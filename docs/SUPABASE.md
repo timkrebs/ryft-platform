@@ -21,17 +21,21 @@ either.
    from the exposed schemas. Migration 0007 also revokes every table privilege from
    `anon`, `authenticated` and `service_role` and enables RLS, but nothing should be
    exposed in the first place.
-5. **Pooler connection string** (Connect → Session pooler, port **5432**) into
-   `DATABASE_URL` (`deploy/k8s/secrets.example.yaml`, or Vault `secret/ryft`):
-   `postgresql://postgres.<ref>:<db-password>@aws-<n>-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require`.
+5. **Session pooler** (Connect → Session pooler, port **5432**): copy the host
+   (`aws-<n>-eu-central-1.pooler.supabase.com`; the `aws-<n>` index differs per project)
+   into `database.host`, and the database password into `database_owner_password`, in
+   `infra/vault/terraform.tfvars`. Terraform builds every connection string from them.
+   The owner URL goes only to the migrate namespace; each service gets
+   `postgresql://ryft_<service>.<ref>:<generated>@<host>:5432/postgres?sslmode=require`.
    Session mode, not transaction mode (6543): migrations take advisory locks and pgx
-   uses prepared statements. Copy the host from the dashboard; the `aws-<n>` index
-   differs per project. The direct host `db.<ref>.supabase.co` is IPv6-only unless you
-   buy the IPv4 add-on; EKS pods use IPv4, so use the pooler.
+   uses prepared statements. The direct host `db.<ref>.supabase.co` is IPv6-only unless
+   you buy the IPv4 add-on; EKS pods use IPv4, so use the pooler.
 6. **Secret key** for account deletion (Project Settings → API Keys → secret key
-   `sb_secret_…`, or the legacy `service_role` JWT) into `SUPABASE_SERVICE_ROLE_KEY`
-   (Secret `ryft-supabase-admin`, read by the api pods only; Vault `secret/ryft-admin`).
-7. **Project ref** into `deploy/k8s/base/configmap.yaml` (`SUPABASE_PROJECT_REF`).
+   `sb_secret_…`, or the legacy `service_role` JWT) into
+   `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY` in the same tfvars. Only the api
+   namespace receives it.
+7. **Project ref** into `supabase_project_ref` (tfvars). ingest and api read it from
+   their Vault namespace; it is also the suffix of every pooler user name.
 8. **Smoke-test user**: Authentication → Users → Add user (email + password, auto-confirm).
    `make smoke-supabase` signs in with it (`SUPABASE_URL`, `SUPABASE_ANON_KEY`,
    `SMOKE_EMAIL`, `SMOKE_PASSWORD`) and writes synthetic days into it — keep it separate
@@ -92,7 +96,7 @@ when a token arrives with a key ID they have not seen. So:
   verify after at most one refresh.
 - **Revoking** a key: tokens signed with it stop working after the next refresh, within
   10 minutes. To cut that short, restart the api and ingest pods
-  (`kubectl -n ryft rollout restart deploy/api deploy/ingest`).
+  (`kubectl -n ryft-api rollout restart deploy/api; kubectl -n ryft-ingest rollout restart deploy/ingest`).
 - If the JWKS is unreachable, requests get `503` (not `401`), so the app keeps its
   session and retries. `/readyz` turns unready while no keys are loaded.
 

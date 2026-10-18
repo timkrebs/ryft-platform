@@ -1,0 +1,60 @@
+# ingest: HealthKit uploads → Postgres (role ryft_ingest) → ryft.ingested.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  labels: { app: ingest, part-of: ryft }
+spec:
+  # replicas: owned by the HorizontalPodAutoscaler (hpa.yaml)
+  selector:
+    matchLabels: { app: ingest }
+  template:
+    metadata:
+      labels: { app: ingest, part-of: ryft }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      # Created by infra/vault on EKS (the identity Vault's Kubernetes auth trusts)
+      # and by overlays/local-postgres elsewhere. The service never calls the
+      # Kubernetes API, so the pod gets no token.
+      serviceAccountName: ingest
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: ingest } }
+      containers:
+        - name: ingest
+          image: ghcr.io/timkrebs/ryft/ingest:latest
+          ports: [{ containerPort: 8080, name: http }]
+          envFrom:
+            - configMapRef: { name: ryft-config }
+            # Only this service's credentials: on EKS synced by the Vault Secrets
+            # Operator from Vault namespace ryft/ingest (infra/vault).
+            - secretRef: { name: ryft-secrets }
+          # The service waits up to 10 minutes for the migrate job before it listens.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 126
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }

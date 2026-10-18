@@ -6,7 +6,7 @@ SERVICES := ingest scoring api migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply k8s-apply-vault k8s-apply-eks k8s-delete k8s-validate
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -52,28 +52,42 @@ smoke-supabase:
 check-swift:
 	./scripts/check_swift.sh
 
-# Default overlay (deploy/k8s/secrets.yaml) or the Vault one; see docs/OPERATIONS.md.
-k8s-apply:
-	kubectl apply -k deploy/k8s
+# One namespace per service (docs/ARCHITECTURE.md → Namespaces).
+NAMESPACES := nats migrate ingest scoring api
+LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 
-k8s-apply-vault:
-	kubectl apply -k deploy/k8s/vault
-
-# EKS (api.ryftapp.de): needs infra/aws/kubernetes applied and overlays/eks/secrets.yaml.
+# EKS (api.ryftapp.de), after infra/aws/kubernetes and infra/vault are applied
+# (docs/OPERATIONS.md → EKS): the Vault Secrets Operator objects first, so each
+# namespace has its Secret before the pods start; then the workloads. The finished
+# migrate Job is deleted first because a Job's pod template cannot change.
 k8s-apply-eks:
+	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s; done
+	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s; done
+	kubectl -n ryft-migrate delete job migrate --ignore-not-found
 	kubectl apply -k deploy/k8s/overlays/eks
+	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
+	for s in ingest api scoring; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
-k8s-delete:
-	kubectl delete -k deploy/k8s
+# Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
+k8s-apply-local:
+	[ -d $(LOCAL_SECRETS) ] || ./scripts/local-secrets.sh
+	kubectl -n ryft-migrate delete job migrate --ignore-not-found
+	kubectl apply -k deploy/k8s/overlays/local-postgres
 
-# Render base and the Vault, EKS and local-postgres overlays offline and validate
-# them (no cluster needed). Overlays without a real secrets.yaml borrow
-# secrets.example.yaml for the render and lose it again.
+k8s-delete-local:
+	kubectl delete -k deploy/k8s/overlays/local-postgres
+
+# Render every overlay offline and validate it (no cluster needed): each service's
+# namespace, EKS, local-postgres (with throwaway secrets if none exist), the
+# Vault Secrets Operator manifests infra/vault generated (if any) and the golden
+# copies its tests pin.
 KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
-OVERLAY_SECRETS  := deploy/k8s/overlays/eks/secrets.yaml deploy/k8s/overlays/local-postgres/secrets.yaml
 k8s-validate:
-	@set -e; out=$$(mktemp); borrowed=; \
-	for f in $(OVERLAY_SECRETS); do if [ ! -f $$f ]; then cp deploy/k8s/secrets.example.yaml $$f; borrowed="$$borrowed $$f"; fi; done; \
-	trap 'rm -f "$$out"; [ -z "$$borrowed" ] || rm -f $$borrowed' EXIT; \
-	for o in base vault overlays/eks overlays/local-postgres; do kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
+	@set -e; out=$$(mktemp); gen=; \
+	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
+	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
+	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
+	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
+	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"

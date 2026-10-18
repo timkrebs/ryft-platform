@@ -45,18 +45,21 @@ Supabase setup: [`docs/SUPABASE.md`](docs/SUPABASE.md).
 
 ## 2. Kubernetes
 
+One namespace per workload (`ryft-ingest`, `ryft-scoring`, `ryft-api`, `ryft-nats`,
+`ryft-migrate`), each with only its own credentials:
+
 ```bash
-make images REGISTRY=ghcr.io/<you>/ryft && make push      # or let CI push ghcr.io/timkrebs/ryft/*
-cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml  # Supabase pooler DATABASE_URL (+ service key); ref in base/configmap.yaml
-# edit deploy/k8s/base/kustomization.yaml images + base/ingress.yaml host
-kubectl apply -k deploy/k8s                                 # or: kubectl apply -k deploy/k8s/vault
-kubectl -n ryft get pods
-kubectl -n ryft port-forward svc/api 8082:80 &  kubectl -n ryft port-forward svc/ingest 8081:80 &
+# EKS + Supabase + Vault (infra/aws, infra/aws/kubernetes and infra/vault applied; images on ghcr)
+make k8s-validate && make k8s-apply-eks
+kubectl -n ryft-api port-forward svc/api 8082:80 &  kubectl -n ryft-ingest port-forward svc/ingest 8081:80 &
 make smoke-supabase              # with SUPABASE_URL/ANON_KEY + a dedicated test user; writes synthetic days
+
+# Self-hosted (in-cluster Postgres, API key, generated per-namespace secrets)
+make k8s-apply-local
 ```
 
-Then put the Ingress (or the two services) behind your tunnel with TLS. Vault,
-network policy, scaling, backups and restore: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+Runbook, namespaces, network policy, scaling, backups and restore:
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md). Vault: [`infra/vault/README.md`](infra/vault/README.md).
 
 ## CI
 

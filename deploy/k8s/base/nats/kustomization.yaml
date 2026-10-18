@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NATS JetStream with one user per service (nats.conf). Namespace-neutral;
+# services/nats puts it into ryft-nats.
+resources:
+  - statefulset.yaml
+  - service.yaml
+  - networkpolicy.yaml
+configMapGenerator:
+  # The hash suffix rolls the StatefulSet when the permissions change.
+  - name: nats-config
+    files: [nats.conf]

@@ -211,21 +211,66 @@ Everything above is a starting point with sensible constants; the tests in
 4. "Full re-sync" wipes anchors and re-uploads the window; "Apply & recompute" PATCHes
    `max_hr` / sleep base and queues a 90-day recompute.
 
+## Namespaces and trust
+
+Every workload is its own security domain: a Kubernetes namespace, a service account, a
+Vault namespace with its own Kubernetes auth mount, and credentials usable only for
+what that workload does. No credential is shared, and none is broader than its user.
+
+```text
+              Internet ──TLS── Traefik (kube-system)
+                                 │ /v1/sync          │ /v1
+                        ┌────────▼───────┐  ┌────────▼───────┐
+                        │ ryft-ingest    │  │ ryft-api       │      ryft-scoring
+                        │ SA ingest      │  │ SA api         │      SA scoring
+                        │ PG ryft_ingest │  │ PG ryft_api    │      PG ryft_scoring
+                        └───┬────────┬───┘  └──┬──────────┬──┘      ┌───┬─────┐
+              NATS user ingest│      │443/5432 │NATS user api│      │   │5432 │
+                            ┌─▼──────┴─────────▼──┐          │      │   │     │
+                            │ ryft-nats  (bcrypt) │◀─────────┼──────┘   │     │
+                            └─────────────────────┘          │ NATS user scoring
+                                                             ▼          ▼
+            ryft-migrate (Job, owner) ──5432──▶  Supabase: Supavisor pooler + Auth (public)
+
+  Vault (HCP): admin/ryft/{ingest,scoring,api,nats,migrate}, each with auth/kubernetes
+  bound to its namespace + service account, kv/config = that workload's keys only.
+  The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
+```
+
+- **Identity:** each pod runs as its own service account, without an automounted
+  Kubernetes token (no workload calls the Kubernetes API). The operator requests
+  short-lived, audience-`vault` tokens for that account and logs into that namespace's
+  Vault mount. Vault confirms each token through the cluster's TokenReview. A role is
+  bound to exactly one namespace and one service account.
+- **Secrets:** `infra/vault` generates the database and NATS passwords and writes each
+  one only into the namespaces that need it (`infra/vault/README.md`).
+- **Data:** each service connects as its own Postgres role (Database roles above). Only
+  the migrate Job holds the owner.
+- **Messaging:** each service is its own NATS user with the narrowest subjects (Events
+  above). The NATS server holds only bcrypt hashes.
+- **Network:** default deny for ingress and egress in every namespace, then exactly
+  the flows in the drawing (`OPERATIONS.md` → Network policy). Internet egress is
+  limited to public addresses on 443/5432.
+- **Pods:** Pod Security `restricted` on every namespace. Everything runs as non-root
+  with a read-only root filesystem (the in-cluster Postgres of `local-postgres`
+  excepted), no privilege escalation, all capabilities dropped and seccomp
+  `RuntimeDefault`.
+
+Not covered (yet): mTLS between Traefik and the services (inside the cluster that hop is
+plain HTTP), image signing and admission policy, and per-user row-level security inside
+the services' own roles. The services scope every query by user themselves.
+
 ## Deployment
 
-`deploy/k8s/base` is the kustomization: namespace, Postgres 17 (StatefulSet, 10 Gi
-PVC), NATS 2.11 with JetStream (2 Gi PVC), the three deployments (distroless,
-non-root, read-only FS, probes on `/healthz` + `/readyz`, Prometheus scrape
-annotations), ClusterIP services, an Ingress that routes `/v1/sync` → ingest and
-`/v1` → api, a default-deny NetworkPolicy with explicit allows, PDBs and CPU HPAs
-(2–4 replicas) for api and ingest, and a nightly `pg_dump` CronJob. Two overlays
-supply `ryft-secrets`: `deploy/k8s` from a git-ignored `secrets.yaml`, or
-`deploy/k8s/vault` through a `VaultStaticSecret` (Vault Secrets Operator, KV v2
-`secret/ryft`). Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
-
-Expose it the way you already expose things: a Cloudflare tunnel pointing at the two
-ClusterIP services (or at the Ingress) is enough; the API key is the only auth, so
-keep TLS on.
+`deploy/k8s/base/<service>` holds namespace-neutral manifests for each workload. The
+three services are distroless, non-root, with a read-only FS, startup/readiness/liveness
+probes and Prometheus annotations. NATS 2.11 runs JetStream on a 2 Gi PVC with
+`nats.conf`. migrate is a one-shot Job. api and ingest have their own Ingress
+(`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB. `deploy/k8s/services/<service>`
+puts each into its namespace. `overlays/eks` composes the five namespaces on EKS, with
+Secrets from Vault through the operator. `overlays/local-postgres` composes them with
+an in-cluster Postgres, a nightly `pg_dump` CronJob and generated per-namespace
+Secrets. Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
 
 ## What to build next (in rough order of payoff)
 

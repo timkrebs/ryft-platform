@@ -1,0 +1,8 @@
+# DATABASE_URL (the schema owner) and DB_PASSWORD_<SERVICE> come from Secret
+# ryft-secrets (Vault).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ryft-config
+data:
+  LOG_LEVEL: info

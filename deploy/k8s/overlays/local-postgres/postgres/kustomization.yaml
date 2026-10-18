@@ -1,0 +1,8 @@
+# The in-cluster Postgres and its nightly backup, in their own namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft-postgres
+resources:
+  - ../../../base/common
+  - postgres.yaml
+  - backup.yaml

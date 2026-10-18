@@ -1,0 +1,10 @@
+# Non-secret settings. DATABASE_URL and the NATS credentials come from Secret
+# ryft-secrets (Vault).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ryft-config
+data:
+  NATS_URL: nats://nats.ryft-nats.svc.cluster.local:4222
+  PORT: "8080"
+  LOG_LEVEL: info

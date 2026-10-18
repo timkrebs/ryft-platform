@@ -1,0 +1,24 @@
+# Traefik (infra/aws/kubernetes) terminates TLS on its websecure entrypoint, the only
+# one exposed, with a certificate cert-manager obtains via DNS-01. Its own certificate
+# for the same host, as a Secret cannot be shared across namespaces.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingest
+  namespace: ryft-ingest
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [api.ryftapp.de]
+      secretName: api-ryftapp-de-tls
+  rules:
+    - host: api.ryftapp.de
+      http:
+        paths:
+          - path: /v1/sync
+            pathType: Prefix
+            backend: { service: { name: ingest, port: { name: http } } }

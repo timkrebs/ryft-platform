@@ -34,10 +34,12 @@ A Prometheus that discovers pods by annotation needs a job like this (the standa
 
 The queries below assume the `app` label from that relabelling (`app="ingest"` etc.).
 kube-prometheus-stack ignores these annotations by default; there, add a `PodMonitor`
-selecting `part-of: ryft` with `podMetricsEndpoints: [{port: http}]`.
+selecting `part-of: ryft` in the namespaces `ryft-ingest`, `ryft-scoring` and `ryft-api`
+(`namespaceSelector.matchNames`) with `podMetricsEndpoints: [{port: http}]`.
 
-The `NetworkPolicy` in `deploy/k8s` admits scrapes from the namespace named
-`monitoring` only; change `ryft-allow-metrics` if Prometheus lives elsewhere.
+Each service's `NetworkPolicy` (`deploy/k8s/base/<service>/networkpolicy.yaml`) admits
+scrapes on 8080 from the namespace named `monitoring` only; change that rule if
+Prometheus lives elsewhere.
 
 ## Metrics
 
@@ -60,7 +62,7 @@ The `NetworkPolicy` in `deploy/k8s` admits scrapes from the namespace named
 
 ## Grafana dashboard — panel list
 
-Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
+Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces). All rates over `[5m]` unless noted.
 
 **Row: Health at a glance**
 
@@ -70,7 +72,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 | Syncs (24 h) | stat | `sum(increase(ryft_http_requests_total{app="ingest",route="POST /v1/sync",code="200"}[24h]))` |
 | Days scored (24 h) | stat | `sum(increase(ryft_days_scored_total{result="ok"}[24h]))` |
 | API error ratio | stat (%) | `sum(rate(ryft_http_requests_total{app="api",code=~"5.."}[5m])) / sum(rate(ryft_http_requests_total{app="api"}[5m]))` |
-| Pods up | stat | `sum by (app) (up{namespace="$namespace"})` |
+| Pods up | stat | `sum by (app) (up{namespace=~"$namespace"})` |
 
 **Row: Ingest**
 
@@ -105,13 +107,14 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 
 | Panel | Type | Query |
 | --- | --- | --- |
-| Memory (RSS) | time series | `process_resident_memory_bytes{namespace="$namespace"}` |
-| Goroutines | time series | `go_goroutines{namespace="$namespace"}` |
-| CPU | time series | `rate(process_cpu_seconds_total{namespace="$namespace"}[5m])` |
+| Memory (RSS) | time series | `process_resident_memory_bytes{namespace=~"$namespace"}` |
+| Goroutines | time series | `go_goroutines{namespace=~"$namespace"}` |
+| CPU | time series | `rate(process_cpu_seconds_total{namespace=~"$namespace"}[5m])` |
 
 NATS exposes its own monitoring on `:8222` (`/varz`, `/jsz`); the
-`prometheus-nats-exporter` turns it into metrics if you want stream depth. For
-Postgres, `postgres_exporter` with the `ryft` credentials.
+`prometheus-nats-exporter` turns it into metrics if you want stream depth (it needs a
+NetworkPolicy rule in `ryft-nats` for 8222). For the in-cluster Postgres of
+`local-postgres`, `postgres_exporter` with a read-only role.
 
 ## Suggested alerts
 
@@ -155,7 +158,7 @@ them no longer than you need.
 **Finding a request** a user reports (the app shows or logs `request_id`):
 
 ```sh
-kubectl -n ryft logs -l part-of=ryft --all-containers --prefix --since=24h --max-log-requests=20 \
+for s in ingest api scoring; do kubectl -n ryft-$s logs -l app=$s --prefix --since=24h --max-log-requests=10; done \
   | grep 01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c
 ```
 

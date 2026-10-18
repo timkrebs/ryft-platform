@@ -1,21 +1,41 @@
-# Fully self-hosted variant: in-cluster Postgres instead of Supabase and the
-# shared API key instead of Supabase Auth (local development / single user on a
-# home cluster; nothing here is safe to expose to the internet).
-#   cp ../../secrets.example.yaml secrets.yaml   # use the local-postgres keys in it
-#   kubectl apply -k deploy/k8s/overlays/local-postgres
+# Fully self-hosted variant: in-cluster Postgres (ryft-postgres) instead of
+# Supabase, and the shared API key instead of Supabase Auth (local development or
+# a single user on a home cluster; nothing here is safe to expose to the
+# internet). Same namespaces, roles, NATS users and policies as EKS. Kustomize
+# creates what infra/vault creates there (namespaces, service accounts) and the
+# per-namespace Secrets, from env files written by scripts/local-secrets.sh.
+#   make k8s-apply-local
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: ryft
 resources:
-  - ../../base
-  - postgres.yaml
-  - secrets.yaml
+  - namespaces.yaml
+  - postgres
+  - egress-postgres.yaml
+  - ../../services/nats
+  - ../../services/migrate
+  - ../../services/ingest
+  - ../../services/scoring
+  - ../../services/api
+
+# Each namespace gets only its own credentials (git-ignored secrets/*.env).
+secretGenerator:
+  - { name: ryft-secrets, namespace: ryft-ingest, envs: [secrets/ingest.env] }
+  - { name: ryft-secrets, namespace: ryft-scoring, envs: [secrets/scoring.env] }
+  - { name: ryft-secrets, namespace: ryft-api, envs: [secrets/api.env] }
+  - { name: ryft-secrets, namespace: ryft-nats, envs: [secrets/nats.env] }
+  - { name: ryft-secrets, namespace: ryft-migrate, envs: [secrets/migrate.env] }
+  - { name: ryft-secrets, namespace: ryft-postgres, envs: [secrets/postgres.env] }
+generatorOptions:
+  disableNameSuffixHash: true
+
 patches:
-  - target: { kind: ConfigMap, name: ryft-config }
-    patch: |-
+  - target: { kind: ConfigMap, name: ryft-config, namespace: ryft-ingest }
+    patch: &apikey |-
       - op: replace
         path: /data/AUTH_MODE
         value: apikey
       - op: add
         path: /data/ALLOW_INSECURE_APIKEY_AUTH
         value: "true"
+  - target: { kind: ConfigMap, name: ryft-config, namespace: ryft-api }
+    patch: *apikey

@@ -1,0 +1,38 @@
+# Applies the migrations and sets the services' role passwords, then exits. The
+# services wait for it. A Job's pod template is immutable: delete the finished Job
+# before applying a new image (`make k8s-apply-eks` does); it also removes itself
+# an hour after finishing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels: { app: migrate, part-of: ryft }
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { app: migrate, part-of: ryft }
+    spec:
+      serviceAccountName: migrate
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: ghcr.io/timkrebs/ryft/migrate:latest
+          envFrom:
+            - configMapRef: { name: ryft-config }
+            - secretRef: { name: ryft-secrets }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }

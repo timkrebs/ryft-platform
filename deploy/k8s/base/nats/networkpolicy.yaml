@@ -1,0 +1,19 @@
+# In: the three services, each from its own namespace, on the client port only
+# (the monitor port answers the kubelet's probes). Out: nothing but DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats
+spec:
+  podSelector: { matchLabels: { app: nats } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-ingest } }
+          podSelector: { matchLabels: { app: ingest } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-scoring } }
+          podSelector: { matchLabels: { app: scoring } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-api } }
+          podSelector: { matchLabels: { app: api } }
+      ports:
+        - { protocol: TCP, port: 4222 }

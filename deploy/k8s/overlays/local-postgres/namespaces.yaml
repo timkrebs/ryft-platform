@@ -1,0 +1,86 @@
+# On EKS infra/vault creates these: one namespace per service with Pod Security
+# "restricted", and the service account each workload runs as.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-ingest
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-scoring
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-api
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-nats
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-migrate
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ryft-postgres
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: ingest, namespace: ryft-ingest }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: scoring, namespace: ryft-scoring }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: api, namespace: ryft-api }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: nats, namespace: ryft-nats }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: migrate, namespace: ryft-migrate }
+automountServiceAccountToken: false

@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  labels: { app: nats, part-of: ryft }
+spec:
+  serviceName: nats
+  replicas: 1
+  selector:
+    matchLabels: { app: nats }
+  template:
+    metadata:
+      labels: { app: nats, part-of: ryft }
+    spec:
+      serviceAccountName: nats
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000       # the image declares no user
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nats
+          image: nats:2.11-alpine
+          args: ["-c", "/etc/nats/nats.conf"]
+          envFrom:
+            # NATS_PASSWORD_<SERVICE>: bcrypt hashes only (infra/vault); the
+            # plaintext passwords live in the services' own namespaces.
+            - secretRef: { name: ryft-secrets }
+          ports:
+            - { containerPort: 4222, name: client }
+            - { containerPort: 8222, name: monitor }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/nats, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: monitor }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: monitor }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: config
+          configMap: { name: nats-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }

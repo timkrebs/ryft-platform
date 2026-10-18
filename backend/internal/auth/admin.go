@@ -33,7 +33,7 @@ func NewAdmin(base, key string, client *http.Client) (*Admin, error) {
 	}
 	switch role, isJWT := jwtRole(key); {
 	case strings.Contains(key, "change-me"):
-		return nil, fmt.Errorf("SUPABASE_SERVICE_ROLE_KEY is still the placeholder from secrets.example.yaml")
+		return nil, fmt.Errorf("SUPABASE_SERVICE_ROLE_KEY is still a placeholder (change-me)")
 	case strings.HasPrefix(key, "sb_secret_"):
 	case isJWT && role == "service_role":
 		a.jwt = true

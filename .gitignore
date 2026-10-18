@@ -6,3 +6,4 @@ backend/bin/
 xcuserdata/
 DerivedData/
 .DS_Store
+deploy/k8s/overlays/local-postgres/secrets/

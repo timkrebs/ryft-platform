@@ -1,0 +1,17 @@
+# /v1/sync on the shared host; the api Ingress serves the rest of /v1. Traefik
+# and ingress-nginx both prefer the longer prefix across Ingress objects.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingest
+  annotations:
+    # The api Ingress owns the host's DNS record (ExternalDNS).
+    external-dns.alpha.kubernetes.io/ingress-hostname-source: annotation-only
+spec:
+  rules:
+    - host: ryft.example.com
+      http:
+        paths:
+          - path: /v1/sync
+            pathType: Prefix
+            backend: { service: { name: ingest, port: { name: http } } }

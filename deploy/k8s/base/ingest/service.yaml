@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest
+  labels: { app: ingest, part-of: ryft }
+spec:
+  selector: { app: ingest }
+  ports: [{ name: http, port: 80, targetPort: http }]

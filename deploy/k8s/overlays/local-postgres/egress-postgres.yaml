@@ -1,0 +1,61 @@
+# The services' internet egress excludes private addresses, so the in-cluster
+# Postgres needs its own rule in each namespace that connects to it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-local-postgres
+  namespace: ryft-ingest
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-postgres } }
+          podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-local-postgres
+  namespace: ryft-scoring
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-postgres } }
+          podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-local-postgres
+  namespace: ryft-api
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-postgres } }
+          podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-local-postgres
+  namespace: ryft-migrate
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-postgres } }
+          podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }

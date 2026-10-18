@@ -1,6 +1,6 @@
 # RYFT platform — status
 
-State of the v1 platform after M1 (Supabase, 2026-10-18). Contract:
+State of the v1 platform after M1 (Supabase) and the zero-trust layout (2026-10-18). Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -22,7 +22,7 @@ deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
 | Item | What | Where |
 | --- | --- | --- |
-| EKS cluster | VPC + EKS `ryft-prod` (Terraform modules), applied by the user on 2026-10-18 | [`infra/aws`](../infra/aws/README.md) |
+| EKS cluster | VPC + EKS `ryft-prod-euc1` (Terraform modules; renamed from `ryft-prod`), applied by the user | [`infra/aws`](../infra/aws/README.md) |
 | Domain `ryftapp.de` | Route 53 zone (own root, long-lived) with CAA for Let's Encrypt; GoDaddy stays the registrar | `infra/aws/dns` |
 | Edge | AWS Load Balancer Controller, Traefik behind an NLB (HTTPS only), cert-manager with Let's Encrypt DNS-01 issuers, ExternalDNS, encrypted gp3 default StorageClass; all Terraform + Helm with Pod Identity | `infra/aws/kubernetes` |
 | EKS overlay | `api.ryftapp.de` Ingress (Traefik + cert-manager), encrypted storage class on every volume, image tags to pin | `deploy/k8s/overlays/eks` |
@@ -42,6 +42,16 @@ agreed extras):
 | Steps and kcal | Daily totals on `DailyScore` and `DayDetail.strain`, trend metrics. | migration 0008, D41 |
 | CI | The test job runs the Postgres integration tests (migrations, deletion races) against a service container. | `.github/workflows/ci.yml` |
 
+**Zero trust: one identity per workload** ([`ARCHITECTURE.md`](ARCHITECTURE.md#namespaces-and-trust)):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Database roles | `ryft_ingest` / `ryft_scoring` / `ryft_api` with only the privileges their queries use. Migrations run only in the migrate job, as the owner. Passwords are set as SCRAM verifiers. | migration 0009, `cmd/migrate`, D42 |
+| NATS users | One user per service. Publishers may only publish `ryft.ingested`; scoring alone manages and consumes the stream. Each service has its own reply inbox. | `deploy/k8s/base/nats/nats.conf`, D43 |
+| Namespaces | `ryft-{ingest,scoring,api,nats,migrate}`, each with default deny in and out, explicit flows, internet egress only to public addresses, Pod Security `restricted`, and no service-account tokens in pods. | `deploy/k8s`, D44 |
+| Vault | HCP namespace paths fixed. Credentials are generated and written only where used. A migrate namespace, the api's Supabase key, and a mocked `terraform test` with golden operator manifests. | `infra/vault` (yours, uncommitted), D45 |
+| Operator | Vault Secrets Operator 1.6.0 as a pinned add-on, with no default identity. | `infra/aws/kubernetes`, D46 |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -57,7 +67,10 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `make up && make smoke` on the existing volume after M1 (migrations 0007 and 0008 over real data) | pass, incl. two-user isolation on a shared device and workout UUID, request IDs and security headers, `413`s, account deletion (data gone, `401` afterwards on api and ingest, repeatable), overlapping heart-rate, sleep and step sources; no warnings or errors in the service logs |
 | `make check-swift` | the Swift mirror in `API.md` decodes every endpoint; the app's current models (`../app`) decode every endpoint they call |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
-| Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 6 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
+| Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
+| `infra/vault` | `validate`, tflint clean, `terraform test` (mocked, 6 runs): keys per namespace, owner password only in migrate, bcrypt-only NATS, role bindings, policy, Pod Security, golden operator manifests (fails with the old namespace path) |
+| Zero-trust layout locally | compose runs migrate, then the services as `ryft_*` roles and their NATS users. `make smoke` passes on the existing volume, with migration 0009 applied over the data. The grant matrix, SCRAM login and RLS on the Supabase shape are tested against Postgres 17. The NATS permission tests pass against compose and with bcrypt hashes, and fail against a permissive config. |
+| `make k8s-validate` (per-namespace) | each `services/<svc>`, `overlays/eks`, `overlays/local-postgres` and the golden operator manifests (140 resources, VSO 1.6 CRD schemas). Every rendered pod checked for the restricted profile; each namespace's Secret holds only its own keys. NATS ran as uid 1000 on a read-only root, and Postgres as uid 70 with all capabilities dropped (Podman). |
 | Helm charts of the edge | each pinned chart rendered with the exact values (`helm template`), schemas accepted, output validated with kubeconform incl. cert-manager CRD schemas; Traefik Service exposes only 443 |
 | Backup script + restore procedure | run against the compose Postgres: dump as uid 70 with read-only root FS, `pg_restore --clean --if-exists` into empty and populated databases, identical row counts |
 | Dockerfile cross-build | `linux/amd64` image built on arm64 and started |
@@ -75,9 +88,12 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
   The cluster root's next plan also carries the EBS add-on change (no default
   StorageClass from the add-on) and, without a `terraform.tfvars`, still leaves the
   Kubernetes API open to `0.0.0.0/0`.
-- **Not on EKS yet:** Prometheus (`monitoring` namespace, needs a third node), Vault
-  Secrets Operator, content on the apex `ryftapp.de` / `www`, DNSSEC.
-- **Vault overlay untested against a live Vault / Vault Secrets Operator.**
+- **Not on EKS yet:** Prometheus (`monitoring` namespace, needs a third node), content on
+  the apex `ryftapp.de` / `www`, DNSSEC.
+- **Untested against the real services:** `infra/vault` against HCP Vault, the operator
+  against the cluster, and Supavisor accepting the custom roles (`ryft_api.<ref>`). The
+  first `make k8s-apply-eks` proves all three; `infra/vault` is only checked with mocked
+  providers.
 - **Failure-path metrics** (`ryft_events_handled_total{result="retry|failed"}`,
   `ryft_nats_redeliveries_total`) are wired but were not exercised end to end.
 - **No live Supabase project yet.** The Supabase paths are verified against a fake JWKS
@@ -114,67 +130,74 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
   - The app also reads `details` keys. They are frozen, but the typed fields
     (`baseline_days`, `DayDetail.sleep`, `DayDetail.strain`) are the contract.
 
+## Alpha readiness
+
+The code, manifests and Terraform are ready and verified offline and on the local
+stack. Nothing runs on the cluster yet. A first alpha (TestFlight, a few people) needs
+these steps, in order. All of them are yours, because each needs an account or
+credentials:
+
+| # | Step | Why it blocks |
+| --- | --- | --- |
+| 1 | **Supabase project** per [`SUPABASE.md`](SUPABASE.md) (Frankfurt, asymmetric JWT keys, Apple provider, Data API off). Use a paid plan for real users: free projects pause after a week of inactivity and keep no backups. | no database, no sign-in |
+| 2 | **GitHub remote + first CI run.** Images `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>`. Make the packages public, or add an `imagePullSecret` per namespace. | nothing to pull |
+| 3 | **`infra/aws/dns`**, then the GoDaddy nameserver switch | no certificate, no DNS |
+| 4 | **`infra/aws/kubernetes`** (Traefik, cert-manager, ExternalDNS, gp3-encrypted, now the Vault Secrets Operator) | no ingress, no secrets sync |
+| 5 | **`infra/vault`**: `terraform.tfvars` has the old shape and placeholders. Copy the new `terraform.tfvars.example`: `supabase_project_ref`, `database.host`, `database_owner_password`, `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY`. Then `terraform test`, plan, apply. | no credentials anywhere |
+| 6 | **kubectl context**: the current one points at the old cluster ARN `…/ryft-prod`. Run `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1`. | Terraform's kubernetes provider uses its own token, but `make k8s-apply-eks` uses kubectl |
+| 7 | Pin `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml`, then `make k8s-apply-eks` | — |
+| 8 | **Verify:** `curl -sI https://api.ryftapp.de/v1/me` → `401`; `make smoke-supabase` through port-forwards with the test user; the RLS/role queries in `SUPABASE.md` | — |
+| 9 | **App:** Release xcconfig → `https://api.ryftapp.de` and the Supabase URL and publishable key; the hand-off list above | the app talks to nothing |
+
+Acceptable for an alpha, but known gaps:
+- **Single points:** one NATS replica and one scoring replica.
+- **No Prometheus or alerting.** At least add an external uptime check on
+  `https://api.ryftapp.de/v1/me`, expecting 401.
+- **Pod logs only, not shipped.**
+- **Apple token revocation** is not implemented. App Store review requires it, an
+  internal TestFlight alpha does not.
+- **Kubernetes auth needs HCP Vault to reach the EKS API.** If you narrow
+  `endpoint_public_access_cidrs`, include Vault's egress addresses, or logins (and
+  secret refreshes) stop.
+- **Cost:** about €120–160 a month (`infra/aws/README.md`).
+- **Your own uncommitted files:** the `ryft-prod-euc1` rename in `infra/aws`
+  (`locals.tf`, `variables.tf`) matches the applied state; commit it. `infra/vault` is
+  untracked; commit it, together with its `.terraform.lock.hcl`, once you have reviewed
+  the changes.
+
 ## Deploy
 
 Local:
 
 ```bash
-make up && make smoke                 # Docker or Podman; prints the scored table + contract checks
+make up && make smoke                 # Docker or Podman: migrate, roles, NATS users, contract checks
 make check-swift                      # optional, macOS
 ```
 
 Images (CI does this on push once the repo is on GitHub; by hand):
 
 ```bash
-make push REGISTRY=ghcr.io/timkrebs/ryft            # builds, tags :<short-sha> and :latest, pushes
+make push REGISTRY=ghcr.io/timkrebs/ryft            # ingest, scoring, api, migrate: :<short-sha> and :latest
 ```
 
-Kubernetes, plain Secret (Supabase; the checklist in [`SUPABASE.md`](SUPABASE.md) first):
-
-```bash
-cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml   # DATABASE_URL (session pooler) + SUPABASE_SERVICE_ROLE_KEY
-# SUPABASE_PROJECT_REF in deploy/k8s/base/configmap.yaml; image tag in base/kustomization.yaml; host in base/ingress.yaml
-make k8s-validate
-kubectl apply -k deploy/k8s
-kubectl -n ryft rollout status deploy/api deploy/ingest deploy/scoring
-```
-
-In-cluster Postgres with the shared API key instead (no Supabase): `kubectl apply -k
-deploy/k8s/overlays/local-postgres` with the commented `local-postgres` values in
-`secrets.yaml`.
-
-Kubernetes, Vault (after the Vault-side setup in [`OPERATIONS.md`](OPERATIONS.md#deploy-with-vault-vault-secrets-operator)):
-
-```bash
-kubectl apply -k deploy/k8s/vault
-kubectl -n ryft get vaultstaticsecret ryft-secrets
-```
-
-Then, once per install or upgrade from the scaffold, rescore history so the new
-columns are filled, and run the smoke test through port-forwards:
-
-```bash
-kubectl -n ryft port-forward svc/api 8082:80 & kubectl -n ryft port-forward svc/ingest 8081:80 &
-# each user rescores their own history (the app, or with the user's access token):
-curl -fsS -X POST localhost:8082/v1/recompute -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' -d "{\"from\":\"$(date -v-90d +%F)\",\"to\":\"$(date +%F)\"}"
-SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=… SMOKE_EMAIL=… SMOKE_PASSWORD=… make smoke-supabase
-```
-
-`make smoke-supabase` signs in as the dedicated smoke-test user and writes synthetic days
-into that account only. Keep it separate from real accounts.
-
-### EKS / api.ryftapp.de
-
-Commands in order, each run by you (Terraform state never leaves your machine):
+EKS, in order (each Terraform root applied by you; Terraform state never leaves your
+machine; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
 
 ```bash
 (cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
 # GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
-(cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)         # EBS add-on update
+(cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)
+aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1
 (cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email
 (cd infra/aws/kubernetes && terraform init && terraform plan -out=tfplan && terraform apply tfplan)
-# after M1 + first CI run: overlays/eks secrets.yaml + image tag, then make k8s-apply-eks
+(cd infra/vault && cp terraform.tfvars.example terraform.tfvars)               # Supabase values (SUPABASE.md)
+(cd infra/vault && export VAULT_ADDR=… VAULT_TOKEN=… VAULT_NAMESPACE=admin && \
+  terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
+# newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
+make k8s-validate && make k8s-apply-eks
 ```
 
-Full runbook: `docs/OPERATIONS.md` → EKS.
+Then, with each user's token, rescore history (`POST /v1/recompute`, `OPERATIONS.md` →
+Upgrading). Run `make smoke-supabase` only with the dedicated test user.
+
+Self-hosted (k3s etc.): `make k8s-apply-local` (`OPERATIONS.md` → Self-hosted).
