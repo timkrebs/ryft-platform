@@ -12,3 +12,5 @@ tfplan
 *.tfplan
 # Per-session milestone specs; they stay local
 CLAUDE_FOLLOWUP_*.md
+__pycache__/
+infra/backend.hcl

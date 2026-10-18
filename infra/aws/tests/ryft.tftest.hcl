@@ -84,14 +84,14 @@ mock_provider "time" {}
 mock_provider "null" {}
 mock_provider "cloudinit" {}
 
-run "names_derive_from_project_and_environment" {
+run "names_derive_from_project_environment_and_location" {
   assert {
-    condition     = output.cluster_name == "ryft-prod"
-    error_message = "the cluster must be named <project>-<environment>"
+    condition     = output.cluster_name == "ryft-prod-euc1"
+    error_message = "the cluster must be named <project>-<environment>-<location>"
   }
 
   assert {
-    condition     = output.configure_kubectl == "aws eks update-kubeconfig --region eu-central-1 --name ryft-prod --alias ryft-prod"
+    condition     = output.configure_kubectl == "aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1"
     error_message = "configure_kubectl must target the cluster in the configured region"
   }
 }
@@ -102,8 +102,19 @@ run "other_environment_gets_its_own_names" {
   }
 
   assert {
-    condition     = output.cluster_name == "ryft-dev"
+    condition     = output.cluster_name == "ryft-dev-euc1"
     error_message = "environment must be part of the cluster name"
+  }
+}
+
+run "location_is_part_of_every_name" {
+  variables {
+    location = "euw1"
+  }
+
+  assert {
+    condition     = output.cluster_name == "ryft-prod-euw1"
+    error_message = "location must be the third part of the cluster name"
   }
 }
 
@@ -174,3 +185,28 @@ run "rejects_invalid_api_cidr" {
 
   expect_failures = [var.endpoint_public_access_cidrs]
 }
+
+run "budget_alarm_only_with_a_recipient" {
+  command = plan
+
+  assert {
+    condition     = length(aws_budgets_budget.monthly) == 0
+    error_message = "no budget without a recipient"
+  }
+}
+
+run "budget_alarm_at_80_percent_and_forecast" {
+  command = plan
+
+  variables {
+    budget_alert_emails = ["ops@example.com"]
+  }
+  assert {
+    condition = (
+      aws_budgets_budget.monthly[0].limit_amount == "165" && aws_budgets_budget.monthly[0].limit_unit == "USD" &&
+      length(aws_budgets_budget.monthly[0].notification) == 2
+    )
+    error_message = "monthly budget, alerts at 80 % actual and 100 % forecast"
+  }
+}
+

@@ -6,7 +6,7 @@ SERVICES := ingest scoring api migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-state
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -73,6 +73,24 @@ k8s-apply-eks:
 	kubectl -n ryft-nats rollout status statefulset/nats --timeout=5m
 	kubectl apply -k deploy/k8s/overlays/eks
 	for s in ingest api scoring; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
+
+# Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
+# its Fleet Management token is synced from Vault into namespace monitoring first.
+K8S_MONITORING_VERSION := 4.5.3
+monitoring-apply:
+	kubectl apply -k deploy/k8s/overlays/vault-namespaces/monitoring
+	kubectl -n monitoring wait --for=create secret/ryft-secrets --timeout=120s
+	helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
+	helm repo update grafana >/dev/null
+	helm upgrade --install grafana-cloud grafana/k8s-monitoring --version $(K8S_MONITORING_VERSION) \
+	  --namespace monitoring --values deploy/monitoring/k8s-monitoring.yaml --wait --timeout 10m
+
+# Move every Terraform root's state into the S3 bucket from infra/aws/state, once
+# (docs/OPERATIONS.md → Terraform state). Terraform asks before copying each state.
+TF_ROOTS := infra/aws infra/aws/dns infra/aws/kubernetes infra/vault
+tf-migrate-state:
+	@test -f infra/backend.hcl || { echo "infra/backend.hcl missing: (cd infra/aws/state && terraform init && terraform apply && terraform output -raw backend_hcl > ../../backend.hcl)"; exit 1; }
+	for r in $(TF_ROOTS); do (cd $$r && terraform init -migrate-state -backend-config=$(CURDIR)/infra/backend.hcl) || exit 1; done
 
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
 k8s-apply-local:

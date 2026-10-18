@@ -8,20 +8,13 @@ terraform {
     }
   }
 
-  # State is local (terraform.tfstate, git-ignored) until you pick a backend.
-  # HCP Terraform:
-  # cloud {
-  #   organization = "<your-org>"
-  #   workspaces {
-  #     name = "ryft-aws-prod"
-  #   }
-  # }
-  #
-  # Or S3 with native locking (Terraform >= 1.10):
-  # backend "s3" {
-  #   bucket       = "<state-bucket>"
-  #   key          = "ryft/aws/prod.tfstate"
-  #   region       = "eu-central-1"
-  #   use_lockfile = true
-  # }
+  # Remote state in the bucket from infra/aws/state (docs/OPERATIONS.md → Terraform
+  # state). Bucket and KMS key come from the git-ignored infra/backend.hcl:
+  #   terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
+  backend "s3" {
+    key          = "aws/cluster.tfstate"
+    region       = "eu-central-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 }

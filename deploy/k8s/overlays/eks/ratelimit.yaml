@@ -1,0 +1,32 @@
+# Per-IP limit at the edge, before any token is checked: 20 requests/s on average,
+# bursts of 50, per client address (the NLB preserves it; infra/aws/kubernetes).
+# The services' own per-user limit (D36) only starts after a valid token. Each
+# Traefik replica counts on its own, so the effective limit is up to 2x. Over it,
+# Traefik answers 429 itself, with a plain-text body.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+  namespace: ryft-api
+spec:
+  rateLimit:
+    average: 20
+    period: 1s
+    burst: 50
+    sourceCriterion:
+      ipStrategy:
+        depth: 0
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+  namespace: ryft-ingest
+spec:
+  rateLimit:
+    average: 20
+    period: 1s
+    burst: 50
+    sourceCriterion:
+      ipStrategy:
+        depth: 0

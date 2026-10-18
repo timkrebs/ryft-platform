@@ -66,7 +66,8 @@ run "chart_versions_are_pinned" {
       helm_release.traefik.version == "42.0.0" &&
       helm_release.cert_manager.version == "v1.21.2" &&
       helm_release.external_dns.version == "1.23.0" &&
-      helm_release.vault_secrets_operator.version == "1.6.0"
+      helm_release.vault_secrets_operator.version == "1.6.0" &&
+      helm_release.fluent_bit.version == "0.2.0"
     )
     error_message = "every chart must be pinned to the reviewed version"
   }
@@ -146,6 +147,15 @@ run "rejects_invalid_acme_email" {
   expect_failures = [var.acme_email]
 }
 
+run "traefik_sees_client_ips" {
+  command = plan
+
+  assert {
+    condition     = strcontains(yamldecode(helm_release.traefik.values[0]).service.annotations["service.beta.kubernetes.io/aws-load-balancer-target-group-attributes"], "preserve_client_ip.enabled=true")
+    error_message = "the per-IP edge rate limit needs the NLB to preserve client IPs"
+  }
+}
+
 run "vault_secrets_operator_has_no_default_identity" {
   command = plan
 
@@ -156,6 +166,28 @@ run "vault_secrets_operator_has_no_default_identity" {
       yamldecode(helm_release.vault_secrets_operator.values[0]).controller.manager.globalTransformationOptions.excludeRaw == true
     )
     error_message = "every namespace brings its own VaultConnection and VaultAuth (infra/vault); no shared default"
+  }
+}
+
+run "logs_ship_only_ryft_to_an_encrypted_group" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_log_group.containers.retention_in_days == 14 && aws_cloudwatch_log_group.containers.name == "/ryft/ryft-prod-euc1/containers"
+    error_message = "one RYFT log group, kept 14 days"
+  }
+  assert {
+    condition = alltrue([for p in split(",", yamldecode(helm_release.fluent_bit.values[0]).input.path) :
+    strcontains(p, "_ryft-") || strcontains(p, "_kube-system_") && startswith(p, "/var/log/containers/traefik-")])
+    error_message = "Fluent Bit tails only the RYFT namespaces and Traefik"
+  }
+  assert {
+    condition     = yamldecode(helm_release.fluent_bit.values[0]).cloudWatchLogs.autoCreateGroup == false
+    error_message = "the chart must not create an unencrypted group of its own"
+  }
+  assert {
+    condition     = aws_kms_key.logs.enable_key_rotation
+    error_message = "the log key rotates"
   }
 }
 

@@ -4,7 +4,9 @@ region      = "eu-central-1"
 project     = "ryft"
 environment = "prod"
 
-# Only your own address(es) should reach the Kubernetes API: curl -s https://checkip.amazonaws.com
+# Who may reach the Kubernetes API. Your own address(es) (curl -s https://checkip.amazonaws.com)
+# AND HCP Vault's egress addresses: its Kubernetes auth calls TokenReview on every login
+# (infra/vault). Without Vault's, secret syncs stop; leave 0.0.0.0/0 until you know them.
 endpoint_public_access_cidrs = ["203.0.113.10/32"]
 
 deletion_protection = true
@@ -23,3 +25,7 @@ node_group = {
 tags = {
   Owner = "platform-team"
 }
+
+# Monthly cost alarm (AWS Budgets, USD; 165 ≈ €150): alerts at 80 % spent and 100 % forecast.
+budget_alert_emails = ["you@example.com"]
+# monthly_budget_usd = 165

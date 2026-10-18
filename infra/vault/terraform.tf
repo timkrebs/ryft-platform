@@ -24,14 +24,16 @@ terraform {
     }
   }
 
-  # Same rule as infra/aws: local state until you pick a backend. The state holds
-  # every credential this root writes into Vault (generated passwords, the owner
-  # password) in plaintext: keep it on an encrypted disk, or move it to an encrypted
-  # remote backend before anyone else runs this.
-  # backend "s3" {
-  #   bucket       = "<state-bucket>"
-  #   key          = "ryft/vault/prod.tfstate"
-  #   region       = "eu-central-1"
-  #   use_lockfile = true
-  # }
+  # Remote state in the bucket from infra/aws/state (docs/OPERATIONS.md → Terraform
+  # state). Bucket and KMS key come from the git-ignored infra/backend.hcl:
+  #   terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
+  # This state holds every credential the root writes into Vault (generated
+  # passwords, the owner password, tokens) in plaintext; the bucket is private,
+  # TLS-only and KMS-encrypted, so reading it needs both S3 and KMS permissions.
+  backend "s3" {
+    key          = "vault.tfstate"
+    region       = "eu-central-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 }

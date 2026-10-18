@@ -106,3 +106,20 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+
+variable "budget_alert_emails" {
+  description = "Who gets the monthly cost alerts (80 % actual, 100 % forecast). Empty = no budget."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for e in var.budget_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
+    error_message = "budget_alert_emails must be email addresses."
+  }
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in USD (AWS Budgets bills and alerts in USD); 165 ≈ €150"
+  type        = number
+  default     = 165
+}

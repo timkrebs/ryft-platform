@@ -16,5 +16,14 @@ terraform {
     }
   }
 
-  # Local state (git-ignored) unless you enable a backend; see ../terraform.tf.
+
+  # Remote state in the bucket from infra/aws/state (docs/OPERATIONS.md → Terraform
+  # state). Bucket and KMS key come from the git-ignored infra/backend.hcl:
+  #   terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
+  backend "s3" {
+    key          = "aws/kubernetes.tfstate"
+    region       = "eu-central-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 }

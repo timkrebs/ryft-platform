@@ -68,6 +68,9 @@ resource "helm_release" "traefik" {
         "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type" = "ip"
         "service.beta.kubernetes.io/aws-load-balancer-scheme"          = "internet-facing"
         "service.beta.kubernetes.io/aws-load-balancer-attributes"      = "load_balancing.cross_zone.enabled=true"
+        # With IP targets the NLB hides the client address by default; the per-IP
+        # rate limit (deploy/k8s/overlays/eks) needs Traefik to see it.
+        "service.beta.kubernetes.io/aws-load-balancer-target-group-attributes" = "preserve_client_ip.enabled=true"
       }
     }
     # Publish the NLB hostname in Ingress status so ExternalDNS can point
