@@ -106,3 +106,28 @@ the Today ring shows sleep as a percentage, `sleep` is `sleep_performance` (%).
 `sleep_min` (minutes asleep) is added for duration charts. Points are sparse (days
 without a value are left out, not sent as `null`), and `range` defaults to `7d` with an
 optional `to` like `/v1/sleep`.
+
+## D13 — Insight rule interpretations
+
+- **"Bedtime variance > 90 min"** is read as *spread* (latest − earliest bedtime over the
+  last 7 nights), not statistical variance (minutes², meaningless as a threshold) or
+  standard deviation (a 90-min SD essentially never happens to non-shift-workers, so
+  the card would never fire). Bedtimes are measured on a noon-to-noon axis so 23:30 and
+  00:30 are an hour apart. At least 5 of the 7 nights must have data. Switching to SD
+  is a change inside `bedtimeConsistency`.
+- **Freshness.** "Today's" value is today's, or yesterday's when today has not synced
+  yet; older values never produce a card, so a streak that ended days ago stays silent.
+- **Consecutive** means consecutive calendar nights; a night without data ends a streak.
+- **Calibrating.** Baseline-relative rules (HRV low, RHR up, best HRV) are silent while
+  the day is `calibrating` — a 3-night baseline makes "below baseline" noise.
+- **Three hard days without a green recovery** counts strain ≥ 14 days in the last 14,
+  resetting on any recovery ≥ 67. A day's recovery is its morning, so a green morning
+  followed by a hard day starts a new run that includes that day.
+- **Sleep debt** uses `DailyScore.sleep_debt_min` (debt carried into last night) so the
+  card and the Today screen show the same number.
+- **Readiness trend up** = least-squares slope ≥ 1 point/day over the last 7 days on ≥ 5
+  days, so one good morning after a bad one does not count as a trend.
+- **History window** is 30 days, not the prompt's 14: "best HRV in 30 days" needs 30. The
+  other rules only look at the last 14 or fewer days.
+- Cards carry the extra `day` field the prompt's `Insight` example shows; `metric` is a
+  `/v1/trends` metric so the app can deep-link.

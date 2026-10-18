@@ -49,7 +49,7 @@ func main() {
 	}
 	defer bus.Close()
 
-	h := &handler{cfg: cfg, st: st, bus: bus, log: log}
+	h := &handler{cfg: cfg, st: st, bus: bus, log: log, cache: &insightCache{}}
 
 	mux := http.NewServeMux()
 	httpx.Health(mux, func(ctx context.Context) error { return st.Ready(ctx) })
@@ -63,6 +63,7 @@ func main() {
 	api.HandleFunc("GET /v1/workouts", h.workouts)
 	api.HandleFunc("GET /v1/workouts/{id}", h.workout)
 	api.HandleFunc("GET /v1/trends", h.trends)
+	api.HandleFunc("GET /v1/insights", h.insights)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
 
@@ -73,10 +74,11 @@ func main() {
 }
 
 type handler struct {
-	cfg config.Config
-	st  *store.Store
-	bus *events.Bus
-	log *slog.Logger
+	cfg   config.Config
+	st    *store.Store
+	bus   *events.Bus
+	log   *slog.Logger
+	cache *insightCache
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

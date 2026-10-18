@@ -40,7 +40,7 @@ the same `samples` table with new `type` values — nothing else changes.
 |-----------|------|----------------|----------|
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
 | `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
 share `internal/` packages, and run DB migrations on boot behind an advisory lock.
@@ -126,6 +126,14 @@ remainder, awake is a share of time in bed), quality = sleep performance with la
 good ≥ 80 / fair ≥ 60 / poor, and the hypnogram from the raw `sleep_segments` of the
 night window. `GET /v1/sleep` averages the stored nights of a 7- or 30-day window.
 
+**Insights.** `internal/insights` is a list of pure rules, each
+`func(History) *model.Insight`, over a contiguous 30-day calendar ending today (days
+without a score are empty, so "consecutive nights" means calendar nights). Shared
+helpers handle the fiddly parts: `Latest` (today, or yesterday before today's sync),
+`Streak` (consecutive days ending at the latest day with data). Thresholds sit together
+at the top of `rules.go`. The api computes the cards on read and caches them in memory
+for 5 minutes per local day; with several api replicas each keeps its own cache.
+
 Everything above is a starting point with sensible constants; the tests in
 `algorithms_test.go` pin the calibration so you can change a formula and see what moved.
 
@@ -161,6 +169,6 @@ keep TLS on.
    sync latency) → Grafana dashboard next to your existing stack.
 4. **Weekly / monthly views** and a strain-vs-recovery scatter (the Whoop "sweet spot").
 5. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
-6. **Sleep consistency and journal** (the behaviour-impact feature): a `journal`
-   table + correlation against next-day recovery.
+6. **Journal** (the behaviour-impact feature): a `journal` table + correlation against
+   next-day recovery, surfaced as more insight rules.
 7. **Garmin-only metrics** via an optional `garmin-sync` service.

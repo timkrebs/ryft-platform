@@ -247,6 +247,23 @@ type Trend struct {
 	Baseline *float64     `json:"baseline"` // hrv / rhr only: 30-day baseline as of the last scored day
 }
 
+// Insight severities, most urgent first.
+const (
+	SeverityWarn   = "warn"
+	SeverityNotice = "notice"
+	SeverityInfo   = "info"
+)
+
+// Insight is one card on the Insights screen.
+type Insight struct {
+	ID       string `json:"id"`       // stable per rule, e.g. "hrv-low-3d"
+	Severity string `json:"severity"` // info | notice | warn
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	Metric   string `json:"metric"` // trend metric to deep-link to
+	Day      string `json:"day"`    // the day the insight is about
+}
+
 type User struct {
 	ID           uuid.UUID `json:"id"`
 	Name         string    `json:"name"`

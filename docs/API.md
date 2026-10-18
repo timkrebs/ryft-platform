@@ -52,6 +52,7 @@ Every error response has the same shape:
 | `GET` | `/v1/workouts?from&to` | api | `[Workout]` |
 | `GET` | `/v1/workouts/{id}` | api | `WorkoutDetail` |
 | `GET` | `/v1/trends?metric&range&to` | api | `Trend` |
+| `GET` | `/v1/insights` | api | `[Insight]` |
 | `POST` | `/v1/recompute` | api | `202 {status:"queued"}` |
 | `GET` | `/healthz`, `/readyz` | all | health |
 
@@ -288,6 +289,38 @@ the whole duration counts at that intensity and in that zone.
 | `min`, `max` | number? | `null` without points. |
 | `baseline` | number? | `hrv` and `rhr` only: the 30-day baseline stored on the most recent day in the window that has one (= that day's `hrv_baseline_ms` / `rhr_baseline`). `null` for other metrics. |
 
+### `GET /v1/insights` — Insights screen
+
+Short rule-based cards about today, most urgent first (`warn`, then `notice`, then
+`info`). `[]` when nothing stands out. Computed on read from the last 30 days and cached
+for 5 minutes, so a sync can take up to 5 minutes to change the cards.
+
+```json
+[ { "id": "hrv-low-3d", "severity": "warn", "title": "HRV below your baseline for 3 nights",
+    "body": "Your overnight HRV has been under your 30-day baseline of 55 ms for 3 nights in a row (47 ms last night). …",
+    "metric": "hrv", "day": "2026-10-18" } ]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Stable per rule (table below); use it for icons and de-duplication. New ids may appear — show unknown ones generically. |
+| `severity` | string | `warn`, `notice` or `info` (positive news is `info`). |
+| `title`, `body` | string | Display text, English, numbers already formatted. |
+| `metric` | string | A `GET /v1/trends` metric to deep-link to. |
+| `day` | string | The day the card is about (today, or yesterday when today has not synced yet; for streaks, the latest day). |
+
+| `id` | Severity | Fires when |
+|---|---|---|
+| `hrv-low-3d` | warn | Overnight HRV below its 30-day baseline for ≥ 3 consecutive nights. |
+| `rhr-elevated` | warn | Last night's resting HR ≥ 5 bpm above its baseline. |
+| `strain-no-recovery` | warn | ≥ 3 days at strain ≥ 14 in the last 14 days with no recovery ≥ 67 since the first of them. |
+| `sleep-debt` | notice | Sleep debt (`DailyScore.sleep_debt_min`) ≥ 90 min. |
+| `bedtime-irregular` | notice | Bedtime spread (latest − earliest) > 90 min over the last 7 nights (≥ 5 nights with data). |
+| `readiness-up` | info | Readiness rising ≥ 1 point/day over the last 7 days (least-squares fit, ≥ 5 days). |
+| `hrv-best-30d` | info | Last night's HRV is the highest of the last 30 days (≥ 14 nights of data). |
+
+Baseline-relative rules stay silent while `calibrating`.
+
 ### `POST /v1/recompute` — rescore a range
 
 Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, at most
@@ -304,6 +337,7 @@ for ingest/scoring, NATS) is unreachable.
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | `GET /v1/insights` added. |
 | 2026-10-18 | `GET /v1/trends` and `DailyScore.hrv_baseline_ms` / `rhr_baseline` added. |
 | 2026-10-18 | `GET /v1/workouts/{id}` (heart-rate curve, zone minutes, TRIMP) and `DayDetail.strain` added. |
 | 2026-10-18 | `DayDetail.sleep` (typed night with stages and hypnogram) and `GET /v1/sleep` added. |

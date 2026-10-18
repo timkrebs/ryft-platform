@@ -139,4 +139,16 @@ get("/v1/trends?metric=steps", expect=422)
 get("/v1/trends?metric=hrv&range=1y", expect=422)
 ok("/v1/trends: 90d ok, unknown metric/range → 422")
 
+# ---- 2.5 insights -------------------------------------------------------------
+RANK = {"warn": 0, "notice": 1, "info": 2}
+cards = get("/v1/insights")
+check(isinstance(cards, list), "/v1/insights must be a list")
+for c in cards:
+    check(set(c) == {"id", "severity", "title", "body", "metric", "day"}, f"insight keys {sorted(c)}")
+    check(c["severity"] in RANK and c["metric"] in FIELD and c["day"] <= TODAY and c["title"] and c["body"],
+          f"insight {c}")
+check([RANK[c["severity"]] for c in cards] == sorted(RANK[c["severity"]] for c in cards), "insights not sorted by severity")
+check(get("/v1/insights") == cards, "cached insights differ between calls")
+ok(f"/v1/insights: {len(cards)} cards {[c['id'] for c in cards]}")
+
 print("all API contract checks passed")
