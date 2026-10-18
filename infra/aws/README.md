@@ -6,7 +6,7 @@ Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
 | Root | What | Lifetime |
 | --- | --- | --- |
 | `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only) | long-lived; survives cluster rebuilds |
-| `infra/aws` | VPC + EKS cluster `ryft-prod`, node group, core add-ons | the cluster |
+| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons | the cluster |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
 The zone has its own root so destroying the cluster never changes the nameservers at
@@ -33,9 +33,9 @@ infra/aws/
 | Resource | Name / value |
 | --- | --- |
 | Hosted zone | `ryftapp.de`, `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org` |
-| VPC | `ryft-prod`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
-| EKS cluster | `ryft-prod`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
-| Node group | `ryft-prod-default-…`: 2 × t3.medium (AL2023) |
+| VPC | `ryft-prod-euc1`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
+| EKS cluster | `ryft-prod-euc1`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
+| Node group | `ryft-prod-euc1-default-…`: 2 × t3.medium (AL2023) |
 | EKS add-ons | `vpc-cni` (NetworkPolicy enforcement on), `kube-proxy`, `coredns`, `eks-pod-identity-agent`, `aws-ebs-csi-driver`, `metrics-server` |
 | Edge (Helm) | `aws-load-balancer-controller` 3.6.0, `traefik` 42.0.0 in `kube-system` behind an internet-facing NLB, port 443 only; `cert-manager` v1.21.2 with ClusterIssuers `letsencrypt-staging`/`-prod` (DNS-01 in Route 53); `external-dns` 1.23.0 (zone `ryftapp.de` only, TXT ownership) |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
@@ -74,7 +74,7 @@ cp terraform.tfvars.example terraform.tfvars   # set endpoint_public_access_cidr
 terraform init
 terraform plan -out=tfplan
 terraform apply tfplan                          # ~15 minutes on first apply
-$(terraform output -raw configure_kubectl)      # adds context "ryft-prod" to ~/.kube/config
+$(terraform output -raw configure_kubectl)      # adds context "ryft-prod-euc1" to ~/.kube/config
 kubectl get nodes
 ```
 

@@ -23,5 +23,6 @@ locals {
     traefik                      = { repository = "https://traefik.github.io/charts", chart = "traefik", version = "42.0.0" }
     cert_manager                 = { repository = "https://charts.jetstack.io", chart = "cert-manager", version = "v1.21.2" }
     external_dns                 = { repository = "https://kubernetes-sigs.github.io/external-dns", chart = "external-dns", version = "1.23.0" }
+    vault_secrets_operator       = { repository = "https://helm.releases.hashicorp.com", chart = "vault-secrets-operator", version = "1.6.0" }
   }
 }

@@ -1,9 +1,0 @@
-# Default deployment: the base plus a plain Secret you create from
-# secrets.example.yaml (secrets.yaml is git-ignored). For Vault instead, apply
-# deploy/k8s/vault — see docs/OPERATIONS.md.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: ryft
-resources:
-  - base
-  - secrets.yaml          # copy secrets.example.yaml → secrets.yaml first

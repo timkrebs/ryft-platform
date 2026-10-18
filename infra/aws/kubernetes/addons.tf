@@ -28,7 +28,7 @@ resource "helm_release" "aws_load_balancer_controller" {
 
 # Traefik: the ingress controller. HTTPS only — the plain-HTTP entrypoint is
 # not exposed, so a client can never send its bearer token in cleartext. It
-# runs in kube-system because deploy/k8s/base/networkpolicy.yaml admits Traefik
+# runs in kube-system because deploy/k8s/base/{api,ingest}/networkpolicy.yaml admit Traefik
 # pods there.
 resource "helm_release" "traefik" {
   name       = "traefik"
@@ -163,3 +163,31 @@ resource "helm_release" "external_dns" {
 
   depends_on = [module.external_dns_pod_identity]
 }
+
+# Vault Secrets Operator: syncs each RYFT namespace's Secret ryft-secrets from that
+# service's own Vault namespace. infra/vault generates the VaultConnection, VaultAuth
+# and VaultStaticSecret per namespace (deploy/k8s/overlays/vault-namespaces). There is
+# no default connection or auth method: a namespace without its own VaultAuth gets
+# nothing, so no namespace can borrow another's Vault identity.
+resource "helm_release" "vault_secrets_operator" {
+  name             = "vault-secrets-operator"
+  namespace        = "vault-secrets-operator-system"
+  create_namespace = true
+  repository       = local.charts.vault_secrets_operator.repository
+  chart            = local.charts.vault_secrets_operator.chart
+  version          = local.charts.vault_secrets_operator.version
+
+  values = [yamlencode({
+    defaultVaultConnection = { enabled = false }
+    defaultAuthMethod      = { enabled = false }
+    controller = {
+      manager = {
+        resources = {
+          requests = { cpu = "10m", memory = "64Mi" }
+          limits   = { memory = "256Mi" }
+        }
+      }
+    }
+  })]
+}
+

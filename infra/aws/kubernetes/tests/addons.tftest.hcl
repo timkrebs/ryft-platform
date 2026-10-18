@@ -65,7 +65,8 @@ run "chart_versions_are_pinned" {
       helm_release.aws_load_balancer_controller.version == "3.6.0" &&
       helm_release.traefik.version == "42.0.0" &&
       helm_release.cert_manager.version == "v1.21.2" &&
-      helm_release.external_dns.version == "1.23.0"
+      helm_release.external_dns.version == "1.23.0" &&
+      helm_release.vault_secrets_operator.version == "1.6.0"
     )
     error_message = "every chart must be pinned to the reviewed version"
   }
@@ -99,7 +100,7 @@ run "external_dns_manages_only_the_domain" {
   }
 
   assert {
-    condition     = yamldecode(helm_release.external_dns.values[0]).policy == "sync" && yamldecode(helm_release.external_dns.values[0]).txtOwnerId == "ryft-prod"
+    condition     = yamldecode(helm_release.external_dns.values[0]).policy == "sync" && yamldecode(helm_release.external_dns.values[0]).txtOwnerId == "ryft-prod-euc1"
     error_message = "ExternalDNS must own its records via TXT so sync never deletes foreign ones"
   }
 }
@@ -135,3 +136,16 @@ run "rejects_invalid_acme_email" {
 
   expect_failures = [var.acme_email]
 }
+
+run "vault_secrets_operator_has_no_default_identity" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_secrets_operator.values[0]).defaultVaultConnection.enabled == false &&
+      yamldecode(helm_release.vault_secrets_operator.values[0]).defaultAuthMethod.enabled == false
+    )
+    error_message = "every namespace brings its own VaultConnection and VaultAuth (infra/vault); no shared default"
+  }
+}
+

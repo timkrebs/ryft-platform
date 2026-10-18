@@ -11,7 +11,7 @@ variable "acme_email" {
 variable "cluster_name" {
   description = "Name of the EKS cluster created by infra/aws"
   type        = string
-  default     = "ryft-prod"
+  default     = "ryft-prod-euc1"
 }
 
 variable "domain" {

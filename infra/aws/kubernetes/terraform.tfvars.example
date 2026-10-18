@@ -3,6 +3,6 @@
 # Let's Encrypt sends certificate expiry and account notices here.
 acme_email = "you@example.com"
 
-# cluster_name = "ryft-prod"
+# cluster_name = "ryft-prod-euc1"
 # domain       = "ryftapp.de"
 # region       = "eu-central-1"
