@@ -18,6 +18,15 @@ resource "random_password" "nats" {
   special = false
 }
 
+# Encryption key for data a service stores encrypted (the api's Apple refresh
+# tokens). Never replace it: what was sealed with the old key no longer opens
+# (ciphertexts carry a version byte for a future, deliberate rotation).
+resource "random_bytes" "data_key" {
+  for_each = { for name, s in local.services : name => s if s.data_key }
+
+  length = 32
+}
+
 # KV v2 per service namespace at kv/, one secret `config` holding exactly the keys that
 # service is entitled to. The generated VaultStaticSecret turns it into the Kubernetes
 # Secret `ryft-secrets` the workload reads with envFrom.
@@ -56,6 +65,14 @@ resource "vault_policy" "service" {
 
 # Account deletion needs the Supabase secret key in the api namespace; without it
 # DELETE /v1/me erases the data but not the Supabase login (a warning, not an error).
+check "api_has_apple_keys" {
+  assert {
+    condition = !contains(keys(local.services), "api") || alltrue([for k in ["APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_CLIENT_ID", "APPLE_KEY_P8"] :
+    contains(local.private_keys["api"], k)])
+    error_message = "service_secrets.api lacks APPLE_TEAM_ID/APPLE_KEY_ID/APPLE_CLIENT_ID/APPLE_KEY_P8: deleting a Sign in with Apple account will not revoke its Apple token (App Store requirement)."
+  }
+}
+
 check "api_has_supabase_admin_key" {
   assert {
     condition     = !contains(keys(local.services), "api") || contains(local.private_keys["api"], "SUPABASE_SERVICE_ROLE_KEY")

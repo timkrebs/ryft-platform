@@ -71,3 +71,23 @@ func TestLoadNatsCredentialsComeInPairs(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAppleIsAllOrNothing(t *testing.T) {
+	keys := []string{"APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_CLIENT_ID", "APPLE_KEY_P8", "DATA_ENCRYPTION_KEY"}
+	for _, k := range keys {
+		t.Setenv(k, "")
+	}
+	if _, ok, err := LoadApple(); ok || err != nil {
+		t.Fatalf("none set: disabled, no error (ok=%v err=%v)", ok, err)
+	}
+	t.Setenv("APPLE_TEAM_ID", "M77SKHKG63")
+	if _, _, err := LoadApple(); err == nil {
+		t.Fatal("a partial configuration must be refused")
+	}
+	for _, k := range keys {
+		t.Setenv(k, "x")
+	}
+	if a, ok, err := LoadApple(); !ok || err != nil || a.ClientID != "x" {
+		t.Fatalf("all set: %+v %v %v", a, ok, err)
+	}
+}

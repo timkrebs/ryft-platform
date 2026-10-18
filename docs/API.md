@@ -24,6 +24,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline; apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
+| (after Sign in with Apple) | let deletion revoke the Apple grant | `POST /v1/me/apple-authorization` |
 | (background) | HealthKit upload | `POST /v1/sync` |
 
 ## Conventions
@@ -178,17 +179,19 @@ out-of-range value, `500` if the update itself fails. Changing a setting does **
 ### `DELETE /v1/me` — delete the account
 
 No body. Erases everything stored for the user, in one transaction: samples, sleep,
-workouts, scores, devices and the profile. Then it deletes the user's Supabase Auth
-account (with its Apple identity and sessions). Responds `200`:
+workouts, scores, devices and the profile. Then it revokes the app's Sign in with Apple
+grant (if `POST /v1/me/apple-authorization` stored one), and deletes the user's
+Supabase Auth account with its identities and sessions. Responds `200`:
 
 ```json
-{ "status": "deleted", "auth_user_deleted": true }
+{ "status": "deleted", "auth_user_deleted": true, "apple_token_revoked": true }
 ```
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `status` | string | Always `"deleted"`: the data is gone. |
 | `auth_user_deleted` | bool | `false` if Supabase could not be reached. The platform retries in the background (every 15 minutes), so the app has nothing to do. |
+| `apple_token_revoked` | bool? | `null` when no Apple token was stored (email accounts, or the app never sent a code). `false` if Apple could not be reached; retried in the background like `auth_user_deleted`. |
 
 From then on, every request with that user's token gets `401`, including tokens that
 have not expired yet. The exception is `DELETE /v1/me` itself, which answers `200` again,
@@ -196,10 +199,34 @@ so retrying after a network error is safe. A large account can take several seco
 deletion completes even if the app is closed, and a retry waits for it. `503` (with
 `Retry-After`) means nothing was deleted; retry.
 
-**App:** after `200`, sign out locally and clear any cached data. Not covered yet: Apple's
-account-deletion guidance asks apps that use Sign in with Apple to revoke the user's Apple
-tokens as well (`https://appleid.apple.com/auth/revoke`). See `SUPABASE.md` → Account
-deletion.
+**App:** after `200`, sign out locally and clear any cached data. For Sign in with Apple
+accounts, the revocation Apple requires happens here, provided the app sent the
+authorization code after sign-in (next section).
+
+### `POST /v1/me/apple-authorization` — enable Apple token revocation
+
+Apple requires apps that use Sign in with Apple to revoke the user's tokens when the
+account is deleted. That takes a refresh token, which only the sign-in's one-time
+authorization code yields. Send the code once, right after a successful Sign in with
+Apple; the platform exchanges it with Apple and keeps the refresh token encrypted, for
+`DELETE /v1/me` only.
+
+```json
+{ "code": "c1b2…" }
+```
+
+`code` is `ASAuthorizationAppleIDCredential.authorizationCode` as UTF-8. It is valid for
+five minutes and only once. Responds `204` (no body). Sending a code again later (a new
+sign-in) replaces the stored token.
+
+| Status | When | App should |
+| --- | --- | --- |
+| `204` | stored | — |
+| `422` | `code` missing, invalid, expired or already used; or the code is for a different Apple ID than the signed-in account | not retry with the same code; it is fine to carry on (deletion then cannot revoke at Apple) |
+| `501` | the platform is not configured for Apple revocation (local development) | ignore |
+| `503` | Apple could not be reached (`Retry-After`) | retry once within the code's five minutes |
+
+Never log the code; it is a credential until used.
 
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
 
@@ -608,6 +635,11 @@ struct User: Codable {
 struct AccountDeleted: Codable {   // DELETE /v1/me
     let status: String
     let authUserDeleted: Bool
+    let appleTokenRevoked: Bool?
+}
+
+struct AppleAuthorization: Codable {   // POST /v1/me/apple-authorization
+    let code: String
 }
 
 struct APIErrorBody: Codable {
@@ -620,6 +652,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | `POST /v1/me/apple-authorization` added (the Sign in with Apple authorization code, so deletion can revoke the Apple grant). `DELETE /v1/me` responses add `apple_token_revoked` (nullable). Swift: `AccountDeleted.appleTokenRevoked`, `AppleAuthorization`. |
 | 2026-10-18 | `DailyScore.steps` / `active_kcal` and `DayStrain.steps` / `active_kcal` added (nullable, daily totals after source de-duplication), with trend metrics `steps` and `active_kcal`. Rescore history to fill past days. |
 | 2026-10-18 | Scoring: overlapping HealthKit sources are no longer mixed or summed (see `SCORING.md`). Heart rate is taken from one source per hour, sleep from one source per night. Values change for users with two devices: strain, sleep totals and stages, and the workout curve, which now shows only the winning source. No shape change. |
 | 2026-10-18 | `DELETE /v1/me` added (account deletion: all data, then the Supabase auth user). Afterwards that user's tokens get `401` everywhere except a repeated `DELETE /v1/me`. Swift: `AccountDeleted`. |

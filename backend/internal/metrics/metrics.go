@@ -55,7 +55,7 @@ var (
 	}, []string{"reason"})
 	AccountDeletions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_account_deletions_total",
-		Help: "Account deletion steps: step=data (our rows) or auth (the Supabase auth user), result=ok, error or skipped (no admin key).",
+		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
 	// NATS, ingest + api publish, scoring consumes.

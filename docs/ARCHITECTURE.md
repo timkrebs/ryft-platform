@@ -113,9 +113,9 @@ timer catches up.
 
 | Role | May |
 | --- | --- |
-| `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users` |
+| `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only |
 | `ryft_scoring` | read the raw tables; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes` of `workouts` |
-| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users` |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read |
 
 None of them may create, alter or drop anything, or truncate. Every new table must grant
 the roles what they need in the same migration, and the grants test must be extended.

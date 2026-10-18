@@ -124,6 +124,38 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
+// Apple configures Sign in with Apple token revocation (api only): the
+// developer-account values and the key that encrypts stored refresh tokens.
+type Apple struct {
+	TeamID, KeyID, ClientID, PrivateKey string
+	DataKey                             string // DATA_ENCRYPTION_KEY, base64 32 bytes (infra/vault generates it)
+}
+
+// LoadApple reads APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8 and
+// DATA_ENCRYPTION_KEY. All set: enabled; none: disabled (ok false); some: an
+// error, so a half-configured deployment does not start.
+func LoadApple() (Apple, bool, error) {
+	a := Apple{
+		TeamID: strings.TrimSpace(os.Getenv("APPLE_TEAM_ID")), KeyID: strings.TrimSpace(os.Getenv("APPLE_KEY_ID")),
+		ClientID: strings.TrimSpace(os.Getenv("APPLE_CLIENT_ID")), PrivateKey: os.Getenv("APPLE_KEY_P8"),
+		DataKey: os.Getenv("DATA_ENCRYPTION_KEY"),
+	}
+	set := 0
+	for _, v := range []string{a.TeamID, a.KeyID, a.ClientID, a.PrivateKey, a.DataKey} {
+		if v != "" {
+			set++
+		}
+	}
+	switch set {
+	case 0:
+		return a, false, nil
+	case 5:
+		return a, true, nil
+	default:
+		return a, false, fmt.Errorf("apple token revocation needs APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8 and DATA_ENCRYPTION_KEY together (%d of 5 set)", set)
+	}
+}
+
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v

@@ -13,6 +13,7 @@ locals {
       database        = s.database
       nats            = s.nats
       workload_kind   = s.workload_kind
+      data_key        = s.data_key
     }
   }
 
@@ -37,6 +38,7 @@ locals {
       s.database == "owner" ? concat(["DATABASE_URL"], [for c in keys(local.db_roles) : "DB_PASSWORD_${upper(c)}"]) : [],
       s.nats == "client" ? ["NATS_USER", "NATS_PASSWORD"] : [],
       s.nats == "server" ? [for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}"] : [],
+      s.data_key ? ["DATA_ENCRYPTION_KEY"] : [],
     )
   }
 
@@ -60,6 +62,7 @@ locals {
       ) : {},
       s.nats == "client" ? { NATS_USER = name, NATS_PASSWORD = random_password.nats[name].result } : {},
       s.nats == "server" ? { for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}" => random_password.nats[c].bcrypt_hash } : {},
+      s.data_key ? { DATA_ENCRYPTION_KEY = random_bytes.data_key[name].base64 } : {},
     )
   }
 

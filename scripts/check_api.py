@@ -327,9 +327,14 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
           f"steps/kcal with two devices: {f_day and (f_day[0]['steps'], f_day[0]['active_kcal'])}, want 1800/120")
     ok("steps from watch and phone: 1800 (one source per hour), 120 kcal")
 
+    # ---- Apple revocation is not configured locally: a clear 501, not a 500
+    status, _, body = raw("POST", "/v1/me/apple-authorization", json.dumps({"code": "c.test"}).encode(), key=KEY_B)
+    check(status == 501 and is_error(body), f"apple-authorization without Apple config: {status} {body}")
+
     # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
     wk_a = get(f"/v1/workouts/{a_wk['id']}")
-    gone = {"status": "deleted", "auth_user_deleted": False}  # no Supabase auth user in apikey mode
+    # no Supabase auth user and no Apple token in apikey mode
+    gone = {"status": "deleted", "auth_user_deleted": False, "apple_token_revoked": None}
     status, _, body = raw("DELETE", "/v1/me", key=KEY_B)
     check(status == 200 and body == gone, f"DELETE /v1/me: {status} {body}")
     check(is_error(get("/v1/me", expect=401, key=KEY_B)), "a deleted account's token must get 401")

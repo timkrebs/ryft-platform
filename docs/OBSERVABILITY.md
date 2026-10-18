@@ -52,7 +52,7 @@ Prometheus lives elsewhere.
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
-| `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (no `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
+| `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | `ryft.ingested` publishes (`sync` from ingest, `recompute` from api), `ok`/`error`. A publish error does not fail the sync — this is the only place it shows. |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted). |
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring | Messages received with a delivery count > 1. |
@@ -127,7 +127,7 @@ NetworkPolicy rule in `ryft-nats` for 8222). For the in-cluster Postgres of
 | PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
 | API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
 | Panics | `sum(increase(ryft_http_panics_total[15m])) > 0` | 0m |
-| AuthUserDeletionFailing | `sum(increase(ryft_account_deletions_total{step="auth",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in still exists; check the key) | 0m |
+| AuthUserDeletionFailing | `sum(increase(ryft_account_deletions_total{step=~"auth\|apple",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in or Apple grant still exists; check the keys) | 0m |
 | RateLimited | `sum(rate(ryft_rate_limited_total[10m])) > 1` (a client stuck in a retry loop, or limits too tight) | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |
 

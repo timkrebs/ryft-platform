@@ -43,7 +43,8 @@ var grants = map[string]map[string][]string{
 	"ryft_ingest": {
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
 		"samples": {"SELECT", "INSERT", "UPDATE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE"},
-		"workouts": {"SELECT", "INSERT", "UPDATE"}, "deleted_users": {"SELECT"}, "schema_migrations": {"SELECT"},
+		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
+		// deleted_users: only the id column (below), never the stored Apple token
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -53,7 +54,7 @@ var grants = map[string]map[string][]string{
 		"users": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "devices": {"SELECT", "DELETE"},
 		"samples": {"SELECT", "DELETE"}, "sleep_segments": {"SELECT", "DELETE"}, "workouts": {"SELECT", "DELETE"},
 		"daily_scores": {"SELECT", "DELETE"}, "deleted_users": {"SELECT", "INSERT", "UPDATE"},
-		"schema_migrations": {"SELECT"},
+		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
 	},
 }
 
@@ -63,7 +64,7 @@ func TestServiceRoleGrants(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	tables := []string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores", "deleted_users", "schema_migrations"}
+	tables := []string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores", "deleted_users", "schema_migrations", "apple_tokens"}
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
@@ -83,6 +84,16 @@ func TestServiceRoleGrants(t *testing.T) {
 		var create bool
 		if err := pool.QueryRow(ctx, `SELECT has_schema_privilege($1, 'public', 'CREATE')`, role).Scan(&create); err != nil || create {
 			t.Errorf("%s must not create objects in public (err %v)", role, err)
+		}
+	}
+	// ingest sees whether an ID is tombstoned, not what the tombstone holds.
+	for col, want := range map[string]bool{"id": true, "apple_token_enc": false, "deleted_at": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_ingest', 'public.deleted_users', $1, 'SELECT')`, col).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("ryft_ingest SELECT deleted_users.%s: %v, want %v", col, has, want)
 		}
 	}
 	// scoring may write only the load columns of a workout.

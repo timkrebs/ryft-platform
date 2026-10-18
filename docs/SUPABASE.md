@@ -1,8 +1,8 @@
 # RYFT on Supabase
 
 Supabase provides two things to the platform: **Postgres** (the datastore, through the
-Supavisor pooler) and **Auth** (Sign in with Apple; the app sends the user's access
-token, the services verify it). The services remain the only data API: the app never
+Supavisor pooler) and **Auth** (email + password and Sign in with Apple; the app sends
+the user's access token, the services verify it). The services remain the only data API: the app never
 talks to Supabase's REST API, and the database is locked down so that nobody else can
 either.
 
@@ -15,8 +15,36 @@ either.
    access tokens with ES256 or RS256 keys published at
    `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`. Legacy HS256-only projects
    publish an empty key set; the services then answer every request with `503`.
-3. **Apple provider** (Authentication → Sign In / Providers → Apple): Services ID, Team ID,
-   Key ID and the `.p8` key from the Apple developer account; add the app's bundle ID.
+3. **Apple provider** (Authentication → Sign In / Providers → Apple): enable it and put
+   the app's bundle ID `dev.timkrebs.ryft` into *Client IDs*; native sign-in
+   (`signInWithIdToken`) needs nothing else. A Services ID and the generated secret
+   (a JWT from the `.p8`, valid at most six months) are only needed if a web sign-in
+   is added later.
+   - **Email accounts** (Authentication → Sign In / Providers → Email): enable *Email*,
+     turn on *Confirm email* and *Secure email change*. Under *Password*, set the
+     minimum length to 10 and require letters and digits. Turn on *Leaked password
+     protection* where the plan offers it.
+   - **Redirects** (Authentication → URL Configuration): *Site URL*
+     `https://ryftapp.de`. Add `ryft://auth/callback` to *Redirect URLs*: the app opens
+     confirmation and password-reset links through it.
+   - **Emails** (Authentication → Emails): set the sender name to *RYFT* and word every
+     template the same way (*Confirm signup*, *Reset password*, *Change email address*,
+     *Magic link*). The built-in mailer sends only a few emails an hour, so enter
+     an SMTP provider under *SMTP Settings* before inviting people.
+   - **Rate limits** (Authentication → Rate Limits): sign-ups and sign-ins per hour and
+     IP, and emails per hour. Keep the defaults and lower *sign-ups* for an invite-only
+     alpha. Turn on CAPTCHA (Authentication → Attack Protection) once sign-up is open
+     to everyone.
+   - **Sign in with Apple token revocation** (Apple Developer → Certificates,
+     Identifiers & Profiles → Keys → +): create a key with *Sign in with Apple* enabled
+     for the primary App ID `dev.timkrebs.ryft`, and download `AuthKey_<key id>.p8`
+     (only possible once). The key ID, team ID `M77SKHKG63`, client ID
+     `dev.timkrebs.ryft` and the `.p8` contents go into
+     `service_secrets.api.APPLE_*` in `infra/vault/terraform.tfvars`. The same key may
+     also sign the Supabase provider's web secret.
+
+   Dashboard labels move between Supabase releases; the settings above are what
+   matters.
 4. **Turn off the Data API** (Project Settings → Data API), or at least remove `public`
    from the exposed schemas. Migration 0007 also revokes every table privilege from
    `anon`, `authenticated` and `service_role` and enables RLS, but nothing should be
@@ -78,13 +106,25 @@ still-valid tokens cannot recreate the account), the platform's own nightly dump
 backups ages out; it is not edited. A restore therefore brings deleted accounts back
 unless the tombstones are put back after it (`OPERATIONS.md` → Restore).
 
-**Not covered yet: Apple token revocation.** Apple's account-deletion guidance asks apps
-that use Sign in with Apple to revoke the user's tokens through
-`https://appleid.apple.com/auth/revoke`. That needs an Apple refresh or access token,
-which you get by exchanging the sign-in's authorization code using a client secret signed
-with the `.p8` key. Supabase's native sign-in (`signInWithIdToken`) keeps neither, and
-the `.p8` key must not ship in the app. A later version can accept the authorization
-code on `DELETE /v1/me` and do the exchange and revocation server-side.
+**Apple token revocation.** Apple asks apps that use Sign in with Apple to revoke the
+user's tokens when the account is deleted. Supabase's native sign-in keeps no Apple
+token, and the `.p8` key must not ship in the app, so the api does it:
+
+1. After sign-in the app sends the one-time authorization code to
+   `POST /v1/me/apple-authorization`.
+2. The api exchanges the code at `https://appleid.apple.com/auth/token`. The
+   `client_id` is the bundle ID, and the client secret is an ES256 JWT signed with the
+   `.p8`.
+3. It stores the refresh token encrypted in `apple_tokens` (AES-256-GCM with
+   `DATA_ENCRYPTION_KEY` from the api's Vault namespace; the user ID is bound into the
+   ciphertext).
+4. `DELETE /v1/me` moves the encrypted token to the tombstone, revokes it at
+   `https://appleid.apple.com/auth/revoke`, and only then deletes the Supabase user.
+   Failed revocations are retried by the reconciler every 15 minutes, as failed
+   Supabase deletions are (`ryft_account_deletions_total{step="apple"}`).
+
+Without the `APPLE_*` values the endpoint answers `501` and deletion skips this step;
+`terraform plan` in `infra/vault` warns about it.
 
 ## Signing-key rotation
 
@@ -151,3 +191,31 @@ Compose and `deploy/k8s/overlays/local-postgres` run plain Postgres with
 `AUTH_MODE=apikey` and `ALLOW_INSECURE_APIKEY_AUTH=true`: the bearer is `API_KEY`, or
 `API_KEY:<uuid>` to act as another user. The services refuse to start in that mode
 without the flag. Never expose it.
+
+## Moving the project to Frankfurt
+
+Decided (D49): the first project was created in eu-west-1 (Ireland), while the cluster
+runs in eu-central-1. It is recreated in Frankfurt before anyone else is invited, while
+it holds only test data. A project cannot change region, so this means a new project:
+
+1. **New project** in *Central EU (Frankfurt)*. Work through the checklist above:
+   JWT keys, Apple provider, email settings, Data API off, a new smoke-test user. Note
+   the new project ref, pooler host (`aws-<n>-eu-central-1.pooler.supabase.com`),
+   database password and secret key.
+2. **Vault:** in `infra/vault/terraform.tfvars`, set `supabase_project_ref`,
+   `database.host`, `database_owner_password` and
+   `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY` to the new values. Then
+   `terraform plan`: expect updated `kv/config` secrets in every namespace, since the
+   pooler user names carry the project ref. Apply.
+3. **Deploy:** `make k8s-apply-eks`. The operator syncs the new Secrets, the migrate job
+   builds the empty schema in the new project and sets the role passwords, and the
+   services start against it.
+4. **App:** switch the Supabase URL and publishable key in the Release config. Accounts
+   of the old project do not exist in the new one, so test users sign up again.
+5. **Verify:** `make smoke-supabase` against `https://api.ryftapp.de` (`OPERATIONS.md`),
+   and the role and RLS queries above.
+6. **Retire the old project:** pause it, and delete it after a week with no surprises.
+
+The old project's data is test data and is not migrated. Once real users exist, moving
+again would mean exporting `auth.users` and the `public` schema together; avoid it.
+

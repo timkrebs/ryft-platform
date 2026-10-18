@@ -220,3 +220,45 @@ func TestEnsureUserWaitsForADeletionInProgress(t *testing.T) {
 		t.Fatalf("after the deletion commits EnsureUser must see the tombstone: %v", err)
 	}
 }
+
+func TestAppleTokenMovesToTheTombstoneUntilRevoked(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	a := uuid.New()
+	seedUser(t, st, pool, a)
+	if err := st.SaveAppleToken(ctx, a, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveAppleToken(ctx, a, []byte("sealed-token")); err != nil {
+		t.Fatalf("a newer code replaces the token: %v", err)
+	}
+	if _, err := st.DeletedAppleToken(ctx, a); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a live account has no tombstone token: %v", err)
+	}
+	if err := st.DeleteUser(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM apple_tokens WHERE user_id=$1`, a).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("apple_tokens must be empty after deletion: %d %v", left, err)
+	}
+	if err := st.DeleteUser(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := st.DeletedAppleToken(ctx, a)
+	if err != nil || string(enc) != "sealed-token" {
+		t.Fatalf("the tombstone keeps the token, also across a repeated delete: %q %v", enc, err)
+	}
+	if pending, _ := st.PendingAppleRevocations(ctx, 10); len(pending) != 1 || pending[0] != a {
+		t.Fatalf("pending %v", pending)
+	}
+	if err := st.MarkAppleRevoked(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DeletedAppleToken(ctx, a); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a revoked token is gone: %v", err)
+	}
+	if pending, _ := st.PendingAppleRevocations(ctx, 10); len(pending) != 0 {
+		t.Fatalf("still pending: %v", pending)
+	}
+}

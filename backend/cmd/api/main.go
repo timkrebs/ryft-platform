@@ -84,6 +84,7 @@ func main() {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/me", h.me)
 	api.HandleFunc("PATCH /v1/me", h.patchMe)
+	api.HandleFunc("POST /v1/me/apple-authorization", h.appleAuthorization)
 	api.HandleFunc("GET /v1/days", h.days)
 	api.HandleFunc("GET /v1/days/{day}", h.day)
 	api.HandleFunc("GET /v1/sleep", h.sleepRange)

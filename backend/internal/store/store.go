@@ -128,7 +128,14 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id=$1 FOR UPDATE`, id); err != nil {
 			return err
 		}
+		// An Apple refresh token moves, still encrypted, to the tombstone until
+		// Apple confirms its revocation (MarkAppleRevoked).
+		if _, err := tx.Exec(ctx, `UPDATE deleted_users d SET apple_token_enc = t.token_enc, apple_revoked_at = NULL
+			FROM apple_tokens t WHERE t.user_id = $1 AND d.id = $1`, id); err != nil {
+			return fmt.Errorf("keep apple token: %w", err)
+		}
 		for _, q := range []string{
+			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM samples WHERE user_id=$1`,
 			`DELETE FROM sleep_segments WHERE user_id=$1`,
 			`DELETE FROM workouts WHERE user_id=$1`,
@@ -142,6 +149,44 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		}
 		return nil
 	})
+}
+
+// SaveAppleToken stores (or replaces) the user's encrypted Sign in with Apple
+// refresh token.
+func (s *Store) SaveAppleToken(ctx context.Context, userID uuid.UUID, enc []byte) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO apple_tokens (user_id, token_enc) VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET token_enc = EXCLUDED.token_enc, created_at = now()`, userID, enc)
+	return err
+}
+
+// DeletedAppleToken is the encrypted Apple token of a deleted account that
+// still has to be revoked; ErrNotFound when there is none (never stored, or
+// already revoked).
+func (s *Store) DeletedAppleToken(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	var enc []byte
+	err := s.pool.QueryRow(ctx, `SELECT apple_token_enc FROM deleted_users
+		WHERE id=$1 AND apple_token_enc IS NOT NULL AND apple_revoked_at IS NULL`, id).Scan(&enc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return enc, err
+}
+
+// MarkAppleRevoked drops the token from the tombstone once Apple revoked it.
+func (s *Store) MarkAppleRevoked(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE deleted_users SET apple_token_enc = NULL, apple_revoked_at = now() WHERE id=$1`, id)
+	return err
+}
+
+// PendingAppleRevocations lists deleted accounts whose Apple token is not
+// revoked yet, oldest first.
+func (s *Store) PendingAppleRevocations(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM deleted_users
+		WHERE apple_token_enc IS NOT NULL AND apple_revoked_at IS NULL ORDER BY deleted_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 // MarkAuthDeleted records that the Supabase auth user is gone too.

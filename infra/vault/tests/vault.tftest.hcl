@@ -11,7 +11,11 @@ variables {
   supabase_project_ref        = "abcdefghijklmnopqrst"
   database                    = { host = "aws-0-eu-central-1.pooler.supabase.com" }
   database_owner_password     = "owner-password-123"
-  service_secrets             = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" } }
+  service_secrets = { api = {
+    SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
+    APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "KEY123", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
+    APPLE_KEY_P8              = "-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
+  } }
 }
 
 mock_provider "vault" {}
@@ -32,6 +36,9 @@ mock_provider "aws" {
 mock_provider "random" {
   mock_resource "random_password" {
     defaults = { result = "generatedpassword0123456789", bcrypt_hash = "$2a$10$mockbcrypthash" }
+  }
+  mock_resource "random_bytes" {
+    defaults = { base64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" }
   }
 }
 
@@ -63,7 +70,7 @@ run "each_namespace_holds_only_its_own_credentials" {
     condition = jsonencode(output.secret_keys) == jsonencode({
       ingest  = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
       scoring = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
-      api     = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
+      api     = ["APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
       nats    = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
       migrate = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
     })
@@ -147,3 +154,27 @@ run "rejects_a_placeholder_project_ref" {
   }
   expect_failures = [var.supabase_project_ref]
 }
+
+run "warns_without_the_apple_keys" {
+  command = apply
+
+  variables {
+    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" } }
+  }
+  expect_failures = [check.api_has_apple_keys]
+}
+
+run "the_data_key_reaches_only_the_api" {
+  command = apply
+
+  assert {
+    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate"] :
+    !contains(output.secret_keys[s], "DATA_ENCRYPTION_KEY")])
+    error_message = "only the api may hold the data encryption key"
+  }
+  assert {
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).DATA_ENCRYPTION_KEY) == "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+    error_message = "the api gets the generated key (base64, 32 bytes)"
+  }
+}
+

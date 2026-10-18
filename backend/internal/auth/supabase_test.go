@@ -139,6 +139,22 @@ func TestSupabaseAcceptsValidToken(t *testing.T) {
 	}
 }
 
+func TestSupabaseReadsTheAppleSubjectOnlyFromApple(t *testing.T) {
+	srv := newJWKSServer(t)
+	key := srv.addKey(t, "k1")
+	v := newVerifier(t, srv, SupabaseOptions{})
+	c := claims()
+	c["user_metadata"] = map[string]any{"iss": "https://appleid.apple.com", "provider_id": "001234.abc", "full_name": "Tim"}
+	if p, err := v.Verify(context.Background(), sign(t, key, "k1", c)); err != nil || p.AppleSubject != "001234.abc" {
+		t.Fatalf("apple: %+v %v", p, err)
+	}
+	c = claims()
+	c["user_metadata"] = map[string]any{"iss": "https://accounts.google.com", "provider_id": "999"}
+	if p, _ := v.Verify(context.Background(), sign(t, key, "k1", c)); p.AppleSubject != "" {
+		t.Fatalf("another provider's ID is not an Apple subject: %q", p.AppleSubject)
+	}
+}
+
 func TestSupabaseRejectsBadTokens(t *testing.T) {
 	srv := newJWKSServer(t)
 	key := srv.addKey(t, "k1")

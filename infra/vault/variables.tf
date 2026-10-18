@@ -57,6 +57,8 @@ variable "services" {
                      "owner" = the schema owner and every role's password (the migrate job), "none".
     nats:            "client" = its own NATS user, "server" = the NATS server (bcrypt hashes), "none".
     workload_kind:   what the operator restarts when the secret changes ("" for a Job).
+    data_key:        a generated DATA_ENCRYPTION_KEY (32 random bytes, base64) for data the
+                     service stores encrypted (the api: Sign in with Apple refresh tokens).
   EOT
   type = map(object({
     service_account = optional(string)
@@ -64,11 +66,12 @@ variable "services" {
     database        = optional(string, "none")
     nats            = optional(string, "none")
     workload_kind   = optional(string, "Deployment")
+    data_key        = optional(bool, false)
   }))
   default = {
     ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
     scoring = { database = "role", nats = "client" }
-    api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
+    api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client", data_key = true }
     nats    = { nats = "server", workload_kind = "StatefulSet" }
     migrate = { database = "owner", workload_kind = "" }
   }
