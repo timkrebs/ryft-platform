@@ -29,7 +29,7 @@ func (h *handler) trends(w http.ResponseWriter, r *http.Request) {
 	}
 	loc, err := h.location(r)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	end, err := endDay(r, loc)
@@ -40,7 +40,7 @@ func (h *handler) trends(w http.ResponseWriter, r *http.Request) {
 	from, to := end.AddDate(0, 0, -(n-1)).Format(dayLayout), end.Format(dayLayout)
 	points, baseline, err := h.st.Trend(r.Context(), userOf(r).ID, metric, from, to)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, scoring.TrendSummary(metric, rng, from, to, points, baseline))

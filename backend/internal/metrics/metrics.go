@@ -37,7 +37,17 @@ var (
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
 	}, []string{})
 
+	// all services.
+	Panics = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_panics_total",
+		Help: "Handler panics recovered (answered 500), by route pattern.",
+	}, []string{"route"})
+
 	// ingest + api.
+	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_rate_limited_total",
+		Help: "Requests answered 429 by the per-user limit, by class (sync, default).",
+	}, []string{"class"})
 	AuthFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_auth_failures_total",
 		Help: "Rejected /v1 requests by reason: missing_token, expired, signature, issuer, audience, unknown_key, " +

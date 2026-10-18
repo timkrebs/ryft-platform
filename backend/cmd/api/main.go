@@ -19,6 +19,7 @@ import (
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/ratelimit"
 	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
 )
@@ -86,17 +87,32 @@ func main() {
 	api.HandleFunc("GET /v1/insights", h.insights)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	api.HandleFunc("/v1/", httpx.NotFound)
+	limits := ratelimit.NewUserLimits()
 	mux.Handle("/v1/", auth.Middleware(auth.Options{
 		Log:      log,
 		Verifier: verifier,
-		OnAuth:   auth.LoadUser(ensureUser(st)),
-	}, httpx.WithRoutes(api)))
+		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
+			return limits.Allow(r, p.UserID.String())
+		},
+		OnAuth: auth.LoadUser(ensureUser(st)),
+	}, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))
 	mux.HandleFunc("/", httpx.NotFound)
 
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
+}
+
+// readTimeout bounds the work of one API request (reads are a few queries).
+const readTimeout = 15 * time.Second
+
+// requestID is the ID Instrument gave this request, for events it causes.
+func requestID(r *http.Request) string {
+	if f := httpx.Info(r.Context()); f != nil {
+		return f.RequestID
+	}
+	return ""
 }
 
 // ensureUser finds or creates the caller's user row from the verified token.
@@ -119,8 +135,8 @@ func (h *handler) me(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 	var p model.UserPatch
-	if err := httpx.ReadJSON(r, &p); err != nil {
-		httpx.WriteError(w, 400, err.Error())
+	if err := httpx.ReadJSON(w, r, &p, httpx.MaxBodyDefault); err != nil {
+		httpx.WriteDecodeError(w, err)
 		return
 	}
 	if p.MaxHR != nil && (*p.MaxHR < 100 || *p.MaxHR > 230) {
@@ -139,7 +155,7 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.st.UpdateUser(r.Context(), userOf(r).ID, p)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, u)
@@ -152,8 +168,8 @@ const recomputeEvery = time.Minute
 // Use it after a big HealthKit backfill or after changing max_hr / sleep base.
 func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 	var req model.RecomputeRequest
-	if err := httpx.ReadJSON(r, &req); err != nil {
-		httpx.WriteError(w, 400, err.Error())
+	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodyDefault); err != nil {
+		httpx.WriteDecodeError(w, err)
 		return
 	}
 	for _, d := range []string{req.From, req.To} {
@@ -175,7 +191,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 	// queue 400 days of scoring on the single scoring consumer.
 	ok, err := h.st.TryRequestRecompute(r.Context(), u.ID, recomputeEvery)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	if !ok {
@@ -183,10 +199,12 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusTooManyRequests, "a recompute was requested less than a minute ago")
 		return
 	}
-	ev := model.IngestedEvent{UserID: u.ID, Days: []string{req.From, req.To}, Reason: "recompute"}
+	ev := model.IngestedEvent{UserID: u.ID, Days: []string{req.From, req.To}, Reason: "recompute", RequestID: requestID(r)}
 	dedup := fmt.Sprintf("recompute:%s:%s:%s", u.ID, req.From, req.To)
 	if err := h.bus.PublishIngested(r.Context(), ev, dedup); err != nil {
-		httpx.WriteError(w, 503, "queue unavailable: "+err.Error())
+		h.log.ErrorContext(r.Context(), "publish recompute", "err", err)
+		w.Header().Set("Retry-After", "30")
+		httpx.WriteError(w, http.StatusServiceUnavailable, "queue unavailable")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "queued", "from": req.From, "to": req.To})

@@ -72,7 +72,7 @@ func (c *insightCache) put(k insightKey, now time.Time, cards []model.Insight) {
 func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 	loc, err := h.location(r)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	now := time.Now()
@@ -88,12 +88,12 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 	from := today.AddDate(0, 0, -(insights.Window - 1)).Format(dayLayout)
 	scores, err := h.st.DailyScores(r.Context(), userOf(r).ID, from, key)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	nights, err := h.st.SleepNights(r.Context(), userOf(r).ID, from, key)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	bedtimes := make(map[string]time.Time, len(nights))

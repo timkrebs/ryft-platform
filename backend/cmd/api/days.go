@@ -73,26 +73,26 @@ var (
 
 // writeRangeError maps a dateRange error to its status: 422 for an inverted
 // range, 400 for a malformed date, 500 for anything else (the user lookup).
-func writeRangeError(w http.ResponseWriter, err error) {
+func writeRangeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errFromAfterTo):
 		httpx.WriteError(w, 422, err.Error())
 	case errors.Is(err, errBadDate):
 		httpx.WriteError(w, 400, err.Error())
 	default:
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 	}
 }
 
 func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	from, to, err := h.dateRange(r)
 	if err != nil {
-		writeRangeError(w, err)
+		writeRangeError(w, r, err)
 		return
 	}
 	rows, err := h.st.DailyScores(r.Context(), userOf(r).ID, from, to)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	if rows == nil {
@@ -108,7 +108,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	day := r.PathValue("day")
 	loc, err := h.location(r)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	d, err := time.ParseInLocation(dayLayout, day, loc)
@@ -118,17 +118,17 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	}
 	scores, err := h.st.DailyScores(ctx, userOf(r).ID, day, day)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	nights, err := h.st.SleepNights(ctx, userOf(r).ID, day, day)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	workouts, err := h.st.WorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	if workouts == nil {
@@ -140,7 +140,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		out.Score = scores[0]
 		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
 		if err != nil {
-			httpx.WriteError(w, 500, err.Error())
+			httpx.Fail(w, r, err)
 			return
 		}
 		out.Strain = scoring.DayStrainFrom(load)
@@ -150,7 +150,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 			from, to := scoring.NightWindow(d)
 			segs, err := h.st.SleepEndingBetween(ctx, userOf(r).ID, from, to)
 			if err != nil {
-				httpx.WriteError(w, 500, err.Error())
+				httpx.Fail(w, r, err)
 				return
 			}
 			out.Sleep = &model.SleepDetail{SleepSummary: s, Segments: scoring.Hypnogram(segs)}
@@ -174,7 +174,7 @@ func (h *handler) sleepRange(w http.ResponseWriter, r *http.Request) {
 	}
 	loc, err := h.location(r)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	to, err := endDay(r, loc)
@@ -185,7 +185,7 @@ func (h *handler) sleepRange(w http.ResponseWriter, r *http.Request) {
 	from := to.AddDate(0, 0, -(n - 1)).Format(dayLayout)
 	nights, err := h.st.SleepNights(r.Context(), userOf(r).ID, from, to.Format(dayLayout))
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, scoring.SleepRangeSummary(rng, from, to.Format(dayLayout), nights))

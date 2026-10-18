@@ -30,5 +30,6 @@ for metric in ["readiness", "recovery", "strain", "sleep", "sleep_min", "hrv", "
 await decode([Insight].self, "/v1/insights")
 await decode(User.self, "/v1/me")
 await decode(APIErrorBody.self, "/v1/trends?metric=nope", status: 422)
-await decode(APIErrorBody.self, "/v1/nope", status: 404)
+let notFound = await decode(APIErrorBody.self, "/v1/nope", status: 404)
+precondition(notFound.requestId != nil, "error bodies must carry request_id")
 print("Swift mirror decodes every endpoint")

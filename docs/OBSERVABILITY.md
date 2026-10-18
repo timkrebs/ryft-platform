@@ -2,7 +2,7 @@
 
 Each service (ingest, scoring, api) serves Prometheus metrics on `GET /metrics`
 (port 8080, no auth). The Ingress only routes `/v1/*`, so `/metrics` is reachable
-inside the cluster only. Logs are JSON (`slog`) on stdout.
+inside the cluster only. Logs are JSON (`slog`) on stdout; see **Logs** below.
 
 ## Scraping
 
@@ -47,6 +47,8 @@ The `NetworkPolicy` in `deploy/k8s` admits scrapes from the namespace named
 | `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
+| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`) or `default`. The recompute gate (one per minute) is not counted here. |
+| `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | `ryft.ingested` publishes (`sync` from ingest, `recompute` from api), `ok`/`error`. A publish error does not fail the sync — this is the only place it shows. |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted). |
@@ -78,6 +80,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 | Samples ingested by type | stacked bars, 1 h buckets | `sum by (type) (increase(ryft_samples_ingested_total{kind="sample"}[1h]))` |
 | Sleep segments / workouts | time series | `sum by (kind) (increase(ryft_samples_ingested_total{kind!="sample"}[1h]))` |
 | Auth failures by reason | time series | `sum by (reason) (rate(ryft_auth_failures_total[5m]))` |
+| Rate limited / panics | time series | `sum by (app, class) (rate(ryft_rate_limited_total[5m]))`, `sum by (app, route) (increase(ryft_http_panics_total[5m]))` |
 
 **Row: Scoring**
 
@@ -119,8 +122,41 @@ Postgres, `postgres_exporter` with the `ryft` credentials.
 | AuthUnavailable | `sum(rate(ryft_auth_failures_total{reason=~"jwks_.*\|internal"}[5m])) > 0` | 5m |
 | PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
 | API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
+| Panics | `sum(increase(ryft_http_panics_total[15m])) > 0` | 0m |
+| RateLimited | `sum(rate(ryft_rate_limited_total[10m])) > 1` (a client stuck in a retry loop, or limits too tight) | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory); after
 a restart it is absent until the next sync, so pair it with `absent()` if you want it
 to fire then too.
+
+## Logs
+
+One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
+(`debug`, `info` — default —, `warn`, `error`; ConfigMap `ryft-config`) sets the level.
+
+| Field | On | Meaning |
+| --- | --- | --- |
+| `time`, `level`, `msg`, `service` | every line | `service` is `ingest`, `scoring` or `api`. |
+| `request_id` | every line logged while serving a request; scoring lines for an event | The ID the server gave the request (UUIDv7, also the `X-Request-ID` response header and `request_id` in error bodies). Scoring logs the ID of the sync or recompute request that caused the event, so one ID follows a sync from ingest through scoring. |
+| `client_request_id` | same | A client-sent `X-Request-ID` (if it looks like an ID). Logged only, never used as ours. |
+| `user_id` | once the token is verified; scoring per event and per user in the 15-minute pass | The Supabase user ID (`sub`). |
+| `route` | request lines once routed | ServeMux pattern, e.g. `GET /v1/days/{day}`. |
+| `method`, `path`, `status`, `bytes`, `dur_ms` | the access line (`msg="http"`, one per request) | |
+| `err` | errors and warnings | The internal error. Clients only ever see `"internal error"` and the request ID. |
+
+Never logged: tokens, the `Authorization` header, email addresses, request bodies.
+Scoring's `scored day` lines do carry a user's daily scores (readiness, HRV, resting HR)
+next to `user_id`, so treat the logs as health data: limit who can read them and keep
+them no longer than you need.
+
+**Finding a request** a user reports (the app shows or logs `request_id`):
+
+```sh
+kubectl -n ryft logs -l part-of=ryft --all-containers --prefix --since=24h --max-log-requests=20 \
+  | grep 01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c
+```
+
+Pod logs only reach back to the last restart; for anything older, ship stdout to a log
+store (CloudWatch via Fluent Bit, Loki) and query `request_id` there. Shipping is not
+set up yet.

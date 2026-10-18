@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -85,6 +86,22 @@ func TestMiddlewarePutsPrincipalAndUserInContext(t *testing.T) {
 	u, uok := UserFrom(seen.Context())
 	if !ok || !uok || p.UserID != id || u.ID != id || u.TZ != "Europe/Berlin" {
 		t.Fatalf("principal %+v user %+v", p, u)
+	}
+}
+
+func TestMiddlewareRateLimitsBeforeTheUserLookup(t *testing.T) {
+	looked := false
+	o := Options{Log: discard, Verifier: fakeVerifier{p: Principal{UserID: uuid.New()}},
+		Limit: func(*http.Request, Principal) (string, bool, time.Duration) {
+			return "default", false, 1500 * time.Millisecond
+		},
+		OnAuth: func(ctx context.Context, _ Principal) (context.Context, error) { looked = true; return ctx, nil }}
+	rec, seen := serve(t, o, "Bearer t")
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "2" || seen != nil {
+		t.Fatalf("status %d Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if looked {
+		t.Fatal("a throttled request must not cost a database lookup")
 	}
 }
 

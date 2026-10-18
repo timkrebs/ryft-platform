@@ -19,6 +19,7 @@ import (
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
@@ -70,12 +71,13 @@ func main() {
 	})
 	mux.HandleFunc("/", httpx.NotFound)
 	go func() {
-		if err := httpx.Serve(log, ":"+cfg.Port, mux); err != nil {
+		if err := httpx.Serve(log, ":"+cfg.Port, httpx.Recover(mux)); err != nil {
 			log.Error("serve", "err", err)
 		}
 	}()
 
 	handle := func(ctx context.Context, ev model.IngestedEvent) error {
+		ctx = logx.WithFields(ctx, &logx.Fields{RequestID: ev.RequestID, UserID: ev.UserID.String()})
 		err := handleEvent(ctx, engine, ev)
 		if errors.Is(err, store.ErrNotFound) {
 			// The user was deleted after the event was queued.
@@ -127,15 +129,16 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		return
 	}
 	for _, id := range users {
+		ctx := logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
 		_, loc, err := st.GetUser(ctx, id)
 		if err != nil {
-			log.Error("periodic: user", "user_id", id, "err", err)
+			log.ErrorContext(ctx, "periodic: user", "err", err)
 			continue
 		}
 		today := time.Now().In(loc)
 		for _, d := range []time.Time{today.AddDate(0, 0, -1), today} {
 			if err := engine.ComputeDay(ctx, id, d.Format("2006-01-02")); err != nil {
-				log.Error("periodic recompute", "user_id", id, "day", d.Format("2006-01-02"), "err", err)
+				log.ErrorContext(ctx, "periodic recompute", "day", d.Format("2006-01-02"), "err", err)
 			}
 		}
 	}

@@ -125,16 +125,18 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 		if err := fn(ctx, ev); err != nil {
 			var perm permanentError
 			if errors.As(err, &perm) {
-				log.Warn("event cannot be handled, dropping", "err", err, "user_id", ev.UserID)
+				log.Warn("event cannot be handled, dropping", "err", err, "user_id", ev.UserID, "request_id", ev.RequestID)
 				metrics.EventsHandled.WithLabelValues(ev.Reason, "dropped").Inc()
 				_ = msg.Term()
 				return
 			}
 			if delivered >= maxDeliver {
-				log.Error("handle event failed on last delivery, giving up", "err", err, "days", ev.Days)
+				log.Error("handle event failed on last delivery, giving up", "err", err, "days", ev.Days,
+					"user_id", ev.UserID, "request_id", ev.RequestID)
 				metrics.EventsHandled.WithLabelValues(ev.Reason, "failed").Inc()
 			} else {
-				log.Error("handle event failed, will retry", "err", err, "days", ev.Days, "delivery", delivered)
+				log.Error("handle event failed, will retry", "err", err, "days", ev.Days, "delivery", delivered,
+					"user_id", ev.UserID, "request_id", ev.RequestID)
 				metrics.EventsHandled.WithLabelValues(ev.Reason, "retry").Inc()
 			}
 			_ = msg.NakWithDelay(30 * time.Second)

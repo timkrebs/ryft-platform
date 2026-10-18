@@ -364,3 +364,56 @@ keeps `DB_MAX_CONNS` (default 4, scoring 2) connections, recycled every 30 minut
 Migrations now take `pg_advisory_xact_lock` inside each migration's transaction and
 re-check `schema_migrations` there, so a pod dying mid-migration cannot leave a session
 lock behind on a pooled connection.
+
+## D35 — Request IDs are always the server's
+
+Every request gets a UUIDv7 from the outermost middleware. It is returned in
+`X-Request-ID` and `request_id` in error bodies, logged on every line of the request,
+and carried in the `ryft.ingested` event so scoring's lines for a sync share its ID. A
+client-sent `X-Request-ID` is logged as `client_request_id` only if it matches
+`[A-Za-z0-9._:-]{1,128}`, and is never adopted: a client-chosen ID could collide with, or
+be planted into, another user's log trail. The request ID lives in a mutable
+`logx.Fields` struct in the context, which inner layers fill in (route, user) and which
+survives `r.WithContext` copies. That is also how the route-pattern metric labels (D14)
+reach the outer middleware.
+
+## D36 — Per-user, per-pod token buckets
+
+The rate limit is in memory in each pod, with no Redis. The effective limit is therefore
+up to replicas × limit (≤ 4 api, ≤ 4 ingest), which is acceptable for a guard rail. It
+is keyed by the verified user ID, not the client IP: mobile clients share carrier NAT
+addresses, and behind the load balancer the source IP is not reliable. It runs after
+token verification and before `EnsureUser`, so a throttled request costs no database
+query. Classes:
+
+- `POST /v1/sync`: 2/s, burst 60. A 90-day first backfill is a few dozen pages.
+- Everything else: 10/s, burst 60. App launch is about 10 requests.
+
+`POST /v1/recompute` keeps its own database gate (one per user per minute, D31), which
+works across replicas. Unauthenticated floods are not limited by the services; each
+costs one signature check at most, and unknown-key JWKS refreshes are themselves
+limited (D29). A per-IP limit belongs at the edge (a Traefik `RateLimit` middleware on
+the Ingress) if it is ever needed.
+
+## D37 — Generic 5xx, 413 and hardening headers
+
+Before, a database error's text (SQL, table names) went to the client in the `500`
+body. Now every unexpected error answers `{"error":"internal error","request_id":…}`,
+and the error itself is logged under that request ID (`httpx.Fail`). Request bodies have
+explicit limits: 64 KiB in general, 32 MiB for `POST /v1/sync`. Oversized bodies get
+`413` instead of a `400` "bad json", so the app can tell them apart. That is a status
+change for an existing error, recorded in the API changelog; the app only branches on
+401/429/503. Every response sends `Cache-Control: no-store` (health data must not sit in
+a shared or on-device HTTP cache), `nosniff`, `X-Frame-Options: DENY`, a `default-src
+'none'` CSP, `Referrer-Policy: no-referrer` and HSTS. The server sets
+`MaxHeaderBytes` 64 KiB and `IdleTimeout` 120 s.
+
+## D38 — Request deadlines as context timeouts, not `http.TimeoutHandler`
+
+api requests get 15 s and syncs 50 s, as a context deadline inside the server's 60 s
+write timeout. `http.TimeoutHandler` would buffer every response and write a plain-text
+503 while the handler may still be running. A context deadline instead makes the pgx
+calls return `context.DeadlineExceeded`, which `httpx.Fail` answers with `503 "request
+timed out"` and `Retry-After`, so the app retries rather than reporting a server error.
+Retrying a sync is safe because it is idempotent.
+

@@ -22,6 +22,7 @@ import (
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/ratelimit"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
@@ -81,19 +82,35 @@ func main() {
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/sync", h.sync)
 	api.HandleFunc("/v1/", httpx.NotFound)
+	limits := ratelimit.NewUserLimits()
 	mux.Handle("/v1/", auth.Middleware(auth.Options{
 		Log:      log,
 		Verifier: verifier,
+		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
+			return limits.Allow(r, p.UserID.String())
+		},
 		OnAuth: auth.LoadUser(func(ctx context.Context, p auth.Principal) (model.User, error) {
 			return st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
 		}),
-	}, httpx.WithRoutes(api)))
+	}, httpx.Timeout(syncTimeout, httpx.WithRoutes(api))))
 	mux.HandleFunc("/", httpx.NotFound)
 
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
+}
+
+// syncTimeout bounds one upload's database work; it stays inside the server's
+// 60 s write timeout so a slow upload gets a JSON 503, not a cut connection.
+const syncTimeout = 50 * time.Second
+
+// requestID is the ID Instrument gave this request; scoring logs it too.
+func requestID(r *http.Request) string {
+	if f := httpx.Info(r.Context()); f != nil {
+		return f.RequestID
+	}
+	return ""
 }
 
 type handler struct {
@@ -104,8 +121,8 @@ type handler struct {
 
 func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	var req model.SyncRequest
-	if err := httpx.ReadJSON(r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad json: "+err.Error())
+	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodySync); err != nil {
+		httpx.WriteDecodeError(w, err)
 		return
 	}
 	if err := validate(&req); err != nil {
@@ -117,39 +134,39 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	userID := user.ID
 	loc, err := time.LoadLocation(user.TZ)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "user tz: "+err.Error())
+		httpx.Fail(w, r, fmt.Errorf("user tz: %w", err))
 		return
 	}
 	if err := h.st.TouchDevice(ctx, userID, req.DeviceID, req.DeviceName); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "device: "+err.Error())
+		httpx.Fail(w, r, fmt.Errorf("device: %w", err))
 		return
 	}
 
 	ns, err := h.st.UpsertSamples(ctx, userID, req.Samples)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "samples: "+err.Error())
+		httpx.Fail(w, r, fmt.Errorf("samples: %w", err))
 		return
 	}
 	nsl, err := h.st.UpsertSleep(ctx, userID, req.Sleep)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "sleep: "+err.Error())
+		httpx.Fail(w, r, fmt.Errorf("sleep: %w", err))
 		return
 	}
 	nw, err := h.st.UpsertWorkouts(ctx, userID, req.Workouts)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "workouts: "+err.Error())
+		httpx.Fail(w, r, fmt.Errorf("workouts: %w", err))
 		return
 	}
 
 	days := touchedDays(&req, loc)
 	if len(days) > 0 {
-		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync"}, ""); err != nil {
+		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, ""); err != nil {
 			// Data is stored; scoring's periodic pass will catch up. Report, don't fail the sync.
-			h.log.Error("publish ingested event", "err", err)
+			h.log.ErrorContext(ctx, "publish ingested event", "err", err)
 		}
 	}
 	countIngested(&req)
-	h.log.Info("sync", "user_id", userID, "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
+	h.log.InfoContext(ctx, "sync", "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
 	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days})
 }
 

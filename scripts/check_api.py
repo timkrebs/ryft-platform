@@ -170,7 +170,19 @@ ok(f"/v1/insights: {len(cards)} cards {[c['id'] for c in cards]}")
 
 # ---- 2.9 errors ---------------------------------------------------------------
 def is_error(body):
-    return isinstance(body, dict) and set(body) == {"error"} and body["error"]
+    return (isinstance(body, dict) and set(body) <= {"error", "request_id"} and body["error"]
+            and body.get("request_id"))
+
+
+def raw(method, path, body=None, base=API, headers=None):
+    """Status, headers and decoded body of one request (for header checks)."""
+    hdrs = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json", **(headers or {})}
+    req = urllib.request.Request(base + path, data=body, method=method, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.headers, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, json.loads(e.read())
 
 
 check(is_error(get("/v1/days", expect=401, auth=False)), "401 must carry {error}")
@@ -180,7 +192,25 @@ check(is_error(get("/v1/days?from=2026-10-18&to=2026-10-01", expect=422)), "from
 check(is_error(get("/v1/days?from=yesterday", expect=400)), "malformed date must be 400")
 check(is_error(post("/v1/recompute", {"from": "2024-01-01", "to": TODAY}, expect=422)), "recompute > 400 days must be 422")
 check(is_error(post("/v1/recompute", {"from": TODAY, "to": TODAY, "x": 1}, expect=400)), "unknown body field must be 400")
-ok("errors: 400/401/404/422 all carry {error}")
+ok("errors: 400/401/404/422 all carry {error, request_id}")
+
+status, hdrs, body = raw("GET", "/v1/nope", headers={"X-Request-ID": "client-chosen-id"})
+rid = hdrs.get("X-Request-ID")
+check(rid and rid != "client-chosen-id" and body.get("request_id") == rid,
+      f"X-Request-ID must be server-generated and match the error body: {rid} {body}")
+for base, path in ((API, "/v1/me"), (INGEST, "/healthz")):
+    status, hdrs, _ = raw("GET", path, base=base)
+    check(status == 200 and hdrs.get("X-Request-ID"), f"{base}{path}: X-Request-ID missing")
+    for k, v in {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+                 "Referrer-Policy": "no-referrer"}.items():
+        check(hdrs.get(k) == v, f"{base}{path}: {k} = {hdrs.get(k)!r}, want {v!r}")
+    check("max-age=" in (hdrs.get("Strict-Transport-Security") or ""), f"{base}{path}: HSTS missing")
+big = json.dumps({"from": TODAY, "to": TODAY, "pad": "x" * (70 << 10)}).encode()
+status, _, body = raw("POST", "/v1/recompute", big)
+check(status == 413 and is_error(body), f"a 70 KiB recompute body must be 413, got {status} {body}")
+status, _, body = raw("PATCH", "/v1/me", json.dumps({"tz": "Europe/Berlin", "name": "x" * (70 << 10)}).encode())
+check(status == 413 and is_error(body), f"a 70 KiB settings body must be 413, got {status} {body}")
+ok("X-Request-ID server-generated; security headers on api and ingest; oversized bodies 413")
 
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window

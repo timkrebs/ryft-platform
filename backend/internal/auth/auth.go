@@ -14,8 +14,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -96,10 +99,15 @@ type Verifier interface {
 // any other error is a 503.
 type OnAuth func(ctx context.Context, p Principal) (context.Context, error)
 
+// Limit decides whether an authenticated request may proceed (per-user rate
+// limit); class labels the metric, retryAfter goes into Retry-After.
+type Limit func(r *http.Request, p Principal) (class string, ok bool, retryAfter time.Duration)
+
 // Options configure Middleware.
 type Options struct {
 	Log      *slog.Logger
 	Verifier Verifier
+	Limit    Limit  // optional; checked before OnAuth so throttled requests cost no database query
 	OnAuth   OnAuth // optional
 }
 
@@ -126,6 +134,14 @@ func Middleware(o Options, next http.Handler) http.Handler {
 		}
 		if ri := httpx.Info(ctx); ri != nil {
 			ri.UserID = p.UserID.String()
+		}
+		if o.Limit != nil {
+			if class, ok, wait := o.Limit(r, p); !ok {
+				metrics.RateLimited.WithLabelValues(class).Inc()
+				w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+				httpx.WriteError(w, http.StatusTooManyRequests, "too many requests")
+				return
+			}
 		}
 		ctx = WithPrincipal(ctx, p)
 		if o.OnAuth != nil {

@@ -291,4 +291,7 @@ type IngestedEvent struct {
 	UserID uuid.UUID `json:"user_id"` // the event is always scoped to one user
 	Days   []string  `json:"days"`    // local days whose scores need (re)computing
 	Reason string    `json:"reason"`
+	// RequestID of the HTTP request that caused the event, so scoring's logs
+	// can be correlated with it.
+	RequestID string `json:"request_id,omitempty"`
 }

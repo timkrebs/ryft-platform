@@ -16,19 +16,19 @@ import (
 func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 	from, to, err := h.dateRange(r)
 	if err != nil {
-		writeRangeError(w, err)
+		writeRangeError(w, r, err)
 		return
 	}
 	loc, err := h.location(r)
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	a, _ := time.ParseInLocation(dayLayout, from, loc)
 	b, _ := time.ParseInLocation(dayLayout, to, loc)
 	rows, err := h.st.WorkoutsBetween(r.Context(), userOf(r).ID, a, b.AddDate(0, 0, 1))
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	if rows == nil {
@@ -51,13 +51,13 @@ func (h *handler) workout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	hr, err := h.st.SamplesBetween(r.Context(), userOf(r).ID, model.SampleHeartRate,
 		row.Start, scoring.WorkoutWindowEnd(row.Workout))
 	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
+		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, scoring.WorkoutDetail(row, hr))

@@ -63,8 +63,21 @@ for compose and `overlays/local-postgres` only and refuses to start without
 the `user_id`, and its 15-minute pass covers every user with a device synced in the
 last 48 hours, each in their own timezone.
 
+**Request path.** Every service wraps its mux in the same chain (`internal/httpx`),
+outermost first: **Instrument** (a server-generated request ID in `X-Request-ID`, the log
+context and error bodies; one access-log line; the HTTP metrics labelled by route
+pattern) → **Recover** (a panic becomes a JSON `500`, counted and logged with its stack)
+→ **SecurityHeaders** (`no-store`, `nosniff`, no framing, no referrer, HSTS) → mux.
+`/v1/*` then goes through **auth** (verify the token → per-user token-bucket rate limit
+→ `EnsureUser`) → **Timeout** (15 s for api, 50 s for sync, as a context deadline the
+database calls honour; running out answers `503`) → the route. Bodies are read with a
+size limit (64 KiB, 32 MiB for sync; over → `413`), and unexpected errors answer a
+generic `500` with the request ID while the details go to the log. Logs are JSON with
+`request_id`, `user_id` and `route` on every line of a request (`internal/logx`).
+
 **Events.** Stream `RYFT`, subject `ryft.ingested`, work-queue retention, file
-storage, 7-day max age. Payload `{user_id, days[], reason}`. `reason: "recompute"`
+storage, 7-day max age. Payload `{user_id, days[], reason, request_id}` (`request_id`:
+the request that caused it, for log correlation). `reason: "recompute"`
 with two days means an inclusive range. Failures NAK with a 30 s delay, max 10
 deliveries. If NATS is down, ingest still stores the data and scoring's 15-minute
 timer catches up.

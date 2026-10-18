@@ -1,24 +1,43 @@
-// Package httpx has the small HTTP plumbing every service shares: JSON helpers,
-// request logging and metrics, health/metrics endpoints and graceful shutdown.
-// Authentication lives in internal/auth.
+// Package httpx has the HTTP plumbing every service shares: JSON helpers and
+// the error shape, the middleware chain (request IDs and access logs, metrics,
+// panic recovery, security headers, timeouts), health/metrics endpoints and
+// graceful shutdown. Authentication lives in internal/auth, logging in
+// internal/logx.
+//
+// Chain, outermost first: Instrument → Recover → SecurityHeaders → mux;
+// under /v1: auth (incl. per-user rate limits) → Timeout → WithRoutes(api mux).
 package httpx
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
-const maxBody = 32 << 20 // 32 MiB: a first HealthKit backfill can be large
+// Request body limits: settings and small commands vs. a HealthKit upload
+// (a first backfill page can be large).
+const (
+	MaxBodyDefault = 64 << 10
+	MaxBodySync    = 32 << 20
+)
+
+// RequestIDHeader carries the request ID on every response (and is logged).
+const RequestIDHeader = "X-Request-ID"
 
 func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -26,18 +45,47 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// WriteError writes the API's error shape {"error": msg, "request_id": id};
+// the request ID lets a user report a failure we can find in the logs.
 func WriteError(w http.ResponseWriter, status int, msg string) {
-	WriteJSON(w, status, map[string]string{"error": msg})
+	body := map[string]string{"error": msg}
+	if id := w.Header().Get(RequestIDHeader); id != "" {
+		body["request_id"] = id
+	}
+	WriteJSON(w, status, body)
 }
 
-func ReadJSON(r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(nil, r.Body, maxBody)
+// Fail answers an unexpected server-side error. The client gets a generic
+// message and the request ID; the details go to the log. A request that ran
+// out of time is a 503 (retry), anything else a 500.
+func Fail(w http.ResponseWriter, r *http.Request, err error) {
+	status, msg := http.StatusInternalServerError, "internal error"
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+		status, msg = http.StatusServiceUnavailable, "request timed out"
+		w.Header().Set("Retry-After", "5")
+	}
+	slog.Default().ErrorContext(r.Context(), "request failed", "status", status, "err", err)
+	WriteError(w, status, msg)
+}
+
+// ReadJSON decodes the request body into v, rejecting unknown fields and
+// bodies over limit. Answer its error with WriteDecodeError.
+func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
+	return dec.Decode(v)
+}
+
+// WriteDecodeError answers a ReadJSON failure: 413 for an oversized body,
+// 400 otherwise.
+func WriteDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body over %d bytes", tooLarge.Limit))
+		return
 	}
-	return nil
+	WriteError(w, http.StatusBadRequest, "bad json: "+err.Error())
 }
 
 // NotFound answers unknown routes (and unknown methods on known paths) with
@@ -47,33 +95,16 @@ func NotFound(w http.ResponseWriter, _ *http.Request) {
 	WriteError(w, http.StatusNotFound, "not found")
 }
 
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusWriter) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
-
-// RequestInfo collects what inner layers learn about a request — the route
-// pattern that matched and the authenticated user — for Instrument to log and
-// count once the request is done. It travels as a pointer in the context
-// because middleware like auth hands copies of the request (r.WithContext)
-// inward, and ServeMux records the pattern only on the copy it was given.
-type RequestInfo struct {
-	Route  string
-	UserID string
-}
-
-type infoKey struct{}
+// RequestInfo is what inner layers learn about a request (route, user), for
+// logs and metrics; see logx.Fields.
+type RequestInfo = logx.Fields
 
 // Info returns the request's RequestInfo, or nil outside Instrument.
-func Info(ctx context.Context) *RequestInfo {
-	ri, _ := ctx.Value(infoKey{}).(*RequestInfo)
-	return ri
-}
+func Info(ctx context.Context) *RequestInfo { return logx.FieldsFrom(ctx) }
 
 // WithRoutes serves mux and records the pattern that matched in RequestInfo
-// before the handler runs.
+// before the handler runs (ServeMux sets r.Pattern only on the request copy it
+// was given, which outer middleware never sees).
 func WithRoutes(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ri := Info(r.Context()); ri != nil {
@@ -85,32 +116,124 @@ func WithRoutes(mux *http.ServeMux) http.Handler {
 	})
 }
 
-// Instrument logs every request and records it in the HTTP metrics. The route
-// label is the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+	wrote  bool
+}
+
+func (s *statusWriter) WriteHeader(c int) {
+	if !s.wrote {
+		s.status, s.wrote = c, true
+	}
+	s.ResponseWriter.WriteHeader(c)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if !s.wrote {
+		s.status, s.wrote = http.StatusOK, true
+	}
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += n
+	return n, err
+}
+
+// clientRequestID accepts a client-sent X-Request-ID only if it looks like an
+// ID; it is logged for correlation but never used as ours.
+var clientRequestID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// Instrument is the outermost middleware: it gives every request an ID
+// (X-Request-ID on the response, request_id in every log line and error
+// body), logs one access line and records the HTTP metrics. The route label is
+// the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
 // cardinality stays bounded.
 func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ri := &RequestInfo{}
-		r = r.WithContext(context.WithValue(r.Context(), infoKey{}, ri))
-		sw := &statusWriter{ResponseWriter: w, status: 200}
+		ctx, f := logx.NewContext(r.Context())
+		f.RequestID = newRequestID()
+		if c := r.Header.Get(RequestIDHeader); clientRequestID.MatchString(c) {
+			f.ClientRequestID = c
+		}
+		w.Header().Set(RequestIDHeader, f.RequestID)
+		r = r.WithContext(ctx)
+
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(sw, r)
 		dur := time.Since(start)
-		route := ri.Route
-		if route == "" {
-			route = r.Pattern
+		if f.Route == "" {
+			f.Route = r.Pattern
 		}
+		route := f.Route
 		if route == "" {
 			route = "unmatched"
 		}
 		metrics.HTTPRequests.WithLabelValues(route, strconv.Itoa(sw.status)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(dur.Seconds())
-		attrs := []any{"method", r.Method, "path", r.URL.Path, "route", route, "status", sw.status,
-			"dur_ms", dur.Milliseconds()}
-		if ri.UserID != "" {
-			attrs = append(attrs, "user_id", ri.UserID)
-		}
-		log.InfoContext(r.Context(), "http", attrs...)
+		log.InfoContext(ctx, "http", "method", r.Method, "path", r.URL.Path, "status", sw.status,
+			"bytes", sw.bytes, "dur_ms", dur.Milliseconds())
+	})
+}
+
+func newRequestID() string {
+	if id, err := uuid.NewV7(); err == nil {
+		return id.String()
+	}
+	return uuid.NewString()
+}
+
+// Recover turns a panicking handler into a JSON 500 (if nothing was written
+// yet), logs the stack and counts it. http.ErrAbortHandler is re-raised: it is
+// net/http's way to abort a response on purpose.
+func Recover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			v := recover()
+			if v == nil {
+				return
+			}
+			if v == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity, as net/http does
+				panic(v)
+			}
+			route := "unmatched"
+			if f := Info(r.Context()); f != nil && f.Route != "" {
+				route = f.Route
+			}
+			metrics.Panics.WithLabelValues(route).Inc()
+			slog.Default().ErrorContext(r.Context(), "panic", "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			if !sw.wrote {
+				WriteError(sw, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(sw, r)
+	})
+}
+
+// SecurityHeaders sets the response headers an API carrying health data
+// should always send: no caching anywhere, no content sniffing, no framing,
+// no referrers, HTTPS only.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Cache-Control", "no-store")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Timeout gives the request's work a deadline; database calls fail with a
+// deadline error once it passes, which Fail turns into a 503.
+func Timeout(d time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), d)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -140,6 +263,9 @@ func Serve(log *slog.Logger, addr string, h http.Handler) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -163,7 +289,10 @@ func Serve(log *slog.Logger, addr string, h http.Handler) error {
 	}
 }
 
-// Logger returns a JSON slog logger tagged with the service name.
+// Logger returns the service's JSON logger at LOG_LEVEL and makes it the
+// default, so library logs (e.g. JWKS refresh errors) are structured too.
 func Logger(service string) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", service)
+	log := logx.New(service, logx.ParseLevel(os.Getenv("LOG_LEVEL")))
+	slog.SetDefault(log)
+	return log
 }
