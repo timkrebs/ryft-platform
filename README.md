@@ -13,8 +13,9 @@ flow, the schema and the scoring model. The HTTP contract with the app is
 
 ```
 backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,insights,store,db,events,httpx,metrics,model,config}
-infra/aws/    Terraform: VPC + EKS cluster to run deploy/k8s on (modules/network, modules/eks)
-deploy/k8s/   kustomize: base/ (Postgres, NATS, 3 services, Ingress, policies, backups) + default and vault/ overlays
+infra/aws/    Terraform: VPC + EKS cluster (modules/network, modules/eks), dns/ (ryftapp.de zone),
+              kubernetes/ (Traefik, cert-manager, ExternalDNS, LB controller, encrypted storage)
+deploy/k8s/   kustomize: overlays/eks (api.ryftapp.de), base/ (Postgres, NATS, 3 services, Ingress, policies, backups) + default and vault/ overlays
 ../app/          SwiftUI app (HealthKit sync, Today / Trends / Settings)
 scripts/      synth.py (fake Health data), smoke.sh (end-to-end test), print_days.py
 docker-compose.yml   local stack

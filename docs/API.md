@@ -29,7 +29,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 
 | Topic | Rule |
 | --- | --- |
-| Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). |
+| Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). Production: **`https://api.ryftapp.de`** for both (HTTPS only, port 80 closed; live once Supabase auth ships, M1). Configure the app with that one URL and leave the ingest URL empty. |
 | Auth | Every `/v1/*` request carries `Authorization: Bearer <API_KEY>`. Missing or wrong key → `401` with `WWW-Authenticate: Bearer realm="ryft"`. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB. |
 | Keys | `snake_case`. The app decodes with `.convertFromSnakeCase`. |
@@ -533,6 +533,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | Production host `https://api.ryftapp.de` documented (both services, HTTPS only). No API change. |
 | 2026-10-18 | Fixes: a workout running past midnight is scored on its whole window (was: only the part before midnight); `DayDetail.strain` is non-null whenever `score.strain` is; `PATCH /v1/me` returns `500`, not `422`, when the database fails; the 400-day recompute limit counts calendar days, so ranges across DST are judged the same by api and scoring. |
 | 2026-10-18 | `DailyScore.baseline_days` added; `details` keys read by existing clients frozen. |
 | 2026-10-18 | Errors: unknown routes and methods return a JSON `404` (was plain text); `GET /v1/days` and `/v1/workouts` with `from > to` return `422` (was `200 []`); `POST /v1/recompute` over 400 days returns `422` (was `202`, then failed in scoring). |

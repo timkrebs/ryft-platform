@@ -14,7 +14,7 @@ EKS cluster for RYFT, wrapping
 | `vpc-cni` with `enableNetworkPolicy` | Pod networking; enforces the NetworkPolicies in `deploy/k8s/base/networkpolicy.yaml` (otherwise silently ignored) |
 | `eks-pod-identity-agent` | Pod Identity for the EBS CSI role |
 | `kube-proxy`, `coredns` | Service routing and DNS |
-| `aws-ebs-csi-driver` with `defaultStorageClass` | gp3 PersistentVolumes; creates the default StorageClass `ebs-csi-default-sc` the PVCs (no `storageClassName`) bind to |
+| `aws-ebs-csi-driver` | EBS PersistentVolumes. No StorageClass from the add-on (it would be unencrypted); `infra/aws/kubernetes` creates the encrypted default `gp3-encrypted` |
 | `metrics-server` | Resource metrics for the api/ingest HorizontalPodAutoscalers |
 
 ```hcl

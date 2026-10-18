@@ -1,0 +1,5 @@
+# Set by infra/aws/kubernetes/addons.tf.
+email: ""
+region: ""
+hostedZoneID: ""
+dnsZone: ""

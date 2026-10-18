@@ -1,0 +1,17 @@
+# Traefik (infra/aws/kubernetes) terminates TLS on its websecure entrypoint —
+# the only one exposed — with a certificate cert-manager obtains from Let's
+# Encrypt via DNS-01. ExternalDNS points api.ryftapp.de at Traefik's NLB.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ryft
+  namespace: ryft
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [api.ryftapp.de]
+      secretName: api-ryftapp-de-tls

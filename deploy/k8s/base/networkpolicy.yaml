@@ -27,7 +27,7 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        # k3s: Traefik in kube-system
+        # Traefik in kube-system: k3s default, and on EKS (infra/aws/kubernetes)
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
           podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
         # ingress-nginx

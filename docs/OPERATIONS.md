@@ -74,13 +74,50 @@ Settings too. `POSTGRES_PASSWORD` only takes effect on an empty data directory �
 rotate it, `ALTER USER ryft PASSWORD '…'` in Postgres first, then update both
 `POSTGRES_PASSWORD` and `DATABASE_URL` in Vault.
 
+## EKS (api.ryftapp.de)
+
+The AWS side is Terraform in three roots, each applied by hand in order; the details,
+cost and teardown are in [`infra/aws/README.md`](../infra/aws/README.md).
+
+| Step | Command | Done when |
+| --- | --- | --- |
+| 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` | `terraform output name_servers` lists four awsdns servers |
+| 2. Delegate | GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → those four | `dig NS ryftapp.de @a.nic.de +short` shows them |
+| 3. Cluster | `cd infra/aws && terraform apply` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
+| 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `kubectl get sc` shows `gp3-encrypted (default)` |
+| 5. App | see below | `curl -sI https://api.ryftapp.de/v1/me` → `401`, certificate from Let's Encrypt |
+
+Step 5 waits for Supabase auth (M1): the app's Release build signs in with Supabase, and
+until the backend verifies those tokens only the shared `API_KEY` protects the data.
+It also needs images on GHCR (first CI run on GitHub). Then:
+
+```bash
+cp deploy/k8s/secrets.example.yaml deploy/k8s/overlays/eks/secrets.yaml   # real values; git-ignored
+# set newTag in deploy/k8s/overlays/eks/kustomization.yaml to the CI commit (short SHA)
+make k8s-validate
+make k8s-apply-eks                                  # kubectl apply -k deploy/k8s/overlays/eks
+kubectl -n ryft rollout status deploy/api deploy/ingest deploy/scoring
+kubectl -n ryft get ingress,certificate             # certificate READY True (DNS-01, ~1–2 min)
+dig +short api.ryftapp.de                           # NLB addresses (ExternalDNS)
+curl -sI https://api.ryftapp.de/v1/me               # 401 without a token
+```
+
+The public host only routes `/v1/*`; `/healthz`, `/readyz` and `/metrics` stay internal.
+Port 80 is not exposed at all, so clients must use `https://`. Don't run `make smoke`
+against the public host: it writes synthetic days into the one real user. Use a
+port-forward to a fresh install instead.
+
+Certificates: cert-manager renews 30 days before expiry. To try issuance without
+touching Let's Encrypt's production rate limits, point the Ingress annotation at
+`letsencrypt-staging` first.
+
 ## Network policy
 
 `base/networkpolicy.yaml` denies all ingress in the namespace, then allows:
 
 | To | From | Port |
 | --- | --- | --- |
-| ingest, api | the Ingress controller: Traefik in `kube-system` (k3s) or ingress-nginx in `ingress-nginx` | 8080 |
+| ingest, api | the Ingress controller: Traefik in `kube-system` (k3s default, and on EKS via `infra/aws/kubernetes`) or ingress-nginx in `ingress-nginx` | 8080 |
 | postgres | pods labelled `part-of: ryft` (the three services) and `app: pg-backup` (backup/restore) | 5432 |
 | nats | pods labelled `part-of: ryft` | 4222 |
 | ingest, scoring, api | namespace `monitoring` (Prometheus) | 8080 |

@@ -1,4 +1,5 @@
 deploy/k8s/secrets.yaml
+deploy/k8s/**/secrets.yaml
 backend/bin/
 .env
 *.xcuserstate

@@ -18,6 +18,15 @@ deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 | 2.8 CI | vet, race tests, golangci-lint, manifest validation, smoke on Docker; multi-arch images to `ghcr.io/timkrebs/ryft/<service>` (short SHA, `latest` on main) | `.github/workflows/ci.yml`, `.golangci.yml` |
 | 2.9 API docs | Full v1 contract with screen map, error semantics, Swift mirror, changelog | [`API.md`](API.md) |
 
+**Infrastructure (after the brief):**
+
+| Item | What | Where |
+| --- | --- | --- |
+| EKS cluster | VPC + EKS `ryft-prod` (Terraform modules), applied by the user on 2026-10-18 | [`infra/aws`](../infra/aws/README.md) |
+| Domain `ryftapp.de` | Route 53 zone (own root, long-lived) with CAA for Let's Encrypt; GoDaddy stays the registrar | `infra/aws/dns` |
+| Edge | AWS Load Balancer Controller, Traefik behind an NLB (HTTPS only), cert-manager with Let's Encrypt DNS-01 issuers, ExternalDNS, encrypted gp3 default StorageClass; all Terraform + Helm with Pod Identity | `infra/aws/kubernetes` |
+| EKS overlay | `api.ryftapp.de` Ingress (Traefik + cert-manager), encrypted storage class on every volume, image tags to pin | `deploy/k8s/overlays/eks` |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -30,7 +39,9 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `golangci-lint run` (v2.15, `.golangci.yml`) | 0 issues |
 | `make down && make up && make smoke` on Podman, fresh volumes (all six migrations) | pass, incl. `scripts/check_api.py`: every endpoint, documented invariants, error paths, a workout across midnight |
 | `make check-swift` | the Swift mirror in `API.md` decodes every endpoint; the app's current models (`../app`) decode every endpoint they call |
-| `make k8s-validate` | base + Vault overlay render and validate with kubeconform (VSO CRD schemas included) |
+| `make k8s-validate` | base, Vault and EKS overlays render and validate with kubeconform (77 resources; VSO CRD schemas included) |
+| Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 6 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
+| Helm charts of the edge | each pinned chart rendered with the exact values (`helm template`), schemas accepted, output validated with kubeconform incl. cert-manager CRD schemas; Traefik Service exposes only 443 |
 | Backup script + restore procedure | run against the compose Postgres: dump as uid 70 with read-only root FS, `pg_restore --clean --if-exists` into empty and populated databases, identical row counts |
 | Dockerfile cross-build | `linux/amd64` image built on arm64 and started |
 | `actionlint .github/workflows/ci.yml` | pass |
@@ -41,9 +52,14 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 - **CI has not run on GitHub.** This repo has no remote yet; the workflow is linted, not
   executed. Action major versions (`checkout@v5`, `setup-go@v6`, `golangci-lint-action@v8`)
   should be confirmed on the first run.
-- **Nothing was applied to a cluster.** Manifests are validated offline only. The
-  NetworkPolicy needs a CNI that enforces it (k3s does) and assumes Traefik in
-  `kube-system` or ingress-nginx, and Prometheus in namespace `monitoring`.
+- **Only the cluster root is applied** (by the user). `infra/aws/dns` and
+  `infra/aws/kubernetes` are verified offline, not applied; the nameserver switch at
+  GoDaddy is a manual step; the RYFT overlay waits for M1 and the first CI images.
+  The cluster root's next plan also carries the EBS add-on change (no default
+  StorageClass from the add-on) and, without a `terraform.tfvars`, still leaves the
+  Kubernetes API open to `0.0.0.0/0`.
+- **Not on EKS yet:** Prometheus (`monitoring` namespace, needs a third node), Vault
+  Secrets Operator, content on the apex `ryftapp.de` / `www`, DNSSEC.
 - **Vault overlay untested against a live Vault / Vault Secrets Operator.**
 - **Failure-path metrics** (`ryft_events_handled_total{result="retry|failed"}`,
   `ryft_nats_redeliveries_total`) are wired but were not exercised end to end.
@@ -100,3 +116,18 @@ API_KEY=$API_KEY make smoke           # writes 10 synthetic days for a device na
 
 `make smoke` against a real install adds synthetic data to the real user; skip it
 there, or run it before the phone's first sync.
+
+### EKS / api.ryftapp.de
+
+Commands in order, each run by you (Terraform state never leaves your machine):
+
+```bash
+(cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
+# GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
+(cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)         # EBS add-on update
+(cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email
+(cd infra/aws/kubernetes && terraform init && terraform plan -out=tfplan && terraform apply tfplan)
+# after M1 + first CI run: overlays/eks secrets.yaml + image tag, then make k8s-apply-eks
+```
+
+Full runbook: `docs/OPERATIONS.md` → EKS.

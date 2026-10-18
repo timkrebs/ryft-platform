@@ -1,0 +1,48 @@
+# RYFT on the EKS cluster from infra/aws, served at https://api.ryftapp.de.
+#
+# Needs the add-ons from infra/aws/kubernetes (Traefik, cert-manager with the
+# letsencrypt-prod ClusterIssuer, ExternalDNS, the gp3-encrypted StorageClass)
+# and secrets.yaml next to this file (git-ignored; copy ../../secrets.example.yaml).
+#   kubectl apply -k deploy/k8s/overlays/eks      (or: make k8s-apply-eks)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft
+resources:
+  - ../../base
+  - secrets.yaml
+
+patches:
+  # Traefik + Let's Encrypt for the public host.
+  - path: ingress.yaml
+  - target: { kind: Ingress, name: ryft }
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.ryftapp.de
+  # Every volume on the encrypted class (volumeClaimTemplates are immutable, so
+  # this must be right before the first apply).
+  - target: { kind: StatefulSet, name: postgres }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: gp3-encrypted
+  - target: { kind: StatefulSet, name: nats }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: gp3-encrypted
+  - target: { kind: PersistentVolumeClaim, name: pg-backups }
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: gp3-encrypted
+
+# Pin to the commit CI built (ghcr.io/timkrebs/ryft/<service>:<short-sha>).
+# The placeholder fails on purpose until the first CI run has pushed images.
+images:
+  - name: ghcr.io/timkrebs/ryft/ingest
+    newTag: replace-with-ci-sha
+  - name: ghcr.io/timkrebs/ryft/scoring
+    newTag: replace-with-ci-sha
+  - name: ghcr.io/timkrebs/ryft/api
+    newTag: replace-with-ci-sha

@@ -241,3 +241,56 @@ a deploy, and these wrong-result bugs, all fixed:
 - `PATCH /v1/me` reported database failures as `422`; the timezone is now validated up
   front and store errors are `500`.
 - The PDB documentation claimed drains never block; that only holds on multi-node clusters.
+
+## D23 — `ryftapp.de` lives in Route 53, in its own long-lived root
+
+GoDaddy stays the registrar; the whole zone is delegated to Route 53 (the GoDaddy zone
+served only its parking page — apex A and `www`, no MX/TXT, no DNSSEC — so nothing had to
+be migrated). Every future subdomain is then a Terraform or ExternalDNS change, not a
+manual GoDaddy edit. The zone is its own root (`infra/aws/dns`, `prevent_destroy`) so
+destroying the cluster to save money never recreates it — a new zone means new
+nameservers and another registrar change. CAA allows only Let's Encrypt.
+
+## D24 — Traefik + cert-manager with DNS-01, HTTPS only
+
+As `CLAUDE_FOLLOWUP_EKS_GOLIVE.md` planned (and the user chose over an ALB + ACM edge):
+Traefik behind an NLB, certificates from Let's Encrypt via cert-manager. Two deviations
+from that note:
+- **DNS-01 instead of HTTP-01.** The zone is in Route 53, so no solver pods, no port 80
+  and no extra NetworkPolicy rule; certificates can be issued before the API is public.
+- **Port 80 is not exposed.** Without a plain-HTTP listener a misconfigured client can
+  never send its bearer token in cleartext before a redirect. The app uses `https://`.
+Traefik runs in `kube-system`, which the existing `ryft-allow-ingress-controller` policy
+already admits, so `deploy/k8s/base` did not change. The NLB comes from the AWS Load
+Balancer Controller (`aws-load-balancer-type: external`, IP targets).
+
+## D25 — The edge add-ons are a Terraform root, not a Helm runbook
+
+The go-live note listed `helm install` commands for `docs/OPERATIONS.md`; the user asked
+for Terraform. They live in `infra/aws/kubernetes`, a separate root that reads the cluster
+by name — the Helm/Kubernetes providers must not be configured from a cluster created in
+the same apply. Pod Identity roles are created there too, next to the releases that use
+them. ClusterIssuers come from a small local chart because `kubernetes_manifest` needs the
+cert-manager CRDs at plan time. Chart versions are pinned in one `locals` block.
+Prometheus (go-live step 3.3) is not part of this root yet. Per `CLAUDE.md`, all three
+roots are applied by the user; nothing here was applied by the agent.
+
+## D26 — Encrypted default StorageClass; the add-on's default is removed
+
+EBS encryption-by-default is off in the AWS account, and an account-wide setting is not
+the platform's to change. The EBS CSI add-on's own default class
+(`ebs-csi-default-sc`) would create unencrypted volumes for health data, so it is turned
+off and `infra/aws/kubernetes` defines `gp3-encrypted` (default, `Retain`). The EKS
+overlay names it explicitly on every `volumeClaimTemplate` and PVC because those fields
+are immutable. `Retain` means deleted PVCs leave volumes behind; the teardown in
+`infra/aws/README.md` lists them.
+
+## D27 — Overlay layout and secrets for EKS
+
+`deploy/k8s/overlays/eks` (the path `CLAUDE.md` names) keeps everything EKS-specific;
+`base/` is unchanged apart from a comment. Its `secrets.yaml` sits next to it because
+kustomize refuses files outside the overlay root, hence `.gitignore` now covers
+`deploy/k8s/**/secrets.yaml`. Image tags are a deliberate placeholder
+(`replace-with-ci-sha`) until CI has pushed SHA-tagged images: applying earlier fails
+loudly instead of running `latest`. `make k8s-validate` borrows `secrets.example.yaml` to
+render the overlay when no real secret exists.

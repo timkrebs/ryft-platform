@@ -47,10 +47,10 @@ module "eks" {
     kube-proxy = {}
     coredns    = {}
 
-    # PersistentVolumes for Postgres, NATS and backups. EKS has no default
-    # StorageClass; this creates gp3 "ebs-csi-default-sc" and marks it default.
+    # PersistentVolumes for NATS, backups (and Postgres until Supabase). The
+    # add-on's own default StorageClass is left off: it would create unencrypted
+    # volumes. infra/aws/kubernetes defines the encrypted default "gp3-encrypted".
     aws-ebs-csi-driver = {
-      configuration_values = jsonencode({ defaultStorageClass = { enabled = true } })
       pod_identity_association = [{
         role_arn        = module.ebs_csi_pod_identity.iam_role_arn
         service_account = "ebs-csi-controller-sa"
