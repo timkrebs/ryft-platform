@@ -30,14 +30,16 @@ patches:
         path: /spec/volumeClaimTemplates/0/spec/storageClassName
         value: gp3-encrypted
 
-# Pin to the commit CI built (ghcr.io/timkrebs/ryft/<image>:<short-sha>).
-# The placeholder fails on purpose until the first CI run has pushed images.
+# Pin to the commit CI built (ghcr.io/timkrebs/ryft/<image>:<short-sha>): the short SHA
+# of a green run on main, e.g. `gh run list --workflow ci --branch main --status success
+# --limit 1 --json headSha --jq ".[0].headSha[:7]"`. The packages are public. Always quote
+# the tag: a short SHA like 155e166 or 1234567 is a number to YAML.
 images:
   - name: ghcr.io/timkrebs/ryft/ingest
-    newTag: replace-with-ci-sha
+    newTag: "155e166"
   - name: ghcr.io/timkrebs/ryft/scoring
-    newTag: replace-with-ci-sha
+    newTag: "155e166"
   - name: ghcr.io/timkrebs/ryft/api
-    newTag: replace-with-ci-sha
+    newTag: "155e166"
   - name: ghcr.io/timkrebs/ryft/migrate
-    newTag: replace-with-ci-sha
+    newTag: "155e166"
