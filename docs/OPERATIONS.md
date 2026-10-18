@@ -230,7 +230,9 @@ fall back to 1 replica until the HPA scales them to 2 — harmless, but expect i
 
 Migrations run on boot (advisory lock, so several pods starting at once is safe).
 New columns on `daily_scores` (readiness, sleep detail, strain detail, baselines) are
-filled when a day is scored; rescore history once after upgrading to this version:
+filled when a day is scored, and source de-duplication (`SCORING.md`) changes strain
+and sleep for anyone with two devices. Rescore history once after upgrading to this
+version:
 
 ```bash
 curl -fsS -X POST https://<host>/v1/recompute -H "Authorization: Bearer $ACCESS_TOKEN" \

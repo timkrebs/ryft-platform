@@ -101,7 +101,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if err != nil {
 		return err
 	}
-	sleep := SummarizeSleep(segs)
+	sleep := SummarizeSleep(DedupSleepSources(segs))
 
 	hrvFrom, hrvTo := nightFrom, nightTo
 	if !sleep.Start.IsZero() {
@@ -175,7 +175,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if err != nil {
 		return err
 	}
-	strain := Strain(hrPoints(hrSamples), strainRHR, maxHR)
+	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
 
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
@@ -184,13 +184,15 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	for _, w := range workouts {
 		// Each workout loads its own window rather than filtering the day's
 		// samples: a 23:20–00:40 run must count its minutes after midnight too,
-		// and match the curve GET /v1/workouts/{id} draws.
-		wkSamples, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, w.Start, WorkoutWindowEnd(w))
+		// and match the curve GET /v1/workouts/{id} draws (same whole-hour
+		// window, same source per hour).
+		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))
+		around, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, from, to)
 		if err != nil {
 			return err
 		}
 		var load StrainResult
-		inWindow := hrPoints(wkSamples)
+		inWindow := hrPoints(WorkoutSamples(w, around))
 		if len(inWindow) >= 2 {
 			load = Strain(inWindow, strainRHR, maxHR)
 		} else if w.AvgHR != nil {

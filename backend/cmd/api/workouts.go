@@ -54,11 +54,11 @@ func (h *handler) workout(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
-	hr, err := h.st.SamplesBetween(r.Context(), userOf(r).ID, model.SampleHeartRate,
-		row.Start, scoring.WorkoutWindowEnd(row.Workout))
+	from, to := scoring.SampleWindow(row.Start, scoring.WorkoutWindowEnd(row.Workout))
+	hr, err := h.st.SamplesBetween(r.Context(), userOf(r).ID, model.SampleHeartRate, from, to)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, 200, scoring.WorkoutDetail(row, hr))
+	httpx.WriteJSON(w, 200, scoring.WorkoutDetail(row, scoring.WorkoutSamples(row.Workout, hr)))
 }

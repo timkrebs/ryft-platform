@@ -442,3 +442,20 @@ restore. `DELETE /v1/me` gets its own auth chain without the user lookup, so a r
 after a deletion still reaches the handler. It runs detached from the client
 (`context.WithoutCancel`) with a 2-minute deadline. Apple token revocation is not part
 of this (see `SUPABASE.md`).
+
+## D40 — Source de-duplication per hour, and for sleep per night
+
+The spec said to prefer the source with the most samples *that day*. A day-level
+winner drops the phone's samples for the hours the watch was charging (and the reverse
+for a phone left on a desk), so the winner is chosen per sample type and per clock hour.
+Within an hour, "most samples" picks the device that was worn. Ties go to the name that
+sorts first, so the result does not depend on row order. A workout's samples are chosen
+from the whole hours around it (`SampleWindow`) and then cut to its window, so workout
+load, workout curve and day strain always agree on the source.
+
+The spec named `heart_rate`, `steps` and `active_energy`. Sleep has the same flaw and a
+larger effect: two trackers' stages were summed, which doubles a night. So sleep is
+de-duplicated as well, one source per night, the one with the most asleep minutes. HRV,
+resting HR, respiratory rate and SpO₂ are averaged rather than summed and are left as
+they are. Choosing the source with the largest total for steps was considered and
+rejected: it rewards whichever device over-counts.

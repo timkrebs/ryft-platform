@@ -15,9 +15,9 @@ const MaxHRPoints = 600
 // workout end itself is inclusive, as in ComputeDay, and Postgres stores µs.
 func WorkoutWindowEnd(w model.Workout) time.Time { return w.End.Add(time.Microsecond) }
 
-// WorkoutDetail assembles the workout screen from the stored row and the raw
-// heart-rate samples inside its window. Average and max HR come from the app
-// when it sent them, otherwise from the samples.
+// WorkoutDetail assembles the workout screen from the stored row and the
+// heart-rate samples inside its window (WorkoutSamples). Average and max HR
+// come from the app when it sent them, otherwise from the samples.
 func WorkoutDetail(w store.WorkoutRow, hr []model.Sample) model.WorkoutDetail {
 	pts := make([]HRPoint, 0, len(hr))
 	var sum, peak float64

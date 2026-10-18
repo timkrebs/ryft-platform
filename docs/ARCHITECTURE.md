@@ -106,6 +106,10 @@ day's strain line up like Whoop.
 
 ## Scoring (`internal/scoring/algorithms.go`, unit-tested)
 
+**Sources.** Before anything is computed, overlapping HealthKit sources are reduced to
+one: per hour for heart rate, steps and active energy, and per night for sleep. See
+[`SCORING.md`](SCORING.md).
+
 **Baselines.** Each overnight signal is compared to your own previous 30 scored days.
 HRV is compared in log space (it is log-normally distributed). With fewer than 7
 days the row is flagged `calibrating` and a population SD is used instead of yours.

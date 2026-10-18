@@ -215,6 +215,8 @@ ok("X-Request-ID server-generated; security headers on api and ingest; oversized
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
 # checked above). Its load must cover all 80 minutes, not just those before midnight.
+# A second, sparser heart-rate source (a band reading 60 bpm) overlaps it: source
+# de-duplication must keep the watch's curve and load untouched.
 tz = ZoneInfo(get("/v1/me")["tz"])
 d = date.fromisoformat(TODAY) - timedelta(days=40)
 start = datetime(d.year, d.month, d.day, 23, 20, tzinfo=tz).astimezone(timezone.utc)
@@ -222,8 +224,11 @@ iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
 wid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "check-api-midnight-run"))
 hr = [{"type": "heart_rate", "start": iso(start + timedelta(minutes=m)), "end": iso(start + timedelta(minutes=m)),
        "value": 150, "unit": "bpm", "source": "check"} for m in range(81)]
+band = [{"type": "heart_rate", "start": iso(start + timedelta(minutes=m, seconds=30)),
+         "end": iso(start + timedelta(minutes=m, seconds=30)), "value": 60, "unit": "bpm", "source": "check-band"}
+        for m in range(0, 80, 10)]
 synced_at = (datetime.now(timezone.utc) - timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S")
-post("/v1/sync", {"device_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "check-api")), "samples": hr, "sleep": [],
+post("/v1/sync", {"device_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "check-api")), "samples": hr + band, "sleep": [],
                   "workouts": [{"id": wid, "activity": "running", "start": iso(start),
                                 "end": iso(start + timedelta(minutes=80)), "source": "check"}]},
      expect=200, base=INGEST)
@@ -234,7 +239,8 @@ for _ in range(30):  # wait until scoring has rescored the workout's day after t
 wk = get(f"/v1/workouts/{wid}")
 check(wk["trimp"] is not None, "midnight workout was not scored within 30 s")
 check(len(wk["hr"]) == 81 and sum(wk["zone_min"]) >= 78, f"midnight workout zones {wk['zone_min']} (want ~80 min)")
-ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}")
+check({p["bpm"] for p in wk["hr"]} == {150}, f"the band's samples leaked into the curve: {sorted({p['bpm'] for p in wk['hr']})}")
+ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}; overlapping source ignored")
 
 # ---- multi-user isolation (apikey mode: "<API_KEY>:<uuid>" acts as that user) ---
 if os.environ.get("AUTH_MODE", "apikey") == "apikey":
@@ -277,6 +283,24 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     get("/v1/days", expect=401, key="wrong-key-0123456789")
     get("/v1/days", expect=401, key=f"{KEY}:not-a-uuid")
     ok(f"isolation: user {B[:8]}… sees only its own data; shared device and workout UUID stay separate")
+
+    # ---- one night from two trackers counts once (source de-duplication) ------
+    e = date.fromisoformat(TODAY) - timedelta(days=60)
+    bed = datetime(e.year, e.month, e.day, 0, 30, tzinfo=ZoneInfo(me_b["tz"])).astimezone(timezone.utc)
+    seg = lambda src, stage, off, mins: {"start": iso(bed + timedelta(minutes=off)),
+                                         "end": iso(bed + timedelta(minutes=off + mins)), "stage": stage, "source": src}
+    night = [seg("check-watch", "core", 0, 200), seg("check-watch", "deep", 200, 100), seg("check-watch", "rem", 300, 120),
+             seg("check-ring", "core", 5, 400)]
+    post("/v1/sync", {"device_id": synth_device, "samples": [], "sleep": night, "workouts": []},
+         expect=200, base=INGEST, key=KEY_B)
+    for _ in range(30):
+        if get(f"/v1/days?from={e}&to={e}", key=KEY_B):
+            break
+        time.sleep(1)
+    s_b = get(f"/v1/days/{e}", key=KEY_B)["sleep"]
+    check(s_b and s_b["total_min"] == 420 and s_b["has_stages"], f"two trackers' night must count once (420 min): {s_b}")
+    check(len(s_b["segments"]) == 3, f"hypnogram must show one source: {s_b['segments']}")
+    ok("one night from two trackers counts once: 420 min, the watch's stages")
 
     # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
     wk_a = get(f"/v1/workouts/{a_wk['id']}")

@@ -40,8 +40,15 @@ curl -fsS -X POST "$INGEST_URL/v1/sync" -H "Authorization: Bearer $API_KEY" \
 FROM=$(python3 -c "from datetime import date,timedelta;print(date.today()-timedelta(days=$DAYS))")
 TO=$(date +%F)
 echo "→ POST /v1/recompute $FROM..$TO (chronological so baselines build up)"
-curl -fsS -X POST "$API_URL/v1/recompute" -H "Authorization: Bearer $API_KEY" \
-  -H 'Content-Type: application/json' -d "{\"from\":\"$FROM\",\"to\":\"$TO\"}"; echo
+recompute() {
+  curl -sS -o /dev/stderr -w '%{http_code}' -X POST "$API_URL/v1/recompute" -H "Authorization: Bearer $API_KEY" \
+    -H 'Content-Type: application/json' -d "{\"from\":\"$FROM\",\"to\":\"$TO\"}"
+}
+CODE=$(recompute); echo
+if [ "$CODE" = 429 ]; then # one recompute per user per minute: a smoke run right after another waits
+  echo "→ recompute rate-limited, retrying in 61 s"; sleep 61; CODE=$(recompute); echo
+fi
+[ "$CODE" = 202 ] || { echo "✗ POST /v1/recompute: $CODE"; exit 1; }
 
 echo "→ waiting for scoring"
 for i in $(seq 1 30); do

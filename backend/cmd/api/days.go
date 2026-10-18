@@ -153,7 +153,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 				httpx.Fail(w, r, err)
 				return
 			}
-			out.Sleep = &model.SleepDetail{SleepSummary: s, Segments: scoring.Hypnogram(segs)}
+			out.Sleep = &model.SleepDetail{SleepSummary: s, Segments: scoring.Hypnogram(scoring.DedupSleepSources(segs))}
 		}
 	}
 	httpx.WriteJSON(w, 200, out)
