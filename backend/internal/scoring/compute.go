@@ -67,7 +67,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		return fmt.Errorf("bad day %q: %w", day, err)
 	}
 	dayStart, dayEnd := d, d.AddDate(0, 0, 1)
-	nightFrom, nightTo := d.Add(nightStartOffset), d.Add(nightEndOffset)
+	nightFrom, nightTo := NightWindow(d)
 
 	// ---- sleep -------------------------------------------------------------
 	segs, err := e.st.SleepEndingBetween(ctx, userID, nightFrom, nightTo)
@@ -220,13 +220,21 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		details["sleep_end"] = sleep.End.In(loc).Format(time.RFC3339)
 	}
 
+	var night store.SleepNight
+	if sleep.AsleepMin > 0 {
+		start, end, inBed := sleep.Start.UTC(), sleep.End.UTC(), InBedMinutes(sleep)
+		night = store.SleepNight{Day: day, Start: &start, End: &end, TotalMin: &sleep.AsleepMin,
+			InBedMin: &inBed, DeepMin: &sleep.DeepMin, LightMin: &sleep.CoreMin, REMMin: &sleep.REMMin,
+			AwakeMin: &sleep.AwakeMin, HasStages: sleep.HasStages, Performance: sleepPerf}
+	}
+
 	row := model.DailyScore{
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
 		SleepNeedMin: &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2,
 		Calibrating: rec.Calibrating, Details: details,
 	}
-	if err := e.st.UpsertDailyScore(ctx, userID, row); err != nil {
+	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night}); err != nil {
 		return err
 	}
 	e.log.Info("scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", strain.Score,

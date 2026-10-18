@@ -40,7 +40,7 @@ the same `samples` table with new `type` values — nothing else changes.
 |-----------|------|----------------|----------|
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
 | `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/workouts`, `POST /v1/recompute` | Postgres, NATS |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
 share `internal/` packages, and run DB migrations on boot behind an advisory lock.
@@ -101,8 +101,17 @@ workout has no HR samples the average HR × duration is used.
 
 **Sleep.** `need = base + min(60, 3 · yesterday's strain) + min(60, 0.3 · debt)`, where
 debt is the shortfall over the last 7 nights with 0.7/day decay. `performance =
-actual / need`, capped at 100. Stage minutes (deep / REM / core / awake) are kept in
-`details`. If a source records only `inbed` (old firmware), 90 % of it counts as asleep.
+actual / need`, capped at 100. If a source records only `inbed` (old firmware), 90 % of
+it counts as asleep.
+
+**Sleep screen.** Scoring stores the night's typed totals on `daily_scores`
+(`sleep_start`, `sleep_end`, `in_bed_min`, `deep_min`, `light_min` = HealthKit core,
+`rem_min`, `awake_min`, `sleep_has_stages`; migration 0003). The api assembles the
+views on read with pure functions in `internal/scoring/sleep.go`: efficiency =
+asleep / in bed, stage percentages (deep/light/rem sum to exactly 100 by largest
+remainder, awake is a share of time in bed), quality = sleep performance with labels
+good ≥ 80 / fair ≥ 60 / poor, and the hypnogram from the raw `sleep_segments` of the
+night window. `GET /v1/sleep` averages the stored nights of a 7- or 30-day window.
 
 Everything above is a starting point with sensible constants; the tests in
 `algorithms_test.go` pin the calibration so you can change a formula and see what moved.

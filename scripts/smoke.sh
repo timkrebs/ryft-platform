@@ -30,3 +30,6 @@ done
 
 echo "→ GET /v1/days (last $DAYS days)"
 curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KEY" | python3 "$HERE/print_days.py"
+
+echo "→ API contract checks"
+API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"

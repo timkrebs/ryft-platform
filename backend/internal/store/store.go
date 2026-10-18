@@ -202,23 +202,70 @@ func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, 
 
 // ---- daily scores ----------------------------------------------------------
 
-func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, d model.DailyScore) error {
+// SleepNight is the stored summary of the night that ended on Day. Pointers
+// are nil for rows scored before migration 0003.
+type SleepNight struct {
+	Day         string
+	Start, End  *time.Time
+	TotalMin    *int
+	InBedMin    *int
+	DeepMin     *int
+	LightMin    *int // HealthKit "core"
+	REMMin      *int
+	AwakeMin    *int
+	HasStages   bool
+	Performance *int
+}
+
+// ScoreRow is everything scoring writes for one day: the score the API serves
+// plus the typed columns other views are assembled from.
+type ScoreRow struct {
+	model.DailyScore
+	Sleep SleepNight // zero when no sleep was recorded
+}
+
+func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) error {
+	d, n := row.DailyScore, row.Sleep
 	details, err := json.Marshal(d.Details)
 	if err != nil {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
-		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state, computed_at)
-		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())
+		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
+		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages, computed_at)
+		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
-		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery, strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
+		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
+		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
 		 sleep_need_min=EXCLUDED.sleep_need_min, sleep_actual_min=EXCLUDED.sleep_actual_min, sleep_debt_min=EXCLUDED.sleep_debt_min,
 		 hrv_ms=EXCLUDED.hrv_ms, rhr=EXCLUDED.rhr, resp_rate=EXCLUDED.resp_rate, spo2=EXCLUDED.spo2,
-		 calibrating=EXCLUDED.calibrating, details=EXCLUDED.details, computed_at=now()`,
+		 calibrating=EXCLUDED.calibrating, details=EXCLUDED.details,
+		 sleep_start=EXCLUDED.sleep_start, sleep_end=EXCLUDED.sleep_end, in_bed_min=EXCLUDED.in_bed_min,
+		 deep_min=EXCLUDED.deep_min, light_min=EXCLUDED.light_min, rem_min=EXCLUDED.rem_min,
+		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
-		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State)
+		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
+		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages)
 	return err
+}
+
+// SleepNights returns the nights in [from, to] (inclusive local days) that have
+// recorded sleep, oldest first.
+func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to string) ([]SleepNight, error) {
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), sleep_start, sleep_end, sleep_actual_min,
+		in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages, sleep_performance
+		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date AND sleep_actual_min IS NOT NULL
+		ORDER BY day`, userID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (SleepNight, error) {
+		var n SleepNight
+		err := r.Scan(&n.Day, &n.Start, &n.End, &n.TotalMin, &n.InBedMin, &n.DeepMin, &n.LightMin,
+			&n.REMMin, &n.AwakeMin, &n.HasStages, &n.Performance)
+		return n, err
+	})
 }
 
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {

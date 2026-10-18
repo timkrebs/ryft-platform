@@ -48,6 +48,7 @@ Every error response has the same shape:
 | `PATCH` | `/v1/me` | api | `User` |
 | `GET` | `/v1/days?from&to` | api | `[DailyScore]` |
 | `GET` | `/v1/days/{day}` | api | `DayDetail` |
+| `GET` | `/v1/sleep?range&to` | api | `SleepRange` |
 | `GET` | `/v1/workouts?from&to` | api | `[Workout]` |
 | `POST` | `/v1/recompute` | api | `202 {status:"queued"}` |
 | `GET` | `/healthz`, `/readyz` | all | health |
@@ -138,12 +139,67 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 
 ### `GET /v1/days/{day}` — one day
 
-```json
-{ "score": DailyScore, "workouts": [Workout] }
+```jsonc
+{ "score": DailyScore, "sleep": SleepDetail?, "workouts": [Workout] }
 ```
 
 A day that has not been scored yet returns `200` with a `score` whose numbers are
-all `null`, `state: "calibrating"` and `workouts: []`. `400` on a malformed day.
+all `null`, `state: "calibrating"`, `sleep: null` and `workouts: []`. `400` on a
+malformed day. `sleep` is `null` when no sleep was recorded for the night ending on
+`day` (also for days scored before the platform upgrade until they are recomputed).
+
+`SleepDetail` — last night as the Sleep screen's *Day* tab shows it:
+
+```json
+{
+  "start": "2026-10-17T21:00:00Z", "end": "2026-10-18T05:12:00Z",
+  "total_min": 468, "in_bed_min": 492, "efficiency": 95,
+  "stages": [ {"stage":"deep","min":112,"pct":24}, {"stage":"light","min":261,"pct":56},
+              {"stage":"rem","min":95,"pct":20},  {"stage":"awake","min":10,"pct":2} ],
+  "quality": 82, "quality_label": "good", "has_stages": true,
+  "segments": [ {"stage":"light","start":"2026-10-17T21:12:00Z","end":"2026-10-17T21:40:00Z"}, … ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `start`, `end` | timestamp | First and last sleep segment of the night (including `inbed`). |
+| `total_min` | int | Minutes asleep (= `score.sleep_actual_min`). |
+| `in_bed_min` | int | Recorded time in bed; without an `inbed` record, the span `start`→`end`; never less than asleep + awake. |
+| `efficiency` | int | `round(100 · total_min / in_bed_min)`, 0–100. |
+| `stages` | `[SleepStage]` | Always four entries in this order: `deep`, `light`, `rem`, `awake`. HealthKit `core` is reported as `light`. |
+| `quality` | int | 0–100. Currently equal to `score.sleep_performance`. |
+| `quality_label` | string | `good` (quality ≥ 80), `fair` (60–79), `poor` (< 60). |
+| `has_stages` | bool | `false` when the source recorded no stages (older firmware): `deep`/`light`/`rem` are then 0 min and 0 %. |
+| `segments` | `[SleepInterval]` | The hypnogram, oldest first: `{stage, start, end}` with `stage` one of `deep`, `light`, `rem`, `awake`, `asleep` (stage unknown). Touching segments of one stage are merged; `inbed` is not a stage and is left out. Only on this endpoint. |
+
+`SleepStage`: `{ "stage": string, "min": int, "pct": int }`. For `deep`, `light`, `rem`,
+`pct` is the share of staged sleep and the three always sum to exactly 100 (or are all 0
+when `has_stages` is false). For `awake`, `pct` is the share of `in_bed_min`.
+
+### `GET /v1/sleep?range=week|month&to=YYYY-MM-DD` — Week / Month tabs
+
+`range` is `week` (7 days) or `month` (30 days), default `week`; `to` is the last day,
+default today. `422` on another `range`, `400` on a malformed `to`.
+
+```json
+{
+  "range": "week", "from": "2026-10-12", "to": "2026-10-18", "nights": 7,
+  "days": [ { "day": "2026-10-12", "start": "…", "end": "…", "total_min": 475, "in_bed_min": 511,
+              "efficiency": 93, "stages": [ … ], "quality": 93, "quality_label": "good", "has_stages": true }, … ],
+  "avg_total_min": 455, "avg_in_bed_min": 486, "avg_efficiency": 94, "avg_quality": 90,
+  "avg_stages": [ {"stage":"deep","min":85,"pct":19}, … ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `range`, `from`, `to` | string | The window actually served, inclusive. |
+| `days` | `[SleepDay]` | Only nights with data, oldest first. A `SleepDay` is `day` plus every `SleepDetail` field except `segments`. Missing nights are absent — fill the gaps from `from`/`to`. |
+| `nights` | int | `len(days)`. |
+| `avg_total_min`, `avg_in_bed_min`, `avg_quality` | int? | Means over `days`; `null` when there are none. |
+| `avg_efficiency` | int? | `avg_total_min / avg_in_bed_min`. |
+| `avg_stages` | `[SleepStage]` | Mean minutes per stage over nights with `has_stages`, same order and `pct` rules as `stages`; `[]` when no night had stages. |
 
 ### `GET /v1/workouts?from&to` — workouts
 
@@ -179,5 +235,6 @@ for ingest/scoring, NATS) is unreachable.
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | `DayDetail.sleep` (typed night with stages and hypnogram) and `GET /v1/sleep` added. |
 | 2026-10-18 | `DailyScore.readiness` and `DailyScore.state` added. |
 | 2026-10-18 | Initial v1: sync, me, days, day detail, workouts, recompute. |

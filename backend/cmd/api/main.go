@@ -59,6 +59,7 @@ func main() {
 	api.HandleFunc("PATCH /v1/me", h.patchMe)
 	api.HandleFunc("GET /v1/days", h.days)
 	api.HandleFunc("GET /v1/days/{day}", h.day)
+	api.HandleFunc("GET /v1/sleep", h.sleepRange)
 	api.HandleFunc("GET /v1/workouts", h.workouts)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
@@ -106,86 +107,19 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 	h.me(w, r)
 }
 
-// dateRange parses ?from=&to= (YYYY-MM-DD) with a default of the last 30 days.
-func (h *handler) dateRange(r *http.Request) (string, string, error) {
-	_, loc, err := h.st.GetUser(r.Context(), h.cfg.UserID)
-	if err != nil {
-		return "", "", err
-	}
-	now := time.Now().In(loc)
-	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
-	if to == "" {
-		to = now.Format("2006-01-02")
-	}
-	if from == "" {
-		from = now.AddDate(0, 0, -29).Format("2006-01-02")
-	}
-	for _, d := range []string{from, to} {
-		if _, err := time.Parse("2006-01-02", d); err != nil {
-			return "", "", err
-		}
-	}
-	return from, to, nil
-}
-
-func (h *handler) days(w http.ResponseWriter, r *http.Request) {
-	from, to, err := h.dateRange(r)
-	if err != nil {
-		httpx.WriteError(w, 400, "from/to must be YYYY-MM-DD")
-		return
-	}
-	rows, err := h.st.DailyScores(r.Context(), h.cfg.UserID, from, to)
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	if rows == nil {
-		rows = []model.DailyScore{}
-	}
-	httpx.WriteJSON(w, 200, rows)
-}
-
-func (h *handler) day(w http.ResponseWriter, r *http.Request) {
-	day := r.PathValue("day")
-	_, loc, err := h.st.GetUser(r.Context(), h.cfg.UserID)
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	d, err := time.ParseInLocation("2006-01-02", day, loc)
-	if err != nil {
-		httpx.WriteError(w, 400, "day must be YYYY-MM-DD")
-		return
-	}
-	scores, err := h.st.DailyScores(r.Context(), h.cfg.UserID, day, day)
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	workouts, err := h.st.WorkoutsBetween(r.Context(), h.cfg.UserID, d, d.AddDate(0, 0, 1))
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	if workouts == nil {
-		workouts = []model.Workout{}
-	}
-	out := model.DayDetail{Workouts: workouts, Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
-	if len(scores) > 0 {
-		out.Score = scores[0]
-	}
-	httpx.WriteJSON(w, 200, out)
-}
-
 func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 	from, to, err := h.dateRange(r)
 	if err != nil {
 		httpx.WriteError(w, 400, "from/to must be YYYY-MM-DD")
 		return
 	}
-	_, loc, _ := h.st.GetUser(r.Context(), h.cfg.UserID)
-	a, _ := time.ParseInLocation("2006-01-02", from, loc)
-	b, _ := time.ParseInLocation("2006-01-02", to, loc)
+	loc, err := h.location(r)
+	if err != nil {
+		httpx.WriteError(w, 500, err.Error())
+		return
+	}
+	a, _ := time.ParseInLocation(dayLayout, from, loc)
+	b, _ := time.ParseInLocation(dayLayout, to, loc)
 	rows, err := h.st.WorkoutsBetween(r.Context(), h.cfg.UserID, a, b.AddDate(0, 0, 1))
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
@@ -206,7 +140,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, d := range []string{req.From, req.To} {
-		if _, err := time.Parse("2006-01-02", d); err != nil {
+		if _, err := time.Parse(dayLayout, d); err != nil {
 			httpx.WriteError(w, 422, "from/to must be YYYY-MM-DD")
 			return
 		}
