@@ -58,7 +58,7 @@ func main() {
 	st := store.New(pool)
 	engine := scoring.NewEngine(st, log)
 
-	bus, err := events.Connect(ctx, cfg.NatsURL, "scoring")
+	bus, err := events.Connect(ctx, cfg.NatsURL, events.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass, OwnStream: true})
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)

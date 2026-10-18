@@ -26,6 +26,8 @@ type Config struct {
 	Port        string
 	DatabaseURL string
 	NatsURL     string
+	NatsUser    string // NATS_USER/NATS_PASSWORD: the service's own NATS user; both or neither
+	NatsPass    string
 	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection
 }
 
@@ -58,6 +60,10 @@ func Load(service string) (Config, error) {
 	}
 	if c.DatabaseURL == "" {
 		return c, fmt.Errorf("DATABASE_URL is required")
+	}
+	c.NatsUser, c.NatsPass = os.Getenv("NATS_USER"), os.Getenv("NATS_PASSWORD")
+	if (c.NatsUser == "") != (c.NatsPass == "") {
+		return c, fmt.Errorf("set both NATS_USER and NATS_PASSWORD, or neither")
 	}
 	if v := os.Getenv("DB_MAX_CONNS"); v != "" {
 		n, err := strconv.Atoi(v)

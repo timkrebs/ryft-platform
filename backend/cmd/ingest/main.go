@@ -58,7 +58,7 @@ func main() {
 	}
 	st := store.New(pool)
 
-	bus, err := events.Connect(ctx, cfg.NatsURL, "ingest")
+	bus, err := events.Connect(ctx, cfg.NatsURL, events.Options{Name: "ingest", User: cfg.NatsUser, Password: cfg.NatsPass})
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)

@@ -54,3 +54,20 @@ func TestLoadAuthAPIKeyAndOverrides(t *testing.T) {
 		t.Fatalf("%+v %v", a, err)
 	}
 }
+
+func TestLoadNatsCredentialsComeInPairs(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	for env, ok := range map[[2]string]bool{
+		{"", ""}: true, {"ingest", "secret"}: true, {"ingest", ""}: false, {"", "secret"}: false,
+	} {
+		t.Setenv("NATS_USER", env[0])
+		t.Setenv("NATS_PASSWORD", env[1])
+		c, err := Load("ingest")
+		if (err == nil) != ok {
+			t.Errorf("NATS_USER=%q NATS_PASSWORD=%q: err %v", env[0], env[1], err)
+		}
+		if ok && (c.NatsUser != env[0] || c.NatsPass != env[1]) {
+			t.Errorf("got %q/%q", c.NatsUser, c.NatsPass)
+		}
+	}
+}

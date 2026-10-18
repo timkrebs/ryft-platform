@@ -13,11 +13,19 @@ services:
       interval: 5s
       retries: 10
 
+  # Same config as Kubernetes (users and permissions per service). On Kubernetes
+  # the passwords are bcrypt hashes from Vault; here they are dev passwords.
   nats:
     image: nats:2.11-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    command: ["-c", "/etc/nats/nats.conf"]
+    environment:
+      NATS_PASSWORD_INGEST: dev-ingest-nats-password
+      NATS_PASSWORD_SCORING: dev-scoring-nats-password
+      NATS_PASSWORD_API: dev-api-nats-password
     ports: ["4222:4222", "8222:8222"]
-    volumes: ["natsdata:/data"]
+    volumes:
+      - natsdata:/data
+      - ./deploy/k8s/base/nats/nats.conf:/etc/nats/nats.conf:ro
 
   # Applies the migrations as the owner (ryft) and sets the services' role
   # passwords, then exits; the services start after it and connect as their own
@@ -44,6 +52,8 @@ services:
         AUTH_MODE: apikey
         ALLOW_INSECURE_APIKEY_AUTH: "true"
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
+      NATS_USER: ingest
+      NATS_PASSWORD: dev-ingest-nats-password
     ports: ["8081:8080"]
     depends_on: &deps
       migrate: { condition: service_completed_successfully }
@@ -54,6 +64,8 @@ services:
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_scoring:dev-scoring-db-password@postgres:5432/ryft?sslmode=disable
+      NATS_USER: scoring
+      NATS_PASSWORD: dev-scoring-nats-password
     depends_on: *deps
 
   api:
@@ -61,6 +73,8 @@ services:
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
+      NATS_USER: api
+      NATS_PASSWORD: dev-api-nats-password
     ports: ["8082:8080"]
     depends_on: *deps
 

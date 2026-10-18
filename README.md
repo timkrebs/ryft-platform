@@ -38,7 +38,7 @@ day          recovery  strain  sleep%  need  actual    hrv   rhr  resp  calibrat
 ```
 
 Config is env-only: `DATABASE_URL` (the service's own role; for `migrate` the schema owner,
-plus `DB_PASSWORD_INGEST|SCORING|API`), `NATS_URL`, `PORT`, `DB_MAX_CONNS`, `LOG_LEVEL`, and for ingest/api
+plus `DB_PASSWORD_INGEST|SCORING|API`), `NATS_URL` with `NATS_USER` + `NATS_PASSWORD`, `PORT`, `DB_MAX_CONNS`, `LOG_LEVEL`, and for ingest/api
 `AUTH_MODE` with `SUPABASE_PROJECT_REF` (production, Supabase tokens) or `API_KEY` +
 `ALLOW_INSECURE_APIKEY_AUTH=true` (compose; bearer `API_KEY` or `API_KEY:<uuid>`).
 Supabase setup: [`docs/SUPABASE.md`](docs/SUPABASE.md).

@@ -89,7 +89,12 @@ generic `500` with the request ID while the details go to the log. Logs are JSON
 
 **Events.** Stream `RYFT`, subject `ryft.ingested`, work-queue retention, file
 storage, 7-day max age. Payload `{user_id, days[], reason, request_id}` (`request_id`:
-the request that caused it, for log correlation). `reason: "recompute"`
+the request that caused it, for log correlation). Every service is its own NATS user
+(`deploy/k8s/base/nats/nats.conf`, shared by compose and Kubernetes): ingest and api
+may only publish `ryft.ingested`, and scoring alone may create the stream and its
+consumer, pull from it and ack. Replies go to a per-service inbox (`_INBOX_<service>`),
+which is the only thing a service may subscribe to. `internal/events/permissions_test.go`
+checks this against a running NATS (CI smoke job). `reason: "recompute"`
 with two days means an inclusive range. Failures NAK with a 30 s delay, max 10
 deliveries. If NATS is down, ingest still stores the data and scoring's 15-minute
 timer catches up.

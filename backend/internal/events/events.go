@@ -31,13 +31,32 @@ type Bus struct {
 	js jetstream.JetStream
 }
 
-// Connect dials NATS and ensures the stream exists (idempotent).
-func Connect(ctx context.Context, url, name string) (*Bus, error) {
-	nc, err := nats.Connect(url,
-		nats.Name(name),
+// Options for Connect.
+type Options struct {
+	// Name is the client name. Replies (publish acks, JetStream API answers)
+	// arrive on _INBOX_<name>.>, the only subjects the service may subscribe
+	// to (deploy/k8s/base/nats/nats.conf).
+	Name string
+	// User and Password authenticate the service as its own NATS user.
+	// Empty: no authentication (a NATS without users).
+	User, Password string
+	// OwnStream creates or updates the RYFT stream. Only scoring, the
+	// consumer, may; publishers only publish.
+	OwnStream bool
+}
+
+// Connect dials NATS and, with OwnStream, ensures the stream exists (idempotent).
+func Connect(ctx context.Context, url string, o Options) (*Bus, error) {
+	opts := []nats.Option{
+		nats.Name(o.Name),
+		nats.CustomInboxPrefix("_INBOX_" + o.Name),
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
+		nats.ReconnectWait(2 * time.Second),
+	}
+	if o.User != "" {
+		opts = append(opts, nats.UserInfo(o.User, o.Password))
+	}
+	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
@@ -45,6 +64,9 @@ func Connect(ctx context.Context, url, name string) (*Bus, error) {
 	if err != nil {
 		nc.Close()
 		return nil, err
+	}
+	if !o.OwnStream {
+		return &Bus{nc: nc, js: js}, nil
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      StreamName,
