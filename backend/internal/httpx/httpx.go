@@ -237,10 +237,9 @@ func Timeout(d time.Duration, next http.Handler) http.Handler {
 	})
 }
 
-// Health mounts /healthz (process up), /readyz (dependencies reachable) and
-// /metrics (Prometheus). None of them require auth; the Ingress only routes /v1.
+// Health mounts /healthz (process up) and /readyz (dependencies reachable) for
+// the probes. Neither requires auth; the Ingress only routes /v1.
 func Health(mux *http.ServeMux, ready func(context.Context) error) {
-	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})
@@ -253,6 +252,22 @@ func Health(mux *http.ServeMux, ready func(context.Context) error) {
 		}
 		WriteJSON(w, 200, map[string]string{"status": "ready"})
 	})
+}
+
+// ServeMetrics serves Prometheus /metrics on its own port in the background.
+// Kept apart from the API port so that a collector on the node's network can
+// be let in to metrics without being let in to the API (deploy/k8s NetworkPolicy).
+func ServeMetrics(log *slog.Logger, addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 30 * time.Second,
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
+	go func() {
+		log.Info("metrics listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server", "err", err)
+		}
+	}()
 }
 
 // Serve runs the server until SIGINT/SIGTERM, then drains for up to 10s.

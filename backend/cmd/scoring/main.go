@@ -64,6 +64,7 @@ func main() {
 
 	// Health endpoints only; no public API.
 	mux := http.NewServeMux()
+	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
 	httpx.Health(mux, func(ctx context.Context) error {
 		if err := st.Ready(ctx); err != nil {
 			return err

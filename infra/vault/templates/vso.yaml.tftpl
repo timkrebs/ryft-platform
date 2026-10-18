@@ -61,6 +61,6 @@ spec:
 %{ if restart_kind != "" ~}
   rolloutRestartTargets:
     - kind: ${restart_kind}
-      name: ${service}
+      name: ${restart_name}
 %{ endif ~}
 %{ endif ~}

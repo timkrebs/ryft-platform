@@ -24,6 +24,7 @@ const (
 type Config struct {
 	ServiceName string
 	Port        string
+	MetricsPort string // METRICS_PORT, default 9090: /metrics only
 	DatabaseURL string
 	NatsURL     string
 	NatsUser    string // NATS_USER/NATS_PASSWORD: the service's own NATS user; both or neither
@@ -51,6 +52,7 @@ func Load(service string) (Config, error) {
 	c := Config{
 		ServiceName: service,
 		Port:        getenv("PORT", "8080"),
+		MetricsPort: getenv("METRICS_PORT", "9090"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		NatsURL:     getenv("NATS_URL", "nats://nats:4222"),
 		DBMaxConns:  4,

@@ -1,4 +1,4 @@
-# In: Prometheus only. Out: NATS and the Supavisor pooler; scoring needs no Supabase
+# In: the metrics collector only (9090). Out: NATS and the Supavisor pooler; scoring needs no Supabase
 # Auth.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -9,10 +9,10 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        # Prometheus scrapes /metrics
+        # The metrics collector (namespace monitoring) scrapes /metrics on its own port.
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
-        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 9090 }
   egress:
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-nats } }

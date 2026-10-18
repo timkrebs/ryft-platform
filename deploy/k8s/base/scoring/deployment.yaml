@@ -13,7 +13,7 @@ spec:
       labels: { app: scoring, part-of: ryft }
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
+        prometheus.io/port: "9090"
         prometheus.io/path: /metrics
     spec:
       # Created by infra/vault on EKS (the identity Vault's Kubernetes auth trusts)
@@ -29,7 +29,9 @@ spec:
       containers:
         - name: scoring
           image: ghcr.io/timkrebs/ryft/scoring:latest
-          ports: [{ containerPort: 8080, name: http }]
+          ports:
+            - { containerPort: 8080, name: http }      # API and probes
+            - { containerPort: 9090, name: metrics }   # /metrics only
           envFrom:
             - configMapRef: { name: ryft-config }
             # Only this service's credentials: on EKS synced by the Vault Secrets

@@ -27,6 +27,8 @@ service_secrets = {
       -----END PRIVATE KEY-----
     EOT
   }
+  # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…).
+  monitoring = { GC_TOKEN = "glc_…" }
   # coach  = { ANTHROPIC_API_KEY = "sk-ant-…" }
   # notify = { APNS_KEY_ID = "…", APNS_TEAM_ID = "…", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----…" }
 }

@@ -7,13 +7,15 @@ locals {
     for name, s in var.services : name => {
       vault_ns        = "${var.project}/${name}"
       vault_ns_full   = join("/", compact([var.vault_parent_namespace_root, var.project, name]))
-      k8s_ns          = "${var.project}-${name}"
+      k8s_ns          = coalesce(s.k8s_namespace, "${var.project}-${name}")
       service_account = coalesce(s.service_account, name)
       secret_keys     = s.secret_keys
       database        = s.database
       nats            = s.nats
       workload_kind   = s.workload_kind
       data_key        = s.data_key
+      pod_security    = s.pod_security
+      workload_name   = coalesce(s.workload_name, name)
     }
   }
 

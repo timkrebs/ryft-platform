@@ -59,6 +59,9 @@ variable "services" {
     workload_kind:   what the operator restarts when the secret changes ("" for a Job).
     data_key:        a generated DATA_ENCRYPTION_KEY (32 random bytes, base64) for data the
                      service stores encrypted (the api: Sign in with Apple refresh tokens).
+    k8s_namespace:   the Kubernetes namespace (default <project>-<name>).
+    pod_security:    the namespace's Pod Security level: restricted (default), baseline, privileged.
+    workload_name:   the workload the operator restarts (default the service name).
   EOT
   type = map(object({
     service_account = optional(string)
@@ -67,6 +70,9 @@ variable "services" {
     nats            = optional(string, "none")
     workload_kind   = optional(string, "Deployment")
     data_key        = optional(bool, false)
+    k8s_namespace   = optional(string)
+    pod_security    = optional(string, "restricted")
+    workload_name   = optional(string)
   }))
   default = {
     ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
@@ -74,13 +80,21 @@ variable "services" {
     api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client", data_key = true }
     nats    = { nats = "server", workload_kind = "StatefulSet" }
     migrate = { database = "owner", workload_kind = "" }
+    # Grafana Cloud's k8s-monitoring collector (deploy/monitoring): node metrics,
+    # Beyla and an SDK injector need root, host network and host files, so its
+    # namespace cannot be restricted (D51). Only GC_TOKEN, from service_secrets.
+    monitoring = {
+      k8s_namespace = "monitoring", pod_security = "privileged",
+      workload_kind = "DaemonSet", workload_name = "grafana-cloud-alloy"
+    }
   }
 
   validation {
     condition = alltrue([for s in values(var.services) :
       contains(["none", "role", "owner"], s.database) && contains(["none", "client", "server"], s.nats) &&
-    contains(["Deployment", "StatefulSet", "DaemonSet", ""], s.workload_kind)])
-    error_message = "database must be none|role|owner, nats none|client|server, workload_kind Deployment|StatefulSet|DaemonSet or \"\"."
+      contains(["Deployment", "StatefulSet", "DaemonSet", ""], s.workload_kind) &&
+    contains(["restricted", "baseline", "privileged"], s.pod_security)])
+    error_message = "database must be none|role|owner, nats none|client|server, workload_kind Deployment|StatefulSet|DaemonSet or \"\", pod_security restricted|baseline|privileged."
   }
   validation {
     condition     = length([for s in values(var.services) : s if s.database == "owner"]) <= 1 && length([for s in values(var.services) : s if s.nats == "server"]) <= 1

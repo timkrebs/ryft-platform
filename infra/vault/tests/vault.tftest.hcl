@@ -11,11 +11,14 @@ variables {
   supabase_project_ref        = "abcdefghijklmnopqrst"
   database                    = { host = "aws-0-eu-central-1.pooler.supabase.com" }
   database_owner_password     = "owner-password-123"
-  service_secrets = { api = {
-    SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
-    APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "KEY123", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
-    APPLE_KEY_P8              = "-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
-  } }
+  service_secrets = {
+    api = {
+      SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
+      APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "KEY123", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
+      APPLE_KEY_P8              = "-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
+    }
+    monitoring = { GC_TOKEN = "glc_test" }
+  }
 }
 
 mock_provider "vault" {}
@@ -68,11 +71,12 @@ run "each_namespace_holds_only_its_own_credentials" {
 
   assert {
     condition = jsonencode(output.secret_keys) == jsonencode({
-      ingest  = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
-      scoring = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
-      api     = ["APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
-      nats    = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
-      migrate = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
+      ingest     = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
+      scoring    = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
+      api        = ["APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
+      nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
+      migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
+      monitoring = ["GC_TOKEN"]
     })
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
   }
@@ -105,7 +109,7 @@ run "roles_trust_one_namespace_and_one_service_account" {
 
   assert {
     condition = alltrue([for k, r in vault_kubernetes_auth_backend_role.service :
-      tolist(r.bound_service_account_namespaces) == tolist(["ryft-${k}"]) && tolist(r.bound_service_account_names) == tolist([k]) &&
+      tolist(r.bound_service_account_namespaces) == tolist([k == "monitoring" ? "monitoring" : "ryft-${k}"]) && tolist(r.bound_service_account_names) == tolist([k]) &&
     r.audience == "vault" && r.role_name == k])
     error_message = "a role must be bound to exactly its own namespace and service account"
   }
@@ -115,8 +119,8 @@ run "roles_trust_one_namespace_and_one_service_account" {
   }
   assert {
     condition = alltrue([for k, n in kubernetes_namespace_v1.service :
-    n.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted"])
-    error_message = "every namespace enforces Pod Security restricted"
+    n.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" if k != "monitoring"])
+    error_message = "every RYFT namespace enforces Pod Security restricted"
   }
   assert {
     condition = alltrue([for k, sa in kubernetes_service_account_v1.workload :
@@ -159,7 +163,7 @@ run "warns_without_the_apple_keys" {
   command = apply
 
   variables {
-    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" } }
+    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test" } }
   }
   expect_failures = [check.api_has_apple_keys]
 }
@@ -169,12 +173,32 @@ run "the_data_key_reaches_only_the_api" {
 
   assert {
     condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate"] :
-    !contains(output.secret_keys[s], "DATA_ENCRYPTION_KEY")])
+    !contains(output.secret_keys[s], "DATA_ENCRYPTION_KEY")]) && !contains(output.secret_keys["monitoring"], "DATA_ENCRYPTION_KEY")
     error_message = "only the api may hold the data encryption key"
   }
   assert {
     condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).DATA_ENCRYPTION_KEY) == "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
     error_message = "the api gets the generated key (base64, 32 bytes)"
+  }
+}
+
+run "monitoring_is_privileged_and_restarts_the_collector" {
+  command = apply
+
+  assert {
+    condition = (
+      kubernetes_namespace_v1.service["monitoring"].metadata[0].name == "monitoring" &&
+      kubernetes_namespace_v1.service["monitoring"].metadata[0].labels["pod-security.kubernetes.io/enforce"] == "privileged" &&
+      kubernetes_namespace_v1.service["api"].metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted"
+    )
+    error_message = "monitoring alone runs privileged, in namespace monitoring"
+  }
+  assert {
+    condition = (
+      strcontains(local_file.vso["monitoring"].content, "namespace: admin/ryft/monitoring") &&
+      strcontains(local_file.vso["monitoring"].content, "- kind: DaemonSet\n      name: grafana-cloud-alloy")
+    )
+    error_message = "the operator logs in to admin/ryft/monitoring and restarts the collector DaemonSet"
   }
 }
 

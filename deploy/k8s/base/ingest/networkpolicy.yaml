@@ -1,4 +1,4 @@
-# In: the Ingress controller and Prometheus. Out: NATS, Supabase Auth (JWKS) and the
+# In: the Ingress controller (8080) and the metrics collector (9090). Out: NATS, Supabase Auth (JWKS) and the
 # Supavisor pooler.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -18,10 +18,10 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
     - from:
-        # Prometheus scrapes /metrics
+        # The metrics collector (namespace monitoring) scrapes /metrics on its own port.
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
-        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 9090 }
   egress:
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-nats } }

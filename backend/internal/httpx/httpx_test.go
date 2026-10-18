@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,5 +166,39 @@ func TestReadJSONLimitIs413(t *testing.T) {
 		if rec.Code != want {
 			t.Errorf("%.20s…: status %d, want %d", body, rec.Code, want)
 		}
+	}
+}
+
+func TestMetricsHaveTheirOwnPort(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	ServeMetrics(slog.New(slog.NewTextHandler(io.Discard, nil)), addr)
+	var resp *http.Response
+	for range 50 {
+		if resp, err = http.Get("http://" + addr + "/metrics"); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "go_goroutines") {
+		t.Fatalf("metrics port: %d", resp.StatusCode)
+	}
+	// The API port's health mux no longer serves them.
+	mux := http.NewServeMux()
+	Health(mux, func(context.Context) error { return nil })
+	mux.HandleFunc("/", NotFound)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("/metrics on the API port: %d, want 404", rec.Code)
 	}
 }

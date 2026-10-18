@@ -1,0 +1,38 @@
+# RYFT alert rules for Grafana Cloud (Prometheus rule format). Load them into the
+# stack's ruler with mimirtool, or recreate them under Alerting → Alert rules:
+#   mimirtool rules load deploy/monitoring/alerts.yaml \
+#     --address=https://prometheus-<region>.grafana.net --id=<metrics instance id> --key=<token with rules:write>
+# Expressions and thresholds: docs/OBSERVABILITY.md → Suggested alerts.
+namespace: ryft
+groups:
+  - name: ryft
+    rules:
+      - alert: NoSync
+        # No phone has synced for six hours (the gauge lives in ingest's memory;
+        # absent() also fires when nothing reports it, e.g. after a restart).
+        expr: (time() - max(ryft_last_sync_timestamp_seconds) > 6 * 3600) or absent(ryft_last_sync_timestamp_seconds)
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "No RYFT sync for over six hours" }
+      - alert: ScoringErrors
+        expr: sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0
+        for: 15m
+        labels: { severity: warning }
+      - alert: EventsDropped
+        expr: sum(increase(ryft_events_handled_total{result=~"failed|bad"}[1h])) > 0
+        labels: { severity: warning }
+      - alert: AuthUnavailable
+        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_.*|internal"}[5m])) > 0
+        for: 5m
+        labels: { severity: critical }
+      - alert: API5xx
+        expr: sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05
+        for: 10m
+        labels: { severity: critical }
+      - alert: Panics
+        expr: sum(increase(ryft_http_panics_total[15m])) > 0
+        labels: { severity: critical }
+      - alert: AccountDeletionIncomplete
+        expr: sum(increase(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "A deleted account still has its Supabase sign-in or Apple grant" }

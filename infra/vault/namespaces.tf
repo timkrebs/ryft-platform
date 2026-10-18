@@ -13,8 +13,9 @@ resource "vault_namespace" "service" {
   path      = each.key
 }
 
-# Matching Kubernetes namespaces. Pod Security "restricted": no root, no privilege
-# escalation, no host access, seccomp on; every RYFT pod is built for it.
+# Matching Kubernetes namespaces. Pod Security "restricted" (no root, no privilege
+# escalation, no host access, seccomp on), which every RYFT pod is built for; only
+# the monitoring collector's namespace is "privileged" (D51).
 resource "kubernetes_namespace_v1" "service" {
   for_each = local.services
 
@@ -24,9 +25,9 @@ resource "kubernetes_namespace_v1" "service" {
       "app.kubernetes.io/part-of"          = var.project
       "ryft.dev/service"                   = each.key
       "ryft.dev/vault-namespace"           = replace(each.value.vault_ns_full, "/", "_")
-      "pod-security.kubernetes.io/enforce" = "restricted"
-      "pod-security.kubernetes.io/warn"    = "restricted"
-      "pod-security.kubernetes.io/audit"   = "restricted"
+      "pod-security.kubernetes.io/enforce" = each.value.pod_security
+      "pod-security.kubernetes.io/warn"    = each.value.pod_security
+      "pod-security.kubernetes.io/audit"   = each.value.pod_security
     }
   }
 }

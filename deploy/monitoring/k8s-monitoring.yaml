@@ -1,0 +1,47 @@
+# Grafana Cloud Kubernetes Monitoring (chart grafana/k8s-monitoring 4.5.3), as the
+# Grafana Cloud onboarding generated it, adapted to RYFT (docs/DECISIONS.md D51):
+#   - namespace monitoring (created by infra/vault, Pod Security privileged), not ryft;
+#   - the Fleet Management token comes from Secret ryft-secrets (key GC_TOKEN), which
+#     the Vault Secrets Operator syncs from Vault admin/ryft/monitoring. It is never
+#     on a command line or in this file.
+# What the collector gathers is configured remotely in Grafana Cloud (Fleet
+# Management). RYFT's pod logs must stay out of it (they carry users' daily scores;
+# they go to CloudWatch instead): see docs/OBSERVABILITY.md → Grafana Cloud.
+#   make monitoring-apply
+cluster:
+  name: ryft-prod-euc1
+
+collectorCommon:
+  alloy:
+    remoteConfig:
+      enabled: true
+      url: https://fleet-management-prod-011.grafana.net
+      auth:
+        username: "1580862"          # the stack's Fleet Management user (not a secret)
+        passwordKey: GC_TOKEN
+      secret:
+        create: false
+        name: ryft-secrets
+        namespace: monitoring
+
+collectors:
+  alloy:
+    presets: [large, root, host-network, host-storage, host-cgroup, clustered, service-discovery, filesystem-log-reader, daemonset, otel-receiver]
+    extraService:
+      enabled: true
+      name: otel-receiver
+
+telemetryServices:
+  node-exporter:
+    deploy: false
+  kube-state-metrics:
+    deploy: true
+  beyla:
+    deploy: true
+    k8sCache:
+      replicas: 1
+  opencost:
+    deploy: false
+  sdkInjector:
+    deploy: true
+    allowedConfigMapWriters: system:serviceaccount:monitoring:grafana-cloud-alloy

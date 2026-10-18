@@ -1,0 +1,48 @@
+# The Grafana Cloud collector (deploy/monitoring) runs on the nodes' network, so its
+# scrapes come from node addresses, not from pods in namespace monitoring. On EKS
+# nodes and pods share the VPC range (10.0.0.0/16, infra/aws vpc_cidr), so this
+# admits anything in the VPC, but only to the metrics port: /metrics carries
+# counters and route labels, no user data. The API port 8080 stays reachable from
+# Traefik only.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-from-nodes
+  namespace: ryft-ingest
+spec:
+  podSelector: { matchLabels: { app: ingest } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-from-nodes
+  namespace: ryft-api
+spec:
+  podSelector: { matchLabels: { app: api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-from-nodes
+  namespace: ryft-scoring
+spec:
+  podSelector: { matchLabels: { app: scoring } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 9090 }

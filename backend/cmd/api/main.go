@@ -74,6 +74,7 @@ func main() {
 	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct}
 
 	mux := http.NewServeMux()
+	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
 	httpx.Health(mux, func(ctx context.Context) error {
 		if err := st.Ready(ctx); err != nil {
 			return err

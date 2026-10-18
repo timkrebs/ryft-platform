@@ -73,6 +73,13 @@ check "api_has_apple_keys" {
   }
 }
 
+check "monitoring_has_its_token" {
+  assert {
+    condition     = !contains(keys(local.services), "monitoring") || contains(local.private_keys["monitoring"], "GC_TOKEN")
+    error_message = "service_secrets.monitoring.GC_TOKEN is not set: the Grafana Cloud collector cannot reach Fleet Management."
+  }
+}
+
 check "api_has_supabase_admin_key" {
   assert {
     condition     = !contains(keys(local.services), "api") || contains(local.private_keys["api"], "SUPABASE_SERVICE_ROLE_KEY")
