@@ -7,3 +7,6 @@ xcuserdata/
 DerivedData/
 .DS_Store
 deploy/k8s/overlays/local-postgres/secrets/
+# Terraform plan files can hold secrets in plaintext
+tfplan
+*.tfplan
