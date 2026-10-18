@@ -67,6 +67,17 @@ func (c *insightCache) put(k insightKey, now time.Time, cards []model.Insight) {
 	c.entries[k] = insightEntry{at: now, cards: cards}
 }
 
+// forget drops a user's entries (their account was deleted).
+func (c *insightCache) forget(user uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.entries {
+		if k.user == user {
+			delete(c.entries, k)
+		}
+	}
+}
+
 // insights is the Insights screen: rule-based cards about today, computed from
 // the last insights.Window days of scores on read.
 func (h *handler) insights(w http.ResponseWriter, r *http.Request) {

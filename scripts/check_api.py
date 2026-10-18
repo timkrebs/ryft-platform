@@ -174,9 +174,9 @@ def is_error(body):
             and body.get("request_id"))
 
 
-def raw(method, path, body=None, base=API, headers=None):
+def raw(method, path, body=None, base=API, headers=None, key=None):
     """Status, headers and decoded body of one request (for header checks)."""
-    hdrs = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json", **(headers or {})}
+    hdrs = {"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json", **(headers or {})}
     req = urllib.request.Request(base + path, data=body, method=method, headers=hdrs)
     try:
         with urllib.request.urlopen(req) as r:
@@ -277,5 +277,19 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     get("/v1/days", expect=401, key="wrong-key-0123456789")
     get("/v1/days", expect=401, key=f"{KEY}:not-a-uuid")
     ok(f"isolation: user {B[:8]}… sees only its own data; shared device and workout UUID stay separate")
+
+    # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
+    wk_a = get(f"/v1/workouts/{a_wk['id']}")
+    gone = {"status": "deleted", "auth_user_deleted": False}  # no Supabase auth user in apikey mode
+    status, _, body = raw("DELETE", "/v1/me", key=KEY_B)
+    check(status == 200 and body == gone, f"DELETE /v1/me: {status} {body}")
+    check(is_error(get("/v1/me", expect=401, key=KEY_B)), "a deleted account's token must get 401")
+    post("/v1/sync", {"device_id": synth_device, "samples": hr_b, "sleep": [], "workouts": []},
+         expect=401, base=INGEST, key=KEY_B)
+    status, _, body = raw("DELETE", "/v1/me", key=KEY_B)
+    check(status == 200 and body == gone, f"repeating DELETE /v1/me must succeed: {status} {body}")
+    check(strip(get(f"/v1/days?to={TODAY}")) == a_days, "deleting B changed A's days")
+    check(get(f"/v1/workouts/{a_wk['id']}") == wk_a, "deleting B touched A's workout with the same UUID")
+    ok(f"account deletion: {B[:8]}… erased, locked out (api and ingest), repeatable; A untouched")
 
 print("all API contract checks passed")

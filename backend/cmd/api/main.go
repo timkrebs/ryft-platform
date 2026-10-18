@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -65,7 +66,14 @@ func main() {
 	}
 	log.Info("auth", "mode", authCfg.Mode)
 
-	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache()}
+	acct, err := newAccounts(st, log, authCfg)
+	if err != nil {
+		log.Error("account deletion", "err", err)
+		os.Exit(1)
+	}
+	go acct.reconcileEvery(ctx, reconcileEvery)
+
+	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct}
 
 	mux := http.NewServeMux()
 	httpx.Health(mux, func(ctx context.Context) error {
@@ -88,14 +96,21 @@ func main() {
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
-	mux.Handle("/v1/", auth.Middleware(auth.Options{
+	authOpts := auth.Options{
 		Log:      log,
 		Verifier: verifier,
 		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
 			return limits.Allow(r, p.UserID.String())
 		},
-		OnAuth: auth.LoadUser(ensureUser(st)),
-	}, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))
+	}
+	// Account deletion skips the user lookup (a deleted account gets 401 from
+	// it) so that a retry after a failed Supabase call still reaches the
+	// handler, and its own deadline replaces readTimeout.
+	del := http.NewServeMux()
+	del.HandleFunc("DELETE /v1/me", h.deleteMe)
+	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
+	authOpts.OnAuth = auth.LoadUser(ensureUser(st))
+	mux.Handle("/v1/", auth.Middleware(authOpts, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))
 	mux.HandleFunc("/", httpx.NotFound)
 
 	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
@@ -116,17 +131,23 @@ func requestID(r *http.Request) string {
 }
 
 // ensureUser finds or creates the caller's user row from the verified token.
+// A deleted account's token is rejected like any other bad token.
 func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.User, error) {
 	return func(ctx context.Context, p auth.Principal) (model.User, error) {
-		return st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+		if errors.Is(err, store.ErrDeleted) {
+			return u, auth.Unauthorized("deleted", err)
+		}
+		return u, err
 	}
 }
 
 type handler struct {
-	st    *store.Store
-	bus   *events.Bus
-	log   *slog.Logger
-	cache *insightCache
+	st       *store.Store
+	bus      *events.Bus
+	log      *slog.Logger
+	cache    *insightCache
+	accounts *accounts
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

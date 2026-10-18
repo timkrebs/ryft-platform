@@ -23,6 +23,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline; apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
+| Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
 | (background) | HealthKit upload | `POST /v1/sync` |
 
 ## Conventions
@@ -57,7 +58,7 @@ services produce; decode it as optional anyway (a proxy in front may answer on i
 | Status | When |
 | --- | --- |
 | `400` | Malformed JSON, unknown body field, malformed date / UUID in query or path |
-| `401` | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token (checked before routing, so any `/v1/*` path). Refresh the session once and retry; a second `401` means sign in again. |
+| `401` | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token, or the account was deleted (checked before routing, so any `/v1/*` path). Refresh the session once and retry; a second `401` means sign in again. |
 | `404` | Resource does not exist (`/v1/workouts/{id}`), or unknown route or method |
 | `413` | Request body over the limit (32 MiB for `POST /v1/sync`, 64 KiB otherwise). For sync, send smaller pages. |
 | `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone |
@@ -73,6 +74,7 @@ The message is for logs and debugging; branch on the status code, not the text.
 | --- | --- | --- |
 | Valid Supabase access token | normal response | — |
 | No or malformed `Authorization` header, expired token, bad signature, wrong issuer/audience, `role` ≠ `authenticated`, anonymous user | `401`, `WWW-Authenticate: Bearer realm="ryft", error="invalid_token"` | refresh the session once, retry; on a second `401` sign the user out |
+| The account was deleted (`DELETE /v1/me`), token not yet expired | `401` (except `DELETE /v1/me`: `200`) | sign out; the refresh fails as well, since the Supabase user is gone |
 | Signing keys temporarily unreachable, database down | `503` with `Retry-After` | retry later; never sign out |
 
 Tokens are verified against the project's published signing keys
@@ -172,6 +174,32 @@ Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 10
 `sleep_base_min` (int, 240–720). Returns the updated `User`. `422` on an unknown zone or
 out-of-range value, `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
 `POST /v1/recompute`.
+
+### `DELETE /v1/me` — delete the account
+
+No body. Erases everything stored for the user, in one transaction: samples, sleep,
+workouts, scores, devices and the profile. Then it deletes the user's Supabase Auth
+account (with its Apple identity and sessions). Responds `200`:
+
+```json
+{ "status": "deleted", "auth_user_deleted": true }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `status` | string | Always `"deleted"`: the data is gone. |
+| `auth_user_deleted` | bool | `false` if Supabase could not be reached. The platform retries in the background (every 15 minutes), so the app has nothing to do. |
+
+From then on, every request with that user's token gets `401`, including tokens that
+have not expired yet. The exception is `DELETE /v1/me` itself, which answers `200` again,
+so retrying after a network error is safe. A large account can take several seconds. The
+deletion completes even if the app is closed, and a retry waits for it. `503` (with
+`Retry-After`) means nothing was deleted; retry.
+
+**App:** after `200`, sign out locally and clear any cached data. Not covered yet: Apple's
+account-deletion guidance asks apps that use Sign in with Apple to revoke the user's Apple
+tokens as well (`https://appleid.apple.com/auth/revoke`). See `SUPABASE.md` → Account
+deletion.
 
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
 
@@ -569,6 +597,11 @@ struct User: Codable {
     let sleepBaseMin: Int
 }
 
+struct AccountDeleted: Codable {   // DELETE /v1/me
+    let status: String
+    let authUserDeleted: Bool
+}
+
 struct APIErrorBody: Codable {
     let error: String
     let requestId: String?   // same as the X-Request-ID header
@@ -579,6 +612,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | `DELETE /v1/me` added (account deletion: all data, then the Supabase auth user). Afterwards that user's tokens get `401` everywhere except a repeated `DELETE /v1/me`. Swift: `AccountDeleted`. |
 | 2026-10-18 | **Request IDs and hardening**: every response carries `X-Request-ID`, and error bodies add `request_id` (`APIErrorBody.requestId`). `500` bodies no longer include internal error text. Request bodies other than `POST /v1/sync` are limited to 64 KiB, and an oversized body is `413` (was `400`). Per-user rate limits (`429` + `Retry-After`) and request timeouts (`503 "request timed out"` + `Retry-After`) were added, plus no-cache and security headers on every response. |
 | 2026-10-18 | **Auth: Supabase access tokens** replace the shared API key; every response is scoped to the token's user, created on first request. `401` now strictly means "refresh / sign in again", `503` (with `Retry-After`) "retry". `User.email` and `User.provider` added. `POST /v1/recompute` answers `429` within a minute of the previous request. |
 | 2026-10-18 | Production host `https://api.ryftapp.de` documented (both services, HTTPS only). No API change. |

@@ -22,6 +22,11 @@ type Store struct{ pool *pgxpool.Pool }
 // ErrNotFound is returned by single-row reads when the row does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrDeleted is returned by EnsureUser for an account deleted with
+// DeleteUser: its tokens stay valid until they expire but must not bring the
+// account back.
+var ErrDeleted = errors.New("account deleted")
+
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
@@ -63,11 +68,15 @@ type Identity struct {
 // seenEvery bounds how often an active user's row is written (last_seen_at).
 const seenEvery = 5 * time.Minute
 
+// lockUser serialises EnsureUser's writes and DeleteUser for one user, so a
+// request racing a deletion either finishes first or sees the tombstone.
+const lockUser = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
+
 // EnsureUser returns the caller's user row, creating it on the first request
 // (users come from Supabase Auth; there is no sign-up endpoint). The common
 // case is a single read; the row is only written when it is missing, its
 // last_seen_at is older than seenEvery, or the token carries a new email,
-// provider or name.
+// provider or name. A deleted account is ErrDeleted.
 func (s *Store) EnsureUser(ctx context.Context, id Identity) (model.User, error) {
 	var lastSeen *time.Time
 	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+`, last_seen_at FROM users WHERE id=$1`, id.ID), &lastSeen)
@@ -78,13 +87,88 @@ func (s *Store) EnsureUser(ctx context.Context, id Identity) (model.User, error)
 	case lastSeen != nil && time.Since(*lastSeen) < seenEvery && !identityChanged(u, id):
 		return u, nil
 	}
-	return scanUser(s.pool.QueryRow(ctx, `INSERT INTO users (id, name, email, provider, last_seen_at)
-		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), now())
-		ON CONFLICT (id) DO UPDATE SET last_seen_at = now(),
-		  name     = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
-		  email    = COALESCE(EXCLUDED.email, users.email),
-		  provider = COALESCE(EXCLUDED.provider, users.provider)
-		RETURNING `+userColumns, id.ID, id.Name, id.Email, id.Provider))
+	var out model.User
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockUser, id.ID); err != nil {
+			return err
+		}
+		var deleted bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM deleted_users WHERE id=$1)`, id.ID).Scan(&deleted); err != nil {
+			return err
+		}
+		if deleted {
+			return ErrDeleted
+		}
+		var err error
+		out, err = scanUser(tx.QueryRow(ctx, `INSERT INTO users (id, name, email, provider, last_seen_at)
+			VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), now())
+			ON CONFLICT (id) DO UPDATE SET last_seen_at = now(),
+			  name     = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+			  email    = COALESCE(EXCLUDED.email, users.email),
+			  provider = COALESCE(EXCLUDED.provider, users.provider)
+			RETURNING `+userColumns, id.ID, id.Name, id.Email, id.Provider))
+		return err
+	})
+	return out, err
+}
+
+// DeleteUser erases a user: every row they own and the user row, in one
+// transaction, leaving only a tombstone (deleted_users) so their still-valid
+// tokens cannot recreate the account. Idempotent. The user row is locked
+// first: syncs in flight (which hold a key-share lock through their foreign
+// keys) finish before the delete, later ones fail their foreign-key check.
+func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockUser, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO deleted_users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id=$1 FOR UPDATE`, id); err != nil {
+			return err
+		}
+		for _, q := range []string{
+			`DELETE FROM samples WHERE user_id=$1`,
+			`DELETE FROM sleep_segments WHERE user_id=$1`,
+			`DELETE FROM workouts WHERE user_id=$1`,
+			`DELETE FROM daily_scores WHERE user_id=$1`,
+			`DELETE FROM devices WHERE user_id=$1`,
+			`DELETE FROM users WHERE id=$1`,
+		} {
+			if _, err := tx.Exec(ctx, q, id); err != nil {
+				return fmt.Errorf("%s: %w", q, err)
+			}
+		}
+		return nil
+	})
+}
+
+// MarkAuthDeleted records that the Supabase auth user is gone too.
+func (s *Store) MarkAuthDeleted(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE deleted_users SET auth_deleted_at = now() WHERE id=$1 AND auth_deleted_at IS NULL`, id)
+	return err
+}
+
+// PendingAuthDeletions lists deleted accounts whose Supabase auth user has not
+// been deleted yet, oldest first.
+func (s *Store) PendingAuthDeletions(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM deleted_users WHERE auth_deleted_at IS NULL ORDER BY deleted_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
+// ResurrectedUsers lists deleted accounts that have a user row again, e.g.
+// after a database restore from a backup taken before the deletion (with the
+// tombstones re-inserted afterwards; see docs/OPERATIONS.md).
+func (s *Store) ResurrectedUsers(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT d.id FROM deleted_users d JOIN users u ON u.id = d.id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
 func identityChanged(u model.User, id Identity) bool {

@@ -51,8 +51,12 @@ var (
 	AuthFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_auth_failures_total",
 		Help: "Rejected /v1 requests by reason: missing_token, expired, signature, issuer, audience, unknown_key, " +
-			"role, anonymous, subject, api_key, … (401) and jwks_unavailable, jwks_refresh_limited, internal (503).",
+			"role, anonymous, subject, api_key, deleted, … (401) and jwks_unavailable, jwks_refresh_limited, internal (503).",
 	}, []string{"reason"})
+	AccountDeletions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_account_deletions_total",
+		Help: "Account deletion steps: step=data (our rows) or auth (the Supabase auth user), result=ok, error or skipped (no admin key).",
+	}, []string{"step", "result"})
 
 	// NATS, ingest + api publish, scoring consumes.
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{

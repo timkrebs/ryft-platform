@@ -417,3 +417,28 @@ calls return `context.DeadlineExceeded`, which `httpx.Fail` answers with `503 "r
 timed out"` and `Retry-After`, so the app retries rather than reporting a server error.
 Retrying a sync is safe because it is idempotent.
 
+
+## D39 — Account deletion: hard delete, tombstone, locks, then Supabase
+
+`DELETE /v1/me` hard-deletes every row in one transaction rather than soft-deleting:
+nothing in the product needs a deleted account's health data, and an erased row cannot
+leak. What remains is a tombstone (`deleted_users`: ID, timestamps). A deleted user's
+access token stays valid for up to an hour, and without the tombstone `EnsureUser` would
+recreate the account on the next request. Concurrency:
+
+- `EnsureUser`'s write path and `DeleteUser` take the same per-user transaction-level
+  advisory lock. A recreate therefore either commits before the deletion (and is then
+  deleted with it) or sees the tombstone.
+- `DeleteUser` locks the user row `FOR UPDATE` before deleting anything. Syncs in flight
+  hold a key-share lock through their foreign keys, so they commit first and their rows
+  are deleted too. Later syncs fail the foreign-key check.
+
+The integration tests prove both with a held transaction, and they fail with either lock
+removed. The Supabase auth user is deleted after our transaction commits. If that call
+fails, the account is still erased on our side, the response says
+`auth_user_deleted: false`, and each api pod's reconciler retries it. That reconciler
+also re-deletes accounts that have a user row despite a tombstone, which happens after a
+restore. `DELETE /v1/me` gets its own auth chain without the user lookup, so a retry
+after a deletion still reaches the handler. It runs detached from the client
+(`context.WithoutCancel`) with a 2-minute deadline. Apple token revocation is not part
+of this (see `SUPABASE.md`).

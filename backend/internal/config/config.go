@@ -37,6 +37,7 @@ type Auth struct {
 	ProjectRef string // <ref> in https://<ref>.supabase.co
 	Issuer     string // expected iss; default https://<ref>.supabase.co/auth/v1
 	JWKSURL    string // default <Issuer>/.well-known/jwks.json
+	AdminKey   string // SUPABASE_SERVICE_ROLE_KEY, api only (account deletion); optional
 
 	// apikey mode
 	APIKey        string
@@ -79,6 +80,7 @@ func LoadAuth() (Auth, error) {
 		ProjectRef:    strings.TrimSpace(os.Getenv("SUPABASE_PROJECT_REF")),
 		Issuer:        strings.TrimRight(os.Getenv("SUPABASE_ISSUER"), "/"),
 		JWKSURL:       os.Getenv("SUPABASE_JWKS_URL"),
+		AdminKey:      strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		APIKey:        os.Getenv("API_KEY"),
 		APIKeyUserID:  DefaultUserID,
 		AllowInsecure: os.Getenv("ALLOW_INSECURE_APIKEY_AUTH") == "true",

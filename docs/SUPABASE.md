@@ -57,6 +57,31 @@ The user row is created on the first request (`store.EnsureUser`) with `email`,
 name), refreshed at most every five minutes. There is no foreign key to `auth.users`, so
 the same migrations run on plain Postgres.
 
+## Account deletion
+
+`DELETE /v1/me` erases the user's rows (data and profile) and then calls
+`DELETE /auth/v1/admin/users/<id>` with `SUPABASE_SERVICE_ROLE_KEY`. That hard-deletes the
+auth user with its Apple identity and sessions. A new `sb_secret_…` key goes in the
+`apikey` header only; the legacy `service_role` JWT is also sent as the bearer. The api
+refuses to start with a publishable or anon key there. Without the key, the data is
+still erased, but the auth user stays, and `ryft_account_deletions_total{step="auth",
+result="skipped"}` counts it. Failed calls are retried every 15 minutes from
+`deleted_users.auth_deleted_at IS NULL`.
+
+What stays: the tombstone (the user ID and when it was deleted, so that the user's
+still-valid tokens cannot recreate the account), the platform's own nightly dumps
+(14 days) and Supabase's backups (daily, or PITR, per the plan's retention). Data in
+backups ages out; it is not edited. A restore therefore brings deleted accounts back
+unless the tombstones are put back after it (`OPERATIONS.md` → Restore).
+
+**Not covered yet: Apple token revocation.** Apple's account-deletion guidance asks apps
+that use Sign in with Apple to revoke the user's tokens through
+`https://appleid.apple.com/auth/revoke`. That needs an Apple refresh or access token,
+which you get by exchanging the sign-in's authorization code using a client secret signed
+with the `.p8` key. Supabase's native sign-in (`signInWithIdToken`) keeps neither, and
+the `.p8` key must not ship in the app. A later version can accept the authorization
+code on `DELETE /v1/me` and do the exchange and revocation server-side.
+
 ## Signing-key rotation
 
 The services re-read the JWKS every **10 minutes** — Supabase's edge caches it for 10

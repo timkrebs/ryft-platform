@@ -32,6 +32,12 @@ spec:
           envFrom:
             - configMapRef: { name: ryft-config }
             - secretRef: { name: ryft-secrets }
+          env:
+            # Account deletion (DELETE /v1/me) only; ingest and scoring never
+            # hold this key. Optional: without it the Supabase auth user stays.
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef: { name: ryft-supabase-admin, key: SUPABASE_SERVICE_ROLE_KEY, optional: true }
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 10

@@ -63,6 +63,14 @@ for compose and `overlays/local-postgres` only and refuses to start without
 the `user_id`, and its 15-minute pass covers every user with a device synced in the
 last 48 hours, each in their own timezone.
 
+**Account deletion.** `DELETE /v1/me` (api) erases the user's rows in one transaction
+and leaves a tombstone (`deleted_users`), then deletes the Supabase auth user with the
+project's secret key, which only api holds. A per-user advisory lock serialises the
+deletion against `EnsureUser`'s writes, and the user row is locked first, so syncs in
+flight finish before the delete and later ones fail. Tokens of a deleted account get
+`401`. A reconciler in each api pod (at start-up, then every 15 minutes) retries failed
+Supabase deletions and erases accounts that reappeared, e.g. after a restore.
+
 **Request path.** Every service wraps its mux in the same chain (`internal/httpx`),
 outermost first: **Instrument** (a server-generated request ID in `X-Request-ID`, the log
 context and error bodies; one access-log line; the HTTP metrics labelled by route

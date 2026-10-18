@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -90,7 +91,11 @@ func main() {
 			return limits.Allow(r, p.UserID.String())
 		},
 		OnAuth: auth.LoadUser(func(ctx context.Context, p auth.Principal) (model.User, error) {
-			return st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+			u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+			if errors.Is(err, store.ErrDeleted) { // a deleted account's token is a bad token
+				return u, auth.Unauthorized("deleted", err)
+			}
+			return u, err
 		}),
 	}, httpx.Timeout(syncTimeout, httpx.WithRoutes(api))))
 	mux.HandleFunc("/", httpx.NotFound)

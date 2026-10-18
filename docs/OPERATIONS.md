@@ -172,6 +172,10 @@ existing one both reproduce every row. Dumps hold the `public` schema only (no S
 plain-Postgres database into Supabase needs the RLS step from `SUPABASE.md`. Supabase
 keeps its own daily backups as well.
 
+Accounts deleted after the dump was taken come back with it. So keep the current
+tombstones across the restore (steps 2b and 3b below). The api pods then erase those
+accounts again when they start (their deletion reconciler runs at start-up).
+
 ```bash
 # 1. stop writers (HPA does not scale a Deployment that is at 0)
 kubectl -n ryft scale deploy/api deploy/ingest deploy/scoring --replicas=0
@@ -199,8 +203,16 @@ EOF
 kubectl -n ryft wait --for=condition=Ready pod/pg-restore
 kubectl -n ryft exec pg-restore -- ls -lh /backups
 
+# 2b. save the current tombstones (deleted accounts)
+kubectl -n ryft exec pg-restore -- sh -c 'psql "$DATABASE_URL" -c "\copy deleted_users TO /tmp/tombstones.csv CSV"'
+
 # 3. restore (drops and recreates every object in the dump)
 kubectl -n ryft exec pg-restore -- sh -c 'pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" /backups/ryft-20261018T013000Z.dump'
+
+# 3b. put the tombstones back
+kubectl -n ryft exec pg-restore -- sh -c 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -c "CREATE TEMP TABLE t (LIKE deleted_users)" -c "\copy t FROM /tmp/tombstones.csv CSV" \
+  -c "INSERT INTO deleted_users SELECT * FROM t ON CONFLICT (id) DO UPDATE SET auth_deleted_at = COALESCE(deleted_users.auth_deleted_at, EXCLUDED.auth_deleted_at)"'
 
 # 4. clean up and restart; the HPAs take api/ingest back to 2
 kubectl -n ryft delete pod pg-restore
