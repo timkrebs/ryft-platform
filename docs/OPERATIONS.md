@@ -95,7 +95,9 @@ Debugging from inside the namespace (e.g. `kubectl run psql …`) needs the labe
 
 api and ingest run 2–4 replicas under a CPU HPA (70 % of the 50m request; needs
 metrics-server) with a `PodDisruptionBudget` of `minAvailable: 1`, spread across nodes
-when there are several. Their Deployments carry no `replicas`, so re-applying never
+when there are several. On a **single-node** cluster a drain blocks on the second pod
+(the first has nowhere to reschedule): use `kubectl drain --disable-eviction`, or
+`kubectl -n ryft delete pdb api ingest` before maintenance and re-apply afterwards. Their Deployments carry no `replicas`, so re-applying never
 fights the HPA. scoring stays at one replica: it owns the 15-minute timer and processes
 recompute ranges in order. Postgres and NATS are single-replica StatefulSets.
 
@@ -160,6 +162,10 @@ To restore a dump from your machine instead, `kubectl -n ryft cp ./ryft-….dump
 pg-restore:/backups/` before step 3 (the PVC must have room).
 
 ## Upgrading
+
+From the scaffold: api and ingest no longer set `replicas` (the HPA owns it). Because the
+old manifest did, the first `kubectl apply` drops the field and the Deployments briefly
+fall back to 1 replica until the HPA scales them to 2 — harmless, but expect it.
 
 Migrations run on boot (advisory lock, so several pods starting at once is safe).
 New columns on `daily_scores` (readiness, sleep detail, strain detail, baselines) are

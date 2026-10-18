@@ -136,7 +136,7 @@ workout without `id`).
 
 Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230),
 `sleep_base_min` (int, 240–720). Returns the updated `User`. `422` on an unknown zone or
-out-of-range value. Changing a setting does **not** rescore history; follow with
+out-of-range value, `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
 `POST /v1/recompute`.
 
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
@@ -214,8 +214,8 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 | `has_stages` | bool | `false` when the source recorded no stages (older firmware): `deep`/`light`/`rem` are then 0 min and 0 %. |
 | `segments` | `[SleepInterval]` | The hypnogram, oldest first: `{stage, start, end}` with `stage` one of `deep`, `light`, `rem`, `awake`, `asleep` (stage unknown). Touching segments of one stage are merged; `inbed` is not a stage and is left out. Only on this endpoint. |
 
-`DayStrain` — the heart-rate load behind `score.strain` (Strain screen); `null` when
-the day had no heart-rate data:
+`DayStrain` — the heart-rate load behind `score.strain` (Strain screen); `null` exactly
+when `score.strain` is `null` (no heart-rate data that day):
 
 ```json
 { "trimp": 99, "hr_min": 912, "zone_min": [12, 24, 37, 7, 0] }
@@ -291,7 +291,7 @@ Returns every `Workout` field plus:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `avg_hr`, `max_hr` | number? | As sent by the app; when the app sent none, derived from the heart-rate samples in the workout window. Still omitted when there are no samples either. |
-| `hr` | `[HRSample]` | The heart-rate curve between `start` and `end` (inclusive), oldest first, at most 600 points. Longer series are down-sampled with Largest-Triangle-Three-Buckets, so peaks survive and every point is a real sample. `[]` when there are no samples. |
+| `hr` | `[HRSample]` | The heart-rate curve between `start` and `end` (inclusive, also past midnight), oldest first, at most 600 points. Longer series are down-sampled with Largest-Triangle-Three-Buckets, so peaks survive and every point is a real sample. `[]` when there are no samples. |
 | `HRSample.t` | timestamp | |
 | `HRSample.bpm` | int | Rounded bpm. |
 | `zone_min` | `[int]?` | Five entries, minutes in the heart-rate-reserve zones (as `DayStrain`). `null` until scored. |
@@ -533,6 +533,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | Fixes: a workout running past midnight is scored on its whole window (was: only the part before midnight); `DayDetail.strain` is non-null whenever `score.strain` is; `PATCH /v1/me` returns `500`, not `422`, when the database fails; the 400-day recompute limit counts calendar days, so ranges across DST are judged the same by api and scoring. |
 | 2026-10-18 | `DailyScore.baseline_days` added; `details` keys read by existing clients frozen. |
 | 2026-10-18 | Errors: unknown routes and methods return a JSON `404` (was plain text); `GET /v1/days` and `/v1/workouts` with `from > to` return `422` (was `200 []`); `POST /v1/recompute` over 400 days returns `422` (was `202`, then failed in scoring). |
 | 2026-10-18 | `GET /v1/insights` added. |

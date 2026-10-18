@@ -112,7 +112,9 @@ workout has no HR samples the average HR × duration is used.
 70–80, 80–90, ≥ 90 %). Scoring stores zones + TRIMP on each workout row and on the
 day (`zone_minutes` jsonb, `trimp`, `hr_min`; migration 0004), so
 `GET /v1/workouts/{id}` only has to load the heart-rate samples in the window and
-down-sample them to ≤ 600 points (LTTB, `scoring.DownsampleHR`).
+down-sample them to ≤ 600 points (LTTB, `scoring.DownsampleHR`). A workout is scored on
+the samples of its own window, so one that runs past midnight counts in full on the
+day it started; the day's strain counts only that day's samples.
 
 **Sleep.** `need = base + min(60, 3 · yesterday's strain) + min(60, 0.3 · debt)`, where
 debt is the shortfall over the last 7 nights with 0.7/day decay. `performance =

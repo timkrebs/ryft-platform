@@ -102,4 +102,8 @@ func TestDayStrainFrom(t *testing.T) {
 	if got == nil || got.TRIMP != 41 || got.HRMin != 912 || got.ZoneMin[1] != 11 {
 		t.Fatalf("got %+v", got)
 	}
+	zero, none := 0.0, 0 // under 30 s of HR: strain is 0.0, not null, so neither is this
+	if DayStrainFrom(store.DayLoad{TRIMP: &zero, HRMin: &none, ZoneMinutes: make([]float64, 5)}) == nil {
+		t.Fatal("a scored day with < 1 HR minute must still have a strain object")
+	}
 }

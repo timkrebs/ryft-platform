@@ -46,9 +46,10 @@ func WorkoutDetail(w store.WorkoutRow, hr []model.Sample) model.WorkoutDetail {
 	return out
 }
 
-// DayStrainFrom turns a stored day load into the API object; nil without HR data.
+// DayStrainFrom turns a stored day load into the API object; nil exactly when
+// the day has no strain (no HR data), so it is non-null whenever score.strain is.
 func DayStrainFrom(l store.DayLoad) *model.DayStrain {
-	if l.TRIMP == nil || l.HRMin == nil || *l.HRMin == 0 {
+	if l.TRIMP == nil || l.HRMin == nil {
 		return nil
 	}
 	return &model.DayStrain{TRIMP: int(math.Round(*l.TRIMP)), HRMin: *l.HRMin, ZoneMin: zoneInts(l.ZoneMinutes)}

@@ -32,3 +32,17 @@ func TestHRVBaselineIsGeometricMean(t *testing.T) {
 		t.Fatalf("RHR baseline = %v", r)
 	}
 }
+
+func TestRangeDaysIgnoresDST(t *testing.T) {
+	// 2025-10-01 → 2026-11-05 spans the 2026 spring-forward and two fall-backs;
+	// counted in local hours it is 9601 h, which once made the api and scoring disagree.
+	if n, err := RangeDays("2025-10-01", "2026-11-05"); err != nil || n != 400 {
+		t.Fatalf("RangeDays = %d, %v; want 400", n, err)
+	}
+	if n, _ := RangeDays("2026-10-18", "2026-10-18"); n != 0 {
+		t.Fatalf("same day = %d", n)
+	}
+	if _, err := RangeDays("2026-10-18", "tomorrow"); err == nil {
+		t.Fatal("malformed date must error")
+	}
+}

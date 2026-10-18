@@ -108,8 +108,14 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 422, "sleep_base_min out of range")
 		return
 	}
+	if p.TZ != nil {
+		if _, err := time.LoadLocation(*p.TZ); err != nil || *p.TZ == "" {
+			httpx.WriteError(w, 422, "tz must be an IANA time zone name")
+			return
+		}
+	}
 	if err := h.st.UpdateUser(r.Context(), h.cfg.UserID, p); err != nil {
-		httpx.WriteError(w, 422, err.Error())
+		httpx.WriteError(w, 500, err.Error())
 		return
 	}
 	h.me(w, r)
@@ -133,9 +139,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 422, "from must be <= to")
 		return
 	}
-	a, _ := time.Parse(dayLayout, req.From)
-	b, _ := time.Parse(dayLayout, req.To)
-	if b.Sub(a) > scoring.MaxRangeDays*24*time.Hour {
+	if n, _ := scoring.RangeDays(req.From, req.To); n > scoring.MaxRangeDays {
 		httpx.WriteError(w, 422, fmt.Sprintf("range too large (max %d days)", scoring.MaxRangeDays))
 		return
 	}

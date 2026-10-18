@@ -6,9 +6,12 @@ on the first broken promise.
 
   API_URL=http://localhost:8082 API_KEY=... check_api.py YYYY-MM-DD(today)
 """
-import json, os, sys, urllib.error, urllib.request
+import json, os, sys, time, urllib.error, urllib.request, uuid
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 API = os.environ.get("API_URL", "http://localhost:8082")
+INGEST = os.environ.get("INGEST_URL", "http://localhost:8081")
 KEY = os.environ.get("API_KEY", "dev-api-key-change-me")
 TODAY = sys.argv[1]
 
@@ -25,8 +28,8 @@ def get(path, expect=200, auth=True):
     return json.loads(body) if body.strip().startswith((b"{", b"[")) else body
 
 
-def post(path, body, expect):
-    req = urllib.request.Request(API + path, data=json.dumps(body).encode(), method="POST",
+def post(path, body, expect, base=API):
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
                                  headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req) as r:
@@ -178,5 +181,29 @@ check(is_error(get("/v1/days?from=yesterday", expect=400)), "malformed date must
 check(is_error(post("/v1/recompute", {"from": "2024-01-01", "to": TODAY}, expect=422)), "recompute > 400 days must be 422")
 check(is_error(post("/v1/recompute", {"from": TODAY, "to": TODAY, "x": 1}, expect=400)), "unknown body field must be 400")
 ok("errors: 400/401/404/422 all carry {error}")
+
+# ---- workouts across midnight -------------------------------------------------
+# An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
+# checked above). Its load must cover all 80 minutes, not just those before midnight.
+tz = ZoneInfo(get("/v1/me")["tz"])
+d = date.fromisoformat(TODAY) - timedelta(days=40)
+start = datetime(d.year, d.month, d.day, 23, 20, tzinfo=tz).astimezone(timezone.utc)
+iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+wid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "check-api-midnight-run"))
+hr = [{"type": "heart_rate", "start": iso(start + timedelta(minutes=m)), "end": iso(start + timedelta(minutes=m)),
+       "value": 150, "unit": "bpm", "source": "check"} for m in range(81)]
+synced_at = (datetime.now(timezone.utc) - timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S")
+post("/v1/sync", {"device_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, "check-api")), "samples": hr, "sleep": [],
+                  "workouts": [{"id": wid, "activity": "running", "start": iso(start),
+                                "end": iso(start + timedelta(minutes=80)), "source": "check"}]},
+     expect=200, base=INGEST)
+for _ in range(30):  # wait until scoring has rescored the workout's day after this sync
+    if get(f"/v1/days/{d.isoformat()}")["score"]["computed_at"][:19] >= synced_at:
+        break
+    time.sleep(1)
+wk = get(f"/v1/workouts/{wid}")
+check(wk["trimp"] is not None, "midnight workout was not scored within 30 s")
+check(len(wk["hr"]) == 81 and sum(wk["zone_min"]) >= 78, f"midnight workout zones {wk['zone_min']} (want ~80 min)")
+ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}")
 
 print("all API contract checks passed")

@@ -28,6 +28,21 @@ func NewEngine(st *store.Store, log *slog.Logger) *Engine { return &Engine{st: s
 // larger ranges up front instead of letting the event fail ten times.
 const MaxRangeDays = 400
 
+// RangeDays is the number of calendar days from `from` to `to` (YYYY-MM-DD).
+// It counts dates, not hours, so a range across a DST change is not off by
+// one hour — the api and scoring must agree exactly on MaxRangeDays.
+func RangeDays(from, to string) (int, error) {
+	a, err := time.Parse("2006-01-02", from)
+	if err != nil {
+		return 0, fmt.Errorf("from: %w", err)
+	}
+	b, err := time.Parse("2006-01-02", to)
+	if err != nil {
+		return 0, fmt.Errorf("to: %w", err)
+	}
+	return int(b.Sub(a) / (24 * time.Hour)), nil
+}
+
 const (
 	baselineDays = 30
 	debtDays     = 7
@@ -38,21 +53,19 @@ const (
 
 // ComputeRange recomputes every day in [from, to], inclusive, oldest first.
 func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to string) error {
+	n, err := RangeDays(from, to)
+	if err != nil {
+		return err
+	}
+	if n > MaxRangeDays {
+		return fmt.Errorf("range too large (max %d days)", MaxRangeDays)
+	}
 	_, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
 		return err
 	}
-	a, err := time.ParseInLocation("2006-01-02", from, loc)
-	if err != nil {
-		return fmt.Errorf("from: %w", err)
-	}
-	b, err := time.ParseInLocation("2006-01-02", to, loc)
-	if err != nil {
-		return fmt.Errorf("to: %w", err)
-	}
-	if b.Sub(a) > MaxRangeDays*24*time.Hour {
-		return fmt.Errorf("range too large (max %d days)", MaxRangeDays)
-	}
+	a, _ := time.ParseInLocation("2006-01-02", from, loc)
+	b, _ := time.ParseInLocation("2006-01-02", to, loc)
 	for d := a; !d.After(b); d = d.AddDate(0, 0, 1) {
 		if err := e.ComputeDay(ctx, userID, d.Format("2006-01-02")); err != nil {
 			return fmt.Errorf("day %s: %w", d.Format("2006-01-02"), err)
@@ -162,24 +175,22 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if err != nil {
 		return err
 	}
-	points := make([]HRPoint, len(hrSamples))
-	for k, s := range hrSamples {
-		points[k] = HRPoint{T: s.Start, BPM: s.Value}
-	}
-	strain := Strain(points, strainRHR, maxHR)
+	strain := Strain(hrPoints(hrSamples), strainRHR, maxHR)
 
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return err
 	}
 	for _, w := range workouts {
-		var load StrainResult
-		var inWindow []HRPoint
-		for _, p := range points {
-			if !p.T.Before(w.Start) && !p.T.After(w.End) {
-				inWindow = append(inWindow, p)
-			}
+		// Each workout loads its own window rather than filtering the day's
+		// samples: a 23:20–00:40 run must count its minutes after midnight too,
+		// and match the curve GET /v1/workouts/{id} draws.
+		wkSamples, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, w.Start, WorkoutWindowEnd(w))
+		if err != nil {
+			return err
 		}
+		var load StrainResult
+		inWindow := hrPoints(wkSamples)
 		if len(inWindow) >= 2 {
 			load = Strain(inWindow, strainRHR, maxHR)
 		} else if w.AvgHR != nil {
@@ -261,6 +272,14 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	e.log.Info("scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", strain.Score,
 		"sleep_min", sleep.AsleepMin, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
 	return nil
+}
+
+func hrPoints(samples []model.Sample) []HRPoint {
+	pts := make([]HRPoint, len(samples))
+	for k, s := range samples {
+		pts[k] = HRPoint{T: s.Start, BPM: s.Value}
+	}
+	return pts
 }
 
 func (e *Engine) mean(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) *float64 {

@@ -171,7 +171,9 @@ api and ingest have no `replicas` in their Deployments (the HPA, min 2 / max 4, 
 it); otherwise every `kubectl apply` would reset them to 1. `minAvailable: 1` PDBs plus a
 minimum of 2 replicas means drains never block. scoring is deliberately left at one
 replica without HPA/PDB: it runs the 15-minute timer and recompute ranges must be
-scored oldest-first by one consumer.
+scored oldest-first by one consumer. Drains proceed without manual steps only on
+multi-node clusters; on a single node the PDB blocks the second pod (see
+`OPERATIONS.md`).
 
 ## D18 — CI does more than the prompt lists
 
@@ -221,3 +223,21 @@ Found while doing this: the app's `SleepMath.percent` treats any value ≤ 1 as 
 fraction, so a stage share of 1 % (common for awake time) would render as 100 %. The
 API sends whole percentages only; `API.md` now says so explicitly. The fix belongs in
 the app.
+
+## D22 — Fixes from an independent review of the change set
+
+A second-pass review of `e4ca28c..HEAD` found nothing that crashes, loses data or breaks
+a deploy, and these wrong-result bugs, all fixed:
+
+- Workouts crossing local midnight were scored only on the samples before midnight,
+  because scoring filtered the day's samples. Each workout now loads its own window
+  (the same one `GET /v1/workouts/{id}` draws); `check_api.py` syncs a 23:20–00:40 run
+  and fails without the fix (39 of 80 zone minutes).
+- The api counted the 400-day recompute limit in UTC hours, scoring in local hours, so
+  a range spanning a DST change could pass the api and fail ten times in scoring. Both
+  now use `scoring.RangeDays` (calendar days).
+- `DayDetail.strain` was `null` for a day with under 30 s of HR data although
+  `score.strain` was `0.0`.
+- `PATCH /v1/me` reported database failures as `422`; the timezone is now validated up
+  front and store errors are `500`.
+- The PDB documentation claimed drains never block; that only holds on multi-node clusters.
