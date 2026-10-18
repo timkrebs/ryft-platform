@@ -26,6 +26,17 @@ variable "environment" {
   }
 }
 
+variable "location" {
+  description = "Location name, the third part of every resource name (e.g. euc1)"
+  type        = string
+  default     = "euc1"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9]{1,8}$", var.location))
+    error_message = "location must be 2-9 lowercase letters or digits, starting with a letter."
+  }
+}
+
 variable "kubernetes_version" {
   description = "Kubernetes minor version of the EKS control plane"
   type        = string
