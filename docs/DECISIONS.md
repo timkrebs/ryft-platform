@@ -595,3 +595,27 @@ key, the whole KV secret as JSON, is excluded globally and on each generated
 VaultStaticSecret. Through `envFrom` it would have become one more environment
 variable holding every credential, as seen on the first real sync. The chart was
 rendered with these values and validated (33 resources).
+
+## D47 — Start-up order and backoff instead of crash loops
+
+On the first EKS deploy, the services started next to the migrate job, tried their
+database roles before migrate had set the passwords, and exited, as designed. Kubernetes
+restarted them quickly and in lockstep, and Supavisor's circuit breaker blocked the roles
+(`ECIRCUITBREAKER … too many authentication failures`) well after the passwords existed.
+Five restarts later they came up.
+
+Two changes, either of which would have prevented it:
+
+- **Backoff:** the services retry the database (`db.Open`) and NATS (`events.Open`) with
+  backoff, 5 s doubling to 60 s with ±20 % jitter (`internal/retry`), instead of exiting.
+  The database step is bounded by `MigrateWait` (10 min) and NATS by 5 min. Reproduced
+  locally: with `ryft_api` set `NOLOGIN`, the api logged two retries and connected as
+  soon as the role could log in, without a restart.
+- **Staged apply:** `make k8s-apply-eks` applies NATS and the migrate Job first
+  (`ryft.dev/stage=first`, a label only on those two namespaces' objects), waits for
+  them, and only then applies the services.
+
+The same race exists when rotating a database password: the services must not get the
+new one before Postgres has it. `OPERATIONS.md` gives the forced order (migrate's Secret
+first, the migrate job, then the service's Secret). A restart-free rotation with two
+alternating roles was considered and not built; rotation is rare and manual.

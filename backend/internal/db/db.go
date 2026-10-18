@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/timkrebs/ryft/internal/retry"
 )
 
 //go:embed migrations/*.sql
@@ -47,16 +49,40 @@ func Connect(ctx context.Context, url string, maxConns int) (*pgxpool.Pool, erro
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	pingCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	return pool, nil
 }
 
-// MigrateWait is how long a service waits at start-up for the migrate job
-// before it gives up and exits (Kubernetes restarts it).
+// MigrateWait is how long a service waits at start-up for the database and
+// the migrate job before it gives up and exits (Kubernetes restarts it).
 const MigrateWait = 10 * time.Minute
+
+// Open is how a service connects: it retries with backoff while the database
+// or the service's role is not ready yet (the migrate job sets the role
+// passwords), then waits until the schema is current, all within MigrateWait.
+func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgxpool.Pool, error) {
+	wait, cancel := context.WithTimeout(ctx, MigrateWait)
+	defer cancel()
+	var pool *pgxpool.Pool
+	err := retry.Until(wait, log, "database", retry.Startup, func(context.Context) error {
+		p, err := Connect(ctx, url, maxConns) // the pool outlives the wait
+		pool = p
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := WaitMigrated(wait, pool, log); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
 
 // migrationLock serialises migrators across pods. It is a transaction-level
 // advisory lock: it disappears with the transaction even if the pod dies or a

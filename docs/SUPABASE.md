@@ -119,6 +119,10 @@ Migration `0007_supabase_auth.sql`, Supabase part (skipped on plain Postgres):
   plaintext. Check once after the first deploy:
   `SELECT rolname, rolcanlogin, rolbypassrls FROM pg_roles WHERE rolname LIKE 'ryft_%';`
   (→ `true`, `false` for all three).
+- Supavisor blocks a user for a while after repeated failed logins (`ECIRCUITBREAKER`
+  … `too many authentication failures`). A role password that changes before Postgres
+  knows it, or services starting before migrate has set it, trips that. Deploy and
+  rotate in the order `OPERATIONS.md` gives. The services back off on their own.
 
 **Restoring a database migrated on plain Postgres into Supabase** (e.g. moving off the
 `local-postgres` overlay): migration 0007 is recorded as applied but its Supabase block

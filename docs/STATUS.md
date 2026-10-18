@@ -90,10 +90,21 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
   Kubernetes API open to `0.0.0.0/0`.
 - **Not on EKS yet:** Prometheus (`monitoring` namespace, needs a third node), content on
   the apex `ryftapp.de` / `www`, DNSSEC.
-- **Untested against the real services:** `infra/vault` against HCP Vault, the operator
-  against the cluster, and Supavisor accepting the custom roles (`ryft_api.<ref>`). The
-  first `make k8s-apply-eks` proves all three; `infra/vault` is only checked with mocked
-  providers.
+- **First deploy on EKS (2026-10-18) proved the zero-trust path.** HCP Vault reached the
+  EKS API (TokenReview), and the operator synced all five Secrets with only their own
+  keys. The migrate job ran all nine migrations against Supabase and set the role
+  passwords. The pooler accepts the custom roles (`ryft_api.<ref>`), the NATS users
+  log in, and `/readyz` is green everywhere.
+  - **Startup race, since fixed:** the services had started next to migrate, tried
+    their roles before the passwords existed, and tripped the pooler's circuit
+    breaker. They restarted for about two minutes. Fix: staged apply plus backoff (D47).
+  - **Open:** DNS. Route 53 has `api.ryftapp.de`, but the domain is still delegated to
+    GoDaddy (`ns21`/`ns22.domaincontrol.com`), so the name does not resolve and the
+    Let's Encrypt DNS-01 challenge waits.
+- **Supabase region:** the project's pooler is `aws-0-eu-west-1` (Ireland), the cluster
+  is in eu-central-1 (Frankfurt). That works (both EU), but every query crosses regions
+  (about 20–25 ms round trip). A Supabase project cannot move; recreate it in Frankfurt
+  before real users if latency matters.
 - **Failure-path metrics** (`ryft_events_handled_total{result="retry|failed"}`,
   `ryft_nats_redeliveries_total`) are wired but were not exercised end to end.
 - **No live Supabase project yet.** The Supabase paths are verified against a fake JWKS
@@ -132,22 +143,17 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Alpha readiness
 
-The code, manifests and Terraform are ready and verified offline and on the local
-stack. Nothing runs on the cluster yet. A first alpha (TestFlight, a few people) needs
-these steps, in order. All of them are yours, because each needs an account or
-credentials:
+Deployed to EKS on 2026-10-18. Done: the Supabase project, the GitHub remote with green
+CI and public images, the edge add-ons with the Vault Secrets Operator, `infra/vault`,
+and `make k8s-apply-eks` at `155e166`. Every workload runs, and the secrets, roles, NATS
+users and readiness are verified on the cluster. What is left before a first alpha:
 
 | # | Step | Why it blocks |
 | --- | --- | --- |
-| 1 | **Supabase project** per [`SUPABASE.md`](SUPABASE.md) (Frankfurt, asymmetric JWT keys, Apple provider, Data API off). Use a paid plan for real users: free projects pause after a week of inactivity and keep no backups. | no database, no sign-in |
-| 2 | **GitHub remote + first CI run.** Images `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>`. Make the packages public, or add an `imagePullSecret` per namespace. | nothing to pull |
-| 3 | **`infra/aws/dns`**, then the GoDaddy nameserver switch | no certificate, no DNS |
-| 4 | **`infra/aws/kubernetes`** (Traefik, cert-manager, ExternalDNS, gp3-encrypted, now the Vault Secrets Operator) | no ingress, no secrets sync |
-| 5 | **`infra/vault`**: `terraform.tfvars` has the old shape and placeholders. Copy the new `terraform.tfvars.example`: `supabase_project_ref`, `database.host`, `database_owner_password`, `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY`. Then `terraform test`, plan, apply. | no credentials anywhere |
-| 6 | **kubectl context**: the current one points at the old cluster ARN `…/ryft-prod`. Run `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1`. | Terraform's kubernetes provider uses its own token, but `make k8s-apply-eks` uses kubectl |
-| 7 | Pin `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml`, then `make k8s-apply-eks` | — |
-| 8 | **Verify:** `curl -sI https://api.ryftapp.de/v1/me` → `401`; `make smoke-supabase` through port-forwards with the test user; the RLS/role queries in `SUPABASE.md` | — |
-| 9 | **App:** Release xcconfig → `https://api.ryftapp.de` and the Supabase URL and publishable key; the hand-off list above | the app talks to nothing |
+| 1 | **Delegate the domain:** GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → the four Route 53 servers (`terraform -chdir=infra/aws/dns output name_servers`). | `api.ryftapp.de` does not resolve; the certificate waits on its DNS-01 challenge |
+| 2 | **Redeploy with the start-up fix:** push, wait for CI, pin the new short SHA (quoted) in `deploy/k8s/overlays/eks/kustomization.yaml`, `make k8s-apply-eks`. | not blocking (it runs), but the next deploy or restart should not crash-loop |
+| 3 | **Verify:** `kubectl -n ryft-api get certificate` → `True`; `curl -sI https://api.ryftapp.de/v1/me` → `401`; `make smoke-supabase` through port-forwards with the test user; the role and RLS queries in `SUPABASE.md`. | — |
+| 4 | **App:** Release xcconfig → `https://api.ryftapp.de` and the Supabase URL and publishable key; the hand-off list above. | the app talks to nothing |
 
 Acceptable for an alpha, but known gaps:
 - **Single points:** one NATS replica and one scoring replica.

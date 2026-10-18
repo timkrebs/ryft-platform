@@ -58,14 +58,18 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 
 # EKS (api.ryftapp.de), after infra/aws/kubernetes and infra/vault are applied
 # (docs/OPERATIONS.md → EKS): the Vault Secrets Operator objects first, so each
-# namespace has its Secret before the pods start; then the workloads. The finished
-# migrate Job is deleted first because a Job's pod template cannot change.
+# namespace has its Secret before the pods start; then NATS and the migrate Job
+# (label ryft.dev/stage=first), and the services only once migrate has set their
+# role passwords. The finished migrate Job is deleted first because a Job's pod
+# template cannot change.
 k8s-apply-eks:
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s; done
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
-	kubectl apply -k deploy/k8s/overlays/eks
+	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
 	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
+	kubectl -n ryft-nats rollout status statefulset/nats --timeout=5m
+	kubectl apply -k deploy/k8s/overlays/eks
 	for s in ingest api scoring; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.

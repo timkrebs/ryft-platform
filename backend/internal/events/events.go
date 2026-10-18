@@ -17,6 +17,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/retry"
 )
 
 const (
@@ -79,6 +80,20 @@ func Connect(ctx context.Context, url string, o Options) (*Bus, error) {
 		return nil, fmt.Errorf("ensure stream: %w", err)
 	}
 	return &Bus{nc: nc, js: js}, nil
+}
+
+// Open is Connect, retried with backoff for up to five minutes while NATS is
+// not reachable yet (its pod starting) or refuses the login.
+func Open(ctx context.Context, url string, o Options, log *slog.Logger) (*Bus, error) {
+	wait, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	var bus *Bus
+	err := retry.Until(wait, log, "nats", retry.Startup, func(ctx context.Context) error {
+		b, err := Connect(ctx, url, o)
+		bus = b
+		return err
+	})
+	return bus, err
 }
 
 func (b *Bus) Close() { _ = b.nc.Drain() }

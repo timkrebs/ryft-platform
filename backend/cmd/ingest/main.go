@@ -42,23 +42,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	// Retries until the role can log in and the migrate job has applied the
+	// schema; this service's role cannot change it.
+	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
 	if err != nil {
 		log.Error("db", "err", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
-	// The migrate job applies migrations; this service's role cannot.
-	waitCtx, cancelWait := context.WithTimeout(ctx, db.MigrateWait)
-	err = db.WaitMigrated(waitCtx, pool, log)
-	cancelWait()
-	if err != nil {
-		log.Error("schema", "err", err)
-		os.Exit(1)
-	}
 	st := store.New(pool)
 
-	bus, err := events.Connect(ctx, cfg.NatsURL, events.Options{Name: "ingest", User: cfg.NatsUser, Password: cfg.NatsPass})
+	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "ingest", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)

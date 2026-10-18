@@ -52,10 +52,21 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
 | 8. App | `make k8s-apply-eks` | see below |
 
-`make k8s-apply-eks` applies the operator objects for every namespace and waits until
-each `ryft-secrets` exists. It then deletes the finished migrate Job, since a Job's pod
-template is immutable, applies the overlay, waits for the migrate Job, and waits for the
-three rollouts. The services wait up to 10 minutes for the schema (startup probe).
+`make k8s-apply-eks` runs these steps, waiting at each one:
+
+1. It applies the operator objects for every namespace and waits until each
+   `ryft-secrets` exists.
+2. It deletes the finished migrate Job, since a Job's pod template is immutable.
+3. It applies the first stage, NATS and the migrate Job (label `ryft.dev/stage=first`),
+   and waits for the Job and NATS.
+4. Only then it applies everything, so the services start after their role passwords
+   exist, and waits for the three rollouts.
+
+Order matters because Supabase's pooler blocks a database user for a while after
+repeated failed logins (`ECIRCUITBREAKER`). Starting the services next to migrate on
+the first deploy cost a few minutes of crash loops. The services now also retry the
+database and NATS with backoff (5 s doubling to 60 s, jittered) instead of exiting,
+and wait up to 10 minutes (startup probe).
 
 ```bash
 make k8s-validate && make k8s-apply-eks
@@ -84,11 +95,33 @@ try issuance without touching Let's Encrypt's production rate limits, point both
 Ingress annotations at `letsencrypt-staging` first.
 
 **Rotation.** The operator re-reads each namespace's `kv/config` hourly and restarts
-the workload on a change. Generated passwords rotate with
-`terraform apply -replace=…` (`infra/vault/README.md`), followed by
-`make k8s-apply-eks`, so the migrate job gives Postgres the new role password. For the
-Supabase secret key, create a new one in Supabase, put it in `terraform.tfvars`, run
-`terraform apply`, then revoke the old one.
+the workload on a change.
+
+- **Supabase secret key:** create a new one in Supabase, put it in `terraform.tfvars`,
+  run `terraform apply`, then revoke the old one.
+- **NATS password:** `terraform apply -replace='random_password.nats["api"]'`. The
+  operator updates both sides within the hour. To skip the wait, delete
+  `ryft-secrets` in `ryft-nats`, then in the service's namespace, and the operator
+  re-creates them.
+- **Database role password:** Postgres must get the new password before the service
+  does, or its new pods fail their logins and may trip the pooler's circuit breaker.
+  So force the order instead of waiting for the hourly refresh (here for `api`):
+
+  ```bash
+  terraform -chdir=infra/vault apply -replace='random_password.db["api"]'
+  kubectl -n ryft-migrate delete secret ryft-secrets      # the operator re-creates it from Vault
+  kubectl -n ryft-migrate wait --for=create secret/ryft-secrets --timeout=2m
+  kubectl -n ryft-migrate delete job migrate --ignore-not-found
+  kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
+  kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m   # Postgres has the new password
+  kubectl -n ryft-api delete secret ryft-secrets          # re-created; the operator restarts the Deployment
+  kubectl -n ryft-api rollout status deploy/api
+  ```
+
+  Open connections survive a password change, so the old pods keep serving until the new
+  ones are ready. If a `wait --for=create` times out, the operator did not re-create the
+  Secret at once; it does at the next hourly refresh at the latest
+  (`kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets`).
 
 ## Self-hosted (overlays/local-postgres)
 
