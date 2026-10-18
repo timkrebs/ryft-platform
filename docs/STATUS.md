@@ -191,7 +191,7 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 (cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email
 (cd infra/aws/kubernetes && terraform init && terraform plan -out=tfplan && terraform apply tfplan)
 (cd infra/vault && cp terraform.tfvars.example terraform.tfvars)               # Supabase values (SUPABASE.md)
-(cd infra/vault && export VAULT_ADDR=… VAULT_TOKEN=… VAULT_NAMESPACE=admin && \
+(cd infra/vault && export VAULT_TOKEN=… && \
   terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
 make k8s-validate && make k8s-apply-eks
