@@ -250,7 +250,14 @@ what that workload does. No credential is shared, and none is broader than its u
   above). The NATS server holds only bcrypt hashes.
 - **Network:** default deny for ingress and egress in every namespace, then exactly
   the flows in the drawing (`OPERATIONS.md` → Network policy). Internet egress is
-  limited to public addresses on 443/5432.
+  limited to public addresses on 443/5432. Traefik limits each client IP before any
+  token is checked. `/metrics` has its own port (9090), so the metrics collector can be
+  let in without reaching the API port.
+- **Outside the RYFT namespaces:**
+  - `monitoring` runs Grafana Cloud's collector, privileged and steered from Grafana
+    Cloud (D51). It gets metrics only; RYFT's logs go to CloudWatch (`amazon-cloudwatch`,
+    Fluent Bit), KMS-encrypted and kept 14 days (D52).
+  - `ryft-web` serves the apex site and `apple-app-site-association`, without secrets.
 - **Pods:** Pod Security `restricted` on every namespace. Everything runs as non-root
   with a read-only root filesystem (the in-cluster Postgres of `local-postgres`
   excepted), no privilege escalation, all capabilities dropped and seccomp

@@ -63,7 +63,7 @@ services produce; decode it as optional anyway (a proxy in front may answer on i
 | `404` | Resource does not exist (`/v1/workouts/{id}`), or unknown route or method |
 | `413` | Request body over the limit (32 MiB for `POST /v1/sync`, 64 KiB otherwise). For sync, send smaller pages. |
 | `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone |
-| `429` | Too many requests; wait `Retry-After` seconds: the per-user rate limit (see **Conventions**), or a second `POST /v1/recompute` within a minute. |
+| `429` | Too many requests; wait `Retry-After` seconds: the per-user rate limit (see **Conventions**), or a second `POST /v1/recompute` within a minute. The edge also limits each client IP (20/s, bursts of 50) before any token is checked; that `429` has a plain-text body, so do not require JSON on a `429`. |
 | `500` | Unexpected server error. The message is always `"internal error"`; the details are in the server log under `request_id`. |
 | `503` | Retry after `Retry-After`: the token could not be checked right now (Supabase keys unreachable — **not** a sign-in problem, keep the session), the database or the queue is down, or the request ran out of time (`"request timed out"`); `/readyz`. |
 
@@ -652,6 +652,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | A per-IP limit at the edge (20 requests/s, bursts of 50) answers `429` with a plain-text body before the per-user limit applies. No shape change. |
 | 2026-10-18 | `POST /v1/me/apple-authorization` added (the Sign in with Apple authorization code, so deletion can revoke the Apple grant). `DELETE /v1/me` responses add `apple_token_revoked` (nullable). Swift: `AccountDeleted.appleTokenRevoked`, `AppleAuthorization`. |
 | 2026-10-18 | `DailyScore.steps` / `active_kcal` and `DayStrain.steps` / `active_kcal` added (nullable, daily totals after source de-duplication), with trend metrics `steps` and `active_kcal`. Rescore history to fill past days. |
 | 2026-10-18 | Scoring: overlapping HealthKit sources are no longer mixed or summed (see `SCORING.md`). Heart rate is taken from one source per hour, sleep from one source per night. Values change for users with two devices: strain, sleep totals and stages, and the workout curve, which now shows only the winning source. No shape change. |

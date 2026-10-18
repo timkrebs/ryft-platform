@@ -51,6 +51,11 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows five |
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
 | 8. App | `make k8s-apply-eks` | see below |
+| 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
+| 10. State | `infra/aws/state`, then `make tf-migrate-state` (once) | see **Terraform state** below |
+
+All Terraform roots keep their state in S3 after step 10. A fresh checkout initialises
+each root with `terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl`.
 
 `make k8s-apply-eks` runs these steps, waiting at each one:
 
@@ -174,8 +179,9 @@ Every namespace starts with `default-deny` (no ingress, no egress) and `allow-dn
 
 | Workload | In | Out |
 | --- | --- | --- |
-| ingest, api | 8080 from Traefik in `kube-system` (or ingress-nginx in `ingress-nginx`) and from namespace `monitoring` | NATS (`ryft-nats`, 4222), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
-| scoring | 8080 from `monitoring` | NATS (4222), TCP 5432 to public addresses |
+| ingest, api | 8080 from Traefik in `kube-system` (or ingress-nginx in `ingress-nginx`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | NATS (`ryft-nats`, 4222), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
+| scoring | 9090 from `monitoring` (and the VPC range on EKS) | NATS (4222), TCP 5432 to public addresses |
+| web (`ryft-web`) | 8080 from Traefik | nothing |
 | nats | 4222 from the `ingest`, `scoring` and `api` pods, each in its own namespace | nothing |
 | migrate | nothing | TCP 5432 to public addresses |
 | postgres (`local-postgres`) | 5432 from the four client namespaces and the backup pods | nothing |
@@ -191,6 +197,23 @@ API server sets and nobody can relabel.
 Adjust the `from` of ingest/api for another Ingress controller, or add a `cloudflared`
 peer if a Cloudflare tunnel targets the services directly.
 
+### Edge rate limit
+
+Before any token is checked, Traefik limits each client IP to 20 requests a second on
+average, with bursts of 50 (`overlays/eks/ratelimit.yaml`, a `Middleware` in `ryft-api`,
+`ryft-ingest` and `ryft-web`). Each of the two Traefik replicas counts on its own, so
+the effective limit is up to twice that. Over it, Traefik answers `429` with a
+plain-text body. The NLB preserves client addresses, which this needs (a target-group
+attribute in `infra/aws/kubernetes`). Check it from one machine, expecting `429`s
+after the first ~100:
+
+```bash
+for i in $(seq 1 150); do curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftapp.de/v1/me; done | sort | uniq -c
+```
+
+The services' own per-user limit (D36) applies after the token, so the two complement
+each other.
+
 ## Scaling and disruptions
 
 api and ingest run 2–4 replicas under a CPU HPA (70 % of the 50m request; needs
@@ -201,6 +224,80 @@ because the first has nowhere to reschedule. Use `kubectl drain --disable-evicti
 maintenance and re-apply afterwards. Their Deployments carry no `replicas`, so
 re-applying never fights the HPA. scoring stays at one replica: it owns the 15-minute
 timer and processes recompute ranges in order. NATS is a single-replica StatefulSet.
+
+## Monitoring (Grafana Cloud)
+
+The collector is Grafana's `k8s-monitoring` chart with the onboarding's preset, in
+namespace `monitoring`. Its Fleet Management token lives in Vault like every other
+credential (D51). It is never passed on a command line:
+
+1. **Rotate the token** that was used during onboarding (it was on a command line and
+   in a chat): Grafana Cloud → your stack → Access policies → the Kubernetes Monitoring
+   policy → create a new token, then delete the old one.
+2. **Vault:** put the new token into `infra/vault/terraform.tfvars` as
+   `service_secrets.monitoring = { GC_TOKEN = "glc_…" }`. Remove the hand-made secret
+   (`vault kv metadata delete …` under `admin/ryft/…/grafana-cloud`). If you created
+   the Vault namespace `admin/ryft/monitoring` by hand, import it instead of
+   deleting it: `terraform import 'vault_namespace.service["monitoring"]' ryft/monitoring`.
+   Do the same for an existing `monitoring` Kubernetes namespace:
+   `terraform import 'kubernetes_namespace_v1.service["monitoring"]' monitoring`.
+3. `terraform plan` and `apply` in `infra/vault`. This creates the Vault namespace, its
+   auth role, `kv/config {GC_TOKEN}`, the namespace `monitoring` (Pod Security
+   privileged) and `deploy/k8s/overlays/vault-namespaces/monitoring`.
+4. `make monitoring-apply`: it applies the operator objects, waits for
+   `monitoring/ryft-secrets`, then runs
+   `helm upgrade --install grafana-cloud grafana/k8s-monitoring --version 4.5.3`.
+5. **In Grafana Cloud:**
+   - In the Fleet Management pipelines for pod logs, exclude namespaces matching
+     `ryft-.*`; RYFT's logs go to CloudWatch.
+   - Load `deploy/monitoring/alerts.yaml` with `mimirtool rules load`.
+   - Check that the cluster appears in Kubernetes Monitoring, that
+     `ryft_http_requests_total` has series, and that `{namespace=~"ryft-.*"}` in Logs
+     Explore is empty.
+
+**What the collector can do:** it runs as root on the host network with the nodes'
+log files, cgroups and storage mounted. Beyla reads all pod traffic through eBPF,
+including RYFT's routes and durations, and the SDK injector's webhook may modify pods
+that opt in by annotation (no RYFT pod does). Its configuration comes from Grafana
+Cloud. Access to the Grafana stack is therefore access to the cluster's telemetry: keep
+the stack's members to yourself.
+
+## Terraform state
+
+Every root's state used to live on your machine. The states of `infra/vault` and
+`infra/aws` hold credentials, so they belong in an encrypted, versioned, locked store.
+To move them:
+
+```bash
+cd infra/aws/state && terraform init && terraform apply     # bucket ryft-tfstate-<account>-eu-central-1, KMS key, local state
+terraform output -raw backend_hcl > ../../backend.hcl       # bucket + key ARN; git-ignored
+cd ../../.. && make tf-migrate-state                         # each root: init -migrate-state, Terraform asks before copying
+(cd infra/aws && terraform plan)                             # no changes: the state arrived
+```
+
+When every root plans cleanly, delete the old local `terraform.tfstate*` files; they
+contain the same secrets in plaintext. Locking uses S3 lockfiles (`use_lockfile`), so
+there is no DynamoDB table. The bootstrap root keeps its own small state locally; it
+holds no secrets. Overwritten state versions are kept 90 days.
+
+## Budget
+
+`infra/aws` creates a monthly AWS Budgets alarm once `budget_alert_emails` is set in its
+`terraform.tfvars`. The budget is USD 165, about €150, and it emails at 80 % spent and
+when the month is forecast to exceed it.
+
+## Apex site and apple-app-site-association
+
+`https://ryftapp.de` serves a minimal page from `ryft-web`; `www.ryftapp.de` redirects
+to it. It also serves `/.well-known/apple-app-site-association`: `webcredentials` for
+password AutoFill with email accounts, and `applinks` for `/auth/*` once the app handles
+universal links. The app's entitlements must list `webcredentials:ryftapp.de` (and
+`applinks:ryftapp.de` later). Check:
+
+```bash
+curl -sI https://ryftapp.de/.well-known/apple-app-site-association          # 200, application/json, no redirect
+curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
+```
 
 ## Backups
 
@@ -216,6 +313,12 @@ none). There is no dump job in the cluster. Before restoring a backup:
 4. `make k8s-apply-eks` to run the migrate job again, which sets the role passwords in
    case the backup predates them. The api's deletion reconciler erases the restored
    accounts at start-up.
+
+**Restore drill, monthly** (paid plan): restore the latest backup into a new scratch
+project (Database → Backups → *Restore to a new project*). Then compare `SELECT
+count(*)` of `users`, `samples` and `daily_scores` with production, and note how long it
+took in `STATUS.md`. Delete the scratch project afterwards; it holds real health data.
+On the free plan there is nothing to restore, so check the plan before inviting people.
 
 **In-cluster Postgres (`local-postgres`).** `pg-backup` in `ryft-postgres` runs
 `pg_dump --format=custom` nightly at 03:30 Europe/Berlin into the `pg-backups` PVC

@@ -677,3 +677,71 @@ upsert.
 No rescore is needed today. The production database was created on 2026-10-18 by the
 current code, so no day was scored with older rules (and the Frankfurt project will
 start empty as well).
+
+## D51 — Grafana Cloud collector: the onboarding preset, isolated, token in Vault
+
+The user chose Grafana Cloud's Kubernetes Monitoring with the onboarding's full preset:
+a root, host-network Alloy DaemonSet with node log files, cgroups and storage mounted,
+Beyla eBPF, an SDK-injection webhook, and pipelines from Fleet Management. That cannot
+run under Pod Security `restricted`. It is kept as chosen, with four changes:
+
+- **Namespace:** `monitoring`, created by `infra/vault` with Pod Security `privileged`,
+  instead of the shared `ryft` namespace from the generated command.
+- **Token:** the Fleet Management token is a Terraform-managed secret in Vault
+  `admin/ryft/monitoring`, synced by the operator. The chart reads it from that Secret
+  (`remoteConfig.secret.create: false`), never from a `--set` flag. The token shown
+  during onboarding must be rotated.
+- **Logs:** RYFT's pod logs carry users' daily scores and go to CloudWatch (D52), not
+  Grafana Cloud. Because the collector can read every log file on the node, this is a
+  Fleet Management setting (exclude `ryft-.*`), checked by an empty Logs query, not an
+  enforced boundary. Making it one would mean dropping `filesystem-log-reader` from the
+  preset.
+- **Metrics port:** a host-network collector scrapes from node addresses, and on EKS
+  nodes and pods share the VPC range. Opening the API port 8080 to that range would let
+  every pod reach the API, so `/metrics` moved to port 9090. Only 9090 is opened to the
+  VPC; it carries counters and route labels, no user data.
+
+Beyla still sees RYFT's HTTP traffic (routes, status, durations; trace URLs contain
+workout UUIDs). Excluding the `ryft-*` namespaces from Beyla's discovery is the next
+step if that matters.
+
+## D52 — Logs in CloudWatch, not Loki
+
+The spec left the choice open; the cheaper one wins. At alpha volume CloudWatch Logs
+costs about €1 a month plus €1 for the KMS key, needs no extra pods on two t3.medium
+nodes, and keeps health data in the account and region that already hold the cluster.
+Loki would need object storage, pods and upgrades, or Grafana Cloud's hosted Loki, which
+means a further processor of health data. Fluent Bit ships only the `ryft-*` namespaces
+and Traefik. The group keeps 14 days, encrypted with a key that CloudWatch Logs may use
+for `/ryft/*` groups only, and is readable by the account's administrators only
+(`OBSERVABILITY.md`).
+
+## D53 — Per-IP limit at the edge, with client IPs preserved
+
+Traefik's `RateLimit` middleware limits each client to 20 requests a second, bursts of
+50, before a token is checked; the per-user limit (D36) takes over after it. With
+`nlb-target-type: ip` the NLB had hidden client addresses, which would have put every
+client into a handful of buckets, one per NLB address. The target-group attribute
+`preserve_client_ip.enabled=true` fixes that; the load balancer controller manages the
+security-group rules. The middleware is an EKS-overlay object (Traefik-specific), one per
+namespace, since Traefik references middlewares within a namespace.
+
+## D54 — Remote state: one bucket, partial backend configuration
+
+`infra/aws/state` creates one S3 bucket for all four roots, each with its own key and S3
+lockfiles. The bucket is versioned (90 days of old versions), private, TLS-only and
+encrypted with its own KMS key. The backend blocks hold only key, region and locking.
+Bucket and key ARN come from a git-ignored `infra/backend.hcl` that the bootstrap root
+prints, which keeps the account ID out of the repository. The bootstrap root's own state
+stays local: it holds no secrets and can be re-imported.
+
+## D55 — Budget in USD; the apex site in the cluster
+
+AWS Budgets alerts in USD: USD 165 ≈ €150, at 80 % actual and 100 % forecast, created
+only once a recipient is set, so a plan without one does not fail. The apex site runs as
+an unprivileged nginx in `ryft-web`. It reuses Traefik, the DNS-01 certificate and
+ExternalDNS, which S3 + CloudFront would duplicate with an ACM certificate in us-east-1.
+Its `apple-app-site-association` lists `webcredentials` already, so password AutoFill
+works for email accounts, and `applinks` under `/auth/*` for later universal links.
+Apple fetches it without following redirects, so `www` redirects to the apex and the app
+names `ryftapp.de` itself.

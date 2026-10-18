@@ -62,6 +62,21 @@ agreed extras):
 | Vault | HCP namespace paths fixed. Credentials are generated and written only where used. A migrate namespace, the api's Supabase key, and a mocked `terraform test` with golden operator manifests. | `infra/vault`, D45 |
 | Operator | Vault Secrets Operator 1.6.0 as a pinned add-on, with no default identity. | `infra/aws/kubernetes`, D46 |
 
+**After go-live** (account flows the app needs, operations gaps):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Apple token revocation | `POST /v1/me/apple-authorization` exchanges the Sign in with Apple code and keeps the refresh token encrypted in `apple_tokens` (api only). `DELETE /v1/me` revokes it before deleting the Supabase user; the reconciler retries. | `internal/apple`, `internal/sealed`, migration 0010, D48 |
+| Production account checks | `make smoke-supabase` against the public host. With `SUPABASE_SECRET_KEY`, two throwaway users: row creation, isolation, deletion down to the Supabase sign-in. | `scripts/check_accounts.py` |
+| Rescore tool | `scripts/rescore_all.sh` runs `scoring rescore` in the scoring pod with its own role. | D50 |
+| Edge rate limit | 20 r/s, burst 50 per client IP (Traefik), client IPs preserved by the NLB | D53 |
+| Logs | Fluent Bit → CloudWatch `/ryft/ryft-prod-euc1/containers`, KMS, 14 days, RYFT namespaces and Traefik only | `infra/aws/kubernetes/logs.tf`, D52 |
+| Metrics | Grafana Cloud `k8s-monitoring` in namespace `monitoring`, token from Vault, alert rules; `/metrics` on port 9090 | `deploy/monitoring`, D51 |
+| Terraform state | S3 bucket with KMS and lockfiles for all four roots | `infra/aws/state`, D54 |
+| Budget | AWS Budgets monthly alarm, 80 % actual and 100 % forecast | `infra/aws/budget.tf`, D55 |
+| Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
+| Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -89,28 +104,42 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Not done / not verified
 
-Open items of the current milestone (`after go-live`) first, then known gaps.
+Built and tested, applied by nobody yet: everything in **After go-live**. Your steps,
+in this order:
 
-- **Supabase region.** The project is in eu-west-1 (Ireland), the cluster in eu-central-1.
-  Decided: recreate it in Frankfurt before inviting anyone else, while the database is
-  empty (runbook in `SUPABASE.md`).
-- **Apple token revocation on `DELETE /v1/me`.** In progress (Sign in with Apple accounts).
-- **`make smoke-supabase` has not run against production yet.**
-- **Rescore: nothing to do today.** The production database was created on 2026-10-18 by
-  the current code, so no day was scored by older rules. `scripts/rescore_all.sh` is for
-  the next scoring change.
-- **Operations gaps:** per-IP edge rate limit, log shipping (CloudWatch), metrics and the
-  NoSync alert (Grafana Cloud, decided), remote Terraform state, budget alarm, apex
-  `ryftapp.de` with `apple-app-site-association`.
-- **Known gaps, accepted for the alpha:**
-  - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
-    `ryft_nats_redeliveries_total` are wired but were not exercised end to end.
-  - **Single points:** one NATS replica and one scoring replica.
-  - **Kubernetes auth needs HCP Vault to reach the EKS API** (TokenReview). Narrow
-    `endpoint_public_access_cidrs` only together with Vault's egress addresses.
-  - **Insight texts are English only.** Handlers are covered by the smoke contract checks,
-    not by Go tests against a database.
-  - **Cost:** about €120–160 a month (`infra/aws/README.md`).
+1. **Supabase in Frankfurt:** new project and the full checklist (`SUPABASE.md` → Moving
+   the project to Frankfurt), including the Apple key for revocation
+   (`service_secrets.api.APPLE_*`).
+2. **`infra/vault`:** new Supabase values, the Apple values, and the rotated Grafana
+   token (`service_secrets.monitoring.GC_TOKEN`); then plan and apply (monitoring
+   namespace and Apple key included). Retire the hand-made Grafana secret first
+   (`OPERATIONS.md` → Monitoring).
+3. **`infra/aws/kubernetes`:** plan and apply: Traefik with client IPs preserved,
+   Fluent Bit with its log group and key, the operator without `_raw`, cert-manager's
+   public DNS-01 checks.
+4. **`infra/aws`:** `budget_alert_emails` in tfvars, plan and apply.
+5. **Images and deploy:** CI for the current commit, pin its short SHA (quoted), then
+   `make k8s-apply-eks` (migrations 0009 and 0010, the edge limit, the metrics port,
+   the apex site).
+6. **`make monitoring-apply`**, then the Grafana Cloud steps: exclude `ryft-.*` pod logs,
+   load the alerts.
+7. **`make smoke-supabase`** against `https://api.ryftapp.de` with `SUPABASE_SECRET_KEY`.
+   Record the run here.
+8. **Remote state:** `infra/aws/state`, then `make tf-migrate-state`
+   (`OPERATIONS.md` → Terraform state).
+
+Known gaps, accepted for the alpha:
+- **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
+  `ryft_nats_redeliveries_total` are wired but were not exercised end to end.
+- **Single points:** one NATS replica and one scoring replica.
+- **Kubernetes auth needs HCP Vault to reach the EKS API** (TokenReview).
+- **Grafana excludes RYFT logs by configuration, not by a boundary;** Beyla sees RYFT's
+  HTTP traffic (D51).
+- **Insight texts are English only.** Handlers are covered by the smoke contract checks,
+  not by Go tests against a database.
+- **Cost:** about €120–160 a month (`infra/aws/README.md`). The budget alarm watches
+  it.
+
 - **For the iOS side** (nothing in `../app` was changed):
   - Decode `User.email`/`provider`, `DailyScore.steps`/`active_kcal`,
     `DayStrain.steps`/`active_kcal`, and `APIErrorBody.requestId`. All are optional, and
@@ -119,6 +148,15 @@ Open items of the current milestone (`after go-live`) first, then known gaps.
     `429` + `Retry-After`. `413` means a smaller sync page. Only a second `401` after a
     refresh signs out.
   - Delete account: call `DELETE /v1/me`, then sign out and clear caches.
+  - After every successful Sign in with Apple, send
+    `ASAuthorizationAppleIDCredential.authorizationCode` once to
+    `POST /v1/me/apple-authorization` (`204`; ignore `422`/`501`, retry `503` once).
+    Without it, deletion cannot revoke the Apple grant.
+  - A `429` may come from the edge with a plain-text body: honour `Retry-After` without
+    expecting JSON.
+  - Entitlements: `webcredentials:ryftapp.de` for password AutoFill with email accounts
+    (`apple-app-site-association` is live with the deploy); `applinks:ryftapp.de` once
+    the app handles `/auth/*` universal links.
   - New users start in `Europe/Berlin`: send the device's zone with `PATCH /v1/me` on
     first launch.
   - Show steps and kcal on the Strain screen.
@@ -146,6 +184,7 @@ EKS, in order (each Terraform root applied by you; Terraform state never leaves 
 machine; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
 
 ```bash
+# After `make tf-migrate-state`, every `terraform init` takes -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
 (cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
 # GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
 (cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)
@@ -157,6 +196,7 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
   terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
 make k8s-validate && make k8s-apply-eks
+make monitoring-apply                                  # Grafana Cloud collector, after infra/vault has the token
 ```
 
 Run `make smoke-supabase` only with the dedicated test user.

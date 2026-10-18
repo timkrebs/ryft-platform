@@ -1,45 +1,42 @@
 # RYFT — observability
 
-Each service (ingest, scoring, api) serves Prometheus metrics on `GET /metrics`
-(port 8080, no auth). The Ingress only routes `/v1/*`, so `/metrics` is reachable
-inside the cluster only. Logs are JSON (`slog`) on stdout; see **Logs** below.
+Each service (ingest, scoring, api) serves Prometheus metrics on `GET /metrics` on its
+own port, **9090** (`METRICS_PORT`, no auth), apart from the API and probe port 8080.
+The Ingress only routes `/v1/*`, so `/metrics` is never public. Logs are JSON (`slog`)
+on stdout and shipped to CloudWatch; see **Logs** below.
 
-## Scraping
+## Collection: Grafana Cloud
 
-The pod templates carry the conventional annotations; there is no `ServiceMonitor`:
+Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
+`k8s-monitoring` chart (`deploy/monitoring/k8s-monitoring.yaml`, `make
+monitoring-apply`) in namespace `monitoring`. Its pipelines are configured remotely in
+Grafana Cloud's Fleet Management, and it discovers the RYFT pods through their
+annotations:
 
 ```yaml
 prometheus.io/scrape: "true"
-prometheus.io/port: "8080"
+prometheus.io/port: "9090"
 prometheus.io/path: /metrics
 ```
 
-A Prometheus that discovers pods by annotation needs a job like this (the standard
-`kubernetes-pods` job from the Prometheus Helm chart does exactly this):
+The collector runs on the nodes' network, so its scrapes come from node addresses. Each
+service admits port 9090 from namespace `monitoring` (`base/<service>/networkpolicy.yaml`)
+and, on EKS, from the VPC range (`overlays/eks/metrics-from-nodes.yaml`). Pods share
+that range, so any pod may read `/metrics`: counters and route labels, no user data.
+Port 8080 stays reachable from Traefik only.
 
-```yaml
-- job_name: kubernetes-pods
-  kubernetes_sd_configs: [{ role: pod }]
-  relabel_configs:
-    - { source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape], action: keep, regex: "true" }
-    - { source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path], target_label: __metrics_path__, regex: (.+) }
-    - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-      regex: ([^:]+)(?::\d+)?;(\d+)
-      replacement: $1:$2
-      target_label: __address__
-    - { source_labels: [__meta_kubernetes_namespace], target_label: namespace }
-    - { source_labels: [__meta_kubernetes_pod_label_app], target_label: app }
-    - { source_labels: [__meta_kubernetes_pod_name], target_label: pod }
-```
+**RYFT's pod logs stay out of Grafana Cloud.** They carry users' daily scores and go to
+CloudWatch instead (D52). The collector can read every container's log file
+(`filesystem-log-reader`), so this is a Fleet Management setting, not a boundary:
+exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore that
+`{namespace=~"ryft-.*"}` returns nothing.
 
-The queries below assume the `app` label from that relabelling (`app="ingest"` etc.).
-kube-prometheus-stack ignores these annotations by default; there, add a `PodMonitor`
-selecting `part-of: ryft` in the namespaces `ryft-ingest`, `ryft-scoring` and `ryft-api`
-(`namespaceSelector.matchNames`) with `podMetricsEndpoints: [{port: http}]`.
+Alert rules: `deploy/monitoring/alerts.yaml` (Prometheus format; load with `mimirtool
+rules load`, or recreate them under Alerting); the table below explains them.
 
-Each service's `NetworkPolicy` (`deploy/k8s/base/<service>/networkpolicy.yaml`) admits
-scrapes on 8080 from the namespace named `monitoring` only; change that rule if
-Prometheus lives elsewhere.
+A self-hosted Prometheus works the same way: a job that keeps pods with
+`prometheus.io/scrape=true` and uses the annotated port, running in namespace
+`monitoring`.
 
 ## Metrics
 
@@ -127,7 +124,7 @@ NetworkPolicy rule in `ryft-nats` for 8222). For the in-cluster Postgres of
 | PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
 | API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
 | Panics | `sum(increase(ryft_http_panics_total[15m])) > 0` | 0m |
-| AuthUserDeletionFailing | `sum(increase(ryft_account_deletions_total{step=~"auth\|apple",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in or Apple grant still exists; check the keys) | 0m |
+| AccountDeletionIncomplete | `sum(increase(ryft_account_deletions_total{step=~"auth\|apple",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in or Apple grant still exists; check the keys) | 0m |
 | RateLimited | `sum(rate(ryft_rate_limited_total[10m])) > 1` (a client stuck in a retry loop, or limits too tight) | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |
 
@@ -162,6 +159,24 @@ for s in ingest api scoring; do kubectl -n ryft-$s logs -l app=$s --prefix --sin
   | grep 01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c
 ```
 
-Pod logs only reach back to the last restart; for anything older, ship stdout to a log
-store (CloudWatch via Fluent Bit, Loki) and query `request_id` there. Shipping is not
-set up yet.
+Pod logs only reach back to the last restart. Everything older is in CloudWatch.
+
+### In CloudWatch
+
+Fluent Bit (`infra/aws/kubernetes`, `logs.tf`) ships the container logs of the `ryft-*`
+namespaces and of Traefik to the log group `/ryft/ryft-prod-euc1/containers`. The group
+is KMS-encrypted and keeps 14 days; there is one stream per container. Each JSON line is
+parsed into fields under `data` (`data.request_id`, `data.user_id`, `data.msg`, …).
+CloudWatch Logs Insights:
+
+```text
+fields @timestamp, data.service, data.msg, data.status, data.err
+| filter data.request_id = "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c"
+| sort @timestamp asc
+```
+
+**Who can read them:** anyone whose IAM identity may call `logs:GetLogEvents` or
+`logs:StartQuery` on the group *and* `kms:Decrypt` on the key `alias/ryft-prod-euc1-logs`.
+Today that is the account's administrators only. Treat any grant as access to health
+data: no broad `CloudWatchLogsReadOnlyAccess` for others, and no export to buckets or
+third parties. Cost at alpha volume is around €1 a month, plus €1 for the key.
