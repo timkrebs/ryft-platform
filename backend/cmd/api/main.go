@@ -170,7 +170,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	if workouts == nil {
 		workouts = []model.Workout{}
 	}
-	out := model.DayDetail{Workouts: workouts, Score: model.DailyScore{Day: day, Details: map[string]any{}}}
+	out := model.DayDetail{Workouts: workouts, Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
 		out.Score = scores[0]
 	}

@@ -1,8 +1,9 @@
 # RYFT — architecture
 
 A self-hosted Whoop: a Garmin watch feeds Apple Health, an iOS app ships that data to
-Go microservices on Kubernetes, and the services turn it into daily **Recovery**,
-**Strain** and **Sleep** scores the app renders.
+Go microservices on Kubernetes, and the services turn it into daily **Readiness**,
+**Recovery**, **Strain** and **Sleep** scores the app renders. The HTTP contract with
+the app is [`API.md`](API.md).
 
 ```
  Garmin watch ──BLE──▶ Garmin Connect (iOS) ──▶ Apple Health (HealthKit)
@@ -62,7 +63,7 @@ timer catches up.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per HKWorkout (`id` = HK UUID), with `strain` filled by scoring.
-- `daily_scores(user_id, day)` — the product: recovery, strain, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to
 D (sleep ending between D-1 20:00 and D 13:00), so the morning's recovery and the
@@ -79,6 +80,16 @@ days the row is flagged `calibrating` and a population SD is used instead of you
 sleep performance 0.25, respiratory rate 0.05 (higher is worse — the illness tell).
 Missing signals drop out and the weights renormalise. Bands: ≥67 green, 34–66 yellow,
 <34 red.
+
+**Readiness (1–100) and state.** The Today screen's headline:
+`round(0.6 · recovery + 0.4 · sleep performance)`, minus an overreach penalty when
+yesterday's strain was above 14 on a recovery below 50 — 0 points at strain 14
+ramping linearly to 10 at strain 21. Without a night of sleep, readiness is
+recovery alone (the weights renormalise); without recovery it is `null`. `state` is
+the word under the greeting: `balanced` ≥ 67, `strained` 34–66, `depleted` < 34,
+`calibrating` while fewer than 7 nights of baseline exist or there is no readiness.
+Both are stored on `daily_scores` (migration 0002); the penalty is in
+`details.readiness_penalty`.
 
 **Strain (0–21).** Heart-rate reserve `HRR = (HR − RHR) / (maxHR − RHR)` per sample,
 integrated over time (gaps > 5 min credit nothing — the watch was off). Intensity

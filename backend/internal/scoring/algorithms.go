@@ -156,6 +156,51 @@ func Recovery(in RecoveryInputs) RecoveryResult {
 	return res
 }
 
+// ---- Readiness ---------------------------------------------------------------
+
+// Readiness overreach rule: yesterday's strain above readinessStrainLimit on a
+// recovery below readinessRecoveryLimit costs up to readinessMaxPenalty points,
+// ramping linearly from 0 at the limit to the full penalty at strain 21.
+const (
+	readinessStrainLimit   = 14.0
+	readinessRecoveryLimit = 50
+	readinessMaxPenalty    = 10.0
+)
+
+// Readiness is the Today screen's headline number:
+// round(0.6·recovery + 0.4·sleep performance) minus the overreach penalty,
+// clamped to 1..100.
+func Readiness(recovery, sleepPerf int, yesterdayStrain float64) int {
+	base := int(math.Round(0.6*float64(recovery) + 0.4*float64(sleepPerf)))
+	return int(clamp(float64(base-ReadinessPenalty(recovery, yesterdayStrain)), 1, 100))
+}
+
+// ReadinessPenalty is the number of points Readiness subtracts because
+// yesterday's strain exceeded what today's recovery supports.
+func ReadinessPenalty(recovery int, yesterdayStrain float64) int {
+	if yesterdayStrain <= readinessStrainLimit || recovery >= readinessRecoveryLimit {
+		return 0
+	}
+	over := clamp((yesterdayStrain-readinessStrainLimit)/(21-readinessStrainLimit), 0, 1)
+	return int(math.Round(readinessMaxPenalty * over))
+}
+
+// ReadinessState is the word the app shows under the greeting. Same bands as
+// recovery (≥67 green, 34–66 yellow, <34 red); "calibrating" while baselines
+// are still being built or there is nothing to score.
+func ReadinessState(readiness *int, calibrating bool) string {
+	switch {
+	case readiness == nil || calibrating:
+		return model.StateCalibrating
+	case *readiness >= 67:
+		return model.StateBalanced
+	case *readiness >= 34:
+		return model.StateStrained
+	default:
+		return model.StateDepleted
+	}
+}
+
 // ---- Strain ------------------------------------------------------------------
 
 // HRPoint is one heart-rate sample.

@@ -209,20 +209,20 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, d model.
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
-		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, computed_at)
-		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())
+		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state, computed_at)
+		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
-		 recovery=EXCLUDED.recovery, strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
+		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery, strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
 		 sleep_need_min=EXCLUDED.sleep_need_min, sleep_actual_min=EXCLUDED.sleep_actual_min, sleep_debt_min=EXCLUDED.sleep_debt_min,
 		 hrv_ms=EXCLUDED.hrv_ms, rhr=EXCLUDED.rhr, resp_rate=EXCLUDED.resp_rate, spo2=EXCLUDED.spo2,
 		 calibrating=EXCLUDED.calibrating, details=EXCLUDED.details, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
-		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details)
+		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State)
 	return err
 }
 
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), recovery, strain, sleep_performance, sleep_need_min,
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, sleep_performance, sleep_need_min,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, calibrating, details, computed_at
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
 	if err != nil {
@@ -231,7 +231,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.DailyScore, error) {
 		var d model.DailyScore
 		var details []byte
-		err := r.Scan(&d.Day, &d.Recovery, &d.Strain, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
+		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.Calibrating, &details, &d.ComputedAt)
 		if err != nil {
 			return d, err

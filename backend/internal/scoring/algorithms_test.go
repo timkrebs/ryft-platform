@@ -154,3 +154,48 @@ func TestSleepFallbackWithoutStages(t *testing.T) {
 		t.Fatalf("inbed-only should estimate 90%% asleep: %+v", s)
 	}
 }
+
+func TestReadiness(t *testing.T) {
+	// Brand board: recovery 82 % after a 87 % night and a moderate day → 84.
+	if r := Readiness(82, 87, 12.4); r != 84 {
+		t.Fatalf("brand-board readiness = %d, want 84", r)
+	}
+	cases := []struct {
+		name       string
+		rec, sleep int
+		strain     float64
+		want       int
+	}{
+		{"no penalty at strain 14", 40, 80, 14, 56},
+		{"no penalty when recovery supports it", 60, 80, 21, 68},
+		{"half penalty at strain 17.5", 40, 80, 17.5, 51},
+		{"full penalty at strain 21", 40, 80, 21, 46},
+		{"clamped at 1", 1, 0, 21, 1},
+		{"clamped at 100", 100, 100, 0, 100},
+	}
+	for _, c := range cases {
+		if got := Readiness(c.rec, c.sleep, c.strain); got != c.want {
+			t.Errorf("%s: Readiness(%d, %d, %.1f) = %d, want %d", c.name, c.rec, c.sleep, c.strain, got, c.want)
+		}
+	}
+}
+
+func TestReadinessState(t *testing.T) {
+	cases := []struct {
+		readiness   *int
+		calibrating bool
+		want        string
+	}{
+		{i(67), false, model.StateBalanced},
+		{i(66), false, model.StateStrained},
+		{i(34), false, model.StateStrained},
+		{i(33), false, model.StateDepleted},
+		{i(90), true, model.StateCalibrating},
+		{nil, false, model.StateCalibrating},
+	}
+	for _, c := range cases {
+		if got := ReadinessState(c.readiness, c.calibrating); got != c.want {
+			t.Errorf("ReadinessState(%v, %v) = %q, want %q", c.readiness, c.calibrating, got, c.want)
+		}
+	}
+}

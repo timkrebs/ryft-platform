@@ -180,6 +180,21 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if rec.Score > 0 {
 		recovery = &rec.Score
 	}
+	// Readiness needs a recovery score; without a night of sleep it falls back
+	// to recovery alone (the sleep weight renormalises away, as in Recovery).
+	var readiness *int
+	var readinessPenalty int
+	if recovery != nil {
+		sp := *recovery
+		if sleepPerf != nil {
+			sp = *sleepPerf
+		}
+		r := Readiness(*recovery, sp, yesterdayStrain)
+		readiness = &r
+		readinessPenalty = ReadinessPenalty(*recovery, yesterdayStrain)
+	}
+	state := ReadinessState(readiness, rec.Calibrating)
+
 	var strainScore *float64
 	if strain.Minutes > 0 {
 		strainScore = &strain.Score
@@ -189,15 +204,16 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		actual = &sleep.AsleepMin
 	}
 	details := map[string]any{
-		"recovery":         rec.Components,
-		"trimp":            math.Round(strain.TRIMP),
-		"hr_minutes":       math.Round(strain.Minutes),
-		"zone_minutes":     strain.ZoneMinutes,
-		"sleep_stages":     map[string]int{"deep": sleep.DeepMin, "rem": sleep.REMMin, "core": sleep.CoreMin, "awake": sleep.AwakeMin, "inbed": sleep.InBedMin},
-		"sleep_has_stages": sleep.HasStages,
-		"yesterday_strain": yesterdayStrain,
-		"baseline_days":    len(lnHRV),
-		"workouts":         len(workouts),
+		"recovery":          rec.Components,
+		"trimp":             math.Round(strain.TRIMP),
+		"hr_minutes":        math.Round(strain.Minutes),
+		"zone_minutes":      strain.ZoneMinutes,
+		"sleep_stages":      map[string]int{"deep": sleep.DeepMin, "rem": sleep.REMMin, "core": sleep.CoreMin, "awake": sleep.AwakeMin, "inbed": sleep.InBedMin},
+		"sleep_has_stages":  sleep.HasStages,
+		"yesterday_strain":  yesterdayStrain,
+		"readiness_penalty": readinessPenalty,
+		"baseline_days":     len(lnHRV),
+		"workouts":          len(workouts),
 	}
 	if !sleep.Start.IsZero() {
 		details["sleep_start"] = sleep.Start.In(loc).Format(time.RFC3339)
@@ -205,7 +221,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	}
 
 	row := model.DailyScore{
-		Day: day, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
+		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
 		SleepNeedMin: &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2,
 		Calibrating: rec.Calibrating, Details: details,
@@ -213,7 +229,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if err := e.st.UpsertDailyScore(ctx, userID, row); err != nil {
 		return err
 	}
-	e.log.Info("scored day", "day", day, "recovery", rec.Score, "strain", strain.Score,
+	e.log.Info("scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", strain.Score,
 		"sleep_min", sleep.AsleepMin, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
 	return nil
 }
@@ -240,9 +256,10 @@ func (e *Engine) last(ctx context.Context, userID uuid.UUID, typ string, from, t
 	return &v
 }
 
-func deref(p *float64) float64 {
+func deref[T int | float64](p *T) T {
+	var zero T
 	if p == nil {
-		return 0
+		return zero
 	}
 	return *p
 }

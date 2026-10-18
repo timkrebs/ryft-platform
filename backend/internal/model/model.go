@@ -40,6 +40,14 @@ var KnownSleepStages = map[string]bool{
 	SleepInBed: true, SleepAsleep: true, SleepCore: true, SleepDeep: true, SleepREM: true, SleepAwake: true,
 }
 
+// Readiness states, shown under the greeting on the Today screen.
+const (
+	StateBalanced    = "balanced"    // readiness ≥ 67
+	StateStrained    = "strained"    // 34..66
+	StateDepleted    = "depleted"    // < 34
+	StateCalibrating = "calibrating" // baselines not established yet, or no score
+)
+
 type Sample struct {
 	Type   string    `json:"type"`
 	Start  time.Time `json:"start"`
@@ -87,7 +95,9 @@ type SyncResponse struct {
 
 // DailyScore is what the app renders on the Today / Trends screens.
 type DailyScore struct {
-	Day              string         `json:"day"` // YYYY-MM-DD
+	Day              string         `json:"day"`       // YYYY-MM-DD
+	Readiness        *int           `json:"readiness"` // 1..100, the Today headline
+	State            string         `json:"state"`     // State* constant
 	Recovery         *int           `json:"recovery"`
 	Strain           *float64       `json:"strain"`
 	SleepPerformance *int           `json:"sleep_performance"`
