@@ -16,7 +16,7 @@ import (
 func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 	from, to, err := h.dateRange(r)
 	if err != nil {
-		httpx.WriteError(w, 400, "from/to must be YYYY-MM-DD")
+		writeRangeError(w, err)
 		return
 	}
 	loc, err := h.location(r)

@@ -24,6 +24,10 @@ type Engine struct {
 
 func NewEngine(st *store.Store, log *slog.Logger) *Engine { return &Engine{st: st, log: log} }
 
+// MaxRangeDays bounds a recompute range (to − from); POST /v1/recompute rejects
+// larger ranges up front instead of letting the event fail ten times.
+const MaxRangeDays = 400
+
 const (
 	baselineDays = 30
 	debtDays     = 7
@@ -46,8 +50,8 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 	if err != nil {
 		return fmt.Errorf("to: %w", err)
 	}
-	if b.Sub(a) > 400*24*time.Hour {
-		return fmt.Errorf("range too large (max 400 days)")
+	if b.Sub(a) > MaxRangeDays*24*time.Hour {
+		return fmt.Errorf("range too large (max %d days)", MaxRangeDays)
 	}
 	for d := a; !d.After(b); d = d.AddDate(0, 0, 1) {
 		if err := e.ComputeDay(ctx, userID, d.Format("2006-01-02")); err != nil {
@@ -248,7 +252,8 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
 		SleepNeedMin: &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
-		Calibrating: rec.Calibrating, Details: details,
+		BaselineDays: min(lnHRVBase.N, rhrBase.N),
+		Calibrating:  rec.Calibrating, Details: details,
 	}
 	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load}); err != nil {
 		return err

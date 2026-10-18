@@ -79,7 +79,7 @@ rotate it, `ALTER USER ryft PASSWORD '…'` in Postgres first, then update both
 `base/networkpolicy.yaml` denies all ingress in the namespace, then allows:
 
 | To | From | Port |
-|---|---|---|
+| --- | --- | --- |
 | ingest, api | the Ingress controller: Traefik in `kube-system` (k3s) or ingress-nginx in `ingress-nginx` | 8080 |
 | postgres | pods labelled `part-of: ryft` (the three services) and `app: pg-backup` (backup/restore) | 5432 |
 | nats | pods labelled `part-of: ryft` | 4222 |

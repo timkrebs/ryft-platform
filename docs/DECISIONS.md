@@ -189,3 +189,35 @@ scored oldest-first by one consumer.
   `backend/`. Default `standard` set plus bodyclose, copyloopvar, errorlint, gosec,
   misspell, nilerr, noctx, nolintlint, sqlclosecheck, unconvert, usestdlibvars, and
   gofmt/goimports. The handful of findings it raised were fixed rather than excluded.
+
+## D19 — Error shape everywhere; 404 for wrong methods; stricter ranges
+
+ServeMux's own 404/405 responses are plain text, which broke the `{"error": …}`
+contract. A JSON catch-all now answers unknown routes on every service; a wrong method
+on a known path is therefore `404`, not `405` (the prompt's status list has no 405).
+Three inputs that used to "succeed" now fail fast with `422`: `from > to` on
+`/v1/days` and `/v1/workouts` (was `200 []`), and `POST /v1/recompute` over 400 days
+(was `202`, after which scoring rejected the event ten times and dropped it).
+
+## D20 — `baseline_days` typed; `details` keys frozen
+
+The iOS app (built in parallel from its own copy of the contract) reads several
+`details` keys — `baseline_days` for "N nights to go", `zone_minutes`, `trimp`,
+`sleep_start`/`sleep_end`. `details` stays free-form, but those keys are now documented
+as frozen, and the calibration progress is a typed field: `baseline_days` =
+min(HRV days, resting-HR days) in the baseline window, so `calibrating ⇔
+baseline_days < 7` exactly (the `details` value counts HRV days only).
+
+## D21 — The contract is checked from Swift too
+
+`API.md` carries a Swift mirror of every response type. `scripts/check_swift.sh`
+(`make check-swift`, macOS) compiles that block straight out of the doc and decodes every
+endpoint of the running stack with the app's decoder settings, then compiles the app's
+*current* models from `../app` and checks they decode every endpoint the app calls
+without silently dropping data (the app's decoders use `try?`). Not in CI: it needs a
+Swift toolchain and the app checkout.
+
+Found while doing this: the app's `SleepMath.percent` treats any value ≤ 1 as a 0–1
+fraction, so a stage share of 1 % (common for awake time) would render as 100 %. The
+API sends whole percentages only; `API.md` now says so explicitly. The fix belongs in
+the app.

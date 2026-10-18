@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -34,16 +35,37 @@ func (h *handler) dateRange(r *http.Request) (string, string, error) {
 	}
 	for _, d := range []string{from, to} {
 		if _, err := time.Parse(dayLayout, d); err != nil {
-			return "", "", err
+			return "", "", errBadDate
 		}
 	}
+	if from > to {
+		return "", "", errFromAfterTo
+	}
 	return from, to, nil
+}
+
+var (
+	errBadDate     = errors.New("from/to must be YYYY-MM-DD")
+	errFromAfterTo = errors.New("from must be <= to")
+)
+
+// writeRangeError maps a dateRange error to its status: 422 for an inverted
+// range, 400 for a malformed date, 500 for anything else (the user lookup).
+func writeRangeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errFromAfterTo):
+		httpx.WriteError(w, 422, err.Error())
+	case errors.Is(err, errBadDate):
+		httpx.WriteError(w, 400, err.Error())
+	default:
+		httpx.WriteError(w, 500, err.Error())
+	}
 }
 
 func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	from, to, err := h.dateRange(r)
 	if err != nil {
-		httpx.WriteError(w, 400, "from/to must be YYYY-MM-DD")
+		writeRangeError(w, err)
 		return
 	}
 	rows, err := h.st.DailyScores(r.Context(), h.cfg.UserID, from, to)

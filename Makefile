@@ -6,7 +6,7 @@ SERVICES := ingest scoring api
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke k8s-apply k8s-apply-vault k8s-delete k8s-validate
+.PHONY: test build images push up down logs smoke check-swift k8s-apply k8s-apply-vault k8s-delete k8s-validate
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -35,6 +35,11 @@ logs:
 # Push a synthetic night + workout through the stack and read the score back.
 smoke:
 	./scripts/smoke.sh
+
+# After smoke, on macOS: decode every endpoint with the Swift mirror in docs/API.md
+# and with the app's current models (../app). See scripts/check_swift.sh.
+check-swift:
+	./scripts/check_swift.sh
 
 # Default overlay (deploy/k8s/secrets.yaml) or the Vault one; see docs/OPERATIONS.md.
 k8s-apply:

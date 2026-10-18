@@ -62,6 +62,7 @@ func main() {
 		}
 		return bus.Ready(ctx)
 	})
+	mux.HandleFunc("/", httpx.NotFound)
 	go func() {
 		if err := httpx.Serve(log, ":"+cfg.Port, mux); err != nil {
 			log.Error("serve", "err", err)

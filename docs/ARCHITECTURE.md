@@ -37,7 +37,7 @@ the same `samples` table with new `type` values — nothing else changes.
 ## Services
 
 | Service   | Port | Responsibility | Talks to |
-|-----------|------|----------------|----------|
+| --- | --- | --- | --- |
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
 | `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
 | `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
@@ -65,7 +65,7 @@ timer catches up.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per HKWorkout (`id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
-- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to
 D (sleep ending between D-1 20:00 and D 13:00), so the morning's recovery and the

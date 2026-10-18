@@ -42,6 +42,13 @@ func ReadJSON(r *http.Request, v any) error {
 	return nil
 }
 
+// NotFound answers unknown routes (and unknown methods on known paths) with
+// the API's JSON error shape instead of ServeMux's plain-text 404/405. Mount it
+// on "/" and on the authenticated "/v1/" mux.
+func NotFound(w http.ResponseWriter, _ *http.Request) {
+	WriteError(w, http.StatusNotFound, "not found")
+}
+
 // BearerAuth rejects requests whose Authorization header does not carry the
 // configured key. Constant-time compare so timing does not leak the key.
 func BearerAuth(apiKey string, next http.Handler) http.Handler {

@@ -110,7 +110,8 @@ type DailyScore struct {
 	SpO2             *float64       `json:"spo2"`
 	HRVBaselineMS    *float64       `json:"hrv_baseline_ms"` // 30-day baseline hrv_ms is scored against
 	RHRBaseline      *float64       `json:"rhr_baseline"`    // 30-day baseline rhr is scored against
-	Calibrating      bool           `json:"calibrating"`
+	BaselineDays     int            `json:"baseline_days"`   // nights of history behind the baselines, 0..30
+	Calibrating      bool           `json:"calibrating"`     // baseline_days < 7
 	Details          map[string]any `json:"details"`
 	ComputedAt       time.Time      `json:"computed_at"`
 }

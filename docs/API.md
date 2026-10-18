@@ -6,13 +6,29 @@ wire types (`../app/Ryft/Networking/Models.swift`) mirror the shapes below and
 
 **Compatibility rule.** v1 only changes additively: new endpoints, new optional
 query parameters, new response fields. A field is never renamed, removed or
-retyped, and an enum never loses a value, without moving to `/v2`. Clients must
-ignore response fields they do not know.
+retyped without moving to `/v2`. Clients must ignore response fields they do not
+know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `stage`,
+`severity` will not gain values without `/v2`, so they can be decoded as Swift enums.
+`Insight.id`, `Insight.metric` and `Workout.activity` are **open** strings.
+
+## Screens → endpoints
+
+| Screen | Numbers | Endpoint |
+| --- | --- | --- |
+| Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt | `GET /v1/days/{today}` → `score` |
+| Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
+| Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
+| Sleep — Week / Month | nightly totals and stages, averages | `GET /v1/sleep?range=week` / `month` |
+| Strain | day strain, zones, TRIMP, activities | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
+| Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
+| Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
+| Profile | timezone, max HR, sleep baseline; apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
+| (background) | HealthKit upload | `POST /v1/sync` |
 
 ## Conventions
 
 | Topic | Rule |
-|---|---|
+| --- | --- |
 | Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). |
 | Auth | Every `/v1/*` request carries `Authorization: Bearer <API_KEY>`. Missing or wrong key → `401` with `WWW-Authenticate: Bearer realm="ryft"`. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB. |
@@ -20,7 +36,7 @@ ignore response fields they do not know.
 | Timestamps | RFC 3339 strings, e.g. `"2026-10-18T05:12:00Z"`; fractional seconds may appear. |
 | Days | `YYYY-MM-DD`, a calendar day in the user's timezone (`users.tz`, see `GET /v1/me`). The night that *ends* on day D belongs to D. |
 | Nullability | A field typed `T?` below is `null` when unknown; a few `Workout` fields are *omitted* instead (noted per field), so decode every `T?` as optional. Fields not marked `?` are always present and non-null. |
-| Units | Durations in whole minutes (`*_min`), heart rate in bpm, HRV in ms (SDNN), strain on the 0–21 scale, scores 0–100. |
+| Units | Durations in whole minutes (`*_min`), heart rate in bpm, HRV in ms (SDNN), strain on the 0–21 scale, scores 0–100. Percentages (`pct`, `efficiency`, `quality`, scores) are whole numbers 0–100, **never** 0–1 fractions: `1` means 1 %. |
 
 ### Errors
 
@@ -31,18 +47,20 @@ Every error response has the same shape:
 ```
 
 | Status | When |
-|---|---|
-| `400` | Malformed JSON, unknown body field, malformed query parameter or path value |
-| `401` | Missing or wrong bearer token |
-| `404` | Resource or route does not exist |
-| `422` | Well-formed but invalid (out-of-range value, unknown enum, `from > to`) |
+| --- | --- |
+| `400` | Malformed JSON, unknown body field, body over 32 MiB, malformed date / UUID in query or path |
+| `401` | Missing or wrong bearer token (checked before routing, so any `/v1/*` path) |
+| `404` | Resource does not exist (`/v1/workouts/{id}`), or unknown route or method |
+| `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone |
 | `500` | Unexpected server error |
 | `503` | A dependency is down (queue unavailable on `POST /v1/recompute`; `/readyz`) |
+
+The message is for logs and debugging; branch on the status code, not the text.
 
 ## Endpoints
 
 | Method | Path | Service | Returns |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `POST` | `/v1/sync` | ingest | `SyncResponse` |
 | `GET` | `/v1/me` | api | `User` |
 | `PATCH` | `/v1/me` | api | `User` |
@@ -54,14 +72,14 @@ Every error response has the same shape:
 | `GET` | `/v1/trends?metric&range&to` | api | `Trend` |
 | `GET` | `/v1/insights` | api | `[Insight]` |
 | `POST` | `/v1/recompute` | api | `202 {status:"queued"}` |
-| `GET` | `/healthz`, `/readyz` | all | health |
+| `GET` | `/healthz`, `/readyz`, `/metrics` | all | health, Prometheus (no auth, not routed by the Ingress) |
 
 ### `POST /v1/sync` — upload HealthKit data
 
 Request `SyncRequest`:
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `device_id` | uuid | Required. Stable per app install. |
 | `device_name` | string? | Optional, shown nowhere yet. |
 | `samples` | `[Sample]` | May be empty. |
@@ -72,7 +90,7 @@ Request `SyncRequest`:
 (number), `unit` (string, informational), `source` (string, HealthKit source name).
 
 | `type` | Unit of `value` |
-|---|---|
+| --- | --- |
 | `heart_rate` | bpm |
 | `hrv_sdnn` | ms |
 | `resting_hr` | bpm (one per day) |
@@ -106,6 +124,14 @@ workout without `id`).
   "max_hr": 190, "sleep_base_min": 460 }
 ```
 
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | uuid | |
+| `name` | string | |
+| `tz` | string | IANA zone; defines every day boundary in this API. |
+| `max_hr` | int | bpm, used for heart-rate reserve in strain and zones. |
+| `sleep_base_min` | int | Baseline sleep need in minutes before strain and debt top-ups. |
+
 ### `PATCH /v1/me` — change settings
 
 Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230),
@@ -117,12 +143,20 @@ out-of-range value. Changing a setting does **not** rescore history; follow with
 
 Both parameters optional; default is the 30 days ending today (local). Returns the
 scored days in `[from, to]`, oldest first; days that were never scored are absent.
-`400` on a malformed date.
+`400` on a malformed date, `422` when `from > to`.
+
+```json
+{ "day": "2026-10-18", "readiness": 84, "state": "balanced", "recovery": 82, "strain": 12.4,
+  "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 35,
+  "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
+  "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "calibrating": false,
+  "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
+```
 
 `DailyScore`:
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `day` | string | `YYYY-MM-DD` |
 | `readiness` | int? | 1–100. Today's headline: `round(0.6·recovery + 0.4·sleep_performance)` minus up to 10 points when yesterday's strain was > 14 on a recovery < 50. `null` when there is no recovery. |
 | `state` | string | `balanced` (readiness ≥ 67), `strained` (34–66), `depleted` (< 34), `calibrating` (fewer than 7 nights of baseline, or no readiness). |
@@ -138,8 +172,9 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `spo2` | number? | Overnight mean, percent. |
 | `hrv_baseline_ms` | number? | The 30-day HRV baseline `hrv_ms` was scored against: geometric mean of up to 30 scored days before `day`. |
 | `rhr_baseline` | number? | The 30-day resting-HR baseline `rhr` was scored against. |
-| `calibrating` | bool | Fewer than 7 days of baseline history. |
-| `details` | object | Free-form breakdown for debugging; **not part of the contract** — do not build UI on it. |
+| `baseline_days` | int | Nights of history behind the baselines (the smaller of HRV and resting-HR days among the 30 scored days before `day`), 0–30. "Calibrating — N nights to go" is `7 − baseline_days`. |
+| `calibrating` | bool | `baseline_days < 7`. |
+| `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
 
 ### `GET /v1/days/{day}` — one day
@@ -149,7 +184,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 ```
 
 A day that has not been scored yet returns `200` with a `score` whose numbers are
-all `null`, `state: "calibrating"`, `sleep: null`, `strain: null` and `workouts: []`. `400` on a
+all `null`, `state: "calibrating"`, `calibrating: false`, `computed_at:
+"0001-01-01T00:00:00Z"`, and `sleep: null`, `strain: null`, `workouts: []`. `400` on a
 malformed day. `sleep` is `null` when no sleep was recorded for the night ending on
 `day` (also for days scored before the platform upgrade until they are recomputed).
 
@@ -167,7 +203,7 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `start`, `end` | timestamp | First and last sleep segment of the night (including `inbed`). |
 | `total_min` | int | Minutes asleep (= `score.sleep_actual_min`). |
 | `in_bed_min` | int | Recorded time in bed; without an `inbed` record, the span `start`→`end`; never less than asleep + awake. |
@@ -186,7 +222,7 @@ the day had no heart-rate data:
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `trimp` | int | Banister TRIMP for the whole day. |
 | `hr_min` | int | Minutes of usable heart-rate data (watch worn). |
 | `zone_min` | `[int]` | Five entries: minutes at 50–60, 60–70, 70–80, 80–90 and ≥ 90 % of heart-rate reserve. |
@@ -211,7 +247,7 @@ default today. `422` on another `range`, `400` on a malformed `to`.
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `range`, `from`, `to` | string | The window actually served, inclusive. |
 | `days` | `[SleepDay]` | Only nights with data, oldest first. A `SleepDay` is `day` plus every `SleepDetail` field except `segments`. Missing nights are absent — fill the gaps from `from`/`to`. |
 | `nights` | int | `len(days)`. |
@@ -227,7 +263,7 @@ oldest first.
 `Workout`:
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `id` | uuid | The HealthKit workout UUID. |
 | `activity` | string | e.g. `running`; `other` when unknown. |
 | `start`, `end` | timestamp | |
@@ -253,7 +289,7 @@ Returns every `Workout` field plus:
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `avg_hr`, `max_hr` | number? | As sent by the app; when the app sent none, derived from the heart-rate samples in the workout window. Still omitted when there are no samples either. |
 | `hr` | `[HRSample]` | The heart-rate curve between `start` and `end` (inclusive), oldest first, at most 600 points. Longer series are down-sampled with Largest-Triangle-Three-Buckets, so peaks survive and every point is a real sample. `[]` when there are no samples. |
 | `HRSample.t` | timestamp | |
@@ -268,7 +304,7 @@ the whole duration counts at that intensity and in that zone.
 ### `GET /v1/trends?metric=…&range=7d|30d|90d&to=YYYY-MM-DD` — Trends charts
 
 | Parameter | Values | Default |
-|---|---|---|
+| --- | --- | --- |
 | `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm) | required |
 | `range` | `7d`, `30d`, `90d` — days ending at `to`, inclusive | `7d` |
 | `to` | `YYYY-MM-DD` | today |
@@ -282,7 +318,7 @@ the whole duration counts at that intensity and in that zone.
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `metric`, `range`, `from`, `to` | string | The window actually served. |
 | `points` | `[TrendPoint]` | `{day, value}` for each scored day with a value, oldest first. Days without a value are absent (a gap in the chart), so there can be fewer points than days. Same numbers as the matching `DailyScore` field. |
 | `avg` | number? | Mean of `points`, one decimal. `null` without points. |
@@ -302,7 +338,7 @@ for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 ```
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `id` | string | Stable per rule (table below); use it for icons and de-duplication. New ids may appear — show unknown ones generically. |
 | `severity` | string | `warn`, `notice` or `info` (positive news is `info`). |
 | `title`, `body` | string | Display text, English, numbers already formatted. |
@@ -310,7 +346,7 @@ for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 | `day` | string | The day the card is about (today, or yesterday when today has not synced yet; for streaks, the latest day). |
 
 | `id` | Severity | Fires when |
-|---|---|---|
+| --- | --- | --- |
 | `hrv-low-3d` | warn | Overnight HRV below its 30-day baseline for ≥ 3 consecutive nights. |
 | `rhr-elevated` | warn | Last night's resting HR ≥ 5 bpm above its baseline. |
 | `strain-no-recovery` | warn | ≥ 3 days at strain ≥ 14 in the last 14 days with no recovery ≥ 67 since the first of them. |
@@ -323,20 +359,182 @@ Baseline-relative rules stay silent while `calibrating`.
 
 ### `POST /v1/recompute` — rescore a range
 
-Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, at most
-400 days). Responds `202 {"status":"queued","from":"…","to":"…"}`; scoring rebuilds
-the days oldest first within seconds. `422` on bad dates, `503` if the queue is down.
+Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, `to − from`
+at most 400 days). Responds `202 {"status":"queued","from":"…","to":"…"}`; scoring
+rebuilds the days oldest first; a 90-day range takes a few seconds. `422` on bad dates, an
+inverted or too-large range; `503` if the queue is down. Use it after `PATCH /v1/me`
+and after the first big backfill.
 
 ### Health
 
 `GET /healthz` → `200 {"status":"ok"}` while the process runs.
 `GET /readyz` → `200 {"status":"ready"}`, or `503 {"error":"…"}` when Postgres (and,
-for ingest/scoring, NATS) is unreachable.
+for ingest/scoring, NATS) is unreachable. `GET /metrics` → Prometheus text format
+(see `OBSERVABILITY.md`). All three are unauthenticated and not exposed by the Ingress.
+
+## Swift mirror
+
+Codable types for the iOS app, matching the shapes above with the app's decoder
+(`.convertFromSnakeCase`, RFC 3339 dates with or without fractional seconds). They
+extend `Models.swift`: `DailyScore` and `DayDetail` replace the existing structs
+(new fields only), the rest are new. `Workout`, `User`, `UserPatch` and the sync
+types are unchanged. `scripts/check_swift.sh` compiles this block and decodes every
+endpoint of a running stack with it.
+
+```swift
+import Foundation
+
+enum ReadinessState: String, Codable { case balanced, strained, depleted, calibrating }
+enum SleepQualityLabel: String, Codable { case good, fair, poor }
+enum SleepStageName: String, Codable { case deep, light, rem, awake, asleep }
+enum InsightSeverity: String, Codable { case warn, notice, info }
+
+struct DailyScore: Codable, Identifiable {
+    let day: String
+    let readiness: Int?
+    let state: ReadinessState
+    let recovery: Int?
+    let strain: Double?
+    let sleepPerformance: Int?
+    let sleepNeedMin: Int?
+    let sleepActualMin: Int?
+    let sleepDebtMin: Int?
+    let hrvMs: Double?
+    let rhr: Double?
+    let respRate: Double?
+    let spo2: Double?
+    let hrvBaselineMs: Double?
+    let rhrBaseline: Double?
+    let baselineDays: Int
+    let calibrating: Bool
+    let computedAt: Date
+    var id: String { day }
+}
+
+struct SleepStage: Codable {
+    let stage: SleepStageName
+    let min: Int
+    let pct: Int
+}
+
+struct SleepInterval: Codable {
+    let stage: SleepStageName
+    let start: Date
+    let end: Date
+}
+
+struct SleepDetail: Codable {
+    let start: Date
+    let end: Date
+    let totalMin: Int
+    let inBedMin: Int
+    let efficiency: Int
+    let stages: [SleepStage]
+    let quality: Int
+    let qualityLabel: SleepQualityLabel
+    let hasStages: Bool
+    let segments: [SleepInterval]
+}
+
+struct DayStrain: Codable {
+    let trimp: Int
+    let hrMin: Int
+    let zoneMin: [Int]
+}
+
+struct DayDetail: Codable {
+    let score: DailyScore
+    let sleep: SleepDetail?
+    let strain: DayStrain?
+    let workouts: [Workout]
+}
+
+struct SleepDay: Codable, Identifiable {
+    let day: String
+    let start: Date
+    let end: Date
+    let totalMin: Int
+    let inBedMin: Int
+    let efficiency: Int
+    let stages: [SleepStage]
+    let quality: Int
+    let qualityLabel: SleepQualityLabel
+    let hasStages: Bool
+    var id: String { day }
+}
+
+struct SleepRange: Codable {
+    let range: String
+    let from: String
+    let to: String
+    let days: [SleepDay]
+    let nights: Int
+    let avgTotalMin: Int?
+    let avgInBedMin: Int?
+    let avgEfficiency: Int?
+    let avgQuality: Int?
+    let avgStages: [SleepStage]
+}
+
+struct HRSample: Codable {
+    let t: Date
+    let bpm: Int
+}
+
+struct WorkoutDetail: Codable, Identifiable {
+    let id: UUID
+    let activity: String
+    let start: Date
+    let end: Date
+    let avgHr: Double?
+    let maxHr: Double?
+    let energyKcal: Double?
+    let distanceM: Double?
+    let source: String
+    let strain: Double?
+    let hr: [HRSample]
+    let zoneMin: [Int]?
+    let trimp: Int?
+}
+
+struct TrendPoint: Codable, Identifiable {
+    let day: String
+    let value: Double
+    var id: String { day }
+}
+
+struct Trend: Codable {
+    let metric: String
+    let range: String
+    let from: String
+    let to: String
+    let points: [TrendPoint]
+    let avg: Double?
+    let min: Double?
+    let max: Double?
+    let baseline: Double?
+}
+
+struct Insight: Codable, Identifiable {
+    let id: String
+    let severity: InsightSeverity
+    let title: String
+    let body: String
+    let metric: String
+    let day: String
+}
+
+struct APIErrorBody: Codable {
+    let error: String
+}
+```
 
 ## Changelog
 
 | Date | Change |
-|---|---|
+| --- | --- |
+| 2026-10-18 | `DailyScore.baseline_days` added; `details` keys read by existing clients frozen. |
+| 2026-10-18 | Errors: unknown routes and methods return a JSON `404` (was plain text); `GET /v1/days` and `/v1/workouts` with `from > to` return `422` (was `200 []`); `POST /v1/recompute` over 400 days returns `422` (was `202`, then failed in scoring). |
 | 2026-10-18 | `GET /v1/insights` added. |
 | 2026-10-18 | `GET /v1/trends` and `DailyScore.hrv_baseline_ms` / `rhr_baseline` added. |
 | 2026-10-18 | `GET /v1/workouts/{id}` (heart-rate curve, zone minutes, TRIMP) and `DayDetail.strain` added. |

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
@@ -65,7 +67,9 @@ func main() {
 	api.HandleFunc("GET /v1/trends", h.trends)
 	api.HandleFunc("GET /v1/insights", h.insights)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
+	api.HandleFunc("/v1/", httpx.NotFound)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
+	mux.HandleFunc("/", httpx.NotFound)
 
 	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
 		log.Error("serve", "err", err)
@@ -127,6 +131,12 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.From > req.To {
 		httpx.WriteError(w, 422, "from must be <= to")
+		return
+	}
+	a, _ := time.Parse(dayLayout, req.From)
+	b, _ := time.Parse(dayLayout, req.To)
+	if b.Sub(a) > scoring.MaxRangeDays*24*time.Hour {
+		httpx.WriteError(w, 422, fmt.Sprintf("range too large (max %d days)", scoring.MaxRangeDays))
 		return
 	}
 	ev := model.IngestedEvent{UserID: h.cfg.UserID, Days: []string{req.From, req.To}, Reason: "recompute"}

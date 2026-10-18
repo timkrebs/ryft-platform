@@ -65,7 +65,9 @@ func main() {
 	})
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/sync", h.sync)
+	api.HandleFunc("/v1/", httpx.NotFound)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
+	mux.HandleFunc("/", httpx.NotFound)
 
 	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
 		log.Error("serve", "err", err)

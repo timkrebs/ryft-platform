@@ -42,7 +42,7 @@ The `NetworkPolicy` in `deploy/k8s` admits scrapes from the namespace named
 ## Metrics
 
 | Metric | Type | Labels | Service | Meaning |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `ryft_http_requests_total` | counter | `route`, `code` | all | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
 | `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
@@ -61,7 +61,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 **Row: Health at a glance**
 
 | Panel | Type | Query |
-|---|---|---|
+| --- | --- | --- |
 | Time since last sync | stat (thresholds 6 h / 24 h) | `time() - max(ryft_last_sync_timestamp_seconds)` |
 | Syncs (24 h) | stat | `sum(increase(ryft_http_requests_total{app="ingest",route="POST /v1/sync",code="200"}[24h]))` |
 | Days scored (24 h) | stat | `sum(increase(ryft_days_scored_total{result="ok"}[24h]))` |
@@ -71,7 +71,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 **Row: Ingest**
 
 | Panel | Type | Query |
-|---|---|---|
+| --- | --- | --- |
 | Sync requests by status | time series | `sum by (code) (rate(ryft_http_requests_total{route="POST /v1/sync"}[5m]))` |
 | Sync latency p50 / p95 / p99 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[5m])))` (repeat for 0.5, 0.99) |
 | Samples ingested by type | stacked bars, 1 h buckets | `sum by (type) (increase(ryft_samples_ingested_total{kind="sample"}[1h]))` |
@@ -81,7 +81,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 **Row: Scoring**
 
 | Panel | Type | Query |
-|---|---|---|
+| --- | --- | --- |
 | Days scored by result | time series | `sum by (result) (rate(ryft_days_scored_total[5m]))` |
 | Scoring duration p50 / p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_scoring_duration_seconds_bucket[5m])))` |
 | Events handled by result | time series | `sum by (reason, result) (rate(ryft_events_handled_total[5m]))` |
@@ -91,7 +91,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 **Row: API**
 
 | Panel | Type | Query |
-|---|---|---|
+| --- | --- | --- |
 | Requests by route | time series | `sum by (route) (rate(ryft_http_requests_total{app="api",route=~".*/v1/.*"}[5m]))` |
 | Latency p95 by route | time series | `histogram_quantile(0.95, sum by (route, le) (rate(ryft_http_request_duration_seconds_bucket{app="api"}[5m])))` |
 | 4xx / 5xx by route | time series | `sum by (route, code) (rate(ryft_http_requests_total{app="api",code=~"[45].."}[5m]))` |
@@ -99,7 +99,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 **Row: Runtime** (repeat by `app`)
 
 | Panel | Type | Query |
-|---|---|---|
+| --- | --- | --- |
 | Memory (RSS) | time series | `process_resident_memory_bytes{namespace="$namespace"}` |
 | Goroutines | time series | `go_goroutines{namespace="$namespace"}` |
 | CPU | time series | `rate(process_cpu_seconds_total{namespace="$namespace"}[5m])` |
@@ -111,7 +111,7 @@ Postgres, `postgres_exporter` with the `ryft` credentials.
 ## Suggested alerts
 
 | Alert | Expression | For |
-|---|---|---|
+| --- | --- | --- |
 | NoSync | `time() - max(ryft_last_sync_timestamp_seconds) > 6*3600` | 15m |
 | ScoringErrors | `sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0` | 15m |
 | EventsDropped | `sum(increase(ryft_events_handled_total{result=~"failed\|bad"}[1h])) > 0` | 0m |

@@ -25,6 +25,19 @@ def get(path, expect=200, auth=True):
     return json.loads(body) if body.strip().startswith((b"{", b"[")) else body
 
 
+def post(path, body, expect):
+    req = urllib.request.Request(API + path, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    if status != expect:
+        fail(f"POST {path}: status {status}, want {expect}: {raw[:200]!r}")
+    return json.loads(raw)
+
+
 def fail(msg):
     print(f"✗ {msg}")
     sys.exit(1)
@@ -48,6 +61,7 @@ for d in days:
     check("readiness" in d and d["state"] in STATES, f"{d['day']}: readiness/state missing or bad: {d.get('state')}")
     r = d["readiness"]
     check(r is None or 1 <= r <= 100, f"{d['day']}: readiness {r} out of range")
+    check(d["calibrating"] == (d["baseline_days"] < 7), f"{d['day']}: calibrating != baseline_days < 7")
     if r is not None and not d["calibrating"]:
         want = "balanced" if r >= 67 else "strained" if r >= 34 else "depleted"
         check(d["state"] == want, f"{d['day']}: state {d['state']} for readiness {r}")
@@ -150,5 +164,19 @@ for c in cards:
 check([RANK[c["severity"]] for c in cards] == sorted(RANK[c["severity"]] for c in cards), "insights not sorted by severity")
 check(get("/v1/insights") == cards, "cached insights differ between calls")
 ok(f"/v1/insights: {len(cards)} cards {[c['id'] for c in cards]}")
+
+# ---- 2.9 errors ---------------------------------------------------------------
+def is_error(body):
+    return isinstance(body, dict) and set(body) == {"error"} and body["error"]
+
+
+check(is_error(get("/v1/days", expect=401, auth=False)), "401 must carry {error}")
+check(is_error(get("/v1/nope", expect=404)), "unknown /v1 route must be a JSON 404")
+check(is_error(get("/nope", expect=404, auth=False)), "unknown route must be a JSON 404")
+check(is_error(get("/v1/days?from=2026-10-18&to=2026-10-01", expect=422)), "from > to must be 422")
+check(is_error(get("/v1/days?from=yesterday", expect=400)), "malformed date must be 400")
+check(is_error(post("/v1/recompute", {"from": "2024-01-01", "to": TODAY}, expect=422)), "recompute > 400 days must be 422")
+check(is_error(post("/v1/recompute", {"from": TODAY, "to": TODAY, "x": 1}, expect=400)), "unknown body field must be 400")
+ok("errors: 400/401/404/422 all carry {error}")
 
 print("all API contract checks passed")
