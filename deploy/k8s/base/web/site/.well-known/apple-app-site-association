@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["M77SKHKG63.dev.timkrebs.ryft"],
+        "components": [
+          { "/": "/auth/*", "comment": "email confirmation and password reset, once the app handles universal links" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["M77SKHKG63.dev.timkrebs.ryft"]
+  }
+}
