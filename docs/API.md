@@ -30,7 +30,8 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Topic | Rule |
 | --- | --- |
 | Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). Production: **`https://api.ryftapp.de`** for both (HTTPS only, port 80 closed; live once Supabase auth ships, M1). Configure the app with that one URL and leave the ingest URL empty. |
-| Auth | Every `/v1/*` request carries `Authorization: Bearer <API_KEY>`. Missing or wrong key → `401` with `WWW-Authenticate: Bearer realm="ryft"`. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
+| Auth | Every `/v1/*` request carries `Authorization: Bearer <access token>`: the Supabase Auth access token of the signed-in user (a JWT; Sign in with Apple through Supabase). See **Authentication** below. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
+| Users | Every response is scoped to the token's user. There is no sign-up call: the platform creates the user on the first authenticated request. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB. |
 | Keys | `snake_case`. The app decodes with `.convertFromSnakeCase`. |
 | Timestamps | RFC 3339 strings, e.g. `"2026-10-18T05:12:00Z"`; fractional seconds may appear. |
@@ -49,13 +50,33 @@ Every error response has the same shape:
 | Status | When |
 | --- | --- |
 | `400` | Malformed JSON, unknown body field, body over 32 MiB, malformed date / UUID in query or path |
-| `401` | Missing or wrong bearer token (checked before routing, so any `/v1/*` path) |
+| `401` | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token (checked before routing, so any `/v1/*` path). Refresh the session once and retry; a second `401` means sign in again. |
 | `404` | Resource does not exist (`/v1/workouts/{id}`), or unknown route or method |
 | `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone |
 | `500` | Unexpected server error |
-| `503` | A dependency is down (queue unavailable on `POST /v1/recompute`; `/readyz`) |
+| `429` | Too many requests; wait `Retry-After` seconds (e.g. a second `POST /v1/recompute` within a minute). |
+| `503` | A dependency is down: the token could not be checked right now (Supabase keys unreachable — **not** a sign-in problem, keep the session and retry after `Retry-After`), the database, or the queue on `POST /v1/recompute`; `/readyz`. |
 
 The message is for logs and debugging; branch on the status code, not the text.
+
+### Authentication
+
+| Situation | Response | Client should |
+| --- | --- | --- |
+| Valid Supabase access token | normal response | — |
+| No or malformed `Authorization` header, expired token, bad signature, wrong issuer/audience, `role` ≠ `authenticated`, anonymous user | `401`, `WWW-Authenticate: Bearer realm="ryft", error="invalid_token"` | refresh the session once, retry; on a second `401` sign the user out |
+| Signing keys temporarily unreachable, database down | `503` with `Retry-After` | retry later; never sign out |
+
+Tokens are verified against the project's published signing keys
+(`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`, ES256/RS256 only) and must
+carry `iss = https://<ref>.supabase.co/auth/v1`, `aud = authenticated`,
+`role = authenticated`, a UUID `sub` (the user ID) and must not be anonymous. The
+platform reads `email`, `app_metadata.provider` and `user_metadata.full_name` into the
+user's profile.
+
+**Local development** (`AUTH_MODE=apikey`, refused unless explicitly allowed): the bearer
+is the shared `API_KEY` (acts as one configured user) or `<API_KEY>:<uuid>` (acts as that
+user). Never exposed outside a developer machine.
 
 ## Endpoints
 
@@ -120,14 +141,19 @@ workout without `id`).
 ### `GET /v1/me` — user settings
 
 ```json
-{ "id": "00000000-0000-0000-0000-000000000001", "name": "owner", "tz": "Europe/Berlin",
-  "max_hr": 190, "sleep_base_min": 460 }
+{ "id": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c", "name": "Tim K", "email": "tim@example.com",
+  "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 460 }
 ```
+
+The user is created on the first authenticated request with `tz = Europe/Berlin`,
+`max_hr = 190`, `sleep_base_min = 460`; set real values with `PATCH /v1/me`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `id` | uuid | |
-| `name` | string | |
+| `id` | uuid | Supabase user ID (`sub` of the token). |
+| `name` | string | From the sign-in (`user_metadata.full_name`, the Apple name); `""` until known. |
+| `email` | string? | From the token; for Sign in with Apple possibly a private relay address. |
+| `provider` | string? | Sign-in provider, e.g. `apple`. |
 | `tz` | string | IANA zone; defines every day boundary in this API. |
 | `max_hr` | int | bpm, used for heart-rate reserve in strain and zones. |
 | `sleep_base_min` | int | Baseline sleep need in minutes before strain and debt top-ups. |
@@ -360,7 +386,8 @@ Baseline-relative rules stay silent while `calibrating`.
 ### `POST /v1/recompute` — rescore a range
 
 Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, `to − from`
-at most 400 days). Responds `202 {"status":"queued","from":"…","to":"…"}`; scoring
+at most 400 days). At most one request per user per minute: a second one gets `429` with
+`Retry-After`. Responds `202 {"status":"queued","from":"…","to":"…"}`; scoring
 rebuilds the days oldest first; a 90-day range takes a few seconds. `422` on bad dates, an
 inverted or too-large range; `503` if the queue is down. Use it after `PATCH /v1/me`
 and after the first big backfill.
@@ -376,8 +403,8 @@ for ingest/scoring, NATS) is unreachable. `GET /metrics` → Prometheus text for
 
 Codable types for the iOS app, matching the shapes above with the app's decoder
 (`.convertFromSnakeCase`, RFC 3339 dates with or without fractional seconds). They
-extend `Models.swift`: `DailyScore` and `DayDetail` replace the existing structs
-(new fields only), the rest are new. `Workout`, `User`, `UserPatch` and the sync
+extend `Models.swift`: `DailyScore`, `DayDetail` and `User` replace the existing
+structs (new fields only), the rest are new. `Workout`, `UserPatch` and the sync
 types are unchanged. `scripts/check_swift.sh` compiles this block and decodes every
 endpoint of a running stack with it.
 
@@ -524,6 +551,16 @@ struct Insight: Codable, Identifiable {
     let day: String
 }
 
+struct User: Codable {
+    let id: UUID
+    let name: String
+    let email: String?
+    let provider: String?
+    let tz: String
+    let maxHr: Int
+    let sleepBaseMin: Int
+}
+
 struct APIErrorBody: Codable {
     let error: String
 }
@@ -533,6 +570,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | **Auth: Supabase access tokens** replace the shared API key; every response is scoped to the token's user, created on first request. `401` now strictly means "refresh / sign in again", `503` (with `Retry-After`) "retry". `User.email` and `User.provider` added. `POST /v1/recompute` answers `429` within a minute of the previous request. |
 | 2026-10-18 | Production host `https://api.ryftapp.de` documented (both services, HTTPS only). No API change. |
 | 2026-10-18 | Fixes: a workout running past midnight is scored on its whole window (was: only the part before midnight); `DayDetail.strain` is non-null whenever `score.strain` is; `PATCH /v1/me` returns `500`, not `422`, when the database fails; the 400-day recompute limit counts calendar days, so ranges across DST are judged the same by api and scoring. |
 | 2026-10-18 | `DailyScore.baseline_days` added; `details` keys read by existing clients frozen. |

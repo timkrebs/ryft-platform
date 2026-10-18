@@ -26,7 +26,7 @@ func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 	}
 	a, _ := time.ParseInLocation(dayLayout, from, loc)
 	b, _ := time.ParseInLocation(dayLayout, to, loc)
-	rows, err := h.st.WorkoutsBetween(r.Context(), h.cfg.UserID, a, b.AddDate(0, 0, 1))
+	rows, err := h.st.WorkoutsBetween(r.Context(), userOf(r).ID, a, b.AddDate(0, 0, 1))
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return
@@ -45,7 +45,7 @@ func (h *handler) workout(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 400, "id must be a UUID")
 		return
 	}
-	row, err := h.st.Workout(r.Context(), h.cfg.UserID, id)
+	row, err := h.st.Workout(r.Context(), userOf(r).ID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		httpx.WriteError(w, 404, "workout not found")
 		return
@@ -54,7 +54,7 @@ func (h *handler) workout(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 500, err.Error())
 		return
 	}
-	hr, err := h.st.SamplesBetween(r.Context(), h.cfg.UserID, model.SampleHeartRate,
+	hr, err := h.st.SamplesBetween(r.Context(), userOf(r).ID, model.SampleHeartRate,
 		row.Start, scoring.WorkoutWindowEnd(row.Workout))
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())

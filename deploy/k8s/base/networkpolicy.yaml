@@ -1,11 +1,12 @@
-# Ingress isolation for namespace ryft:
+# Isolation for namespace ryft. Ingress:
 #   ingest, api   ← the Ingress controller only (Traefik on k3s, or ingress-nginx)
 #   postgres      ← the three services and the backup job only
 #   nats          ← the three services only
 #   :8080/metrics ← Prometheus in namespace "monitoring"
 # Everything else is denied. Kubelet probes come from the node, which common CNIs
-# (k3s's kube-router, Calico, Cilium) allow regardless of policy. Egress is not
-# restricted. Your CNI must enforce NetworkPolicy (k3s does by default).
+# (k3s's kube-router, Calico, Cilium, the EKS VPC CNI) allow regardless of policy.
+# Egress of the three services: DNS, NATS, and TCP 443/5432 out (ryft-egress).
+# Your CNI must enforce NetworkPolicy (k3s does by default; EKS via infra/aws).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -80,3 +81,30 @@ spec:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
         - { protocol: TCP, port: 8080 }
+---
+# Egress of the three services: cluster DNS, NATS in this namespace, and TCP
+# 443 / 5432 to anywhere — Supabase Auth (JWKS, admin API) and the Supavisor
+# pooler, or the in-cluster Postgres of overlays/local-postgres. NetworkPolicy
+# cannot match hostnames, so the ports are the restriction.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ryft-egress
+  namespace: ryft
+spec:
+  podSelector: { matchLabels: { part-of: ryft } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector: { matchLabels: { app: nats } }
+      ports:
+        - { protocol: TCP, port: 4222 }
+    - ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 5432 }

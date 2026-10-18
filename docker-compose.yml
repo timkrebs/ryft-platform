@@ -25,6 +25,10 @@ services:
       DATABASE_URL: postgres://ryft:ryft@postgres:5432/ryft?sslmode=disable
       NATS_URL: nats://nats:4222
       API_KEY: ${API_KEY:-dev-api-key-change-me}
+      # Local development: a shared key instead of Supabase tokens. The bearer
+      # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
+      AUTH_MODE: apikey
+      ALLOW_INSECURE_APIKEY_AUTH: "true"
     ports: ["8081:8080"]
     depends_on:
       postgres: { condition: service_healthy }

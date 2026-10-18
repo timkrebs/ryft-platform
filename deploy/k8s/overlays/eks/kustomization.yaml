@@ -1,8 +1,10 @@
 # RYFT on the EKS cluster from infra/aws, served at https://api.ryftapp.de.
 #
 # Needs the add-ons from infra/aws/kubernetes (Traefik, cert-manager with the
-# letsencrypt-prod ClusterIssuer, ExternalDNS, the gp3-encrypted StorageClass)
-# and secrets.yaml next to this file (git-ignored; copy ../../secrets.example.yaml).
+# letsencrypt-prod ClusterIssuer, ExternalDNS, the gp3-encrypted StorageClass),
+# SUPABASE_PROJECT_REF in base/configmap.yaml, and secrets.yaml next to this
+# file (git-ignored; copy ../../secrets.example.yaml: DATABASE_URL to the
+# Supabase pooler, SUPABASE_SERVICE_ROLE_KEY).
 #   kubectl apply -k deploy/k8s/overlays/eks      (or: make k8s-apply-eks)
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -21,11 +23,6 @@ patches:
         value: api.ryftapp.de
   # Every volume on the encrypted class (volumeClaimTemplates are immutable, so
   # this must be right before the first apply).
-  - target: { kind: StatefulSet, name: postgres }
-    patch: |-
-      - op: add
-        path: /spec/volumeClaimTemplates/0/spec/storageClassName
-        value: gp3-encrypted
   - target: { kind: StatefulSet, name: nats }
     patch: |-
       - op: add

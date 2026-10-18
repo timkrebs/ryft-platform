@@ -34,8 +34,15 @@ var (
 	}, []string{"kind", "type"})
 	LastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_last_sync_timestamp_seconds",
-		Help: "Unix time of the last successful sync, per device.",
-	}, []string{"device"})
+		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
+	}, []string{})
+
+	// ingest + api.
+	AuthFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_auth_failures_total",
+		Help: "Rejected /v1 requests by reason: missing_token, expired, signature, issuer, audience, unknown_key, " +
+			"role, anonymous, subject, api_key, … (401) and jwks_unavailable, jwks_refresh_limited, internal (503).",
+	}, []string{"reason"})
 
 	// NATS, ingest + api publish, scoring consumes.
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -45,7 +52,8 @@ var (
 	EventsHandled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_handled_total",
 		Help: "ryft.ingested events consumed, by reason and result: ok, retry (NAKed for redelivery), " +
-			"failed (last delivery failed, JetStream gives up), bad (unparseable, terminated).",
+			"failed (last delivery failed, JetStream gives up), bad (unparseable, terminated), " +
+			"dropped (cannot succeed, e.g. the user was deleted; terminated).",
 	}, []string{"reason", "result"})
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",

@@ -1,5 +1,8 @@
-# Nightly logical backup: pg_dump (custom format) to the pg-backups PVC, keeping
-# 14 days. Restore and off-cluster copies: docs/OPERATIONS.md.
+# Nightly logical backup of the app schema (public): pg_dump (custom format) of
+# DATABASE_URL to the pg-backups PVC, keeping 14 days. Works against Supabase and
+# the local-postgres overlay; pg_dump's major version must be >= the server's.
+# Deleted accounts stay in these dumps until they age out (14 days).
+# Restore and off-cluster copies: docs/OPERATIONS.md.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -40,17 +43,15 @@ spec:
             - name: pg-dump
               image: postgres:17-alpine
               env:
-                - { name: PGHOST, value: postgres }
-                - { name: PGUSER, value: ryft }
-                - { name: PGDATABASE, value: ryft }
-                - name: PGPASSWORD
-                  valueFrom: { secretKeyRef: { name: ryft-secrets, key: POSTGRES_PASSWORD } }
+                # Supabase pooler or the local-postgres overlay's database.
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: ryft-secrets, key: DATABASE_URL } }
                 - { name: KEEP_DAYS, value: "14" }
               command: ["/bin/sh", "-ec"]
               args:
                 - |
                   f="/backups/ryft-$(date -u +%Y%m%dT%H%M%SZ).dump"
-                  pg_dump --format=custom --no-owner --file="$f.partial"
+                  pg_dump --format=custom --no-owner --schema=public --file="$f.partial" "$DATABASE_URL"
                   mv "$f.partial" "$f"
                   find /backups -name 'ryft-*.dump' -mtime +"$KEEP_DAYS" -delete
                   find /backups -name '*.partial' -mmin +120 -delete

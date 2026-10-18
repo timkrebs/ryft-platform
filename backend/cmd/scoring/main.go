@@ -1,11 +1,13 @@
 // scoring turns raw samples into daily Recovery / Strain / Sleep scores.
 // It is driven by two things: ingest events on NATS (recompute the days a
-// sync touched) and a timer (keep today and yesterday fresh while the day is
-// still accumulating strain).
+// sync touched, for the user in the event) and a timer (keep today and
+// yesterday fresh, in each user's timezone, for everyone who synced lately).
 package main
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +24,11 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-const refreshEvery = 15 * time.Minute
+const (
+	refreshEvery = 15 * time.Minute
+	// activeWindow: users whose devices synced this recently get the timer pass.
+	activeWindow = 48 * time.Hour
+)
 
 func main() {
 	log := httpx.Logger("scoring")
@@ -34,7 +40,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	pool, err := db.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		log.Error("db", "err", err)
 		os.Exit(1)
@@ -70,17 +76,12 @@ func main() {
 	}()
 
 	handle := func(ctx context.Context, ev model.IngestedEvent) error {
-		days := append([]string(nil), ev.Days...)
-		sort.Strings(days) // oldest first so baselines chain correctly
-		if ev.Reason == "recompute" && len(days) == 2 {
-			return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
+		err := handleEvent(ctx, engine, ev)
+		if errors.Is(err, store.ErrNotFound) {
+			// The user was deleted after the event was queued.
+			return events.Permanent(err)
 		}
-		for _, d := range days {
-			if err := engine.ComputeDay(ctx, ev.UserID, d); err != nil {
-				return err
-			}
-		}
-		return nil
+		return err
 	}
 
 	go func() {
@@ -91,17 +92,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				_, loc, err := st.GetUser(ctx, cfg.UserID)
-				if err != nil {
-					log.Error("periodic: user", "err", err)
-					continue
-				}
-				today := time.Now().In(loc)
-				for _, d := range []time.Time{today.AddDate(0, 0, -1), today} {
-					if err := engine.ComputeDay(ctx, cfg.UserID, d.Format("2006-01-02")); err != nil {
-						log.Error("periodic recompute", "day", d.Format("2006-01-02"), "err", err)
-					}
-				}
+				refreshActive(ctx, log, st, engine)
 			}
 		}
 	}()
@@ -110,5 +101,42 @@ func main() {
 	if err := bus.ConsumeIngested(ctx, log, handle); err != nil {
 		log.Error("consume", "err", err)
 		os.Exit(1)
+	}
+}
+
+func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
+	days := append([]string(nil), ev.Days...)
+	sort.Strings(days) // oldest first so baselines chain correctly
+	if ev.Reason == "recompute" && len(days) == 2 {
+		return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
+	}
+	for _, d := range days {
+		if err := engine.ComputeDay(ctx, ev.UserID, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refreshActive rescores yesterday and today for every user who synced within
+// activeWindow, each in their own timezone.
+func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine) {
+	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
+	if err != nil {
+		log.Error("periodic: active users", "err", err)
+		return
+	}
+	for _, id := range users {
+		_, loc, err := st.GetUser(ctx, id)
+		if err != nil {
+			log.Error("periodic: user", "user_id", id, "err", err)
+			continue
+		}
+		today := time.Now().In(loc)
+		for _, d := range []time.Time{today.AddDate(0, 0, -1), today} {
+			if err := engine.ComputeDay(ctx, id, d.Format("2006-01-02")); err != nil {
+				log.Error("periodic recompute", "user_id", id, "day", d.Format("2006-01-02"), "err", err)
+			}
+		}
 	}
 }

@@ -28,6 +28,7 @@ for metric in ["readiness", "recovery", "strain", "sleep", "sleep_min", "hrv", "
     await decode(Trend.self, "/v1/trends?metric=\(metric)&range=30d&to=\(today)")
 }
 await decode([Insight].self, "/v1/insights")
+await decode(User.self, "/v1/me")
 await decode(APIErrorBody.self, "/v1/trends?metric=nope", status: 422)
 await decode(APIErrorBody.self, "/v1/nope", status: 404)
 print("Swift mirror decodes every endpoint")

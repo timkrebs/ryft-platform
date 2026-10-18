@@ -1,11 +1,10 @@
 // Package httpx has the small HTTP plumbing every service shares: JSON helpers,
-// bearer auth, request logging and metrics, health/metrics endpoints and
-// graceful shutdown.
+// request logging and metrics, health/metrics endpoints and graceful shutdown.
+// Authentication lives in internal/auth.
 package httpx
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -49,25 +47,6 @@ func NotFound(w http.ResponseWriter, _ *http.Request) {
 	WriteError(w, http.StatusNotFound, "not found")
 }
 
-// BearerAuth rejects requests whose Authorization header does not carry the
-// configured key. Constant-time compare so timing does not leak the key.
-func BearerAuth(apiKey string, next http.Handler) http.Handler {
-	if apiKey == "" {
-		panic("httpx.BearerAuth: empty API key")
-	}
-	want := []byte(apiKey)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		tok, ok := strings.CutPrefix(h, "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(tok), want) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ryft"`)
-			WriteError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -75,24 +54,63 @@ type statusWriter struct {
 
 func (s *statusWriter) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
 
+// RequestInfo collects what inner layers learn about a request — the route
+// pattern that matched and the authenticated user — for Instrument to log and
+// count once the request is done. It travels as a pointer in the context
+// because middleware like auth hands copies of the request (r.WithContext)
+// inward, and ServeMux records the pattern only on the copy it was given.
+type RequestInfo struct {
+	Route  string
+	UserID string
+}
+
+type infoKey struct{}
+
+// Info returns the request's RequestInfo, or nil outside Instrument.
+func Info(ctx context.Context) *RequestInfo {
+	ri, _ := ctx.Value(infoKey{}).(*RequestInfo)
+	return ri
+}
+
+// WithRoutes serves mux and records the pattern that matched in RequestInfo
+// before the handler runs.
+func WithRoutes(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ri := Info(r.Context()); ri != nil {
+			if _, pattern := mux.Handler(r); pattern != "" {
+				ri.Route = pattern
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
 // Instrument logs every request and records it in the HTTP metrics. The route
-// label is the ServeMux pattern that matched (set on r by the mux, including
-// nested muxes behind BearerAuth), so /v1/days/2026-10-18 counts as
-// "GET /v1/days/{day}".
+// label is the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
+// cardinality stays bounded.
 func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ri := &RequestInfo{}
+		r = r.WithContext(context.WithValue(r.Context(), infoKey{}, ri))
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		start := time.Now()
 		next.ServeHTTP(sw, r)
 		dur := time.Since(start)
-		route := r.Pattern
+		route := ri.Route
+		if route == "" {
+			route = r.Pattern
+		}
 		if route == "" {
 			route = "unmatched"
 		}
 		metrics.HTTPRequests.WithLabelValues(route, strconv.Itoa(sw.status)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(dur.Seconds())
-		log.Info("http", "method", r.Method, "path", r.URL.Path, "route", route, "status", sw.status,
-			"dur_ms", dur.Milliseconds())
+		attrs := []any{"method", r.Method, "path", r.URL.Path, "route", route, "status", sw.status,
+			"dur_ms", dur.Milliseconds()}
+		if ri.UserID != "" {
+			attrs = append(attrs, "user_id", ri.UserID)
+		}
+		log.InfoContext(r.Context(), "http", attrs...)
 	})
 }
 

@@ -7,6 +7,19 @@ API_URL=${API_URL:-http://localhost:8082}
 API_KEY=${API_KEY:-dev-api-key-change-me}
 DAYS=${DAYS:-10}
 HERE=$(cd "$(dirname "$0")" && pwd)
+AUTH_MODE=${AUTH_MODE:-apikey}
+
+# AUTH_MODE=supabase: sign the test user in (GoTrue password grant) and use its
+# access token as the bearer. It writes synthetic days into that user's data.
+if [ "$AUTH_MODE" = supabase ]; then
+  : "${SUPABASE_URL:?set SUPABASE_URL}" "${SUPABASE_ANON_KEY:?set SUPABASE_ANON_KEY}"
+  : "${SMOKE_EMAIL:?set SMOKE_EMAIL}" "${SMOKE_PASSWORD:?set SMOKE_PASSWORD}"
+  echo "→ signing in $SMOKE_EMAIL at $SUPABASE_URL"
+  API_KEY=$(curl -fsS -X POST "${SUPABASE_URL%/}/auth/v1/token?grant_type=password" \
+    -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' \
+    -d "$(python3 -c 'import json,os;print(json.dumps({"email":os.environ["SMOKE_EMAIL"],"password":os.environ["SMOKE_PASSWORD"]}))')" \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+fi
 
 echo "→ waiting for ingest and api to be ready"
 for url in "$INGEST_URL" "$API_URL"; do
@@ -41,4 +54,4 @@ echo "→ GET /v1/days (last $DAYS days)"
 curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KEY" | python3 "$HERE/print_days.py"
 
 echo "→ API contract checks"
-INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"
+AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"

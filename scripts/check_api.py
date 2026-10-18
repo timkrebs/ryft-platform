@@ -16,8 +16,8 @@ KEY = os.environ.get("API_KEY", "dev-api-key-change-me")
 TODAY = sys.argv[1]
 
 
-def get(path, expect=200, auth=True):
-    req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {KEY}"} if auth else {})
+def get(path, expect=200, auth=True, key=None):
+    req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {key or KEY}"} if auth else {})
     try:
         with urllib.request.urlopen(req) as r:
             status, body = r.status, r.read()
@@ -28,9 +28,9 @@ def get(path, expect=200, auth=True):
     return json.loads(body) if body.strip().startswith((b"{", b"[")) else body
 
 
-def post(path, body, expect, base=API):
+def post(path, body, expect, base=API, key=None):
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+                                 headers={"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req) as r:
             status, raw = r.status, r.read()
@@ -205,5 +205,47 @@ wk = get(f"/v1/workouts/{wid}")
 check(wk["trimp"] is not None, "midnight workout was not scored within 30 s")
 check(len(wk["hr"]) == 81 and sum(wk["zone_min"]) >= 78, f"midnight workout zones {wk['zone_min']} (want ~80 min)")
 ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}")
+
+# ---- multi-user isolation (apikey mode: "<API_KEY>:<uuid>" acts as that user) ---
+if os.environ.get("AUTH_MODE", "apikey") == "apikey":
+    B = str(uuid.uuid4())
+    KEY_B = f"{KEY}:{B}"
+    me_b = get("/v1/me", key=KEY_B)
+    check(me_b["id"] == B and me_b["provider"] == "apikey", f"/v1/me for a new user: {me_b}")
+    check(get(f"/v1/days?to={TODAY}", key=KEY_B) == [], "a new user must see no days")
+    check(get("/v1/insights", key=KEY_B) == [], "a new user must not get another user's insight cards")
+    a_wk = wks[-1]
+    get(f"/v1/workouts/{a_wk['id']}", expect=404, key=KEY_B)
+
+    strip = lambda rows: [{k: v for k, v in r.items() if k != "computed_at"} for r in rows]
+    a_days = strip(get(f"/v1/days?to={TODAY}"))
+    # User B on the same iPhone as A: same device ID, and a workout that reuses
+    # A's HealthKit UUID with B's own times. Both must stay separate.
+    d_b = date.fromisoformat(TODAY) - timedelta(days=50)
+    start_b = datetime(d_b.year, d_b.month, d_b.day, 7, 0, tzinfo=timezone.utc)
+    hr_b = [{"type": "heart_rate", "start": iso(start_b + timedelta(minutes=m)), "end": iso(start_b + timedelta(minutes=m)),
+             "value": 140, "unit": "bpm", "source": "check-b"} for m in range(31)]
+    hrv_b = [{"type": "hrv_sdnn", "start": iso(start_b - timedelta(hours=2)), "end": iso(start_b - timedelta(hours=2)),
+              "value": 99, "unit": "ms", "source": "check-b"}]
+    synth_device = str(uuid.uuid5(uuid.NAMESPACE_DNS, "synth.ryft.local"))
+    post("/v1/sync", {"device_id": synth_device, "samples": hr_b + hrv_b, "sleep": [],
+                      "workouts": [{"id": a_wk["id"], "activity": "cycling", "start": iso(start_b),
+                                    "end": iso(start_b + timedelta(minutes=30)), "source": "check-b"}]},
+         expect=200, base=INGEST, key=KEY_B)
+    for _ in range(30):
+        b_days = get(f"/v1/days?from={d_b.isoformat()}&to={TODAY}", key=KEY_B)
+        if any(d["hrv_ms"] == 99 for d in b_days):
+            break
+        time.sleep(1)
+    check(any(d["hrv_ms"] == 99 for d in b_days), f"B's day was not scored: {b_days}")
+    check(all(d["day"] in {d_b.isoformat(), (d_b + timedelta(days=1)).isoformat()} for d in b_days),
+          f"B sees days it never synced: {[d['day'] for d in b_days]}")
+    check(strip(get(f"/v1/days?to={TODAY}")) == a_days, "B's sync changed A's days")
+    wk_a, wk_b = get(f"/v1/workouts/{a_wk['id']}"), get(f"/v1/workouts/{a_wk['id']}", key=KEY_B)
+    check(wk_a["activity"] == a_wk["activity"] and wk_a["start"] == a_wk["start"], f"A's workout was overwritten: {wk_a}")
+    check(wk_b["activity"] == "cycling" and wk_b["start"] == iso(start_b), f"B's workout with A's UUID: {wk_b}")
+    get("/v1/days", expect=401, key="wrong-key-0123456789")
+    get("/v1/days", expect=401, key=f"{KEY}:not-a-uuid")
+    ok(f"isolation: user {B[:8]}… sees only its own data; shared device and workout UUID stay separate")
 
 print("all API contract checks passed")

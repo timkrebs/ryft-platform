@@ -16,12 +16,22 @@ Render without applying: `kubectl kustomize deploy/k8s/vault`. Validate:
 
 ## Deploy with a plain Secret
 
+The datastore and identity provider is Supabase ([`SUPABASE.md`](SUPABASE.md) has the
+project checklist). Set the project ref in `deploy/k8s/base/configmap.yaml`, then:
+
 ```bash
 cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml
-# set POSTGRES_PASSWORD, the same password inside DATABASE_URL, and API_KEY (openssl rand -hex 32)
+# DATABASE_URL = Supabase session pooler string; SUPABASE_SERVICE_ROLE_KEY = secret key (api only)
 kubectl apply -k deploy/k8s
 kubectl -n ryft rollout status deploy/api deploy/ingest deploy/scoring
 ```
+
+**Fully self-hosted** (in-cluster Postgres, shared API key, nothing exposed):
+`deploy/k8s/overlays/local-postgres` with its own `secrets.yaml` using the
+`local-postgres` keys from the example. If an install from before this change ran
+Postgres from `base/`, `kubectl apply` does not prune the old StatefulSet: delete it
+(`kubectl -n ryft delete statefulset postgres`, after a backup) once the data lives in
+Supabase.
 
 ## Deploy with Vault (Vault Secrets Operator)
 
@@ -31,21 +41,21 @@ auth method at `kubernetes/`. If Vault is not at
 `http://vault.vault.svc.cluster.local:8200`, edit `deploy/k8s/vault/vault-auth.yaml`
 (`VaultConnection.spec.address`, and `caCertSecretRef` for TLS).
 
-1. Write the secret (same keys as `secrets.example.yaml`):
+1. Write the secrets (same keys as `secrets.example.yaml`). The admin key lives at its
+   own path so only the api pods receive it:
 
    ```bash
-   PG_PW=$(openssl rand -hex 24)
    vault kv put secret/ryft \
-     API_KEY="$(openssl rand -hex 32)" \
-     POSTGRES_PASSWORD="$PG_PW" \
-     DATABASE_URL="postgres://ryft:${PG_PW}@postgres.ryft.svc.cluster.local:5432/ryft?sslmode=disable"
+     DATABASE_URL='postgresql://postgres.<ref>:<db-password>@aws-<n>-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require'
+   vault kv put secret/ryft-admin SUPABASE_SERVICE_ROLE_KEY='sb_secret_…'
    ```
 
 2. A read-only policy and a Kubernetes auth role bound to the `ryft-vault` service account:
 
    ```bash
    vault policy write ryft - <<'EOF'
-   path "secret/data/ryft" { capabilities = ["read"] }
+   path "secret/data/ryft"       { capabilities = ["read"] }
+   path "secret/data/ryft-admin" { capabilities = ["read"] }
    EOF
    vault write auth/kubernetes/role/ryft \
      bound_service_account_names=ryft-vault \
@@ -68,11 +78,10 @@ Switching an existing install from `secrets.yaml` to Vault: the operator will no
 a Secret it did not create, so `kubectl -n ryft delete secret ryft-secrets` first
 (running pods keep their env), then apply the overlay.
 
-**Rotation.** The operator re-reads `secret/ryft` hourly and rollout-restarts
-api, ingest and scoring when it changes. Rotating `API_KEY` means updating the app's
-Settings too. `POSTGRES_PASSWORD` only takes effect on an empty data directory — to
-rotate it, `ALTER USER ryft PASSWORD '…'` in Postgres first, then update both
-`POSTGRES_PASSWORD` and `DATABASE_URL` in Vault.
+**Rotation.** The operator re-reads both paths hourly and rollout-restarts the pods
+that use them. To rotate the database password, reset it in Supabase (Database →
+Settings), then update `DATABASE_URL`; for the secret key, create a new one in
+Supabase, update `secret/ryft-admin`, then revoke the old one.
 
 ## EKS (api.ryftapp.de)
 
@@ -87,9 +96,8 @@ cost and teardown are in [`infra/aws/README.md`](../infra/aws/README.md).
 | 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `kubectl get sc` shows `gp3-encrypted (default)` |
 | 5. App | see below | `curl -sI https://api.ryftapp.de/v1/me` → `401`, certificate from Let's Encrypt |
 
-Step 5 waits for Supabase auth (M1): the app's Release build signs in with Supabase, and
-until the backend verifies those tokens only the shared `API_KEY` protects the data.
-It also needs images on GHCR (first CI run on GitHub). Then:
+Step 5 needs the Supabase project ([`SUPABASE.md`](SUPABASE.md)) and images on GHCR
+(first CI run on GitHub). Then:
 
 ```bash
 cp deploy/k8s/secrets.example.yaml deploy/k8s/overlays/eks/secrets.yaml   # real values; git-ignored
@@ -118,12 +126,16 @@ touching Let's Encrypt's production rate limits, point the Ingress annotation at
 | To | From | Port |
 | --- | --- | --- |
 | ingest, api | the Ingress controller: Traefik in `kube-system` (k3s default, and on EKS via `infra/aws/kubernetes`) or ingress-nginx in `ingress-nginx` | 8080 |
-| postgres | pods labelled `part-of: ryft` (the three services) and `app: pg-backup` (backup/restore) | 5432 |
+| postgres (`overlays/local-postgres`) | pods labelled `part-of: ryft` (the three services) and `app: pg-backup` (backup/restore) | 5432 |
 | nats | pods labelled `part-of: ryft` | 4222 |
 | ingest, scoring, api | namespace `monitoring` (Prometheus) | 8080 |
 
 Adjust `ryft-allow-ingress-controller` for another controller, or uncomment the
-`cloudflared` peer if a Cloudflare tunnel targets the services directly. Kubelet
+`cloudflared` peer if a Cloudflare tunnel targets the services directly.
+
+**Egress** (`ryft-egress`): the three services may reach cluster DNS (UDP/TCP 53), NATS
+(4222) and TCP 443 / 5432 anywhere — Supabase Auth and the pooler. NetworkPolicy cannot
+name hosts, so the ports are the restriction; the backup job is not restricted. Kubelet
 probes come from the node and are allowed by the common CNIs. Egress is open.
 Debugging from inside the namespace (e.g. `kubectl run psql …`) needs the label
 `app: pg-backup` to reach Postgres.
@@ -155,7 +167,10 @@ The PVC lives in the cluster, often on the same disk as Postgres. Copy dumps off
 ### Restore
 
 Verified against the compose stack: restoring into an empty database and over an
-existing one both reproduce every row.
+existing one both reproduce every row. Dumps hold the `public` schema only (no Supabase
+`auth`/`storage`), so they restore into Supabase or plain Postgres alike; restoring a
+plain-Postgres database into Supabase needs the RLS step from `SUPABASE.md`. Supabase
+keeps its own daily backups as well.
 
 ```bash
 # 1. stop writers (HPA does not scale a Deployment that is at 0)
@@ -174,11 +189,8 @@ spec:
       image: postgres:17-alpine
       command: ["sleep", "3600"]
       env:
-        - { name: PGHOST, value: postgres }
-        - { name: PGUSER, value: ryft }
-        - { name: PGDATABASE, value: ryft }
-        - name: PGPASSWORD
-          valueFrom: { secretKeyRef: { name: ryft-secrets, key: POSTGRES_PASSWORD } }
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ryft-secrets, key: DATABASE_URL } }
       volumeMounts: [{ name: backups, mountPath: /backups }]
   volumes:
     - name: backups
@@ -188,7 +200,7 @@ kubectl -n ryft wait --for=condition=Ready pod/pg-restore
 kubectl -n ryft exec pg-restore -- ls -lh /backups
 
 # 3. restore (drops and recreates every object in the dump)
-kubectl -n ryft exec pg-restore -- pg_restore --clean --if-exists --no-owner -d ryft /backups/ryft-20261018T013000Z.dump
+kubectl -n ryft exec pg-restore -- sh -c 'pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" /backups/ryft-20261018T013000Z.dump'
 
 # 4. clean up and restart; the HPAs take api/ingest back to 2
 kubectl -n ryft delete pod pg-restore
@@ -209,7 +221,7 @@ New columns on `daily_scores` (readiness, sleep detail, strain detail, baselines
 filled when a day is scored; rescore history once after upgrading to this version:
 
 ```bash
-curl -fsS -X POST https://<host>/v1/recompute -H "Authorization: Bearer $API_KEY" \
+curl -fsS -X POST https://<host>/v1/recompute -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "{\"from\":\"$(date -v-90d +%F 2>/dev/null || date -d '-90 days' +%F)\",\"to\":\"$(date +%F)\"}"
 ```

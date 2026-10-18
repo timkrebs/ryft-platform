@@ -46,9 +46,10 @@ The `NetworkPolicy` in `deploy/k8s` admits scrapes from the namespace named
 | `ryft_http_requests_total` | counter | `route`, `code` | all | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
 | `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
-| `ryft_last_sync_timestamp_seconds` | gauge | `device` | ingest | Unix time of the device's last successful sync. Resets on restart. |
+| `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
+| `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | `ryft.ingested` publishes (`sync` from ingest, `recompute` from api), `ok`/`error`. A publish error does not fail the sync — this is the only place it shows. |
-| `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable). |
+| `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted). |
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring | Messages received with a delivery count > 1. |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write. |
@@ -76,7 +77,7 @@ Variables: `$namespace` (default `ryft`). All rates over `[5m]` unless noted.
 | Sync latency p50 / p95 / p99 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[5m])))` (repeat for 0.5, 0.99) |
 | Samples ingested by type | stacked bars, 1 h buckets | `sum by (type) (increase(ryft_samples_ingested_total{kind="sample"}[1h]))` |
 | Sleep segments / workouts | time series | `sum by (kind) (increase(ryft_samples_ingested_total{kind!="sample"}[1h]))` |
-| Last sync per device | table | `ryft_last_sync_timestamp_seconds * 1000` (unit: datetime) |
+| Auth failures by reason | time series | `sum by (reason) (rate(ryft_auth_failures_total[5m]))` |
 
 **Row: Scoring**
 
@@ -115,6 +116,7 @@ Postgres, `postgres_exporter` with the `ryft` credentials.
 | NoSync | `time() - max(ryft_last_sync_timestamp_seconds) > 6*3600` | 15m |
 | ScoringErrors | `sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0` | 15m |
 | EventsDropped | `sum(increase(ryft_events_handled_total{result=~"failed\|bad"}[1h])) > 0` | 0m |
+| AuthUnavailable | `sum(rate(ryft_auth_failures_total{reason=~"jwks_.*\|internal"}[5m])) > 0` | 5m |
 | PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
 | API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |

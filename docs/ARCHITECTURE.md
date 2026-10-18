@@ -43,14 +43,25 @@ the same `samples` table with new `type` values — nothing else changes.
 | `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
-share `internal/` packages, and run DB migrations on boot behind an advisory lock.
+share `internal/` packages, and run DB migrations on boot, each in a transaction under a
+transaction-level advisory lock (safe behind Supabase's pooler).
 Each serves `/healthz`, `/readyz` and Prometheus `/metrics` on 8080 — metric
 catalogue and dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
-**Auth.** Single-user: the app sends `Authorization: Bearer <API_KEY>`; services
-compare in constant time. `users.id` is a fixed seeded UUID. Multi-user later = a
-`devices.api_key_hash` column and a lookup in `httpx.BearerAuth`; the schema already
-keys everything by `user_id`.
+**Auth and users.** Multi-user, with Supabase as identity provider and database
+([`SUPABASE.md`](SUPABASE.md)). The app signs in with Apple through Supabase and sends
+the Supabase access token as the bearer; `internal/auth` verifies it against the
+project's JWKS (ES256/RS256, issuer, audience, role, expiry) and puts the principal in
+the request context. `store.EnsureUser` then loads the user row — creating it on the
+first request, refreshing email/name/provider at most every five minutes — and every
+handler reads the user and timezone from the context; there is no global user. `401`
+means "this token is not acceptable" (the app refreshes once, then signs out), `503`
+means "could not check right now" (JWKS or database unreachable), so an outage never
+signs anyone out. `AUTH_MODE=apikey` (shared key, `<key>:<uuid>` to act as any user) is
+for compose and `overlays/local-postgres` only and refuses to start without
+`ALLOW_INSECURE_APIKEY_AUTH=true`. The scoring service needs no auth; its events carry
+the `user_id`, and its 15-minute pass covers every user with a device synced in the
+last 48 hours, each in their own timezone.
 
 **Events.** Stream `RYFT`, subject `ryft.ingested`, work-queue retention, file
 storage, 7-day max age. Payload `{user_id, days[], reason}`. `reason: "recompute"`
@@ -60,11 +71,12 @@ timer catches up.
 
 ## Data model (Postgres)
 
-- `users` — `tz` (the local day boundary), `max_hr` (for heart-rate reserve), `sleep_base_min`.
-- `devices` — one row per app install, `last_sync_at`.
+- `users` — `id` = Supabase user ID; `name`, `email`, `provider` from the token; `tz` (the local day boundary), `max_hr` (for heart-rate reserve), `sleep_base_min`; `last_seen_at`, `recompute_requested_at`.
+- `deleted_users` — tombstones (UUID only) of deleted accounts.
+- `devices` — one row per user and app install (`(user_id, id)`), `last_sync_at`.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
-- `workouts` — one row per HKWorkout (`id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
+- `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
 - `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to

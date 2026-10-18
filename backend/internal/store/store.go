@@ -28,10 +28,20 @@ func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ---- users / devices -------------------------------------------------------
 
-func (s *Store) GetUser(ctx context.Context, id uuid.UUID) (model.User, *time.Location, error) {
+const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min`
+
+func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
-	err := s.pool.QueryRow(ctx, `SELECT id, name, tz, max_hr, sleep_base_min FROM users WHERE id=$1`, id).
-		Scan(&u.ID, &u.Name, &u.TZ, &u.MaxHR, &u.SleepBaseMin)
+	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin}, extra...)...)
+	return u, err
+}
+
+// GetUser loads a user and their timezone. ErrNotFound when there is no such user.
+func (s *Store) GetUser(ctx context.Context, id uuid.UUID) (model.User, *time.Location, error) {
+	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return u, nil, ErrNotFound
+	}
 	if err != nil {
 		return u, nil, err
 	}
@@ -42,27 +52,96 @@ func (s *Store) GetUser(ctx context.Context, id uuid.UUID) (model.User, *time.Lo
 	return u, loc, nil
 }
 
-func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch) error {
+// Identity is what a verified token says about its user.
+type Identity struct {
+	ID       uuid.UUID
+	Email    string // "" = unknown, keeps the stored value
+	Provider string
+	Name     string
+}
+
+// seenEvery bounds how often an active user's row is written (last_seen_at).
+const seenEvery = 5 * time.Minute
+
+// EnsureUser returns the caller's user row, creating it on the first request
+// (users come from Supabase Auth; there is no sign-up endpoint). The common
+// case is a single read; the row is only written when it is missing, its
+// last_seen_at is older than seenEvery, or the token carries a new email,
+// provider or name.
+func (s *Store) EnsureUser(ctx context.Context, id Identity) (model.User, error) {
+	var lastSeen *time.Time
+	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+`, last_seen_at FROM users WHERE id=$1`, id.ID), &lastSeen)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return u, err
+	case lastSeen != nil && time.Since(*lastSeen) < seenEvery && !identityChanged(u, id):
+		return u, nil
+	}
+	return scanUser(s.pool.QueryRow(ctx, `INSERT INTO users (id, name, email, provider, last_seen_at)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), now())
+		ON CONFLICT (id) DO UPDATE SET last_seen_at = now(),
+		  name     = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+		  email    = COALESCE(EXCLUDED.email, users.email),
+		  provider = COALESCE(EXCLUDED.provider, users.provider)
+		RETURNING `+userColumns, id.ID, id.Name, id.Email, id.Provider))
+}
+
+func identityChanged(u model.User, id Identity) bool {
+	return (id.Name != "" && id.Name != u.Name) ||
+		(id.Email != "" && (u.Email == nil || *u.Email != id.Email)) ||
+		(id.Provider != "" && (u.Provider == nil || *u.Provider != id.Provider))
+}
+
+// UpdateUser applies a settings patch and returns the updated row.
+func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch) (model.User, error) {
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil {
-			return fmt.Errorf("invalid tz: %w", err)
+			return model.User{}, fmt.Errorf("invalid tz: %w", err)
 		}
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE users SET
+	u, err := scanUser(s.pool.QueryRow(ctx, `UPDATE users SET
 		tz = COALESCE($2, tz),
 		max_hr = COALESCE($3, max_hr),
 		sleep_base_min = COALESCE($4, sleep_base_min)
-		WHERE id=$1`, id, p.TZ, p.MaxHR, p.SleepBaseMin)
-	return err
+		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return u, ErrNotFound
+	}
+	return u, err
 }
 
+// TouchDevice records a sync from a device. Device IDs are per install, so
+// one phone used by two accounts has a row per account.
 func (s *Store) TouchDevice(ctx context.Context, userID, deviceID uuid.UUID, name string) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO devices (id, user_id, name, last_sync_at)
 		VALUES ($1,$2,$3,now())
-		ON CONFLICT (id) DO UPDATE SET last_sync_at = now(),
+		ON CONFLICT (user_id, id) DO UPDATE SET last_sync_at = now(),
 		  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE devices.name END`,
 		deviceID, userID, name)
 	return err
+}
+
+// ActiveUsers lists users with a device that synced since the given time.
+func (s *Store) ActiveUsers(ctx context.Context, since time.Time) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT user_id FROM devices WHERE last_sync_at >= $1`, since)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
+// TryRequestRecompute rate-limits recompute requests per user across all api
+// replicas: true (and the timestamp recorded) only if the previous request is
+// at least minInterval ago.
+func (s *Store) TryRequestRecompute(ctx context.Context, userID uuid.UUID, minInterval time.Duration) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET recompute_requested_at = now()
+		WHERE id=$1 AND (recompute_requested_at IS NULL OR recompute_requested_at < now() - make_interval(secs => $2))`,
+		userID, minInterval.Seconds())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // ---- ingest ----------------------------------------------------------------
@@ -102,7 +181,7 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 	for _, w := range in {
 		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-			ON CONFLICT (id) DO UPDATE SET activity=EXCLUDED.activity, start_at=EXCLUDED.start_at, end_at=EXCLUDED.end_at,
+			ON CONFLICT (user_id, id) DO UPDATE SET activity=EXCLUDED.activity, start_at=EXCLUDED.start_at, end_at=EXCLUDED.end_at,
 			  avg_hr=EXCLUDED.avg_hr, max_hr=EXCLUDED.max_hr, energy_kcal=EXCLUDED.energy_kcal,
 			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source`,
 			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source)
@@ -177,13 +256,13 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 
 // SetWorkoutLoad stores what scoring computed for one workout: strain, TRIMP
 // and minutes in the five heart-rate-reserve zones.
-func (s *Store) SetWorkoutLoad(ctx context.Context, id uuid.UUID, strain, trimp float64, zones [5]float64) error {
+func (s *Store) SetWorkoutLoad(ctx context.Context, userID, id uuid.UUID, strain, trimp float64, zones [5]float64) error {
 	z, err := json.Marshal(roundZones(zones[:]))
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$2, trimp=$3, zone_minutes=$4 WHERE id=$1`,
-		id, strain, math.Round(trimp*10)/10, z)
+	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$3, trimp=$4, zone_minutes=$5 WHERE user_id=$1 AND id=$2`,
+		userID, id, strain, math.Round(trimp*10)/10, z)
 	return err
 }
 

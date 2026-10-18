@@ -294,3 +294,73 @@ kustomize refuses files outside the overlay root, hence `.gitignore` now covers
 (`replace-with-ci-sha`) until CI has pushed SHA-tagged images: applying earlier fails
 loudly instead of running `latest`. `make k8s-validate` borrows `secrets.example.yaml` to
 render the overlay when no real secret exists.
+
+## D28 — Supabase for Postgres and Auth; the services stay the only data API
+
+As `CLAUDE_FOLLOWUP_SUPABASE.md` decided: the Supabase project is the datastore, Supabase
+Auth (Sign in with Apple) replaces the shared `API_KEY`, and the app never talks to
+Supabase's Data API. Migration 0007 enables RLS with own-row policies and revokes all
+table, sequence and function privileges from `anon`, `authenticated` and `service_role`
+(also for future tables), guarded so plain Postgres still migrates. The services connect
+as `postgres`, the table owner, which bypasses RLS. `AUTH_MODE=apikey` survives for
+compose and `overlays/local-postgres` only and refuses to start without
+`ALLOW_INSECURE_APIKEY_AUTH=true`.
+
+## D29 — JWKS refreshed every 10 minutes; 401 only for bad tokens
+
+The spec said "refreshed hourly". Supabase's docs say the JWKS is edge-cached for 10
+minutes and clients should not cache longer (revoked keys must stop working), so the
+refresh interval is 10 minutes, plus an on-demand refresh at most once a minute for an
+unknown key ID. The app refreshes its session once on a `401` and signs the user out if
+the retry fails, so every failure that is not the token's fault — no keys loaded, the
+JWKS unreachable during an unknown-key lookup, the refresh rate limit, a database error
+in the user lookup — answers `503` with `Retry-After` instead. Tokens must also carry
+`role = authenticated` and not be anonymous (the anon key is itself a JWT).
+
+## D30 — keyfunc v3.7.0, not the latest
+
+keyfunc v3.8.x and the latest `golang.org/x/time` require Go ≥ 1.25; v3.7.0 (jwkset
+v0.11.0, x/time v0.9.0) keeps the module's Go 1.24 floor (as D14 did for
+client_golang). `golang-jwt/jwt` v5.3.1 needs Go 1.21.
+
+## D31 — Multi-user schema and scoping details
+
+- `devices` and `workouts` are keyed by `(user_id, id)`: both IDs come from the phone,
+  and one iPhone can be signed into by two accounts (`check_api.py` reuses a device and
+  a workout UUID across users).
+- `EnsureUser` reads the user row on every request (replacing the old per-request
+  `GetUser`) and writes only when it is missing, older than five minutes or the token's
+  profile changed — no write per request.
+- The scoring timer finds active users through `devices.last_sync_at` (indexed), not a
+  `DISTINCT` over `samples` as the spec suggested; cheaper and equivalent.
+- `POST /v1/recompute` is limited to one per user per minute through a conditional update
+  (works across replicas) and published with a JetStream dedup ID.
+- The insights cache is keyed by user and local day and bounded.
+- `ryft_last_sync_timestamp_seconds` lost its `device` label (unbounded with many users,
+  and it published device IDs).
+
+## D32 — apikey mode can act as any user
+
+In apikey mode the bearer `<API_KEY>:<uuid>` acts as that user. That is what lets
+`check_api.py` prove isolation with fresh users on every run against compose. The mode is
+local-only by construction (D28).
+
+## D33 — Deploy changes for Supabase
+
+`postgres.yaml` moved from `base/` to `overlays/local-postgres` (which also switches to
+apikey mode). The project ref is set once in `base/configmap.yaml`; the services refuse
+to start while it is the placeholder. The Supabase secret key lives in its own Secret
+(`ryft-supabase-admin`, Vault path `secret/ryft-admin`) referenced only by api, so ingest
+and scoring never hold it. The backup job dumps `--schema=public` of `DATABASE_URL`
+(Supabase or local) instead of the in-cluster Postgres. A new `ryft-egress` policy
+allows the services DNS, NATS and TCP 443/5432 out; NetworkPolicy cannot match the
+Supabase hostnames.
+
+## D34 — Small pools and transaction-level migration locks
+
+Supavisor session mode holds one server connection per client connection, so each pod
+keeps `DB_MAX_CONNS` (default 4, scoring 2) connections, recycled every 30 minutes. Not a
+`pool_max_conns` URL parameter: the backup job's libpq `pg_dump` would reject it.
+Migrations now take `pg_advisory_xact_lock` inside each migration's transaction and
+re-check `schema_migrations` there, so a pod dying mid-migration cannot leave a session
+lock behind on a pooled connection.

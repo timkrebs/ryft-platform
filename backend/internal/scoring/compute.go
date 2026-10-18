@@ -196,7 +196,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		} else if w.AvgHR != nil {
 			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
 		}
-		if err := e.st.SetWorkoutLoad(ctx, w.ID, load.Score, load.TRIMP, load.ZoneMinutes); err != nil {
+		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, load.Score, load.TRIMP, load.ZoneMinutes); err != nil {
 			return err
 		}
 	}

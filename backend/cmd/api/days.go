@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
@@ -13,10 +15,30 @@ import (
 
 const dayLayout = "2006-01-02"
 
-// location is the user's timezone; every day boundary the API uses is local to it.
+// userOf is the authenticated caller's user row (loaded by the auth middleware).
+func userOf(r *http.Request) model.User {
+	u, _ := auth.UserFrom(r.Context())
+	return u
+}
+
+// location is the caller's timezone; every day boundary the API uses is local to it.
 func (h *handler) location(r *http.Request) (*time.Location, error) {
-	_, loc, err := h.st.GetUser(r.Context(), h.cfg.UserID)
-	return loc, err
+	return loadLocation(userOf(r).TZ)
+}
+
+// locations caches parsed timezones; there are only a few distinct ones.
+var locations sync.Map
+
+func loadLocation(name string) (*time.Location, error) {
+	if l, ok := locations.Load(name); ok {
+		return l.(*time.Location), nil
+	}
+	l, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("user tz %q: %w", name, err)
+	}
+	locations.Store(name, l)
+	return l, nil
 }
 
 // dateRange parses ?from=&to= (YYYY-MM-DD) with a default of the last 30 days.
@@ -68,7 +90,7 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 		writeRangeError(w, err)
 		return
 	}
-	rows, err := h.st.DailyScores(r.Context(), h.cfg.UserID, from, to)
+	rows, err := h.st.DailyScores(r.Context(), userOf(r).ID, from, to)
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return
@@ -94,17 +116,17 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 400, "day must be YYYY-MM-DD")
 		return
 	}
-	scores, err := h.st.DailyScores(ctx, h.cfg.UserID, day, day)
+	scores, err := h.st.DailyScores(ctx, userOf(r).ID, day, day)
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return
 	}
-	nights, err := h.st.SleepNights(ctx, h.cfg.UserID, day, day)
+	nights, err := h.st.SleepNights(ctx, userOf(r).ID, day, day)
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return
 	}
-	workouts, err := h.st.WorkoutsBetween(ctx, h.cfg.UserID, d, d.AddDate(0, 0, 1))
+	workouts, err := h.st.WorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return
@@ -116,7 +138,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
 		out.Score = scores[0]
-		load, err := h.st.DayLoadOf(ctx, h.cfg.UserID, day)
+		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
 		if err != nil {
 			httpx.WriteError(w, 500, err.Error())
 			return
@@ -126,7 +148,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	if len(nights) > 0 {
 		if s, ok := scoring.NightSummary(nights[0]); ok {
 			from, to := scoring.NightWindow(d)
-			segs, err := h.st.SleepEndingBetween(ctx, h.cfg.UserID, from, to)
+			segs, err := h.st.SleepEndingBetween(ctx, userOf(r).ID, from, to)
 			if err != nil {
 				httpx.WriteError(w, 500, err.Error())
 				return
@@ -161,7 +183,7 @@ func (h *handler) sleepRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	from := to.AddDate(0, 0, -(n - 1)).Format(dayLayout)
-	nights, err := h.st.SleepNights(r.Context(), h.cfg.UserID, from, to.Format(dayLayout))
+	nights, err := h.st.SleepNights(r.Context(), userOf(r).ID, from, to.Format(dayLayout))
 	if err != nil {
 		httpx.WriteError(w, 500, err.Error())
 		return

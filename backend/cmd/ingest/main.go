@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
@@ -29,13 +32,15 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
-	if cfg.APIKey == "" {
-		log.Error("API_KEY is required")
+	authCfg, err := config.LoadAuth()
+	if err != nil {
+		log.Error("auth config", "err", err)
 		os.Exit(1)
 	}
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	pool, err := db.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		log.Error("db", "err", err)
 		os.Exit(1)
@@ -54,19 +59,35 @@ func main() {
 	}
 	defer bus.Close()
 
-	h := &handler{cfg: cfg, st: st, bus: bus, log: log}
+	verifier, err := auth.FromConfig(ctx, authCfg)
+	if err != nil {
+		log.Error("auth", "err", err)
+		os.Exit(1)
+	}
+	log.Info("auth", "mode", authCfg.Mode)
+
+	h := &handler{st: st, bus: bus, log: log}
 
 	mux := http.NewServeMux()
 	httpx.Health(mux, func(ctx context.Context) error {
 		if err := st.Ready(ctx); err != nil {
 			return err
 		}
-		return bus.Ready(ctx)
+		if err := bus.Ready(ctx); err != nil {
+			return err
+		}
+		return verifier.Ready(ctx)
 	})
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/sync", h.sync)
 	api.HandleFunc("/v1/", httpx.NotFound)
-	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
+	mux.Handle("/v1/", auth.Middleware(auth.Options{
+		Log:      log,
+		Verifier: verifier,
+		OnAuth: auth.LoadUser(func(ctx context.Context, p auth.Principal) (model.User, error) {
+			return st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+		}),
+	}, httpx.WithRoutes(api)))
 	mux.HandleFunc("/", httpx.NotFound)
 
 	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
@@ -76,7 +97,6 @@ func main() {
 }
 
 type handler struct {
-	cfg config.Config
 	st  *store.Store
 	bus *events.Bus
 	log *slog.Logger
@@ -93,11 +113,11 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	userID := h.cfg.UserID
-
-	_, loc, err := h.st.GetUser(ctx, userID)
+	user, _ := auth.UserFrom(ctx)
+	userID := user.ID
+	loc, err := time.LoadLocation(user.TZ)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "user: "+err.Error())
+		httpx.WriteError(w, http.StatusInternalServerError, "user tz: "+err.Error())
 		return
 	}
 	if err := h.st.TouchDevice(ctx, userID, req.DeviceID, req.DeviceName); err != nil {
@@ -123,13 +143,13 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 
 	days := touchedDays(&req, loc)
 	if len(days) > 0 {
-		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync"}); err != nil {
+		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync"}, ""); err != nil {
 			// Data is stored; scoring's periodic pass will catch up. Report, don't fail the sync.
 			h.log.Error("publish ingested event", "err", err)
 		}
 	}
 	countIngested(&req)
-	h.log.Info("sync", "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
+	h.log.Info("sync", "user_id", userID, "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
 	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days})
 }
 
@@ -219,5 +239,5 @@ func countIngested(req *model.SyncRequest) {
 	if len(req.Workouts) > 0 {
 		metrics.Ingested.WithLabelValues("workout", "workout").Add(float64(len(req.Workouts)))
 	}
-	metrics.LastSync.WithLabelValues(req.DeviceID.String()).SetToCurrentTime()
+	metrics.LastSync.WithLabelValues().SetToCurrentTime()
 }

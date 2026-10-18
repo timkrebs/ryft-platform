@@ -7,6 +7,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -67,15 +68,31 @@ func (b *Bus) Ready(ctx context.Context) error {
 	return nil
 }
 
-func (b *Bus) PublishIngested(ctx context.Context, ev model.IngestedEvent) error {
+// PublishIngested queues an event for scoring. A non-empty dedupID makes
+// JetStream drop identical publishes within its duplicate window (2 minutes).
+func (b *Bus) PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error {
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return err
 	}
-	_, err = b.js.Publish(ctx, SubjectIngested, data)
+	var opts []jetstream.PublishOpt
+	if dedupID != "" {
+		opts = append(opts, jetstream.WithMsgID(dedupID))
+	}
+	_, err = b.js.Publish(ctx, SubjectIngested, data, opts...)
 	metrics.EventsPublished.WithLabelValues(ev.Reason, metrics.Result(err)).Inc()
 	return err
 }
+
+// permanentError marks a handler failure that retrying cannot fix.
+type permanentError struct{ err error }
+
+func (p permanentError) Error() string { return p.err.Error() }
+func (p permanentError) Unwrap() error { return p.err }
+
+// Permanent wraps err so ConsumeIngested terminates the message instead of
+// redelivering it (e.g. the event's user no longer exists).
+func Permanent(err error) error { return permanentError{err} }
 
 // ConsumeIngested blocks, handing every event to fn. fn returning an error
 // NAKs the message so JetStream redelivers it after a delay.
@@ -106,6 +123,13 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 			return
 		}
 		if err := fn(ctx, ev); err != nil {
+			var perm permanentError
+			if errors.As(err, &perm) {
+				log.Warn("event cannot be handled, dropping", "err", err, "user_id", ev.UserID)
+				metrics.EventsHandled.WithLabelValues(ev.Reason, "dropped").Inc()
+				_ = msg.Term()
+				return
+			}
 			if delivered >= maxDeliver {
 				log.Error("handle event failed on last delivery, giving up", "err", err, "days", ev.Days)
 				metrics.EventsHandled.WithLabelValues(ev.Reason, "failed").Inc()

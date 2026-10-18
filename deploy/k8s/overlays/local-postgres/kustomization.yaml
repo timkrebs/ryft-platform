@@ -1,0 +1,21 @@
+# Fully self-hosted variant: in-cluster Postgres instead of Supabase and the
+# shared API key instead of Supabase Auth (local development / single user on a
+# home cluster; nothing here is safe to expose to the internet).
+#   cp ../../secrets.example.yaml secrets.yaml   # use the local-postgres keys in it
+#   kubectl apply -k deploy/k8s/overlays/local-postgres
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft
+resources:
+  - ../../base
+  - postgres.yaml
+  - secrets.yaml
+patches:
+  - target: { kind: ConfigMap, name: ryft-config }
+    patch: |-
+      - op: replace
+        path: /data/AUTH_MODE
+        value: apikey
+      - op: add
+        path: /data/ALLOW_INSECURE_APIKEY_AUTH
+        value: "true"

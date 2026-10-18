@@ -7,7 +7,6 @@ namespace: ryft
 resources:
   - namespace.yaml
   - configmap.yaml
-  - postgres.yaml
   - nats.yaml
   - ingest.yaml
   - scoring.yaml

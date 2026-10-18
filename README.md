@@ -37,18 +37,21 @@ day          recovery  strain  sleep%  need  actual    hrv   rhr  resp  calibrat
 2026-10-15         33    15.0     84   550     463   47.1  51.2  14.6  False
 ```
 
-Config is env-only: `DATABASE_URL`, `NATS_URL`, `API_KEY`, `PORT`, optional `USER_ID`.
+Config is env-only: `DATABASE_URL`, `NATS_URL`, `PORT`, `DB_MAX_CONNS`, and for ingest/api
+`AUTH_MODE` with `SUPABASE_PROJECT_REF` (production, Supabase tokens) or `API_KEY` +
+`ALLOW_INSECURE_APIKEY_AUTH=true` (compose; bearer `API_KEY` or `API_KEY:<uuid>`).
+Supabase setup: [`docs/SUPABASE.md`](docs/SUPABASE.md).
 
 ## 2. Kubernetes
 
 ```bash
 make images REGISTRY=ghcr.io/<you>/ryft && make push      # or let CI push ghcr.io/timkrebs/ryft/*
-cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml  # set API_KEY (openssl rand -hex 32) + DB password
+cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml  # Supabase pooler DATABASE_URL (+ service key); ref in base/configmap.yaml
 # edit deploy/k8s/base/kustomization.yaml images + base/ingress.yaml host
 kubectl apply -k deploy/k8s                                 # or: kubectl apply -k deploy/k8s/vault
 kubectl -n ryft get pods
 kubectl -n ryft port-forward svc/api 8082:80 &  kubectl -n ryft port-forward svc/ingest 8081:80 &
-API_KEY=<your key> make smoke    # only on a fresh install: it writes 10 synthetic days into the user's data
+make smoke-supabase              # with SUPABASE_URL/ANON_KEY + a dedicated test user; writes synthetic days
 ```
 
 Then put the Ingress (or the two services) behind your tunnel with TLS. Vault,

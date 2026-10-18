@@ -267,7 +267,9 @@ type Insight struct {
 
 type User struct {
 	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
+	Name         string    `json:"name"`     // display name; from the sign-in (Apple full name), may be empty
+	Email        *string   `json:"email"`    // from the token; null when unknown
+	Provider     *string   `json:"provider"` // sign-in provider, e.g. "apple"; null when unknown
 	TZ           string    `json:"tz"`
 	MaxHR        int       `json:"max_hr"`
 	SleepBaseMin int       `json:"sleep_base_min"`
@@ -286,7 +288,7 @@ type RecomputeRequest struct {
 
 // IngestedEvent is published on NATS after a successful sync.
 type IngestedEvent struct {
-	UserID uuid.UUID `json:"user_id"`
-	Days   []string  `json:"days"` // local days whose scores need (re)computing
+	UserID uuid.UUID `json:"user_id"` // the event is always scoped to one user
+	Days   []string  `json:"days"`    // local days whose scores need (re)computing
 	Reason string    `json:"reason"`
 }

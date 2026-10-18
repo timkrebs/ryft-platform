@@ -22,11 +22,22 @@ var migrations embed.FS
 
 // Connect opens a pool and pings it. timestamptz values scan as UTC so every
 // timestamp the API emits is UTC regardless of the container's TZ.
-func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
+//
+// maxConns caps the pool (0 keeps pgx's default). Behind Supabase's Supavisor
+// in session mode every pooled connection holds a server connection, so the
+// services keep their pools small (DB_MAX_CONNS). Connections are recycled
+// every 30 minutes so pooler and server restarts are absorbed.
+func Connect(ctx context.Context, url string, maxConns int) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool: %w", err)
 	}
+	if maxConns > 0 {
+		cfg.MaxConns = int32(maxConns)
+	}
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = time.Minute
 	cfg.AfterConnect = func(_ context.Context, c *pgx.Conn) error {
 		c.TypeMap().RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID,
 			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC}})
@@ -43,23 +54,26 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// migrationLock serialises migrators across pods. It is a transaction-level
+// advisory lock: it disappears with the transaction even if the pod dies or a
+// pooler hands the session to someone else.
+const migrationLock = 7_419_001
+
 // Migrate applies every migrations/NNNN_*.sql file not yet recorded in
-// schema_migrations, in numeric order. Safe to run from every service on boot:
-// an advisory lock serialises concurrent starters.
+// schema_migrations, in numeric order, each in its own transaction under the
+// migration lock (re-checking schema_migrations inside it). Safe to run from
+// every service on boot.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
+	return migrateTo(ctx, pool, log, 0)
+}
 
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(7_419_001)`); err != nil {
+// migrateTo applies migrations up to and including version upTo (0 = all).
+func migrateTo(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, upTo int) error {
+	if err := locked(ctx, pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+			version int PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`)
 		return err
-	}
-	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock(7_419_001)`) //nolint:errcheck
-
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version int PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+	}); err != nil {
 		return err
 	}
 
@@ -74,33 +88,53 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("migration %q: bad version prefix", e.Name())
 		}
-		var applied bool
-		if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&applied); err != nil {
-			return err
-		}
-		if applied {
-			continue
+		if upTo > 0 && version > upTo {
+			break
 		}
 		sqlBytes, err := migrations.ReadFile("migrations/" + e.Name())
 		if err != nil {
 			return err
 		}
-		tx, err := conn.Begin(ctx)
+		applied := false
+		err = locked(ctx, pool, func(tx pgx.Tx) error {
+			var done bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&done); err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+			if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
+				return fmt.Errorf("apply %s: %w", e.Name(), err)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version); err != nil {
+				return err
+			}
+			applied = true
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("apply %s: %w", e.Name(), err)
+		if applied {
+			log.InfoContext(ctx, "migration applied", "file", e.Name())
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		log.Info("migration applied", "file", e.Name())
 	}
 	return nil
+}
+
+// locked runs fn in a transaction holding the migration lock.
+func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLock); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
