@@ -17,6 +17,18 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A throwaway server for the opt-in migration and store tests (account
+    # deletion races); they create and drop their own databases.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_PASSWORD: pw }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 15
+    env:
+      RYFT_TEST_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres
     defaults:
       run:
         working-directory: backend
