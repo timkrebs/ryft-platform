@@ -112,4 +112,31 @@ st = get(f"/v1/days/{TODAY}")["strain"]
 check(st is not None and st["hr_min"] > 0 and len(st["zone_min"]) == 5, f"day strain: {st}")
 ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes")
 
+# ---- 2.4 trends ---------------------------------------------------------------
+FIELD = {"readiness": "readiness", "recovery": "recovery", "strain": "strain", "sleep": "sleep_performance",
+         "sleep_min": "sleep_actual_min", "hrv": "hrv_ms", "rhr": "rhr"}
+by_day = {d["day"]: d for d in days}
+for metric, field in FIELD.items():
+    tr = get(f"/v1/trends?metric={metric}&range=7d&to={TODAY}")
+    check(tr["metric"] == metric and tr["range"] == "7d" and tr["to"] == TODAY, f"trend {metric}: echo")
+    pts = tr["points"]
+    check(0 < len(pts) <= 7, f"trend {metric}: {len(pts)} points")
+    check(all(tr["from"] <= p["day"] <= tr["to"] for p in pts), f"trend {metric}: point outside window")
+    for p in pts:
+        check(by_day[p["day"]][field] == p["value"], f"trend {metric} {p['day']}: {p['value']} != days {by_day[p['day']][field]}")
+    vals = [p["value"] for p in pts]
+    check(tr["min"] == min(vals) and tr["max"] == max(vals), f"trend {metric}: min/max")
+    check(abs(tr["avg"] - sum(vals) / len(vals)) <= 0.05, f"trend {metric}: avg {tr['avg']}")
+    if metric in ("hrv", "rhr"):
+        base_field = {"hrv": "hrv_baseline_ms", "rhr": "rhr_baseline"}[metric]
+        check(tr["baseline"] is not None and tr["baseline"] == by_day[TODAY][base_field],
+              f"trend {metric}: baseline {tr['baseline']} != today's {base_field} {by_day[TODAY][base_field]}")
+    else:
+        check(tr["baseline"] is None, f"trend {metric}: baseline must be null")
+ok(f"/v1/trends: {len(FIELD)} metrics match /v1/days; hrv/rhr carry a baseline")
+check(len(get(f"/v1/trends?metric=readiness&range=90d&to={TODAY}")["points"]) == len([d for d in days if d["readiness"] is not None]), "90d readiness")
+get("/v1/trends?metric=steps", expect=422)
+get("/v1/trends?metric=hrv&range=1y", expect=422)
+ok("/v1/trends: 90d ok, unknown metric/range → 422")
+
 print("all API contract checks passed")

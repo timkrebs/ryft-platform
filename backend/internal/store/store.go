@@ -298,9 +298,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
-		 zone_minutes, trimp, hr_min, computed_at)
+		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,now())
+		 $25,$26,$27,$28,$29,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -310,11 +310,12 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 sleep_start=EXCLUDED.sleep_start, sleep_end=EXCLUDED.sleep_end, in_bed_min=EXCLUDED.in_bed_min,
 		 deep_min=EXCLUDED.deep_min, light_min=EXCLUDED.light_min, rem_min=EXCLUDED.rem_min,
 		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages,
-		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min, computed_at=now()`,
+		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min,
+		 hrv_baseline_ms=EXCLUDED.hrv_baseline_ms, rhr_baseline=EXCLUDED.rhr_baseline, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
-		zones, l.TRIMP, l.HRMin)
+		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline)
 	return err
 }
 
@@ -359,7 +360,7 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, sleep_performance, sleep_need_min,
-		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, calibrating, details, computed_at
+		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, calibrating, details, computed_at
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
 	if err != nil {
 		return nil, err
@@ -368,7 +369,8 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		var d model.DailyScore
 		var details []byte
 		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
-			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.Calibrating, &details, &d.ComputedAt)
+			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
+			&d.Calibrating, &details, &d.ComputedAt)
 		if err != nil {
 			return d, err
 		}
@@ -380,4 +382,59 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		}
 		return d, nil
 	})
+}
+
+// ---- trends ----------------------------------------------------------------
+
+// trendColumns maps a trend metric to its daily_scores column. It is the
+// whitelist: only these names are ever interpolated into SQL.
+var trendColumns = map[string]string{
+	model.MetricReadiness: "readiness",
+	model.MetricRecovery:  "recovery",
+	model.MetricStrain:    "strain",
+	model.MetricSleep:     "sleep_performance",
+	model.MetricSleepMin:  "sleep_actual_min",
+	model.MetricHRV:       "hrv_ms",
+	model.MetricRHR:       "rhr",
+}
+
+var baselineColumns = map[string]string{
+	model.MetricHRV: "hrv_baseline_ms",
+	model.MetricRHR: "rhr_baseline",
+}
+
+// Trend returns metric's non-null values in [from, to] (inclusive local days),
+// oldest first, and for hrv/rhr the baseline stored on the last day in the
+// range that has one.
+func (s *Store) Trend(ctx context.Context, userID uuid.UUID, metric, from, to string) ([]model.TrendPoint, *float64, error) {
+	col, ok := trendColumns[metric]
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown trend metric %q", metric)
+	}
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT to_char(day,'YYYY-MM-DD'), %[1]s::double precision
+		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date AND %[1]s IS NOT NULL
+		ORDER BY day`, col), userID, from, to)
+	if err != nil {
+		return nil, nil, err
+	}
+	points, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.TrendPoint, error) {
+		var p model.TrendPoint
+		err := r.Scan(&p.Day, &p.Value)
+		return p, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	bcol, ok := baselineColumns[metric]
+	if !ok {
+		return points, nil, nil
+	}
+	var baseline *float64
+	err = s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT %[1]s FROM daily_scores
+		WHERE user_id=$1 AND day >= $2::date AND day <= $3::date AND %[1]s IS NOT NULL
+		ORDER BY day DESC LIMIT 1`, bcol), userID, from, to).Scan(&baseline)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return points, nil, nil
+	}
+	return points, baseline, err
 }

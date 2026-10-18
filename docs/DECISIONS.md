@@ -87,3 +87,22 @@ The Strain screen needs the day's load, not only per-workout load. The day's TRI
 minutes of heart-rate data and zone minutes were already computed but only reachable
 through the untyped `details`. They are now stored typed (migration 0004, together
 with the workout columns) and served as `DayDetail.strain`.
+
+## D11 — Trend baselines are stored, not recomputed on read
+
+"The 30-day baseline for hrv/rhr" is taken to mean the baseline recovery scores
+against: up to 30 scored days *before* the day, HRV as a geometric mean because the
+model compares HRV in log space. Scoring already computes it, so it is stored per day
+(migration 0005) — new columns, no new tables, as the prompt requires. The insight
+rules need the same per-night baseline, and storing it keeps all three consumers
+(recovery, trends, insights) on one definition. The two baselines are also exposed on
+`DailyScore` (`hrv_baseline_ms`, `rhr_baseline`) so the Today tiles can show "vs. your
+baseline" (additive).
+
+## D12 — Trend metric `sleep` is sleep performance; `sleep_min` added
+
+The prompt lists `sleep` without a unit. Since the other trend metrics are scores, and
+the Today ring shows sleep as a percentage, `sleep` is `sleep_performance` (%).
+`sleep_min` (minutes asleep) is added for duration charts. Points are sparse (days
+without a value are left out, not sent as `null`), and `range` defaults to `7d` with an
+optional `to` like `/v1/sleep`.

@@ -40,7 +40,7 @@ the same `samples` table with new `type` values — nothing else changes.
 |-----------|------|----------------|----------|
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
 | `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
 share `internal/` packages, and run DB migrations on boot behind an advisory lock.
@@ -74,6 +74,13 @@ day's strain line up like Whoop.
 **Baselines.** Each overnight signal is compared to your own previous 30 scored days.
 HRV is compared in log space (it is log-normally distributed). With fewer than 7
 days the row is flagged `calibrating` and a population SD is used instead of yours.
+The HRV (geometric mean) and resting-HR baselines each day was scored against are
+stored on its row (`hrv_baseline_ms`, `rhr_baseline`; migration 0005), so trends and
+insights compare against exactly what recovery used.
+
+**Trends.** `GET /v1/trends` reads one `daily_scores` column over a 7/30/90-day window
+(metric → column is a whitelist in `store.Trend`) plus, for HRV and resting HR, the
+latest stored baseline. No extra tables or rollups: 90 rows per request.
 
 **Recovery (1–100).** Sub-scores map a z-score through `100 / (1 + e^(-1.2 z))`
 (z=0 → 50, +1 → 77, −1 → 23). Weights: HRV 0.45, resting HR 0.25 (lower is better),

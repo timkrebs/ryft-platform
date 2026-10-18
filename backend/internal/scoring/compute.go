@@ -126,10 +126,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		sleepPerf = &p
 	}
 
+	lnHRVBase, rhrBase := NewBaseline(lnHRV, fallbackSDlnHRV), NewBaseline(rhrs, fallbackSDRHR)
 	rec := Recovery(RecoveryInputs{
 		HRVms: hrv, RHR: rhr, RespRate: resp,
-		LnHRVBase:        NewBaseline(lnHRV, fallbackSDlnHRV),
-		RHRBase:          NewBaseline(rhrs, fallbackSDRHR),
+		LnHRVBase:        lnHRVBase,
+		RHRBase:          rhrBase,
 		RespBase:         NewBaseline(resps, fallbackSDResp),
 		SleepPerformance: sleepPerf,
 	})
@@ -139,7 +140,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if rhr != nil {
 		strainRHR = *rhr
 	} else if len(rhrs) > 0 {
-		strainRHR = NewBaseline(rhrs, fallbackSDRHR).Mean
+		strainRHR = rhrBase.Mean
 	}
 	maxHR := float64(user.MaxHR)
 
@@ -231,10 +232,12 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 			AwakeMin: &sleep.AwakeMin, HasStages: sleep.HasStages, Performance: sleepPerf}
 	}
 
+	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
+
 	row := model.DailyScore{
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
 		SleepNeedMin: &need, SleepActualMin: actual, SleepDebtMin: &debt,
-		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2,
+		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
 		Calibrating: rec.Calibrating, Details: details,
 	}
 	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load}); err != nil {

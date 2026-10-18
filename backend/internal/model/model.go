@@ -108,6 +108,8 @@ type DailyScore struct {
 	RHR              *float64       `json:"rhr"`
 	RespRate         *float64       `json:"resp_rate"`
 	SpO2             *float64       `json:"spo2"`
+	HRVBaselineMS    *float64       `json:"hrv_baseline_ms"` // 30-day baseline hrv_ms is scored against
+	RHRBaseline      *float64       `json:"rhr_baseline"`    // 30-day baseline rhr is scored against
 	Calibrating      bool           `json:"calibrating"`
 	Details          map[string]any `json:"details"`
 	ComputedAt       time.Time      `json:"computed_at"`
@@ -209,6 +211,40 @@ type SleepRange struct {
 	AvgEfficiency *int         `json:"avg_efficiency"`
 	AvgQuality    *int         `json:"avg_quality"`
 	AvgStages     []SleepStage `json:"avg_stages"` // over nights with stages; empty when none
+}
+
+// Trend metrics (GET /v1/trends?metric=).
+const (
+	MetricReadiness = "readiness" // DailyScore.readiness
+	MetricRecovery  = "recovery"  // DailyScore.recovery
+	MetricStrain    = "strain"    // DailyScore.strain
+	MetricSleep     = "sleep"     // DailyScore.sleep_performance (%)
+	MetricSleepMin  = "sleep_min" // DailyScore.sleep_actual_min (minutes asleep)
+	MetricHRV       = "hrv"       // DailyScore.hrv_ms
+	MetricRHR       = "rhr"       // DailyScore.rhr
+)
+
+var KnownTrendMetrics = map[string]bool{
+	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
+	MetricSleepMin: true, MetricHRV: true, MetricRHR: true,
+}
+
+type TrendPoint struct {
+	Day   string  `json:"day"`
+	Value float64 `json:"value"`
+}
+
+// Trend is one metric over a 7/30/90-day window for the Trends charts.
+type Trend struct {
+	Metric   string       `json:"metric"`
+	Range    string       `json:"range"` // 7d | 30d | 90d
+	From     string       `json:"from"`
+	To       string       `json:"to"`
+	Points   []TrendPoint `json:"points"` // days with a value only, oldest first
+	Avg      *float64     `json:"avg"`
+	Min      *float64     `json:"min"`
+	Max      *float64     `json:"max"`
+	Baseline *float64     `json:"baseline"` // hrv / rhr only: 30-day baseline as of the last scored day
 }
 
 type User struct {

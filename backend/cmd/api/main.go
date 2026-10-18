@@ -62,6 +62,7 @@ func main() {
 	api.HandleFunc("GET /v1/sleep", h.sleepRange)
 	api.HandleFunc("GET /v1/workouts", h.workouts)
 	api.HandleFunc("GET /v1/workouts/{id}", h.workout)
+	api.HandleFunc("GET /v1/trends", h.trends)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
 

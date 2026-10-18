@@ -62,6 +62,26 @@ func NewBaseline(values []float64, fallbackSD float64) Baseline {
 	return b
 }
 
+// HRVBaselineMS is the HRV baseline in ms for display: recovery compares HRV in
+// log space, so the baseline is the geometric mean exp(mean ln HRV). Nil
+// without history.
+func HRVBaselineMS(lnBase Baseline) *float64 {
+	if lnBase.N == 0 {
+		return nil
+	}
+	v := math.Round(math.Exp(lnBase.Mean)*10) / 10
+	return &v
+}
+
+// RHRBaseline is the resting-HR baseline in bpm; nil without history.
+func RHRBaseline(b Baseline) *float64 {
+	if b.N == 0 {
+		return nil
+	}
+	v := math.Round(b.Mean*10) / 10
+	return &v
+}
+
 // z returns the z-score of v against b, or 0 when there is no history.
 func (b Baseline) z(v float64) float64 {
 	if b.N == 0 || b.SD == 0 {

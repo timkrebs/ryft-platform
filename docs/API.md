@@ -51,6 +51,7 @@ Every error response has the same shape:
 | `GET` | `/v1/sleep?range&to` | api | `SleepRange` |
 | `GET` | `/v1/workouts?from&to` | api | `[Workout]` |
 | `GET` | `/v1/workouts/{id}` | api | `WorkoutDetail` |
+| `GET` | `/v1/trends?metric&range&to` | api | `Trend` |
 | `POST` | `/v1/recompute` | api | `202 {status:"queued"}` |
 | `GET` | `/healthz`, `/readyz` | all | health |
 
@@ -134,6 +135,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `rhr` | number? | Resting HR, bpm. |
 | `resp_rate` | number? | Overnight breaths/min. |
 | `spo2` | number? | Overnight mean, percent. |
+| `hrv_baseline_ms` | number? | The 30-day HRV baseline `hrv_ms` was scored against: geometric mean of up to 30 scored days before `day`. |
+| `rhr_baseline` | number? | The 30-day resting-HR baseline `rhr` was scored against. |
 | `calibrating` | bool | Fewer than 7 days of baseline history. |
 | `details` | object | Free-form breakdown for debugging; **not part of the contract** — do not build UI on it. |
 | `computed_at` | timestamp | When the row was last scored. |
@@ -261,6 +264,30 @@ Returns every `Workout` field plus:
 A workout logged without heart-rate samples is scored from `avg_hr` and duration:
 the whole duration counts at that intensity and in that zone.
 
+### `GET /v1/trends?metric=…&range=7d|30d|90d&to=YYYY-MM-DD` — Trends charts
+
+| Parameter | Values | Default |
+|---|---|---|
+| `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm) | required |
+| `range` | `7d`, `30d`, `90d` — days ending at `to`, inclusive | `7d` |
+| `to` | `YYYY-MM-DD` | today |
+
+`422` on a missing/unknown `metric` or `range`, `400` on a malformed `to`.
+
+```json
+{ "metric": "hrv", "range": "7d", "from": "2026-10-12", "to": "2026-10-18",
+  "points": [ {"day":"2026-10-12","value":47.4}, {"day":"2026-10-13","value":50.8}, … ],
+  "avg": 51.7, "min": 47.1, "max": 57.6, "baseline": 52.3 }
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `metric`, `range`, `from`, `to` | string | The window actually served. |
+| `points` | `[TrendPoint]` | `{day, value}` for each scored day with a value, oldest first. Days without a value are absent (a gap in the chart), so there can be fewer points than days. Same numbers as the matching `DailyScore` field. |
+| `avg` | number? | Mean of `points`, one decimal. `null` without points. |
+| `min`, `max` | number? | `null` without points. |
+| `baseline` | number? | `hrv` and `rhr` only: the 30-day baseline stored on the most recent day in the window that has one (= that day's `hrv_baseline_ms` / `rhr_baseline`). `null` for other metrics. |
+
 ### `POST /v1/recompute` — rescore a range
 
 Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, at most
@@ -277,6 +304,7 @@ for ingest/scoring, NATS) is unreachable.
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | `GET /v1/trends` and `DailyScore.hrv_baseline_ms` / `rhr_baseline` added. |
 | 2026-10-18 | `GET /v1/workouts/{id}` (heart-rate curve, zone minutes, TRIMP) and `DayDetail.strain` added. |
 | 2026-10-18 | `DayDetail.sleep` (typed night with stages and hypnogram) and `GET /v1/sleep` added. |
 | 2026-10-18 | `DailyScore.readiness` and `DailyScore.state` added. |
