@@ -19,6 +19,7 @@ func fakeJWT(role string) string {
 func TestNewAdminChecksTheKeyKind(t *testing.T) {
 	for key, ok := range map[string]bool{
 		"sb_secret_abc123":          true,
+		"sb_secret_change-me":       false,
 		fakeJWT("service_role"):     true,
 		fakeJWT("anon"):             false,
 		"sb_publishable_abc123":     false,
