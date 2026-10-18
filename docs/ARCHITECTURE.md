@@ -154,11 +154,15 @@ Everything above is a starting point with sensible constants; the tests in
 
 ## Deployment
 
-`deploy/k8s` is a kustomization: namespace, Postgres 17 (StatefulSet, 10 Gi PVC),
-NATS 2.11 with JetStream (2 Gi PVC), the three deployments (distroless, non-root,
-read-only FS, probes on `/healthz` + `/readyz`), ClusterIP services, an Ingress that
-routes `/v1/sync` → ingest and `/v1` → api. Copy `secrets.example.yaml` → `secrets.yaml`,
-set `API_KEY` (`openssl rand -hex 32`) and the Postgres password, `kubectl apply -k`.
+`deploy/k8s/base` is the kustomization: namespace, Postgres 17 (StatefulSet, 10 Gi
+PVC), NATS 2.11 with JetStream (2 Gi PVC), the three deployments (distroless,
+non-root, read-only FS, probes on `/healthz` + `/readyz`, Prometheus scrape
+annotations), ClusterIP services, an Ingress that routes `/v1/sync` → ingest and
+`/v1` → api, a default-deny NetworkPolicy with explicit allows, PDBs and CPU HPAs
+(2–4 replicas) for api and ingest, and a nightly `pg_dump` CronJob. Two overlays
+supply `ryft-secrets`: `deploy/k8s` from a git-ignored `secrets.yaml`, or
+`deploy/k8s/vault` through a `VaultStaticSecret` (Vault Secrets Operator, KV v2
+`secret/ryft`). Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
 
 Expose it the way you already expose things: a Cloudflare tunnel pointing at the two
 ClusterIP services (or at the Ingress) is enough; the API key is the only auth, so
@@ -166,9 +170,14 @@ keep TLS on.
 
 ## What to build next (in rough order of payoff)
 
-1. **Vault Secrets Operator** for `ryft-secrets` instead of a committed Secret.
-4. **Weekly / monthly views** and a strain-vs-recovery scatter (the Whoop "sweet spot").
-5. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
-6. **Journal** (the behaviour-impact feature): a `journal` table + correlation against
+1. **HealthKit source de-duplication.** Samples and sleep from several sources (iPhone +
+   Garmin) are summed as-is; pick one source per type and night (HealthKit's own
+   priority order) before scoring. Prerequisite for the next item.
+2. **Calories and steps on the Strain screen** (`active_energy`, `steps` are ingested but
+   not aggregated yet).
+3. **Strain-vs-recovery "sweet spot"**: a recommended strain target for the day from
+   today's recovery.
+4. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
+5. **Journal** (the behaviour-impact feature): a `journal` table + correlation against
    next-day recovery, surfaced as more insight rules.
-7. **Garmin-only metrics** via an optional `garmin-sync` service.
+6. **Garmin-only metrics** via an optional `garmin-sync` service.

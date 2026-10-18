@@ -1,0 +1,33 @@
+# How the Vault Secrets Operator reaches and authenticates to Vault for namespace
+# ryft: Kubernetes auth, role "ryft", as service account ryft-vault.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ryft-vault
+  namespace: ryft
+automountServiceAccountToken: false
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: ryft
+spec:
+  # In-cluster Vault from the official Helm chart; change for an external Vault / HCP Vault.
+  address: http://vault.vault.svc.cluster.local:8200
+  skipTLSVerify: false
+  # caCertSecretRef: vault-ca      # Secret with ca.crt when Vault serves TLS
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: ryft
+  namespace: ryft
+spec:
+  vaultConnectionRef: vault
+  method: kubernetes
+  mount: kubernetes
+  kubernetes:
+    role: ryft
+    serviceAccount: ryft-vault
+    audiences: [vault]

@@ -145,3 +145,30 @@ optional `to` like `/v1/sleep`.
   design — this makes them visible).
 - `prometheus/client_golang` is pinned to v1.23.2: v1.25 requires `go 1.26`, which would
   break the `golang:1.25` build image and the module's Go 1.24 floor.
+
+## D15 — Manifests split into `base/` plus two overlays
+
+The prompt wants `deploy/k8s/vault/` "as the alternative to `secrets.yaml`", but a
+kustomize overlay cannot remove a resource from its base, and the old flat
+`deploy/k8s/kustomization.yaml` listed `secrets.yaml` directly. Everything except the
+Secret moved to `deploy/k8s/base/` (history kept with `git mv`); `deploy/k8s` is now the
+default overlay (base + `secrets.yaml`), so `kubectl apply -k deploy/k8s` works exactly
+as before, and `deploy/k8s/vault` is base + VaultStaticSecret. Image tags are now set in
+`base/kustomization.yaml`.
+
+## D16 — NetworkPolicy exceptions beyond "only the Ingress / only the services"
+
+- Prometheus (namespace `monitoring`) may reach :8080 on the three services; otherwise
+  the 2.6 metrics could not be scraped.
+- The backup CronJob (and the documented restore pod), labelled `app: pg-backup`, may
+  reach Postgres.
+- Both Traefik (k3s default) and ingress-nginx are allowed out of the box, since the
+  Ingress comment names both; a Cloudflare tunnel peer is provided commented out.
+
+## D17 — HPA owns replicas; scoring stays single
+
+api and ingest have no `replicas` in their Deployments (the HPA, min 2 / max 4, owns
+it); otherwise every `kubectl apply` would reset them to 1. `minAvailable: 1` PDBs plus a
+minimum of 2 replicas means drains never block. scoring is deliberately left at one
+replica without HPA/PDB: it runs the 15-minute timer and recompute ranges must be
+scored oldest-first by one consumer.

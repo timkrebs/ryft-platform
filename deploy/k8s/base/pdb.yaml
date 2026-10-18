@@ -1,0 +1,21 @@
+# Keep one api and one ingest pod through voluntary disruptions (node drains,
+# upgrades). The HPAs keep at least two replicas, so a drain can always proceed.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: ryft
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingest
+  namespace: ryft
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: ingest }

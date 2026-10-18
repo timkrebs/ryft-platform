@@ -7,8 +7,8 @@ Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — it explains the da
 flow, the schema and the scoring model.
 
 ```
-backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,store,db,events,httpx,model,config}
-deploy/k8s/   kustomize manifests (Postgres, NATS JetStream, 3 services, Ingress)
+backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,insights,store,db,events,httpx,metrics,model,config}
+deploy/k8s/   kustomize: base/ (Postgres, NATS, 3 services, Ingress, policies, backups) + default and vault/ overlays
 ../app/          SwiftUI app (HealthKit sync, Today / Trends / Settings)
 scripts/      synth.py (fake Health data), smoke.sh (end-to-end test), print_days.py
 docker-compose.yml   local stack
@@ -35,16 +35,17 @@ Config is env-only: `DATABASE_URL`, `NATS_URL`, `API_KEY`, `PORT`, optional `USE
 ## 2. Kubernetes
 
 ```bash
-make images REGISTRY=ghcr.io/<you>/ryft && make push      # or your own registry
+make images REGISTRY=ghcr.io/<you>/ryft && make push      # or let CI push ghcr.io/timkrebs/ryft/*
 cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml  # set API_KEY (openssl rand -hex 32) + DB password
-# edit deploy/k8s/kustomization.yaml images + ingress.yaml host
-kubectl apply -k deploy/k8s
+# edit deploy/k8s/base/kustomization.yaml images + base/ingress.yaml host
+kubectl apply -k deploy/k8s                                 # or: kubectl apply -k deploy/k8s/vault
 kubectl -n ryft get pods
 kubectl -n ryft port-forward svc/api 8082:80 &  kubectl -n ryft port-forward svc/ingest 8081:80 &
 API_KEY=<your key> make smoke
 ```
 
-Then put the Ingress (or the two services) behind your tunnel with TLS.
+Then put the Ingress (or the two services) behind your tunnel with TLS. Vault,
+network policy, scaling, backups and restore: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## 3. iOS app
 

@@ -114,7 +114,7 @@ Postgres, `postgres_exporter` with the `ryft` credentials.
 |---|---|---|
 | NoSync | `time() - max(ryft_last_sync_timestamp_seconds) > 6*3600` | 15m |
 | ScoringErrors | `sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0` | 15m |
-| EventsDropped | `sum(increase(ryft_events_handled_total{result=~"failed|bad"}[1h])) > 0` | 0m |
+| EventsDropped | `sum(increase(ryft_events_handled_total{result=~"failed\|bad"}[1h])) > 0` | 0m |
 | PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
 | API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |

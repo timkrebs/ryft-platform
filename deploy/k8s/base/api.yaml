@@ -5,7 +5,7 @@ metadata:
   namespace: ryft
   labels: { app: api, part-of: ryft }
 spec:
-  replicas: 1
+  # replicas: owned by the HorizontalPodAutoscaler (hpa.yaml)
   selector:
     matchLabels: { app: api }
   template:
@@ -20,6 +20,11 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: api } }
       containers:
         - name: api
           image: ghcr.io/timkrebs/ryft/api:latest

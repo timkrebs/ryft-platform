@@ -1,0 +1,26 @@
+# Everything except the Secret. Apply through an overlay:
+#   kubectl apply -k deploy/k8s         # Secret from deploy/k8s/secrets.yaml (git-ignored)
+#   kubectl apply -k deploy/k8s/vault   # Secret materialised from Vault by the Vault Secrets Operator
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - nats.yaml
+  - ingest.yaml
+  - scoring.yaml
+  - api.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+  - pdb.yaml
+  - hpa.yaml
+  - backup.yaml
+images:
+  - name: ghcr.io/timkrebs/ryft/ingest
+    newTag: latest
+  - name: ghcr.io/timkrebs/ryft/scoring
+    newTag: latest
+  - name: ghcr.io/timkrebs/ryft/api
+    newTag: latest

@@ -6,7 +6,7 @@ SERVICES := ingest scoring api
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke k8s-apply k8s-delete
+.PHONY: test build images push up down logs smoke k8s-apply k8s-apply-vault k8s-delete k8s-validate
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -36,8 +36,18 @@ logs:
 smoke:
 	./scripts/smoke.sh
 
+# Default overlay (deploy/k8s/secrets.yaml) or the Vault one; see docs/OPERATIONS.md.
 k8s-apply:
 	kubectl apply -k deploy/k8s
 
+k8s-apply-vault:
+	kubectl apply -k deploy/k8s/vault
+
 k8s-delete:
 	kubectl delete -k deploy/k8s
+
+# Render the base and the Vault overlay offline and validate them (no cluster needed).
+KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+k8s-validate:
+	for o in base vault; do kubectl kustomize deploy/k8s/$$o; echo ---; done | \
+	  kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' -

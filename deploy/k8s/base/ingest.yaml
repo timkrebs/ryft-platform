@@ -5,7 +5,7 @@ metadata:
   namespace: ryft
   labels: { app: ingest, part-of: ryft }
 spec:
-  replicas: 1
+  # replicas: owned by the HorizontalPodAutoscaler (hpa.yaml)
   selector:
     matchLabels: { app: ingest }
   template:
@@ -20,6 +20,11 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: ingest } }
       containers:
         - name: ingest
           image: ghcr.io/timkrebs/ryft/ingest:latest
