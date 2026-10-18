@@ -228,7 +228,8 @@ From the scaffold: api and ingest no longer set `replicas` (the HPA owns it). Be
 old manifest did, the first `kubectl apply` drops the field and the Deployments briefly
 fall back to 1 replica until the HPA scales them to 2 — harmless, but expect it.
 
-Migrations run on boot (advisory lock, so several pods starting at once is safe).
+Migrations run in the migrate job before the services (they wait for it; advisory lock,
+so two migrate runs at once are safe).
 New columns on `daily_scores` (readiness, sleep detail, strain detail, baselines) are
 filled when a day is scored (`steps` and `active_kcal` too), and source
 de-duplication (`SCORING.md`) changes strain and sleep for anyone with two devices. Rescore history once after upgrading to this

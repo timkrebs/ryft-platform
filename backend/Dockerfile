@@ -1,4 +1,4 @@
-# One Dockerfile for all three services; pick the binary with --build-arg SERVICE=ingest|scoring|api
+# One Dockerfile for every binary; pick it with --build-arg SERVICE=ingest|scoring|api|migrate
 # The build stage runs on the build machine and cross-compiles for the target
 # platform, so multi-arch builds (CI: linux/amd64 + linux/arm64) need no emulation.
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build

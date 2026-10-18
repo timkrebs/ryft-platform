@@ -470,3 +470,28 @@ and "did not move" stay apart. `DayDetail.strain` repeats them for the Strain sc
 It stays `null` without heart-rate data (the invariant fixed in D22), so a phone-only
 user sees steps on `score` only. They are informational and do not change the strain
 score.
+
+## D42 — Least-privilege database roles and a migrate job
+
+Every namespace used to hold the same owner credential, which can drop tables and read
+every user's data. Each service now connects as its own role (`ryft_ingest`,
+`ryft_scoring`, `ryft_api`, migration 0009) with only the table privileges its queries
+use, derived from the store calls of that service. scoring may update only the load
+columns of `workouts`, so the phone's data cannot be rewritten by the scorer. None of the
+roles can run DDL, so migrations moved out of the services into `cmd/migrate`. It runs
+once per deploy as the owner (Kubernetes Job in `ryft-migrate`, a one-shot compose
+service). The services wait for the schema instead of applying it (`db.WaitMigrated`,
+up to 10 minutes, then exit so Kubernetes retries).
+
+- **Passwords:** migrations never contain them. The roles are created `NOLOGIN`, and the
+  migrate job enables `LOGIN` and sets each password from `DB_PASSWORD_<SERVICE>`.
+  Terraform (`infra/vault`) generates the passwords and writes each one only into the
+  owning service's Vault namespace, plus the migrate namespace. The job sends a SCRAM
+  verifier computed in Go (Go 1.24 `crypto/pbkdf2`, pinned against an independent
+  implementation), so the plaintext cannot appear in Postgres's statement log.
+- **RLS:** on Supabase, RLS is on and now applies to the services. A permissive
+  `<table>_services` policy admits the three roles; the grants are what limit them. This
+  is simpler than `BYPASSRLS`, which a non-superuser `postgres` may not be able to grant
+  on Supabase.
+- **Compose:** compose runs the same roles, so a missing grant fails `make smoke`
+  locally, not in production.

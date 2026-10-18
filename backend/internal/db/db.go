@@ -54,6 +54,10 @@ func Connect(ctx context.Context, url string, maxConns int) (*pgxpool.Pool, erro
 	return pool, nil
 }
 
+// MigrateWait is how long a service waits at start-up for the migrate job
+// before it gives up and exits (Kubernetes restarts it).
+const MigrateWait = 10 * time.Minute
+
 // migrationLock serialises migrators across pods. It is a transaction-level
 // advisory lock: it disappears with the transaction even if the pod dies or a
 // pooler hands the session to someone else.
@@ -61,8 +65,8 @@ const migrationLock = 7_419_001
 
 // Migrate applies every migrations/NNNN_*.sql file not yet recorded in
 // schema_migrations, in numeric order, each in its own transaction under the
-// migration lock (re-checking schema_migrations inside it). Safe to run from
-// every service on boot.
+// migration lock (re-checking schema_migrations inside it). cmd/migrate runs
+// it as the schema owner; concurrent runs are safe.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	return migrateTo(ctx, pool, log, 0)
 }

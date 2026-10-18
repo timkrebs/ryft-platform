@@ -94,8 +94,8 @@ func TestMigrateVanillaPostgres(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatalf("second run must be a no-op: %v", err)
 	}
-	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies`); n != 0 {
-		t.Fatalf("no RLS policies on plain Postgres, got %d", n)
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE policyname LIKE '%own_row%'`); n != 0 {
+		t.Fatalf("no own-row policies on plain Postgres, got %d", n)
 	}
 	if n := scalar[int](t, pool, `SELECT count(*) FROM users WHERE id=$1`, seed); n != 0 {
 		t.Fatal("the unused seed user must be removed")
@@ -135,8 +135,12 @@ func TestMigrateSupabaseShape(t *testing.T) {
 			}
 		}
 	}
-	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public'`); n != 6 {
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%own_row%'`); n != 6 {
 		t.Errorf("want 6 own-row policies, got %d", n)
+	}
+	// Every table admits the service roles (migration 0009), or they would see nothing.
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%_services'`); n != len(tables) {
+		t.Errorf("want a service policy on each of the %d tables, got %d", len(tables), n)
 	}
 	if scalar[bool](t, pool, `SELECT has_sequence_privilege('anon', 'public.samples_id_seq', 'USAGE')`) {
 		t.Error("anon must not use the sequences")

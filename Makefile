@@ -1,6 +1,6 @@
 REGISTRY ?= ghcr.io/timkrebs/ryft
 TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
-SERVICES := ingest scoring api
+SERVICES := ingest scoring api migrate
 
 # Docker if it is installed, otherwise Podman (its `compose` runs the same file).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)

@@ -42,9 +42,13 @@ the same `samples` table with new `type` values — nothing else changes.
 | `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
 | `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
 
-All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
-share `internal/` packages, and run DB migrations on boot, each in a transaction under a
-transaction-level advisory lock (safe behind Supabase's pooler).
+All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
+share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
+schema: it runs once per deploy as the schema owner (a Job, or a one-shot compose
+service), applies each migration in a transaction under a transaction-level advisory
+lock (safe behind Supabase's pooler), and sets the services' role passwords. The
+services connect as least-privilege roles (below) and wait at start-up until the schema
+has every migration they were built with.
 Each serves `/healthz`, `/readyz` and Prometheus `/metrics` on 8080 — metric
 catalogue and dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
@@ -99,6 +103,17 @@ timer catches up.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
 - `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+
+**Database roles** (migration 0009; `internal/db/roles_test.go` pins the matrix):
+
+| Role | May |
+| --- | --- |
+| `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users` |
+| `ryft_scoring` | read the raw tables; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes` of `workouts` |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users` |
+
+None of them may create, alter or drop anything, or truncate. Every new table must grant
+the roles what they need in the same migration, and the grants test must be extended.
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to
 D (sleep ending between D-1 20:00 and D 13:00), so the morning's recovery and the

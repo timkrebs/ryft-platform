@@ -85,7 +85,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        service: [ingest, scoring, api]
+        service: [ingest, scoring, api, migrate]
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-qemu-action@v3

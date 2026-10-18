@@ -105,9 +105,16 @@ Migration `0007_supabase_auth.sql`, Supabase part (skipped on plain Postgres):
 - `REVOKE ALL` on tables, sequences and functions in `public` from `anon`,
   `authenticated`, `service_role`, and the same for tables created later
   (`ALTER DEFAULT PRIVILEGES FOR ROLE postgres`).
-- The services connect as `postgres`, which owns the tables and therefore bypasses RLS.
-  Never `ALTER TABLE … FORCE ROW LEVEL SECURITY`. Check the role once:
-  `SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname = 'postgres';`
+- Only the migrate job connects as `postgres`, which owns the tables and therefore bypasses
+  RLS. Never `ALTER TABLE … FORCE ROW LEVEL SECURITY`.
+- The services connect as `ryft_ingest`, `ryft_scoring` and `ryft_api` (migration 0009),
+  which hold only the table privileges they need (`ARCHITECTURE.md` → Database roles).
+  RLS applies to them, so every table also has a policy `<table>_services` that admits
+  them. Through the pooler their user names are `<role>.<ref>`, e.g. `ryft_api.<ref>`.
+  The migrate job sets their passwords from its environment, sending SCRAM verifiers, not
+  plaintext. Check once after the first deploy:
+  `SELECT rolname, rolcanlogin, rolbypassrls FROM pg_roles WHERE rolname LIKE 'ryft_%';`
+  (→ `true`, `false` for all three).
 
 **Restoring a database migrated on plain Postgres into Supabase** (e.g. moving off the
 `local-postgres` overlay): migration 0007 is recorded as applied but its Supabase block
@@ -122,7 +129,7 @@ and `SELECT has_table_privilege('anon', 'public.samples', 'SELECT');` (→ `fals
 Supavisor session mode holds one server connection per client connection. Each pod
 keeps a small pool (`DB_MAX_CONNS`, default 4 for api/ingest, 2 for scoring), recycled
 every 30 minutes: at the HPA maximum (4 api + 4 ingest + 1 scoring) that is 34
-connections. Check the project's pool size (Database → Connection pooling) if you raise
+connections, plus 2 while the migrate job runs. Check the project's pool size (Database → Connection pooling) if you raise
 replicas or `DB_MAX_CONNS`.
 
 `sslmode=require` encrypts but does not verify the server certificate. For

@@ -19,35 +19,50 @@ services:
     ports: ["4222:4222", "8222:8222"]
     volumes: ["natsdata:/data"]
 
-  ingest:
-    build: { context: ./backend, args: { SERVICE: ingest } }
-    environment: &env
+  # Applies the migrations as the owner (ryft) and sets the services' role
+  # passwords, then exits; the services start after it and connect as their own
+  # least-privilege roles, as on Kubernetes (docs/ARCHITECTURE.md).
+  migrate:
+    build: { context: ./backend, args: { SERVICE: migrate } }
+    environment:
       DATABASE_URL: postgres://ryft:ryft@postgres:5432/ryft?sslmode=disable
-      NATS_URL: nats://nats:4222
-      API_KEY: ${API_KEY:-dev-api-key-change-me}
-      # Local development: a shared key instead of Supabase tokens. The bearer
-      # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
-      AUTH_MODE: apikey
-      ALLOW_INSECURE_APIKEY_AUTH: "true"
-    ports: ["8081:8080"]
+      DB_PASSWORD_INGEST: dev-ingest-db-password
+      DB_PASSWORD_SCORING: dev-scoring-db-password
+      DB_PASSWORD_API: dev-api-db-password
+    restart: "no"
     depends_on:
       postgres: { condition: service_healthy }
+
+  ingest:
+    build: { context: ./backend, args: { SERVICE: ingest } }
+    environment:
+      <<: &env
+        NATS_URL: nats://nats:4222
+        API_KEY: ${API_KEY:-dev-api-key-change-me}
+        # Local development: a shared key instead of Supabase tokens. The bearer
+        # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
+        AUTH_MODE: apikey
+        ALLOW_INSECURE_APIKEY_AUTH: "true"
+      DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
+    ports: ["8081:8080"]
+    depends_on: &deps
+      migrate: { condition: service_completed_successfully }
       nats: { condition: service_started }
 
   scoring:
     build: { context: ./backend, args: { SERVICE: scoring } }
-    environment: *env
-    depends_on:
-      postgres: { condition: service_healthy }
-      nats: { condition: service_started }
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://ryft_scoring:dev-scoring-db-password@postgres:5432/ryft?sslmode=disable
+    depends_on: *deps
 
   api:
     build: { context: ./backend, args: { SERVICE: api } }
-    environment: *env
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
     ports: ["8082:8080"]
-    depends_on:
-      postgres: { condition: service_healthy }
-      nats: { condition: service_started }
+    depends_on: *deps
 
 volumes:
   pgdata:

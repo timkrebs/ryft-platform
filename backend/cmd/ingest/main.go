@@ -48,8 +48,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool, log); err != nil {
-		log.Error("migrate", "err", err)
+	// The migrate job applies migrations; this service's role cannot.
+	waitCtx, cancelWait := context.WithTimeout(ctx, db.MigrateWait)
+	err = db.WaitMigrated(waitCtx, pool, log)
+	cancelWait()
+	if err != nil {
+		log.Error("schema", "err", err)
 		os.Exit(1)
 	}
 	st := store.New(pool)
