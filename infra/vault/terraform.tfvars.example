@@ -1,0 +1,32 @@
+region                      = "eu-central-1"
+eks_cluster_name            = "ryft-prod-euc1"
+project                     = "ryft"
+vault_parent_namespace_root = "admin" # "admin" on HCP Vault Dedicated; "" on self-managed Enterprise
+vault_address_for_cluster   = "https://<cluster>.hashicorp.cloud:8200" # Terraform uses it too
+# vault_address             = "https://…"         # only if Terraform reaches Vault at another address
+# vault_ca_bundle_b64       = "LS0tLS1CRUdJTi..."  # only for a private CA
+
+# Supabase (docs/SUPABASE.md). The database and NATS passwords of the services are
+# generated here; you only provide the owner password, which only the migrate
+# namespace receives.
+supabase_project_ref    = "<ref>"
+database                = { host = "aws-<n>-eu-central-1.pooler.supabase.com" } # Connect → Session pooler
+database_owner_password = "<database password>"
+
+# Per-service credentials. Keys land only in that service's kv/config.
+service_secrets = {
+  api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_…" } # Project Settings → API Keys; account deletion
+  # coach  = { ANTHROPIC_API_KEY = "sk-ant-…" }
+  # notify = { APNS_KEY_ID = "…", APNS_TEAM_ID = "…", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----…" }
+}
+
+# Add a service: one line here creates its Vault namespace, Kubernetes namespace,
+# auth mount, KV, policy and VSO manifests (a database = "role" also needs a
+# migration creating ryft_<name> and an entry in backend/internal/db.ServiceRoles).
+# services = {
+#   ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
+#   scoring = { database = "role", nats = "client" }
+#   api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
+#   nats    = { nats = "server", workload_kind = "StatefulSet" }
+#   migrate = { database = "owner", workload_kind = "" }
+# }
