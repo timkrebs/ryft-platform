@@ -50,6 +50,7 @@ Every error response has the same shape:
 | `GET` | `/v1/days/{day}` | api | `DayDetail` |
 | `GET` | `/v1/sleep?range&to` | api | `SleepRange` |
 | `GET` | `/v1/workouts?from&to` | api | `[Workout]` |
+| `GET` | `/v1/workouts/{id}` | api | `WorkoutDetail` |
 | `POST` | `/v1/recompute` | api | `202 {status:"queued"}` |
 | `GET` | `/healthz`, `/readyz` | all | health |
 
@@ -140,11 +141,11 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 ### `GET /v1/days/{day}` — one day
 
 ```jsonc
-{ "score": DailyScore, "sleep": SleepDetail?, "workouts": [Workout] }
+{ "score": DailyScore, "sleep": SleepDetail?, "strain": DayStrain?, "workouts": [Workout] }
 ```
 
 A day that has not been scored yet returns `200` with a `score` whose numbers are
-all `null`, `state: "calibrating"`, `sleep: null` and `workouts: []`. `400` on a
+all `null`, `state: "calibrating"`, `sleep: null`, `strain: null` and `workouts: []`. `400` on a
 malformed day. `sleep` is `null` when no sleep was recorded for the night ending on
 `day` (also for days scored before the platform upgrade until they are recomputed).
 
@@ -172,6 +173,19 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 | `quality_label` | string | `good` (quality ≥ 80), `fair` (60–79), `poor` (< 60). |
 | `has_stages` | bool | `false` when the source recorded no stages (older firmware): `deep`/`light`/`rem` are then 0 min and 0 %. |
 | `segments` | `[SleepInterval]` | The hypnogram, oldest first: `{stage, start, end}` with `stage` one of `deep`, `light`, `rem`, `awake`, `asleep` (stage unknown). Touching segments of one stage are merged; `inbed` is not a stage and is left out. Only on this endpoint. |
+
+`DayStrain` — the heart-rate load behind `score.strain` (Strain screen); `null` when
+the day had no heart-rate data:
+
+```json
+{ "trimp": 99, "hr_min": 912, "zone_min": [12, 24, 37, 7, 0] }
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `trimp` | int | Banister TRIMP for the whole day. |
+| `hr_min` | int | Minutes of usable heart-rate data (watch worn). |
+| `zone_min` | `[int]` | Five entries: minutes at 50–60, 60–70, 70–80, 80–90 and ≥ 90 % of heart-rate reserve. |
 
 `SleepStage`: `{ "stage": string, "min": int, "pct": int }`. For `deep`, `light`, `rem`,
 `pct` is the share of staged sleep and the three always sum to exactly 100 (or are all 0
@@ -219,6 +233,34 @@ oldest first.
 | `source` | string | |
 | `strain` | number? | 0–21, filled by scoring. Omitted until scored. |
 
+### `GET /v1/workouts/{id}` — one workout
+
+`id` is the workout UUID. `400` when it is not a UUID, `404` when no such workout.
+Returns every `Workout` field plus:
+
+```json
+{
+  "id": "…", "activity": "running", "start": "2026-10-17T17:30:00Z", "end": "2026-10-17T18:40:00Z",
+  "avg_hr": 151.6, "max_hr": 178, "source": "Garmin Connect", "strain": 14.9,
+  "hr": [ {"t":"2026-10-17T17:30:00Z","bpm":96}, {"t":"2026-10-17T17:31:00Z","bpm":131}, … ],
+  "zone_min": [2, 24, 37, 7, 0],
+  "trimp": 99
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `avg_hr`, `max_hr` | number? | As sent by the app; when the app sent none, derived from the heart-rate samples in the workout window. Still omitted when there are no samples either. |
+| `hr` | `[HRSample]` | The heart-rate curve between `start` and `end` (inclusive), oldest first, at most 600 points. Longer series are down-sampled with Largest-Triangle-Three-Buckets, so peaks survive and every point is a real sample. `[]` when there are no samples. |
+| `HRSample.t` | timestamp | |
+| `HRSample.bpm` | int | Rounded bpm. |
+| `zone_min` | `[int]?` | Five entries, minutes in the heart-rate-reserve zones (as `DayStrain`). `null` until scored. |
+| `trimp` | int? | Banister TRIMP of the workout. `null` until scored. |
+| `strain` | number? | 0–21. Omitted until scored. |
+
+A workout logged without heart-rate samples is scored from `avg_hr` and duration:
+the whole duration counts at that intensity and in that zone.
+
 ### `POST /v1/recompute` — rescore a range
 
 Body `{ "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }` (inclusive, `from ≤ to`, at most
@@ -235,6 +277,7 @@ for ingest/scoring, NATS) is unreachable.
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | `GET /v1/workouts/{id}` (heart-rate curve, zone minutes, TRIMP) and `DayDetail.strain` added. |
 | 2026-10-18 | `DayDetail.sleep` (typed night with stages and hypnogram) and `GET /v1/sleep` added. |
 | 2026-10-18 | `DailyScore.readiness` and `DailyScore.state` added. |
 | 2026-10-18 | Initial v1: sync, me, days, day detail, workouts, recompute. |

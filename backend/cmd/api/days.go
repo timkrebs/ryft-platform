@@ -57,8 +57,8 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, 200, rows)
 }
 
-// day is the Today / Sleep "Day" view: the score, last night in detail with
-// its stage timeline, and the day's workouts.
+// day is the Today / Sleep "Day" / Strain view: the score, last night in
+// detail with its stage timeline, the day's heart-rate load and its workouts.
 func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	day := r.PathValue("day")
@@ -94,6 +94,12 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
 		out.Score = scores[0]
+		load, err := h.st.DayLoadOf(ctx, h.cfg.UserID, day)
+		if err != nil {
+			httpx.WriteError(w, 500, err.Error())
+			return
+		}
+		out.Strain = scoring.DayStrainFrom(load)
 	}
 	if len(nights) > 0 {
 		if s, ok := scoring.NightSummary(nights[0]); ok {

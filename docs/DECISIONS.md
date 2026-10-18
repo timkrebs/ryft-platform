@@ -68,3 +68,22 @@ parsed out of the free-form `details` JSON, which stays as it was for compatibil
 There is no SQL backfill — old rows get the columns on their next recompute, and the
 upgrade procedure in `docs/STATUS.md` recomputes 90 days anyway. All timestamps now
 scan from Postgres as UTC (`db.Connect`), so the API emits UTC as the contract says.
+
+## D9 — Workout detail: integers on the wire, app values win
+
+- `hr[].bpm`, `zone_min[]` and `trimp` are rounded integers, as in the prompt's example
+  (`"bpm":152`, `"zone_min":[0,5,20,30,2]`, `"trimp":77`); storage keeps one decimal.
+- `avg_hr` / `max_hr` stay what the app sent (HealthKit's workout statistics). Only
+  when they are missing does the detail derive them from the samples in the window.
+  The list endpoint is unchanged.
+- Down-sampling uses Largest-Triangle-Three-Buckets rather than bucket means: a
+  sprint peak is what the user looks for on the curve, and means flatten it.
+- A workout scored from `avg_hr` alone (no samples) credits its whole duration to the
+  average's zone, so `zone_min` is never misleadingly empty for it.
+
+## D10 — `DayDetail.strain` (additive, not in the prompt)
+
+The Strain screen needs the day's load, not only per-workout load. The day's TRIMP,
+minutes of heart-rate data and zone minutes were already computed but only reachable
+through the untyped `details`. They are now stored typed (migration 0004, together
+with the workout columns) and served as `DayDetail.strain`.

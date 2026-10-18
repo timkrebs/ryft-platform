@@ -92,4 +92,24 @@ err = get("/v1/sleep?range=year", expect=422)
 check(isinstance(err, dict) and "error" in err, "422 must carry {error}")
 ok("/v1/sleep?range=year → 422 {error}")
 
+# ---- 2.3 workouts -------------------------------------------------------------
+wks = get(f"/v1/workouts?to={TODAY}")
+check(len(wks) > 0, "/v1/workouts: synthetic data has workouts")
+wk = get(f"/v1/workouts/{wks[-1]['id']}")
+check(wk["id"] == wks[-1]["id"] and wk["strain"] is not None, "workout detail: id/strain")
+check(0 < len(wk["hr"]) <= 600, f"workout detail: {len(wk['hr'])} hr points")
+check(all(wk["start"] <= p["t"] <= wk["end"] for p in wk["hr"]), "hr points outside the workout window")
+check(all(a["t"] < b["t"] for a, b in zip(wk["hr"], wk["hr"][1:])), "hr points not sorted")
+check(isinstance(wk["trimp"], int) and len(wk["zone_min"]) == 5, f"trimp/zone_min: {wk['trimp']} {wk['zone_min']}")
+check(wk["avg_hr"] is not None and wk["max_hr"] >= wk["avg_hr"], "avg/max hr")
+mins = (len(wk["hr"]) - 1)  # synth samples every minute
+check(sum(wk["zone_min"]) <= mins + 1, f"zone minutes {sum(wk['zone_min'])} exceed duration {mins}")
+ok(f"/v1/workouts/{{id}}: {len(wk['hr'])} hr points, zones {wk['zone_min']}, trimp {wk['trimp']}, strain {wk['strain']}")
+get("/v1/workouts/00000000-0000-0000-0000-00000000dead", expect=404)
+get("/v1/workouts/not-a-uuid", expect=400)
+ok("/v1/workouts/{id}: 404 unknown, 400 malformed")
+st = get(f"/v1/days/{TODAY}")["strain"]
+check(st is not None and st["hr_min"] > 0 and len(st["zone_min"]) == 5, f"day strain: {st}")
+ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes")
+
 print("all API contract checks passed")

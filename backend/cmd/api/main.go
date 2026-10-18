@@ -61,6 +61,7 @@ func main() {
 	api.HandleFunc("GET /v1/days/{day}", h.day)
 	api.HandleFunc("GET /v1/sleep", h.sleepRange)
 	api.HandleFunc("GET /v1/workouts", h.workouts)
+	api.HandleFunc("GET /v1/workouts/{id}", h.workout)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
 
@@ -105,30 +106,6 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.me(w, r)
-}
-
-func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
-	from, to, err := h.dateRange(r)
-	if err != nil {
-		httpx.WriteError(w, 400, "from/to must be YYYY-MM-DD")
-		return
-	}
-	loc, err := h.location(r)
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	a, _ := time.ParseInLocation(dayLayout, from, loc)
-	b, _ := time.ParseInLocation(dayLayout, to, loc)
-	rows, err := h.st.WorkoutsBetween(r.Context(), h.cfg.UserID, a, b.AddDate(0, 0, 1))
-	if err != nil {
-		httpx.WriteError(w, 500, err.Error())
-		return
-	}
-	if rows == nil {
-		rows = []model.Workout{}
-	}
-	httpx.WriteJSON(w, 200, rows)
 }
 
 // recompute asks scoring (via NATS) to rebuild a date range, oldest first.

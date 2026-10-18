@@ -158,7 +158,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		return err
 	}
 	for _, w := range workouts {
-		var ws float64
+		var load StrainResult
 		var inWindow []HRPoint
 		for _, p := range points {
 			if !p.T.Before(w.Start) && !p.T.After(w.End) {
@@ -166,11 +166,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 			}
 		}
 		if len(inWindow) >= 2 {
-			ws = Strain(inWindow, strainRHR, maxHR).Score
+			load = Strain(inWindow, strainRHR, maxHR)
 		} else if w.AvgHR != nil {
-			ws = StrainFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
+			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
 		}
-		if err := e.st.SetWorkoutStrain(ctx, w.ID, ws); err != nil {
+		if err := e.st.SetWorkoutLoad(ctx, w.ID, load.Score, load.TRIMP, load.ZoneMinutes); err != nil {
 			return err
 		}
 	}
@@ -196,8 +196,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	state := ReadinessState(readiness, rec.Calibrating)
 
 	var strainScore *float64
+	var load store.DayLoad
 	if strain.Minutes > 0 {
 		strainScore = &strain.Score
+		trimp, hrMin := strain.TRIMP, int(math.Round(strain.Minutes))
+		load = store.DayLoad{TRIMP: &trimp, HRMin: &hrMin, ZoneMinutes: strain.ZoneMinutes[:]}
 	}
 	var actual *int
 	if sleep.AsleepMin > 0 {
@@ -234,7 +237,7 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2,
 		Calibrating: rec.Calibrating, Details: details,
 	}
-	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night}); err != nil {
+	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load}); err != nil {
 		return err
 	}
 	e.log.Info("scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", strain.Score,

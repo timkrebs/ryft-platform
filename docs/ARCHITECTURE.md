@@ -62,7 +62,7 @@ timer catches up.
 - `devices` — one row per app install, `last_sync_at`.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
-- `workouts` — one row per HKWorkout (`id` = HK UUID), with `strain` filled by scoring.
+- `workouts` — one row per HKWorkout (`id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
 - `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, `calibrating`, and a `details` JSONB with the breakdown the UI can show.
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to
@@ -98,6 +98,12 @@ Banister's `i · 0.64 · e^(1.92 i)`; score `21 · (1 − e^(−TRIMP/80))`. Cal
 sitting all day ≈ 0, an hour's brisk walk ≈ 2, a 60-min run at 75 % HRR ≈ 14, a
 two-hour race effort ≈ 20. Each workout gets its own strain over its window; if a
 workout has no HR samples the average HR × duration is used.
+
+**Strain detail.** Integration also yields minutes in five HRR zones (50–60, 60–70,
+70–80, 80–90, ≥ 90 %). Scoring stores zones + TRIMP on each workout row and on the
+day (`zone_minutes` jsonb, `trimp`, `hr_min`; migration 0004), so
+`GET /v1/workouts/{id}` only has to load the heart-rate samples in the window and
+down-sample them to ≤ 600 points (LTTB, `scoring.DownsampleHR`).
 
 **Sleep.** `need = base + min(60, 3 · yesterday's strain) + min(60, 0.3 · debt)`, where
 debt is the shortfall over the last 7 nights with 0.7/day decay. `performance =
@@ -146,7 +152,6 @@ keep TLS on.
 1. **Vault Secrets Operator** for `ryft-secrets` instead of a committed Secret.
 2. **Prometheus metrics** (`promhttp` on each service; samples ingested, days scored,
    sync latency) → Grafana dashboard next to your existing stack.
-3. **Per-workout detail** screen: HR curve, zone minutes (already in `details`).
 4. **Weekly / monthly views** and a strain-vs-recovery scatter (the Whoop "sweet spot").
 5. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
 6. **Sleep consistency and journal** (the behaviour-impact feature): a `journal`

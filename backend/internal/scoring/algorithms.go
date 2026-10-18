@@ -246,21 +246,26 @@ func Strain(points []HRPoint, rhr, maxHR float64) StrainResult {
 		hrr := clamp((points[i].BPM-rhr)/(maxHR-rhr), 0, 1)
 		res.Minutes += mins
 		res.TRIMP += mins * trimpPerMinute(hrr)
-		switch {
-		case hrr >= 0.9:
-			res.ZoneMinutes[4] += mins
-		case hrr >= 0.8:
-			res.ZoneMinutes[3] += mins
-		case hrr >= 0.7:
-			res.ZoneMinutes[2] += mins
-		case hrr >= 0.6:
-			res.ZoneMinutes[1] += mins
-		case hrr >= 0.5:
-			res.ZoneMinutes[0] += mins
+		if z := hrrZone(hrr); z >= 0 {
+			res.ZoneMinutes[z] += mins
 		}
 	}
 	res.Score = StrainFromTRIMP(res.TRIMP)
 	return res
+}
+
+// zoneFloors are the lower bounds of the five heart-rate-reserve zones.
+var zoneFloors = [5]float64{0.5, 0.6, 0.7, 0.8, 0.9}
+
+// hrrZone is the 0-based heart-rate-reserve zone (50-60, 60-70, 70-80, 80-90,
+// 90+ %), or -1 below 50 %.
+func hrrZone(hrr float64) int {
+	for z := len(zoneFloors) - 1; z >= 0; z-- {
+		if hrr >= zoneFloors[z] {
+			return z
+		}
+	}
+	return -1
 }
 
 func trimpPerMinute(hrr float64) float64 {
@@ -275,11 +280,24 @@ func StrainFromTRIMP(trimp float64) float64 {
 // StrainFromAverage estimates a workout's strain when only avg HR and duration
 // are known (e.g. a workout logged without continuous HR samples).
 func StrainFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) float64 {
+	return LoadFromAverage(avgHR, rhr, maxHR, dur).Score
+}
+
+// LoadFromAverage is StrainFromAverage with the full result: the whole duration
+// is credited at the average's intensity and to the average's zone.
+func LoadFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) StrainResult {
+	var res StrainResult
 	if maxHR <= rhr || dur <= 0 {
-		return 0
+		return res
 	}
 	hrr := clamp((avgHR-rhr)/(maxHR-rhr), 0, 1)
-	return StrainFromTRIMP(dur.Minutes() * trimpPerMinute(hrr))
+	res.Minutes = dur.Minutes()
+	res.TRIMP = res.Minutes * trimpPerMinute(hrr)
+	if z := hrrZone(hrr); z >= 0 {
+		res.ZoneMinutes[z] = res.Minutes
+	}
+	res.Score = StrainFromTRIMP(res.TRIMP)
+	return res
 }
 
 // ---- Sleep -------------------------------------------------------------------

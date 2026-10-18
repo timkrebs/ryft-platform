@@ -5,7 +5,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +18,9 @@ import (
 )
 
 type Store struct{ pool *pgxpool.Pool }
+
+// ErrNotFound is returned by single-row reads when the row does not exist.
+var ErrNotFound = errors.New("not found")
 
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
@@ -170,9 +175,53 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 	})
 }
 
-func (s *Store) SetWorkoutStrain(ctx context.Context, id uuid.UUID, strain float64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE workouts SET strain=$2 WHERE id=$1`, id, strain)
+// SetWorkoutLoad stores what scoring computed for one workout: strain, TRIMP
+// and minutes in the five heart-rate-reserve zones.
+func (s *Store) SetWorkoutLoad(ctx context.Context, id uuid.UUID, strain, trimp float64, zones [5]float64) error {
+	z, err := json.Marshal(roundZones(zones[:]))
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$2, trimp=$3, zone_minutes=$4 WHERE id=$1`,
+		id, strain, math.Round(trimp*10)/10, z)
 	return err
+}
+
+// WorkoutRow is a workout with the load scoring attached to it. ZoneMinutes and
+// TRIMP are nil until the workout's day has been scored.
+type WorkoutRow struct {
+	model.Workout
+	ZoneMinutes []float64
+	TRIMP       *float64
+}
+
+func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, error) {
+	var w WorkoutRow
+	var zones []byte
+	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
+		source, strain, zone_minutes, trimp FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
+		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
+			&w.Source, &w.Strain, &zones, &w.TRIMP)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return w, ErrNotFound
+	}
+	if err != nil {
+		return w, err
+	}
+	if len(zones) > 0 {
+		if err := json.Unmarshal(zones, &w.ZoneMinutes); err != nil {
+			return w, fmt.Errorf("workout %s zone_minutes: %w", id, err)
+		}
+	}
+	return w, nil
+}
+
+func roundZones(z []float64) []float64 {
+	out := make([]float64, len(z))
+	for k, v := range z {
+		out[k] = math.Round(v*10) / 10
+	}
+	return out
 }
 
 // History is the per-day input the scoring baselines need.
@@ -217,24 +266,41 @@ type SleepNight struct {
 	Performance *int
 }
 
+// DayLoad is the heart-rate load behind a day's strain. Nil fields mean no
+// heart-rate data that day (or a row scored before migration 0004).
+type DayLoad struct {
+	TRIMP       *float64
+	HRMin       *int
+	ZoneMinutes []float64
+}
+
 // ScoreRow is everything scoring writes for one day: the score the API serves
 // plus the typed columns other views are assembled from.
 type ScoreRow struct {
 	model.DailyScore
 	Sleep SleepNight // zero when no sleep was recorded
+	Load  DayLoad
 }
 
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) error {
-	d, n := row.DailyScore, row.Sleep
+	d, n, l := row.DailyScore, row.Sleep, row.Load
 	details, err := json.Marshal(d.Details)
 	if err != nil {
 		return err
 	}
+	var zones []byte
+	if l.ZoneMinutes != nil {
+		if zones, err = json.Marshal(roundZones(l.ZoneMinutes)); err != nil {
+			return err
+		}
+	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
-		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages, computed_at)
-		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,now())
+		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
+		 zone_minutes, trimp, hr_min, computed_at)
+		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
+		 $25,$26,$27,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -243,11 +309,34 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 calibrating=EXCLUDED.calibrating, details=EXCLUDED.details,
 		 sleep_start=EXCLUDED.sleep_start, sleep_end=EXCLUDED.sleep_end, in_bed_min=EXCLUDED.in_bed_min,
 		 deep_min=EXCLUDED.deep_min, light_min=EXCLUDED.light_min, rem_min=EXCLUDED.rem_min,
-		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages, computed_at=now()`,
+		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages,
+		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
-		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages)
+		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
+		zones, l.TRIMP, l.HRMin)
 	return err
+}
+
+// DayLoadOf returns the stored heart-rate load of one day (zero DayLoad when
+// the day is not scored).
+func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (DayLoad, error) {
+	var l DayLoad
+	var zones []byte
+	err := s.pool.QueryRow(ctx, `SELECT trimp, hr_min, zone_minutes FROM daily_scores WHERE user_id=$1 AND day=$2::date`,
+		userID, day).Scan(&l.TRIMP, &l.HRMin, &zones)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return l, nil
+	}
+	if err != nil {
+		return l, err
+	}
+	if len(zones) > 0 {
+		if err := json.Unmarshal(zones, &l.ZoneMinutes); err != nil {
+			return l, fmt.Errorf("day %s zone_minutes: %w", day, err)
+		}
+	}
+	return l, nil
 }
 
 // SleepNights returns the nights in [from, to] (inclusive local days) that have

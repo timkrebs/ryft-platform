@@ -115,8 +115,31 @@ type DailyScore struct {
 
 type DayDetail struct {
 	Score    DailyScore   `json:"score"`
-	Sleep    *SleepDetail `json:"sleep"` // null when no sleep was recorded for the night
+	Sleep    *SleepDetail `json:"sleep"`  // null when no sleep was recorded for the night
+	Strain   *DayStrain   `json:"strain"` // null when there was no heart-rate data
 	Workouts []Workout    `json:"workouts"`
+}
+
+// DayStrain is the heart-rate load behind DailyScore.strain.
+type DayStrain struct {
+	TRIMP   int   `json:"trimp"`    // Banister training impulse
+	HRMin   int   `json:"hr_min"`   // minutes of usable heart-rate data
+	ZoneMin []int `json:"zone_min"` // minutes in HRR zones 50-60, 60-70, 70-80, 80-90, 90+ %
+}
+
+// HRSample is one point of a workout's heart-rate curve.
+type HRSample struct {
+	T   time.Time `json:"t"`
+	BPM int       `json:"bpm"`
+}
+
+// WorkoutDetail backs the workout screen: the workout plus its heart-rate
+// curve (≤ 600 points) and load. ZoneMin and TRIMP are null until scored.
+type WorkoutDetail struct {
+	Workout
+	HR      []HRSample `json:"hr"`
+	ZoneMin []int      `json:"zone_min"`
+	TRIMP   *int       `json:"trimp"`
 }
 
 // API sleep stages. HealthKit "core" is shown as "light" in the app.
