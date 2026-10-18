@@ -105,6 +105,15 @@ run "external_dns_manages_only_the_domain" {
   }
 }
 
+run "dns01_propagation_is_checked_publicly" {
+  command = plan
+
+  assert {
+    condition     = contains(yamldecode(helm_release.cert_manager.values[0]).extraArgs, "--dns01-recursive-nameservers-only")
+    error_message = "cert-manager must check DNS-01 against public resolvers, not the (caching) VPC resolver"
+  }
+}
+
 run "issuers_solve_dns01_in_the_zone" {
   command = plan
 

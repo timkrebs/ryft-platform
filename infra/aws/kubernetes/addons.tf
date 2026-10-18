@@ -101,6 +101,14 @@ resource "helm_release" "cert_manager" {
     serviceAccount = {
       name = "cert-manager"
     }
+    # Check DNS-01 propagation against public resolvers, not the VPC resolver: after
+    # a delegation change it can cache the old nameservers for up to a day (seen when
+    # ryftapp.de moved from GoDaddy to Route 53), and Let's Encrypt validates from the
+    # internet anyway.
+    extraArgs = [
+      "--dns01-recursive-nameservers-only",
+      "--dns01-recursive-nameservers=8.8.8.8:53,9.9.9.9:53",
+    ]
     resources = {
       requests = { cpu = "10m", memory = "64Mi" }
       limits   = { memory = "256Mi" }
