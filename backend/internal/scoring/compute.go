@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
@@ -58,6 +59,15 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 
 // ComputeDay scores one local calendar day.
 func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) error {
+	start := time.Now()
+	err := e.computeDay(ctx, userID, day)
+	result := metrics.Result(err)
+	metrics.DaysScored.WithLabelValues(result).Inc()
+	metrics.ScoringDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
+	return err
+}
+
+func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) error {
 	user, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
 		return err

@@ -131,3 +131,17 @@ optional `to` like `/v1/sleep`.
   other rules only look at the last 14 or fewer days.
 - Cards carry the extra `day` field the prompt's `Insight` example shows; `metric` is a
   `/v1/trends` metric so the app can deep-link.
+
+## D14 — Metrics: route patterns, one package, pinned client_golang
+
+- HTTP metrics label by the ServeMux pattern (`r.Pattern`, set by the nested mux behind
+  `BearerAuth`), never the path, so day and UUID paths cannot explode cardinality. The
+  prompt's "sync requests and latency" are these metrics with `route="POST /v1/sync"`
+  rather than a second, sync-only pair.
+- All metrics live in `internal/metrics`; service-specific ones are vectors, so a
+  service only exports what it records.
+- Added beyond the prompt: `ryft_last_sync_timestamp_seconds` (the "is my phone still
+  syncing?" alert) and `ryft_events_published_total` (ingest swallows publish errors by
+  design — this makes them visible).
+- `prometheus/client_golang` is pinned to v1.23.2: v1.25 requires `go 1.26`, which would
+  break the `golang:1.25` build image and the module's Go 1.24 floor.

@@ -44,6 +44,8 @@ the same `samples` table with new `type` values — nothing else changes.
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`),
 share `internal/` packages, and run DB migrations on boot behind an advisory lock.
+Each serves `/healthz`, `/readyz` and Prometheus `/metrics` on 8080 — metric
+catalogue and dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
 **Auth.** Single-user: the app sends `Authorization: Bearer <API_KEY>`; services
 compare in constant time. `users.id` is a fixed seeded UUID. Multi-user later = a
@@ -165,8 +167,6 @@ keep TLS on.
 ## What to build next (in rough order of payoff)
 
 1. **Vault Secrets Operator** for `ryft-secrets` instead of a committed Secret.
-2. **Prometheus metrics** (`promhttp` on each service; samples ingested, days scored,
-   sync latency) → Grafana dashboard next to your existing stack.
 4. **Weekly / monthly views** and a strain-vs-recovery scatter (the Whoop "sweet spot").
 5. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
 6. **Journal** (the behaviour-impact feature): a `journal` table + correlation against

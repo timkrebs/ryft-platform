@@ -1,5 +1,6 @@
 // Package httpx has the small HTTP plumbing every service shares: JSON helpers,
-// bearer auth, request logging, health endpoints and graceful shutdown.
+// bearer auth, request logging and metrics, health/metrics endpoints and
+// graceful shutdown.
 package httpx
 
 import (
@@ -11,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/timkrebs/ryft/internal/metrics"
 )
 
 const maxBody = 32 << 20 // 32 MiB: a first HealthKit backfill can be large
@@ -64,18 +68,31 @@ type statusWriter struct {
 
 func (s *statusWriter) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
 
-func Logging(log *slog.Logger, next http.Handler) http.Handler {
+// Instrument logs every request and records it in the HTTP metrics. The route
+// label is the ServeMux pattern that matched (set on r by the mux, including
+// nested muxes behind BearerAuth), so /v1/days/2026-10-18 counts as
+// "GET /v1/days/{day}".
+func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		start := time.Now()
 		next.ServeHTTP(sw, r)
-		log.Info("http", "method", r.Method, "path", r.URL.Path, "status", sw.status,
-			"dur_ms", time.Since(start).Milliseconds())
+		dur := time.Since(start)
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		metrics.HTTPRequests.WithLabelValues(route, strconv.Itoa(sw.status)).Inc()
+		metrics.HTTPDuration.WithLabelValues(route).Observe(dur.Seconds())
+		log.Info("http", "method", r.Method, "path", r.URL.Path, "route", route, "status", sw.status,
+			"dur_ms", dur.Milliseconds())
 	})
 }
 
-// Health mounts /healthz (process up) and /readyz (dependencies reachable).
+// Health mounts /healthz (process up), /readyz (dependencies reachable) and
+// /metrics (Prometheus). None of them require auth; the Ingress only routes /v1.
 func Health(mux *http.ServeMux, ready func(context.Context) error) {
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})

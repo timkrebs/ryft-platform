@@ -17,6 +17,7 @@ import (
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
@@ -66,7 +67,7 @@ func main() {
 	api.HandleFunc("POST /v1/sync", h.sync)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
 
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Logging(log, mux)); err != nil {
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
@@ -125,6 +126,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 			h.log.Error("publish ingested event", "err", err)
 		}
 	}
+	countIngested(&req)
 	h.log.Info("sync", "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
 	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days})
 }
@@ -194,4 +196,26 @@ func touchedDays(req *model.SyncRequest, loc *time.Location) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// countIngested records a successful sync's records by kind and type (both
+// closed vocabularies after validate, so label cardinality is bounded).
+func countIngested(req *model.SyncRequest) {
+	samples, stages := map[string]int{}, map[string]int{}
+	for _, s := range req.Samples {
+		samples[s.Type]++
+	}
+	for _, s := range req.Sleep {
+		stages[s.Stage]++
+	}
+	for typ, n := range samples {
+		metrics.Ingested.WithLabelValues("sample", typ).Add(float64(n))
+	}
+	for stage, n := range stages {
+		metrics.Ingested.WithLabelValues("sleep", stage).Add(float64(n))
+	}
+	if len(req.Workouts) > 0 {
+		metrics.Ingested.WithLabelValues("workout", "workout").Add(float64(len(req.Workouts)))
+	}
+	metrics.LastSync.WithLabelValues(req.DeviceID.String()).SetToCurrentTime()
 }

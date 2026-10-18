@@ -67,7 +67,7 @@ func main() {
 	api.HandleFunc("POST /v1/recompute", h.recompute)
 	mux.Handle("/v1/", httpx.BearerAuth(cfg.APIKey, api))
 
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Logging(log, mux)); err != nil {
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, mux)); err != nil {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}

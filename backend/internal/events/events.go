@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -21,6 +22,7 @@ const (
 	StreamName      = "RYFT"
 	SubjectIngested = "ryft.ingested"
 	ConsumerScoring = "scoring"
+	maxDeliver      = 10
 )
 
 type Bus struct {
@@ -71,6 +73,7 @@ func (b *Bus) PublishIngested(ctx context.Context, ev model.IngestedEvent) error
 		return err
 	}
 	_, err = b.js.Publish(ctx, SubjectIngested, data)
+	metrics.EventsPublished.WithLabelValues(ev.Reason, metrics.Result(err)).Inc()
 	return err
 }
 
@@ -82,23 +85,38 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 		FilterSubject: SubjectIngested,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       5 * time.Minute,
-		MaxDeliver:    10,
+		MaxDeliver:    maxDeliver,
 	})
 	if err != nil {
 		return fmt.Errorf("ensure consumer: %w", err)
 	}
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		delivered := uint64(1)
+		if md, err := msg.Metadata(); err == nil {
+			delivered = md.NumDelivered
+		}
+		if delivered > 1 {
+			metrics.Redeliveries.WithLabelValues(ConsumerScoring).Inc()
+		}
 		var ev model.IngestedEvent
 		if err := json.Unmarshal(msg.Data(), &ev); err != nil {
 			log.Error("bad event, dropping", "err", err)
+			metrics.EventsHandled.WithLabelValues("unknown", "bad").Inc()
 			_ = msg.Term()
 			return
 		}
 		if err := fn(ctx, ev); err != nil {
-			log.Error("handle event failed, will retry", "err", err, "days", ev.Days)
+			if delivered >= maxDeliver {
+				log.Error("handle event failed on last delivery, giving up", "err", err, "days", ev.Days)
+				metrics.EventsHandled.WithLabelValues(ev.Reason, "failed").Inc()
+			} else {
+				log.Error("handle event failed, will retry", "err", err, "days", ev.Days, "delivery", delivered)
+				metrics.EventsHandled.WithLabelValues(ev.Reason, "retry").Inc()
+			}
 			_ = msg.NakWithDelay(30 * time.Second)
 			return
 		}
+		metrics.EventsHandled.WithLabelValues(ev.Reason, "ok").Inc()
 		_ = msg.Ack()
 	})
 	if err != nil {
