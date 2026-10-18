@@ -47,4 +47,5 @@ readings per night that are averaged (or the latest one is taken), so a second s
 moves the value slightly but never doubles it.
 
 Changing these rules changes stored scores. After a deploy, rescore history with
-`POST /v1/recompute` (`OPERATIONS.md` → Upgrading).
+`scripts/rescore_all.sh` (`OPERATIONS.md` → EKS), which runs `scoring rescore` for
+every user; a single user can still use `POST /v1/recompute`.

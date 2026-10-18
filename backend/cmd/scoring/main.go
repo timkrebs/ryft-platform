@@ -32,6 +32,9 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "rescore" {
+		os.Exit(rescore(os.Args[2:]))
+	}
 	log := httpx.Logger("scoring")
 	cfg, err := config.Load("scoring")
 	if err != nil {

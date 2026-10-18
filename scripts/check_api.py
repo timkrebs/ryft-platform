@@ -192,7 +192,9 @@ def raw(method, path, body=None, base=API, headers=None, key=None):
 
 check(is_error(get("/v1/days", expect=401, auth=False)), "401 must carry {error}")
 check(is_error(get("/v1/nope", expect=404)), "unknown /v1 route must be a JSON 404")
-check(is_error(get("/nope", expect=404, auth=False)), "unknown route must be a JSON 404")
+PUBLIC = API.startswith("https://")  # behind the Ingress, which routes only /v1
+if not PUBLIC:
+    check(is_error(get("/nope", expect=404, auth=False)), "unknown route must be a JSON 404")
 check(is_error(get("/v1/days?from=2026-10-18&to=2026-10-01", expect=422)), "from > to must be 422")
 check(is_error(get("/v1/days?from=yesterday", expect=400)), "malformed date must be 400")
 check(is_error(post("/v1/recompute", {"from": "2024-01-01", "to": TODAY}, expect=422)), "recompute > 400 days must be 422")
@@ -203,9 +205,11 @@ status, hdrs, body = raw("GET", "/v1/nope", headers={"X-Request-ID": "client-cho
 rid = hdrs.get("X-Request-ID")
 check(rid and rid != "client-chosen-id" and body.get("request_id") == rid,
       f"X-Request-ID must be server-generated and match the error body: {rid} {body}")
-for base, path in ((API, "/v1/me"), (INGEST, "/healthz")):
+# api: a 200; ingest: its own JSON 404 for GET /v1/sync (only POST exists), which
+# proves the answer comes from the service and not from the Ingress.
+for base, path, want in ((API, "/v1/me", 200), (INGEST, "/v1/sync", 404)):
     status, hdrs, _ = raw("GET", path, base=base)
-    check(status == 200 and hdrs.get("X-Request-ID"), f"{base}{path}: X-Request-ID missing")
+    check(status == want and hdrs.get("X-Request-ID"), f"{base}{path}: {status}, X-Request-ID {hdrs.get('X-Request-ID')}")
     for k, v in {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
                  "Referrer-Policy": "no-referrer"}.items():
         check(hdrs.get(k) == v, f"{base}{path}: {k} = {hdrs.get(k)!r}, want {v!r}")

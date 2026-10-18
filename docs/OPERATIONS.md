@@ -85,9 +85,34 @@ Kubernetes auth needs HCP Vault to reach the EKS API (TokenReview), so
 `endpoint_public_access_cidrs` must admit Vault's egress addresses.
 
 The public host only routes `/v1/*`; `/healthz`, `/readyz` and `/metrics` stay internal.
-Port 80 is not exposed at all, so clients must use `https://`. Don't run `make smoke`
-against the public host: it writes synthetic days into the one real user. Use
-`make smoke-supabase` with the dedicated test user instead (`SUPABASE.md`).
+Port 80 is not exposed at all, so clients must use `https://`.
+
+**Production smoke test.** `make smoke-supabase` runs against the public host with the
+real project. It never touches real accounts:
+
+```bash
+SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=<publishable key> \
+SMOKE_EMAIL=<test user> SMOKE_PASSWORD=<…> SUPABASE_SECRET_KEY=sb_secret_… \
+API_URL=https://api.ryftapp.de INGEST_URL=https://api.ryftapp.de make smoke-supabase
+```
+
+1. **Contract checks:** it signs in the dedicated test user (`SUPABASE.md` checklist)
+   and runs the full contract checks with 10 synthetic days in that account.
+2. **Account flows** (`scripts/check_accounts.py`, needs `SUPABASE_SECRET_KEY`): it
+   creates two throwaway, confirmed users through the Supabase admin API and signs them
+   in. It checks that `/v1/me` creates the row, that one user's sync stays invisible to
+   the other, and the `apple-authorization` endpoint. It then deletes both through
+   `DELETE /v1/me` and checks the tokens get `401` and the Supabase sign-ins are gone.
+   It cleans up even when a check fails.
+
+The email-confirmation link itself is tested by hand from the app. Don't run plain
+`make smoke` against the public host: it is for apikey mode.
+
+**Rescoring** after a scoring rule or constant changed (`SCORING.md`):
+`scripts/rescore_all.sh [days]` (default 400) runs `scoring rescore` inside the scoring
+pod. Each user's last *days* days are rescored, oldest first, with scoring's own role;
+the log shows `user rescored … n of N`, then `rescore done`. Locally:
+`RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
 
 Certificates: cert-manager renews 30 days before expiry. Each Ingress has its own
 certificate for the same host, because a Secret cannot be shared across namespaces. To

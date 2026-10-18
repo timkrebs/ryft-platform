@@ -661,3 +661,19 @@ recreate it in Frankfurt before inviting anyone, while the database holds only t
 data; `SUPABASE.md` → *Moving the project to Frankfurt* is the runbook. The platform
 needs no code change: the region is only in the pooler host and the project ref
 (`infra/vault` tfvars), and migrate builds the schema in the new project.
+
+## D50 — Rescoring everyone runs inside scoring, not through the API
+
+The spec suggested one `POST /v1/recompute` per user using the admin key. But that
+endpoint acts as the user whose access token it carries, and the Supabase secret key
+cannot mint user tokens. Working around that would mean a new admin path into the api.
+Instead, the scoring binary has a `rescore` subcommand, run in the scoring pod with
+`kubectl exec` (`scripts/rescore_all.sh`). It uses scoring's own least-privilege role,
+which may read raw data and write scores and nothing else. It needs no new credential,
+no NATS round trip and no per-minute gate, and rescores each user's days oldest first.
+Concurrent events for the same days are harmless, since scoring a day is an idempotent
+upsert.
+
+No rescore is needed today. The production database was created on 2026-10-18 by the
+current code, so no day was scored with older rules (and the Frankfurt project will
+start empty as well).

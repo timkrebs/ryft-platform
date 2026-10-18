@@ -251,6 +251,15 @@ func (s *Store) TouchDevice(ctx context.Context, userID, deviceID uuid.UUID, nam
 	return err
 }
 
+// UserIDs lists every user, for a full rescore.
+func (s *Store) UserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
 // ActiveUsers lists users with a device that synced since the given time.
 func (s *Store) ActiveUsers(ctx context.Context, since time.Time) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx, `SELECT DISTINCT user_id FROM devices WHERE last_sync_at >= $1`, since)

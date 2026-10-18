@@ -24,8 +24,12 @@ fi
 echo "→ waiting for ingest and api to be ready"
 for url in "$INGEST_URL" "$API_URL"; do
   for i in $(seq 1 60); do
-    curl -fsS "$url/readyz" >/dev/null 2>&1 && break
-    [ "$i" = 60 ] && { echo "✗ $url/readyz not ready after 60 s"; exit 1; }
+    case "$url" in
+      # The public host routes only /v1: a JSON 401 there means the service answers.
+      https://*) [ "$(curl -s -o /dev/null -w '%{http_code}' "$url/v1/me")" = 401 ] && break ;;
+      *) curl -fsS "$url/readyz" >/dev/null 2>&1 && break ;;
+    esac
+    [ "$i" = 60 ] && { echo "✗ $url not ready after 60 s"; exit 1; }
     sleep 1
   done
 done

@@ -45,7 +45,9 @@ smoke-supabase:
 	  echo "smoke-supabase: skipped (set SUPABASE_URL, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD; API_URL/INGEST_URL point at the stack)"; \
 	  exit 0; \
 	fi; \
-	AUTH_MODE=supabase ./scripts/smoke.sh
+	AUTH_MODE=supabase ./scripts/smoke.sh; \
+	if [ -n "$$SUPABASE_SECRET_KEY" ]; then ./scripts/check_accounts.py; \
+	else echo "accounts: skipped (set SUPABASE_SECRET_KEY to test sign-up, isolation and deletion with throwaway users)"; fi
 
 # After smoke, on macOS: decode every endpoint with the Swift mirror in docs/API.md
 # and with the app's current models (../app). See scripts/check_swift.sh.
