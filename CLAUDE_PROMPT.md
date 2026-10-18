@@ -1,5 +1,10 @@
 # RYFT Platform — Claude Code prompt
 
+> **Status 2026-10-18:** every item in this prompt (2.1–2.9) is complete and reviewed —
+> see `docs/STATUS.md` and `docs/DECISIONS.md`. Keep this file as the reference for the
+> original scope. Next: `CLAUDE_FOLLOWUP_SUPABASE.md` (M1), then
+> `CLAUDE_FOLLOWUP_EKS_GOLIVE.md` (M1b), then milestones M3+ in `../ROADMAP.md`.
+
 You are building the backend platform for **RYFT** ("Your whole health."), a self-hosted
 Whoop-style health platform. A Garmin watch syncs into Apple Health; the RYFT iOS app
 (built separately in `../app`) reads HealthKit and pushes the data to this platform;

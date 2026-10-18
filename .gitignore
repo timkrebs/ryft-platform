@@ -10,3 +10,5 @@ deploy/k8s/overlays/local-postgres/secrets/
 # Terraform plan files can hold secrets in plaintext
 tfplan
 *.tfplan
+# Per-session milestone specs; they stay local
+CLAUDE_FOLLOWUP_*.md
