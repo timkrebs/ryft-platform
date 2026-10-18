@@ -128,9 +128,9 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 
 	rec := Recovery(RecoveryInputs{
 		HRVms: hrv, RHR: rhr, RespRate: resp,
-		LnHRVBase: NewBaseline(lnHRV, fallbackSDlnHRV),
-		RHRBase:   NewBaseline(rhrs, fallbackSDRHR),
-		RespBase:  NewBaseline(resps, fallbackSDResp),
+		LnHRVBase:        NewBaseline(lnHRV, fallbackSDlnHRV),
+		RHRBase:          NewBaseline(rhrs, fallbackSDRHR),
+		RespBase:         NewBaseline(resps, fallbackSDResp),
 		SleepPerformance: sleepPerf,
 	})
 
@@ -189,11 +189,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 		actual = &sleep.AsleepMin
 	}
 	details := map[string]any{
-		"recovery":      rec.Components,
-		"trimp":         math.Round(strain.TRIMP),
-		"hr_minutes":    math.Round(strain.Minutes),
-		"zone_minutes":  strain.ZoneMinutes,
-		"sleep_stages":  map[string]int{"deep": sleep.DeepMin, "rem": sleep.REMMin, "core": sleep.CoreMin, "awake": sleep.AwakeMin, "inbed": sleep.InBedMin},
+		"recovery":         rec.Components,
+		"trimp":            math.Round(strain.TRIMP),
+		"hr_minutes":       math.Round(strain.Minutes),
+		"zone_minutes":     strain.ZoneMinutes,
+		"sleep_stages":     map[string]int{"deep": sleep.DeepMin, "rem": sleep.REMMin, "core": sleep.CoreMin, "awake": sleep.AwakeMin, "inbed": sleep.InBedMin},
 		"sleep_has_stages": sleep.HasStages,
 		"yesterday_strain": yesterdayStrain,
 		"baseline_days":    len(lnHRV),

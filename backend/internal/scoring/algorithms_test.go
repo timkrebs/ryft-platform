@@ -80,7 +80,7 @@ func TestStrainScale(t *testing.T) {
 	start := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
 	const rhr, maxHR = 50.0, 190.0
 
-	rest := Strain(hrSeries(start, 600, 60), rhr, maxHR) // 10h at ~7% HRR
+	rest := Strain(hrSeries(start, 600, 60), rhr, maxHR)  // 10h at ~7% HRR
 	tempo := Strain(hrSeries(start, 60, 155), rhr, maxHR) // 60 min at 75% HRR
 	race := Strain(hrSeries(start, 120, 170), rhr, maxHR) // 2h at 86% HRR
 

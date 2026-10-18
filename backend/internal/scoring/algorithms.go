@@ -240,10 +240,10 @@ func StrainFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) float64 {
 // ---- Sleep -------------------------------------------------------------------
 
 type SleepTotals struct {
-	Start, End                                     time.Time
-	InBedMin, AsleepMin, DeepMin, REMMin, CoreMin  int
-	AwakeMin                                       int
-	HasStages                                      bool
+	Start, End                                    time.Time
+	InBedMin, AsleepMin, DeepMin, REMMin, CoreMin int
+	AwakeMin                                      int
+	HasStages                                     bool
 }
 
 // SummarizeSleep collapses HealthKit segments into totals. Stage segments are

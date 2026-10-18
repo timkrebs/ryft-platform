@@ -1,5 +1,5 @@
 // Package model holds the wire types shared by the ingest and api services and
-// mirrored 1:1 by the iOS app (see ios/Ryft/Networking/Models.swift).
+// mirrored 1:1 by the iOS app (see ../app/Ryft/Networking/Models.swift).
 package model
 
 import (

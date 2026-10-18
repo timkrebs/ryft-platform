@@ -49,10 +49,10 @@ Then put the Ingress (or the two services) behind your tunnel with TLS.
 ## 3. iOS app
 
 1. On the iPhone: Garmin Connect → More → Settings → **Apple Health** → allow everything.
-2. `cd ../app && xcodegen generate && open RYFT.xcodeproj` (or create an empty iOS App
-   named *RYFT* in Xcode and drag the `../app/RYFT` folder in). Set your team, make
+2. `cd ../app && xcodegen generate && open Ryft.xcodeproj` (or create an empty iOS App
+   named *RYFT* in Xcode and drag the `../app/Ryft` folder in). Set your team, make
    sure the target has the **HealthKit** capability with *Background Delivery* and
-   **Background Modes → Background fetch**. `Info.plist` and `RYFT.entitlements`
+   **Background Modes → Background fetch**. `Info.plist` and `Ryft.entitlements`
    are included.
 3. Run on a real device (HealthKit does nothing in the simulator). Accept the Health
    prompt, open Settings in the app, enter the API URL and API key, tap *Save & test*,
@@ -62,5 +62,5 @@ Then put the Ingress (or the two services) behind your tunnel with TLS.
 ## Adding a sample type or a metric
 
 1. `backend/internal/model/model.go` → add the `Sample*` constant.
-2. `../app/RYFT/Health/HealthKitManager.swift` → add a `QuantitySpec`.
+2. `../app/Ryft/Health/HealthKitManager.swift` → add a `QuantitySpec`.
 3. Use it in `internal/scoring/compute.go`; pin the behaviour in `algorithms_test.go`.
