@@ -1,0 +1,6 @@
+deploy/k8s/secrets.yaml
+backend/bin/
+.env
+*.xcuserstate
+xcuserdata/
+DerivedData/

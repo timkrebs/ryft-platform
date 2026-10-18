@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft
+resources:
+  - namespace.yaml
+  - secrets.yaml          # copy secrets.example.yaml → secrets.yaml first
+  - configmap.yaml
+  - postgres.yaml
+  - nats.yaml
+  - ingest.yaml
+  - scoring.yaml
+  - api.yaml
+  - ingress.yaml
+images:
+  - name: ghcr.io/timkrebs/ryft/ingest
+    newTag: latest
+  - name: ghcr.io/timkrebs/ryft/scoring
+    newTag: latest
+  - name: ghcr.io/timkrebs/ryft/api
+    newTag: latest

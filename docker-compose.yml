@@ -1,0 +1,50 @@
+# Local development stack. `make up` then `make smoke`.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ryft
+      POSTGRES_PASSWORD: ryft
+      POSTGRES_DB: ryft
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ryft"]
+      interval: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: ["natsdata:/data"]
+
+  ingest:
+    build: { context: ./backend, args: { SERVICE: ingest } }
+    environment: &env
+      DATABASE_URL: postgres://ryft:ryft@postgres:5432/ryft?sslmode=disable
+      NATS_URL: nats://nats:4222
+      API_KEY: ${API_KEY:-dev-api-key-change-me}
+    ports: ["8081:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+
+  scoring:
+    build: { context: ./backend, args: { SERVICE: scoring } }
+    environment: *env
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+
+  api:
+    build: { context: ./backend, args: { SERVICE: api } }
+    environment: *env
+    ports: ["8082:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+
+volumes:
+  pgdata:
+  natsdata:
