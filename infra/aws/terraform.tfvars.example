@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+
+region      = "eu-central-1"
+project     = "ryft"
+environment = "prod"
+
+# Only your own address(es) should reach the Kubernetes API: curl -s https://checkip.amazonaws.com
+endpoint_public_access_cidrs = ["203.0.113.10/32"]
+
+deletion_protection = true
+
+node_group = {
+  instance_types = ["t3.medium"]
+  min_size       = 2
+  max_size       = 4
+  desired_size   = 2
+
+  # Graviton is ~20 % cheaper; the RYFT images are multi-arch:
+  # ami_type       = "AL2023_ARM_64_STANDARD"
+  # instance_types = ["t4g.medium"]
+}
+
+tags = {
+  Owner = "platform-team"
+}
