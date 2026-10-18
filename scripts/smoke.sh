@@ -8,6 +8,15 @@ API_KEY=${API_KEY:-dev-api-key-change-me}
 DAYS=${DAYS:-10}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
+echo "→ waiting for ingest and api to be ready"
+for url in "$INGEST_URL" "$API_URL"; do
+  for i in $(seq 1 60); do
+    curl -fsS "$url/readyz" >/dev/null 2>&1 && break
+    [ "$i" = 60 ] && { echo "✗ $url/readyz not ready after 60 s"; exit 1; }
+    sleep 1
+  done
+done
+
 echo "→ generating $DAYS synthetic days"
 python3 "$HERE/synth.py" "$DAYS" > /tmp/ryft-synth.json
 

@@ -93,8 +93,9 @@ func DownsampleHR(pts []HRPoint, limit int) []HRPoint {
 		// Pick the point in this bucket forming the largest triangle with the
 		// previously selected point and the next bucket's average.
 		ax, ay := x(pts[a]), pts[a].BPM
-		best, bestArea := -1, -1.0
-		for j := int(float64(b)*bucket) + 1; j < int(float64(b+1)*bucket)+1; j++ {
+		start, end := int(float64(b)*bucket)+1, int(float64(b+1)*bucket)+1
+		best, bestArea := start, -1.0
+		for j := start; j < end; j++ {
 			area := math.Abs((ax-avgX)*(pts[j].BPM-ay) - (ax-x(pts[j]))*(avgY-ay))
 			if area > bestArea {
 				best, bestArea = j, area

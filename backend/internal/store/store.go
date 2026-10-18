@@ -121,7 +121,7 @@ func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
 	for i := 0; i < b.Len(); i++ {
 		tag, err := res.Exec()
 		if err != nil {
-			res.Close()
+			_ = res.Close()
 			return 0, fmt.Errorf("batch item %d: %w", i, err)
 		}
 		n += int(tag.RowsAffected())

@@ -172,3 +172,20 @@ it); otherwise every `kubectl apply` would reset them to 1. `minAvailable: 1` PD
 minimum of 2 replicas means drains never block. scoring is deliberately left at one
 replica without HPA/PDB: it runs the 15-minute timer and recompute ranges must be
 scored oldest-first by one consumer.
+
+## D18 — CI does more than the prompt lists
+
+- Also runs on `pull_request` (tests and checks only; images are pushed from `push`
+  events, where the token can write packages).
+- Two extra gates before images are pushed: `make k8s-validate` (the manifests are
+  applied by hand, so CI is the only check they get) and `make up && make smoke` on
+  Docker — the prompt calls smoke "the acceptance test", so images should not ship
+  without it. `smoke.sh` now waits for `/readyz` so `make up && make smoke` is not racy.
+- Images are multi-arch (amd64 + arm64): the Dockerfile's build stage now
+  cross-compiles on `$BUILDPLATFORM` (`GOOS/GOARCH` from `TARGETOS/TARGETARCH`), so this
+  costs no emulation. Plain `docker build` / `podman build` behave as before.
+- Every push gets a short-SHA tag; `latest` only on the default branch, as specified.
+- `.golangci.yml` (v2 format) sits at the repo root; golangci-lint finds it from
+  `backend/`. Default `standard` set plus bodyclose, copyloopvar, errorlint, gosec,
+  misspell, nilerr, noctx, nolintlint, sqlclosecheck, unconvert, usestdlibvars, and
+  gofmt/goimports. The handful of findings it raised were fixed rather than excluded.

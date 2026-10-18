@@ -19,7 +19,7 @@ docker-compose.yml   local stack
 ```bash
 cd backend && go mod tidy && go test ./...     # tidy once: go.sum is generated on your machine
 cd .. && make up                               # Postgres + NATS + ingest(:8081) scoring api(:8082)
-make smoke                                     # synthetic 10 days through the whole pipeline
+make smoke                                     # synthetic 10 days through the whole pipeline + API contract checks
 ```
 
 `make smoke` prints a table like:
@@ -46,6 +46,15 @@ API_KEY=<your key> make smoke
 
 Then put the Ingress (or the two services) behind your tunnel with TLS. Vault,
 network policy, scaling, backups and restore: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request: `go vet`,
+`go test -race`, `golangci-lint` (config: `.golangci.yml`), `make k8s-validate`
+(kustomize + kubeconform) and `make up && make smoke` on Docker. On pushes that pass,
+it builds the three images (linux/amd64 + linux/arm64) from `backend/Dockerfile` and
+pushes `ghcr.io/timkrebs/ryft/<service>:<short-sha>`, plus `:latest` on `main`.
+Locally: `make test`, `cd backend && golangci-lint run`, `make k8s-validate`.
 
 ## 3. iOS app
 

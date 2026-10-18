@@ -58,7 +58,7 @@ func Connect(ctx context.Context, url, name string) (*Bus, error) {
 	return &Bus{nc: nc, js: js}, nil
 }
 
-func (b *Bus) Close() { b.nc.Drain() } //nolint:errcheck
+func (b *Bus) Close() { _ = b.nc.Drain() }
 
 func (b *Bus) Ready(ctx context.Context) error {
 	if !b.nc.IsConnected() {

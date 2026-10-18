@@ -24,7 +24,7 @@ func TestInstrumentLabelsByInnerRoutePattern(t *testing.T) {
 	h := Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), mux)
 
 	for _, day := range []string{"2026-10-17", "2026-10-18"} {
-		req := httptest.NewRequest("GET", "/v1/days/"+day, nil)
+		req := httptest.NewRequest(http.MethodGet, "/v1/days/"+day, nil)
 		req.Header.Set("Authorization", "Bearer k")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -37,7 +37,7 @@ func TestInstrumentLabelsByInnerRoutePattern(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/days/2026-10-18", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/days/2026-10-18", nil))
 	if rec.Code != 401 || rec.Header().Get("WWW-Authenticate") == "" {
 		t.Fatalf("missing token: status %d", rec.Code)
 	}

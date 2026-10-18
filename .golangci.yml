@@ -1,0 +1,40 @@
+# golangci-lint v2. Run from backend/: `golangci-lint run` (CI does the same).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose       # unclosed HTTP response bodies
+    - copyloopvar     # pre-Go 1.22 loop variable copies
+    - errorlint       # wrapped errors compared with == or type-switched
+    - gosec           # security smells
+    - misspell
+    - nilerr          # returning nil after checking err != nil
+    - noctx           # HTTP/SQL calls without a context
+    - nolintlint      # //nolint directives must name a linter
+    - sqlclosecheck   # unclosed rows / statements
+    - unconvert       # redundant conversions
+    - usestdlibvars   # http.MethodGet over "GET", etc.
+  settings:
+    gosec:
+      excludes:
+        - G115 # int conversions: values here are bounded scores and minutes
+  exclusions:
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/timkrebs/ryft]
