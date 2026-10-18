@@ -30,6 +30,17 @@ Where it applies:
   window (`WorkoutSamples`). So a workout always uses the same source per hour as the
   day it belongs to, and its load matches its curve.
 - **Sleep totals, stages and the hypnogram** use the night's winning source.
+- **Steps and active energy** are summed per local day after de-duplication (below).
+
+## Steps and active energy
+
+`daily_scores.steps` and `active_kcal` are the local day's de-duplicated samples, summed
+and rounded to whole numbers (`DayTotal`). A sample counts on the day it starts, so a
+step sample from 23:55 to 00:05 belongs to the earlier day. `NULL` when no samples of
+that type arrived. They feed `DailyScore`, `DayDetail.strain` and the trend metrics
+`steps` and `active_kcal`, and nothing else; they do not change strain.
+
+## What is left alone
 
 Not de-duplicated: HRV, resting heart rate, respiratory rate and SpO₂. They are a few
 readings per night that are averaged (or the latest one is taken), so a second source

@@ -18,13 +18,14 @@ struct Workout: Codable, Identifiable {
 await decode([DailyScore].self, "/v1/days?to=\(today)")
 let detail = await decode(DayDetail.self, "/v1/days/\(today)")
 precondition(detail.sleep != nil && detail.strain != nil, "today must have sleep and strain")
+precondition(detail.strain?.steps != nil && detail.score.activeKcal != nil, "today must have steps and active kcal")
 await decode(SleepRange.self, "/v1/sleep?range=week&to=\(today)")
 await decode(SleepRange.self, "/v1/sleep?range=month&to=\(today)")
 let workouts = await decode([Workout].self, "/v1/workouts?to=\(today)")
 if let w = workouts.last {
     await decode(WorkoutDetail.self, "/v1/workouts/\(w.id.uuidString.lowercased())")
 }
-for metric in ["readiness", "recovery", "strain", "sleep", "sleep_min", "hrv", "rhr"] {
+for metric in ["readiness", "recovery", "strain", "sleep", "sleep_min", "hrv", "rhr", "steps", "active_kcal"] {
     await decode(Trend.self, "/v1/trends?metric=\(metric)&range=30d&to=\(today)")
 }
 await decode([Insight].self, "/v1/insights")

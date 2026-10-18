@@ -459,3 +459,14 @@ de-duplicated as well, one source per night, the one with the most asleep minute
 resting HR, respiratory rate and SpO₂ are averaged rather than summed and are left as
 they are. Choosing the source with the largest total for steps was considered and
 rejected: it rewards whichever device over-counts.
+
+## D41 — Steps and active kcal as daily totals
+
+Both are stored as whole numbers on `daily_scores` (migration 0008), summed from the
+local day's samples after source de-duplication (D40). A sample counts on the day it
+starts, the rule the ingest's dirty-day calculation already uses, and it is not split
+across midnight. They are nullable: no samples means `null`, not `0`, so "not tracked"
+and "did not move" stay apart. `DayDetail.strain` repeats them for the Strain screen.
+It stays `null` without heart-rate data (the invariant fixed in D22), so a phone-only
+user sees steps on `score` only. They are informational and do not change the strain
+score.

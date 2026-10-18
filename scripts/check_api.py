@@ -125,13 +125,18 @@ ok(f"/v1/workouts/{{id}}: {len(wk['hr'])} hr points, zones {wk['zone_min']}, tri
 get("/v1/workouts/00000000-0000-0000-0000-00000000dead", expect=404)
 get("/v1/workouts/not-a-uuid", expect=400)
 ok("/v1/workouts/{id}: 404 unknown, 400 malformed")
-st = get(f"/v1/days/{TODAY}")["strain"]
+today = get(f"/v1/days/{TODAY}")
+st = today["strain"]
 check(st is not None and st["hr_min"] > 0 and len(st["zone_min"]) == 5, f"day strain: {st}")
-ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes")
+check(isinstance(st["steps"], int) and st["steps"] > 0 and st["steps"] == today["score"]["steps"]
+      and isinstance(st["active_kcal"], int) and st["active_kcal"] == today["score"]["active_kcal"],
+      f"strain steps/kcal {st['steps']}/{st['active_kcal']} != score {today['score']['steps']}/{today['score']['active_kcal']}")
+check(all(d["steps"] is None or (isinstance(d["steps"], int) and d["steps"] >= 0) for d in days), "steps must be whole and ≥ 0")
+ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes, {st['steps']} steps, {st['active_kcal']} kcal")
 
 # ---- 2.4 trends ---------------------------------------------------------------
 FIELD = {"readiness": "readiness", "recovery": "recovery", "strain": "strain", "sleep": "sleep_performance",
-         "sleep_min": "sleep_actual_min", "hrv": "hrv_ms", "rhr": "rhr"}
+         "sleep_min": "sleep_actual_min", "hrv": "hrv_ms", "rhr": "rhr", "steps": "steps", "active_kcal": "active_kcal"}
 by_day = {d["day"]: d for d in days}
 for metric, field in FIELD.items():
     tr = get(f"/v1/trends?metric={metric}&range=7d&to={TODAY}")
@@ -152,7 +157,7 @@ for metric, field in FIELD.items():
         check(tr["baseline"] is None, f"trend {metric}: baseline must be null")
 ok(f"/v1/trends: {len(FIELD)} metrics match /v1/days; hrv/rhr carry a baseline")
 check(len(get(f"/v1/trends?metric=readiness&range=90d&to={TODAY}")["points"]) == len([d for d in days if d["readiness"] is not None]), "90d readiness")
-get("/v1/trends?metric=steps", expect=422)
+get("/v1/trends?metric=calories", expect=422)
 get("/v1/trends?metric=hrv&range=1y", expect=422)
 ok("/v1/trends: 90d ok, unknown metric/range → 422")
 
@@ -301,6 +306,26 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     check(s_b and s_b["total_min"] == 420 and s_b["has_stages"], f"two trackers' night must count once (420 min): {s_b}")
     check(len(s_b["segments"]) == 3, f"hypnogram must show one source: {s_b['segments']}")
     ok("one night from two trackers counts once: 420 min, the watch's stages")
+
+    # ---- steps from a watch and a phone count once per hour ------------------------
+    f = date.fromisoformat(TODAY) - timedelta(days=70)
+    nine = datetime(f.year, f.month, f.day, 9, 0, tzinfo=ZoneInfo(me_b["tz"])).astimezone(timezone.utc)
+    q = lambda typ, src, off, val, unit: {"type": typ, "start": iso(nine + timedelta(minutes=off)),
+                                         "end": iso(nine + timedelta(minutes=off + 5)), "value": val, "unit": unit, "source": src}
+    act = ([q("steps", "check-watch", 5 * i, 100, "count") for i in range(12)] +      # 09:00 watch: 1200
+           [q("steps", "check-phone", 15 * i, 290, "count") for i in range(4)] +      # 09:00 phone, sparser: dropped
+           [q("steps", "check-phone", 60 + 20 * i, 200, "count") for i in range(3)] +  # 10:00 phone only: 600
+           [q("active_energy", "check-watch", 5 * i, 10, "kcal") for i in range(12)])
+    post("/v1/sync", {"device_id": synth_device, "samples": act, "sleep": [], "workouts": []},
+         expect=200, base=INGEST, key=KEY_B)
+    for _ in range(30):
+        f_day = get(f"/v1/days?from={f}&to={f}", key=KEY_B)
+        if f_day and f_day[0]["steps"] is not None:
+            break
+        time.sleep(1)
+    check(f_day and f_day[0]["steps"] == 1800 and f_day[0]["active_kcal"] == 120,
+          f"steps/kcal with two devices: {f_day and (f_day[0]['steps'], f_day[0]['active_kcal'])}, want 1800/120")
+    ok("steps from watch and phone: 1800 (one source per hour), 120 kcal")
 
     # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
     wk_a = get(f"/v1/workouts/{a_wk['id']}")

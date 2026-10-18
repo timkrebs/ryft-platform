@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Generate a synthetic /v1/sync payload for N days ending today: a night of sleep
 with stages, overnight HRV/respiration/SpO2, a daily resting HR, all-day heart
-rate at ~1-minute resolution and a workout every other day.
+rate at ~1-minute resolution, steps and active energy in 10-minute buckets (plus a
+phone that also counts steps, so source de-duplication has work) and a workout every
+other day.
 
 Usage: synth.py [days] > payload.json
 """
@@ -16,8 +18,10 @@ device = str(uuid.uuid5(uuid.NAMESPACE_DNS, "synth.ryft.local"))
 samples, sleep, workouts = [], [], []
 iso = lambda t: t.isoformat().replace("+00:00", "Z")
 
-def add(t, start, end, value, unit):
-    samples.append({"type": t, "start": iso(start), "end": iso(end), "value": round(value, 2), "unit": unit, "source": "synth"})
+def add(t, start, end, value, unit, source="synth"):
+    samples.append({"type": t, "start": iso(start), "end": iso(end), "value": round(value, 2), "unit": unit, "source": source})
+
+act = random.Random(7)  # its own stream, so the sleep and heart-rate data above stay as they were
 
 for d in range(days, 0, -1):
     day0 = (now - timedelta(days=d - 1)).replace(hour=0, minute=0)
@@ -55,5 +59,17 @@ for d in range(days, 0, -1):
             bpm = random.gauss(68, 6)
         add("heart_rate", t, t, max(40, bpm), "bpm")
         t += timedelta(minutes=1)
+
+    # Steps and active energy in 10-minute buckets while awake; the phone counts
+    # the same steps in 30-minute buckets (fewer samples, so the watch wins).
+    t = wake
+    while t < min(day0 + timedelta(hours=22), now):
+        moving = workout and workout[0] <= t <= workout[1]
+        step = act.randint(1200, 1700) if moving else act.randint(0, 180)
+        add("steps", t, t + timedelta(minutes=10), step, "count")
+        add("active_energy", t, t + timedelta(minutes=10), act.uniform(90, 130) if moving else act.uniform(2, 9), "kcal")
+        if (t - wake) % timedelta(minutes=30) == timedelta(0):
+            add("steps", t, t + timedelta(minutes=30), act.randint(0, 500), "count", source="synth-phone")
+        t += timedelta(minutes=10)
 
 print(json.dumps({"device_id": device, "device_name": "synth", "samples": samples, "sleep": sleep, "workouts": workouts}))

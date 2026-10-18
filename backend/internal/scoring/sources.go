@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"math"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/model"
@@ -120,4 +121,15 @@ func DedupSleepSources(segs []model.SleepSegment) []model.SleepSegment {
 		}
 	}
 	return out
+}
+
+// DayTotal sums a cumulative sample type (steps, active energy) after
+// DedupSources, so overlapping devices are counted once, rounded to a whole
+// number. A sample counts on the day it starts.
+func DayTotal(xs []model.Sample) int {
+	var sum float64
+	for _, x := range DedupSources(xs) {
+		sum += x.Value
+	}
+	return int(math.Round(sum))
 }

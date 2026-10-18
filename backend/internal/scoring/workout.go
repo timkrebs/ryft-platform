@@ -52,7 +52,8 @@ func DayStrainFrom(l store.DayLoad) *model.DayStrain {
 	if l.TRIMP == nil || l.HRMin == nil {
 		return nil
 	}
-	return &model.DayStrain{TRIMP: int(math.Round(*l.TRIMP)), HRMin: *l.HRMin, ZoneMin: zoneInts(l.ZoneMinutes)}
+	return &model.DayStrain{TRIMP: int(math.Round(*l.TRIMP)), HRMin: *l.HRMin, ZoneMin: zoneInts(l.ZoneMinutes),
+		Steps: l.Steps, ActiveKcal: l.ActiveKcal}
 }
 
 // zoneInts rounds zone minutes for the wire; nil stays nil (not scored yet).

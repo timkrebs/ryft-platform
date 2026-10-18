@@ -176,3 +176,18 @@ func TestDedupSleepSourcesCountsANightOnce(t *testing.T) {
 		t.Fatalf("a tie goes to the first name: %+v", out)
 	}
 }
+
+func TestDayTotalCountsOverlappingDevicesOnce(t *testing.T) {
+	var day []model.Sample
+	// 09:00 phone and watch both counted the same walk; the watch has more samples.
+	day = append(day, series(model.SampleSteps, "Watch", t0, 12, 5*time.Minute, 100)...)
+	day = append(day, series(model.SampleSteps, "iPhone", t0, 4, 15*time.Minute, 290)...)
+	// 10:00 only the phone (watch charging).
+	day = append(day, series(model.SampleSteps, "iPhone", t0.Add(time.Hour), 3, 20*time.Minute, 200.4)...)
+	if got := DayTotal(day); got != 1200+601 {
+		t.Fatalf("DayTotal = %d, want the watch's 1200 + the phone's 601", got)
+	}
+	if DayTotal(nil) != 0 {
+		t.Fatal("no samples, no steps")
+	}
+}

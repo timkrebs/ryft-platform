@@ -19,7 +19,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
 | Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
 | Sleep — Week / Month | nightly totals and stages, averages | `GET /v1/sleep?range=week` / `month` |
-| Strain | day strain, zones, TRIMP, activities | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
+| Strain | day strain, zones, TRIMP, steps, active kcal, activities | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline; apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
@@ -209,7 +209,7 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 
 ```json
 { "day": "2026-10-18", "readiness": 84, "state": "balanced", "recovery": 82, "strain": 12.4,
-  "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 35,
+  "steps": 9412, "active_kcal": 612, "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 35,
   "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
   "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "calibrating": false,
   "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
@@ -224,6 +224,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `state` | string | `balanced` (readiness ≥ 67), `strained` (34–66), `depleted` (< 34), `calibrating` (fewer than 7 nights of baseline, or no readiness). |
 | `recovery` | int? | 1–100. ≥ 67 green, 34–66 yellow, < 34 red. |
 | `strain` | number? | 0–21, one decimal. `null` when no heart-rate data that day. |
+| `steps` | int? | Steps that day (local day), counting each hour from one device only (`SCORING.md`). `null` when no step samples arrived; days scored before this field existed stay `null` until rescored. |
+| `active_kcal` | int? | Active energy that day in whole kcal, de-duplicated the same way. `null` without samples. |
 | `sleep_performance` | int? | 0–100, actual / need. |
 | `sleep_need_min` | int? | Minutes. |
 | `sleep_actual_min` | int? | Minutes asleep last night. |
@@ -280,7 +282,7 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 when `score.strain` is `null` (no heart-rate data that day):
 
 ```json
-{ "trimp": 99, "hr_min": 912, "zone_min": [12, 24, 37, 7, 0] }
+{ "trimp": 99, "hr_min": 912, "zone_min": [12, 24, 37, 7, 0], "steps": 9412, "active_kcal": 612 }
 ```
 
 | Field | Type | Notes |
@@ -288,6 +290,8 @@ when `score.strain` is `null` (no heart-rate data that day):
 | `trimp` | int | Banister TRIMP for the whole day. |
 | `hr_min` | int | Minutes of usable heart-rate data (watch worn). |
 | `zone_min` | `[int]` | Five entries: minutes at 50–60, 60–70, 70–80, 80–90 and ≥ 90 % of heart-rate reserve. |
+| `steps` | int? | Same as `score.steps`, for the Strain screen. |
+| `active_kcal` | int? | Same as `score.active_kcal`. |
 
 `SleepStage`: `{ "stage": string, "min": int, "pct": int }`. For `deep`, `light`, `rem`,
 `pct` is the share of staged sleep and the three always sum to exactly 100 (or are all 0
@@ -367,7 +371,7 @@ the whole duration counts at that intensity and in that zone.
 
 | Parameter | Values | Default |
 | --- | --- | --- |
-| `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm) | required |
+| `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm), `steps`, `active_kcal` | required |
 | `range` | `7d`, `30d`, `90d` — days ending at `to`, inclusive | `7d` |
 | `to` | `YYYY-MM-DD` | today |
 
@@ -458,6 +462,8 @@ struct DailyScore: Codable, Identifiable {
     let state: ReadinessState
     let recovery: Int?
     let strain: Double?
+    let steps: Int?
+    let activeKcal: Int?
     let sleepPerformance: Int?
     let sleepNeedMin: Int?
     let sleepActualMin: Int?
@@ -503,6 +509,8 @@ struct DayStrain: Codable {
     let trimp: Int
     let hrMin: Int
     let zoneMin: [Int]
+    let steps: Int?
+    let activeKcal: Int?
 }
 
 struct DayDetail: Codable {
@@ -612,6 +620,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-18 | `DailyScore.steps` / `active_kcal` and `DayStrain.steps` / `active_kcal` added (nullable, daily totals after source de-duplication), with trend metrics `steps` and `active_kcal`. Rescore history to fill past days. |
 | 2026-10-18 | Scoring: overlapping HealthKit sources are no longer mixed or summed (see `SCORING.md`). Heart rate is taken from one source per hour, sleep from one source per night. Values change for users with two devices: strain, sleep totals and stages, and the workout curve, which now shows only the winning source. No shape change. |
 | 2026-10-18 | `DELETE /v1/me` added (account deletion: all data, then the Supabase auth user). Afterwards that user's tokens get `401` everywhere except a repeated `DELETE /v1/me`. Swift: `AccountDeleted`. |
 | 2026-10-18 | **Request IDs and hardening**: every response carries `X-Request-ID`, and error bodies add `request_id` (`APIErrorBody.requestId`). `500` bodies no longer include internal error text. Request bodies other than `POST /v1/sync` are limited to 64 KiB, and an oversized body is `413` (was `400`). Per-user rate limits (`429` + `Retry-After`) and request timeouts (`503 "request timed out"` + `Retry-After`) were added, plus no-cache and security headers on every response. |

@@ -203,6 +203,16 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		}
 	}
 
+	// ---- activity ----------------------------------------------------------------
+	steps, err := e.dayTotal(ctx, userID, model.SampleSteps, dayStart, dayEnd)
+	if err != nil {
+		return err
+	}
+	kcal, err := e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd)
+	if err != nil {
+		return err
+	}
+
 	// ---- persist -----------------------------------------------------------------
 	var recovery *int
 	if rec.Score > 0 {
@@ -262,8 +272,9 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
 
 	row := model.DailyScore{
-		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, SleepPerformance: sleepPerf,
-		SleepNeedMin: &need, SleepActualMin: actual, SleepDebtMin: &debt,
+		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, Steps: steps, ActiveKcal: kcal,
+		SleepPerformance: sleepPerf,
+		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
 		BaselineDays: min(lnHRVBase.N, rhrBase.N),
 		Calibrating:  rec.Calibrating, Details: details,
@@ -282,6 +293,17 @@ func hrPoints(samples []model.Sample) []HRPoint {
 		pts[k] = HRPoint{T: s.Start, BPM: s.Value}
 	}
 	return pts
+}
+
+// dayTotal sums a cumulative sample type (steps, active energy) over the
+// local day; nil when there are no samples.
+func (e *Engine) dayTotal(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) (*int, error) {
+	xs, err := e.st.SamplesBetween(ctx, userID, typ, from, to)
+	if err != nil || len(xs) == 0 {
+		return nil, err
+	}
+	n := DayTotal(xs)
+	return &n, nil
 }
 
 func (e *Engine) mean(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) *float64 {

@@ -100,6 +100,8 @@ type DailyScore struct {
 	State            string         `json:"state"`     // State* constant
 	Recovery         *int           `json:"recovery"`
 	Strain           *float64       `json:"strain"`
+	Steps            *int           `json:"steps"`       // day total, null without step samples
+	ActiveKcal       *int           `json:"active_kcal"` // day total of active energy, null without samples
 	SleepPerformance *int           `json:"sleep_performance"`
 	SleepNeedMin     *int           `json:"sleep_need_min"`
 	SleepActualMin   *int           `json:"sleep_actual_min"`
@@ -125,9 +127,11 @@ type DayDetail struct {
 
 // DayStrain is the heart-rate load behind DailyScore.strain.
 type DayStrain struct {
-	TRIMP   int   `json:"trimp"`    // Banister training impulse
-	HRMin   int   `json:"hr_min"`   // minutes of usable heart-rate data
-	ZoneMin []int `json:"zone_min"` // minutes in HRR zones 50-60, 60-70, 70-80, 80-90, 90+ %
+	TRIMP      int   `json:"trimp"`       // Banister training impulse
+	HRMin      int   `json:"hr_min"`      // minutes of usable heart-rate data
+	ZoneMin    []int `json:"zone_min"`    // minutes in HRR zones 50-60, 60-70, 70-80, 80-90, 90+ %
+	Steps      *int  `json:"steps"`       // = DailyScore.steps
+	ActiveKcal *int  `json:"active_kcal"` // = DailyScore.active_kcal
 }
 
 // HRSample is one point of a workout's heart-rate curve.
@@ -216,18 +220,20 @@ type SleepRange struct {
 
 // Trend metrics (GET /v1/trends?metric=).
 const (
-	MetricReadiness = "readiness" // DailyScore.readiness
-	MetricRecovery  = "recovery"  // DailyScore.recovery
-	MetricStrain    = "strain"    // DailyScore.strain
-	MetricSleep     = "sleep"     // DailyScore.sleep_performance (%)
-	MetricSleepMin  = "sleep_min" // DailyScore.sleep_actual_min (minutes asleep)
-	MetricHRV       = "hrv"       // DailyScore.hrv_ms
-	MetricRHR       = "rhr"       // DailyScore.rhr
+	MetricReadiness  = "readiness"   // DailyScore.readiness
+	MetricRecovery   = "recovery"    // DailyScore.recovery
+	MetricStrain     = "strain"      // DailyScore.strain
+	MetricSleep      = "sleep"       // DailyScore.sleep_performance (%)
+	MetricSleepMin   = "sleep_min"   // DailyScore.sleep_actual_min (minutes asleep)
+	MetricHRV        = "hrv"         // DailyScore.hrv_ms
+	MetricRHR        = "rhr"         // DailyScore.rhr
+	MetricSteps      = "steps"       // DailyScore.steps
+	MetricActiveKcal = "active_kcal" // DailyScore.active_kcal
 )
 
 var KnownTrendMetrics = map[string]bool{
 	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
-	MetricSleepMin: true, MetricHRV: true, MetricRHR: true,
+	MetricSleepMin: true, MetricHRV: true, MetricRHR: true, MetricSteps: true, MetricActiveKcal: true,
 }
 
 type TrendPoint struct {

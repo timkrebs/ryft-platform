@@ -15,7 +15,7 @@ func (h *handler) trends(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metric := q.Get("metric")
 	if !model.KnownTrendMetrics[metric] {
-		httpx.WriteError(w, 422, "metric must be one of readiness, recovery, strain, sleep, sleep_min, hrv, rhr")
+		httpx.WriteError(w, 422, "metric must be one of readiness, recovery, strain, sleep, sleep_min, hrv, rhr, steps, active_kcal")
 		return
 	}
 	rng := q.Get("range")

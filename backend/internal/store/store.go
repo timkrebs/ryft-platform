@@ -435,6 +435,8 @@ type DayLoad struct {
 	TRIMP       *float64
 	HRMin       *int
 	ZoneMinutes []float64
+	Steps       *int // read back for DayStrain; written from DailyScore
+	ActiveKcal  *int
 }
 
 // ScoreRow is everything scoring writes for one day: the score the API serves
@@ -461,9 +463,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
-		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, computed_at)
+		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -475,11 +477,11 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages,
 		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min,
 		 hrv_baseline_ms=EXCLUDED.hrv_baseline_ms, rhr_baseline=EXCLUDED.rhr_baseline,
-		 baseline_days=EXCLUDED.baseline_days, computed_at=now()`,
+		 baseline_days=EXCLUDED.baseline_days, steps=EXCLUDED.steps, active_kcal=EXCLUDED.active_kcal, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
-		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays)
+		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal)
 	return err
 }
 
@@ -488,8 +490,8 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (DayLoad, error) {
 	var l DayLoad
 	var zones []byte
-	err := s.pool.QueryRow(ctx, `SELECT trimp, hr_min, zone_minutes FROM daily_scores WHERE user_id=$1 AND day=$2::date`,
-		userID, day).Scan(&l.TRIMP, &l.HRMin, &zones)
+	err := s.pool.QueryRow(ctx, `SELECT trimp, hr_min, zone_minutes, steps, active_kcal FROM daily_scores WHERE user_id=$1 AND day=$2::date`,
+		userID, day).Scan(&l.TRIMP, &l.HRMin, &zones, &l.Steps, &l.ActiveKcal)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return l, nil
 	}
@@ -523,7 +525,7 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 }
 
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, sleep_performance, sleep_need_min,
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal, sleep_performance, sleep_need_min,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
 		calibrating, details, computed_at
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
@@ -533,7 +535,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.DailyScore, error) {
 		var d model.DailyScore
 		var details []byte
-		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
+		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
 			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt)
 		if err != nil {
@@ -554,13 +556,15 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 // trendColumns maps a trend metric to its daily_scores column. It is the
 // whitelist: only these names are ever interpolated into SQL.
 var trendColumns = map[string]string{
-	model.MetricReadiness: "readiness",
-	model.MetricRecovery:  "recovery",
-	model.MetricStrain:    "strain",
-	model.MetricSleep:     "sleep_performance",
-	model.MetricSleepMin:  "sleep_actual_min",
-	model.MetricHRV:       "hrv_ms",
-	model.MetricRHR:       "rhr",
+	model.MetricReadiness:  "readiness",
+	model.MetricRecovery:   "recovery",
+	model.MetricStrain:     "strain",
+	model.MetricSleep:      "sleep_performance",
+	model.MetricSleepMin:   "sleep_actual_min",
+	model.MetricHRV:        "hrv_ms",
+	model.MetricRHR:        "rhr",
+	model.MetricSteps:      "steps",
+	model.MetricActiveKcal: "active_kcal",
 }
 
 var baselineColumns = map[string]string{
