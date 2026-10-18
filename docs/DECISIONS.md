@@ -590,5 +590,8 @@ changes:
 The go-live spec had it as a manual `helm install`. Like the other add-ons (D25) it is
 now a pinned `helm_release` in `infra/aws/kubernetes` (chart 1.6.0, CRDs still
 `secrets.hashicorp.com/v1beta1`). Its default VaultConnection and default auth method
-are off, so a namespace without its own VaultAuth gets no secrets at all. The chart was
+are off, so a namespace without its own VaultAuth gets no secrets at all. The `_raw`
+key, the whole KV secret as JSON, is excluded globally and on each generated
+VaultStaticSecret. Through `envFrom` it would have become one more environment
+variable holding every credential, as seen on the first real sync. The chart was
 rendered with these values and validated (33 resources).

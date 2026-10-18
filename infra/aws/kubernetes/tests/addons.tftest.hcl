@@ -143,7 +143,8 @@ run "vault_secrets_operator_has_no_default_identity" {
   assert {
     condition = (
       yamldecode(helm_release.vault_secrets_operator.values[0]).defaultVaultConnection.enabled == false &&
-      yamldecode(helm_release.vault_secrets_operator.values[0]).defaultAuthMethod.enabled == false
+      yamldecode(helm_release.vault_secrets_operator.values[0]).defaultAuthMethod.enabled == false &&
+      yamldecode(helm_release.vault_secrets_operator.values[0]).controller.manager.globalTransformationOptions.excludeRaw == true
     )
     error_message = "every namespace brings its own VaultConnection and VaultAuth (infra/vault); no shared default"
   }

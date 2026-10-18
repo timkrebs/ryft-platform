@@ -182,6 +182,8 @@ resource "helm_release" "vault_secrets_operator" {
     defaultAuthMethod      = { enabled = false }
     controller = {
       manager = {
+        # No `_raw` key (the whole secret as JSON) in any synced Secret.
+        globalTransformationOptions = { excludeRaw = true }
         resources = {
           requests = { cpu = "10m", memory = "64Mi" }
           limits   = { memory = "256Mi" }
