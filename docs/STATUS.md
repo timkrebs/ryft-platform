@@ -1,6 +1,6 @@
 # RYFT platform — status
 
-State of the v1 platform after M1 (Supabase) and the zero-trust layout (2026-10-18). Contract:
+State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18). Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -27,6 +27,16 @@ deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 | Edge | AWS Load Balancer Controller, Traefik behind an NLB (HTTPS only), cert-manager with Let's Encrypt DNS-01 issuers, ExternalDNS, encrypted gp3 default StorageClass; all Terraform + Helm with Pod Identity | `infra/aws/kubernetes` |
 | EKS overlay | `api.ryftapp.de` Ingress (Traefik + cert-manager), encrypted storage class on every volume, image tags to pin | `deploy/k8s/overlays/eks` |
 
+**Go-live (M1b), all applied by the user on 2026-10-18:**
+
+| Item | State |
+| --- | --- |
+| CI | `github.com/timkrebs/ryft-platform`, every job green (test with Postgres, lint, manifests, smoke with the NATS permission check, images). Public multi-arch images `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<short-sha>`. |
+| Terraform | `infra/aws`, `infra/aws/dns`, `infra/aws/kubernetes` (Traefik, cert-manager with public DNS-01 checks, ExternalDNS, the operator) and `infra/vault` applied; state local on the user's machine. |
+| DNS + TLS | `ryftapp.de` delegated from GoDaddy to Route 53. `api.ryftapp.de` → the NLB (ExternalDNS). Let's Encrypt certificates in `ryft-api` and `ryft-ingest`, valid until 2027-01-16. Port 80 closed. |
+| Workloads | `make k8s-apply-eks` at `a602a20`: migrate ran nine migrations against Supabase and set the role passwords; api ×2, ingest ×2, scoring, nats ready with 0 restarts; every Secret synced from Vault with only its own keys. |
+| Public check | `GET https://api.ryftapp.de/v1/me` and `/v1/sync` → `401` with `WWW-Authenticate`, HSTS, `Cache-Control: no-store`, `X-Request-ID`. |
+
 **M1 — Supabase, multi-user, platform hardening** (`CLAUDE_FOLLOWUP_SUPABASE.md` plus the
 agreed extras):
 
@@ -49,7 +59,7 @@ agreed extras):
 | Database roles | `ryft_ingest` / `ryft_scoring` / `ryft_api` with only the privileges their queries use. Migrations run only in the migrate job, as the owner. Passwords are set as SCRAM verifiers. | migration 0009, `cmd/migrate`, D42 |
 | NATS users | One user per service. Publishers may only publish `ryft.ingested`; scoring alone manages and consumes the stream. Each service has its own reply inbox. | `deploy/k8s/base/nats/nats.conf`, D43 |
 | Namespaces | `ryft-{ingest,scoring,api,nats,migrate}`, each with default deny in and out, explicit flows, internet egress only to public addresses, Pod Security `restricted`, and no service-account tokens in pods. | `deploy/k8s`, D44 |
-| Vault | HCP namespace paths fixed. Credentials are generated and written only where used. A migrate namespace, the api's Supabase key, and a mocked `terraform test` with golden operator manifests. | `infra/vault` (yours, uncommitted), D45 |
+| Vault | HCP namespace paths fixed. Credentials are generated and written only where used. A migrate namespace, the api's Supabase key, and a mocked `terraform test` with golden operator manifests. | `infra/vault`, D45 |
 | Operator | Vault Secrets Operator 1.6.0 as a pinned add-on, with no default identity. | `infra/aws/kubernetes`, D46 |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
@@ -79,51 +89,28 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Not done / not verified
 
-- **CI has not run on GitHub.** This repo has no remote yet; the workflow is linted, not
-  executed. Action major versions (`checkout@v5`, `setup-go@v6`, `golangci-lint-action@v8`)
-  should be confirmed on the first run.
-- **Only the cluster root is applied** (by the user). `infra/aws/dns` and
-  `infra/aws/kubernetes` are verified offline, not applied; the nameserver switch at
-  GoDaddy is a manual step; the RYFT overlay waits for M1 and the first CI images.
-  The cluster root's next plan also carries the EBS add-on change (no default
-  StorageClass from the add-on) and, without a `terraform.tfvars`, still leaves the
-  Kubernetes API open to `0.0.0.0/0`.
-- **Not on EKS yet:** Prometheus (`monitoring` namespace, needs a third node), content on
-  the apex `ryftapp.de` / `www`, DNSSEC.
-- **First deploy on EKS (2026-10-18) proved the zero-trust path.** HCP Vault reached the
-  EKS API (TokenReview), and the operator synced all five Secrets with only their own
-  keys. The migrate job ran all nine migrations against Supabase and set the role
-  passwords. The pooler accepts the custom roles (`ryft_api.<ref>`), the NATS users
-  log in, and `/readyz` is green everywhere.
-  - **Startup race, since fixed:** the services had started next to migrate, tried
-    their roles before the passwords existed, and tripped the pooler's circuit
-    breaker. They restarted for about two minutes. Fix: staged apply plus backoff (D47).
-  - **Open:** DNS. Route 53 has `api.ryftapp.de`, but the domain is still delegated to
-    GoDaddy (`ns21`/`ns22.domaincontrol.com`), so the name does not resolve and the
-    Let's Encrypt DNS-01 challenge waits.
-- **Supabase region:** the project's pooler is `aws-0-eu-west-1` (Ireland), the cluster
-  is in eu-central-1 (Frankfurt). That works (both EU), but every query crosses regions
-  (about 20–25 ms round trip). A Supabase project cannot move; recreate it in Frankfurt
-  before real users if latency matters.
-- **Failure-path metrics** (`ryft_events_handled_total{result="retry|failed"}`,
-  `ryft_nats_redeliveries_total`) are wired but were not exercised end to end.
-- **No live Supabase project yet.** The Supabase paths are verified against a fake JWKS
-  and a faked Supabase database shape. `make smoke-supabase` skips without
-  `SUPABASE_*`. Before go-live: work through the `SUPABASE.md` checklist, then run
-  `make smoke-supabase` against the stack and the RLS check queries in `SUPABASE.md`.
-- **Apple token revocation on account deletion is not implemented.** Apple asks for it
-  for Sign in with Apple. It needs the sign-in's authorization code and a server-side
-  client secret (`SUPABASE.md` → Account deletion).
-- **Logs are not shipped anywhere** (stdout only, lost on pod restart). They carry
-  daily scores, so treat any log store as health data.
-- **Rate limits are per pod** (effective limit up to replicas × limit). There is no
-  per-IP limit for unauthenticated traffic; that belongs on the Traefik edge if needed
-  (D36).
-- **Rescore after deploying M1.** De-duplication changes strain and sleep for users with
-  two devices, and `steps`/`active_kcal` are `null` on days scored before. Run
-  `POST /v1/recompute` over the history (one per user per minute).
-- Insight texts are English only; there are no Go handler tests against a database
-  (handlers are covered by the smoke contract checks).
+Open items of the current milestone (`after go-live`) first, then known gaps.
+
+- **Supabase region.** The project is in eu-west-1 (Ireland), the cluster in eu-central-1.
+  Decided: recreate it in Frankfurt before inviting anyone else, while the database is
+  empty (runbook in `SUPABASE.md`).
+- **Apple token revocation on `DELETE /v1/me`.** In progress (Sign in with Apple accounts).
+- **`make smoke-supabase` has not run against production yet.**
+- **Rescore: nothing to do today.** The production database was created on 2026-10-18 by
+  the current code, so no day was scored by older rules. `scripts/rescore_all.sh` is for
+  the next scoring change.
+- **Operations gaps:** per-IP edge rate limit, log shipping (CloudWatch), metrics and the
+  NoSync alert (Grafana Cloud, decided), remote Terraform state, budget alarm, apex
+  `ryftapp.de` with `apple-app-site-association`.
+- **Known gaps, accepted for the alpha:**
+  - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
+    `ryft_nats_redeliveries_total` are wired but were not exercised end to end.
+  - **Single points:** one NATS replica and one scoring replica.
+  - **Kubernetes auth needs HCP Vault to reach the EKS API** (TokenReview). Narrow
+    `endpoint_public_access_cidrs` only together with Vault's egress addresses.
+  - **Insight texts are English only.** Handlers are covered by the smoke contract checks,
+    not by Go tests against a database.
+  - **Cost:** about €120–160 a month (`infra/aws/README.md`).
 - **For the iOS side** (nothing in `../app` was changed):
   - Decode `User.email`/`provider`, `DailyScore.steps`/`active_kcal`,
     `DayStrain.steps`/`active_kcal`, and `APIErrorBody.requestId`. All are optional, and
@@ -131,8 +118,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
   - Status handling: treat `503` as "retry after `Retry-After`", never as sign-out. Honour
     `429` + `Retry-After`. `413` means a smaller sync page. Only a second `401` after a
     refresh signs out.
-  - Delete account: call `DELETE /v1/me`, then sign out and clear caches (Apple
-    revocation above).
+  - Delete account: call `DELETE /v1/me`, then sign out and clear caches.
   - New users start in `Europe/Berlin`: send the device's zone with `PATCH /v1/me` on
     first launch.
   - Show steps and kcal on the Strain screen.
@@ -140,36 +126,6 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
     100 %. The API sends whole percentages (`API.md`, Conventions).
   - The app also reads `details` keys. They are frozen, but the typed fields
     (`baseline_days`, `DayDetail.sleep`, `DayDetail.strain`) are the contract.
-
-## Alpha readiness
-
-Deployed to EKS on 2026-10-18. Done: the Supabase project, the GitHub remote with green
-CI and public images, the edge add-ons with the Vault Secrets Operator, `infra/vault`,
-and `make k8s-apply-eks` at `155e166`. Every workload runs, and the secrets, roles, NATS
-users and readiness are verified on the cluster. What is left before a first alpha:
-
-| # | Step | Why it blocks |
-| --- | --- | --- |
-| 1 | **Delegate the domain:** GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → the four Route 53 servers (`terraform -chdir=infra/aws/dns output name_servers`). | `api.ryftapp.de` does not resolve; the certificate waits on its DNS-01 challenge |
-| 2 | **Redeploy with the start-up fix:** push, wait for CI, pin the new short SHA (quoted) in `deploy/k8s/overlays/eks/kustomization.yaml`, `make k8s-apply-eks`. | not blocking (it runs), but the next deploy or restart should not crash-loop |
-| 3 | **Verify:** `kubectl -n ryft-api get certificate` → `True`; `curl -sI https://api.ryftapp.de/v1/me` → `401`; `make smoke-supabase` through port-forwards with the test user; the role and RLS queries in `SUPABASE.md`. | — |
-| 4 | **App:** Release xcconfig → `https://api.ryftapp.de` and the Supabase URL and publishable key; the hand-off list above. | the app talks to nothing |
-
-Acceptable for an alpha, but known gaps:
-- **Single points:** one NATS replica and one scoring replica.
-- **No Prometheus or alerting.** At least add an external uptime check on
-  `https://api.ryftapp.de/v1/me`, expecting 401.
-- **Pod logs only, not shipped.**
-- **Apple token revocation** is not implemented. App Store review requires it, an
-  internal TestFlight alpha does not.
-- **Kubernetes auth needs HCP Vault to reach the EKS API.** If you narrow
-  `endpoint_public_access_cidrs`, include Vault's egress addresses, or logins (and
-  secret refreshes) stop.
-- **Cost:** about €120–160 a month (`infra/aws/README.md`).
-- **Your own uncommitted files:** the `ryft-prod-euc1` rename in `infra/aws`
-  (`locals.tf`, `variables.tf`) matches the applied state; commit it. `infra/vault` is
-  untracked; commit it, together with its `.terraform.lock.hcl`, once you have reviewed
-  the changes.
 
 ## Deploy
 
@@ -203,7 +159,6 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 make k8s-validate && make k8s-apply-eks
 ```
 
-Then, with each user's token, rescore history (`POST /v1/recompute`, `OPERATIONS.md` →
-Upgrading). Run `make smoke-supabase` only with the dedicated test user.
+Run `make smoke-supabase` only with the dedicated test user.
 
 Self-hosted (k3s etc.): `make k8s-apply-local` (`OPERATIONS.md` → Self-hosted).
