@@ -4,7 +4,12 @@ Your own Whoop: Garmin watch → Apple Health → iOS app → Go microservices o
 Kubernetes → daily Recovery / Strain / Sleep scores.
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — it explains the data
-flow, the schema and the scoring model.
+flow, the schema and the scoring model. The HTTP contract with the app is
+[`docs/API.md`](docs/API.md); operations (Vault, network policy, backups) are in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md), metrics in
+[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md), what is done and how to deploy in
+[`docs/STATUS.md`](docs/STATUS.md), and judgement calls in
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ```
 backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,insights,store,db,events,httpx,metrics,model,config}
@@ -41,7 +46,7 @@ cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml  # set API_KEY (opens
 kubectl apply -k deploy/k8s                                 # or: kubectl apply -k deploy/k8s/vault
 kubectl -n ryft get pods
 kubectl -n ryft port-forward svc/api 8082:80 &  kubectl -n ryft port-forward svc/ingest 8081:80 &
-API_KEY=<your key> make smoke
+API_KEY=<your key> make smoke    # only on a fresh install: it writes 10 synthetic days into the user's data
 ```
 
 Then put the Ingress (or the two services) behind your tunnel with TLS. Vault,
