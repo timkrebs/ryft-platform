@@ -22,8 +22,7 @@ resource "local_file" "vso" {
     service_account = each.value.service_account
     kv_mount        = vault_mount.kv[each.key].path
     has_secret      = contains(keys(vault_kv_secret_v2.config), each.key)
-    restart_kind    = each.value.workload_kind
-    restart_name    = each.value.workload_name
+    restart_targets = each.value.restart_targets
   })
 }
 

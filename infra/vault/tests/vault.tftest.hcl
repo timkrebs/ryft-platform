@@ -240,9 +240,10 @@ run "monitoring_is_privileged_and_restarts_the_collector" {
   assert {
     condition = (
       strcontains(local_file.vso["monitoring"].content, "namespace: admin/ryft/monitoring") &&
-      strcontains(local_file.vso["monitoring"].content, "- kind: DaemonSet\n      name: grafana-cloud-alloy")
+      strcontains(local_file.vso["monitoring"].content,
+      "- kind: DaemonSet\n      name: grafana-cloud-alloy-daemonset\n    - kind: Deployment\n      name: grafana-cloud-alloy-deployment\n")
     )
-    error_message = "the operator logs in to admin/ryft/monitoring and restarts the collector DaemonSet"
+    error_message = "the operator logs in to admin/ryft/monitoring and restarts both collectors"
   }
 }
 

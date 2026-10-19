@@ -16,6 +16,7 @@ locals {
       data_key        = s.data_key
       pod_security    = s.pod_security
       workload_name   = coalesce(s.workload_name, name)
+      restart_targets = concat(s.workload_kind == "" ? [] : [{ kind = s.workload_kind, name = coalesce(s.workload_name, name) }], s.extra_restarts)
     }
   }
 

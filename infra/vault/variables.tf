@@ -62,6 +62,8 @@ variable "services" {
     k8s_namespace:   the Kubernetes namespace (default <project>-<name>).
     pod_security:    the namespace's Pod Security level: restricted (default), baseline, privileged.
     workload_name:   the workload the operator restarts (default the service name).
+    extra_restarts:  further workloads it restarts, [{kind, name}] (the collector's
+                     Deployment next to its DaemonSet).
   EOT
   type = map(object({
     service_account = optional(string)
@@ -73,6 +75,7 @@ variable "services" {
     k8s_namespace   = optional(string)
     pod_security    = optional(string, "restricted")
     workload_name   = optional(string)
+    extra_restarts  = optional(list(object({ kind = string, name = string })), [])
   }))
   default = {
     ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
@@ -83,9 +86,11 @@ variable "services" {
     # Grafana Cloud's k8s-monitoring collector (deploy/monitoring): node metrics,
     # Beyla and an SDK injector need root, host network and host files, so its
     # namespace cannot be restricted (D51). Only GC_TOKEN, from service_secrets.
+    # Two collectors read the token (as Grafana Cloud's onboarding names them).
     monitoring = {
-      k8s_namespace = "monitoring", pod_security = "privileged",
-      workload_kind = "DaemonSet", workload_name = "grafana-cloud-alloy"
+      k8s_namespace  = "monitoring", pod_security = "privileged",
+      workload_kind  = "DaemonSet", workload_name = "grafana-cloud-alloy-daemonset",
+      extra_restarts = [{ kind = "Deployment", name = "grafana-cloud-alloy-deployment" }]
     }
   }
 
@@ -93,6 +98,7 @@ variable "services" {
     condition = alltrue([for s in values(var.services) :
       contains(["none", "role", "owner"], s.database) && contains(["none", "client", "server"], s.nats) &&
       contains(["Deployment", "StatefulSet", "DaemonSet", ""], s.workload_kind) &&
+      alltrue([for r in s.extra_restarts : contains(["Deployment", "StatefulSet", "DaemonSet"], r.kind)]) &&
     contains(["restricted", "baseline", "privileged"], s.pod_security)])
     error_message = "database must be none|role|owner, nats none|client|server, workload_kind Deployment|StatefulSet|DaemonSet or \"\", pod_security restricted|baseline|privileged."
   }

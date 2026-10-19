@@ -58,9 +58,11 @@ spec:
     # would turn into one more variable holding every credential.
     transformation:
       excludeRaw: true
-%{ if restart_kind != "" ~}
+%{ if length(restart_targets) > 0 ~}
   rolloutRestartTargets:
-    - kind: ${restart_kind}
-      name: ${restart_name}
+%{ for t in restart_targets ~}
+    - kind: ${t.kind}
+      name: ${t.name}
+%{ endfor ~}
 %{ endif ~}
 %{ endif ~}
