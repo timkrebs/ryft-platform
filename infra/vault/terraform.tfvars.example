@@ -21,7 +21,9 @@ service_secrets = {
     APPLE_TEAM_ID   = "M77SKHKG63"        # Apple Developer → Membership
     APPLE_KEY_ID    = "<key id>"          # Certificates, IDs & Profiles → Keys → the Sign in with Apple key
     APPLE_CLIENT_ID = "dev.timkrebs.ryft" # the app's bundle ID (native sign-in), not a Services ID
-    APPLE_KEY_P8    = <<-EOT
+    # The whole AuthKey_<key id>.p8 (downloadable once), either as one line,
+    # base64 -i AuthKey_<key id>.p8 | tr -d '\n', or pasted between the EOT lines.
+    APPLE_KEY_P8 = <<-EOT
       -----BEGIN PRIVATE KEY-----
       …the contents of AuthKey_<key id>.p8…
       -----END PRIVATE KEY-----

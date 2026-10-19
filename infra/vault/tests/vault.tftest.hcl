@@ -14,8 +14,9 @@ variables {
   service_secrets = {
     api = {
       SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
-      APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "KEY123", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
-      APPLE_KEY_P8              = "-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
+      APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
+      # The shape of a .p8, not a key: only the format is checked here.
+      APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"
     }
     monitoring = { GC_TOKEN = "glc_test" }
   }
@@ -161,6 +162,33 @@ run "rejects_a_placeholder_project_ref" {
     supabase_project_ref = "<ref>"
   }
   expect_failures = [var.supabase_project_ref]
+}
+
+run "rejects_placeholders_from_the_example" {
+  command = plan
+
+  variables {
+    service_secrets = {
+      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_KEY_ID = "…", APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----" }
+      monitoring = { GC_TOKEN = "glc_test" }
+    }
+  }
+  expect_failures = [var.service_secrets]
+}
+
+run "accepts_a_base64_encoded_apple_key" {
+  command = plan
+
+  variables {
+    service_secrets = {
+      api = {
+        SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
+        APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
+        APPLE_KEY_P8              = base64encode("-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----\n")
+      }
+      monitoring = { GC_TOKEN = "glc_test" }
+    }
+  }
 }
 
 run "warns_without_the_apple_keys" {

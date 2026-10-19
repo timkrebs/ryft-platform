@@ -158,6 +158,26 @@ variable "service_secrets" {
   type        = map(map(string))
   sensitive   = true
   default     = {}
+
+  # Placeholders from terraform.tfvars.example would reach the pods and fail only at
+  # startup: the api refuses to start with a malformed Apple key.
+  validation {
+    condition = alltrue(flatten([for svc, kv in var.service_secrets : [for k, v in kv :
+    !strcontains(v, "…") && !can(regex("^<[^>]*>$", trimspace(v)))]]))
+    error_message = "service_secrets still holds a placeholder (… or <…>) from terraform.tfvars.example."
+  }
+  validation {
+    condition = !contains(keys(lookup(var.service_secrets, "api", {})), "APPLE_KEY_ID") || can(regex(
+    "^[A-Z0-9]{10}$", lookup(var.service_secrets, "api", {})["APPLE_KEY_ID"]))
+    error_message = "service_secrets.api.APPLE_KEY_ID is the 10-character Key ID of the Sign in with Apple key (Apple Developer → Keys)."
+  }
+  validation {
+    condition = !contains(keys(lookup(var.service_secrets, "api", {})), "APPLE_KEY_P8") || length(regexall(
+      "-----BEGIN PRIVATE KEY-----\\s*[A-Za-z0-9+/=\\s]{100,}-----END PRIVATE KEY-----",
+      try(base64decode(lookup(var.service_secrets, "api", {})["APPLE_KEY_P8"]), lookup(var.service_secrets, "api", {})["APPLE_KEY_P8"])
+    )) > 0
+    error_message = "service_secrets.api.APPLE_KEY_P8 must be the whole AuthKey_<key id>.p8 file, as PEM or base64-encoded."
+  }
 }
 
 variable "token_ttl" {
