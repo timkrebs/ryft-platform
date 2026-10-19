@@ -104,32 +104,31 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Not done / not verified
 
-Built and tested, applied by nobody yet: everything in **After go-live**. Your steps,
-in this order:
+Applied on 2026-10-19 except where marked open. Your steps, in this order:
 
-1. **State into HCP Terraform first** (`OPERATIONS.md` → Terraform state). Create the
-   `-dns` and `-kubernetes` workspaces, set all four to execution mode Local with
-   Terraform 1.16.6, install 1.16.6, `terraform login`, then `make tf-migrate-hcp`. Then
-   `terraform import 'kubernetes_namespace_v1.service["monitoring"]' monitoring` in
-   `infra/vault`, plan every root, and retire the S3 bucket.
-2. **Supabase in Frankfurt:** new project and the full checklist (`SUPABASE.md` → Moving
-   the project to Frankfurt), including the Apple key for revocation
-   (`service_secrets.api.APPLE_*`). Done on 2026-10-19.
-3. **`infra/vault`:** new Supabase values, the Apple values, and the rotated Grafana
-   token (`service_secrets.monitoring.GC_TOKEN`); then plan and apply (monitoring
-   namespace and Apple key included). Retire the hand-made Grafana secret first
-   (`OPERATIONS.md` → Monitoring).
-4. **`infra/aws/kubernetes`:** plan and apply: Traefik with client IPs preserved,
-   Fluent Bit with its log group and key, the operator without `_raw`, cert-manager's
-   public DNS-01 checks.
-5. **`infra/aws`:** `budget_alert_emails` in tfvars, plan and apply.
-6. **Images and deploy:** CI for the current commit, pin its short SHA (quoted), then
-   `make k8s-apply-eks` (migrations 0009 and 0010, the edge limit, the metrics port,
-   the apex site).
-7. **`make monitoring-apply`**, then the Grafana Cloud steps: exclude `ryft-.*` pod logs,
-   load the alerts.
-8. **`make smoke-supabase`** against `https://api.ryftapp.de` with `SUPABASE_SECRET_KEY`.
-   Record the run here.
+1. **State in HCP Terraform:** done (`make tf-migrate-hcp`; the `monitoring` namespace
+   was recreated by Terraform). Open: delete the local `terraform.tfstate*` files and
+   `~/.ryft-tfstate-rescue/`, retire the S3 bucket (`OPERATIONS.md` → Terraform state).
+2. **Supabase in Frankfurt:** done; the new database was migrated by the deploy.
+3. **`infra/vault`:** applied with the new Supabase values and `GC_TOKEN`. **Blocked:
+   the Apple values.** The Apple Developer Program membership is pending, so the four
+   `service_secrets.api.APPLE_*` stay out of `terraform.tfvars`. Until then revocation
+   is off: `POST /v1/me/apple-authorization` answers `501`, `DELETE /v1/me` works and
+   reports `apple_token_revoked: null`. Once the membership is there: create the Sign in
+   with Apple key, add all four values, plan and apply, then
+   `kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager`.
+4. **`infra/aws/kubernetes`:** done (no changes left).
+5. **`infra/aws`:** done: budget, the API endpoint stays `0.0.0.0/0` (HCP Vault's
+   TokenReview), the node tags (one full node rotation), three nodes (D57). The budget's
+   $165 is below the estimate; raise `monthly_budget_usd` or expect the alarm.
+6. **Images and deploy:** `7a69705` runs for ingest, scoring and web, and the apex site
+   with its certificate is live. **Open: api.** Its new pods refused the placeholder
+   Apple values, and the image needs the configuration fix that lets it start without
+   the Apple keys. Pin the next green CI image, then `make k8s-apply-eks`.
+7. **`make monitoring-apply`** (open), then the Grafana Cloud steps: exclude `ryft-.*`
+   pod logs, load the alerts.
+8. **`make smoke-supabase`** against `https://api.ryftapp.de` with
+   `SUPABASE_SECRET_KEY` (open). Record the run here.
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
