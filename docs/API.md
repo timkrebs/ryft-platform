@@ -18,11 +18,12 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt | `GET /v1/days/{today}` → `score` |
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
 | Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
-| Sleep — Week / Month | nightly totals and stages, averages | `GET /v1/sleep?range=week` / `month` |
+| Sleep — Week / Month | nightly totals and stages, consistency, bedtime / wake strip, averages | `GET /v1/sleep?range=week` / `month` |
+| Sleep — Planner | three bedtimes for a wake time, the need behind them | `GET /v1/sleep/plan?wake=07:00` |
 | Strain | day strain, zones, TRIMP, steps, active kcal, activities | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
-| Profile | timezone, max HR, sleep baseline; apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
+| Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
 | (after Sign in with Apple) | let deletion revoke the Apple grant | `POST /v1/me/apple-authorization` |
 | Strain — Train | start a workout, today's plan, live session, summary with load and PRs | `GET /v1/plans/today`, `PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete` |
@@ -104,6 +105,7 @@ user). Never exposed outside a developer machine.
 | `GET` | `/v1/days?from&to` | api | `[DailyScore]` |
 | `GET` | `/v1/days/{day}` | api | `DayDetail` |
 | `GET` | `/v1/sleep?range&to` | api | `SleepRange` |
+| `GET` | `/v1/sleep/plan?wake` | api | `SleepPlan` |
 | `GET` | `/v1/workouts?from&to` | api | `[Workout]` |
 | `GET` | `/v1/workouts/{id}` | api | `WorkoutDetail` |
 | `GET` | `/v1/trends?metric&range&to` | api | `Trend` |
@@ -169,7 +171,8 @@ workout without `id`).
 
 ```json
 { "id": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c", "name": "Tim K", "email": "tim@example.com",
-  "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 460 }
+  "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 455,
+  "sleep_base_source": "learned", "sleep_base_learned_min": 455, "sleep_base_learned_at": "2026-10-18T02:00:04Z" }
 ```
 
 The user is created on the first authenticated request with `tz = Europe/Berlin`,
@@ -183,13 +186,26 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `provider` | string? | Sign-in provider, e.g. `apple`. |
 | `tz` | string | IANA zone; defines every day boundary in this API. |
 | `max_hr` | int | bpm, used for heart-rate reserve in strain and zones. |
-| `sleep_base_min` | int | Baseline sleep need in minutes before strain and debt top-ups. |
+| `sleep_base_min` | int | Baseline sleep need in minutes before strain and debt top-ups and the nap credit: the one in use, see `sleep_base_source`. |
+| `sleep_base_source` | string | `default` (460 min, nothing learned yet), `learned` (the weekly estimate below), `manual` (set with `PATCH`). Closed enum. |
+| `sleep_base_learned_min` | int? | The latest learned estimate, also while `manual` (for "learned 7 h 35 min · override"); `null` until there is one. |
+| `sleep_base_learned_at` | timestamp? | When that estimate was computed. |
+
+**Learned baseline.** Every Sunday from 04:00 local time, scoring estimates the
+baseline from the last 30 scored days. It needs at least 14 nights of sleep, of which at
+least 7 *qualify*: the morning's recovery was ≥ 67 after a day with strain < 10. The
+estimate is the median minutes asleep of the qualifying nights, clamped to 360–570. Unless
+the source is `manual`, `sleep_base_min` takes the estimate when it changes, and the last
+seven days are rescored with it.
 
 ### `PATCH /v1/me` — change settings
 
 Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230),
-`sleep_base_min` (int, 240–720). Returns the updated `User`. `422` on an unknown zone or
-out-of-range value, `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
+`sleep_base_min` (int, 240–720; sets `sleep_base_source` to `manual`, so learning no
+longer changes it), `sleep_base_manual` (bool; `false` goes back to the learned estimate,
+or to the default 460 when there is none; `true` keeps the current value as manual).
+Returns the updated `User`. `422` on an unknown zone, an out-of-range value, or
+`sleep_base_min` together with `sleep_base_manual: false`; `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
 `POST /v1/recompute`.
 
 ### `DELETE /v1/me` — delete the account
@@ -252,7 +268,9 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 
 ```json
 { "day": "2026-10-18", "readiness": 84, "state": "balanced", "recovery": 82, "strain": 12.4,
-  "steps": 9412, "active_kcal": 612, "strength_min": 59, "volume_kg": 7420, "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 35,
+  "steps": 9412, "active_kcal": 612, "strength_min": 59, "volume_kg": 7420, "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 137,
+  "sleep_need_base_min": 460, "sleep_need_strain_min": 37, "sleep_need_debt_min": 41, "sleep_need_nap_min": 0, "nap_min": 25,
+  "sleep_quality": 91, "sleep_consistency": 81,
   "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
   "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "calibrating": false,
   "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
@@ -272,7 +290,14 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `strength_min` | int? | Minutes of the completed strength sessions started that day. `null` without one. |
 | `volume_kg` | number? | Their volume, Σ reps × kg of working sets. `null` without a session. |
 | `sleep_performance` | int? | 0–100, actual / need. |
-| `sleep_need_min` | int? | Minutes. |
+| `sleep_need_min` | int? | Minutes: `sleep_need_base_min + sleep_need_strain_min + sleep_need_debt_min − sleep_need_nap_min`. |
+| `sleep_need_base_min` | int? | The baseline the need started from (`User.sleep_base_min` when scored). |
+| `sleep_need_strain_min` | int? | Top-up for yesterday's strain: 3 min per strain point, at most 60. |
+| `sleep_need_debt_min` | int? | Top-up for sleep debt: 30 % of `sleep_debt_min`, at most 60. |
+| `sleep_need_nap_min` | int? | Nap credit: yesterday's `nap_min`, which lowers last night's need. |
+| `nap_min` | int? | Naps that day: sleep ending 10:00–20:00 local that is not part of the night, each nap ≥ 20 min, the sum capped at 90. It lowers the **following** night's need (the next day's `sleep_need_nap_min`). `0` when there was none; `null` for days scored before this field existed. |
+| `sleep_quality` | int? | 0–100, the night's quality (`DayDetail.sleep.quality`, `SCORING.md` → Sleep): `0.6·performance + 0.2·efficiency + 0.2·restorative`. `null` without a night. |
+| `sleep_consistency` | int? | 0–100: how regular bedtime and wake time were over the last 7 nights, `100 − 0.5·(σ bedtime + σ wake time)` in minutes. Needs 5 nights with data, else `null`. |
 | `sleep_actual_min` | int? | Minutes asleep last night. |
 | `sleep_debt_min` | int? | Decayed shortfall of the 7 nights before last night. |
 | `hrv_ms` | number? | Overnight mean SDNN, ms. |
@@ -306,7 +331,8 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
   "total_min": 468, "in_bed_min": 492, "efficiency": 95,
   "stages": [ {"stage":"deep","min":112,"pct":24}, {"stage":"light","min":261,"pct":56},
               {"stage":"rem","min":95,"pct":20},  {"stage":"awake","min":10,"pct":2} ],
-  "quality": 82, "quality_label": "good", "has_stages": true,
+  "quality": 91, "quality_label": "good", "restorative": 100, "has_stages": true,
+  "need": { "base": 460, "strain": 37, "debt": 41, "nap_credit": 0, "total": 538 },
   "segments": [ {"stage":"light","start":"2026-10-17T21:12:00Z","end":"2026-10-17T21:40:00Z"}, … ]
 }
 ```
@@ -318,8 +344,10 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 | `in_bed_min` | int | Recorded time in bed; without an `inbed` record, the span `start`→`end`; never less than asleep + awake. |
 | `efficiency` | int | `round(100 · total_min / in_bed_min)`, 0–100. |
 | `stages` | `[SleepStage]` | Always four entries in this order: `deep`, `light`, `rem`, `awake`. HealthKit `core` is reported as `light`. |
-| `quality` | int | 0–100. Currently equal to `score.sleep_performance`. |
+| `quality` | int | 0–100: `round(0.6·performance + 0.2·efficiency + 0.2·restorative)`, with performance = `score.sleep_performance`. Was equal to performance before 2026-10-19. |
+| `restorative` | int | 0–100: the share of deep + REM sleep against 40 % of time asleep, `min(100, (deep + rem) / asleep / 0.40 · 100)`; equal to performance when the source records no stages. |
 | `quality_label` | string | `good` (quality ≥ 80), `fair` (60–79), `poor` (< 60). |
+| `need` | `SleepNeed` | Why the night's need is what it is: `{base, strain, debt, nap_credit, total}` in minutes, the `sleep_need_*` fields of the score (`total = base + strain + debt − nap_credit` = `score.sleep_need_min`). Days scored before 2026-10-19 report the whole need as `base` until they are rescored. Only on this endpoint. |
 | `has_stages` | bool | `false` when the source recorded no stages (older firmware): `deep`/`light`/`rem` are then 0 min and 0 %. |
 | `segments` | `[SleepInterval]` | The hypnogram, oldest first: `{stage, start, end}` with `stage` one of `deep`, `light`, `rem`, `awake`, `asleep` (stage unknown). Touching segments of one stage are merged; `inbed` is not a stage and is left out. Only on this endpoint. |
 
@@ -354,20 +382,48 @@ default today. `422` on another `range`, `400` on a malformed `to`.
 {
   "range": "week", "from": "2026-10-12", "to": "2026-10-18", "nights": 7,
   "days": [ { "day": "2026-10-12", "start": "…", "end": "…", "total_min": 475, "in_bed_min": 511,
-              "efficiency": 93, "stages": [ … ], "quality": 93, "quality_label": "good", "has_stages": true }, … ],
-  "avg_total_min": 455, "avg_in_bed_min": 486, "avg_efficiency": 94, "avg_quality": 90,
-  "avg_stages": [ {"stage":"deep","min":85,"pct":19}, … ]
+              "efficiency": 93, "stages": [ … ], "quality": 93, "quality_label": "good", "restorative": 96,
+              "has_stages": true, "consistency": 84, "nap_min": 0 }, … ],
+  "avg_total_min": 455, "avg_in_bed_min": 486, "avg_efficiency": 94, "avg_quality": 90, "avg_consistency": 83,
+  "avg_stages": [ {"stage":"deep","min":85,"pct":19}, … ],
+  "bedtimes": [ { "day": "2026-10-12", "bed": "2026-10-11T21:08:00Z", "wake": "2026-10-12T05:01:00Z" }, … ]
 }
 ```
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `range`, `from`, `to` | string | The window actually served, inclusive. |
-| `days` | `[SleepDay]` | Only nights with data, oldest first. A `SleepDay` is `day` plus every `SleepDetail` field except `segments`. Missing nights are absent — fill the gaps from `from`/`to`. |
+| `days` | `[SleepDay]` | Only nights with data, oldest first. A `SleepDay` is `day` plus every `SleepDetail` field except `segments` and `need`, plus `consistency` (int?, = that day's `score.sleep_consistency`) and `nap_min` (int?, = `score.nap_min`). Missing nights are absent — fill the gaps from `from`/`to`. |
 | `nights` | int | `len(days)`. |
 | `avg_total_min`, `avg_in_bed_min`, `avg_quality` | int? | Means over `days`; `null` when there are none. |
 | `avg_efficiency` | int? | `avg_total_min / avg_in_bed_min`. |
 | `avg_stages` | `[SleepStage]` | Mean minutes per stage over nights with `has_stages`, same order and `pct` rules as `stages`; `[]` when no night had stages. |
+| `avg_consistency` | int? | Mean of `days[].consistency`; `null` when no day has one. |
+| `bedtimes` | `[SleepBedtime]` | `{day, bed, wake}` for each night in `days` (the night's start and end) for the bedtime / wake-time strip. |
+
+### `GET /v1/sleep/plan?wake=HH:MM` — Sleep Planner
+
+`wake` is a local wake time (`07:00`): the next time it occurs, today or tomorrow. `422`
+when it is missing or not `HH:MM`.
+
+```json
+{ "wake": "2026-10-20T05:00:00Z", "need_min": 512, "in_bed_min": 569, "efficiency": 90,
+  "bedtime_100": "2026-10-19T19:31:00Z", "bedtime_85": "2026-10-19T20:56:00Z", "bedtime_70": "2026-10-19T22:22:00Z",
+  "basis": { "base": 460, "strain_topup": 36, "debt_topup": 16, "nap_credit": 0, "efficiency": 90 } }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `wake` | timestamp | The wake time asked for, resolved. |
+| `need_min` | int | Tonight's need: `base + strain_topup + debt_topup − nap_credit`. |
+| `in_bed_min` | int | Time in bed for the full need: `need_min / efficiency`. |
+| `efficiency` | int | The efficiency planned with: the mean of the last 7 nights, never below 85 (90 without nights). |
+| `bedtime_100`, `bedtime_85`, `bedtime_70` | timestamp | When to go to bed to get 100 %, 85 % and 70 % of the need: `wake − share · in_bed_min`. Ascending. |
+| `basis.base` | int | `User.sleep_base_min`. |
+| `basis.strain_topup` | int | **Today's** strain so far × 3 min, at most 60 (the night's score will use the day's final strain). |
+| `basis.debt_topup` | int | 30 % of the debt including last night, at most 60. |
+| `basis.nap_credit` | int | Today's naps (`score.nap_min`), at most 90. |
+| `basis.efficiency` | int | As `efficiency`. |
 
 ### `GET /v1/workouts?from&to` — workouts
 
@@ -421,7 +477,7 @@ the whole duration counts at that intensity and in that zone.
 
 | Parameter | Values | Default |
 | --- | --- | --- |
-| `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm), `steps`, `active_kcal`, `strength_min`, `volume_kg` | required |
+| `metric` | `readiness`, `recovery`, `strain`, `sleep` (sleep performance %), `sleep_min` (minutes asleep), `hrv` (ms), `rhr` (bpm), `steps`, `active_kcal`, `strength_min`, `volume_kg`, `sleep_quality`, `sleep_consistency`, `nap_min` | required |
 | `range` | `7d`, `30d`, `90d` — days ending at `to`, inclusive | `7d` |
 | `to` | `YYYY-MM-DD` | today |
 
@@ -471,6 +527,9 @@ for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 | `readiness-up` | info | Readiness rising ≥ 1 point/day over the last 7 days (least-squares fit, ≥ 5 days). |
 | `hrv-best-30d` | info | Last night's HRV is the highest of the last 30 days (≥ 14 nights of data). |
 | `pr` | info | A personal record in a session completed today or yesterday (the newest; an `e1rm` record before the others). Metric `volume_kg`. |
+| `sleep-consistency-low` | notice | `sleep_consistency` below 60 (over the last 7 nights). Metric `sleep_consistency`. |
+| `nap-credit` | info | A nap of ≥ 45 min today (or yesterday, before today syncs): tonight's need is that much lower. Metric `nap_min`. |
+| `baseline-learned` | info | The learned sleep baseline became the one in use in the last 2 days (`sleep_base_source` turned `learned`). Metric `sleep_min`. |
 
 Baseline-relative rules stay silent while `calibrating`.
 
@@ -810,9 +869,9 @@ for ingest/scoring, NATS) is unreachable. `GET /metrics` → Prometheus text for
 
 Codable types for the iOS app, matching the shapes above with the app's decoder
 (`.convertFromSnakeCase`, RFC 3339 dates with or without fractional seconds). They
-extend `Models.swift`: `DailyScore`, `DayDetail`, `DayStrain`, `Workout` and `User`
-replace the existing structs (new fields only), the rest are new. `UserPatch` and the
-sync types are unchanged. A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
+extend `Models.swift`: `DailyScore`, `DayDetail`, `DayStrain`, `Workout`, `User`,
+`UserPatch` and the sleep types replace the existing structs (new fields only), the rest
+are new. The sync types are unchanged. A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
 endpoint of a running stack with it.
 
 ```swift
@@ -837,6 +896,13 @@ struct DailyScore: Codable, Identifiable {
     let sleepNeedMin: Int?
     let sleepActualMin: Int?
     let sleepDebtMin: Int?
+    let sleepNeedBaseMin: Int?
+    let sleepNeedStrainMin: Int?
+    let sleepNeedDebtMin: Int?
+    let sleepNeedNapMin: Int?
+    let napMin: Int?
+    let sleepQuality: Int?
+    let sleepConsistency: Int?
     let hrvMs: Double?
     let rhr: Double?
     let respRate: Double?
@@ -861,6 +927,14 @@ struct SleepInterval: Codable {
     let end: Date
 }
 
+struct SleepNeed: Codable {
+    let base: Int
+    let strain: Int
+    let debt: Int
+    let napCredit: Int
+    let total: Int
+}
+
 struct SleepDetail: Codable {
     let start: Date
     let end: Date
@@ -870,7 +944,9 @@ struct SleepDetail: Codable {
     let stages: [SleepStage]
     let quality: Int
     let qualityLabel: SleepQualityLabel
+    let restorative: Int
     let hasStages: Bool
+    let need: SleepNeed
     let segments: [SleepInterval]
 }
 
@@ -916,8 +992,17 @@ struct SleepDay: Codable, Identifiable {
     let stages: [SleepStage]
     let quality: Int
     let qualityLabel: SleepQualityLabel
+    let restorative: Int
     let hasStages: Bool
+    let consistency: Int?
+    let napMin: Int?
     var id: String { day }
+}
+
+struct SleepBedtime: Codable {
+    let day: String
+    let bed: Date
+    let wake: Date
 }
 
 struct SleepRange: Codable {
@@ -931,6 +1016,27 @@ struct SleepRange: Codable {
     let avgEfficiency: Int?
     let avgQuality: Int?
     let avgStages: [SleepStage]
+    let avgConsistency: Int?
+    let bedtimes: [SleepBedtime]
+}
+
+struct SleepPlanBasis: Codable {
+    let base: Int
+    let strainTopup: Int
+    let debtTopup: Int
+    let napCredit: Int
+    let efficiency: Int
+}
+
+struct SleepPlan: Codable {   // GET /v1/sleep/plan?wake=HH:MM
+    let wake: Date
+    let needMin: Int
+    let inBedMin: Int
+    let efficiency: Int
+    let bedtime100: Date
+    let bedtime85: Date
+    let bedtime70: Date
+    let basis: SleepPlanBasis
 }
 
 struct HRSample: Codable {
@@ -981,6 +1087,8 @@ struct Insight: Codable, Identifiable {
     let day: String
 }
 
+enum SleepBaseSource: String, Codable { case `default`, learned, manual }
+
 struct User: Codable {
     let id: UUID
     let name: String
@@ -989,6 +1097,16 @@ struct User: Codable {
     let tz: String
     let maxHr: Int
     let sleepBaseMin: Int
+    let sleepBaseSource: SleepBaseSource
+    let sleepBaseLearnedMin: Int?
+    let sleepBaseLearnedAt: Date?
+}
+
+struct UserPatch: Codable {   // PATCH /v1/me, every field optional
+    var tz: String?
+    var maxHr: Int?
+    var sleepBaseMin: Int?
+    var sleepBaseManual: Bool?
 }
 
 struct AccountDeleted: Codable {   // DELETE /v1/me
@@ -1239,6 +1357,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-19 | **Sleep upgrades** (M4): `DailyScore.nap_min`, `sleep_quality`, `sleep_consistency` and the need breakdown (`sleep_need_base_min`, `_strain_min`, `_debt_min`, `_nap_min`); `DayDetail.sleep.need` and `restorative`; `SleepRange.avg_consistency`, `bedtimes`, `days[].consistency` / `nap_min`; `User.sleep_base_source` / `sleep_base_learned_min` / `sleep_base_learned_at` and `UserPatch.sleep_base_manual`; `GET /v1/sleep/plan`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min`; insights `sleep-consistency-low`, `nap-credit`, `baseline-learned`. **Behaviour, no shape change:** `quality` is now its own score instead of a copy of sleep performance, so quality values and labels change; a nap lowers the following night's need; the baseline is learned weekly unless set by hand. Rescore history to fill past days. Swift: the new fields and types, `UserPatch` joins the mirror. |
 | 2026-10-19 | **Train** (M3b): exercise library (`/v1/exercises`, history and records), plans with an enrolment (`/v1/plans`, `/v1/plans/today`), and logged sessions (`PUT /v1/sessions/{id}` with merge and a `409` that carries the server's copy, `…/complete`, list, detail, delete). `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, trend metrics `strength_min` and `volume_kg`, insight `pr`, status `403`. **Behaviour:** `strain` now includes the muscular load of completed sessions, so a day (or workout) with a logged session but no heart rate has a strain. Swift: the Train types, `Workout` joins the mirror. |
 | 2026-10-18 | A per-IP limit at the edge (20 requests/s, bursts of 50) answers `429` with a plain-text body before the per-user limit applies. No shape change. |
 | 2026-10-18 | `POST /v1/me/apple-authorization` added (the Sign in with Apple authorization code, so deletion can revoke the Apple grant). `DELETE /v1/me` responses add `apple_token_revoked` (nullable). Swift: `AccountDeleted.appleTokenRevoked`, `AppleAuthorization`. |
