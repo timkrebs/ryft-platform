@@ -6,7 +6,7 @@ SERVICES := ingest scoring api migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-images k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -64,7 +64,7 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 # (label ryft.dev/stage=first), and the services only once migrate has set their
 # role passwords. The finished migrate Job is deleted first because a Job's pod
 # template cannot change.
-k8s-apply-eks:
+k8s-apply-eks: k8s-check-images
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s; done
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
@@ -149,3 +149,14 @@ k8s-validate:
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
 	for f in infra/vault/tests/golden/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
+	@$(MAKE) --no-print-directory k8s-check-images
+
+# Every image the EKS overlay deploys must be a well-formed reference with a pinned
+# tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in
+# InvalidImageName until its deadline, 2026-10-19), no :latest, no missing tag.
+IMAGE_REF := ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[a-f0-9]{64})$$
+k8s-check-images:
+	@imgs=$$(kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
+	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)'; printf '%s\n' "$$imgs" | grep -E ':latest$$'); \
+	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
+	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
