@@ -128,9 +128,12 @@ ok("/v1/workouts/{id}: 404 unknown, 400 malformed")
 today = get(f"/v1/days/{TODAY}")
 st = today["strain"]
 check(st is not None and st["hr_min"] > 0 and len(st["zone_min"]) == 5, f"day strain: {st}")
-check(isinstance(st["steps"], int) and st["steps"] > 0 and st["steps"] == today["score"]["steps"]
-      and isinstance(st["active_kcal"], int) and st["active_kcal"] == today["score"]["active_kcal"],
+check(st["steps"] == today["score"]["steps"] and st["active_kcal"] == today["score"]["active_kcal"],
       f"strain steps/kcal {st['steps']}/{st['active_kcal']} != score {today['score']['steps']}/{today['score']['active_kcal']}")
+# synth.py starts moving at ~06:30 UTC: before that, today has heart rate but no steps yet.
+check(st["steps"] is None or (isinstance(st["steps"], int) and st["steps"] > 0 and isinstance(st["active_kcal"], int)),
+      f"strain steps/kcal {st['steps']}/{st['active_kcal']}")
+check(any(isinstance(d["steps"], int) and d["steps"] > 0 for d in days), "no day has steps")
 check(all(d["steps"] is None or (isinstance(d["steps"], int) and d["steps"] >= 0) for d in days), "steps must be whole and ≥ 0")
 ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes, {st['steps']} steps, {st['active_kcal']} kcal")
 
