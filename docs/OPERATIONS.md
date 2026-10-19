@@ -380,10 +380,10 @@ Vault credentials; HCP never holds cloud credentials.
    `terraform import 'kubernetes_namespace_v1.service["monitoring"]' monitoring`.
 5. `terraform plan` in every root. Nothing that already exists may show as *create*.
 6. Delete the old local `terraform.tfstate*` and the rescue copies. They contain the
-   same secrets in plaintext.
-7. Retire the S3 bucket of the earlier attempt:
-   `cd infra/aws/state && terraform apply && terraform destroy` (it now has
-   `force_destroy`), then `rm -rf infra/aws/state infra/backend.hcl`.
+   same secrets in plaintext. Done 2026-10-19, also the `tfplan` files.
+7. Retire the S3 bucket of the earlier attempt. Done 2026-10-19: the bootstrap root
+   destroyed it and was then removed from the repository with `infra/backend.hcl`
+   (D54).
 
 If `terraform init` ever offers to *migrate* state from another backend, answer **no**
 and use the steps above: the S3 bucket holds only a partial Vault state.

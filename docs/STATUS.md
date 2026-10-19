@@ -151,8 +151,9 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 Applied on 2026-10-19 except where marked open. Your steps, in this order:
 
 1. **State in HCP Terraform:** done (`make tf-migrate-hcp`; the `monitoring` namespace
-   was recreated by Terraform). Open: delete the local `terraform.tfstate*` files and
-   `~/.ryft-tfstate-rescue/`, retire the S3 bucket (`OPERATIONS.md` → Terraform state).
+   was recreated by Terraform). The local `terraform.tfstate*`, `tfplan` files and
+   `~/.ryft-tfstate-rescue/` are deleted, the S3 bucket of the first attempt is
+   destroyed and `infra/aws/state` removed (2026-10-19).
 2. **Supabase in Frankfurt:** done; the new database was migrated by the deploy.
 3. **`infra/vault`:** done. Applied with the Supabase values, `GC_TOKEN`, the four
    `service_secrets.api.APPLE_*` (the Apple Developer Program membership was accepted on

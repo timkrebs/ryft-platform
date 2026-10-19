@@ -748,6 +748,9 @@ Bucket and key ARN come from a git-ignored `infra/backend.hcl` that the bootstra
 prints, which keeps the account ID out of the repository. The bootstrap root's own state
 stays local: it holds no secrets and can be re-imported.
 
+Retired on 2026-10-19: the bucket was destroyed and `infra/aws/state` and
+`infra/backend.hcl` were removed from the repository.
+
 ## D55 — Budget in USD; the apex site in the cluster
 
 AWS Budgets alerts in USD: USD 165 ≈ €150, at 80 % actual and 100 % forecast, created
