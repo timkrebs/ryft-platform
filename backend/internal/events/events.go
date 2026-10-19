@@ -1,7 +1,9 @@
 // Package events is the thin NATS JetStream layer between ingest and scoring.
 //
-// Stream RYFT persists subject ryft.ingested; scoring consumes it with a
-// durable pull consumer so a scoring restart never loses a recompute request.
+// Stream RYFT persists ryft.ingested (a sync or recompute touched days) and
+// ryft.session.completed (a strength session was finished); scoring consumes
+// both with one durable pull consumer, so a scoring restart never loses a
+// recompute request.
 package events
 
 import (
@@ -23,8 +25,10 @@ import (
 const (
 	StreamName      = "RYFT"
 	SubjectIngested = "ryft.ingested"
-	ConsumerScoring = "scoring"
-	maxDeliver      = 10
+	// SubjectSessionCompleted carries a model.SessionCompletedEvent (api).
+	SubjectSessionCompleted = "ryft.session.completed"
+	ConsumerScoring         = "scoring"
+	maxDeliver              = 10
 )
 
 type Bus struct {
@@ -121,6 +125,42 @@ func (b *Bus) PublishIngested(ctx context.Context, ev model.IngestedEvent, dedup
 	return err
 }
 
+// PublishSessionCompleted queues a finished session's day for scoring, which
+// handles it like an ingest event for that day.
+func (b *Bus) PublishSessionCompleted(ctx context.Context, ev model.SessionCompletedEvent, dedupID string) error {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	var opts []jetstream.PublishOpt
+	if dedupID != "" {
+		opts = append(opts, jetstream.WithMsgID(dedupID))
+	}
+	_, err = b.js.Publish(ctx, SubjectSessionCompleted, data, opts...)
+	metrics.EventsPublished.WithLabelValues(ReasonSessionCompleted, metrics.Result(err)).Inc()
+	return err
+}
+
+// ReasonSessionCompleted is the IngestedEvent.Reason a session event becomes.
+const ReasonSessionCompleted = "session_completed"
+
+// decode turns a message of either subject into the event scoring handles.
+func decode(msg jetstream.Msg) (model.IngestedEvent, error) {
+	if msg.Subject() == SubjectSessionCompleted {
+		var s model.SessionCompletedEvent
+		if err := json.Unmarshal(msg.Data(), &s); err != nil {
+			return model.IngestedEvent{}, err
+		}
+		if s.Day == "" {
+			return model.IngestedEvent{}, errors.New("session event without a day")
+		}
+		return model.IngestedEvent{UserID: s.UserID, Days: []string{s.Day}, Reason: ReasonSessionCompleted, RequestID: s.RequestID}, nil
+	}
+	var ev model.IngestedEvent
+	err := json.Unmarshal(msg.Data(), &ev)
+	return ev, err
+}
+
 // permanentError marks a handler failure that retrying cannot fix.
 type permanentError struct{ err error }
 
@@ -131,15 +171,16 @@ func (p permanentError) Unwrap() error { return p.err }
 // redelivering it (e.g. the event's user no longer exists).
 func Permanent(err error) error { return permanentError{err} }
 
-// ConsumeIngested blocks, handing every event to fn. fn returning an error
-// NAKs the message so JetStream redelivers it after a delay.
+// ConsumeIngested blocks, handing every event of both subjects to fn (a
+// session event as an IngestedEvent for its day). fn returning an error NAKs
+// the message so JetStream redelivers it after a delay.
 func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(context.Context, model.IngestedEvent) error) error {
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, StreamName, jetstream.ConsumerConfig{
-		Durable:       ConsumerScoring,
-		FilterSubject: SubjectIngested,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       5 * time.Minute,
-		MaxDeliver:    maxDeliver,
+		Durable:        ConsumerScoring,
+		FilterSubjects: []string{SubjectIngested, SubjectSessionCompleted},
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		AckWait:        5 * time.Minute,
+		MaxDeliver:     maxDeliver,
 	})
 	if err != nil {
 		return fmt.Errorf("ensure consumer: %w", err)
@@ -152,8 +193,8 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 		if delivered > 1 {
 			metrics.Redeliveries.WithLabelValues(ConsumerScoring).Inc()
 		}
-		var ev model.IngestedEvent
-		if err := json.Unmarshal(msg.Data(), &ev); err != nil {
+		ev, err := decode(msg)
+		if err != nil {
 			log.Error("bad event, dropping", "err", err)
 			metrics.EventsHandled.WithLabelValues("unknown", "bad").Inc()
 			_ = msg.Term()

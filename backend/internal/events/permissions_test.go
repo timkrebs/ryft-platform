@@ -112,7 +112,7 @@ func TestNatsPermissionsPublishersOnlyPublish(t *testing.T) {
 		_, err = js.Publish(short, "ryft.other", []byte("x"))
 		cancel()
 		if err == nil {
-			t.Errorf("%s may publish only ryft.ingested", svc)
+			t.Errorf("%s may publish only its own event subjects", svc)
 		}
 		if _, err := nc.SubscribeSync(SubjectIngested); err != nil {
 			t.Fatal(err)
@@ -131,6 +131,25 @@ func TestNatsPermissionsPublishersOnlyPublish(t *testing.T) {
 		}
 		if !v.saw(`Publish to "$JS.API.CONSUMER.MSG.NEXT.RYFT.scoring"`) {
 			t.Errorf("%s must not pull scoring's messages", svc)
+		}
+	}
+}
+
+// Only api finishes strength sessions; the message is a bad event (no day) that
+// scoring terminates.
+func TestNatsPermissionsSessionSubject(t *testing.T) {
+	ctx := context.Background()
+	for svc, want := range map[string]bool{"api": true, "ingest": false} {
+		nc, _ := connectAs(t, svc)
+		js, err := jetstream.New(nc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		short, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err = js.Publish(short, SubjectSessionCompleted, []byte("{}"))
+		cancel()
+		if (err == nil) != want {
+			t.Errorf("%s publishing %s: err=%v, want allowed=%v", svc, SubjectSessionCompleted, err, want)
 		}
 	}
 }

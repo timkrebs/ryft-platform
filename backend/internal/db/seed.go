@@ -254,3 +254,16 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+// Exercises are the built-in exercises as the store returns them (fixed ids,
+// load factors), for tests that pin calibration on the real library.
+func (b Builtins) Exercises() []model.Exercise {
+	out := make([]model.Exercise, 0, len(b.exercises))
+	for _, e := range b.exercises {
+		out = append(out, model.Exercise{ID: train.BuiltinExerciseID(e.Slug), Slug: e.Slug, Name: e.NameEN, NameEN: e.NameEN,
+			NameDE: e.NameDE, Kind: e.Kind, PrimaryMuscles: e.PrimaryMuscles, SecondaryMuscles: nonNil(e.SecondaryMuscles),
+			Equipment: nonNil(e.Equipment), LoadType: e.LoadType, BodyweightFactor: e.BodyweightFactor,
+			LoadFactor: e.LoadFactor, IsUnilateral: e.IsUnilateral})
+	}
+	return out
+}

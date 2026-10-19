@@ -177,6 +177,12 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	}
 	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
 
+	// Strength sessions first: they may create the workouts the loop below scores.
+	strength, err := e.strength(ctx, userID, dayStart, dayEnd)
+	if err != nil {
+		return fmt.Errorf("strength: %w", err)
+	}
+
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return err
@@ -198,7 +204,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		} else if w.AvgHR != nil {
 			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
 		}
-		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, load.Score, load.TRIMP, load.ZoneMinutes); err != nil {
+		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, strainOf(load, w), load.TRIMP, load.ZoneMinutes); err != nil {
 			return err
 		}
 	}
@@ -240,6 +246,12 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		trimp, hrMin := strain.TRIMP, int(math.Round(strain.Minutes))
 		load = store.DayLoad{TRIMP: &trimp, HRMin: &hrMin, ZoneMinutes: strain.ZoneMinutes[:]}
 	}
+	// Muscular load joins the heart-rate TRIMP before the compression, so a day
+	// with only a logged session has a strain too (SCORING.md → Strength).
+	if strength.TRIMP > 0 {
+		s, m := StrainFromTRIMP(strain.TRIMP+strength.TRIMP), strength.TRIMP
+		strainScore, load.MuscularTRIMP = &s, &m
+	}
 	var actual *int
 	if sleep.AsleepMin > 0 {
 		actual = &sleep.AsleepMin
@@ -255,6 +267,8 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		"readiness_penalty": readinessPenalty,
 		"baseline_days":     len(lnHRV),
 		"workouts":          len(workouts),
+		"muscular_trimp":    math.Round(strength.TRIMP),
+		"strength_week":     strength.Week,
 	}
 	if !sleep.Start.IsZero() {
 		details["sleep_start"] = sleep.Start.In(loc).Format(time.RFC3339)
@@ -279,10 +293,14 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		BaselineDays: min(lnHRVBase.N, rhrBase.N),
 		Calibrating:  rec.Calibrating, Details: details,
 	}
+	if strength.Sessions > 0 {
+		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10
+		row.StrengthMin, row.VolumeKG = &minutes, &volume
+	}
 	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load}); err != nil {
 		return err
 	}
-	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", strain.Score,
+	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", deref(strainScore), "muscular_trimp", strength.TRIMP,
 		"sleep_min", sleep.AsleepMin, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
 	return nil
 }

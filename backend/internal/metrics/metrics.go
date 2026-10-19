@@ -61,11 +61,11 @@ var (
 	// NATS, ingest + api publish, scoring consumes.
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
-		Help: "ryft.ingested events published, by reason (sync, recompute) and result (ok, error).",
+		Help: "Events published, by reason (sync, recompute, session, session_completed) and result (ok, error).",
 	}, []string{"reason", "result"})
 	EventsHandled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_handled_total",
-		Help: "ryft.ingested events consumed, by reason and result: ok, retry (NAKed for redelivery), " +
+		Help: "Events consumed (ryft.ingested, ryft.session.completed), by reason and result: ok, retry (NAKed for redelivery), " +
 			"failed (last delivery failed, JetStream gives up), bad (unparseable, terminated), " +
 			"dropped (cannot succeed, e.g. the user was deleted; terminated).",
 	}, []string{"reason", "result"})
@@ -84,6 +84,20 @@ var (
 		Help:    "Time to score one day (load, compute, write), by result.",
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
 	}, []string{"result"})
+
+	// Train (api).
+	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_train_sessions_completed_total",
+		Help: "Strength sessions completed (POST /v1/sessions/{id}/complete, repeats included).",
+	})
+	TrainSetsLogged = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_train_sets_logged_total",
+		Help: "Completed sets that PUT /v1/sessions/{id} stored for the first time.",
+	})
+	TrainPRs = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_prs_total",
+		Help: "Personal records set by a completed session, by kind (e1rm, max_weight, max_reps, max_volume).",
+	}, []string{"kind"})
 )
 
 // Handler serves the default registry (these metrics plus go_* and process_*).
