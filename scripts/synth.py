@@ -3,14 +3,21 @@
 with stages, overnight HRV/respiration/SpO2, a daily resting HR, all-day heart
 rate at ~1-minute resolution, steps and active energy in 10-minute buckets (plus a
 phone that also counts steps, so source de-duplication has work) and a workout every
-other day.
+other day. --nap MIN adds a nap of MIN minutes yesterday from 13:00 UTC (15:00 in
+Berlin), which credits today's sleep need.
 
-Usage: synth.py [days] > payload.json
+Usage: synth.py [days] [--nap MIN] > payload.json
 """
 import json, random, sys, uuid
 from datetime import datetime, timedelta, timezone
 
-days = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+args = sys.argv[1:]
+nap = 0
+if "--nap" in args:
+    k = args.index("--nap")
+    nap = int(args[k + 1])
+    del args[k:k + 2]
+days = int(args[0]) if args else 10
 random.seed(42)
 now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 device = str(uuid.uuid5(uuid.NAMESPACE_DNS, "synth.ryft.local"))
@@ -71,5 +78,10 @@ for d in range(days, 0, -1):
         if (t - wake) % timedelta(minutes=30) == timedelta(0):
             add("steps", t, t + timedelta(minutes=30), act.randint(0, 500), "count", source="synth-phone")
         t += timedelta(minutes=10)
+
+# Appended last and without random draws, so every other value stays as it was.
+if nap:
+    t = (now - timedelta(days=1)).replace(hour=13, minute=0)
+    sleep.append({"start": iso(t), "end": iso(t + timedelta(minutes=nap)), "stage": "core", "source": "synth"})
 
 print(json.dumps({"device_id": device, "device_name": "synth", "samples": samples, "sleep": sleep, "workouts": workouts}))

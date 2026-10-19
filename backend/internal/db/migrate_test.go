@@ -119,6 +119,27 @@ func TestMigrateKeepsSeedUserWithData(t *testing.T) {
 	}
 }
 
+// 0013: whoever already changed the default sleep baseline set it by hand.
+func TestMigrateMarksChangedSleepBaseManual(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 12); err != nil {
+		t.Fatal(err)
+	}
+	changed, untouched := "aaaaaaaa-0000-0000-0000-000000000013", "bbbbbbbb-0000-0000-0000-000000000013"
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, sleep_base_min) VALUES ($1, 480), ($2, 460)`, changed, untouched); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{changed: "manual", untouched: "default"} {
+		if got := scalar[string](t, pool, `SELECT sleep_base_source FROM users WHERE id=$1`, id); got != want {
+			t.Errorf("%s: source %s, want %s", id, got, want)
+		}
+	}
+}
+
 func TestMigrateSupabaseShape(t *testing.T) {
 	pool := freshDB(t, true)
 	if err := Migrate(context.Background(), pool, quiet); err != nil {

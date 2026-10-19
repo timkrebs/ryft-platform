@@ -224,3 +224,70 @@ func TestPersonalRecord(t *testing.T) {
 		t.Fatalf("WithPRs places records on their day: %s", ids(Evaluate(h)))
 	}
 }
+
+func TestSleepConsistencyLow(t *testing.T) {
+	cons := func(v int) func(*Day) { return func(d *Day) { d.Consistency = n(v) } }
+	if in := sleepConsistencyLow(hist(cons(80), cons(55))); in == nil || in.ID != "sleep-consistency-low" ||
+		in.Severity != model.SeverityNotice || in.Metric != "sleep_consistency" {
+		t.Fatalf("55 must fire: %+v", in)
+	}
+	if sleepConsistencyLow(hist(cons(55), cons(60))) != nil {
+		t.Fatal("today's 60 is fine, whatever yesterday was")
+	}
+	if in := sleepConsistencyLow(hist(cons(55), nil)); in == nil || in.Day != "2026-10-17" {
+		t.Fatalf("before today syncs, yesterday counts: %+v", in)
+	}
+}
+
+func TestNapCredit(t *testing.T) {
+	nap := func(v int) func(*Day) { return func(d *Day) { d.NapMin = n(v) } }
+	in := napCredit(hist(nil, nap(50)))
+	if in == nil || in.ID != "nap-credit" || in.Metric != "nap_min" || in.Title != "50m nap" ||
+		!strings.Contains(in.Body, "tonight's sleep need is 50m lower") {
+		t.Fatalf("a 50-min nap today: %+v", in)
+	}
+	if napCredit(hist(nap(60), nap(0))) != nil {
+		t.Fatal("today synced without a nap: yesterday's is old news")
+	}
+	if in := napCredit(hist(nap(60), nil)); in == nil || !strings.Contains(in.Body, "last night's") {
+		t.Fatalf("yesterday's nap before today syncs: %+v", in)
+	}
+	if napCredit(hist(nil, nap(40))) != nil {
+		t.Fatal("under 45 min: no card")
+	}
+}
+
+func TestBaselineLearned(t *testing.T) {
+	at := today.Add(5 * time.Hour)
+	base := func(v int) func(*Day) { return func(d *Day) { d.SleepBase = n(v) } }
+	// The day before the rescored week, then the week (learned today).
+	week := func(before int) History {
+		days := []func(*Day){base(before)}
+		for range 7 {
+			days = append(days, base(475))
+		}
+		return hist(days...)
+	}
+	learned := Baseline{Source: model.BaseLearned, Min: 475, LearnedAt: &at}
+	in := baselineLearned(week(460).WithBaseline(learned))
+	if in == nil || in.ID != "baseline-learned" || in.Title != "Your sleep need: 7h 55m" || in.Day != "2026-10-18" {
+		t.Fatalf("a new learned baseline: %+v", in)
+	}
+	if baselineLearned(week(475).WithBaseline(learned)) != nil {
+		t.Fatal("the same estimate as last week: no card")
+	}
+	manual := learned
+	manual.Source = model.BaseManual
+	if baselineLearned(week(460).WithBaseline(manual)) != nil {
+		t.Fatal("set by hand: the estimate is not in use")
+	}
+	old := at.AddDate(0, 0, -2)
+	stale := learned
+	stale.LearnedAt = &old
+	if baselineLearned(week(460).WithBaseline(stale)) != nil {
+		t.Fatal("learned 2 days ago: no card")
+	}
+	if baselineLearned(hist(nil, nil).WithBaseline(learned)) == nil {
+		t.Fatal("no older scores (first estimate): card")
+	}
+}

@@ -40,6 +40,16 @@ type Day struct {
 	SpO2         *float64
 	Bedtime      *time.Time // start of the night's sleep, in the user's timezone
 	PRs          []PR       // personal records set that day (Train), newest first
+	NapMin       *int       // naps that day
+	Consistency  *int       // sleep consistency over the 7 nights ending that day
+	SleepBase    *int       // the baseline that day's need started from
+}
+
+// Baseline is the user's sleep baseline as the baseline-learned card needs it.
+type Baseline struct {
+	Source    string     // model.Base*
+	Min       int        // in use
+	LearnedAt *time.Time // in the user's timezone; nil before the first estimate
 }
 
 // PR is a personal record as a card names it.
@@ -51,7 +61,10 @@ type PR struct {
 
 // History is a contiguous run of calendar days, oldest first; the last is today.
 // "Consecutive nights" therefore means consecutive calendar days.
-type History struct{ Days []Day }
+type History struct {
+	Days     []Day
+	Baseline *Baseline
+}
 
 // Rule inspects the history and returns a card, or nil.
 type Rule func(History) *model.Insight
@@ -66,6 +79,9 @@ var Rules = []Rule{
 	readinessTrendingUp,
 	bestHRV30d,
 	personalRecord,
+	sleepConsistencyLow,
+	napCredit,
+	baselineLearned,
 }
 
 var severityRank = map[string]int{model.SeverityWarn: 0, model.SeverityNotice: 1, model.SeverityInfo: 2}
@@ -97,7 +113,8 @@ func NewHistory(today time.Time, n int, scores []model.DailyScore, bedtimes map[
 		if s, ok := byDay[day]; ok {
 			d = Day{Day: day, Calibrating: s.Calibrating, Readiness: s.Readiness, Recovery: s.Recovery,
 				Strain: s.Strain, SleepPerf: s.SleepPerformance, SleepDebtMin: s.SleepDebtMin,
-				HRV: s.HRVms, HRVBase: s.HRVBaselineMS, RHR: s.RHR, RHRBase: s.RHRBaseline, SpO2: s.SpO2}
+				HRV: s.HRVms, HRVBase: s.HRVBaselineMS, RHR: s.RHR, RHRBase: s.RHRBaseline, SpO2: s.SpO2,
+				NapMin: s.NapMin, Consistency: s.SleepConsistency, SleepBase: s.SleepNeedBaseMin}
 		}
 		if b, ok := bedtimes[day]; ok {
 			d.Bedtime = &b
@@ -112,6 +129,12 @@ func (h History) WithPRs(byDay map[string][]PR) History {
 	for k := range h.Days {
 		h.Days[k].PRs = byDay[h.Days[k].Day]
 	}
+	return h
+}
+
+// WithBaseline adds the user's sleep baseline.
+func (h History) WithBaseline(b Baseline) History {
+	h.Baseline = &b
 	return h
 }
 

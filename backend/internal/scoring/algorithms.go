@@ -376,11 +376,11 @@ func SummarizeSleep(segs []model.SleepSegment) SleepTotals {
 // SleepNeed = personal baseline + strain top-up + a share of accumulated debt.
 // Yesterday's strain adds up to 60 min (3 min per strain point); 30% of the
 // outstanding debt is asked back each night, capped at 60 min, so need never
-// exceeds baseline + 2h and one bad night does not spiral.
+// exceeds baseline + 2h and one bad night does not spiral. It is
+// SleepNeedParts without a nap credit: each top-up is rounded on its own, so
+// the terms the API reports add up to the need.
 func SleepNeed(baseMin int, yesterdayStrain float64, debtMin int) int {
-	strainTopUp := math.Min(60, yesterdayStrain*3)
-	debtTopUp := math.Min(60, float64(debtMin)*0.3)
-	return baseMin + int(math.Round(strainTopUp+debtTopUp))
+	return SleepNeedParts(baseMin, yesterdayStrain, debtMin, 0).Total()
 }
 
 // SleepDebt sums shortfalls over the previous days with geometric decay

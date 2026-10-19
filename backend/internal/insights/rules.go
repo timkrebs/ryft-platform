@@ -20,6 +20,9 @@ const (
 	readinessUpPerDay = 1.0
 	readinessMinDays  = 5 // of the last 7, to fit a trend
 	bestHRVMinNights  = 14
+	consistencyLow    = 60 // sleep consistency below this
+	napCreditMin      = 45 // a nap worth a card
+	learnedRescore    = 7  // days scoring rescores when a learned baseline is applied
 )
 
 // hrvBelowBaseline: HRV under the 30-day baseline for 3+ consecutive nights.
@@ -242,4 +245,64 @@ func kg(v float64) string {
 		return fmt.Sprintf("%.0f", v)
 	}
 	return fmt.Sprintf("%.1f", v)
+}
+
+// sleepConsistencyLow: sleep consistency (bed and wake times over the last 7
+// nights) below 60.
+func sleepConsistencyLow(h History) *model.Insight {
+	d, ok := h.Latest(func(d Day) bool { return d.Consistency != nil })
+	if !ok || *d.Consistency >= consistencyLow {
+		return nil
+	}
+	return &model.Insight{ID: "sleep-consistency-low", Severity: model.SeverityNotice, Metric: model.MetricSleepCons, Day: d.Day,
+		Title: fmt.Sprintf("Sleep consistency %d", *d.Consistency),
+		Body: fmt.Sprintf("Your bedtimes and wake times moved around a lot over the last 7 nights (consistency %d of 100). "+
+			"Going to bed and getting up within about half an hour of the same time each day helps you fall asleep "+
+			"faster and recover better.", *d.Consistency)}
+}
+
+// napCredit: a nap of 45 minutes or more today (yesterday, before today syncs);
+// it lowers the next night's sleep need by as much.
+func napCredit(h History) *model.Insight {
+	d, ok := h.Latest(func(d Day) bool { return d.NapMin != nil })
+	if !ok || *d.NapMin < napCreditMin {
+		return nil
+	}
+	night := "tonight's"
+	if d.Day != h.Days[len(h.Days)-1].Day {
+		night = "last night's"
+	}
+	return &model.Insight{ID: "nap-credit", Severity: model.SeverityInfo, Metric: model.MetricNapMin, Day: d.Day,
+		Title: hm(*d.NapMin) + " nap",
+		Body: fmt.Sprintf("Your naps added up to %s, so %s sleep need is %s lower. Naps late in the afternoon can make "+
+			"it harder to fall asleep at your usual time.", hm(*d.NapMin), night, hm(*d.NapMin))}
+}
+
+// baselineLearned: the weekly estimate became the baseline in use today or
+// yesterday. A weekly estimate equal to the one already in use changes
+// nothing, which shows in the day before the rescored week: it was scored with
+// the same baseline.
+func baselineLearned(h History) *model.Insight {
+	b := h.Baseline
+	if b == nil || b.Source != model.BaseLearned || b.LearnedAt == nil || len(h.Days) < freshDays {
+		return nil
+	}
+	day := b.LearnedAt.Format("2006-01-02")
+	at := -1
+	for k := len(h.Days) - freshDays; k < len(h.Days); k++ {
+		if h.Days[k].Day == day {
+			at = k
+		}
+	}
+	if at < 0 {
+		return nil
+	}
+	if k := at - learnedRescore; k >= 0 && h.Days[k].SleepBase != nil && *h.Days[k].SleepBase == b.Min {
+		return nil
+	}
+	return &model.Insight{ID: "baseline-learned", Severity: model.SeverityInfo, Metric: model.MetricSleepMin, Day: day,
+		Title: "Your sleep need: " + hm(b.Min),
+		Body: fmt.Sprintf("RYFT now plans with a baseline of %s, learned from the nights after which you woke up "+
+			"recovered after an easy day. Strain, sleep debt and naps still move each night's need. You can set your "+
+			"own baseline in Settings.", hm(b.Min))}
 }

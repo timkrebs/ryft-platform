@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
 	"os/signal"
 	"syscall"
 	"time"
@@ -29,21 +30,11 @@ func rescore(args []string) int {
 		log.Error("days must be 1-400", "days", *days)
 		return 2
 	}
-	cfg, err := config.Load("scoring")
+	ctx, st, engine, done, err := offline(log)
 	if err != nil {
-		log.Error("config", "err", err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	pool, err := db.Open(ctx, cfg.DatabaseURL, 2, log)
-	if err != nil {
-		log.Error("db", "err", err)
-		return 1
-	}
-	defer pool.Close()
-	st := store.New(pool)
-	engine := scoring.NewEngine(st, log)
+	defer done()
 
 	users, err := st.UserIDs(ctx)
 	if err != nil {
@@ -68,6 +59,67 @@ func rescore(args []string) int {
 		log.Info("user rescored", "user_id", id, "from", from, "n", i+1, "of", len(users))
 	}
 	log.Info("rescore done", "users", len(users), "failed", failed, "took", time.Since(start).Round(time.Second).String())
+	if failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+// offline opens the database for a one-off subcommand with scoring's own role.
+func offline(log *slog.Logger) (context.Context, *store.Store, *scoring.Engine, func(), error) {
+	cfg, err := config.Load("scoring")
+	if err != nil {
+		log.Error("config", "err", err)
+		return nil, nil, nil, nil, err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	pool, err := db.Open(ctx, cfg.DatabaseURL, 2, log)
+	if err != nil {
+		stop()
+		log.Error("db", "err", err)
+		return nil, nil, nil, nil, err
+	}
+	st := store.New(pool)
+	return ctx, st, scoring.NewEngine(st, log), func() { pool.Close(); stop() }, nil
+}
+
+// learnBaselines runs the weekly sleep-baseline estimate for every user now,
+// whatever the weekday (after a deploy, or after changing its rules), then
+// exits: scoring learn-baselines.
+func learnBaselines(args []string) int {
+	fs := flag.NewFlagSet("learn-baselines", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	log := httpx.Logger("scoring-learn")
+	ctx, st, engine, done, err := offline(log)
+	if err != nil {
+		return 1
+	}
+	defer done()
+	users, err := st.UserIDs(ctx)
+	if err != nil {
+		log.Error("list users", "err", err)
+		return 1
+	}
+	outcomes, failed := map[string]int{}, 0
+	for _, id := range users {
+		_, loc, err := st.GetUser(ctx, id)
+		if err != nil {
+			log.Warn("load user", "user_id", id, "err", err)
+			failed++
+			continue
+		}
+		outcome, err := engine.LearnBaseline(ctx, id, time.Now().In(loc).Format("2006-01-02"))
+		if err != nil {
+			log.Warn("learn sleep baseline", "user_id", id, "err", err)
+			failed++
+			continue
+		}
+		outcomes[outcome]++
+	}
+	log.Info("learn-baselines done", "users", len(users), "applied", outcomes[scoring.LearnApplied],
+		"kept", outcomes[scoring.LearnKept], "insufficient", outcomes[scoring.LearnInsufficient], "failed", failed)
 	if failed > 0 {
 		return 1
 	}

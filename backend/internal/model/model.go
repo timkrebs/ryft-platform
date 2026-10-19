@@ -99,29 +99,37 @@ type SyncResponse struct {
 
 // DailyScore is what the app renders on the Today / Trends screens.
 type DailyScore struct {
-	Day              string         `json:"day"`       // YYYY-MM-DD
-	Readiness        *int           `json:"readiness"` // 1..100, the Today headline
-	State            string         `json:"state"`     // State* constant
-	Recovery         *int           `json:"recovery"`
-	Strain           *float64       `json:"strain"`
-	Steps            *int           `json:"steps"`        // day total, null without step samples
-	ActiveKcal       *int           `json:"active_kcal"`  // day total of active energy, null without samples
-	StrengthMin      *int           `json:"strength_min"` // minutes of completed strength sessions, null without one
-	VolumeKG         *float64       `json:"volume_kg"`    // their Σ reps × kg, null without a session
-	SleepPerformance *int           `json:"sleep_performance"`
-	SleepNeedMin     *int           `json:"sleep_need_min"`
-	SleepActualMin   *int           `json:"sleep_actual_min"`
-	SleepDebtMin     *int           `json:"sleep_debt_min"`
-	HRVms            *float64       `json:"hrv_ms"`
-	RHR              *float64       `json:"rhr"`
-	RespRate         *float64       `json:"resp_rate"`
-	SpO2             *float64       `json:"spo2"`
-	HRVBaselineMS    *float64       `json:"hrv_baseline_ms"` // 30-day baseline hrv_ms is scored against
-	RHRBaseline      *float64       `json:"rhr_baseline"`    // 30-day baseline rhr is scored against
-	BaselineDays     int            `json:"baseline_days"`   // nights of history behind the baselines, 0..30
-	Calibrating      bool           `json:"calibrating"`     // baseline_days < 7
-	Details          map[string]any `json:"details"`
-	ComputedAt       time.Time      `json:"computed_at"`
+	Day              string   `json:"day"`       // YYYY-MM-DD
+	Readiness        *int     `json:"readiness"` // 1..100, the Today headline
+	State            string   `json:"state"`     // State* constant
+	Recovery         *int     `json:"recovery"`
+	Strain           *float64 `json:"strain"`
+	Steps            *int     `json:"steps"`        // day total, null without step samples
+	ActiveKcal       *int     `json:"active_kcal"`  // day total of active energy, null without samples
+	StrengthMin      *int     `json:"strength_min"` // minutes of completed strength sessions, null without one
+	VolumeKG         *float64 `json:"volume_kg"`    // their Σ reps × kg, null without a session
+	SleepPerformance *int     `json:"sleep_performance"`
+	SleepNeedMin     *int     `json:"sleep_need_min"`
+	SleepActualMin   *int     `json:"sleep_actual_min"`
+	SleepDebtMin     *int     `json:"sleep_debt_min"`
+	// The need term by term (M4): need = base + strain + debt − nap credit.
+	SleepNeedBaseMin   *int           `json:"sleep_need_base_min"`
+	SleepNeedStrainMin *int           `json:"sleep_need_strain_min"`
+	SleepNeedDebtMin   *int           `json:"sleep_need_debt_min"`
+	SleepNeedNapMin    *int           `json:"sleep_need_nap_min"` // yesterday's naps, credited to last night
+	NapMin             *int           `json:"nap_min"`            // naps that day (credited to the next night)
+	SleepQuality       *int           `json:"sleep_quality"`
+	SleepConsistency   *int           `json:"sleep_consistency"`
+	HRVms              *float64       `json:"hrv_ms"`
+	RHR                *float64       `json:"rhr"`
+	RespRate           *float64       `json:"resp_rate"`
+	SpO2               *float64       `json:"spo2"`
+	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"` // 30-day baseline hrv_ms is scored against
+	RHRBaseline        *float64       `json:"rhr_baseline"`    // 30-day baseline rhr is scored against
+	BaselineDays       int            `json:"baseline_days"`   // nights of history behind the baselines, 0..30
+	Calibrating        bool           `json:"calibrating"`     // baseline_days < 7
+	Details            map[string]any `json:"details"`
+	ComputedAt         time.Time      `json:"computed_at"`
 }
 
 type DayDetail struct {
@@ -190,9 +198,10 @@ type SleepSummary struct {
 	InBedMin     int          `json:"in_bed_min"` // asleep + awake + time to fall asleep
 	Efficiency   int          `json:"efficiency"` // total / in bed, 0..100
 	Stages       []SleepStage `json:"stages"`     // always deep, light, rem, awake in that order
-	Quality      int          `json:"quality"`    // 0..100, = sleep performance for now
+	Quality      int          `json:"quality"`    // 0..100: 0.6·performance + 0.2·efficiency + 0.2·restorative
 	QualityLabel string       `json:"quality_label"`
-	HasStages    bool         `json:"has_stages"` // false: the source recorded no stages, deep/light/rem are 0
+	Restorative  int          `json:"restorative"` // 0..100, deep + REM against 40 % of sleep
+	HasStages    bool         `json:"has_stages"`  // false: the source recorded no stages, deep/light/rem are 0
 }
 
 // SleepInterval is one bar of the hypnogram.
@@ -202,8 +211,18 @@ type SleepInterval struct {
 	End   time.Time `json:"end"`
 }
 
+// SleepNeed is a night's need term by term (DayDetail.sleep.need).
+type SleepNeed struct {
+	Base      int `json:"base"`
+	Strain    int `json:"strain"`
+	Debt      int `json:"debt"`
+	NapCredit int `json:"nap_credit"`
+	Total     int `json:"total"`
+}
+
 type SleepDetail struct {
 	SleepSummary
+	Need     SleepNeed       `json:"need"`
 	Segments []SleepInterval `json:"segments"` // stage timeline, oldest first
 }
 
@@ -211,20 +230,52 @@ type SleepDetail struct {
 type SleepDay struct {
 	Day string `json:"day"`
 	SleepSummary
+	Consistency *int `json:"consistency"` // = DailyScore.sleep_consistency
+	NapMin      *int `json:"nap_min"`     // = DailyScore.nap_min
+}
+
+// SleepBedtime is one night's bed and wake time, for the bedtime strip.
+type SleepBedtime struct {
+	Day  string    `json:"day"`
+	Bed  time.Time `json:"bed"`
+	Wake time.Time `json:"wake"`
+}
+
+// SleepPlanBasis says where tonight's need comes from.
+type SleepPlanBasis struct {
+	Base        int `json:"base"`
+	StrainTopup int `json:"strain_topup"`
+	DebtTopup   int `json:"debt_topup"`
+	NapCredit   int `json:"nap_credit"`
+	Efficiency  int `json:"efficiency"`
+}
+
+// SleepPlan is GET /v1/sleep/plan: bedtimes for a wake time.
+type SleepPlan struct {
+	Wake       time.Time      `json:"wake"`
+	NeedMin    int            `json:"need_min"`
+	InBedMin   int            `json:"in_bed_min"`
+	Efficiency int            `json:"efficiency"`
+	Bedtime100 time.Time      `json:"bedtime_100"`
+	Bedtime85  time.Time      `json:"bedtime_85"`
+	Bedtime70  time.Time      `json:"bedtime_70"`
+	Basis      SleepPlanBasis `json:"basis"`
 }
 
 // SleepRange backs the Sleep screen's Week / Month tabs.
 type SleepRange struct {
-	Range         string       `json:"range"` // week | month
-	From          string       `json:"from"`
-	To            string       `json:"to"`
-	Days          []SleepDay   `json:"days"` // nights with data only, oldest first
-	Nights        int          `json:"nights"`
-	AvgTotalMin   *int         `json:"avg_total_min"`
-	AvgInBedMin   *int         `json:"avg_in_bed_min"`
-	AvgEfficiency *int         `json:"avg_efficiency"`
-	AvgQuality    *int         `json:"avg_quality"`
-	AvgStages     []SleepStage `json:"avg_stages"` // over nights with stages; empty when none
+	Range          string         `json:"range"` // week | month
+	From           string         `json:"from"`
+	To             string         `json:"to"`
+	Days           []SleepDay     `json:"days"` // nights with data only, oldest first
+	Nights         int            `json:"nights"`
+	AvgTotalMin    *int           `json:"avg_total_min"`
+	AvgInBedMin    *int           `json:"avg_in_bed_min"`
+	AvgEfficiency  *int           `json:"avg_efficiency"`
+	AvgQuality     *int           `json:"avg_quality"`
+	AvgStages      []SleepStage   `json:"avg_stages"` // over nights with stages; empty when none
+	AvgConsistency *int           `json:"avg_consistency"`
+	Bedtimes       []SleepBedtime `json:"bedtimes"`
 }
 
 // Trend metrics (GET /v1/trends?metric=).
@@ -240,13 +291,23 @@ const (
 	MetricActiveKcal  = "active_kcal"  // DailyScore.active_kcal
 	MetricStrengthMin = "strength_min" // DailyScore.strength_min
 	MetricVolumeKG    = "volume_kg"    // DailyScore.volume_kg
+	MetricSleepQual   = "sleep_quality"
+	MetricSleepCons   = "sleep_consistency"
+	MetricNapMin      = "nap_min"
 )
 
 var KnownTrendMetrics = map[string]bool{
 	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
 	MetricSleepMin: true, MetricHRV: true, MetricRHR: true, MetricSteps: true, MetricActiveKcal: true,
-	MetricStrengthMin: true, MetricVolumeKG: true,
+	MetricStrengthMin: true, MetricVolumeKG: true, MetricSleepQual: true, MetricSleepCons: true, MetricNapMin: true,
 }
+
+// Sleep baseline sources (User.sleep_base_source); closed in v1.
+const (
+	BaseDefault = "default"
+	BaseLearned = "learned"
+	BaseManual  = "manual"
+)
 
 type TrendPoint struct {
 	Day   string  `json:"day"`
@@ -291,12 +352,19 @@ type User struct {
 	TZ           string    `json:"tz"`
 	MaxHR        int       `json:"max_hr"`
 	SleepBaseMin int       `json:"sleep_base_min"`
+	// Where sleep_base_min comes from (default|learned|manual) and the latest
+	// learned estimate, also while manual.
+	SleepBaseSource     string     `json:"sleep_base_source"`
+	SleepBaseLearnedMin *int       `json:"sleep_base_learned_min"`
+	SleepBaseLearnedAt  *time.Time `json:"sleep_base_learned_at"`
 }
 
 type UserPatch struct {
 	TZ           *string `json:"tz,omitempty"`
 	MaxHR        *int    `json:"max_hr,omitempty"`
-	SleepBaseMin *int    `json:"sleep_base_min,omitempty"`
+	SleepBaseMin *int    `json:"sleep_base_min,omitempty"` // sets the source to manual
+	// false: back to the learned estimate (or the default); true: keep as manual.
+	SleepBaseManual *bool `json:"sleep_base_manual,omitempty"`
 }
 
 type RecomputeRequest struct {

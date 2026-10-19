@@ -117,6 +117,17 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
 		}
 	}
+	// scoring writes the learned sleep baseline (0013), nothing else of a user.
+	for col, want := range map[string]bool{"sleep_base_min": true, "sleep_base_source": true, "sleep_base_learned_min": true,
+		"sleep_base_learned_at": true, "sleep_base_manual": false, "tz": false, "max_hr": false, "email": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.users', $1, 'UPDATE')`, col).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("ryft_scoring UPDATE users.%s: %v, want %v", col, has, want)
+		}
+	}
 }
 
 // asRole connects to the pool's database as role with password.
@@ -179,6 +190,12 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	}
 	if _, err := scoring.Exec(ctx, `UPDATE users SET tz='UTC'`); err == nil {
 		t.Fatal("scoring must not change users")
+	}
+	if _, err := scoring.Exec(ctx, `UPDATE users SET sleep_base_learned_min=480, sleep_base_learned_at=now() WHERE id=$1`, id); err != nil {
+		t.Fatalf("scoring stores the learned sleep baseline: %v", err)
+	}
+	if _, err := scoring.Exec(ctx, `UPDATE users SET sleep_base_manual=false WHERE id=$1`, id); err == nil {
+		t.Fatal("only the user turns the manual baseline off")
 	}
 
 	api := asRole(t, dsn, "ryft_api", "pw-ryft_api-0123456789")

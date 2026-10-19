@@ -16,7 +16,7 @@ if let w = workouts.last {
     await decode(WorkoutDetail.self, "/v1/workouts/\(w.id.uuidString.lowercased())")
 }
 for metric in ["readiness", "recovery", "strain", "sleep", "sleep_min", "hrv", "rhr", "steps", "active_kcal",
-               "strength_min", "volume_kg"] {
+               "strength_min", "volume_kg", "sleep_quality", "sleep_consistency", "nap_min"] {
     await decode(Trend.self, "/v1/trends?metric=\(metric)&range=30d&to=\(today)")
 }
 await decode([Insight].self, "/v1/insights")

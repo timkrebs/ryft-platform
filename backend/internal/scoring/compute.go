@@ -97,11 +97,16 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	nightFrom, nightTo := NightWindow(d)
 
 	// ---- sleep -------------------------------------------------------------
-	segs, err := e.st.SleepEndingBetween(ctx, userID, nightFrom, nightTo)
+	// Yesterday's naps lower last night's need (D65), so both days' sleep.
+	from, _ := DaySleepWindow(d.AddDate(0, 0, -1))
+	_, to := DaySleepWindow(d)
+	segs, err := e.st.SleepEndingBetween(ctx, userID, from, to)
 	if err != nil {
 		return err
 	}
-	sleep := SummarizeSleep(DedupSleepSources(segs))
+	nightSegs, napMin := SplitDay(segs, d)
+	_, napYesterday := SplitDay(segs, d.AddDate(0, 0, -1))
+	sleep := SummarizeSleep(nightSegs)
 
 	hrvFrom, hrvTo := nightFrom, nightTo
 	if !sleep.Start.IsZero() {
@@ -123,10 +128,18 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		return err
 	}
 	var lnHRV, rhrs, resps []float64
-	var needs, actuals []int
 	var yesterdayStrain float64
 	yesterday := dayStart.AddDate(0, 0, -1).Format("2006-01-02")
-	for idx, h := range hist {
+	// Consistency: the last 7 nights, this one included.
+	firstNight := dayStart.AddDate(0, 0, -(consistencyDays - 1)).Format("2006-01-02")
+	var bedtimes []Bedtime
+	if sleep.AsleepMin > 0 {
+		bedtimes = append(bedtimes, Bedtime{Bed: sleep.Start, Wake: sleep.End})
+	}
+	for _, h := range hist {
+		if h.Day >= firstNight && h.SleepStart != nil && h.SleepEnd != nil {
+			bedtimes = append(bedtimes, Bedtime{Bed: *h.SleepStart, Wake: *h.SleepEnd})
+		}
 		if h.HRV != nil && *h.HRV > 0 {
 			lnHRV = append(lnHRV, math.Log(*h.HRV))
 		}
@@ -136,21 +149,23 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		if h.RespRate != nil && *h.RespRate > 0 {
 			resps = append(resps, *h.RespRate)
 		}
-		if idx < debtDays && h.SleepNeedMin != nil && h.SleepActualMin != nil {
-			needs = append(needs, *h.SleepNeedMin)
-			actuals = append(actuals, *h.SleepActualMin)
-		}
 		if h.Day == yesterday && h.Strain != nil {
 			yesterdayStrain = *h.Strain
 		}
 	}
-	debt := SleepDebt(needs, actuals)
-	need := SleepNeed(user.SleepBaseMin, yesterdayStrain, debt)
+	debt := SleepDebtFrom(hist)
+	parts := SleepNeedParts(user.SleepBaseMin, yesterdayStrain, debt, napYesterday)
+	need := parts.Total()
 
-	var sleepPerf *int
+	var sleepPerf, quality *int
 	if sleep.AsleepMin > 0 {
 		p := SleepPerformance(sleep.AsleepMin, need)
-		sleepPerf = &p
+		q, _ := NightQuality(sleep.AsleepMin, InBedMinutes(sleep), sleep.DeepMin, sleep.REMMin, sleep.HasStages, p)
+		sleepPerf, quality = &p, &q
+	}
+	var consistency *int
+	if c, ok := SleepConsistency(bedtimes, loc); ok {
+		consistency = &c
 	}
 
 	lnHRVBase, rhrBase := NewBaseline(lnHRV, fallbackSDlnHRV), NewBaseline(rhrs, fallbackSDRHR)
@@ -292,6 +307,8 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
 		BaselineDays: min(lnHRVBase.N, rhrBase.N),
 		Calibrating:  rec.Calibrating, Details: details,
+		SleepNeedBaseMin: &parts.Base, SleepNeedStrainMin: &parts.Strain, SleepNeedDebtMin: &parts.Debt,
+		SleepNeedNapMin: &parts.Nap, NapMin: &napMin, SleepQuality: quality, SleepConsistency: consistency,
 	}
 	if strength.Sessions > 0 {
 		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10
@@ -301,7 +318,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		return err
 	}
 	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", deref(strainScore), "muscular_trimp", strength.TRIMP,
-		"sleep_min", sleep.AsleepMin, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
+		"sleep_min", sleep.AsleepMin, "nap_min", napMin, "sleep_need", need, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
 	return nil
 }
 

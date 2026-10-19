@@ -11,13 +11,14 @@ import (
 func tp(t time.Time) *time.Time { return &t }
 
 // The brand board's Sleep screen: 7h48m asleep, deep 1h52 24 %, light 4h21 56 %,
-// REM 1h35 20 %, awake 10 m 2 %, quality 82 % "Good".
+// REM 1h35 20 %, awake 10 m 2 %, quality 82 % "Good" — which is performance 72,
+// efficiency 95 and restorative 100 (deep + REM 44 % of sleep).
 func TestNightSummaryMatchesBrandBoard(t *testing.T) {
 	bed := time.Date(2026, 10, 17, 21, 0, 0, 0, time.UTC)
 	s, ok := NightSummary(store.SleepNight{
 		Day: "2026-10-18", Start: tp(bed), End: tp(bed.Add(492 * time.Minute)),
 		TotalMin: i(468), InBedMin: i(492), DeepMin: i(112), LightMin: i(261), REMMin: i(95), AwakeMin: i(10),
-		HasStages: true, Performance: i(82),
+		HasStages: true, Performance: i(72),
 	})
 	if !ok {
 		t.Fatal("night with totals must summarise")
@@ -31,7 +32,8 @@ func TestNightSummaryMatchesBrandBoard(t *testing.T) {
 			t.Errorf("stage %d = %+v, want %+v", k, s.Stages[k], w)
 		}
 	}
-	if s.TotalMin != 468 || s.InBedMin != 492 || s.Efficiency != 95 || s.Quality != 82 || s.QualityLabel != "good" {
+	if s.TotalMin != 468 || s.InBedMin != 492 || s.Efficiency != 95 || s.Quality != 82 || s.QualityLabel != "good" ||
+		s.Restorative != 100 {
 		t.Fatalf("unexpected summary %+v", s)
 	}
 }
@@ -96,23 +98,32 @@ func TestSleepRangeSummary(t *testing.T) {
 			TotalMin: i(total), InBedMin: i(inBed), DeepMin: i(deep), LightMin: i(light), REMMin: i(rem),
 			AwakeMin: i(awake), HasStages: staged, Performance: i(perf)}
 	}
+	n1, n2 := night("2026-10-13", 420, 460, 80, 260, 80, 20, 80, true), night("2026-10-14", 480, 500, 100, 280, 100, 10, 90, true)
+	n1.Consistency, n2.Consistency, n2.NapMin = i(80), i(91), i(40)
 	r := SleepRangeSummary("week", "2026-10-12", "2026-10-18", []store.SleepNight{
-		night("2026-10-13", 420, 460, 80, 260, 80, 20, 80, true),
-		night("2026-10-14", 480, 500, 100, 280, 100, 10, 90, true),
-		night("2026-10-15", 390, 430, 0, 0, 0, 0, 70, false), // source without stages
+		n1, n2,
+		night("2026-10-15", 390, 430, 0, 0, 0, 0, 70, false), // source without stages, too few nights for consistency
 		{Day: "2026-10-16", TotalMin: i(400)},                // scored before migration 0003: skipped
 	})
+	if r.AvgConsistency == nil || *r.AvgConsistency != 86 || *r.Days[1].NapMin != 40 || r.Days[2].Consistency != nil {
+		t.Fatalf("consistency %v, days %+v", r.AvgConsistency, r.Days)
+	}
+	if len(r.Bedtimes) != 3 || r.Bedtimes[1].Day != "2026-10-14" || !r.Bedtimes[1].Wake.Equal(bed.Add(500*time.Minute)) {
+		t.Fatalf("bedtimes %+v", r.Bedtimes)
+	}
 	if r.Nights != 3 || len(r.Days) != 3 {
 		t.Fatalf("want 3 nights, got %d (%d days)", r.Nights, len(r.Days))
 	}
-	if *r.AvgTotalMin != 430 || *r.AvgQuality != 80 || *r.AvgInBedMin != 463 {
+	// quality 85, 93, 74 (0.6·perf + 0.2·eff + 0.2·restorative)
+	if *r.AvgTotalMin != 430 || *r.AvgQuality != 84 || *r.AvgInBedMin != 463 {
 		t.Fatalf("averages: total %d quality %d in bed %d", *r.AvgTotalMin, *r.AvgQuality, *r.AvgInBedMin)
 	}
 	// Stage averages ignore the unstaged night: deep (80+100)/2 = 90.
 	if len(r.AvgStages) != 4 || r.AvgStages[0].Min != 90 || r.AvgStages[1].Min != 270 {
 		t.Fatalf("avg stages %+v", r.AvgStages)
 	}
-	if empty := SleepRangeSummary("month", "a", "b", nil); empty.AvgTotalMin != nil || empty.Days == nil || empty.AvgStages == nil {
+	if empty := SleepRangeSummary("month", "a", "b", nil); empty.AvgTotalMin != nil || empty.Days == nil || empty.AvgStages == nil ||
+		empty.Bedtimes == nil || empty.AvgConsistency != nil {
 		t.Fatalf("empty range must have null averages and empty (not null) arrays: %+v", empty)
 	}
 }

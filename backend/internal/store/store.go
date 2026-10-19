@@ -33,11 +33,13 @@ func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ---- users / devices -------------------------------------------------------
 
-const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min`
+const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, sleep_base_source,
+	sleep_base_learned_min, sleep_base_learned_at`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
-	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin}, extra...)...)
+	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
+		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt}, extra...)...)
 	return u, err
 }
 
@@ -229,22 +231,57 @@ func identityChanged(u model.User, id Identity) bool {
 		(id.Provider != "" && (u.Provider == nil || *u.Provider != id.Provider))
 }
 
-// UpdateUser applies a settings patch and returns the updated row.
+// defaultSleepBase is users.sleep_base_min's default (migration 0001).
+const defaultSleepBase = 460
+
+// UpdateUser applies a settings patch and returns the updated row. A
+// sleep_base_min makes the baseline manual; sleep_base_manual false goes back
+// to the learned estimate, or to the default without one (D66).
 func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch) (model.User, error) {
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil {
 			return model.User{}, fmt.Errorf("invalid tz: %w", err)
 		}
 	}
+	manual := p.SleepBaseManual
+	if p.SleepBaseMin != nil {
+		t := true
+		manual = &t
+	}
 	u, err := scanUser(s.pool.QueryRow(ctx, `UPDATE users SET
 		tz = COALESCE($2, tz),
 		max_hr = COALESCE($3, max_hr),
-		sleep_base_min = COALESCE($4, sleep_base_min)
-		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin))
+		sleep_base_manual = COALESCE($5, sleep_base_manual),
+		sleep_base_min = CASE
+		  WHEN $4::int IS NOT NULL THEN $4
+		  WHEN $5 = false THEN COALESCE(sleep_base_learned_min, $6)
+		  ELSE sleep_base_min END,
+		sleep_base_source = CASE
+		  WHEN COALESCE($5, sleep_base_manual) THEN 'manual'
+		  WHEN $5 = false AND sleep_base_learned_min IS NOT NULL THEN 'learned'
+		  WHEN $5 = false THEN 'default'
+		  ELSE sleep_base_source END
+		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin, manual, defaultSleepBase))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}
 	return u, err
+}
+
+// SetLearnedBase stores a new learned estimate and, unless the user set the
+// baseline by hand, makes it the baseline in use. changed says whether the
+// baseline in use moved (its days then need rescoring).
+func (s *Store) SetLearnedBase(ctx context.Context, id uuid.UUID, minutes int) (changed bool, err error) {
+	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT sleep_base_min FROM users WHERE id=$1 FOR UPDATE)
+		UPDATE users u SET sleep_base_learned_min=$2, sleep_base_learned_at=now(),
+		  sleep_base_min = CASE WHEN u.sleep_base_manual THEN u.sleep_base_min ELSE $2 END,
+		  sleep_base_source = CASE WHEN u.sleep_base_manual THEN 'manual' ELSE 'learned' END
+		FROM old WHERE u.id=$1
+		RETURNING NOT u.sleep_base_manual AND old.sleep_base_min IS DISTINCT FROM $2`, id, minutes).Scan(&changed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return changed, err
 }
 
 // TouchDevice records a sync from a device. Device IDs are per install, so
@@ -459,18 +496,26 @@ type History struct {
 	Strain         *float64
 	SleepNeedMin   *int
 	SleepActualMin *int
+	Recovery       *int       // the learned baseline's qualifier
+	NapMin         *int       // the next night's nap credit
+	SleepStart     *time.Time // consistency
+	SleepEnd       *time.Time
+	Efficiency     *int // the planner (asleep / in bed)
 }
 
 // ScoreHistory returns up to n scored days strictly before `day`, newest first.
 func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, n int) ([]History, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min,
+		recovery, nap_min, sleep_start, sleep_end,
+		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END
 		FROM daily_scores WHERE user_id=$1 AND day < $2::date ORDER BY day DESC LIMIT $3`, userID, day, n)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (History, error) {
 		var h History
-		err := r.Scan(&h.Day, &h.HRV, &h.RHR, &h.RespRate, &h.Strain, &h.SleepNeedMin, &h.SleepActualMin)
+		err := r.Scan(&h.Day, &h.HRV, &h.RHR, &h.RespRate, &h.Strain, &h.SleepNeedMin, &h.SleepActualMin,
+			&h.Recovery, &h.NapMin, &h.SleepStart, &h.SleepEnd, &h.Efficiency)
 		return h, err
 	})
 }
@@ -490,6 +535,10 @@ type SleepNight struct {
 	AwakeMin    *int
 	HasStages   bool
 	Performance *int
+	// Read back only; scoring writes them from DailyScore.
+	Quality     *int
+	Consistency *int
+	NapMin      *int
 }
 
 // DayLoad is the heart-rate load behind a day's strain. Nil fields mean no
@@ -528,9 +577,10 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
 		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
-		 muscular_trimp, strength_min, volume_kg, computed_at)
+		 muscular_trimp, strength_min, volume_kg, nap_min, sleep_quality, sleep_consistency,
+		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -543,12 +593,16 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min,
 		 hrv_baseline_ms=EXCLUDED.hrv_baseline_ms, rhr_baseline=EXCLUDED.rhr_baseline,
 		 baseline_days=EXCLUDED.baseline_days, steps=EXCLUDED.steps, active_kcal=EXCLUDED.active_kcal,
-		 muscular_trimp=EXCLUDED.muscular_trimp, strength_min=EXCLUDED.strength_min, volume_kg=EXCLUDED.volume_kg, computed_at=now()`,
+		 muscular_trimp=EXCLUDED.muscular_trimp, strength_min=EXCLUDED.strength_min, volume_kg=EXCLUDED.volume_kg,
+		 nap_min=EXCLUDED.nap_min, sleep_quality=EXCLUDED.sleep_quality, sleep_consistency=EXCLUDED.sleep_consistency,
+		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
+		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
-		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG)
+		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
+		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin)
 	return err
 }
 
@@ -578,7 +632,8 @@ func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (Da
 // recorded sleep, oldest first.
 func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to string) ([]SleepNight, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), sleep_start, sleep_end, sleep_actual_min,
-		in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages, sleep_performance
+		in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages, sleep_performance,
+		sleep_quality, sleep_consistency, nap_min
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date AND sleep_actual_min IS NOT NULL
 		ORDER BY day`, userID, from, to)
 	if err != nil {
@@ -587,7 +642,7 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (SleepNight, error) {
 		var n SleepNight
 		err := r.Scan(&n.Day, &n.Start, &n.End, &n.TotalMin, &n.InBedMin, &n.DeepMin, &n.LightMin,
-			&n.REMMin, &n.AwakeMin, &n.HasStages, &n.Performance)
+			&n.REMMin, &n.AwakeMin, &n.HasStages, &n.Performance, &n.Quality, &n.Consistency, &n.NapMin)
 		return n, err
 	})
 }
@@ -595,6 +650,7 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
 		strength_min, volume_kg, sleep_performance, sleep_need_min,
+		sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, nap_min, sleep_quality, sleep_consistency,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
 		calibrating, details, computed_at
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
@@ -605,7 +661,9 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		var d model.DailyScore
 		var details []byte
 		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.StrengthMin, &d.VolumeKG,
-			&d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
+			&d.SleepPerformance, &d.SleepNeedMin,
+			&d.SleepNeedBaseMin, &d.SleepNeedStrainMin, &d.SleepNeedDebtMin, &d.SleepNeedNapMin, &d.NapMin, &d.SleepQuality, &d.SleepConsistency,
+			&d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
 			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt)
 		if err != nil {
@@ -637,6 +695,9 @@ var trendColumns = map[string]string{
 	model.MetricActiveKcal:  "active_kcal",
 	model.MetricStrengthMin: "strength_min",
 	model.MetricVolumeKG:    "volume_kg",
+	model.MetricSleepQual:   "sleep_quality",
+	model.MetricSleepCons:   "sleep_consistency",
+	model.MetricNapMin:      "nap_min",
 }
 
 var baselineColumns = map[string]string{

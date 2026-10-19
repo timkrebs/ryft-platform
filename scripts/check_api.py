@@ -82,6 +82,15 @@ def check_night(s, where):
     check(s["in_bed_min"] >= s["total_min"] > 0, f"{where}: in_bed {s['in_bed_min']} < total {s['total_min']}")
     check(s["efficiency"] == round(100 * s["total_min"] / s["in_bed_min"]), f"{where}: efficiency")
     check(s["quality_label"] in {"good", "fair", "poor"}, f"{where}: quality_label {s['quality_label']}")
+    deep, rem = s["stages"][0]["min"], s["stages"][2]["min"]
+    want = min(100, rnd((deep + rem) / s["total_min"] / 0.40 * 100)) if s["has_stages"] else None
+    check(want is None or s["restorative"] == want, f"{where}: restorative {s['restorative']}, want {want}")
+    check(0 <= s["restorative"] <= 100 and 0 <= s["quality"] <= 100, f"{where}: quality/restorative range")
+
+
+def rnd(x):
+    """Go's math.Round for the non-negative values here (Python's round is to even)."""
+    return int(x + 0.5)
 
 
 detail = get(f"/v1/days/{TODAY}")
@@ -89,7 +98,10 @@ s = detail["sleep"]
 check(s is not None, "/v1/days/{today}: sleep is null after a synced night")
 check_night(s, "day sleep")
 check(detail["score"]["sleep_actual_min"] == s["total_min"], "sleep.total_min != score.sleep_actual_min")
-check(detail["score"]["sleep_performance"] == s["quality"], "sleep.quality != score.sleep_performance")
+sc = detail["score"]
+want = rnd(0.6 * sc["sleep_performance"] + 0.2 * s["efficiency"] + 0.2 * s["restorative"])
+check(s["quality"] == sc["sleep_quality"] == want,
+      f"quality {s['quality']} / score {sc['sleep_quality']}, want 0.6·perf + 0.2·eff + 0.2·restorative = {want}")
 segs = s["segments"]
 check(len(segs) > 0 and all(x["stage"] in STAGES + ["asleep"] for x in segs), "hypnogram segments")
 check(all(a["start"] <= b["start"] for a, b in zip(segs, segs[1:])), "hypnogram not sorted")
@@ -108,6 +120,47 @@ for rng, n in (("week", 7), ("month", 30)):
 err = get("/v1/sleep?range=year", expect=422)
 check(isinstance(err, dict) and "error" in err, "422 must carry {error}")
 ok("/v1/sleep?range=year → 422 {error}")
+
+# M4: naps, consistency, quality as its own score.
+by_day = {d["day"]: d for d in days}
+for d in days:
+    c, nap = d["sleep_consistency"], d["nap_min"]
+    check(c is None or 0 <= c <= 100, f"{d['day']}: sleep_consistency {c}")
+    check(nap is None or 0 <= nap <= 90, f"{d['day']}: nap_min {nap}")
+    if d["sleep_need_base_min"] is not None:
+        check(d["sleep_need_min"] == d["sleep_need_base_min"] + d["sleep_need_strain_min"] + d["sleep_need_debt_min"]
+              - d["sleep_need_nap_min"], f"{d['day']}: the need terms do not add up")
+check(by_day[TODAY]["sleep_consistency"] is not None, "21 synthetic nights: today must have a sleep_consistency")
+check(any(d["sleep_quality"] is not None and d["sleep_quality"] != d["sleep_performance"] for d in days),
+      "sleep_quality must be its own score, not a copy of sleep_performance")
+NAP = int(os.environ.get("NAP", "0"))
+tz_me = ZoneInfo(get("/v1/me")["tz"])
+nap_at = (datetime.now(timezone.utc) - timedelta(days=1)).replace(hour=13, minute=0, second=0, microsecond=0)
+nap_local = nap_at.astimezone(tz_me)
+if NAP and 10 <= nap_local.hour and (nap_local + timedelta(minutes=NAP)).hour < 20:
+    nap_day = nap_local.date().isoformat()
+    credit_day = (nap_local.date() + timedelta(days=1)).isoformat()
+    check(by_day[nap_day]["nap_min"] == NAP, f"{nap_day}: nap_min {by_day[nap_day]['nap_min']}, want {NAP}")
+    if credit_day in by_day:
+        check(by_day[credit_day]["sleep_need_nap_min"] == NAP,
+              f"{credit_day}: nap credit {by_day[credit_day]['sleep_need_nap_min']}, want {NAP}")
+    ok(f"nap: {NAP} min on {nap_day}, credited to {credit_day}'s need")
+else:
+    print(f"- nap credit not checked (NAP={NAP}, the nap is at {nap_local:%H:%M} local)")
+ok(f"/v1/days/{TODAY}: quality {s['quality']} (performance {sc['sleep_performance']}), "
+   f"consistency {by_day[TODAY]['sleep_consistency']}")
+
+sr = get(f"/v1/sleep?range=week&to={TODAY}")
+check(len(sr["bedtimes"]) == sr["nights"], f"/v1/sleep: {len(sr['bedtimes'])} bedtimes for {sr['nights']} nights")
+for d, b in zip(sr["days"], sr["bedtimes"]):
+    check(b == {"day": d["day"], "bed": d["start"], "wake": d["end"]}, f"/v1/sleep bedtimes: {b} vs {d['day']}")
+    check(d["consistency"] == by_day[d["day"]]["sleep_consistency"] and d["nap_min"] == by_day[d["day"]]["nap_min"],
+          f"/v1/sleep {d['day']}: consistency/nap_min differ from /v1/days")
+    check("need" not in d and "segments" not in d, f"/v1/sleep {d['day']}: need/segments only on the day endpoint")
+cons = [d["consistency"] for d in sr["days"] if d["consistency"] is not None]
+check(sr["avg_consistency"] == (rnd(sum(cons) / len(cons)) if cons else None), f"avg_consistency {sr['avg_consistency']}")
+ok(f"/v1/sleep?range=week: avg consistency {sr['avg_consistency']}, {len(sr['bedtimes'])} bedtimes")
+
 
 # ---- 2.3 workouts -------------------------------------------------------------
 wks = get(f"/v1/workouts?to={TODAY}")
@@ -139,7 +192,8 @@ ok(f"/v1/days/{TODAY}.strain: trimp {st['trimp']}, {st['hr_min']} HR minutes, {s
 
 # ---- 2.4 trends ---------------------------------------------------------------
 FIELD = {"readiness": "readiness", "recovery": "recovery", "strain": "strain", "sleep": "sleep_performance",
-         "sleep_min": "sleep_actual_min", "hrv": "hrv_ms", "rhr": "rhr", "steps": "steps", "active_kcal": "active_kcal"}
+         "sleep_min": "sleep_actual_min", "hrv": "hrv_ms", "rhr": "rhr", "steps": "steps", "active_kcal": "active_kcal",
+         "sleep_quality": "sleep_quality", "sleep_consistency": "sleep_consistency", "nap_min": "nap_min"}
 by_day = {d["day"]: d for d in days}
 for metric, field in FIELD.items():
     tr = get(f"/v1/trends?metric={metric}&range=7d&to={TODAY}")
@@ -223,6 +277,7 @@ check(status == 413 and is_error(body), f"a 70 KiB recompute body must be 413, g
 status, _, body = raw("PATCH", "/v1/me", json.dumps({"tz": "Europe/Berlin", "name": "x" * (70 << 10)}).encode())
 check(status == 413 and is_error(body), f"a 70 KiB settings body must be 413, got {status} {body}")
 ok("X-Request-ID server-generated; security headers on api and ingest; oversized bodies 413")
+
 
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
@@ -360,10 +415,13 @@ check(call("POST", f"/v1/sessions/{sid}/complete", None)["muscular_trimp"] == do
 summ = get(f"/v1/sessions?from={D}&to={D}")
 mine = next((x for x in summ if x["id"] == sid), None)
 check(mine and mine["duration_min"] == 60 and mine["pr_count"] >= 1 and mine["set_count"] == n_sets, f"summary: {mine}")
-for _ in range(30):  # scoring rescored the day after the session.completed event
+# strain.sessions comes from the sessions table at once; the score only after
+# scoring has handled the session.completed event, so wait for both.
+for _ in range(30):
     day = get(f"/v1/days/{D}")
     st = day["strain"] or {}
-    if any(x["id"] == sid for x in st.get("sessions", [])):
+    if (any(x["id"] == sid for x in st.get("sessions", []))
+            and (day["score"]["strength_min"] or 0) >= (before_day["score"]["strength_min"] or 0) + 60):
         break
     time.sleep(1)
 check(any(x["id"] == sid for x in st.get("sessions", [])), f"the day was not rescored with the session: {st}")

@@ -5,7 +5,8 @@ set -euo pipefail
 INGEST_URL=${INGEST_URL:-http://localhost:8081}
 API_URL=${API_URL:-http://localhost:8082}
 API_KEY=${API_KEY:-dev-api-key-change-me}
-DAYS=${DAYS:-10}
+DAYS=${DAYS:-21} # 14+ nights for the learned sleep baseline, 5+ for consistency
+NAP=${NAP:-40}   # minutes napped yesterday afternoon (check_api expects the credit)
 HERE=$(cd "$(dirname "$0")" && pwd)
 AUTH_MODE=${AUTH_MODE:-apikey}
 
@@ -35,7 +36,7 @@ for url in "$INGEST_URL" "$API_URL"; do
 done
 
 echo "→ generating $DAYS synthetic days"
-python3 "$HERE/synth.py" "$DAYS" > /tmp/ryft-synth.json
+python3 "$HERE/synth.py" "$DAYS" --nap "$NAP" > /tmp/ryft-synth.json
 
 echo "→ POST /v1/sync"
 curl -fsS -X POST "$INGEST_URL/v1/sync" -H "Authorization: Bearer $API_KEY" \
@@ -65,4 +66,4 @@ echo "→ GET /v1/days (last $DAYS days)"
 curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KEY" | python3 "$HERE/print_days.py"
 
 echo "→ API contract checks"
-AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"
+NAP="$NAP" AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"

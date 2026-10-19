@@ -1,7 +1,8 @@
 // scoring turns raw samples into daily Recovery / Strain / Sleep scores.
 // It is driven by two things: ingest events on NATS (recompute the days a
 // sync touched, for the user in the event) and a timer (keep today and
-// yesterday fresh, in each user's timezone, for everyone who synced lately).
+// yesterday fresh, in each user's timezone, for everyone who synced lately;
+// on Sundays also the weekly sleep-baseline estimate).
 package main
 
 import (
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -34,6 +37,9 @@ const (
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "rescore" {
 		os.Exit(rescore(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "learn-baselines" {
+		os.Exit(learnBaselines(os.Args[2:]))
 	}
 	log := httpx.Logger("scoring")
 	cfg, err := config.Load("scoring")
@@ -91,12 +97,13 @@ func main() {
 	go func() {
 		t := time.NewTicker(refreshEvery)
 		defer t.Stop()
+		learn := learner{tried: map[uuid.UUID]string{}}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				refreshActive(ctx, log, st, engine)
+				refreshActive(ctx, log, st, engine, &learn)
 			}
 		}
 	}()
@@ -123,8 +130,9 @@ func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedE
 }
 
 // refreshActive rescores yesterday and today for every user who synced within
-// activeWindow, each in their own timezone.
-func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine) {
+// activeWindow, each in their own timezone, then runs the weekly baseline
+// estimate where it is due.
+func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
 	if err != nil {
 		log.Error("periodic: active users", "err", err)
@@ -132,7 +140,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 	}
 	for _, id := range users {
 		ctx := logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
-		_, loc, err := st.GetUser(ctx, id)
+		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
 			log.ErrorContext(ctx, "periodic: user", "err", err)
 			continue
@@ -143,5 +151,23 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 				log.ErrorContext(ctx, "periodic recompute", "day", d.Format("2006-01-02"), "err", err)
 			}
 		}
+		learn.maybe(ctx, log, engine, user, today)
+	}
+}
+
+// learner runs the weekly sleep-baseline estimate from the timer pass. It
+// remembers whom it tried on which local day, so a user with too few nights
+// (no estimate stored) is tried once that Sunday, not every 15 minutes. One
+// entry per active user, overwritten weekly.
+type learner struct{ tried map[uuid.UUID]string }
+
+func (l *learner) maybe(ctx context.Context, log *slog.Logger, engine *scoring.Engine, u model.User, now time.Time) {
+	day := now.Format("2006-01-02")
+	if l.tried[u.ID] == day || !scoring.LearnDue(now, u.SleepBaseLearnedAt) {
+		return
+	}
+	l.tried[u.ID] = day
+	if _, err := engine.LearnBaseline(ctx, u.ID, day); err != nil {
+		log.ErrorContext(ctx, "learn sleep baseline", "err", err)
 	}
 }
