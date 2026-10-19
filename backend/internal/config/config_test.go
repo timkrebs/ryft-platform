@@ -80,14 +80,24 @@ func TestLoadAppleIsAllOrNothing(t *testing.T) {
 	if _, ok, err := LoadApple(); ok || err != nil {
 		t.Fatalf("none set: disabled, no error (ok=%v err=%v)", ok, err)
 	}
+	// infra/vault always generates the data key; without the Apple keys the api
+	// must still start, with revocation off.
+	t.Setenv("DATA_ENCRYPTION_KEY", "x")
+	if _, ok, err := LoadApple(); ok || err != nil {
+		t.Fatalf("only the data key: disabled, no error (ok=%v err=%v)", ok, err)
+	}
 	t.Setenv("APPLE_TEAM_ID", "M77SKHKG63")
 	if _, _, err := LoadApple(); err == nil {
-		t.Fatal("a partial configuration must be refused")
+		t.Fatal("a partial Apple configuration must be refused")
 	}
 	for _, k := range keys {
 		t.Setenv(k, "x")
 	}
 	if a, ok, err := LoadApple(); !ok || err != nil || a.ClientID != "x" {
 		t.Fatalf("all set: %+v %v %v", a, ok, err)
+	}
+	t.Setenv("DATA_ENCRYPTION_KEY", "")
+	if _, _, err := LoadApple(); err == nil {
+		t.Fatal("the Apple keys without the data key must be refused")
 	}
 }

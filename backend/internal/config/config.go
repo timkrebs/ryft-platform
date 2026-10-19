@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -134,8 +135,10 @@ type Apple struct {
 }
 
 // LoadApple reads APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8 and
-// DATA_ENCRYPTION_KEY. All set: enabled; none: disabled (ok false); some: an
-// error, so a half-configured deployment does not start.
+// DATA_ENCRYPTION_KEY. The four APPLE_* decide: all set enables revocation, none
+// disables it (ok false), some is an error, so a half-configured deployment does not
+// start. DATA_ENCRYPTION_KEY is required only when revocation is enabled: infra/vault
+// generates it for the api whether or not the Apple keys exist yet.
 func LoadApple() (Apple, bool, error) {
 	a := Apple{
 		TeamID: strings.TrimSpace(os.Getenv("APPLE_TEAM_ID")), KeyID: strings.TrimSpace(os.Getenv("APPLE_KEY_ID")),
@@ -143,18 +146,20 @@ func LoadApple() (Apple, bool, error) {
 		DataKey: os.Getenv("DATA_ENCRYPTION_KEY"),
 	}
 	set := 0
-	for _, v := range []string{a.TeamID, a.KeyID, a.ClientID, a.PrivateKey, a.DataKey} {
+	for _, v := range []string{a.TeamID, a.KeyID, a.ClientID, a.PrivateKey} {
 		if v != "" {
 			set++
 		}
 	}
-	switch set {
-	case 0:
+	switch {
+	case set == 0:
 		return a, false, nil
-	case 5:
-		return a, true, nil
+	case set < 4:
+		return a, false, fmt.Errorf("apple token revocation needs APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID and APPLE_KEY_P8 together (%d of 4 set)", set)
+	case a.DataKey == "":
+		return a, false, errors.New("apple token revocation needs DATA_ENCRYPTION_KEY to seal the stored refresh tokens")
 	default:
-		return a, false, fmt.Errorf("apple token revocation needs APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8 and DATA_ENCRYPTION_KEY together (%d of 5 set)", set)
+		return a, true, nil
 	}
 }
 
