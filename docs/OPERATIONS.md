@@ -221,7 +221,9 @@ metrics-server), with a `PodDisruptionBudget` of `minAvailable: 1`, spread acros
 when there are several. On a **single-node** cluster a drain blocks on the second pod,
 because the first has nowhere to reschedule. Use `kubectl drain --disable-eviction`, or
 `kubectl -n ryft-api delete pdb api; kubectl -n ryft-ingest delete pdb ingest` before
-maintenance and re-apply afterwards. Their Deployments carry no `replicas`, so
+maintenance and re-apply afterwards. Pods that are not ready never count
+(`unhealthyPodEvictionPolicy: AlwaysAllow`): during an outage, when no pod is ready, a
+drain or a node group update still goes through. Their Deployments carry no `replicas`, so
 re-applying never fights the HPA. scoring stays at one replica: it owns the 15-minute
 timer and processes recompute ranges in order. NATS is a single-replica StatefulSet.
 

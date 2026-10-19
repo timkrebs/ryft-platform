@@ -14,12 +14,15 @@ spec:
         name: cpu
         target: { type: Utilization, averageUtilization: 70 }
 ---
-# One pod stays through node drains and upgrades (docs/OPERATIONS.md).
+# One pod stays through node drains and upgrades (docs/OPERATIONS.md). Pods that are
+# not ready protect nothing and may always be evicted: otherwise an outage (no pod
+# ready, 0 disruptions allowed) blocks every node drain, e.g. a node group update.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: ingest
 spec:
   minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels: { app: ingest }
