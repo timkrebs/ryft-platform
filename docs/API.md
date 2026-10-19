@@ -25,6 +25,10 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
+| Profile — Notifications | per-category toggles, quiet hours | `User.notifications`, `PATCH /v1/me/notifications` |
+| (launch, then every 6 h) | feature flags | `GET /v1/config` |
+| (after the first sync, on every token change; sign-out) | push registration | `POST` / `DELETE /v1/devices/{id}/push` |
+| Notifications | morning score, scored session, record, no new data; silent refresh | **Push notifications** below |
 | (after Sign in with Apple) | let deletion revoke the Apple grant | `POST /v1/me/apple-authorization` |
 | Strain — Train | start a workout, today's plan, live session, summary with load and PRs | `GET /v1/plans/today`, `PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete` |
 | Strain — Train: plans | list, detail, plan builder, enrol / pause | `GET /v1/plans`, `GET`/`PUT`/`DELETE /v1/plans/{id}`, `POST /v1/plans/{id}/enroll`, `DELETE /v1/plans/enrollment` |
@@ -100,8 +104,11 @@ user). Never exposed outside a developer machine.
 | Method | Path | Service | Returns |
 | --- | --- | --- | --- |
 | `POST` | `/v1/sync` | ingest | `SyncResponse` |
+| `GET` | `/v1/config` | api | `RemoteConfig` |
 | `GET` | `/v1/me` | api | `User` |
 | `PATCH` | `/v1/me` | api | `User` |
+| `PATCH` | `/v1/me/notifications` | api | `NotificationPrefs` |
+| `POST`, `DELETE` | `/v1/devices/{id}/push` | api | `204`, `204` |
 | `GET` | `/v1/days?from&to` | api | `[DailyScore]` |
 | `GET` | `/v1/days/{day}` | api | `DayDetail` |
 | `GET` | `/v1/sleep?range&to` | api | `SleepRange` |
@@ -172,7 +179,9 @@ workout without `id`).
 ```json
 { "id": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c", "name": "Tim K", "email": "tim@example.com",
   "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 455,
-  "sleep_base_source": "learned", "sleep_base_learned_min": 455, "sleep_base_learned_at": "2026-10-18T02:00:04Z" }
+  "sleep_base_source": "learned", "sleep_base_learned_min": 455, "sleep_base_learned_at": "2026-10-18T02:00:04Z",
+  "notifications": { "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
+                     "quiet_hours": { "from": "22:30", "to": "07:00" } } }
 ```
 
 The user is created on the first authenticated request with `tz = Europe/Berlin`,
@@ -190,6 +199,7 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `sleep_base_source` | string | `default` (460 min, nothing learned yet), `learned` (the weekly estimate below), `manual` (set with `PATCH`). Closed enum. |
 | `sleep_base_learned_min` | int? | The latest learned estimate, also while `manual` (for "learned 7 h 35 min · override"); `null` until there is one. |
 | `sleep_base_learned_at` | timestamp? | When that estimate was computed. |
+| `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
 
 **Learned baseline.** Every Sunday from 04:00 local time, scoring estimates the
 baseline from the last 30 scored days. It needs at least 14 nights of sleep, of which at
@@ -259,6 +269,127 @@ sign-in) replaces the stored token.
 | `503` | Apple could not be reached (`Retry-After`) | retry once within the code's five minutes |
 
 Never log the code; it is a credential until used.
+
+### `GET /v1/config` — remote config
+
+Feature flags, evaluated for the caller. Load on launch and again after `ttl_sec`; keep
+the last answer (and compiled-in defaults) when offline.
+
+```json
+{ "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
+             "coach.enabled": false, "push.enabled": false, "physiology.card": false },
+  "evaluated_at": "2026-10-19T06:12:00Z", "ttl_sec": 21600 }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `flags` | `{string: bool}` | Every flag the platform has, on or off for this user. Keys are **open**: ignore unknown ones, and use the compiled default for one that is missing. |
+| `evaluated_at` | timestamp | When this answer was computed. |
+| `ttl_sec` | int | How long to use it: 21600 (6 h). |
+
+A flag is on for a user when it is enabled and the user is on its allow-list or in its
+first `rollout_pct` of 100 buckets: bucket = the first four bytes of SHA-256 of
+`"<key>:<user id>"` (the lowercase UUID), big-endian, modulo 100. The bucket is stable per
+user and flag, so raising a rollout only adds users. The operator sets flags
+(`OPERATIONS.md` → Feature flags), not the app. Shipped with:
+
+| Key | Default |
+| --- | --- |
+| `train.enabled`, `sleep.planner` | on (100 %) |
+| `today.redesign`, `coach.enabled`, `push.enabled`, `physiology.card` | off (enabled, 0 %: on only for allow-listed testers) |
+
+### `PATCH /v1/me/notifications` — push preferences
+
+Body `NotificationPatch`, both fields optional: `categories` (`{category: bool}`, merged
+into the stored ones; the four categories above), `quiet_hours` (`{"from": "22:30", "to":
+"07:00"}`, local times; `from` later than `to` spans midnight, equal times mean none;
+`null` clears them, leaving the field out keeps them). Returns `NotificationPrefs`:
+
+```json
+{ "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
+  "quiet_hours": { "from": "22:30", "to": "07:00" } }
+```
+
+`422` for an unknown category or a time that is not `HH:MM`; `400` for unknown fields.
+
+### `POST /v1/devices/{id}/push` — register for push
+
+`{id}` is the install's device ID, the same UUID the app sends as `device_id` with
+`POST /v1/sync`. Body `PushRegistration`:
+
+```json
+{ "token": "8a5e…c41f", "env": "production", "locale": "de-DE" }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `token` | string | The APNs device token as hex (64+ characters, any case). |
+| `env` | string | `sandbox` or `production`: the build's `aps-environment` (Xcode debug builds `sandbox`, TestFlight and the App Store `production`). |
+| `locale` | string | The app's language, e.g. `de-DE`; `de…` is kept as `de`, everything else as `en`. It picks the language of names and number formats in the notification's arguments. |
+
+`204`. Send it again whenever the token or the language changes; repeating it is
+harmless. A token another account registered (a shared iPhone) moves to the caller.
+`422` for a malformed token or `env`, `400` for a malformed `{id}`.
+`DELETE /v1/devices/{id}/push` → `204` (on sign-out; also when there is none). Deleting
+the account removes every token.
+
+### Push notifications
+
+RYFT's notifications come from the platform's `notify` service over APNs, with the app's
+bundle ID as topic. **Until the APNs key is configured** (Apple Developer Program,
+`STATUS.md`) nothing is sent; registration and preferences already work.
+
+| Category | Sent when | Title · body keys (arguments) | Opens (`ryft.url`) |
+| --- | --- | --- | --- |
+| `MORNING_SCORE` | Today's recovery is scored for the first time after a night with sleep (in practice the morning sync). Once a day; during quiet hours it waits until they end, the score as it is then. | `MORNING_SCORE_TITLE` (recovery `82%`) · `MORNING_SCORE_BODY_BALANCED`, `_STRAINED`, `_DEPLETED` or `_CALIBRATING` by `state` (readiness) | `https://ryftapp.de/day/<day>` |
+| `SESSION_SCORED` | A completed strength session has its load (scoring has run), within 12 h of its end. The first one each day; not during quiet hours. | `SESSION_SCORED_TITLE` (session title) or `SESSION_SCORED_TITLE_UNTITLED` · `SESSION_SCORED_BODY` (strain), `_PR` (strain) or `_PRS` (strain, number of records) | `https://ryftapp.de/train/session/<id>` |
+| `PR` | Instead of `SESSION_SCORED` when that category is off and the session set a record. | `PR_TITLE` (exercise name) · `PR_BODY_E1RM`, `_MAX_WEIGHT`, `_MAX_REPS` or `_MAX_VOLUME` (value) | `https://ryftapp.de/train/session/<id>` |
+| `SYNC_STALE` | No heart-rate or step sample for 20 hours (users with data in the last 7 days), once a day between 09:00 and 21:00 local, not during quiet hours. | `SYNC_STALE_TITLE` · `SYNC_STALE_BODY` (hours) | — |
+
+With every `MORNING_SCORE` event, also when that category is off or quiet hours hold
+it back, a **silent** push (`content-available`, background priority) tells the app to
+refresh the day: `{"aps": {"content-available": 1}, "ryft": {"kind": "refresh", "day":
+"2026-10-19"}}`. At most one a day.
+
+An alert's payload:
+
+```json
+{ "aps": { "alert": { "title-loc-key": "MORNING_SCORE_TITLE", "title-loc-args": ["82%"],
+                      "loc-key": "MORNING_SCORE_BODY_BALANCED", "loc-args": ["78"] },
+           "sound": "default", "category": "MORNING_SCORE", "thread-id": "MORNING_SCORE",
+           "mutable-content": 1 },
+  "ryft": { "category": "MORNING_SCORE", "day": "2026-10-19", "url": "https://ryftapp.de/day/2026-10-19" } }
+```
+
+`category` is the `UNNotificationCategory` identifier, `thread-id` groups by category,
+`mutable-content` lets a Notification Service Extension attach the ring. A notification
+replaces an undelivered one of the same category and day (`apns-collapse-id`) and
+expires at the end of the local day (`MORNING_SCORE`), after 12 h (`SESSION_SCORED`,
+`PR`) or 6 h (`SYNC_STALE`). Arguments are formatted for the registered `locale`:
+`82%` / `82 %`, `11.2` / `11,2`, exercise names in English or German.
+
+The keys, as the app ships them in `Localizable.xcstrings` (`%@` and positional
+`%1$@`, as iOS fills `loc-args`):
+
+| Key | en | de |
+| --- | --- | --- |
+| `MORNING_SCORE_BODY_BALANCED` | Readiness %@. You're ready to perform: a good day to push. | Bereitschaft %@. Du bist bereit: ein guter Tag für hohe Belastung. |
+| `MORNING_SCORE_BODY_CALIBRATING` | Readiness %@. RYFT is still learning your baselines. | Bereitschaft %@. RYFT lernt noch deine Ausgangswerte. |
+| `MORNING_SCORE_BODY_DEPLETED` | Readiness %@. Take it easy today and protect tonight's sleep. | Bereitschaft %@. Geh es heute ruhig an und schütze deinen Schlaf. |
+| `MORNING_SCORE_BODY_STRAINED` | Readiness %@. Keep the load moderate today. | Bereitschaft %@. Belaste dich heute moderat. |
+| `MORNING_SCORE_TITLE` | Recovery %@ | Erholung %@ |
+| `PR_BODY_E1RM` | Estimated one-rep max %@ kg. | Geschätztes 1RM %@ kg. |
+| `PR_BODY_MAX_REPS` | %@ reps in one set, your most yet. | %@ Wiederholungen in einem Satz, so viele wie nie. |
+| `PR_BODY_MAX_VOLUME` | %@ kg in one set (reps × kg), your best yet. | %@ kg in einem Satz (Wdh. × kg), dein Bestwert. |
+| `PR_BODY_MAX_WEIGHT` | %@ kg, your heaviest set yet. | %@ kg, dein schwerster Satz bisher. |
+| `PR_TITLE` | New record: %@ | Neuer Rekord: %@ |
+| `SESSION_SCORED_BODY` | Strain %@. | Belastung %@. |
+| `SESSION_SCORED_BODY_PR` | Strain %@, 1 new record. | Belastung %@, 1 neuer Rekord. |
+| `SESSION_SCORED_BODY_PRS` | Strain %1$@, %2$@ new records. | Belastung %1$@, %2$@ neue Rekorde. |
+| `SESSION_SCORED_TITLE` | %@ scored | %@ ausgewertet |
+| `SESSION_SCORED_TITLE_UNTITLED` | Workout scored | Training ausgewertet |
+| `SYNC_STALE_BODY` | Nothing new from your watch for %@ hours. Open RYFT to sync. | Seit %@ Stunden nichts Neues von deiner Uhr. Öffne RYFT zum Synchronisieren. |
+| `SYNC_STALE_TITLE` | No new data | Keine neuen Daten |
 
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
 
@@ -862,7 +993,7 @@ its sets: `204`; a completed session's day is rescored.
 
 `GET /healthz` → `200 {"status":"ok"}` while the process runs.
 `GET /readyz` → `200 {"status":"ready"}`, or `503 {"error":"…"}` when Postgres (and,
-for ingest/scoring, NATS) is unreachable. `GET /metrics` → Prometheus text format
+for ingest/scoring/notify, NATS) is unreachable. `GET /metrics` → Prometheus text format
 (see `OBSERVABILITY.md`). All three are unauthenticated and not exposed by the Ingress.
 
 ## Swift mirror
@@ -1100,6 +1231,57 @@ struct User: Codable {
     let sleepBaseSource: SleepBaseSource
     let sleepBaseLearnedMin: Int?
     let sleepBaseLearnedAt: Date?
+    let notifications: NotificationPrefs
+}
+
+// ---- Remote config and push ----------------------------------------------------
+
+struct RemoteConfig: Codable {   // GET /v1/config
+    let flags: [String: Bool]     // open keys
+    let evaluatedAt: Date
+    let ttlSec: Int
+}
+
+enum NotificationCategory: String, Codable, CaseIterable {
+    case morningScore = "MORNING_SCORE", sessionScored = "SESSION_SCORED", pr = "PR", syncStale = "SYNC_STALE"
+}
+
+struct QuietHours: Codable, Equatable {
+    var from: String   // local "HH:MM"
+    var to: String
+}
+
+struct NotificationPrefs: Codable {   // User.notifications, PATCH /v1/me/notifications
+    let categories: [String: Bool]    // keyed by NotificationCategory.rawValue
+    let quietHours: QuietHours?
+}
+
+struct NotificationPatch: Encodable {   // PATCH /v1/me/notifications
+    var categories: [String: Bool]? = nil
+    /// nil: leave unchanged; .some(nil): clear; .some(q): set.
+    var quietHours: QuietHours?? = nil
+
+    enum CodingKeys: String, CodingKey { case categories, quietHours = "quiet_hours" }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(categories, forKey: .categories)
+        if let q = quietHours { try c.encode(q, forKey: .quietHours) }   // .some(nil) encodes null
+    }
+}
+
+enum PushEnvironment: String, Codable { case sandbox, production }
+
+struct PushRegistration: Encodable {   // POST /v1/devices/{id}/push
+    let token: String                   // hex
+    let env: PushEnvironment
+    let locale: String
+}
+
+struct RyftPushInfo: Decodable {   // userInfo["ryft"] of a notification
+    let category: String?          // absent on the silent refresh
+    let kind: String?              // "refresh" on the silent refresh
+    let day: String
+    let url: String?
 }
 
 struct UserPatch: Codable {   // PATCH /v1/me, every field optional
@@ -1357,6 +1539,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-19 | **Remote config and push** (M7 core): `GET /v1/config` (feature flags evaluated per user, `ttl_sec` 21600); `PATCH /v1/me/notifications` and `User.notifications`; `POST` / `DELETE /v1/devices/{id}/push`; the push notifications `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` and the silent refresh, with their localisation keys. Nothing is sent until the APNs key is configured. Swift: `RemoteConfig`, `NotificationCategory`, `QuietHours`, `NotificationPrefs`, `NotificationPatch`, `PushEnvironment`, `PushRegistration`, `RyftPushInfo`, `User.notifications`. |
 | 2026-10-19 | **Sleep upgrades** (M4): `DailyScore.nap_min`, `sleep_quality`, `sleep_consistency` and the need breakdown (`sleep_need_base_min`, `_strain_min`, `_debt_min`, `_nap_min`); `DayDetail.sleep.need` and `restorative`; `SleepRange.avg_consistency`, `bedtimes`, `days[].consistency` / `nap_min`; `User.sleep_base_source` / `sleep_base_learned_min` / `sleep_base_learned_at` and `UserPatch.sleep_base_manual`; `GET /v1/sleep/plan`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min`; insights `sleep-consistency-low`, `nap-credit`, `baseline-learned`. **Behaviour, no shape change:** `quality` is now its own score instead of a copy of sleep performance, so quality values and labels change; a nap lowers the following night's need; the baseline is learned weekly unless set by hand. Rescore history to fill past days. Swift: the new fields and types, `UserPatch` joins the mirror. |
 | 2026-10-19 | **Train** (M3b): exercise library (`/v1/exercises`, history and records), plans with an enrolment (`/v1/plans`, `/v1/plans/today`), and logged sessions (`PUT /v1/sessions/{id}` with merge and a `409` that carries the server's copy, `…/complete`, list, detail, delete). `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, trend metrics `strength_min` and `volume_kg`, insight `pr`, status `403`. **Behaviour:** `strain` now includes the muscular load of completed sessions, so a day (or workout) with a logged session but no heart rate has a strain. Swift: the Train types, `Workout` joins the mirror. |
 | 2026-10-18 | A per-IP limit at the edge (20 requests/s, bursts of 50) answers `429` with a plain-text body before the per-user limit applies. No shape change. |

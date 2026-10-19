@@ -36,3 +36,14 @@ groups:
         expr: sum(increase(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h])) > 0
         labels: { severity: warning }
         annotations: { summary: "A deleted account still has its Supabase sign-in or Apple grant" }
+      - alert: PushFailing
+        # notify reached no device for a notification (APNs unreachable after retries,
+        # or every device refused it). "unconfigured" (no APNs key yet) is not a failure.
+        expr: sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "Push notifications are not reaching devices" }
+      - alert: APNsRejectsOurKey
+        # 403: InvalidProviderToken and friends — the APNs key was revoked, or key ID / team ID do not match.
+        expr: sum(increase(ryft_apns_responses_total{status="403"}[15m])) > 0
+        labels: { severity: critical }
+        annotations: { summary: "APNs refuses notify's provider token (check APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8)" }

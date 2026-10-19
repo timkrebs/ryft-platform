@@ -14,11 +14,14 @@ admin/ryft/
 │             kv/config {DATABASE_URL (role ryft_scoring), NATS_USER/PASSWORD}
 ├── api/      …                               ns ryft-api      SA api
 │             kv/config {DATABASE_URL (role ryft_api), NATS_USER/PASSWORD, SUPABASE_PROJECT_REF,
-│                        SUPABASE_SERVICE_ROLE_KEY}
+│                        SUPABASE_SERVICE_ROLE_KEY, ADMIN_API_KEY (generated), DATA_ENCRYPTION_KEY,
+│                        APPLE_* once set}
+├── notify/   …                               ns ryft-notify   SA notify
+│             kv/config {DATABASE_URL (role ryft_notify), NATS_USER/PASSWORD, APNS_* once set}
 ├── nats/     …                               ns ryft-nats     SA nats
-│             kv/config {NATS_PASSWORD_INGEST/SCORING/API: bcrypt hashes only}
+│             kv/config {NATS_PASSWORD_INGEST/SCORING/API/NOTIFY: bcrypt hashes only}
 └── migrate/  …                               ns ryft-migrate  SA migrate
-              kv/config {DATABASE_URL (the owner), DB_PASSWORD_INGEST/SCORING/API}
+              kv/config {DATABASE_URL (the owner), DB_PASSWORD_INGEST/SCORING/API/NOTIFY}
 ```
 
 | Vault object (per service, inside `admin/ryft/<svc>`) | Kubernetes object (inside `ryft-<svc>`) |
@@ -88,6 +91,14 @@ waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
   one: `make k8s-apply-eks`.
 - **The owner password or the Supabase key:** change it in `terraform.tfvars`, then
   `terraform apply`.
+
+**The admin key** (`/v1/admin/flags`, `docs/OPERATIONS.md` → Feature flags):
+`terraform output -raw admin_api_key`; rotate with
+`terraform apply -replace='random_password.admin_key["api"]'`.
+
+**The APNs key** (notify, `docs/OPERATIONS.md` → Push): `service_secrets.notify` with
+`APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_KEY_P8`, all three or none (validated). Without
+them the plan warns (`check.notify_has_apns_key`) and notify sends nothing.
 
 **Add a service:** add an entry to `services`. With `database = "role"` it also needs a
 migration that creates `ryft_<name>` with its grants, and an entry in

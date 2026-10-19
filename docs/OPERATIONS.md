@@ -28,9 +28,10 @@ credentials and nothing else ([`ARCHITECTURE.md`](ARCHITECTURE.md#namespaces-and
 | --- | --- | --- | --- |
 | `ryft-ingest` | Deployment `ingest` | `admin/ryft/ingest` | DB role `ryft_ingest`, NATS user `ingest`, project ref |
 | `ryft-scoring` | Deployment `scoring` | `admin/ryft/scoring` | DB role `ryft_scoring`, NATS user `scoring` |
-| `ryft-api` | Deployment `api` | `admin/ryft/api` | DB role `ryft_api`, NATS user `api`, project ref, Supabase secret key |
-| `ryft-nats` | StatefulSet `nats` | `admin/ryft/nats` | bcrypt hashes of the three NATS passwords |
-| `ryft-migrate` | Job `migrate` | `admin/ryft/migrate` | the database owner, the three role passwords |
+| `ryft-api` | Deployment `api` | `admin/ryft/api` | DB role `ryft_api`, NATS user `api`, project ref, Supabase secret key, `ADMIN_API_KEY` |
+| `ryft-notify` | Deployment `notify` | `admin/ryft/notify` | DB role `ryft_notify`, NATS user `notify`, the APNs key (once there is one) |
+| `ryft-nats` | StatefulSet `nats` | `admin/ryft/nats` | bcrypt hashes of the four NATS passwords |
+| `ryft-migrate` | Job `migrate` | `admin/ryft/migrate` | the database owner, the four role passwords |
 
 On EKS `infra/vault` creates the namespaces (Pod Security `restricted`), the service
 accounts, the Vault side and the operator manifests; the overlay only deploys workloads.
@@ -49,8 +50,8 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 3. Cluster | `cd infra/aws && terraform apply`, then `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
 | 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready |
 | 5. Supabase | the checklist in [`SUPABASE.md`](SUPABASE.md) | project ref, pooler host, database password, secret key at hand |
-| 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows five |
-| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
+| 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows six |
+| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
 | 8. App | `make k8s-apply-eks` | see below |
 | 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
 
@@ -65,7 +66,13 @@ Local): `terraform init` in a fresh checkout connects to it after `terraform log
 3. It applies the first stage, NATS and the migrate Job (label `ryft.dev/stage=first`),
    and waits for the Job and NATS.
 4. Only then it applies everything, so the services start after their role passwords
-   exist, and waits for the three rollouts.
+   exist, and waits for the four rollouts.
+
+A new service (notify, M7) needs `infra/vault` applied first: that creates its
+namespace, service account and secrets, writes its operator manifests to
+`deploy/k8s/overlays/vault-namespaces/notify`, and gives NATS the password hash it
+references. Without it `make k8s-apply-eks` stops at the missing directory, and NATS
+would not start with an undefined `$NATS_PASSWORD_NOTIFY`.
 
 Order matters because Supabase's pooler blocks a database user for a while after
 repeated failed logins (`ECIRCUITBREAKER`). Starting the services next to migrate on
@@ -75,8 +82,8 @@ and wait up to 10 minutes (startup probe).
 
 ```bash
 make k8s-validate && make k8s-apply-eks
-kubectl -n ryft-migrate logs job/migrate                     # "role password set" ×3, "schema current"
-for s in ingest scoring api nats migrate; do kubectl -n ryft-$s get vaultstaticsecret,secret ryft-secrets; done
+kubectl -n ryft-migrate logs job/migrate                     # "role password set" ×4, "schema current"
+for s in ingest scoring api notify nats migrate; do kubectl -n ryft-$s get vaultstaticsecret,secret ryft-secrets; done
 kubectl -n ryft-api get ingress,certificate                  # certificate READY True (DNS-01, ~1–2 min)
 kubectl -n ryft-ingest get ingress,certificate
 dig +short api.ryftapp.de                                    # NLB addresses (ExternalDNS, from the api Ingress)
@@ -189,10 +196,11 @@ Every namespace starts with `default-deny` (no ingress, no egress) and `allow-dn
 | --- | --- | --- |
 | ingest, api | 8080 from Traefik in `kube-system` (or ingress-nginx in `ingress-nginx`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | NATS (`ryft-nats`, 4222), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
 | scoring | 9090 from `monitoring` (and the VPC range on EKS) | NATS (4222), TCP 5432 to public addresses |
+| notify | 9090 from `monitoring` (and the VPC range on EKS) | NATS (4222), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
 | web (`ryft-web`) | 8080 from Traefik | nothing |
-| nats | 4222 from the `ingest`, `scoring` and `api` pods, each in its own namespace | nothing |
+| nats | 4222 from the `ingest`, `scoring`, `api` and `notify` pods, each in its own namespace | nothing |
 | migrate | nothing | TCP 5432 to public addresses |
-| postgres (`local-postgres`) | 5432 from the four client namespaces and the backup pods | nothing |
+| postgres (`local-postgres`) | 5432 from the five client namespaces and the backup pods | nothing |
 
 "Public addresses" means `0.0.0.0/0` minus RFC 1918, CGNAT and link-local ranges, so no
 workload can reach anything inside the VPC or the cluster on those ports. NetworkPolicy
@@ -221,6 +229,53 @@ for i in $(seq 1 150); do curl -s -o /dev/null -w '%{http_code}\n' https://api.r
 
 The services' own per-user limit (D36) applies after the token, so the two complement
 each other.
+
+## Feature flags
+
+`GET /v1/config` serves the flags in table `feature_flags` (D69). Change them with the
+admin routes and the api's `ADMIN_API_KEY` (generated by `infra/vault`):
+
+```bash
+ADMIN=$(terraform -chdir=infra/vault output -raw admin_api_key)    # locally: dev-admin-key-change-me-0123456789abcdef
+API=https://api.ryftapp.de
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags | jq            # every flag
+# On for two testers only (their user IDs: GET /v1/me → id):
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/today.redesign \
+  -d '{"enabled": true, "rollout_pct": 0, "allow_user_ids": ["<uuid>", "<uuid>"]}'
+# 10 % of everyone, then everyone:
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/today.redesign -d '{"enabled": true, "rollout_pct": 10}'
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/today.redesign -d '{"enabled": true, "rollout_pct": 100}'
+# Kill switch (off for everyone, testers included):
+curl -s -X PUT -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/today.redesign -d '{"enabled": false, "rollout_pct": 100}'
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/some.old_flag      # 204
+```
+
+`PUT` replaces the whole flag (`enabled` and `rollout_pct` required, a missing
+allow-list is empty) and answers `201` for a new key, `200` otherwise; the api logs
+every change (`msg="feature flag set"`). The app caches its answer for up to six hours,
+so a change reaches everyone within that. Rotate the key with
+`terraform apply -replace='random_password.admin_key["api"]'` in `infra/vault`.
+
+## Push (APNs)
+
+notify sends with token-based APNs (D73). Until the key exists it runs and counts
+`ryft_push_notifications_total{result="unconfigured"}`; tokens and preferences are
+stored meanwhile. Once the Apple Developer Program membership is active:
+
+1. Apple Developer → Certificates, IDs & Profiles → Keys → **+**, enable **Apple Push
+   Notifications service (APNs)**, download `AuthKey_<key id>.p8` (once). The same key
+   serves sandbox and production. The App ID `dev.timkrebs.ryft` needs the Push
+   Notifications capability (the app side adds it in Xcode).
+2. In `infra/vault/terraform.tfvars`, `service_secrets.notify = { APNS_KEY_ID, APNS_TEAM_ID,
+   APNS_KEY_P8 }` (all three; the .p8 as PEM or base64), then plan and apply. The
+   operator restarts notify; its log says `apns configured`.
+3. Check: register a debug build (`env: sandbox`), then
+   `kubectl -n ryft-notify logs deploy/notify | grep push` after the next morning sync,
+   and `ryft_push_notifications_total{result="sent"}` in Grafana.
+
+Revoking the key in Apple Developer makes APNs answer `403` (alert `APNsRejectsOurKey`).
+A device token APNs reports gone is deleted (`ryft_push_tokens_pruned_total`). Raise
+`push.enabled` (above) once sending works, so the app starts asking for permission.
 
 ## Scaling and disruptions
 

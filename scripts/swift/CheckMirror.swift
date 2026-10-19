@@ -45,7 +45,12 @@ let sessions = await decode([SessionSummary].self, "/v1/sessions")
 for s in sessions.prefix(3) {
     await decode(Session.self, "/v1/sessions/\(s.id.uuidString.lowercased())")
 }
-await decode(User.self, "/v1/me")
+let me = await decode(User.self, "/v1/me")
+precondition(Set(me.notifications.categories.keys) == Set(NotificationCategory.allCases.map(\.rawValue)), "every category")
+let config = await decode(RemoteConfig.self, "/v1/config")
+precondition(config.ttlSec == 21600 && config.flags["train.enabled"] != nil, "remote config")
+let patch = try! JSONEncoder().encode(NotificationPatch(quietHours: .some(nil)))
+precondition(String(data: patch, encoding: .utf8) == #"{"quiet_hours":null}"#, "a cleared quiet_hours encodes null")
 await decode(APIErrorBody.self, "/v1/trends?metric=nope", status: 422)
 let notFound = await decode(APIErrorBody.self, "/v1/nope", status: 404)
 precondition(notFound.requestId != nil, "error bodies must carry request_id")

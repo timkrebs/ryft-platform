@@ -55,11 +55,16 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | Publishes, `ok`/`error`: `ryft.ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), and `ryft.session.completed` as `session_completed` (api). A publish error does not fail the sync — this is the only place it shows; a failed `…/complete` publish answers `503`. |
-| `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted). |
-| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring | Messages received with a delivery count > 1. |
+| `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (last delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored` and `session_scored`. |
+| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received with a delivery count > 1 (`consumer` `scoring` or `notify`; a deferral counts). |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
 | `ryft_sleep_base_learned_total` | counter | `outcome` | scoring | Weekly sleep-baseline estimates (Sundays from 04:00 local, and `scoring learn-baselines`): `applied` (the baseline in use moved, the last 7 days were rescored), `kept` (same value, or set by hand), `insufficient` (fewer than 14 nights or 7 qualifying), `error`. A run of `error`s means the users' days or the baseline write failed; `applied` should be rare after the first weeks. |
+| `ryft_flag_evaluations_total` | counter | `key`, `result` | api | Feature flags evaluated for `GET /v1/config`, `on` or `off` per flag key. |
+| `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `unauthorized` (wrong or no `ADMIN_API_KEY`), `invalid`, `error`. |
+| `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
+| `ryft_apns_responses_total` | counter | `push_type`, `status` | notify | APNs answers per device request: `alert` or `background`, HTTP status (`200`, `400`, `403`, `410`, `429`, `5xx`) or `error` (no answer). |
+| `ryft_push_tokens_pruned_total` | counter | — | notify | Device tokens dropped because APNs said they are gone. |
 | `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
 | `ryft_train_sets_logged_total` | counter | — | api | Completed sets `PUT /v1/sessions/{id}` stored for the first time. |
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
@@ -100,6 +105,15 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Events handled by result | time series | `sum by (reason, result) (rate(ryft_events_handled_total[5m]))` |
 | NATS redeliveries | time series | `sum(rate(ryft_nats_redeliveries_total[5m]))` |
 | Publish errors | time series | `sum by (app, reason) (rate(ryft_events_published_total{result="error"}[5m]))` |
+
+**Row: Push**
+
+| Panel | Type | Query |
+| --- | --- | --- |
+| Notifications by result | stacked bars, 1 h buckets | `sum by (category, result) (increase(ryft_push_notifications_total[1h]))` |
+| APNs answers | time series | `sum by (push_type, status) (rate(ryft_apns_responses_total[5m]))` |
+| Tokens pruned (7 d) | stat | `sum(increase(ryft_push_tokens_pruned_total[7d]))` |
+| Flags served on / off | time series | `sum by (key, result) (rate(ryft_flag_evaluations_total[1h]))` |
 
 **Row: API**
 
@@ -145,6 +159,8 @@ NetworkPolicy rule in `ryft-nats` for 8222). For the in-cluster Postgres of
 | AccountDeletionIncomplete | `sum(increase(ryft_account_deletions_total{step=~"auth\|apple",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in or Apple grant still exists; check the keys) | 0m |
 | RateLimited | `sum(rate(ryft_rate_limited_total[10m])) > 1` (a client stuck in a retry loop, or limits too tight) | 10m |
 | SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |
+| PushFailing | `sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0` (no device reached; `unconfigured` before the APNs key exists is not a failure) | 0m |
+| APNsRejectsOurKey | `sum(increase(ryft_apns_responses_total{status="403"}[15m])) > 0` (the APNs key revoked, or key/team ID wrong) | 0m |
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory); after
 a restart it is absent until the next sync, so pair it with `absent()` if you want it

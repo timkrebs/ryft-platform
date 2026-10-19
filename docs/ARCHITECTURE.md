@@ -39,10 +39,11 @@ the same `samples` table with new `type` values — nothing else changes.
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
-| `scoring` | 8080 (health only) | Consume `ryft.ingested` and `ryft.session.completed` (one durable pull consumer); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today | Postgres, NATS |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, and Train: `/v1/exercises`, `/v1/plans`, `/v1/sessions` — see [`API.md`](API.md) | Postgres, NATS |
+| `scoring` | 8080 (health only) | Consume `ryft.ingested` and `ryft.session.completed` (one durable pull consumer); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `ryft.scored` (today's first recovery) and `ryft.session.scored` | Postgres, NATS |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), `GET /v1/config`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/flags` | Postgres, NATS |
+| `notify`  | 8080 (health only) | Consume `ryft.scored` and `ryft.session.scored` (its own durable consumer); send APNs pushes; every 15 min the no-data check | Postgres, NATS, APNs |
 
-All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
+All four are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
 share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
 schema: it runs once per deploy as the schema owner (a Job, or a one-shot compose
 service), applies each migration in a transaction under a transaction-level advisory
@@ -75,6 +76,22 @@ flight finish before the delete and later ones fail. Tokens of a deleted account
 `401`. A reconciler in each api pod (at start-up, then every 15 minutes) retries failed
 Supabase deletions and erases accounts that reappeared, e.g. after a restore.
 
+**Remote config.** `feature_flags` holds one row per flag (`enabled`, `rollout_pct`,
+`allow_user_ids`); `GET /v1/config` evaluates all of them for the caller with the pure
+`internal/flags` (D69). The operator changes flags through `/v1/admin/flags` with
+`ADMIN_API_KEY`, a bearer of its own, not a user token (`OPERATIONS.md` → Feature flags).
+
+**Push (notify).** The app registers its APNs token per install
+(`POST /v1/devices/{id}/push`, table `push_tokens`) and its preferences
+(`PATCH /v1/me/notifications`, columns on `users`). scoring announces two moments:
+`ryft.scored` when today first gets a recovery after a night with sleep, and
+`ryft.session.scored` once a completed session's day is scored. notify consumes both,
+loads what the message needs as `ryft_notify`, checks the category and quiet hours,
+claims `(user, day, category)` in `notifications_sent` and sends one APNs request per
+device (`internal/apns`, token-based, HTTP/2), with localisation keys the app resolves.
+A 15-minute timer sends the no-data reminder. Without an APNs key it counts instead of
+sending. Rules: D70–D73, payloads: `API.md` → Push notifications.
+
 **Request path.** Every service wraps its mux in the same chain (`internal/httpx`),
 outermost first: **Instrument** (a server-generated request ID in `X-Request-ID`, the log
 context and error bodies; one access-log line; the HTTP metrics labelled by route
@@ -91,10 +108,14 @@ generic `500` with the request ID while the details go to the log. Logs are JSON
 max age. `ryft.ingested` carries `{user_id, days[], reason, request_id}` (`request_id`:
 the request that caused it, for log correlation); `ryft.session.completed` carries
 `{user_id, session_id, day, request_id}` and is handled like an ingest event for that
-day. Every service is its own NATS user (`deploy/k8s/base/nats/nats.conf`, shared by
+day. `ryft.scored` (`{user_id, day, recovery, readiness, state, sleep_performance,
+sleep_min, request_id}`) and `ryft.session.scored` (`{user_id, session_id, day,
+request_id}`) go from scoring to notify. A work-queue stream gives each subject exactly
+one consumer: scoring's for the first two, notify's for these (D71). Every service is its own NATS user (`deploy/k8s/base/nats/nats.conf`, shared by
 compose and Kubernetes): ingest may only publish `ryft.ingested`, api `ryft.ingested`
-(recompute, session edits) and `ryft.session.completed`, and scoring alone may create the stream and its
-consumer, pull from it and ack. Replies go to a per-service inbox (`_INBOX_<service>`),
+(recompute, session edits) and `ryft.session.completed`, scoring `ryft.scored` and
+`ryft.session.scored`; scoring alone may create the stream and its
+consumer, pull from it and ack, and notify only its own consumer. Replies go to a per-service inbox (`_INBOX_<service>`),
 which is the only thing a service may subscribe to. `internal/events/permissions_test.go`
 checks this against a running NATS (CI smoke job). `reason: "recompute"`
 with two days means an inclusive range. Failures NAK with a 30 s delay, max 10
@@ -110,7 +131,9 @@ timer catches up.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
 - `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
-- **Train** (migrations 0011–0012, D57–D62): `exercises` and `plans` (built-ins with `user_id NULL` from the seeds, custom rows per user), `plan_days`, `plan_exercises`, `plan_enrollments` (one active per user), `sessions` → `session_exercises` → `session_sets` keyed by `(user_id, id)` with client-generated ids, `personal_records(user_id, exercise_id, kind)`. `workouts.muscular_load` / `session_id` say which workout carries a session's load.
+- `feature_flags(key)` — remote config (0014): `enabled`, `rollout_pct`, `allow_user_ids`.
+- `push_tokens(user_id, device_id)` — the app's APNs token per install (unique), `env`, `locale` (0015); `notifications_sent(user_id, day, category)` — what notify sent, claimed before sending. `users.notify_categories` (off switches), `quiet_from` / `quiet_to`.
+- **Train** (migrations 0011–0012, D58–D63): `exercises` and `plans` (built-ins with `user_id NULL` from the seeds, custom rows per user), `plan_days`, `plan_exercises`, `plan_enrollments` (one active per user), `sessions` → `session_exercises` → `session_sets` keyed by `(user_id, id)` with client-generated ids, `personal_records(user_id, exercise_id, kind)`. `workouts.muscular_load` / `session_id` say which workout carries a session's load.
 
 **Database roles** (migration 0009; `internal/db/roles_test.go` pins the matrix):
 
@@ -118,7 +141,8 @@ timer catches up.
 | --- | --- |
 | `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only |
 | `ryft_scoring` | read the raw tables, exercises and sessions; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes`, `muscular_load`, `session_id` of `workouts`, and create and delete only its own (`ryft-session`); update only the load columns of `sessions` |
-| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables, `feature_flags` and `push_tokens`; read and delete `notifications_sent` |
+| `ryft_notify` | read a user's `id`, `tz` and notification settings only; read and delete `push_tokens`; all of `notifications_sent`; read `devices.last_sync_at`, `samples` (user, type, start), the morning's score columns, a session's title, status and load, `personal_records` and exercise names (migration 0015) |
 
 None of them may create, alter or drop anything, or truncate. Every new table must grant
 the roles what they need in the same migration, and the grants test must be extended.
@@ -239,7 +263,9 @@ what that workload does. No credential is shared, and none is broader than its u
                                                              ▼          ▼
             ryft-migrate (Job, owner) ──5432──▶  Supabase: Supavisor pooler + Auth (public)
 
-  Vault (HCP): admin/ryft/{ingest,scoring,api,nats,migrate}, each with auth/kubernetes
+  ryft-notify (SA notify, PG ryft_notify, NATS user notify) ──443──▶ APNs; 5432 ▶ pooler
+
+  Vault (HCP): admin/ryft/{ingest,scoring,api,notify,nats,migrate}, each with auth/kubernetes
   bound to its namespace + service account, kv/config = that workload's keys only.
   The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
 ```
@@ -277,11 +303,12 @@ the services' own roles. The services scope every query by user themselves.
 ## Deployment
 
 `deploy/k8s/base/<service>` holds namespace-neutral manifests for each workload. The
-three services are distroless, non-root, with a read-only FS, startup/readiness/liveness
+four services are distroless, non-root, with a read-only FS, startup/readiness/liveness
 probes and Prometheus annotations. NATS 2.11 runs JetStream on a 2 Gi PVC with
 `nats.conf`. migrate is a one-shot Job. api and ingest have their own Ingress
-(`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB. `deploy/k8s/services/<service>`
-puts each into its namespace. `overlays/eks` composes the five namespaces on EKS, with
+(`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB; scoring and notify run one
+replica each. `deploy/k8s/services/<service>`
+puts each into its namespace. `overlays/eks` composes the six namespaces on EKS, with
 Secrets from Vault through the operator. `overlays/local-postgres` composes them with
 an in-cluster Postgres, a nightly `pg_dump` CronJob and generated per-namespace
 Secrets. Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).

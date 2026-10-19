@@ -1,8 +1,9 @@
 # RYFT platform — status
 
 State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
-Train (M3b, 2026-10-19; M3 itself is deferred, D58) and the sleep upgrades (M4,
-2026-10-19, not deployed yet). Contract:
+Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
+2026-10-19) and the push and remote-config core of M7 (2026-10-19); M4 and M7 are not
+deployed yet. Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -104,6 +105,19 @@ agreed extras):
 | Settings | `User.sleep_base_source` / `_learned_min` / `_learned_at`; `PATCH /v1/me` `sleep_base_manual` | `store.UpdateUser` |
 | Insights, trends | `sleep-consistency-low`, `nap-credit`, `baseline-learned`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min` | `internal/insights/rules.go` |
 
+**Push and remote config (M7 core, 2026-10-19)** — built and verified locally, not
+deployed yet; the weekly report stays in M7 (D69–D73):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Remote config | `GET /v1/config`: flags per user (kill switch, allow-list, stable SHA-256 buckets), the app's six keys seeded; `/v1/admin/flags` with its own `ADMIN_API_KEY` | migration 0014, `internal/flags`, `cmd/api/config.go`, D69 |
+| Token registry | `POST` / `DELETE /v1/devices/{id}/push`; a token moves to the account that registers it last; erased with the account | migration 0015, `store/push.go`, D72 |
+| Preferences | `PATCH /v1/me/notifications` (categories, quiet hours), `User.notifications` | `cmd/api/push.go` |
+| notify | New service and namespace `ryft-notify`, role `ryft_notify`, NATS user `notify`: `MORNING_SCORE` + silent refresh on `ryft.scored`, `SESSION_SCORED` / `PR` on `ryft.session.scored`, `SYNC_STALE` after 20 h; claim per user/day/category, gone tokens pruned, quiet hours honoured; counts instead of sending without an APNs key | `cmd/notify`, `internal/notify`, `internal/apns`, D70–D73 |
+| Events | scoring publishes `ryft.scored` (today's first recovery after a night with sleep) and `ryft.session.scored` (instead of notify reading `ryft.session.completed`, which the work queue gives to scoring alone) | `internal/events`, `nats.conf`, D71 |
+| Payloads | `loc-key` + `loc-args`, en/de texts pinned in `notify.Catalog` and listed in `API.md`; arguments formatted per install language | `internal/notify/messages.go` |
+| Ops | Manifests (Deployment, Service, NetworkPolicy with 443 for APNs), local-postgres and EKS overlays, CI image, `infra/vault` service entry with all-or-none APNs keys, metrics and two alerts | `deploy/k8s/base/notify`, `infra/vault`, `OBSERVABILITY.md` |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -120,6 +134,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `make check-swift` | the Swift mirror in `API.md` decodes every endpoint, the Train ones included; the app's current models (`../app`) decode every endpoint they call |
 | Train (2026-10-19) | `go test ./...` with the strength calibration pinned; Postgres integration tests for the Train store (merge, conflict, replace, ownership, enrolment through a whole plan, account deletion), the seeds (idempotent, fixed ids), the grants and the Supabase shape, and the scoring engine (session-only day, hand-over to a later HealthKit workout, deletion); NATS permission tests (api may publish `ryft.session.completed`, ingest may not); `make up && make smoke` over the existing volume with 0011–0012 applied, incl. the Train block of `check_api.py`; `golangci-lint` 0 issues; `make k8s-validate` |
 | Sleep upgrades (M4, 2026-10-19) | `go test -race ./...` with the pins (consistency 85/55 and the midnight wrap, quality 91 and 82, restorative, nap counting and the split, the planner's API example, learning 14/7/clamp); Postgres integration tests: migration 0013 (manual marking, scoring's column grants, RLS on the Supabase shape), the baseline rules in the store (manual wins, back to learned or 460), `SetLearnedBase` as `ryft_scoring`, the engine over 21 nights (nap credit, need terms, consistency, quality) and learning (applied with the week rescored; manual kept); `make up && make smoke` over the existing volume with 0013 applied and 21 synthetic days with a 40-min nap, including the new `check_api.py` block (nap credit, quality formula, consistency, bedtimes, planner, `PATCH` manual and back, `422`s) and with the scoring commit alone; `make check-swift` (the mirror decodes `SleepPlan`); `golangci-lint` 0 issues; `make k8s-validate`. `scoring learn-baselines` ran in compose (all users `insufficient` on synthetic data, whose green mornings follow hard days). |
+| Push and remote config (M7 core, 2026-10-19) | `go test -race ./...`: flag buckets pinned (and checked with Python's hashlib), evaluation and key rules; the APNs client against an `httptest` HTTP/2 server (headers, priorities, the provider token reused and renewed, `ExpiredProviderToken` retried once, gone tokens); the notify service with a fake store and APNs (once per day, per-device language, deferral to the end of quiet hours, muted, stale day, pruning, release and retry when APNs is down, nothing claimed without a key, session vs record, the stale check by day and hour); the catalog (every key has en and de with the same arguments). Postgres integration tests: migrations 0014–0015 on plain Postgres and the Supabase shape (grants, RLS policies), notify's queries **as `ryft_notify`** (tokens, claims, stale candidates, the morning score, the session notice with records), tokens moving between accounts, preferences, account deletion of the new tables, the engine's morning hook (today only, not on a rescore), the admin and config handlers. NATS permission tests against compose (scoring may publish the two new subjects, notify may only create its consumer, pull and ack). `make up && make smoke` with notify running: config shape, admin allow-list/rollout/kill switch/422s, token registry, preferences, and **the morning path end to end** (a new user's sync → scoring → `ryft.scored` → notify, seen in its `/metrics`); `make check-swift` (mirror decodes `RemoteConfig` and `User.notifications`, `NotificationPatch` encodes `null`; the app's current models still decode); `infra/vault` `terraform test` 15 runs; `golangci-lint` 0 issues; `make k8s-validate` (197 resources). Not verified: a real APNs send (no key yet). |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
 | `infra/vault` | `validate`, tflint clean, `terraform test` (mocked, 6 runs): keys per namespace, owner password only in migrate, bcrypt-only NATS, role bindings, policy, Pod Security, golden operator manifests (fails with the old namespace path) |
@@ -161,19 +176,37 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
    `SUPABASE_SECRET_KEY` (open). Record the run here. It now also runs the Train checks,
    which leave a custom exercise, an enrolment and sessions on the smoke user.
 9. **Train (M3b):** done (`3a0e9a1`).
-10. **Sleep upgrades (M4):** open. Push; once CI is green, put its short SHA in
-    `deploy/k8s/overlays/eks/kustomization.yaml` (all four `newTag`, quoted) and
-    `make k8s-apply-eks`. The migrate job applies 0013; nothing changes in Terraform,
-    Vault or NATS. Then fill history with the new rules and learn the baselines once:
+10. **Sleep upgrades (M4) and push + remote config (M7 core):** open, one deploy.
+    **Vault first**, because notify is a new service: its namespace, service account,
+    role and NATS passwords, operator manifests (`overlays/vault-namespaces/notify`) and
+    the api's `ADMIN_API_KEY` come from `infra/vault`, and NATS will not start without
+    `NATS_PASSWORD_NOTIFY`:
+
+    ```bash
+    cd infra/vault && terraform plan -out=tfplan      # + namespace ryft-notify, Vault ns, role, kv; api gains ADMIN_API_KEY
+    terraform apply tfplan && cd ../..                # warns: no APNs key (expected until Apple accepts the membership)
+    ```
+
+    Then push; once CI is green, put its short SHA in
+    `deploy/k8s/overlays/eks/kustomization.yaml` (all **five** `newTag`, notify included,
+    quoted) and `make k8s-apply-eks`. The migrate job applies 0013–0015 and sets four
+    role passwords; NATS rolls (its config gained notify); notify starts and logs that
+    APNs is not configured. Then fill history with the M4 rules and learn the baselines
+    once:
 
     ```bash
     scripts/rescore_all.sh                                   # 400 days, every user
     kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines
+    curl -s https://api.ryftapp.de/v1/config -H "Authorization: Bearer <token>"   # the six flags
     ```
 
     Until the rescore, older days report their whole need as `base` and have no
     `sleep_quality` / `sleep_consistency` / `nap_min`; the Sleep screen already shows
     the new quality for them. The weekly estimate then runs on its own every Sunday.
+11. **APNs key** (blocked like the Apple keys in step 3): once the membership is
+    there, create the APNs key and add it to `service_secrets.notify`
+    (`OPERATIONS.md` → Push), plan and apply, then raise `push.enabled`
+    (`OPERATIONS.md` → Feature flags).
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
@@ -186,6 +219,10 @@ Known gaps, accepted for the alpha:
   not by Go tests against a database.
 - **M3 is deferred** (D58): no strain target or bands, and strength workouts without a
   logged session get no muscular load (M3's duration estimate).
+- **Push is unproven against Apple**: no APNs key yet, so no real send; the client is
+  tested against a local HTTP/2 server only. The morning push waits for quiet hours
+  through a JetStream redelivery (up to a day), and a failed publish of `ryft.scored`
+  loses that morning's push. One notify replica.
 - **M4 calibration rests on the pins** in `SCORING.md` → Sleep: the 40 % restorative
   target, the quality weights and the learned-baseline qualifier are judgement calls
   (D65, D67), not fitted to data. The learned baseline's `applied` path is tested
@@ -232,6 +269,15 @@ Known gaps, accepted for the alpha:
     `ended_at` with `…/complete` when completing from the offline queue. Send
     `Accept-Language` for German exercise names. `workout_id` can change once the
     watch's workout syncs; merge the activity row by `Workout.session_id`.
+  - **Remote config and push** (`API.md` → `GET /v1/config`, Push notifications;
+    Swift mirror): load `/v1/config` on launch and after `ttl_sec`; register the APNs
+    token with `POST /v1/devices/{id}/push` (the sync `device_id`, `env` from the
+    build, the app language) on every change and `DELETE` it on sign-out; per-category
+    toggles and quiet hours through `PATCH /v1/me/notifications` (`NotificationPatch`
+    encodes `null` to clear). Ship the localisation keys from `API.md` in
+    `Localizable.xcstrings` (en and de) and the categories `MORNING_SCORE`,
+    `SESSION_SCORED`, `PR`, `SYNC_STALE`; open `ryft.url`; refresh `ryft.day` on the
+    silent push. `push.enabled` stays off until the APNs key exists.
   - **Sleep upgrades** (`API.md` changelog 2026-10-19, Swift mirror): decode the new
     `DailyScore` fields, `SleepDetail.need` / `restorative`, `SleepRange.avg_consistency`
     / `bedtimes`, `User.sleep_base_source` / `_learned_min` / `_learned_at`. `quality` is
