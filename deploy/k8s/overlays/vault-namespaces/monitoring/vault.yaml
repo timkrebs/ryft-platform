@@ -45,4 +45,6 @@ spec:
       excludeRaw: true
   rolloutRestartTargets:
     - kind: DaemonSet
-      name: grafana-cloud-alloy
+      name: grafana-cloud-alloy-daemonset
+    - kind: Deployment
+      name: grafana-cloud-alloy-deployment
