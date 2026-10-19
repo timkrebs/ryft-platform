@@ -1,5 +1,5 @@
 terraform {
-  required_version = "~> 1.10"
+  required_version = "1.16.6"
 
   required_providers {
     aws = {
@@ -8,13 +8,14 @@ terraform {
     }
   }
 
-  # Remote state in the bucket from infra/aws/state (docs/OPERATIONS.md → Terraform
-  # state). Bucket and KMS key come from the git-ignored infra/backend.hcl:
-  #   terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
-  backend "s3" {
-    key          = "aws/cluster.tfstate"
-    region       = "eu-central-1"
-    encrypt      = true
-    use_lockfile = true
+  # State in HCP Terraform (docs/OPERATIONS.md → Terraform state): stored, locked
+  # and versioned there; plans and applies run locally (execution mode Local).
+  # One workspace per root; this one holds the cluster: VPC, EKS, node group, core add-ons.
+  cloud {
+    organization = "tim-krebs-org"
+
+    workspaces {
+      name = "ryft-prod-euc1-platform"
+    }
   }
 }

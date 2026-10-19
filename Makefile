@@ -6,7 +6,7 @@ SERVICES := ingest scoring api migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-state
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -85,27 +85,41 @@ monitoring-apply:
 	helm upgrade --install grafana-cloud grafana/k8s-monitoring --version $(K8S_MONITORING_VERSION) \
 	  --namespace monitoring --values deploy/monitoring/k8s-monitoring.yaml --wait --timeout 10m
 
-# Move every Terraform root's state into the S3 bucket from infra/aws/state, once
-# (docs/OPERATIONS.md → Terraform state). Each local state is copied to
-# ~/.ryft-tfstate-rescue/<time>/ first (it holds secrets: delete that copy once all
-# roots plan cleanly). Answer "yes" when Terraform asks to copy the existing state;
-# afterwards the remote state must hold as many resources as the local one did, or
-# the target stops and says how to push the copy.
-TF_ROOTS := infra/aws infra/aws/dns infra/aws/kubernetes infra/vault
-tf-migrate-state:
-	@test -f infra/backend.hcl || { echo "infra/backend.hcl missing: (cd infra/aws/state && terraform init && terraform apply && terraform output -raw backend_hcl > ../../backend.hcl)"; exit 1; }
-	@set -e; rescue=$$HOME/.ryft-tfstate-rescue/$$(date +%Y%m%dT%H%M%S); mkdir -p "$$rescue"; chmod 700 "$$rescue"; \
-	for r in $(TF_ROOTS); do \
-	  name=$$(echo $$r | tr / _); \
-	  if [ -s $$r/terraform.tfstate ]; then cp $$r/terraform.tfstate "$$rescue/$$name.tfstate"; \
-	  elif [ -s $$r/terraform.tfstate.backup ]; then cp $$r/terraform.tfstate.backup "$$rescue/$$name.tfstate"; fi; \
-	  want=$$(jq '[.resources[]?.instances[]?] | length' "$$rescue/$$name.tfstate" 2>/dev/null || echo 0); \
-	  (cd $$r && terraform init -migrate-state -backend-config=$(CURDIR)/infra/backend.hcl); \
-	  got=$$(cd $$r && terraform state list 2>/dev/null | wc -l | tr -d ' '); \
-	  echo "$$r: $$got resources in S3, $$want in the local state"; \
-	  if [ "$$got" -lt "$$want" ]; then \
-	    echo "✗ $$r: the remote state is incomplete. Push the copy: (cd $$r && terraform state push -force $$rescue/$$name.tfstate)"; exit 1; fi; \
-	done; echo "✓ all states in S3; copies in $$rescue (secrets: delete after the plans are clean)"
+# Move every Terraform root's state into its HCP Terraform workspace, once
+# (docs/OPERATIONS.md → Terraform state). Needs `terraform login` and the four
+# workspaces, each with execution mode Local and Terraform 1.16.6. The source is
+# each root's last full local state: terraform.tfstate, or terraform.tfstate.backup
+# where the S3 attempt left terraform.tfstate empty. It is copied to
+# ~/.ryft-tfstate-rescue/<time>/ first. init uses -reconfigure, so nothing is
+# migrated from S3; a workspace that already holds state is left alone, and after a
+# push the workspace must hold as many resources as the local state.
+TF_ORG   := tim-krebs-org
+TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
+            infra/aws/kubernetes:ryft-prod-euc1-kubernetes infra/vault:ryft-prod-euc1-vault
+tf-migrate-hcp:
+	@set -e; \
+	token=$$(jq -r '.credentials["app.terraform.io"].token // empty' $$HOME/.terraform.d/credentials.tfrc.json 2>/dev/null); \
+	[ -n "$$token" ] || { echo "✗ not logged in to HCP Terraform: terraform login"; exit 1; }; \
+	rescue=$$HOME/.ryft-tfstate-rescue/$$(date +%Y%m%dT%H%M%S); mkdir -p "$$rescue"; chmod 700 "$$rescue"; \
+	for pair in $(TF_ROOTS); do \
+	  r=$${pair%%:*}; ws=$${pair#*:}; \
+	  attrs=$$(curl -fsS -H "Authorization: Bearer $$token" \
+	    https://app.terraform.io/api/v2/organizations/$(TF_ORG)/workspaces/$$ws) || { echo "✗ workspace $$ws not found in $(TF_ORG)"; exit 1; }; \
+	  mode=$$(echo "$$attrs" | jq -r '.data.attributes["execution-mode"]'); \
+	  [ "$$mode" = local ] || { echo "✗ $$ws: execution mode is $$mode; set it to Local (Settings → General)"; exit 1; }; \
+	  src=$$r/terraform.tfstate; [ -s $$src ] || src=$$r/terraform.tfstate.backup; \
+	  [ -s $$src ] || { echo "✗ $$r: no local state to move"; exit 1; }; \
+	  cp $$src "$$rescue/$$ws.tfstate"; \
+	  want=$$(jq '[.resources[]?.instances[]?] | length' $$src); \
+	  (cd $$r && terraform init -reconfigure -input=false >/dev/null); \
+	  have=$$(cd $$r && terraform state list | wc -l | tr -d ' '); \
+	  if [ "$$have" -gt 0 ]; then echo "• $$ws already holds $$have resources: left as it is"; continue; fi; \
+	  (cd $$r && terraform state push "$$rescue/$$ws.tfstate"); \
+	  got=$$(cd $$r && terraform state list | wc -l | tr -d ' '); \
+	  [ "$$got" -ge "$$want" ] || { echo "✗ $$ws: $$got resources after the push, $$want expected"; exit 1; }; \
+	  echo "✓ $$r → $$ws: $$got resources"; \
+	done; \
+	echo "✓ every state is in HCP Terraform; copies in $$rescue (they hold secrets: delete them once every root plans cleanly)"
 
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
 k8s-apply-local:

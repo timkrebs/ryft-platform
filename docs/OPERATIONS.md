@@ -43,6 +43,7 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 
 | Step | Command | Done when |
 | --- | --- | --- |
+| 0. State | the four HCP Terraform workspaces with execution mode Local, Terraform 1.16.6, `terraform login` | see **Terraform state** below; states from before HCP: `make tf-migrate-hcp` once |
 | 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` | `terraform output name_servers` lists four awsdns servers |
 | 2. Delegate | GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → those four | `dig NS ryftapp.de @a.nic.de +short` shows them |
 | 3. Cluster | `cd infra/aws && terraform apply`, then `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
@@ -52,10 +53,9 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
 | 8. App | `make k8s-apply-eks` | see below |
 | 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
-| 10. State | `infra/aws/state`, then `make tf-migrate-state` (once, before the next `terraform init` in any root) | see **Terraform state** below |
 
-All Terraform roots keep their state in S3 after step 10. A fresh checkout initialises
-each root with `terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl`.
+Every Terraform root keeps its state in its HCP Terraform workspace (execution mode
+Local): `terraform init` in a fresh checkout connects to it after `terraform login`.
 
 `make k8s-apply-eks` runs these steps, waiting at each one:
 
@@ -264,35 +264,50 @@ the stack's members to yourself.
 
 ## Terraform state
 
-**Do this before the next `terraform init` in any root:** the backend blocks need
-`infra/backend.hcl`, and without it `init` asks for a bucket and fails. To keep local
-state for a while instead, put a git-ignored `backend_override.tf` with
-`terraform { backend "local" {} }` into the root.
+Every root keeps its state in its own **HCP Terraform** workspace (organization
+`tim-krebs-org`, D56). HCP stores, locks and versions the state and records every run.
+Plans and applies run on your machine (execution mode **Local**), with your AWS and
+Vault credentials; HCP never holds cloud credentials.
 
-Every root's state used to live on your machine. The states of `infra/vault` and
-`infra/aws` hold credentials, so they belong in an encrypted, versioned, locked store.
-To move them:
+| Root | Workspace |
+| --- | --- |
+| `infra/aws` | `ryft-prod-euc1-platform` |
+| `infra/aws/dns` | `ryft-prod-euc1-dns` |
+| `infra/aws/kubernetes` | `ryft-prod-euc1-kubernetes` |
+| `infra/vault` | `ryft-prod-euc1-vault` |
 
-```bash
-cd infra/aws/state && terraform init && terraform apply     # bucket ryft-tfstate-<account>-eu-central-1, KMS key, local state
-terraform output -raw backend_hcl > ../../backend.hcl       # bucket + key ARN; git-ignored
-cd ../../.. && make tf-migrate-state                         # each root: init -migrate-state, Terraform asks before copying
-(cd infra/aws && terraform plan)                             # no changes: the state arrived
-```
+**Moving the states there (once):**
 
-`make tf-migrate-state` first copies each local state to `~/.ryft-tfstate-rescue/<time>/`.
-After each root it compares the resource count in S3 with the local one, and stops with
-the `terraform state push` command if S3 holds less. **If a migration left S3 empty or
-incomplete** (seen on 2026-10-19: the local `terraform.tfstate` files were emptied, but
-nothing reached S3), the last full state is `terraform.tfstate.backup` next to it. Push
-that, and use `-force` if the remote already has a different, partial state:
-`terraform state push [-force] terraform.tfstate.backup`. Then `terraform plan` must not
-want to create anything that already exists.
+1. In HCP Terraform, create the two missing workspaces (`-dns`, `-kubernetes`) as
+   CLI-driven workspaces. On all four, set *Settings → General → Execution Mode* to
+   **Local** and the Terraform version to **1.16.6**. Restrict team access: the vault
+   workspace's state contains every RYFT secret.
+2. Install exactly Terraform 1.16.6 (`tfenv install 1.16.6 && tfenv use 1.16.6`, or the
+   binary from releases.hashicorp.com), then run `terraform login`.
+3. `make tf-migrate-hcp`. For each root it:
+   - checks the workspace exists and runs locally;
+   - copies the last full local state to `~/.ryft-tfstate-rescue/<time>/` (that is
+     `terraform.tfstate.backup` where the S3 attempt emptied `terraform.tfstate`);
+   - runs `terraform init -reconfigure`, so nothing comes over from S3;
+   - pushes the state into the empty workspace and checks the resource count.
 
-When every root plans cleanly, delete the old local `terraform.tfstate*` files and the
-rescue copies; they contain the same secrets in plaintext. Locking uses S3 lockfiles (`use_lockfile`), so
-there is no DynamoDB table. The bootstrap root keeps its own small state locally; it
-holds no secrets. Overwritten state versions are kept 90 days.
+   A workspace that already holds state is left alone.
+4. **`infra/vault` only:** the failed apply of 2026-10-19 created the Kubernetes
+   namespace `monitoring`, which the old state does not know:
+   `terraform import 'kubernetes_namespace_v1.service["monitoring"]' monitoring`.
+5. `terraform plan` in every root. Nothing that already exists may show as *create*.
+6. Delete the old local `terraform.tfstate*` and the rescue copies. They contain the
+   same secrets in plaintext.
+7. Retire the S3 bucket of the earlier attempt:
+   `cd infra/aws/state && terraform apply && terraform destroy` (it now has
+   `force_destroy`), then `rm -rf infra/aws/state infra/backend.hcl`.
+
+If `terraform init` ever offers to *migrate* state from another backend, answer **no**
+and use the steps above: the S3 bucket holds only a partial Vault state.
+
+**CI** checks every root offline on every push: `fmt`, `init -backend=false`,
+`validate`, `tflint` and the mocked `terraform test`, with Terraform 1.16.6. It has no
+HCP token and no cloud credentials and never touches a workspace.
 
 ## Budget
 

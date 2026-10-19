@@ -1,3 +1,7 @@
+# RETIRED (D56): the four roots keep their state in HCP Terraform now. This root
+# only exists so that `terraform apply` then `terraform destroy` here removes the
+# bucket and its key; delete the directory afterwards.
+#
 # One bucket for the remote state of every root (infra/aws, infra/aws/dns,
 # infra/aws/kubernetes, infra/vault), one key each, locked with S3 lockfiles.
 # The states hold every credential infra/vault writes, so the bucket is private,
@@ -23,10 +27,9 @@ resource "aws_kms_alias" "state" {
 
 resource "aws_s3_bucket" "state" {
   bucket = local.bucket
-
-  lifecycle {
-    prevent_destroy = true
-  }
+  # Retired: the states moved to HCP Terraform (D56). force_destroy lets
+  # `terraform destroy` remove the bucket with every object version.
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_ownership_controls" "state" {

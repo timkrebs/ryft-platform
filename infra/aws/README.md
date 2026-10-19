@@ -46,9 +46,11 @@ Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api p
 
 ## Usage
 
-Requires Terraform ≥ 1.10, AWS credentials for the target account, `aws` CLI, `kubectl`
-and `dig`. Every root keeps local state (`terraform.tfstate`, git-ignored) until you
-enable a backend (`terraform.tf`).
+Requires Terraform 1.16.6, `terraform login` to HCP Terraform (organization
+`tim-krebs-org`), AWS credentials for the target account, `aws` CLI, `kubectl` and `dig`.
+Each root keeps its state in its own HCP Terraform workspace (`ryft-prod-euc1-platform`,
+`-dns`, `-kubernetes`), with execution mode Local. Plans and applies run here, and HCP
+stores, locks and versions the state (`docs/OPERATIONS.md` → Terraform state).
 
 **1. DNS zone** — once:
 

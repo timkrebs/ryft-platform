@@ -1,5 +1,5 @@
-# Every push: vet, race tests, lint, manifest validation and the end-to-end smoke
-# test; then build the three images and push them to
+# Every push: vet, race tests, lint, manifest validation, the end-to-end smoke test
+# and every Terraform root (offline); then build the images and push them to
 # ghcr.io/timkrebs/ryft/<service>:<short-sha> (and :latest on main).
 name: ci
 
@@ -85,6 +85,42 @@ jobs:
         run: docker compose logs --no-color
       - if: always()
         run: make down CONTAINER=docker
+
+  # Every Terraform root, offline: no HCP Terraform token, no cloud credentials. State
+  # lives in HCP Terraform and plans/applies run on the operator's machine
+  # (docs/OPERATIONS.md → Terraform state); CI only proves the code is sound.
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        root: [infra/aws, infra/aws/dns, infra/aws/kubernetes, infra/vault]
+    defaults:
+      run:
+        working-directory: ${{ matrix.root }}
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: v0.61.0
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.terraform-plugin-cache
+          key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.root)) }}
+      - run: terraform fmt -check -recursive
+      # -backend=false: never touch the HCP Terraform workspace from CI.
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - run: tflint --init && tflint --format compact
+      - run: terraform test
 
   images:
     if: github.event_name == 'push'

@@ -1,5 +1,5 @@
 terraform {
-  required_version = "~> 1.10"
+  required_version = "1.16.6"
 
   required_providers {
     vault = {
@@ -24,16 +24,16 @@ terraform {
     }
   }
 
-  # Remote state in the bucket from infra/aws/state (docs/OPERATIONS.md → Terraform
-  # state). Bucket and KMS key come from the git-ignored infra/backend.hcl:
-  #   terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
+  # State in HCP Terraform (docs/OPERATIONS.md → Terraform state): stored, locked
+  # and versioned there; plans and applies run locally (execution mode Local).
+  # One workspace per root; this one holds Vault namespaces, auth and secrets.
   # This state holds every credential the root writes into Vault (generated
-  # passwords, the owner password, tokens) in plaintext; the bucket is private,
-  # TLS-only and KMS-encrypted, so reading it needs both S3 and KMS permissions.
-  backend "s3" {
-    key          = "vault.tfstate"
-    region       = "eu-central-1"
-    encrypt      = true
-    use_lockfile = true
+  # passwords, the owner password, tokens): workspace access is secret access.
+  cloud {
+    organization = "tim-krebs-org"
+
+    workspaces {
+      name = "ryft-prod-euc1-vault"
+    }
   }
 }

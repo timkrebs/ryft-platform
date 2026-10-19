@@ -72,7 +72,7 @@ agreed extras):
 | Edge rate limit | 20 r/s, burst 50 per client IP (Traefik), client IPs preserved by the NLB | D53 |
 | Logs | Fluent Bit → CloudWatch `/ryft/ryft-prod-euc1/containers`, KMS, 14 days, RYFT namespaces and Traefik only | `infra/aws/kubernetes/logs.tf`, D52 |
 | Metrics | Grafana Cloud `k8s-monitoring` in namespace `monitoring`, token from Vault, alert rules; `/metrics` on port 9090 | `deploy/monitoring`, D51 |
-| Terraform state | S3 bucket with KMS and lockfiles for all four roots | `infra/aws/state`, D54 |
+| Terraform state | HCP Terraform, one workspace per root, execution Local; `make tf-migrate-hcp`; CI checks every root offline | D56 |
 | Budget | AWS Budgets monthly alarm, 80 % actual and 100 % forecast | `infra/aws/budget.tf`, D55 |
 | Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
 | Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
@@ -107,9 +107,11 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 Built and tested, applied by nobody yet: everything in **After go-live**. Your steps,
 in this order:
 
-1. **Remote state first.** The four roots now declare the S3 backend, so `terraform init`
-   fails without `infra/backend.hcl`. Run `infra/aws/state`, then
-   `make tf-migrate-state` (`OPERATIONS.md` → Terraform state).
+1. **State into HCP Terraform first** (`OPERATIONS.md` → Terraform state). Create the
+   `-dns` and `-kubernetes` workspaces, set all four to execution mode Local with
+   Terraform 1.16.6, install 1.16.6, `terraform login`, then `make tf-migrate-hcp`. Then
+   `terraform import 'kubernetes_namespace_v1.service["monitoring"]' monitoring` in
+   `infra/vault`, plan every root, and retire the S3 bucket.
 2. **Supabase in Frankfurt:** new project and the full checklist (`SUPABASE.md` → Moving
    the project to Frankfurt), including the Apple key for revocation
    (`service_secrets.api.APPLE_*`). Done on 2026-10-19.
@@ -181,11 +183,11 @@ Images (CI does this on push once the repo is on GitHub; by hand):
 make push REGISTRY=ghcr.io/timkrebs/ryft            # ingest, scoring, api, migrate: :<short-sha> and :latest
 ```
 
-EKS, in order (each Terraform root applied by you; Terraform state never leaves your
-machine; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
+EKS, in order (each Terraform root applied by you from your machine; state in HCP
+Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
 
 ```bash
-# After `make tf-migrate-state`, every `terraform init` takes -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl
+# State: HCP Terraform workspaces (execution Local), after `terraform login` and, once, `make tf-migrate-hcp`
 (cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
 # GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
 (cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)

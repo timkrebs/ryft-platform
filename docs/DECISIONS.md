@@ -728,6 +728,9 @@ namespace, since Traefik references middlewares within a namespace.
 
 ## D54 — Remote state: one bucket, partial backend configuration
 
+*Superseded by D56.* The migration emptied the four local states without writing them
+to S3.
+
 `infra/aws/state` creates one S3 bucket for all four roots, each with its own key and S3
 lockfiles. The bucket is versioned (90 days of old versions), private, TLS-only and
 encrypted with its own KMS key. The backend blocks hold only key, region and locking.
@@ -745,3 +748,32 @@ Its `apple-app-site-association` lists `webcredentials` already, so password Aut
 works for email accounts, and `applinks` under `/auth/*` for later universal links.
 Apple fetches it without following redirects, so `www` redirects to the apex and the app
 names `ryftapp.de` itself.
+
+## D56 — State in HCP Terraform, one workspace per root, runs stay local
+
+The S3 attempt (D54) failed in the worst way. `terraform init -migrate-state` emptied
+all four local states without writing them to the bucket, and an apply against the
+empty Vault state tried to recreate existing namespaces. The last full states survived
+only in `terraform.tfstate.backup`. The user moved state to HCP Terraform (organization
+`tim-krebs-org`).
+
+- **One workspace per root.** `ryft-prod-euc1-platform` (`infra/aws`),
+  `ryft-prod-euc1-dns`, `ryft-prod-euc1-kubernetes` and `ryft-prod-euc1-vault`.
+  Merging the three AWS roots into one would have meant cross-root state moves right
+  after the incident. It would also have made the Kubernetes and Helm providers depend
+  on a cluster being created in the same run, so the separation stays.
+- **Local execution.** HCP stores, locks and versions the state and records each run.
+  Plans and applies stay on the operator's machine with the operator's credentials, as
+  before, so no cloud credentials sit in HCP. `infra/vault` keeps writing the operator
+  manifests into the repository, and the providers keep using `aws eks get-token`.
+  Remote execution would need dynamic credentials (AWS OIDC, Vault JWT), Kubernetes
+  access without the aws CLI, and the manifests as outputs; it can come later.
+- **Pinned version.** Terraform is pinned to exactly `1.16.6`, as the user asked, in the
+  code, in CI and in the workspaces.
+- **Migration with checks.** `make tf-migrate-hcp` refuses unless the workspace exists
+  and runs locally, keeps a copy of each state outside the repository, initialises with
+  `-reconfigure` so that no partial S3 state can travel, pushes only into an empty
+  workspace, and compares resource counts.
+- **CI** validates, lints and tests every root offline (`init -backend=false`): no HCP
+  token and no credentials in GitHub, and CI never writes state. Speculative plans on
+  pull requests would need remote execution.

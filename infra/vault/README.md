@@ -66,13 +66,15 @@ the pods themselves have no service-account token at all.
 cd infra/vault
 cp terraform.tfvars.example terraform.tfvars      # git-ignored; fill in the Supabase values
 export VAULT_TOKEN=…        # HCP portal → Vault cluster → New admin token; the address comes from tfvars
+terraform login                                   # once: HCP Terraform (state)
 terraform init && terraform test                  # mocked, no credentials needed
 terraform plan -out=tfplan && terraform apply tfplan
 terraform output                                   # namespaces, roles, key names (never values)
 ```
 
-The state holds every credential this root writes into Vault in plaintext. Keep it on
-an encrypted disk, or move it to an encrypted remote backend (`terraform.tf`).
+The state holds every credential this root writes into Vault in plaintext. It lives in
+the HCP Terraform workspace `ryft-prod-euc1-vault` (execution mode Local): access to that
+workspace is access to every RYFT secret, so keep its team access to yourself.
 
 Then `make k8s-apply-eks` from the repo root applies the generated operator manifests,
 waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
