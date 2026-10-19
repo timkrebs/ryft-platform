@@ -175,13 +175,31 @@ func Permanent(err error) error { return permanentError{err} }
 // session event as an IngestedEvent for its day). fn returning an error NAKs
 // the message so JetStream redelivers it after a delay.
 func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(context.Context, model.IngestedEvent) error) error {
-	cons, err := b.js.CreateOrUpdateConsumer(ctx, StreamName, jetstream.ConsumerConfig{
+	cfg := jetstream.ConsumerConfig{
 		Durable:        ConsumerScoring,
 		FilterSubjects: []string{SubjectIngested, SubjectSessionCompleted},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        5 * time.Minute,
 		MaxDeliver:     maxDeliver,
-	})
+	}
+	var cons jetstream.Consumer
+	var err error
+	for attempt := 1; ; attempt++ {
+		cons, err = b.js.CreateOrUpdateConsumer(ctx, StreamName, cfg)
+		// Moving the existing durable to a second filter subject was once answered
+		// without the subjects (NATS 2.11.17, 2026-10-19, while the previous pod still
+		// pulled), which nats.go reports as unsupported; the same request a second
+		// later succeeded. Retry that instead of exiting.
+		if err == nil || !errors.Is(err, jetstream.ErrConsumerMultipleFilterSubjectsNotSupported) || attempt == 5 {
+			break
+		}
+		log.Warn("consumer update not confirmed yet, retrying", "err", err, "attempt", attempt)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("ensure consumer: %w", err)
 	}
