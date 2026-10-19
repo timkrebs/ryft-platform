@@ -7,7 +7,8 @@ environment = "prod"
 # Who may reach the Kubernetes API. Your own address(es) (curl -s https://checkip.amazonaws.com)
 # AND HCP Vault's egress addresses: its Kubernetes auth calls TokenReview on every login
 # (infra/vault). Without Vault's, secret syncs stop; leave 0.0.0.0/0 until you know them.
-endpoint_public_access_cidrs = ["203.0.113.10/32"]
+# The API itself still requires IAM authentication.
+endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 deletion_protection = true
 

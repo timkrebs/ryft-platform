@@ -186,6 +186,16 @@ run "rejects_invalid_api_cidr" {
   expect_failures = [var.endpoint_public_access_cidrs]
 }
 
+run "rejects_a_documentation_api_cidr" {
+  command = plan
+
+  variables {
+    endpoint_public_access_cidrs = ["198.51.100.7/32", "203.0.113.10/32"]
+  }
+
+  expect_failures = [var.endpoint_public_access_cidrs]
+}
+
 run "budget_alarm_only_with_a_recipient" {
   command = plan
 
