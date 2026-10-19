@@ -6,3 +6,6 @@ terraform.tfvars
 crash.log
 tfplan
 *.tfplan
+# Local overrides, e.g. backend_override.tf to keep local state for a while
+override.tf
+*_override.tf
