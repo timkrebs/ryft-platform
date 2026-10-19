@@ -35,6 +35,14 @@ collectorCommon:
 collectors:
   alloy:
     presets: [large, root, host-network, host-storage, host-cgroup, clustered, service-discovery, filesystem-log-reader, daemonset, otel-receiver]
+    # Clustering on host network: Alloy looks for eth0/en0 to advertise itself, but
+    # Amazon Linux 2023 (Nitro) nodes call it ens5, so every collector fell back to
+    # localhost and formed a cluster of one (each would scrape the cluster-wide
+    # targets itself). Only args here: extraEnv would replace the list the chart
+    # builds (NAMESPACE, POD_NAME, CLUSTER_NAME, GCLOUD_RW_API_KEY).
+    alloy:
+      extraArgs:
+        - --cluster.advertise-interfaces=ens5,eth0,en0
     extraService:
       enabled: true
       name: otel-receiver
