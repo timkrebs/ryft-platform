@@ -42,10 +42,10 @@ patches:
 # the tag: a short SHA like 155e166 or 1234567 is a number to YAML.
 images:
   - name: ghcr.io/timkrebs/ryft/ingest
-    newTag: "42a0d71"
+    newTag: "3a0e9a1"
   - name: ghcr.io/timkrebs/ryft/scoring
-    newTag: "42a0d71"
+    newTag: "3a0e9a1"
   - name: ghcr.io/timkrebs/ryft/api
-    newTag: "42a0d71"
+    newTag: "3a0e9a1"
   - name: ghcr.io/timkrebs/ryft/migrate
-    newTag: "42a0d71"
+    newTag: "3a0e9a1"
