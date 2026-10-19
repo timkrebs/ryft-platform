@@ -12,7 +12,8 @@ Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
 monitoring-apply`) in namespace `monitoring`: two Alloy collectors named as the
 onboarding names them, `alloy-daemonset` (one per node, host network) and
 `alloy-deployment` (one replica, cluster-wide work and the OTLP receiver), plus
-node-exporter, kube-state-metrics and Beyla. Their pipelines are configured remotely in
+node-exporter, kube-state-metrics, Beyla, Kepler (energy), OpenCost (cost) and
+k8s-manifest-tail. Their pipelines are configured remotely in
 Grafana Cloud's Fleet Management, which assigns them by collector name; the daemonset
 discovers the RYFT pods through their annotations:
 

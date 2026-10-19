@@ -29,8 +29,9 @@ service_secrets = {
       -----END PRIVATE KEY-----
     EOT
   }
-  # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…).
-  monitoring = { GC_TOKEN = "glc_…" }
+  # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…),
+  # and the stack's Prometheus user (a number, not a secret) OpenCost reads with it.
+  monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }
   # coach  = { ANTHROPIC_API_KEY = "sk-ant-…" }
   # notify = { APNS_KEY_ID = "…", APNS_TEAM_ID = "…", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----…" }
 }

@@ -75,8 +75,9 @@ check "api_has_apple_keys" {
 
 check "monitoring_has_its_token" {
   assert {
-    condition     = !contains(keys(local.services), "monitoring") || contains(local.private_keys["monitoring"], "GC_TOKEN")
-    error_message = "service_secrets.monitoring.GC_TOKEN is not set: the Grafana Cloud collector cannot reach Fleet Management."
+    condition = !contains(keys(local.services), "monitoring") || (contains(local.private_keys["monitoring"], "GC_TOKEN")
+    && contains(local.private_keys["monitoring"], "PROM_USERNAME"))
+    error_message = "service_secrets.monitoring needs GC_TOKEN (the Grafana Cloud token: Fleet Management, OpenCost) and PROM_USERNAME (the stack's Prometheus user, for OpenCost)."
   }
 }
 

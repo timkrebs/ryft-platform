@@ -231,9 +231,10 @@ timer and processes recompute ranges in order. NATS is a single-replica Stateful
 
 The collector is Grafana's `k8s-monitoring` chart with the onboarding's preset, in
 namespace `monitoring`: the collectors `alloy-daemonset` and `alloy-deployment`,
-node-exporter, kube-state-metrics and Beyla. The collector names matter: Fleet
-Management assigns its Kubernetes pipelines by them. Kepler, OpenCost and
-k8s-manifest-tail from the onboarding are left out for lack of pod slots. The Fleet
+node-exporter, kube-state-metrics, Beyla, Kepler, OpenCost and k8s-manifest-tail, as the
+onboarding deploys them (D64). The collector names matter: Fleet Management assigns
+its Kubernetes pipelines by them. OpenCost reads with the same token and the stack's
+Prometheus user (`PROM_USERNAME`, also in Vault). The Fleet
 Management token lives in Vault like every other credential (D51), and the operator
 restarts both collectors when it changes. It is never passed on a command line:
 
@@ -241,7 +242,7 @@ restarts both collectors when it changes. It is never passed on a command line:
    in a chat): Grafana Cloud → your stack → Access policies → the Kubernetes Monitoring
    policy → create a new token, then delete the old one.
 2. **Vault:** put the new token into `infra/vault/terraform.tfvars` as
-   `service_secrets.monitoring = { GC_TOKEN = "glc_…" }`. Remove the hand-made secret
+   `service_secrets.monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }`. Remove the hand-made secret
    (`vault kv metadata delete …` under `admin/ryft/…/grafana-cloud`). If you created
    the Vault namespace `admin/ryft/monitoring` by hand, import it instead of
    deleting it: `terraform import 'vault_namespace.service["monitoring"]' ryft/monitoring`.

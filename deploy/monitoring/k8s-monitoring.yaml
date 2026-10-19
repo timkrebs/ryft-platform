@@ -54,9 +54,9 @@ collectors:
       enabled: true
       name: otel-receiver
 
-# The onboarding also deploys Kepler (energy), OpenCost (cost; a second, inline
-# credential) and k8s-manifest-tail: left out for now, three nodes have no pod slots
-# for them (infra/aws README → Pod capacity, D57).
+# Everything the onboarding deploys, on t3.large nodes (D64). OpenCost reads Grafana
+# Cloud's Prometheus with the same token: user and token from ryft-secrets
+# (PROM_USERNAME and GC_TOKEN in infra/vault), never inline.
 telemetryServices:
   node-exporter:
     deploy: true
@@ -67,7 +67,27 @@ telemetryServices:
     k8sCache:
       replicas: 1
   opencost:
-    deploy: false
+    deploy: true
+    metricsSource: custom
+    opencost:
+      exporter:
+        defaultClusterId: ryft-prod-euc1
+      prometheus:
+        existingSecretName: ryft-secrets
+        username_key: PROM_USERNAME
+        password_key: GC_TOKEN
+        external:
+          url: https://prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom
+  kepler:
+    deploy: true
+  k8s-manifest-tail:
+    deploy: true
+    config:
+      objects:
+        - { apiVersion: v1, kind: Pod }
+        - { apiVersion: apps/v1, kind: Deployment }
+        - { apiVersion: apps/v1, kind: StatefulSet }
+        - { apiVersion: apps/v1, kind: DaemonSet }
   sdkInjector:
     deploy: true
     allowedConfigMapWriters: system:serviceaccount:monitoring:grafana-cloud-alloy-daemonset,system:serviceaccount:monitoring:grafana-cloud-alloy-deployment

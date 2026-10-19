@@ -807,7 +807,7 @@ beyla on every node, kube-state-metrics, beyla's cache, the SDK injector).
   slots get tight; the HPA maximums do not fit today.
 - **Not bigger instances.** A t3.large takes 35 pods. Two of them (70 slots) would add
   about $70 a month against $35 for the third t3.medium, and they would leave one zone
-  without a node.
+  without a node. (Superseded by D64: three t3.large.)
 
 ## D58 — Train without M3: muscular load only from logged sessions
 
@@ -912,3 +912,24 @@ workouts (`source = 'ryft-session'`; restrictive RLS policies on Supabase) and s
 `muscular_load` and `session_id` on the phone's. The api's `…/complete` computes the
 same load with the same code (`Engine.SessionLoadNow`), so the response is final in
 practice; scoring's later pass is authoritative and re-runs on every rescore.
+
+## D64 — t3.large nodes for the whole Grafana Cloud stack
+
+Grafana Cloud's onboarding deploys more than the collectors: node-exporter, Kepler,
+OpenCost and k8s-manifest-tail, and it now names two collectors (D51). On three
+t3.medium (17 pods each, D57) RYFT, the add-ons and the core of that stack left two
+slots; the rest and the HPA maximums did not fit. The user chose bigger nodes.
+
+- **3 × t3.large**, still one per zone: 35 pods and 8 GiB each, 105 slots, about 55 in
+  use. The HPA maximums and a rotation's surge fit, and memory stops being tight (the
+  "large" collector preset requests 1 GiB per collector). This replaces D57's "not
+  bigger instances" and its prefix-delegation plan.
+- **Cost**: about $105 a month more, roughly $350–370 in all. The budget alarm's
+  default ($165) is far below; raise `monthly_budget_usd`.
+- **Changing the type replaces the node group** (the instance type cannot change in
+  place): the module creates the new one first, then drains and deletes the old one.
+  PDBs keep one api and one ingest pod; NATS and scoring restart once.
+- **OpenCost's credentials** come from `ryft-secrets` like the token: `GC_TOKEN` (the
+  same Grafana token as in the onboarding) and `PROM_USERNAME` (the stack's
+  Prometheus user, a number), both from Vault, never in the values file.
+

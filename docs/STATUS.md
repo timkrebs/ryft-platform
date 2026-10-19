@@ -163,8 +163,8 @@ Known gaps, accepted for the alpha:
 - **Train calibration rests on three reference sessions** (D59). Body weight comes from
   the sessions, not from HealthKit; a first session of an exercise is scored against
   its own sets.
-- **Cost:** about $245–265 a month with three nodes (`infra/aws/README.md`), above the
-  budget's default of $165: raise `monthly_budget_usd` or expect the alarm. The budget alarm watches
+- **Cost:** about $350–370 a month with three t3.large (`infra/aws/README.md`, D64), far
+  above the budget's default of $165: raise `monthly_budget_usd` or expect the alarm. The budget alarm watches
   it.
 
 - **For the iOS side** (nothing in `../app` was changed):

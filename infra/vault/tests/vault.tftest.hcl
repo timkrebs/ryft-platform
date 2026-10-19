@@ -18,7 +18,7 @@ variables {
       # The shape of a .p8, not a key: only the format is checked here.
       APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"
     }
-    monitoring = { GC_TOKEN = "glc_test" }
+    monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
   }
 }
 
@@ -77,7 +77,7 @@ run "each_namespace_holds_only_its_own_credentials" {
       api        = ["APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
       nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
       migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
-      monitoring = ["GC_TOKEN"]
+      monitoring = ["GC_TOKEN", "PROM_USERNAME"]
     })
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
   }
@@ -170,7 +170,7 @@ run "rejects_placeholders_from_the_example" {
   variables {
     service_secrets = {
       api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_KEY_ID = "…", APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----" }
-      monitoring = { GC_TOKEN = "glc_test" }
+      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
     }
   }
   expect_failures = [var.service_secrets]
@@ -186,7 +186,7 @@ run "accepts_a_base64_encoded_apple_key" {
         APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
         APPLE_KEY_P8              = base64encode("-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----\n")
       }
-      monitoring = { GC_TOKEN = "glc_test" }
+      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
     }
   }
 }
@@ -197,7 +197,7 @@ run "rejects_a_partial_set_of_apple_keys" {
   variables {
     service_secrets = {
       api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_TEAM_ID = "M77SKHKG63", APPLE_CLIENT_ID = "dev.timkrebs.ryft" }
-      monitoring = { GC_TOKEN = "glc_test" }
+      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
     }
   }
   expect_failures = [var.service_secrets]
@@ -207,7 +207,7 @@ run "warns_without_the_apple_keys" {
   command = apply
 
   variables {
-    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test" } }
+    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" } }
   }
   expect_failures = [check.api_has_apple_keys]
 }
