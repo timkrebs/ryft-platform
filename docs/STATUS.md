@@ -3,7 +3,8 @@
 State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
 Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
 2026-10-19) and the push and remote-config core of M7 (2026-10-19), all deployed
-(`b7e4a4a`, 2026-10-19) with the Sign in with Apple and APNs keys active. Contract:
+(`b7e4a4a`, 2026-10-19) with the Sign in with Apple and APNs keys active, and the journal
+with behavior impact (M5, 2026-10-19, not deployed yet). Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -118,6 +119,16 @@ active; the weekly report stays in M7 (D69–D73):
 | Payloads | `loc-key` + `loc-args`, en/de texts pinned in `notify.Catalog` and listed in `API.md`; arguments formatted per install language | `internal/notify/messages.go` |
 | Ops | Manifests (Deployment, Service, NetworkPolicy with 443 for APNs), local-postgres and EKS overlays, CI image, `infra/vault` service entry with all-or-none APNs keys, metrics and two alerts | `deploy/k8s/base/notify`, `infra/vault`, `OBSERVABILITY.md` |
 
+**Journal and behavior impact (M5, 2026-10-19)** — built and verified locally, not
+deployed yet (`SCORING.md` → Journal, D74–D77):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Catalog | 25 built-in behaviors (en/de, fixed ids, 8 on by default) from the seeds, the user's choice, up to 50 custom behaviors with app ids | migration 0016, `internal/db/seed/behaviors.json`, `store/journal.go`, D77 |
+| Journal | `GET`/`PUT /v1/journal/{day}`: a saved day replaces its entries; unsent behaviors are unknown, not "no"; 14 days back | `cmd/api/journal.go`, D74 |
+| Impact | `GET /v1/behaviors/impact`: recovery and sleep performance (points) and HRV (%) the morning after, yes − no with a seeded 90 % bootstrap, unlocked at 5 + 5 days in 90; computed on request, no worker needed | `internal/behavior`, D75–D76 |
+| Insight | `behavior-impact`: yesterday's behavior with the largest significant negative recovery effect | `internal/insights/rules.go` |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -135,6 +146,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | Train (2026-10-19) | `go test ./...` with the strength calibration pinned; Postgres integration tests for the Train store (merge, conflict, replace, ownership, enrolment through a whole plan, account deletion), the seeds (idempotent, fixed ids), the grants and the Supabase shape, and the scoring engine (session-only day, hand-over to a later HealthKit workout, deletion); NATS permission tests (api may publish `ryft.session.completed`, ingest may not); `make up && make smoke` over the existing volume with 0011–0012 applied, incl. the Train block of `check_api.py`; `golangci-lint` 0 issues; `make k8s-validate` |
 | Sleep upgrades (M4, 2026-10-19) | `go test -race ./...` with the pins (consistency 85/55 and the midnight wrap, quality 91 and 82, restorative, nap counting and the split, the planner's API example, learning 14/7/clamp); Postgres integration tests: migration 0013 (manual marking, scoring's column grants, RLS on the Supabase shape), the baseline rules in the store (manual wins, back to learned or 460), `SetLearnedBase` as `ryft_scoring`, the engine over 21 nights (nap credit, need terms, consistency, quality) and learning (applied with the week rescored; manual kept); `make up && make smoke` over the existing volume with 0013 applied and 21 synthetic days with a 40-min nap, including the new `check_api.py` block (nap credit, quality formula, consistency, bedtimes, planner, `PATCH` manual and back, `422`s) and with the scoring commit alone; `make check-swift` (the mirror decodes `SleepPlan`); `golangci-lint` 0 issues; `make k8s-validate`. `scoring learn-baselines` ran in compose (all users `insufficient` on synthetic data, whose green mornings follow hard days). |
 | Push and remote config (M7 core, 2026-10-19) | `go test -race ./...`: flag buckets pinned (and checked with Python's hashlib), evaluation and key rules; the APNs client against an `httptest` HTTP/2 server (headers, priorities, the provider token reused and renewed, `ExpiredProviderToken` retried once, gone tokens); the notify service with a fake store and APNs (once per day, per-device language, deferral to the end of quiet hours, muted, stale day, pruning, release and retry when APNs is down, nothing claimed without a key, session vs record, the stale check by day and hour); the catalog (every key has en and de with the same arguments). Postgres integration tests: migrations 0014–0015 on plain Postgres and the Supabase shape (grants, RLS policies), notify's queries **as `ryft_notify`** (tokens, claims, stale candidates, the morning score, the session notice with records), tokens moving between accounts, preferences, account deletion of the new tables, the engine's morning hook (today only, not on a rescore), the admin and config handlers. NATS permission tests against compose (scoring may publish the two new subjects, notify may only create its consumer, pull and ack). `make up && make smoke` with notify running: config shape, admin allow-list/rollout/kill switch/422s, token registry, preferences, and **the morning path end to end** (a new user's sync → scoring → `ryft.scored` → notify, seen in its `/metrics`); `make check-swift` (mirror decodes `RemoteConfig` and `User.notifications`, `NotificationPatch` encodes `null`; the app's current models still decode); `infra/vault` `terraform test` 15 runs; `golangci-lint` 0 issues; `make k8s-validate` (197 resources). Not verified: a real APNs send (no key yet). |
+| Journal and behavior impact (M5, 2026-10-19) | `go test -race ./...`: the fixed ids pinned, the 14-day window, entry checks per kind, the effect (a clear one significant, none not, the same seed the same interval, relative HRV), the pairing with the morning after, locked counts and the order; `BenchmarkImpacts75x90` ~44 ms. Postgres integration tests: migration 0016 and the grants (vanilla and Supabase shape), the seeds (25 behaviors, fixed ids, idempotent), the catalog and choice, custom behaviors (update by id, someone else's id, the limit, unique slugs, archive), a journal day's round trip with count and time, replacement, account deletion of the journal; the api handlers (422s, the impact of a known effect: −15 recovery, −16.4 % HRV, significant; the `behavior-impact` card). `make up && make smoke`: catalog, choice, custom behaviors, 403/409/422 and **the roadmap's done-when**: alcohol before the five weakest-HRV mornings of the last 14 days → recovery −11.6 (90 % −18 to −4.7), HRV −7 %; `make check-swift` (the mirror decodes `[Behavior]`, `JournalDay`, `BehaviorImpacts`; the app's models still decode); `golangci-lint` 0 issues; `make k8s-validate`. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
 | `infra/vault` | `validate`, tflint clean, `terraform test` (mocked, 6 runs): keys per namespace, owner password only in migrate, bcrypt-only NATS, role bindings, policy, Pod Security, golden operator manifests (fails with the old namespace path) |
@@ -221,6 +233,9 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
     `POST /v1/devices/{id}/push`). Then turn `push.enabled` on for yourself, and after
     the first `MORNING_SCORE` (`ryft_push_notifications_total{result="sent"}`) for
     everyone (`OPERATIONS.md` → Feature flags).
+12. **Journal (M5):** open. Push; once CI is green, pin its short SHA (all five
+    `newTag`) and `make k8s-apply-eks`. The migrate job applies 0016 and seeds the 25
+    behaviors; nothing changes in Terraform, Vault or NATS, no new service.
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
@@ -283,6 +298,14 @@ Known gaps, accepted for the alpha:
     `ended_at` with `…/complete` when completing from the offline queue. Send
     `Accept-Language` for German exercise names. `workout_id` can change once the
     watch's workout syncs; merge the activity row by `Workout.session_id`.
+  - **Journal** (`API.md` → Journal, Swift mirror): the sheet sends every behavior it
+    showed (`PUT /v1/journal/{day}`, off toggles as `value_bool: false`), because a
+    behavior not sent counts as unknown; the Today card asks until
+    `GET /v1/journal/{yesterday}` is `answered`; editable 14 days back (`editable`).
+    Behavior Insights from `GET /v1/behaviors/impact`: show recovery and sleep effects
+    as points ("−14 recovery"), HRV as %, the interval as a range bar, locked ones with
+    `needed`. Profile → Journal: `PATCH /v1/behaviors`, custom behaviors with the app's
+    id (`POST`, `DELETE`). Names follow `Accept-Language`.
   - **Remote config and push** (`API.md` → `GET /v1/config`, Push notifications;
     Swift mirror): load `/v1/config` on launch and after `ttl_sec`; register the APNs
     token with `POST /v1/devices/{id}/push` (the sync `device_id`, `env` from the

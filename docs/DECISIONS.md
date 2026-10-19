@@ -1102,3 +1102,73 @@ claimed, so nothing is lost for later. The three `APNS_*` values are all-or-none
 (validated by `infra/vault` and at start-up). The topic (the bundle ID
 `dev.timkrebs.ryft`) is not secret and sits in the ConfigMap.
 
+## D74 — The journal: the morning after, and "unknown" is not "no"
+
+- **An entry is about the day it happened** (the morning sheet asks about yesterday),
+  and its effect is the **morning after**: recovery and HRV of day D+1, the sleep
+  performance of that night. The roadmap's `mean(recovery | yes)` does not say which
+  morning; pairing an entry with its own day would measure the night before the
+  behavior, and alcohol at night would seem to improve the previous morning.
+- **A saved day is the unit.** `PUT /v1/journal/{day}` replaces the day with what the
+  sheet showed, the toggles left off as `value_bool: false`. A behavior not sent that
+  day, and a day never saved, is unknown. Without that, every day the user skipped the
+  sheet would count as "no alcohol", and every behavior enabled later as "no" for all
+  the past days. `journal_days` (beyond the roadmap's tables) records the save; it also
+  answers the Today card's "answered yet?".
+- **Editable 14 days back** (the app's Sleep → Day), never ahead.
+- `value_bool` is the yes for every kind; `value_num` (count) and `value_time`
+  (time, stored as minutes after midnight) are details the impact does not use yet.
+
+## D75 — Effects: points, a seeded bootstrap, unlocked at 5 + 5
+
+- **Units.** Recovery and sleep performance are already percentages, so their effect
+  is a difference in **points** ("−14 recovery"); a relative change of a percentage
+  would read as a second percentage. HRV differs a lot between people, so its effect is
+  **relative** to the "no" mornings.
+- **90 % percentile bootstrap, 1 000 resamples**, as the roadmap says. The generator is
+  seeded with user, behavior and metric: a reload must not move the bar the app shows.
+  It is xorshift64* with a multiply-shift bound instead of `math/rand`, whose bounded
+  draws made up most of the time; the bias for groups of up to 90 is below 1e-7.
+- **Unlocked at 5 yes and 5 no days in 90**, as the roadmap says; HRV and sleep
+  performance need 5 + 5 of their own. `significant` (the interval excludes 0) gates
+  the insight, not the list: the app shows unlocked but uncertain effects with their
+  wide bar.
+- Not modelled: confounding (alcohol on weekends, when people also sleep in) and
+  autocorrelation of consecutive days. The card says "typically", and the interval is
+  honest about the noise, not about causes.
+
+## D76 — Impact on request, not a table, an event and a nightly job
+
+The roadmap stores `behavior_impacts`, recomputes them nightly in scoring and after
+every journal write through `ryft.journal.changed`. Computing them when they are
+asked for is cheaper than keeping them fresh: ~44 ms of CPU for 75 unlocked behaviors
+(25 built-ins and 50 custom, all with enough data, the upper end), under 15 ms for
+25, plus two indexed queries. The api has no CPU limit and idles at 1 m. So:
+
+- no table, no subject, no change to scoring's consumer filter (updating it once
+  needed a retry, `internal/events`), no nightly pass, no staleness after a journal
+  write;
+- the insight computes only yesterday's behaviors; the M7 weekly report can call the
+  same function;
+- **no worker service** (asked for if needed): it would add a namespace, a role, a
+  NATS user and a network hop for work shorter than the queries before it.
+  `ryft_behavior_impact_seconds{caller}` watches it; if its p95 passes ~100 ms, the
+  computation moves into a worker (or scoring) with a stored result.
+
+## D77 — The behavior catalog
+
+- **Built-ins** like the exercises (D62): 25 behaviors in `internal/db/seed/
+  behaviors.json`, fixed ids (UUIDv5 of `behavior:<slug>`), English and German names,
+  loaded by the migrate job; a built-in that leaves the seeds is archived, so old
+  entries keep their behavior. Eight are on by default (alcohol, caffeine after 2 pm,
+  late meal, screens in bed, stretching, meditation, feeling sick, work stress): a
+  sheet that fits one screen.
+- **The user's choice** is its own table (`user_behaviors`), so a changed default
+  reaches everyone who never touched it.
+- **Custom behaviors** take their id from the app (offline-safe, a repeated POST
+  updates), at most 50, slug from the name made unique per user. Deleting one archives
+  it: its past entries stay, it leaves the catalog and the impact list.
+- The roadmap's ~25 included "melatonin", "magnesium" and "creatine"; sexual activity
+  and medication beyond them were left out of the built-ins (custom behaviors cover
+  them for whoever wants them).
+

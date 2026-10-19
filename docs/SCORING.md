@@ -214,6 +214,51 @@ below **85**; bedtimes `wake − share · in bed` for 100, 85 and 70 %. Pin: the
 so stored quality, consistency, naps and the need terms are filled for past days; days
 not rescored report the whole need as base.
 
+## Journal (M5)
+
+Code: `internal/behavior` (pure, `behavior_test.go`), the api's
+`cmd/api/journal.go`. Decisions: D74–D77.
+
+**Which morning.** A journal entry is about a day: what the user did on day D (the
+morning sheet asks about yesterday). Its effect shows the **morning after**: the
+recovery and HRV of day D+1 (the night that ends on D+1) and that night's sleep
+performance. Pairing an entry with its own day's morning would measure the night
+*before* the behavior.
+
+**Yes, no, unknown.** A saved day (`PUT /v1/journal/{day}`) holds exactly the
+behaviors the sheet showed: `value_bool` true is a yes, false a no, for every kind (a
+`count` behavior is yes when it happened at all, a `time` behavior when it happened
+at that time). A behavior not sent on a saved day, and every day never saved, is
+unknown and does not count.
+
+**The effect.** For each behavior, over the entry days of the last **90** days whose
+morning after is scored:
+
+| Metric | Statistic |
+| --- | --- |
+| recovery | mean(yes) − mean(no), points |
+| HRV | (mean(yes) − mean(no)) ÷ mean(no) × 100, % (nights with HRV only) |
+| sleep performance | mean(yes) − mean(no), points |
+
+A behavior is **unlocked** with at least **5** yes and **5** no days with a scored
+recovery; HRV and sleep performance need 5 + 5 of their own and are `null` otherwise.
+The interval is a **90 % percentile bootstrap**: both groups resampled with
+replacement **1 000** times, the 5th and 95th percentile of the statistic. The
+generator is seeded with the user, the behavior and the metric, so the same data gives
+the same interval on every request. `significant` = the interval excludes 0. One
+decimal.
+
+**Order.** Unlocked behaviors first, by the size of the recovery effect; then locked
+ones, fewest days still needed first. The list covers every enabled behavior and every
+behavior with entries in the window (deleted custom behaviors excepted).
+
+**The card** `behavior-impact` (notice): among the behaviors logged as done for
+yesterday, the one with the most negative recovery effect that is unlocked and
+significant.
+
+**Computed on request**, not stored (D76): ~44 ms of CPU for 75 behaviors at once, under
+15 ms for 25 (`BenchmarkImpacts75x90`). `ryft_behavior_impact_seconds` watches it.
+
 ## What is left alone
 
 Not de-duplicated: HRV, resting heart rate, respiratory rate and SpO₂. They are a few

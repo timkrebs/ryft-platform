@@ -60,6 +60,8 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
 | `ryft_sleep_base_learned_total` | counter | `outcome` | scoring | Weekly sleep-baseline estimates (Sundays from 04:00 local, and `scoring learn-baselines`): `applied` (the baseline in use moved, the last 7 days were rescored), `kept` (same value, or set by hand), `insufficient` (fewer than 14 nights or 7 qualifying), `error`. A run of `error`s means the users' days or the baseline write failed; `applied` should be rare after the first weeks. |
+| `ryft_journal_saves_total` | counter | — | api | Journal days saved (`PUT /v1/journal/{day}`). |
+| `ryft_behavior_impact_seconds` | histogram | `caller` | api | CPU time of the behavior-impact computation: `caller="impact"` (`GET /v1/behaviors/impact`) or `insight` (yesterday's behaviors for the card). Its p95 passing ~0.1 s is the signal to move it into a worker (D76). |
 | `ryft_flag_evaluations_total` | counter | `key`, `result` | api | Feature flags evaluated for `GET /v1/config`, `on` or `off` per flag key. |
 | `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `unauthorized` (wrong or no `ADMIN_API_KEY`), `invalid`, `error`. |
 | `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
@@ -105,6 +107,13 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Events handled by result | time series | `sum by (reason, result) (rate(ryft_events_handled_total[5m]))` |
 | NATS redeliveries | time series | `sum(rate(ryft_nats_redeliveries_total[5m]))` |
 | Publish errors | time series | `sum by (app, reason) (rate(ryft_events_published_total{result="error"}[5m]))` |
+
+**Row: Journal**
+
+| Panel | Type | Query |
+| --- | --- | --- |
+| Journal days saved (24 h) | stat | `sum(increase(ryft_journal_saves_total[24h]))` |
+| Impact computation p95 | time series | `histogram_quantile(0.95, sum by (caller, le) (rate(ryft_behavior_impact_seconds_bucket[1h])))` |
 
 **Row: Push**
 
