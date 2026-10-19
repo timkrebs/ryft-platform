@@ -35,7 +35,7 @@ infra/aws/
 | Hosted zone | `ryftapp.de`, `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org` |
 | VPC | `ryft-prod-euc1`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
 | EKS cluster | `ryft-prod-euc1`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
-| Node group | `ryft-prod-euc1-default-…`: 3 × t3.medium (AL2023), one per zone |
+| Node group | `ryft-prod-euc1-default-…`: 3 × t3.large (AL2023), one per zone |
 | EKS add-ons | `vpc-cni` (NetworkPolicy enforcement on), `kube-proxy`, `coredns`, `eks-pod-identity-agent`, `aws-ebs-csi-driver`, `metrics-server` |
 | Edge (Helm) | `aws-load-balancer-controller` 3.6.0, `traefik` 42.0.0 in `kube-system` behind an internet-facing NLB, port 443 only; `cert-manager` v1.21.2 with ClusterIssuers `letsencrypt-staging`/`-prod` (DNS-01 in Route 53); `external-dns` 1.23.0 (zone `ryftapp.de` only, TXT ownership) |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
@@ -105,19 +105,17 @@ the name at the NLB within a minute or two.
 
 ## Cost
 
-Roughly $245–265 per month in eu-central-1 before data transfer: control plane ~$73,
-3 × t3.medium ~$105, NAT gateway ~$38, NLB ~$16, three public IPv4 addresses ~$11, Route 53
+Roughly $350–370 per month in eu-central-1 before data transfer: control plane ~$73,
+3 × t3.large ~$210, NAT gateway ~$38, NLB ~$16, three public IPv4 addresses ~$11, Route 53
 zone $0.50, plus EBS volumes and CloudWatch logs. Graviton nodes (`t4g.medium`,
 `AL2023_ARM_64_STANDARD`; the RYFT images are multi-arch) and Spot capacity
 (`node_group.capacity_type = "SPOT"`) cut the node share.
 
-Pod capacity: a t3.medium takes 17 pods (one per secondary IP address), so three nodes
-hold 51. The add-ons and DaemonSets use about 30, RYFT 8 (api 2, ingest 2, scoring,
-NATS, web 2), the Grafana collector about 9. That leaves about 4 slots, not the HPA
-maximums (4 api, 4 ingest). On
-2026-10-19, two nodes ran out of slots and the migrate Job stayed Pending ("Too many
-pods"). The next step is VPC CNI prefix delegation (up to 110 pods per node, one more
-node rotation, about 1 GiB more kubelet reservation per node), not a fourth node (D57).
+Pod capacity: a t3.large takes 35 pods (three ENIs of 12 addresses) and has 8 GiB, so
+three nodes hold 105. RYFT, the add-ons and DaemonSets and the whole Grafana Cloud stack
+(two collectors, node-exporter, Kepler, OpenCost, k8s-manifest-tail) use about 55,
+which leaves the HPA maximums and a node rotation's surge room (D64). On 2026-10-19 two,
+then three t3.medium (17 pods each) ran out of slots (D57).
 
 **Changing node sizes:** the EKS module ignores `desired_size` after creation. Run
 `aws eks update-nodegroup-config --scaling-config minSize=…,maxSize=…,desiredSize=…`,

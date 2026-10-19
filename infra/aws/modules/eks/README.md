@@ -29,7 +29,7 @@ module "eks" {
   node_group = {
     ami_type       = "AL2023_x86_64_STANDARD"
     capacity_type  = "ON_DEMAND"
-    instance_types = ["t3.medium"]
+    instance_types = ["t3.large"]
     min_size       = 2
     max_size       = 4
     desired_size   = 2

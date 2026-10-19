@@ -16,7 +16,7 @@ deletion_protection = true
 # node in its zone. The module ignores desired_size after creation; change it with
 # aws eks update-nodegroup-config, then here.
 node_group = {
-  instance_types = ["t3.medium"]
+  instance_types = ["t3.large"] # 35 pods and 8 GiB per node (D64); changing the type replaces the node group
   min_size       = 3
   max_size       = 4
   desired_size   = 3
