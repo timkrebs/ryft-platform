@@ -103,7 +103,7 @@ timer catches up.
 
 ## Data model (Postgres)
 
-- `users` — `id` = Supabase user ID; `name`, `email`, `provider` from the token; `tz` (the local day boundary), `max_hr` (for heart-rate reserve), `sleep_base_min`; `last_seen_at`, `recompute_requested_at`.
+- `users` — `id` = Supabase user ID; `name`, `email`, `provider` from the token; `tz` (the local day boundary), `max_hr` (for heart-rate reserve), `sleep_base_min` with `sleep_base_source` (`default`, `learned`, `manual`), `sleep_base_manual` and the weekly estimate `sleep_base_learned_min` / `_at` (scoring may write only these baseline columns); `last_seen_at`, `recompute_requested_at`.
 - `deleted_users` — tombstones (UUID only) of deleted accounts.
 - `devices` — one row per user and app install (`(user_id, id)`), `last_sync_at`.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
@@ -176,19 +176,23 @@ down-sample them to ≤ 600 points (LTTB, `scoring.DownsampleHR`). A workout is 
 the samples of its own window, so one that runs past midnight counts in full on the
 day it started; the day's strain counts only that day's samples.
 
-**Sleep.** `need = base + min(60, 3 · yesterday's strain) + min(60, 0.3 · debt)`, where
-debt is the shortfall over the last 7 nights with 0.7/day decay. `performance =
-actual / need`, capped at 100. If a source records only `inbed` (old firmware), 90 % of
-it counts as asleep.
+**Sleep.** `need = base + min(60, 3 · yesterday's strain) + min(60, 0.3 · debt) −
+yesterday's naps (≤ 90)`, each term stored on `daily_scores`, where debt is the shortfall
+over the last 7 nights with 0.7/day decay. `performance = actual / need`, capped at 100.
+If a source records only `inbed` (old firmware), 90 % of it counts as asleep. The night
+is the longest block of sleep in its window; other blocks ending from 10:00, and sleep
+ending 13:00–20:00, are naps. `base` is learned weekly from good nights unless the user
+set it. Details, quality and consistency: [`SCORING.md`](SCORING.md) → Sleep.
 
 **Sleep screen.** Scoring stores the night's typed totals on `daily_scores`
 (`sleep_start`, `sleep_end`, `in_bed_min`, `deep_min`, `light_min` = HealthKit core,
 `rem_min`, `awake_min`, `sleep_has_stages`; migration 0003). The api assembles the
 views on read with pure functions in `internal/scoring/sleep.go`: efficiency =
 asleep / in bed, stage percentages (deep/light/rem sum to exactly 100 by largest
-remainder, awake is a share of time in bed), quality = sleep performance with labels
-good ≥ 80 / fair ≥ 60 / poor, and the hypnogram from the raw `sleep_segments` of the
-night window. `GET /v1/sleep` averages the stored nights of a 7- or 30-day window.
+remainder, awake is a share of time in bed), quality = 0.6 · performance + 0.2 ·
+efficiency + 0.2 · restorative (stored by scoring) with labels good ≥ 80 / fair ≥ 60 /
+poor, and the hypnogram from the night's raw `sleep_segments` without its naps.
+`GET /v1/sleep/plan` turns tonight's need into bedtimes. `GET /v1/sleep` averages the stored nights of a 7- or 30-day window.
 
 **Insights.** `internal/insights` is a list of pure rules, each
 `func(History) *model.Insight`, over a contiguous 30-day calendar ending today (days

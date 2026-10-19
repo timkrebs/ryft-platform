@@ -259,7 +259,7 @@ func sleepBlocks(segs []model.SleepSegment, gap time.Duration) [][]model.SleepSe
 }
 
 // SplitNight separates a night window's segments into the night and the naps
-// it overlaps (docs/SCORING.md → Sleep, D65): the night is the block with
+// it overlaps (docs/SCORING.md → Sleep, D66): the night is the block with
 // the most sleep (blocks end at a pause of an hour). Another block that ends at
 // or after napFrom (10:00, inside the night window, which closes at 13:00) is a
 // morning nap; every other segment stays with the night, as before.

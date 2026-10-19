@@ -119,6 +119,14 @@ pod. Each user's last *days* days are rescored, oldest first, with scoring's own
 the log shows `user rescored … n of N`, then `rescore done`. Locally:
 `RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
 
+**Learned sleep baseline** (`SCORING.md` → Sleep): scoring estimates it every Sunday from
+04:00 local on its own. To run it for every user now (after a deploy, or after changing
+its rules): `kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines`
+(locally `podman compose exec -T scoring /app learn-baselines`). The log ends with
+`learn-baselines done` and the counts `applied` (the baseline moved; that user's last
+7 days were rescored), `kept`, `insufficient` and `failed`. Users who set their baseline
+by hand keep it.
+
 Certificates: cert-manager renews 30 days before expiry. Each Ingress has its own
 certificate for the same host, because a Secret cannot be shared across namespaces. To
 try issuance without touching Let's Encrypt's production rate limits, point both

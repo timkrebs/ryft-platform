@@ -1,7 +1,8 @@
 # RYFT platform — status
 
-State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18) and
-Train (M3b, 2026-10-19; M3 itself is deferred, D58). Contract:
+State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
+Train (M3b, 2026-10-19; M3 itself is deferred, D58) and the sleep upgrades (M4,
+2026-10-19, not deployed yet). Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -13,7 +14,7 @@ deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 | 2.2 Sleep detail | Typed `DayDetail.sleep` with stages (core → light), %, efficiency, quality + label, hypnogram; `GET /v1/sleep?range=week\|month` | `scoring/sleep.go`, migration 0003 |
 | 2.3 Workout detail | `GET /v1/workouts/{id}`: HR curve (LTTB ≤ 600 points), zone minutes, TRIMP, strain, avg/max HR; zones + TRIMP stored at scoring time; `DayDetail.strain` | `scoring/workout.go`, migration 0004 |
 | 2.4 Trends | `GET /v1/trends?metric&range` with avg/min/max and stored 30-day HRV/RHR baselines | `store.Trend`, migration 0005 |
-| 2.5 Insights | Pure rule engine (7 rules, 30-day history), `GET /v1/insights`, 5-minute cache | `internal/insights` |
+| 2.5 Insights | Pure rule engine (11 rules with Train's and M4's, 30-day history), `GET /v1/insights`, 5-minute cache | `internal/insights` |
 | 2.6 Observability | Prometheus `/metrics` on all services, scrape annotations, dashboard panel list and alerts | `internal/metrics`, [`OBSERVABILITY.md`](OBSERVABILITY.md) |
 | 2.7 Hardening | `base/` + default and Vault overlays (VaultStaticSecret), default-deny NetworkPolicy, PDBs, CPU HPAs, nightly `pg_dump` CronJob with documented restore | `deploy/k8s`, [`OPERATIONS.md`](OPERATIONS.md) |
 | 2.8 CI | vet, race tests, golangci-lint, manifest validation, smoke on Docker; multi-arch images to `ghcr.io/timkrebs/ryft/<service>` (short SHA, `latest` on main) | `.github/workflows/ci.yml`, `.golangci.yml` |
@@ -78,7 +79,7 @@ agreed extras):
 | Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
 | Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
 
-**Train (M3b, 2026-10-19)** — built and verified locally, not deployed yet:
+**Train (M3b, 2026-10-19)** — deployed (`3a0e9a1`):
 
 | Item | What | Where |
 | --- | --- | --- |
@@ -88,6 +89,20 @@ agreed extras):
 | Workouts | The load lands on a matching HealthKit strength workout (≥ 50 % overlap) or one scoring creates (`ryft-session`), re-decided on every pass | `scoring/strength_day.go`, D60 |
 | Records, progression | e1RM / max weight / max reps / max volume; `GET /v1/plans/today` targets from %-of-e1RM or linear progression with repeat and deload | `PersonalRecords`, `NextTargetKG` |
 | API | `/v1/exercises`, `/v1/plans`, `/v1/plans/today`, `/v1/sessions` (+ `…/complete`), `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, insight `pr`, `ryft.session.completed` | `cmd/api/train.go`, [`API.md`](API.md) → Train |
+
+**Sleep upgrades (M4, 2026-10-19)** — built and verified locally, not deployed yet
+([`SCORING.md`](SCORING.md) → Sleep, D65–D68):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Naps | The night is the block with the most sleep; other blocks ending from 10:00 and sleep ending 13:00–20:00 are naps (≥ 20 min each, ≤ 90 a day), stored as `nap_min` and credited to the next night's need | `SplitDay`, `NapMinutes`, migration 0013, D66 |
+| Need by term | `sleep_need_{base,strain,debt,nap}_min` on the score; `DayDetail.sleep.need` | `SleepNeedParts`, `NeedOf` |
+| Quality | Its own score, `0.6·performance + 0.2·efficiency + 0.2·restorative`; `restorative` on every night | `NightQuality`, D65 |
+| Consistency | `100 − 0.5·(σ bed + σ wake)` over 7 nights (5 needed); `SleepRange.avg_consistency`, `bedtimes` | `SleepConsistency` |
+| Learned baseline | Weekly (Sunday 04:00 local) median of green nights after easy days, 14/7 nights, 360–570; manual wins; the last 7 days rescored in-process; `scoring learn-baselines`; metric `ryft_sleep_base_learned_total` | `scoring/learn.go`, `SetLearnedBase`, D67 |
+| Planner | `GET /v1/sleep/plan?wake=HH:MM`: bedtimes for 100/85/70 % of tonight's need, efficiency of the last 7 nights (floor 85) | `TonightPlan`, D68 |
+| Settings | `User.sleep_base_source` / `_learned_min` / `_learned_at`; `PATCH /v1/me` `sleep_base_manual` | `store.UpdateUser` |
+| Insights, trends | `sleep-consistency-low`, `nap-credit`, `baseline-learned`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min` | `internal/insights/rules.go` |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
@@ -104,6 +119,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `make up && make smoke` on the existing volume after M1 (migrations 0007 and 0008 over real data) | pass, incl. two-user isolation on a shared device and workout UUID, request IDs and security headers, `413`s, account deletion (data gone, `401` afterwards on api and ingest, repeatable), overlapping heart-rate, sleep and step sources; no warnings or errors in the service logs |
 | `make check-swift` | the Swift mirror in `API.md` decodes every endpoint, the Train ones included; the app's current models (`../app`) decode every endpoint they call |
 | Train (2026-10-19) | `go test ./...` with the strength calibration pinned; Postgres integration tests for the Train store (merge, conflict, replace, ownership, enrolment through a whole plan, account deletion), the seeds (idempotent, fixed ids), the grants and the Supabase shape, and the scoring engine (session-only day, hand-over to a later HealthKit workout, deletion); NATS permission tests (api may publish `ryft.session.completed`, ingest may not); `make up && make smoke` over the existing volume with 0011–0012 applied, incl. the Train block of `check_api.py`; `golangci-lint` 0 issues; `make k8s-validate` |
+| Sleep upgrades (M4, 2026-10-19) | `go test -race ./...` with the pins (consistency 85/55 and the midnight wrap, quality 91 and 82, restorative, nap counting and the split, the planner's API example, learning 14/7/clamp); Postgres integration tests: migration 0013 (manual marking, scoring's column grants, RLS on the Supabase shape), the baseline rules in the store (manual wins, back to learned or 460), `SetLearnedBase` as `ryft_scoring`, the engine over 21 nights (nap credit, need terms, consistency, quality) and learning (applied with the week rescored; manual kept); `make up && make smoke` over the existing volume with 0013 applied and 21 synthetic days with a 40-min nap, including the new `check_api.py` block (nap credit, quality formula, consistency, bedtimes, planner, `PATCH` manual and back, `422`s) and with the scoring commit alone; `make check-swift` (the mirror decodes `SleepPlan`); `golangci-lint` 0 issues; `make k8s-validate`. `scoring learn-baselines` ran in compose (all users `insufficient` on synthetic data, whose green mornings follow hard days). |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
 | `infra/vault` | `validate`, tflint clean, `terraform test` (mocked, 6 runs): keys per namespace, owner password only in migrate, bcrypt-only NATS, role bindings, policy, Pod Security, golden operator manifests (fails with the old namespace path) |
@@ -132,22 +148,32 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
    `kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager`.
 4. **`infra/aws/kubernetes`:** done (no changes left).
 5. **`infra/aws`:** done: budget, the API endpoint stays `0.0.0.0/0` (HCP Vault's
-   TokenReview), the node tags (one full node rotation), three nodes (D57). The budget's
+   TokenReview), the node tags (one full node rotation), three t3.large nodes (D57, D64). The budget's
    $165 is below the estimate; raise `monthly_budget_usd` or expect the alarm.
-6. **Images and deploy:** `7a69705` runs for ingest, scoring and web, and the apex site
-   with its certificate is live. **Open: api.** Its new pods refused the placeholder
-   Apple values, and the image needs the configuration fix that lets it start without
-   the Apple keys. Pin the next green CI image, then `make k8s-apply-eks`.
-7. **`make monitoring-apply`** (open), then the Grafana Cloud steps: exclude `ryft-.*`
-   pod logs, load the alerts.
+6. **Images and deploy:** done; `3a0e9a1` runs for every service, the api starts
+   without the Apple keys.
+7. **`make monitoring-apply`:** applied, metrics arrive. If the Helm release is still
+   `pending-upgrade`: `helm rollback grafana-cloud 5 -n monitoring`, then
+   `make monitoring-apply` again. Open: the Grafana Cloud steps (remove the stale
+   collectors, exclude `ryft-.*` pod logs, load the alerts), and delete the old Grafana
+   token.
 8. **`make smoke-supabase`** against `https://api.ryftapp.de` with
    `SUPABASE_SECRET_KEY` (open). Record the run here. It now also runs the Train checks,
    which leave a custom exercise, an enrolment and sessions on the smoke user.
-9. **Train (M3b):** push; once CI is green, pin that image (it includes everything
-   above) and `make k8s-apply-eks`. The migrate job applies 0011 and 0012 and loads the
-   seeds; NATS rolls because its config changed (api may now publish
-   `ryft.session.completed`); scoring's consumer takes the new subject on start.
-   Nothing changes in Terraform or Vault.
+9. **Train (M3b):** done (`3a0e9a1`).
+10. **Sleep upgrades (M4):** open. Push; once CI is green, put its short SHA in
+    `deploy/k8s/overlays/eks/kustomization.yaml` (all four `newTag`, quoted) and
+    `make k8s-apply-eks`. The migrate job applies 0013; nothing changes in Terraform,
+    Vault or NATS. Then fill history with the new rules and learn the baselines once:
+
+    ```bash
+    scripts/rescore_all.sh                                   # 400 days, every user
+    kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines
+    ```
+
+    Until the rescore, older days report their whole need as `base` and have no
+    `sleep_quality` / `sleep_consistency` / `nap_min`; the Sleep screen already shows
+    the new quality for them. The weekly estimate then runs on its own every Sunday.
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
@@ -160,6 +186,14 @@ Known gaps, accepted for the alpha:
   not by Go tests against a database.
 - **M3 is deferred** (D58): no strain target or bands, and strength workouts without a
   logged session get no muscular load (M3's duration estimate).
+- **M4 calibration rests on the pins** in `SCORING.md` → Sleep: the 40 % restorative
+  target, the quality weights and the learned-baseline qualifier are judgement calls
+  (D65, D67), not fitted to data. The learned baseline's `applied` path is tested
+  against Postgres, not yet seen on real nights. The nap split works on stored segments
+  only: a nap the watch records as part of the night (no hour's pause) stays night.
+- **Local smoke data**: repeated `make smoke` runs on one volume pile up overlapping
+  synthetic nights of one source on the same dates (minutes asleep above 900 in the
+  table). The checks hold; `make down && make up` starts clean.
 - **Train calibration rests on three reference sessions** (D59). Body weight comes from
   the sessions, not from HealthKit; a first session of an exercise is scored against
   its own sets.
@@ -198,6 +232,14 @@ Known gaps, accepted for the alpha:
     `ended_at` with `…/complete` when completing from the offline queue. Send
     `Accept-Language` for German exercise names. `workout_id` can change once the
     watch's workout syncs; merge the activity row by `Workout.session_id`.
+  - **Sleep upgrades** (`API.md` changelog 2026-10-19, Swift mirror): decode the new
+    `DailyScore` fields, `SleepDetail.need` / `restorative`, `SleepRange.avg_consistency`
+    / `bedtimes`, `User.sleep_base_source` / `_learned_min` / `_learned_at`. `quality` is
+    no longer equal to `sleep_performance`: show it as the night's quality and keep
+    performance for "% of need". Planner: `GET /v1/sleep/plan?wake=HH:MM` (local time;
+    `422` when malformed). Settings: show the learned value and its source; setting a
+    value sends `sleep_base_min` (manual), "use learned" sends `sleep_base_manual:
+    false`. New insight ids and trend metrics are additive.
 
 ## Deploy
 
@@ -231,6 +273,8 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
 make k8s-validate && make k8s-apply-eks
 make monitoring-apply                                  # Grafana Cloud collector, after infra/vault has the token
+scripts/rescore_all.sh                                 # after a deploy that changed scoring rules (M4: yes)
+kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
 ```
 
 Run `make smoke-supabase` only with the dedicated test user.

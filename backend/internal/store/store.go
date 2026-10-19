@@ -236,7 +236,7 @@ const defaultSleepBase = 460
 
 // UpdateUser applies a settings patch and returns the updated row. A
 // sleep_base_min makes the baseline manual; sleep_base_manual false goes back
-// to the learned estimate, or to the default without one (D66).
+// to the learned estimate, or to the default without one (D67).
 func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch) (model.User, error) {
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil {

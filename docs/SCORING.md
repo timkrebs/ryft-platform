@@ -1,7 +1,8 @@
 # RYFT — scoring inputs
 
-How scoring treats the raw HealthKit data before any formula runs, and how logged
-strength sessions become load (**Strength**, below). The formulas
+How scoring treats the raw HealthKit data before any formula runs, how logged
+strength sessions become load (**Strength**, below), and how a night becomes need,
+quality, consistency and naps (**Sleep**, below). The other formulas
 (recovery, readiness, strain, sleep need) are described in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#scoring-internalscoringalgorithmsgo-unit-tested); the
 code is in `internal/scoring`.
@@ -139,6 +140,79 @@ set today or yesterday.
 An attempt is a completed session whose exercise names the plan exercise
 (`plan_exercise_id`), or — when it names none — the same exercise on a session started
 from that plan day.
+
+## Sleep (M4)
+
+Code: `internal/scoring/sleep.go` (pure, tested in `sleep_upgrades_test.go`),
+`compute.go` (the day pass), `learn.go` (the weekly estimate). Decisions: D65–D68.
+
+**The night and the naps.** Day D's night window is D−1 20:00 to D 13:00 local (as
+before); its segments come from one source (`DedupSleepSources`). They are grouped into
+blocks: a pause of **60 min** or more between one segment's end and the next one's
+start ends a block. The block with the most minutes asleep is **the night**. Another
+block that ends at or after **10:00** is a morning nap. Every other block stays with the
+night, so dozing on the sofa at 21:00 still counts as before. A late sleeper's single
+block ending at 11:30 is the night, not a nap.
+
+D's naps are those morning blocks plus the sleep ending **13:00–20:00** local (which no
+night window covers), also from one source. Pauses under **30 min** join one nap; a nap
+counts from **20 min** asleep; the day's total is capped at **90 min**. That is
+`daily_scores.nap_min` (`0` without naps).
+
+**Need, term by term.**
+
+| Term | Value | Column |
+| --- | --- | --- |
+| base | `users.sleep_base_min` (below) | `sleep_need_base_min` |
+| strain | `min(60, 3 · yesterday's strain)`, rounded | `sleep_need_strain_min` |
+| debt | `min(60, 0.3 · debt)`, rounded; debt as before (7 nights, 0.7/day decay) | `sleep_need_debt_min` |
+| nap credit | **yesterday's** naps (day D−1), at most 90 | `sleep_need_nap_min` |
+
+`sleep_need_min = base + strain + debt − nap credit`. Each top-up is now rounded on its
+own (it was the sum), so the terms the API reports add up; a need can differ by a minute
+from before. The credit is computed from D−1's raw segments when D is scored, so a nap
+that synced late counts as soon as D is scored again.
+
+**Quality.** `quality = round(0.6 · performance + 0.2 · efficiency + 0.2 · restorative)`,
+stored as `sleep_quality`. Restorative is `min(100, (deep + REM) / asleep / 0.40 · 100)`;
+without stages it equals performance. Pins: the brand board's 82 % "good" is
+performance 72, efficiency 95, restorative 100; the API example 91 is 87 / 95 / 100. It
+used to be equal to performance. The Sleep screen reads the stored value and computes it
+from the stored totals for nights not rescored yet.
+
+**Consistency.** `100 − 0.5 · (σ bedtime + σ wake time)`, minutes, population standard
+deviation on a noon-to-noon axis (23:30 and 00:30 are an hour apart), clamped to 0–100,
+over the **7 nights** ending on D (D's own included) with at least **5** having data;
+else `null`. Bedtime and wake time are the night's first and last segment. Pins: ± 15 min
+around the same times → 85, ± 45 min → 55.
+
+**Learned baseline.** Every Sunday from **04:00** local (scoring's 15-minute pass, once
+per user and Sunday; skipped when the last estimate is younger than 6 days):
+
+1. take the last **30** scored days up to today;
+2. a night *qualifies* when that morning's recovery is **≥ 67** and the day before had a
+   strain **< 10** (no score that day counts as easy);
+3. with at least **14** nights of sleep and **7** qualifying ones, the estimate is the
+   median minutes asleep of the qualifying nights, clamped to **360–570**;
+4. it is stored as `sleep_base_learned_min` / `_at`. Unless the user set the baseline by
+   hand (`sleep_base_source = manual`, which wins), it becomes `sleep_base_min` with
+   source `learned`, and when that value moved the **last 7 days** are rescored in the
+   same process, oldest first.
+
+`scoring learn-baselines` runs the estimate for every user at once (`OPERATIONS.md`).
+`PATCH /v1/me` with `sleep_base_min` makes the source `manual`; `sleep_base_manual:
+false` goes back to the estimate, or to 460 without one. Migration 0013 marks users who
+had already changed 460 as manual.
+
+**Planner** (`GET /v1/sleep/plan`). Tonight's need from the baseline, **today's** strain
+so far, the debt including last night and today's naps; time in bed = need ÷
+efficiency, with efficiency the mean of the last 7 nights, **90** without any and never
+below **85**; bedtimes `wake − share · in bed` for 100, 85 and 70 %. Pin: the API example
+(need 512, 569 in bed, 19:31 / 20:56 / 22:22 for a 05:00 wake).
+
+**After a deploy that changes these rules**, rescore history (`scripts/rescore_all.sh`)
+so stored quality, consistency, naps and the need terms are filled for past days; days
+not rescored report the whole need as base.
 
 ## What is left alone
 

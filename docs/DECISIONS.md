@@ -933,3 +933,75 @@ slots; the rest and the HPA maximums did not fit. The user chose bigger nodes.
   same Grafana token as in the onboarding) and `PROM_USERNAME` (the stack's
   Prometheus user, a number), both from Vault, never in the values file.
 
+## D65 — Sleep quality: performance, efficiency and restorative sleep
+
+Quality was a copy of sleep performance, so a long but restless night looked as good as
+a deep one. M4 gives it its own score: `0.6 · performance + 0.2 · efficiency + 0.2 ·
+restorative`.
+
+- **Performance keeps the most weight** because it is the part tied to the person's
+  need; efficiency and restorative sleep describe how the time was spent.
+- **Restorative** is deep + REM against **40 %** of time asleep, capped at 100. Adults
+  typically spend roughly 15–20 % in deep and 20–25 % in REM, so 40 % is a good night,
+  not an exceptional one. Without stages it equals performance (the formula then
+  weighs performance 0.8), rather than punishing older sources.
+- **The labels stay** (good ≥ 80, fair ≥ 60). Nights now land a few points higher than
+  their performance when they are efficient and deep, lower when not. The brand board's
+  82 % "good" corresponds to performance 72.
+- **Old rows**: the Sleep screen computes quality from the stored totals until a night is
+  rescored, so the app sees one formula at once; `DailyScore.sleep_quality` stays `null`
+  for them until the rescore.
+
+## D66 — Naps: the 10:00–20:00 window and splitting the night
+
+The spec's nap window is 10:00–20:00 local, but the night window (D−1 20:00 to D 13:00)
+already covers the morning. Choices:
+
+- **A nap is decided by its end**, like the night: sleep ending 10:00–20:00.
+- **The night is the block with the most sleep** in its window, blocks ending at a
+  60-min pause (a waking hour, not a trip to the bathroom). Only *other* blocks that end
+  from 10:00 become naps. Blocks before stay with the night, so a short doze before
+  bed changes nothing, and a late sleeper's one long block until 11:30 stays the night.
+- **The afternoon** (13:00–20:00), which no night window covers, is all nap. Morning and
+  afternoon naps are joined before counting, so a nap across 13:00 is one nap.
+- **Counting**: pauses under 30 min join one nap, a nap counts from 20 min asleep, the
+  day's credit is capped at 90 min. Shorter dozes are noise or a phone left on the bed.
+- **The credit goes to the next night** (the nap's day D credits D+1's need), computed
+  from D's raw segments when D+1 is scored, not from D's stored `nap_min`, so the order
+  in which days are rescored does not matter.
+- **One source per window**, as for nights (D40).
+
+## D67 — The learned baseline: which nights qualify, and rescoring in-process
+
+The baseline (460 min by default) should be the person's own. Estimated from what sleep
+the body takes when it is not repaying anything:
+
+- **Qualifying night**: recovery ≥ 67 that morning (green) after a day with strain < 10.
+  A green morning after a hard day is often the body catching up; an easy day before
+  keeps the strain top-up out of it.
+- **Median, not mean**, of those nights, so one 11-hour lie-in does not move it. At least
+  14 nights with sleep and 7 qualifying in the last 30 days; clamped to 360–570
+  (6–9.5 h) so a broken tracker cannot set an absurd value.
+- **Weekly**, Sunday from 04:00 local: often enough to follow a change, rarely enough
+  that the need does not wobble. It runs in scoring's 15-minute pass (once per user and
+  Sunday per pod, also when there is too little data) and as `scoring learn-baselines`.
+- **Manual wins.** `PATCH /v1/me` with `sleep_base_min` sets the source to `manual`;
+  the estimate is still stored (`sleep_base_learned_min`) so the app can offer it, and
+  `sleep_base_manual: false` switches back. Users who had already changed 460 before
+  M4 are marked manual by migration 0013, because they chose that value.
+- **Rescore the last 7 days in the same process** when the baseline in use moves,
+  rather than publishing a recompute event: scoring is the only writer of scores, the
+  week is a few hundred milliseconds, and the debt of the coming nights then chains
+  through the new value at once. Older days keep the baseline they were scored with
+  until a full rescore.
+- **The grant**: scoring may update only the four baseline columns of `users`.
+
+## D68 — The planner's efficiency: the last 7 nights, never below 85 %
+
+`GET /v1/sleep/plan` turns tonight's need into time in bed by dividing by sleep
+efficiency. The last 7 nights' mean is the person's own; **90 %** when there are none
+(a typical adult value). **Never below 85 %**: a week of poor nights would otherwise ask
+for 10+ hours in bed, and lying in bed longer is not how efficiency recovers (sleep
+restriction works the other way). The plan uses **today's strain so far**, so the
+evening's workout raises the need it shows only after it syncs; the night's own score
+uses the day's final strain.

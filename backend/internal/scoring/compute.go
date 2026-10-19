@@ -97,7 +97,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	nightFrom, nightTo := NightWindow(d)
 
 	// ---- sleep -------------------------------------------------------------
-	// Yesterday's naps lower last night's need (D65), so both days' sleep.
+	// Yesterday's naps lower last night's need (D66), so both days' sleep.
 	from, _ := DaySleepWindow(d.AddDate(0, 0, -1))
 	_, to := DaySleepWindow(d)
 	segs, err := e.st.SleepEndingBetween(ctx, userID, from, to)

@@ -59,6 +59,7 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring | Messages received with a delivery count > 1. |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
+| `ryft_sleep_base_learned_total` | counter | `outcome` | scoring | Weekly sleep-baseline estimates (Sundays from 04:00 local, and `scoring learn-baselines`): `applied` (the baseline in use moved, the last 7 days were rescored), `kept` (same value, or set by hand), `insufficient` (fewer than 14 nights or 7 qualifying), `error`. A run of `error`s means the users' days or the baseline write failed; `applied` should be rare after the first weeks. |
 | `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
 | `ryft_train_sets_logged_total` | counter | — | api | Completed sets `PUT /v1/sessions/{id}` stored for the first time. |
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
@@ -95,6 +96,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | --- | --- | --- |
 | Days scored by result | time series | `sum by (result) (rate(ryft_days_scored_total[5m]))` |
 | Scoring duration p50 / p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_scoring_duration_seconds_bucket[5m])))` |
+| Sleep baselines learned | stacked bars, 1 d buckets | `sum by (outcome) (increase(ryft_sleep_base_learned_total[1d]))` |
 | Events handled by result | time series | `sum by (reason, result) (rate(ryft_events_handled_total[5m]))` |
 | NATS redeliveries | time series | `sum(rate(ryft_nats_redeliveries_total[5m]))` |
 | Publish errors | time series | `sum by (app, reason) (rate(ryft_events_published_total{result="error"}[5m]))` |
