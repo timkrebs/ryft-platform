@@ -10,12 +10,14 @@ output "kubernetes_namespaces" {
 
 output "auth_roles" {
   description = "Kubernetes auth mount and role per service (what VaultAuth references)"
+  # Over the roles, not local.services: `terraform import` evaluates outputs against
+  # the state, where a service added since the last apply has no role yet.
   value = {
-    for k, v in local.services : k => {
-      namespace = v.vault_ns_full
-      mount     = vault_auth_backend.kubernetes[k].path
-      role      = vault_kubernetes_auth_backend_role.service[k].role_name
-      sa        = v.service_account
+    for k, r in vault_kubernetes_auth_backend_role.service : k => {
+      namespace = local.services[k].vault_ns_full
+      mount     = r.backend
+      role      = r.role_name
+      sa        = local.services[k].service_account
     }
   }
 }

@@ -114,6 +114,10 @@ run "roles_trust_one_namespace_and_one_service_account" {
     error_message = "a role must be bound to exactly its own namespace and service account"
   }
   assert {
+    condition     = jsonencode(output.auth_roles["monitoring"]) == jsonencode({ namespace = "admin/ryft/monitoring", mount = "kubernetes", role = "monitoring", sa = "monitoring" })
+    error_message = "auth_roles: ${jsonencode(output.auth_roles["monitoring"])}"
+  }
+  assert {
     condition     = !strcontains(vault_policy.service["api"].policy, "*") && strcontains(vault_policy.service["api"].policy, "path \"kv/data/config\"")
     error_message = "the policy reads kv/config and nothing else"
   }
