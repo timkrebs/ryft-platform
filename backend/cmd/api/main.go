@@ -1,5 +1,6 @@
-// api is the read side the iOS app talks to: daily scores, trends, workouts,
-// user settings and a recompute trigger.
+// api is the side the iOS app talks to apart from uploads: daily scores,
+// trends, workouts, user settings, a recompute trigger, and Train (exercises,
+// plans, logged sessions).
 package main
 
 import (
@@ -71,7 +72,7 @@ func main() {
 	}
 	go acct.reconcileEvery(ctx, reconcileEvery)
 
-	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct}
+	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct, engine: scoring.NewEngine(st, log)}
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -94,6 +95,23 @@ func main() {
 	api.HandleFunc("GET /v1/trends", h.trends)
 	api.HandleFunc("GET /v1/insights", h.insights)
 	api.HandleFunc("POST /v1/recompute", h.recompute)
+	api.HandleFunc("GET /v1/exercises", h.exercises)
+	api.HandleFunc("POST /v1/exercises", h.createExercise)
+	api.HandleFunc("PATCH /v1/exercises/{id}", h.patchExercise)
+	api.HandleFunc("DELETE /v1/exercises/{id}", h.archiveExercise)
+	api.HandleFunc("GET /v1/exercises/{id}/history", h.exerciseHistory)
+	api.HandleFunc("GET /v1/plans", h.plans)
+	api.HandleFunc("GET /v1/plans/today", h.planToday)
+	api.HandleFunc("DELETE /v1/plans/enrollment", h.unenroll)
+	api.HandleFunc("GET /v1/plans/{id}", h.plan)
+	api.HandleFunc("PUT /v1/plans/{id}", h.putPlan)
+	api.HandleFunc("DELETE /v1/plans/{id}", h.deletePlan)
+	api.HandleFunc("POST /v1/plans/{id}/enroll", h.enroll)
+	api.HandleFunc("GET /v1/sessions", h.sessions)
+	api.HandleFunc("GET /v1/sessions/{id}", h.session)
+	api.HandleFunc("PUT /v1/sessions/{id}", h.putSession)
+	api.HandleFunc("DELETE /v1/sessions/{id}", h.deleteSession)
+	api.HandleFunc("POST /v1/sessions/{id}/complete", h.completeSession)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -148,6 +166,7 @@ type handler struct {
 	log      *slog.Logger
 	cache    *insightCache
 	accounts *accounts
+	engine   *scoring.Engine // pure scoring with store lookups, for session completion
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

@@ -659,7 +659,7 @@ func (s *Store) CompleteSession(ctx context.Context, userID, id uuid.UUID, c Com
 // attached the session to.
 func (s *Store) SetSessionLoad(ctx context.Context, userID, id uuid.UUID, trimp, strain, volume float64, workoutID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE sessions SET muscular_trimp=$3, strain=$4, volume_kg=$5, workout_id=$6
-		WHERE user_id=$1 AND id=$2 AND (muscular_trimp, strain, volume_kg, workout_id) IS DISTINCT FROM ($3::real, $4::real, $5::real, $6::uuid)`,
+		WHERE user_id=$1 AND id=$2 AND (muscular_trimp, strain, volume_kg, workout_id) IS DISTINCT FROM ($3::float8, $4::float8, $5::float8, $6::uuid)`,
 		userID, id, trimp, strain, volume, workoutID)
 	return err
 }

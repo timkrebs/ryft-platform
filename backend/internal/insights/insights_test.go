@@ -203,3 +203,24 @@ func TestHelpers(t *testing.T) {
 		t.Fatalf("fit %v %v", s, i)
 	}
 }
+
+func TestPersonalRecord(t *testing.T) {
+	pr := func(prs ...PR) func(*Day) { return func(d *Day) { d.PRs = prs } }
+	squat := PR{Exercise: "Back squat", Kind: model.PRMaxWeight, Value: 140}
+	e1rm := PR{Exercise: "Back squat", Kind: model.PRE1RM, Value: 152.5}
+	got := personalRecord(hist(nil, pr(squat, e1rm)))
+	if got == nil || got.ID != "pr" || got.Severity != model.SeverityInfo || got.Metric != model.MetricVolumeKG ||
+		!strings.Contains(got.Body, "152.5 kg") || !strings.Contains(got.Body, "2 records") {
+		t.Fatalf("an e1RM record leads the card: %+v", got)
+	}
+	if got := personalRecord(hist(pr(squat), nil)); got == nil || !strings.Contains(got.Body, "140 kg on Back squat") {
+		t.Fatalf("yesterday's record still shows: %+v", got)
+	}
+	if personalRecord(hist(pr(squat), nil, nil)) != nil {
+		t.Fatal("a record two days ago is old news")
+	}
+	h := NewHistory(today, 3, nil, nil).WithPRs(map[string][]PR{"2026-10-18": {squat}})
+	if ids(Evaluate(h)) != "pr" {
+		t.Fatalf("WithPRs places records on their day: %s", ids(Evaluate(h)))
+	}
+}

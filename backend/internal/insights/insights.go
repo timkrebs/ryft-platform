@@ -39,6 +39,14 @@ type Day struct {
 	RHR, RHRBase *float64
 	SpO2         *float64
 	Bedtime      *time.Time // start of the night's sleep, in the user's timezone
+	PRs          []PR       // personal records set that day (Train), newest first
+}
+
+// PR is a personal record as a card names it.
+type PR struct {
+	Exercise string  // English name
+	Kind     string  // model.PR* kind
+	Value    float64 // kg or reps
 }
 
 // History is a contiguous run of calendar days, oldest first; the last is today.
@@ -57,6 +65,7 @@ var Rules = []Rule{
 	bedtimeConsistency,
 	readinessTrendingUp,
 	bestHRV30d,
+	personalRecord,
 }
 
 var severityRank = map[string]int{model.SeverityWarn: 0, model.SeverityNotice: 1, model.SeverityInfo: 2}
@@ -94,6 +103,14 @@ func NewHistory(today time.Time, n int, scores []model.DailyScore, bedtimes map[
 			d.Bedtime = &b
 		}
 		h.Days[k] = d
+	}
+	return h
+}
+
+// WithPRs puts personal records (by local day) on the history's days.
+func (h History) WithPRs(byDay map[string][]PR) History {
+	for k := range h.Days {
+		h.Days[k].PRs = byDay[h.Days[k].Day]
 	}
 	return h
 }

@@ -55,6 +55,12 @@ func TestUserLimitsClassifiesSync(t *testing.T) {
 	if class, _, _ := u.Allow(httptest.NewRequest(http.MethodGet, "/v1/days", nil), "a"); class != "default" {
 		t.Fatalf("default class expected, got %s", class)
 	}
+	if class, _, _ := u.Allow(httptest.NewRequest(http.MethodPut, "/v1/sessions/0b1c", nil), "a"); class != "session" {
+		t.Fatalf("session saves have their own class, got %s", class)
+	}
+	if class, _, _ := u.Allow(httptest.NewRequest(http.MethodGet, "/v1/sessions/0b1c", nil), "a"); class != "default" {
+		t.Fatalf("reading a session is a default request, got %s", class)
+	}
 	// A backfill: 60 pages back to back must all pass.
 	for k := 0; k < 60; k++ {
 		if _, ok, _ := u.Allow(httptest.NewRequest(http.MethodPost, "/v1/sync", nil), "b"); !ok {

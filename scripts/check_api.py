@@ -254,6 +254,140 @@ check(len(wk["hr"]) == 81 and sum(wk["zone_min"]) >= 78, f"midnight workout zone
 check({p["bpm"] for p in wk["hr"]} == {150}, f"the band's samples leaked into the curve: {sorted({p['bpm'] for p in wk['hr']})}")
 ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}; overlapping source ignored")
 
+# ---- Train: exercises, plans, sessions (M3b) -----------------------------------
+def call(method, path, body=None, expect=200, key=None, headers=None):
+    """One request; expect is a status or a tuple of them. None for an empty body."""
+    hdrs = {"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json", **(headers or {})}
+    req = urllib.request.Request(API + path, data=json.dumps(body).encode() if body is not None else None,
+                                 method=method, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req) as r:
+            status, raw_body = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw_body = e.code, e.read()
+    if status not in (expect if isinstance(expect, tuple) else (expect,)):
+        fail(f"{method} {path}: status {status}, want {expect}: {raw_body[:300]!r}")
+    return json.loads(raw_body) if raw_body.strip() else None
+
+
+lib = get("/v1/exercises")
+squat = next(e for e in lib if e["slug"] == "back-squat")
+check(len(lib) >= 150 and squat["id"] == "053b5627-084e-5417-a033-a6602d812f86" and squat["name"] == "Back squat"
+      and squat["load_type"] == "weight" and "quads" in squat["primary_muscles"], f"library: {len(lib)}, {squat}")
+de = call("GET", "/v1/exercises?q=kniebeuge&muscle=quads", headers={"Accept-Language": "de-DE,de;q=0.9,en;q=0.8"})
+check(any(e["slug"] == "back-squat" and e["name"] == "Kniebeuge" and e["name_en"] == "Back squat" for e in de),
+      "Accept-Language de names exercises in German")
+call("GET", "/v1/exercises?muscle=pecs", expect=422)
+call("PATCH", f"/v1/exercises/{squat['id']}", {"name": "Mine now"}, expect=403)
+cx_id = str(uuid.uuid4())
+cx_body = {"id": cx_id, "name": f"Check press {cx_id[:4]}", "kind": "dumbbell", "primary_muscles": ["chest"],
+           "secondary_muscles": ["triceps"], "load_type": "weight"}
+cx = call("POST", "/v1/exercises", cx_body, expect=201)
+check(cx["is_custom"] and cx["slug"].startswith("check-press") and cx["name_de"] == cx["name"], f"custom exercise: {cx}")
+call("POST", "/v1/exercises", cx_body, expect=200)  # a retry updates
+call("POST", "/v1/exercises", {**cx_body, "id": squat["id"]}, expect=409)
+ok(f"/v1/exercises: {len(lib)} built-ins, German names, a custom exercise, built-ins read-only")
+
+plans = get("/v1/plans")
+fb = next(p for p in plans["builtin"] if p["slug"] == "full-body-3x")
+check({p["slug"] for p in plans["builtin"]} >= {"full-body-3x", "upper-lower-4x", "weightlifting-4x", "five-three-one-4x"},
+      f"built-in plans: {[p['slug'] for p in plans['builtin']]}")
+plan = get(f"/v1/plans/{fb['id']}")
+check(len(plan["days"]) == 3 and plan["days"][0]["exercises"][0]["exercise"]["slug"] == "back-squat"
+      and plan["progression"]["type"] == "linear", f"full-body-3x: {plan['days'][0]}")
+call("PUT", f"/v1/plans/{fb['id']}", plan, expect=403)
+call("POST", f"/v1/plans/{fb['id']}/enroll", expect=(200, 201))
+today_plan = get("/v1/plans/today")
+enr0 = today_plan["enrollment"]
+targets = today_plan["targets"]
+check(enr0["plan_id"] == fb["id"] and enr0["status"] == "active" and targets
+      and all(t["target_kind"] == "kg" and t["target_kg"] is not None for t in targets), f"/v1/plans/today: {today_plan}")
+ok(f"/v1/plans: enrolled in {fb['name']}, today is {today_plan['day']['name']} with {len(targets)} targets")
+
+# A session two days ago at 18:00 local, logged offline-style: a first save with
+# two sets per exercise, a second with all of them, then a stale replay of the first.
+tz = ZoneInfo(get("/v1/me")["tz"])
+D = date.fromisoformat(TODAY) - timedelta(days=2)
+t_start = datetime(D.year, D.month, D.day, 18, 0, tzinfo=tz).astimezone(timezone.utc)
+before_day = get(f"/v1/days/{D}")
+
+
+def mkset(i, reps, kg, minute):
+    t = iso(t_start + timedelta(minutes=minute))
+    return {"id": str(uuid.uuid4()), "set_index": i, "reps": reps, "weight_kg": kg, "rpe": 8, "duration_sec": None,
+            "distance_m": None, "is_warmup": False, "completed_at": t, "updated_at": t}
+
+
+sid = str(uuid.uuid4())
+exercises, minute = [], 0
+for pos, t in enumerate(targets):
+    sets = []
+    for k in range(t["sets"]):
+        minute += 2
+        sets.append(mkset(k, t["reps_max"], max(t["target_kg"], 60), minute))
+    exercises.append({"id": str(uuid.uuid4()), "exercise_id": t["exercise_id"], "plan_exercise_id": t["plan_exercise_id"],
+                      "position": pos, "notes": "", "sets": sets})
+exercises.append({"id": str(uuid.uuid4()), "exercise_id": cx_id, "plan_exercise_id": None, "position": len(exercises),
+                  "notes": "", "sets": [mkset(k, 8, 22.5, minute + 2 * (k + 1)) for k in range(3)]})
+full = {"id": sid, "title": "Check A", "started_at": iso(t_start), "ended_at": None, "status": "in_progress",
+        "plan_day_id": today_plan["day"]["id"], "notes": "", "bodyweight_kg": None, "device_id": None, "exercises": exercises}
+first = {**full, "exercises": [{**e, "sets": e["sets"][:2]} for e in exercises]}
+n_sets = sum(len(e["sets"]) for e in exercises)
+check(call("PUT", f"/v1/sessions/{sid}", first, expect=201)["status"] == "in_progress", "first save creates the session")
+saved = call("PUT", f"/v1/sessions/{sid}", full, expect=200)
+check(sum(len(e["sets"]) for e in saved["exercises"]) == n_sets, "the second save adds the sets")
+saved = call("PUT", f"/v1/sessions/{sid}", first, expect=200)
+check(sum(len(e["sets"]) for e in saved["exercises"]) == n_sets, "a stale replay must not delete newer sets")
+stale = json.loads(json.dumps(first))
+stale["exercises"][0]["sets"][0]["reps"] = 1
+stale["exercises"][0]["sets"][0]["updated_at"] = iso(t_start)  # older than the stored copy
+newer = json.loads(json.dumps(full))
+newer["exercises"][0]["sets"][0]["updated_at"] = iso(t_start + timedelta(minutes=30))
+call("PUT", f"/v1/sessions/{sid}", newer, expect=200)
+conflict = call("PUT", f"/v1/sessions/{sid}", stale, expect=409)
+check(conflict["id"] == sid and conflict["exercises"][0]["sets"][0]["reps"] == targets[0]["reps_max"],
+      f"409 carries the server's session: {conflict['exercises'][0]['sets'][0]}")
+call("PUT", f"/v1/sessions/{uuid.uuid4()}", {**full, "id": None, "status": "completed"}, expect=422)
+call("PUT", f"/v1/sessions/{sid}", {**full, "exercises": [{**exercises[0], "exercise_id": str(uuid.uuid4())}]}, expect=422)
+call("GET", "/v1/sessions?status=bogus", expect=422)
+ok("PUT /v1/sessions/{id}: merge by id, stale replays keep sets, 409 with the server copy, 422 on bad input")
+
+done = call("POST", f"/v1/sessions/{sid}/complete", {"bodyweight_kg": 80, "ended_at": iso(t_start + timedelta(minutes=60))})
+check(done["status"] == "completed" and done["muscular_trimp"] > 0 and 0 < done["strain"] <= 21 and done["volume_kg"] > 0
+      and done["workout_id"] and done["prs"] and all(p["session_id"] == sid for p in done["prs"]),
+      f"completion: {({k: done[k] for k in ('status', 'muscular_trimp', 'strain', 'volume_kg', 'workout_id', 'prs')})}")
+check(call("POST", f"/v1/sessions/{sid}/complete", None)["muscular_trimp"] == done["muscular_trimp"], "completing twice is the same")
+summ = get(f"/v1/sessions?from={D}&to={D}")
+mine = next((x for x in summ if x["id"] == sid), None)
+check(mine and mine["duration_min"] == 60 and mine["pr_count"] >= 1 and mine["set_count"] == n_sets, f"summary: {mine}")
+for _ in range(30):  # scoring rescored the day after the session.completed event
+    day = get(f"/v1/days/{D}")
+    st = day["strain"] or {}
+    if any(x["id"] == sid for x in st.get("sessions", [])):
+        break
+    time.sleep(1)
+check(any(x["id"] == sid for x in st.get("sessions", [])), f"the day was not rescored with the session: {st}")
+sc, sc0 = day["score"], before_day["score"]
+check(sc["strength_min"] >= (sc0["strength_min"] or 0) + 60 and sc["volume_kg"] > 0 and st["muscular_trimp"] > 0
+      and sc["strain"] is not None and sc["strain"] >= (sc0["strain"] or 0), f"day strength: {sc} vs {sc0}")
+wk = [w for w in get(f"/v1/workouts?from={D}&to={D}") if w.get("session_id") == sid]
+check(len(wk) == 1 and wk[0]["muscular_load"] > 0 and wk[0]["id"] == done["workout_id"], f"the session's workout: {wk}")
+enr1 = get("/v1/plans/today")["enrollment"]
+check((enr1["current_week"], enr1["current_day_index"]) != (enr0["current_week"], enr0["current_day_index"]),
+      f"completing today's plan day advances the enrolment: {enr0} → {enr1}")
+hist_cx = get(f"/v1/exercises/{cx_id}/history")
+check(hist_cx["prs"] and hist_cx["sessions"][0]["session_id"] == sid and hist_cx["sessions"][0]["date"] == D.isoformat()
+      and hist_cx["e1rm"], f"exercise history: {hist_cx}")
+check(get("/v1/trends?metric=strength_min&range=7d")["points"], "strength_min is a trend metric")
+ok(f"complete: load {done['muscular_trimp']}, strain {done['strain']}, {len(done['prs'])} PRs; day {D} +{sc['strength_min'] - (sc0['strength_min'] or 0)} min, strain {sc0['strain']} → {sc['strain']}")
+
+tmp = str(uuid.uuid4())
+call("PUT", f"/v1/sessions/{tmp}", {**first, "id": tmp, "exercises": [{**first["exercises"][0], "id": str(uuid.uuid4()),
+     "sets": [{**first["exercises"][0]["sets"][0], "id": str(uuid.uuid4())}]}]}, expect=201)
+call("DELETE", f"/v1/sessions/{tmp}", expect=204)
+call("GET", f"/v1/sessions/{tmp}", expect=404)
+ok("DELETE /v1/sessions/{id}")
+
 # ---- multi-user isolation (apikey mode: "<API_KEY>:<uuid>" acts as that user) ---
 if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     B = str(uuid.uuid4())
@@ -295,6 +429,18 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     get("/v1/days", expect=401, key="wrong-key-0123456789")
     get("/v1/days", expect=401, key=f"{KEY}:not-a-uuid")
     ok(f"isolation: user {B[:8]}… sees only its own data; shared device and workout UUID stay separate")
+
+    # Train: B sees none of A's sessions, custom exercises or enrolment; the same
+    # session id is B's own.
+    check(get("/v1/sessions", key=KEY_B) == [], "B must see no sessions")
+    get(f"/v1/sessions/{sid}", expect=404, key=KEY_B)
+    check(all(not e["is_custom"] for e in get("/v1/exercises", key=KEY_B)), "B must not see A's custom exercises")
+    call("DELETE", f"/v1/exercises/{cx_id}", expect=404, key=KEY_B)
+    call("GET", "/v1/plans/today", expect=204, key=KEY_B)
+    call("PUT", f"/v1/sessions/{sid}", {**first, "exercises": [{**first["exercises"][0], "id": str(uuid.uuid4()),
+         "sets": [{**first["exercises"][0]["sets"][0], "id": str(uuid.uuid4())}]}]}, expect=201, key=KEY_B)
+    check(get(f"/v1/sessions/{sid}")["status"] == "completed", "B's session with A's id left A's alone")
+    ok("Train isolation: sessions, custom exercises and enrolments are per user")
 
     # ---- one night from two trackers counts once (source de-duplication) ------
     e = date.fromisoformat(TODAY) - timedelta(days=60)

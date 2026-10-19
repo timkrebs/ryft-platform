@@ -7,6 +7,7 @@ package ratelimit
 import (
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,21 +66,26 @@ func (l *Limiter) Allow(key string) (bool, time.Duration) {
 
 // UserLimits applies a per-user limit per request class.
 type UserLimits struct {
-	sync, other *Limiter
+	sync, session, other *Limiter
 }
 
 // NewUserLimits returns the platform's limits: uploads may burst through a
-// whole 90-day backfill (tens of pages back to back); everything else allows
-// a screen's worth of parallel reads plus pull-to-refresh.
+// whole 90-day backfill (tens of pages back to back); session saves (the app
+// saves after every set and replays its offline queue) get the same budget of
+// their own; everything else allows a screen's worth of parallel reads plus
+// pull-to-refresh.
 func NewUserLimits() *UserLimits {
-	return &UserLimits{sync: New(2, 60), other: New(10, 60)}
+	return &UserLimits{sync: New(2, 60), session: New(2, 60), other: New(10, 60)}
 }
 
 // Allow classifies r and takes a token from user's bucket for that class.
 func (u *UserLimits) Allow(r *http.Request, user string) (class string, ok bool, retryAfter time.Duration) {
 	class, l := "default", u.other
-	if r.Method == http.MethodPost && r.URL.Path == "/v1/sync" {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/sync":
 		class, l = "sync", u.sync
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
+		class, l = "session", u.session
 	}
 	ok, retryAfter = l.Allow(user)
 	return class, ok, retryAfter

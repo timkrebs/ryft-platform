@@ -144,6 +144,14 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.Strain = scoring.DayStrainFrom(load)
+		if out.Strain != nil {
+			sessions, err := h.st.SessionSummaries(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1), model.SessionCompleted, true)
+			if err != nil {
+				httpx.Fail(w, r, err)
+				return
+			}
+			scoring.DayStrainSessions(out.Strain, sessions)
+		}
 	}
 	if len(nights) > 0 {
 		if s, ok := scoring.NightSummary(nights[0]); ok {

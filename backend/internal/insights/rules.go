@@ -203,3 +203,43 @@ func linearFit(xs, ys []float64) (slope, intercept float64) {
 	slope = (n*sxy - sx*sy) / den
 	return slope, (sy - slope*sx) / n
 }
+
+// personalRecord: a record set today or yesterday (the newest; an estimated
+// 1RM before the other kinds).
+func personalRecord(h History) *model.Insight {
+	d, ok := h.Latest(func(d Day) bool { return len(d.PRs) > 0 })
+	if !ok {
+		return nil
+	}
+	p := d.PRs[0]
+	for _, x := range d.PRs {
+		if x.Kind == model.PRE1RM {
+			p = x
+			break
+		}
+	}
+	var body string
+	switch p.Kind {
+	case model.PRE1RM:
+		body = fmt.Sprintf("Your estimated one-rep max on %s is now %s kg.", p.Exercise, kg(p.Value))
+	case model.PRMaxWeight:
+		body = fmt.Sprintf("%s kg on %s, the heaviest you have logged.", kg(p.Value), p.Exercise)
+	case model.PRMaxReps:
+		body = fmt.Sprintf("%.0f reps of %s in one set, your most yet.", p.Value, p.Exercise)
+	default:
+		body = fmt.Sprintf("%s kg in one set of %s (reps × kg), your best yet.", kg(p.Value), p.Exercise)
+	}
+	if n := len(d.PRs); n > 1 {
+		body += fmt.Sprintf(" %d records in all.", n)
+	}
+	return &model.Insight{ID: "pr", Severity: model.SeverityInfo, Metric: model.MetricVolumeKG, Day: d.Day,
+		Title: "New personal record: " + p.Exercise, Body: body}
+}
+
+// kg formats a weight: whole kilograms without a decimal, else one.
+func kg(v float64) string {
+	if v == math.Trunc(v) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.1f", v)
+}

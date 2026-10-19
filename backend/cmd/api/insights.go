@@ -113,7 +113,18 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 			bedtimes[n.Day] = n.Start.In(loc)
 		}
 	}
-	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes))
+	// Records of today and yesterday (the only ones a card is about).
+	recent, err := h.st.PRsSince(r.Context(), userOf(r).ID, today.AddDate(0, 0, -1))
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	prs := map[string][]insights.PR{}
+	for _, p := range recent {
+		d := p.AchievedAt.In(loc).Format(dayLayout)
+		prs[d] = append(prs[d], insights.PR{Exercise: p.Exercise, Kind: p.Kind, Value: p.Value})
+	}
+	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs))
 	h.cache.put(ck, now, cards)
 	httpx.WriteJSON(w, 200, cards)
 }

@@ -29,10 +29,11 @@ import (
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
-// Request body limits: settings and small commands vs. a HealthKit upload
-// (a first backfill page can be large).
+// Request body limits: settings and small commands, a whole Train document
+// (a session or a plan), and a HealthKit upload (a first backfill page can be large).
 const (
 	MaxBodyDefault = 64 << 10
+	MaxBodyTrain   = 256 << 10
 	MaxBodySync    = 32 << 20
 )
 
