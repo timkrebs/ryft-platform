@@ -1,20 +1,6 @@
 // Decodes every endpoint with the Swift mirror from docs/API.md.
 import Foundation
 
-// Unchanged from the app's Models.swift; the mirror references it.
-struct Workout: Codable, Identifiable {
-    let id: UUID
-    let activity: String
-    let start: Date
-    let end: Date
-    let avgHr: Double?
-    let maxHr: Double?
-    let energyKcal: Double?
-    let distanceM: Double?
-    let source: String
-    var strain: Double?
-}
-
 await decode([DailyScore].self, "/v1/days?to=\(today)")
 let detail = await decode(DayDetail.self, "/v1/days/\(today)")
 precondition(detail.sleep != nil && detail.strain != nil, "today must have sleep and strain")
