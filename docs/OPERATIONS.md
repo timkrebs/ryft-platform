@@ -230,8 +230,12 @@ timer and processes recompute ranges in order. NATS is a single-replica Stateful
 ## Monitoring (Grafana Cloud)
 
 The collector is Grafana's `k8s-monitoring` chart with the onboarding's preset, in
-namespace `monitoring`. Its Fleet Management token lives in Vault like every other
-credential (D51). It is never passed on a command line:
+namespace `monitoring`: the collectors `alloy-daemonset` and `alloy-deployment`,
+node-exporter, kube-state-metrics and Beyla. The collector names matter: Fleet
+Management assigns its Kubernetes pipelines by them. Kepler, OpenCost and
+k8s-manifest-tail from the onboarding are left out for lack of pod slots. The Fleet
+Management token lives in Vault like every other credential (D51), and the operator
+restarts both collectors when it changes. It is never passed on a command line:
 
 1. **Rotate the token** that was used during onboarding (it was on a command line and
    in a chat): Grafana Cloud → your stack → Access policies → the Kubernetes Monitoring
@@ -253,6 +257,8 @@ credential (D51). It is never passed on a command line:
    - In the Fleet Management pipelines for pod logs, exclude namespaces matching
      `ryft-.*`; RYFT's logs go to CloudWatch.
    - Load `deploy/monitoring/alerts.yaml` with `mimirtool rules load`.
+   - Remove collectors that no longer report from Fleet Management → Collectors (the
+     single `alloy` collector before 2026-10-19).
    - Check that the cluster appears in Kubernetes Monitoring, that
      `ryft_http_requests_total` has series, and that `{namespace=~"ryft-.*"}` in Logs
      Explore is empty.

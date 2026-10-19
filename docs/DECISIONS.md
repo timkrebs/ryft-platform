@@ -705,6 +705,16 @@ Beyla still sees RYFT's HTTP traffic (routes, status, durations; trace URLs cont
 workout UUIDs). Excluding the `ryft-*` namespaces from Beyla's discovery is the next
 step if that matters.
 
+
+**2026-10-19, as deployed:** the onboarding now names two collectors, `alloy-daemonset`
+and `alloy-deployment`, and Fleet Management assigns its Kubernetes pipelines by those
+names; a single collector called `alloy` received only self-monitoring and sent no
+cluster metrics. The values follow the onboarding (two collectors, node-exporter on),
+without Kepler, OpenCost and k8s-manifest-tail (pod slots, and OpenCost would need a
+second inline credential). Chart 4.5.3 needs `auth.type: basic` and the user as a
+literal `usernameFrom` when the token comes from an existing secret, and the daemonset
+advertises its cluster address on `ens5` (Amazon Linux 2023), or the three collectors
+never form one cluster.
 ## D52 — Logs in CloudWatch, not Loki
 
 The spec left the choice open; the cheaper one wins. At alpha volume CloudWatch Logs

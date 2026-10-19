@@ -32,9 +32,13 @@ collectorCommon:
       # has none; the server's public certificate needs no client TLS settings.
       tls: null
 
+# The collectors as Grafana Cloud's current onboarding names them: Fleet Management
+# assigns the Kubernetes pipelines by collector (workloadName alloy-daemonset /
+# alloy-deployment). A single collector named "alloy" got only the self-monitoring
+# pipelines and sent no cluster metrics (2026-10-19).
 collectors:
-  alloy:
-    presets: [large, root, host-network, host-storage, host-cgroup, clustered, service-discovery, filesystem-log-reader, daemonset, otel-receiver]
+  alloy-daemonset:
+    presets: [large, root, host-network, host-storage, host-cgroup, clustered, service-discovery, filesystem-log-reader, daemonset]
     # Clustering on host network: Alloy looks for eth0/en0 to advertise itself, but
     # Amazon Linux 2023 (Nitro) nodes call it ens5, so every collector fell back to
     # localhost and formed a cluster of one (each would scrape the cluster-wide
@@ -43,13 +47,19 @@ collectors:
     alloy:
       extraArgs:
         - --cluster.advertise-interfaces=ens5,eth0,en0
+
+  alloy-deployment:
+    presets: [large, clustered, deployment, otel-receiver]
     extraService:
       enabled: true
       name: otel-receiver
 
+# The onboarding also deploys Kepler (energy), OpenCost (cost; a second, inline
+# credential) and k8s-manifest-tail: left out for now, three nodes have no pod slots
+# for them (infra/aws README → Pod capacity, D57).
 telemetryServices:
   node-exporter:
-    deploy: false
+    deploy: true
   kube-state-metrics:
     deploy: true
   beyla:
@@ -60,4 +70,4 @@ telemetryServices:
     deploy: false
   sdkInjector:
     deploy: true
-    allowedConfigMapWriters: system:serviceaccount:monitoring:grafana-cloud-alloy
+    allowedConfigMapWriters: system:serviceaccount:monitoring:grafana-cloud-alloy-daemonset,system:serviceaccount:monitoring:grafana-cloud-alloy-deployment
