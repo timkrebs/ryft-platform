@@ -367,6 +367,33 @@ type UserPatch struct {
 	SleepBaseManual *bool `json:"sleep_base_manual,omitempty"`
 }
 
+// ---- Remote config (GET /v1/config) --------------------------------------------
+
+// FeatureFlag is one row of feature_flags: on for a user when Enabled and the
+// user is on AllowUserIDs or in the first RolloutPct buckets (internal/flags).
+type FeatureFlag struct {
+	Key          string      `json:"key"`
+	Enabled      bool        `json:"enabled"`
+	RolloutPct   int         `json:"rollout_pct"`
+	AllowUserIDs []uuid.UUID `json:"allow_user_ids"`
+	UpdatedAt    time.Time   `json:"updated_at"`
+}
+
+// FlagInput is PUT /v1/admin/flags/{key}: the whole flag (enabled and
+// rollout_pct required; a missing allow-list is empty).
+type FlagInput struct {
+	Enabled      *bool       `json:"enabled"`
+	RolloutPct   *int        `json:"rollout_pct"`
+	AllowUserIDs []uuid.UUID `json:"allow_user_ids"`
+}
+
+// RemoteConfig is GET /v1/config: every flag evaluated for the caller.
+type RemoteConfig struct {
+	Flags       map[string]bool `json:"flags"`
+	EvaluatedAt time.Time       `json:"evaluated_at"`
+	TTLSec      int             `json:"ttl_sec"`
+}
+
 type RecomputeRequest struct {
 	From string `json:"from"` // YYYY-MM-DD
 	To   string `json:"to"`

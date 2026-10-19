@@ -27,6 +27,16 @@ resource "random_bytes" "data_key" {
   length = 32
 }
 
+# Bearer of the api's /v1/admin routes (feature flags). Rotate it with
+#   terraform apply -replace='random_password.admin_key["api"]'
+# the operator then restarts the api with the new key.
+resource "random_password" "admin_key" {
+  for_each = { for name, s in local.services : name => s if s.admin_key }
+
+  length  = 48
+  special = false
+}
+
 # KV v2 per service namespace at kv/, one secret `config` holding exactly the keys that
 # service is entitled to. The generated VaultStaticSecret turns it into the Kubernetes
 # Secret `ryft-secrets` the workload reads with envFrom.

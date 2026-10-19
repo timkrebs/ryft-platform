@@ -59,6 +59,8 @@ variable "services" {
     workload_kind:   what the operator restarts when the secret changes ("" for a Job).
     data_key:        a generated DATA_ENCRYPTION_KEY (32 random bytes, base64) for data the
                      service stores encrypted (the api: Sign in with Apple refresh tokens).
+    admin_key:       a generated ADMIN_API_KEY, the bearer of the operator's /v1/admin routes
+                     (the api: feature flags); read it with `terraform output -raw admin_api_key`.
     k8s_namespace:   the Kubernetes namespace (default <project>-<name>).
     pod_security:    the namespace's Pod Security level: restricted (default), baseline, privileged.
     workload_name:   the workload the operator restarts (default the service name).
@@ -72,6 +74,7 @@ variable "services" {
     nats            = optional(string, "none")
     workload_kind   = optional(string, "Deployment")
     data_key        = optional(bool, false)
+    admin_key       = optional(bool, false)
     k8s_namespace   = optional(string)
     pod_security    = optional(string, "restricted")
     workload_name   = optional(string)
@@ -80,7 +83,7 @@ variable "services" {
   default = {
     ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
     scoring = { database = "role", nats = "client" }
-    api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client", data_key = true }
+    api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client", data_key = true, admin_key = true }
     nats    = { nats = "server", workload_kind = "StatefulSet" }
     migrate = { database = "owner", workload_kind = "" }
     # Grafana Cloud's k8s-monitoring collector (deploy/monitoring): node metrics,

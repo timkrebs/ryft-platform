@@ -14,6 +14,7 @@ locals {
       nats            = s.nats
       workload_kind   = s.workload_kind
       data_key        = s.data_key
+      admin_key       = s.admin_key
       pod_security    = s.pod_security
       workload_name   = coalesce(s.workload_name, name)
       restart_targets = concat(s.workload_kind == "" ? [] : [{ kind = s.workload_kind, name = coalesce(s.workload_name, name) }], s.extra_restarts)
@@ -42,6 +43,7 @@ locals {
       s.nats == "client" ? ["NATS_USER", "NATS_PASSWORD"] : [],
       s.nats == "server" ? [for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}"] : [],
       s.data_key ? ["DATA_ENCRYPTION_KEY"] : [],
+      s.admin_key ? ["ADMIN_API_KEY"] : [],
     )
   }
 
@@ -66,6 +68,7 @@ locals {
       s.nats == "client" ? { NATS_USER = name, NATS_PASSWORD = random_password.nats[name].result } : {},
       s.nats == "server" ? { for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}" => random_password.nats[c].bcrypt_hash } : {},
       s.data_key ? { DATA_ENCRYPTION_KEY = random_bytes.data_key[name].base64 } : {},
+      s.admin_key ? { ADMIN_API_KEY = random_password.admin_key[name].result } : {},
     )
   }
 

@@ -43,3 +43,9 @@ output "login_check" {
     for k, v in local.services : k => "VAULT_NAMESPACE=${v.vault_ns_full} vault write auth/kubernetes/login role=${k} jwt=\"$(kubectl -n ${v.k8s_ns} create token ${v.service_account} --audience vault --duration 10m)\""
   }
 }
+
+output "admin_api_key" {
+  description = "Bearer of the api's /v1/admin routes (docs/OPERATIONS.md → Feature flags)"
+  value       = try(random_password.admin_key["api"].result, null)
+  sensitive   = true
+}

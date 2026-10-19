@@ -127,6 +127,17 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
+// LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin
+// routes (api only; infra/vault generates it). Empty disables them; a short key
+// is refused rather than guessable.
+func LoadAdmin() (string, error) {
+	key := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
+	if key != "" && len(key) < 32 {
+		return "", fmt.Errorf("ADMIN_API_KEY must have at least 32 characters")
+	}
+	return key, nil
+}
+
 // Apple configures Sign in with Apple token revocation (api only): the
 // developer-account values and the key that encrypts stored refresh tokens.
 type Apple struct {

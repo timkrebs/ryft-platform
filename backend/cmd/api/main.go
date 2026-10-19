@@ -64,6 +64,11 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("auth", "mode", authCfg.Mode)
+	adminKey, err := config.LoadAdmin()
+	if err != nil {
+		log.Error("admin config", "err", err)
+		os.Exit(1)
+	}
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
@@ -84,6 +89,7 @@ func main() {
 	})
 
 	api := http.NewServeMux()
+	api.HandleFunc("GET /v1/config", h.remoteConfig)
 	api.HandleFunc("GET /v1/me", h.me)
 	api.HandleFunc("PATCH /v1/me", h.patchMe)
 	api.HandleFunc("POST /v1/me/apple-authorization", h.appleAuthorization)
@@ -130,6 +136,19 @@ func main() {
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
 	authOpts.OnAuth = auth.LoadUser(ensureUser(st))
 	mux.Handle("/v1/", auth.Middleware(authOpts, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))
+	// The operator's routes: ADMIN_API_KEY instead of a user token; absent
+	// without a key.
+	if adminKey != "" {
+		a, adm := admin{h}, http.NewServeMux()
+		adm.HandleFunc("GET /v1/admin/flags", a.flags)
+		adm.HandleFunc("PUT /v1/admin/flags/{key}", a.putFlag)
+		adm.HandleFunc("DELETE /v1/admin/flags/{key}", a.deleteFlag)
+		adm.HandleFunc("/v1/admin/", httpx.NotFound)
+		mux.Handle("/v1/admin/", adminOnly(adminKey, httpx.Timeout(readTimeout, httpx.WithRoutes(adm))))
+		log.Info("admin routes enabled")
+	} else {
+		mux.HandleFunc("/v1/admin/", httpx.NotFound)
+	}
 	mux.HandleFunc("/", httpx.NotFound)
 
 	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {

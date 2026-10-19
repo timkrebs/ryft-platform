@@ -74,7 +74,7 @@ run "each_namespace_holds_only_its_own_credentials" {
     condition = jsonencode(output.secret_keys) == jsonencode({
       ingest     = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
       scoring    = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
-      api        = ["APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
+      api        = ["ADMIN_API_KEY", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
       nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
       migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
       monitoring = ["GC_TOKEN", "PROM_USERNAME"]
@@ -247,3 +247,17 @@ run "monitoring_is_privileged_and_restarts_the_collector" {
   }
 }
 
+
+run "the_admin_key_reaches_only_the_api" {
+  command = apply
+
+  assert {
+    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate", "monitoring"] :
+    !contains(output.secret_keys[s], "ADMIN_API_KEY")]) && contains(output.secret_keys["api"], "ADMIN_API_KEY")
+    error_message = "only the api holds the admin key"
+  }
+  assert {
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).ADMIN_API_KEY) == "generatedpassword0123456789"
+    error_message = "the api gets the generated admin key"
+  }
+}

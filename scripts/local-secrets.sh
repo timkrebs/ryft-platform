@@ -15,7 +15,7 @@ umask 077
 mkdir -p "$dir"
 r() { openssl rand -hex 24; }
 pg=$(r); db_ingest=$(r); db_scoring=$(r); db_api=$(r)
-nats_ingest=$(r); nats_scoring=$(r); nats_api=$(r); api_key=$(r)
+nats_ingest=$(r); nats_scoring=$(r); nats_api=$(r); api_key=$(r); admin_key=$(r)
 host=postgres.ryft-postgres.svc.cluster.local:5432/ryft?sslmode=disable
 
 cat > "$dir/postgres.env" <<ENV
@@ -49,5 +49,6 @@ DATABASE_URL=postgres://ryft_api:$db_api@$host
 NATS_USER=api
 NATS_PASSWORD=$nats_api
 API_KEY=$api_key
+ADMIN_API_KEY=$admin_key
 ENV
 echo "local-secrets: wrote $dir (bearer for the API: API_KEY in $dir/api.env)"

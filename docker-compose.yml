@@ -75,6 +75,8 @@ services:
       DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: api
       NATS_PASSWORD: dev-api-nats-password
+      # Bearer of /v1/admin (feature flags); scripts/check_api.py uses it.
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me-0123456789abcdef}
     ports: ["8082:8080"]
     depends_on: *deps
 

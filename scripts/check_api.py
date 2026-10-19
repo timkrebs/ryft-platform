@@ -16,13 +16,24 @@ KEY = os.environ.get("API_KEY", "dev-api-key-change-me")
 TODAY = sys.argv[1]
 
 
+def send(req):
+    """Status, headers and body of one request. A 429 is waited out (Retry-After, up to
+    three times) as the app does: the checks run faster than any screen and would
+    otherwise trip the per-user limit (10/s, burst 60) on a busy run."""
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            status, hdrs, data = e.code, e.headers, e.read()
+        if status != 429 or attempt == 3:
+            return status, hdrs, data
+        time.sleep(min(float(hdrs.get("Retry-After") or 1), 5))
+
+
 def get(path, expect=200, auth=True, key=None):
     req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {key or KEY}"} if auth else {})
-    try:
-        with urllib.request.urlopen(req) as r:
-            status, body = r.status, r.read()
-    except urllib.error.HTTPError as e:
-        status, body = e.code, e.read()
+    status, _, body = send(req)
     if status != expect:
         fail(f"GET {path}: status {status}, want {expect}: {body[:200]!r}")
     return json.loads(body) if body.strip().startswith((b"{", b"[")) else body
@@ -31,11 +42,7 @@ def get(path, expect=200, auth=True, key=None):
 def post(path, body, expect, base=API, key=None):
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
                                  headers={"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req) as r:
-            status, raw = r.status, r.read()
-    except urllib.error.HTTPError as e:
-        status, raw = e.code, e.read()
+    status, _, raw = send(req)
     if status != expect:
         fail(f"POST {path}: status {status}, want {expect}: {raw[:200]!r}")
     return json.loads(raw)
@@ -263,11 +270,8 @@ def raw(method, path, body=None, base=API, headers=None, key=None):
     """Status, headers and decoded body of one request (for header checks)."""
     hdrs = {"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json", **(headers or {})}
     req = urllib.request.Request(base + path, data=body, method=method, headers=hdrs)
-    try:
-        with urllib.request.urlopen(req) as r:
-            return r.status, r.headers, json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers, json.loads(e.read())
+    status, hdrs, data = send(req)
+    return status, hdrs, json.loads(data) if data.strip() else None  # 204: no body
 
 
 check(is_error(get("/v1/days", expect=401, auth=False)), "401 must carry {error}")
@@ -323,6 +327,44 @@ if me0["sleep_base_source"] == "manual":  # leave the account as it was
 check(m == me0, f"baseline not restored: {m} vs {me0}")
 ok(f"PATCH /v1/me: manual 481 → {m['sleep_base_source']} {m['sleep_base_min']}; base with manual=false → 422")
 
+# ---- remote config (GET /v1/config, /v1/admin/flags) ---------------------------
+APP_FLAGS = {"train.enabled", "sleep.planner", "today.redesign", "coach.enabled", "push.enabled", "physiology.card"}
+cfg = get("/v1/config")
+check(set(cfg) == {"flags", "evaluated_at", "ttl_sec"} and cfg["ttl_sec"] == 21600, f"/v1/config shape: {cfg}")
+check(APP_FLAGS <= set(cfg["flags"]) and all(isinstance(v, bool) for v in cfg["flags"].values()),
+      f"/v1/config must evaluate the app's flags: {cfg['flags']}")
+check(get("/v1/config")["flags"] == cfg["flags"], "the same user gets the same flags")
+ADMIN = os.environ.get("ADMIN_API_KEY", "")
+if ADMIN and os.environ.get("AUTH_MODE", "apikey") == "apikey":
+    def admin(method, path, body=None, key=ADMIN):
+        return raw(method, path, None if body is None else json.dumps(body).encode(), key=key)
+    status, _, body = raw("GET", "/v1/admin/flags")  # a user's bearer is not the admin key
+    check(status == 401 and is_error(body), f"/v1/admin with a user token: {status}")
+    status, _, body = admin("GET", "/v1/admin/flags", key=ADMIN + "x")
+    check(status == 401, f"/v1/admin with a wrong key: {status}")
+    status, _, listed = admin("GET", "/v1/admin/flags")
+    check(status == 200 and APP_FLAGS <= {f["key"] for f in listed}, f"GET /v1/admin/flags: {status}")
+    tester, other = str(uuid.uuid4()), str(uuid.uuid4())
+    status, _, f = admin("PUT", "/v1/admin/flags/check.api", {"enabled": True, "rollout_pct": 0, "allow_user_ids": [tester]})
+    check(status in (200, 201) and f["allow_user_ids"] == [tester] and f["rollout_pct"] == 0, f"PUT flag: {status} {f}")
+    check(get("/v1/config", key=f"{KEY}:{tester}")["flags"]["check.api"] is True, "the allow-listed user gets the flag")
+    check(get("/v1/config", key=f"{KEY}:{other}")["flags"]["check.api"] is False, "others do not at 0 %")
+    admin("PUT", "/v1/admin/flags/check.api", {"enabled": True, "rollout_pct": 100})
+    check(get("/v1/config", key=f"{KEY}:{other}")["flags"]["check.api"] is True, "100 % reaches everyone")
+    admin("PUT", "/v1/admin/flags/check.api", {"enabled": False, "rollout_pct": 100, "allow_user_ids": [tester]})
+    check(get("/v1/config", key=f"{KEY}:{tester}")["flags"]["check.api"] is False, "disabled is off, allow-list included")
+    for path, body in (("check.api", {"enabled": True}), ("check.api", {"enabled": True, "rollout_pct": 101}),
+                       ("Not.A.Key", {"enabled": True, "rollout_pct": 0})):
+        status, _, err = admin("PUT", f"/v1/admin/flags/{path}", body)
+        check(status == 422 and is_error(err), f"PUT /v1/admin/flags/{path} {body}: {status}")
+    status, _, _ = admin("DELETE", "/v1/admin/flags/check.api")
+    check(status == 204 and "check.api" not in get("/v1/config")["flags"], f"DELETE flag: {status}")
+    for k in (tester, other):  # the two users were created by their requests
+        raw("DELETE", "/v1/me", key=f"{KEY}:{k}")
+    ok(f"/v1/config: {len(cfg['flags'])} flags; admin: 401 without the key, allow-list, rollout, kill switch, 422s, delete")
+else:
+    ok(f"/v1/config: {sorted(k for k, v in cfg['flags'].items() if v)} on (admin checks need ADMIN_API_KEY, apikey mode)")
+
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
 # checked above). Its load must cover all 80 minutes, not just those before midnight.
@@ -359,11 +401,7 @@ def call(method, path, body=None, expect=200, key=None, headers=None):
     hdrs = {"Authorization": f"Bearer {key or KEY}", "Content-Type": "application/json", **(headers or {})}
     req = urllib.request.Request(API + path, data=json.dumps(body).encode() if body is not None else None,
                                  method=method, headers=hdrs)
-    try:
-        with urllib.request.urlopen(req) as r:
-            status, raw_body = r.status, r.read()
-    except urllib.error.HTTPError as e:
-        status, raw_body = e.code, e.read()
+    status, _, raw_body = send(req)
     if status not in (expect if isinstance(expect, tuple) else (expect,)):
         fail(f"{method} {path}: status {status}, want {expect}: {raw_body[:300]!r}")
     return json.loads(raw_body) if raw_body.strip() else None

@@ -90,6 +90,16 @@ var (
 		Help: "Weekly sleep-baseline estimates, by outcome (applied: the baseline in use moved and the last 7 days were rescored; kept: the same value, or set by hand; insufficient: too few qualifying nights; error).",
 	}, []string{"outcome"})
 
+	// Remote config (api).
+	FlagEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_flag_evaluations_total",
+		Help: "Feature flags evaluated for GET /v1/config, by key and result (on, off).",
+	}, []string{"key", "result"})
+	AdminRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_admin_requests_total",
+		Help: "Requests to /v1/admin, by result (ok, unauthorized, invalid, error).",
+	}, []string{"result"})
+
 	// Train (api).
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",

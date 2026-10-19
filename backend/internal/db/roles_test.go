@@ -62,7 +62,8 @@ var grants = map[string]map[string][]string{
 		"samples": {"SELECT", "DELETE"}, "sleep_segments": {"SELECT", "DELETE"}, "workouts": {"SELECT", "DELETE"},
 		"daily_scores": {"SELECT", "DELETE"}, "deleted_users": {"SELECT", "INSERT", "UPDATE"},
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"feature_flags": crud,
+		"exercises":     crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }
@@ -74,7 +75,7 @@ func TestServiceRoleGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
-		"deleted_users", "schema_migrations", "apple_tokens"}, trainTables...)
+		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags"}, trainTables...)
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {

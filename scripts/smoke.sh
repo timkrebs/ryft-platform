@@ -66,4 +66,5 @@ echo "→ GET /v1/days (last $DAYS days)"
 curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KEY" | python3 "$HERE/print_days.py"
 
 echo "→ API contract checks"
+ADMIN_API_KEY="${ADMIN_API_KEY-$( [ "$AUTH_MODE" = apikey ] && echo dev-admin-key-change-me-0123456789abcdef)}" \
 NAP="$NAP" AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"
