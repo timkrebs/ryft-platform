@@ -86,11 +86,26 @@ monitoring-apply:
 	  --namespace monitoring --values deploy/monitoring/k8s-monitoring.yaml --wait --timeout 10m
 
 # Move every Terraform root's state into the S3 bucket from infra/aws/state, once
-# (docs/OPERATIONS.md → Terraform state). Terraform asks before copying each state.
+# (docs/OPERATIONS.md → Terraform state). Each local state is copied to
+# ~/.ryft-tfstate-rescue/<time>/ first (it holds secrets: delete that copy once all
+# roots plan cleanly). Answer "yes" when Terraform asks to copy the existing state;
+# afterwards the remote state must hold as many resources as the local one did, or
+# the target stops and says how to push the copy.
 TF_ROOTS := infra/aws infra/aws/dns infra/aws/kubernetes infra/vault
 tf-migrate-state:
 	@test -f infra/backend.hcl || { echo "infra/backend.hcl missing: (cd infra/aws/state && terraform init && terraform apply && terraform output -raw backend_hcl > ../../backend.hcl)"; exit 1; }
-	for r in $(TF_ROOTS); do (cd $$r && terraform init -migrate-state -backend-config=$(CURDIR)/infra/backend.hcl) || exit 1; done
+	@set -e; rescue=$$HOME/.ryft-tfstate-rescue/$$(date +%Y%m%dT%H%M%S); mkdir -p "$$rescue"; chmod 700 "$$rescue"; \
+	for r in $(TF_ROOTS); do \
+	  name=$$(echo $$r | tr / _); \
+	  if [ -s $$r/terraform.tfstate ]; then cp $$r/terraform.tfstate "$$rescue/$$name.tfstate"; \
+	  elif [ -s $$r/terraform.tfstate.backup ]; then cp $$r/terraform.tfstate.backup "$$rescue/$$name.tfstate"; fi; \
+	  want=$$(jq '[.resources[]?.instances[]?] | length' "$$rescue/$$name.tfstate" 2>/dev/null || echo 0); \
+	  (cd $$r && terraform init -migrate-state -backend-config=$(CURDIR)/infra/backend.hcl); \
+	  got=$$(cd $$r && terraform state list 2>/dev/null | wc -l | tr -d ' '); \
+	  echo "$$r: $$got resources in S3, $$want in the local state"; \
+	  if [ "$$got" -lt "$$want" ]; then \
+	    echo "✗ $$r: the remote state is incomplete. Push the copy: (cd $$r && terraform state push -force $$rescue/$$name.tfstate)"; exit 1; fi; \
+	done; echo "✓ all states in S3; copies in $$rescue (secrets: delete after the plans are clean)"
 
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
 k8s-apply-local:

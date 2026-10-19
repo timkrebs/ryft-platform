@@ -280,8 +280,17 @@ cd ../../.. && make tf-migrate-state                         # each root: init -
 (cd infra/aws && terraform plan)                             # no changes: the state arrived
 ```
 
-When every root plans cleanly, delete the old local `terraform.tfstate*` files; they
-contain the same secrets in plaintext. Locking uses S3 lockfiles (`use_lockfile`), so
+`make tf-migrate-state` first copies each local state to `~/.ryft-tfstate-rescue/<time>/`.
+After each root it compares the resource count in S3 with the local one, and stops with
+the `terraform state push` command if S3 holds less. **If a migration left S3 empty or
+incomplete** (seen on 2026-10-19: the local `terraform.tfstate` files were emptied, but
+nothing reached S3), the last full state is `terraform.tfstate.backup` next to it. Push
+that, and use `-force` if the remote already has a different, partial state:
+`terraform state push [-force] terraform.tfstate.backup`. Then `terraform plan` must not
+want to create anything that already exists.
+
+When every root plans cleanly, delete the old local `terraform.tfstate*` files and the
+rescue copies; they contain the same secrets in plaintext. Locking uses S3 lockfiles (`use_lockfile`), so
 there is no DynamoDB table. The bootstrap root keeps its own small state locally; it
 holds no secrets. Overwritten state versions are kept 90 days.
 
