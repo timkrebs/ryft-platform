@@ -17,12 +17,20 @@ collectorCommon:
       enabled: true
       url: https://fleet-management-prod-011.grafana.net
       auth:
-        username: "1580862"          # the stack's Fleet Management user (not a secret)
+        # Explicit: the chart infers basic auth only from an inline password, and with
+        # an existing secret it reads every other value from that secret, the username
+        # too. usernameFrom is a literal Alloy string, so only the token comes from it.
+        # (Without these, the collector started with no credentials, 2026-10-19.)
+        type: basic
+        usernameFrom: '"1580862"'    # the stack's Fleet Management user (not a secret)
         passwordKey: GC_TOKEN
       secret:
         create: false
         name: ryft-secrets
         namespace: monitoring
+      # The chart's default tls block would read ca/cert/key from that secret, which
+      # has none; the server's public certificate needs no client TLS settings.
+      tls: null
 
 collectors:
   alloy:
