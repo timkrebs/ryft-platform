@@ -90,8 +90,10 @@ monitoring-apply:
 # workspaces, each with execution mode Local and Terraform 1.16.6. The source is
 # each root's last full local state: terraform.tfstate, or terraform.tfstate.backup
 # where the S3 attempt left terraform.tfstate empty. It is copied to
-# ~/.ryft-tfstate-rescue/<time>/ first. init uses -reconfigure, so nothing is
-# migrated from S3; a workspace that already holds state is left alone, and after a
+# ~/.ryft-tfstate-rescue/<time>/ first. A workspace that already holds state is left
+# alone. Terraform refuses -reconfigure with a cloud block, so the root's backend cache
+# (.terraform/terraform.tfstate: the S3 settings, no resources) is moved next to the
+# copy instead: init then starts fresh and offers no migration from S3. After the
 # push the workspace must hold as many resources as the local state.
 TF_ORG   := tim-krebs-org
 TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
@@ -107,13 +109,16 @@ tf-migrate-hcp:
 	    https://app.terraform.io/api/v2/organizations/$(TF_ORG)/workspaces/$$ws) || { echo "✗ workspace $$ws not found in $(TF_ORG)"; exit 1; }; \
 	  mode=$$(echo "$$attrs" | jq -r '.data.attributes["execution-mode"]'); \
 	  [ "$$mode" = local ] || { echo "✗ $$ws: execution mode is $$mode; set it to Local (Settings → General)"; exit 1; }; \
+	  if [ -n "$$(echo "$$attrs" | jq -r '.data.relationships["current-state-version"].data.id // empty')" ]; then \
+	    echo "• $$ws already holds a state: left as it is"; continue; fi; \
 	  src=$$r/terraform.tfstate; [ -s $$src ] || src=$$r/terraform.tfstate.backup; \
 	  [ -s $$src ] || { echo "✗ $$r: no local state to move"; exit 1; }; \
 	  cp $$src "$$rescue/$$ws.tfstate"; \
 	  want=$$(jq '[.resources[]?.instances[]?] | length' $$src); \
-	  (cd $$r && terraform init -reconfigure -input=false >/dev/null); \
-	  have=$$(cd $$r && terraform state list | wc -l | tr -d ' '); \
-	  if [ "$$have" -gt 0 ]; then echo "• $$ws already holds $$have resources: left as it is"; continue; fi; \
+	  cache=$$r/.terraform/terraform.tfstate; \
+	  if [ -f $$cache ] && [ "$$(jq -r '.backend.type // empty' $$cache)" != cloud ]; then \
+	    mv $$cache "$$rescue/$$ws.backend-cache.json"; fi; \
+	  (cd $$r && terraform init -input=false >/dev/null); \
 	  (cd $$r && terraform state push "$$rescue/$$ws.tfstate"); \
 	  got=$$(cd $$r && terraform state list | wc -l | tr -d ' '); \
 	  [ "$$got" -ge "$$want" ] || { echo "✗ $$ws: $$got resources after the push, $$want expected"; exit 1; }; \

@@ -771,9 +771,10 @@ only in `terraform.tfstate.backup`. The user moved state to HCP Terraform (organ
 - **Pinned version.** Terraform is pinned to exactly `1.16.6`, as the user asked, in the
   code, in CI and in the workspaces.
 - **Migration with checks.** `make tf-migrate-hcp` refuses unless the workspace exists
-  and runs locally, keeps a copy of each state outside the repository, initialises with
-  `-reconfigure` so that no partial S3 state can travel, pushes only into an empty
-  workspace, and compares resource counts.
+  and runs locally, keeps a copy of each state outside the repository, moves the S3
+  backend cache aside before `init` so that no partial S3 state can travel (Terraform
+  refuses `-reconfigure` with a `cloud` block), pushes only into an empty workspace, and
+  compares resource counts.
 - **CI** validates, lints and tests every root offline (`init -backend=false`): no HCP
   token and no credentials in GitHub, and CI never writes state. Speculative plans on
   pull requests would need remote execution.

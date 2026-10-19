@@ -288,7 +288,8 @@ Vault credentials; HCP never holds cloud credentials.
    - checks the workspace exists and runs locally;
    - copies the last full local state to `~/.ryft-tfstate-rescue/<time>/` (that is
      `terraform.tfstate.backup` where the S3 attempt emptied `terraform.tfstate`);
-   - runs `terraform init -reconfigure`, so nothing comes over from S3;
+   - moves the root's S3 backend cache (`.terraform/terraform.tfstate`, settings only)
+     next to that copy and runs `terraform init`, so nothing comes over from S3;
    - pushes the state into the empty workspace and checks the resource count.
 
    A workspace that already holds state is left alone.
