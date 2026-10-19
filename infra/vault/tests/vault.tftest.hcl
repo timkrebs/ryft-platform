@@ -191,6 +191,18 @@ run "accepts_a_base64_encoded_apple_key" {
   }
 }
 
+run "rejects_a_partial_set_of_apple_keys" {
+  command = plan
+
+  variables {
+    service_secrets = {
+      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_TEAM_ID = "M77SKHKG63", APPLE_CLIENT_ID = "dev.timkrebs.ryft" }
+      monitoring = { GC_TOKEN = "glc_test" }
+    }
+  }
+  expect_failures = [var.service_secrets]
+}
+
 run "warns_without_the_apple_keys" {
   command = apply
 

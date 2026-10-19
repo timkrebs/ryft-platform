@@ -167,6 +167,11 @@ variable "service_secrets" {
     error_message = "service_secrets still holds a placeholder (… or <…>) from terraform.tfvars.example."
   }
   validation {
+    condition = contains([0, 4], length(setintersection(keys(lookup(var.service_secrets, "api", {})),
+    ["APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_CLIENT_ID", "APPLE_KEY_P8"])))
+    error_message = "service_secrets.api needs all four APPLE_* keys or none of them: the api refuses to start with a partial set."
+  }
+  validation {
     condition = !contains(keys(lookup(var.service_secrets, "api", {})), "APPLE_KEY_ID") || can(regex(
     "^[A-Z0-9]{10}$", lookup(var.service_secrets, "api", {})["APPLE_KEY_ID"]))
     error_message = "service_secrets.api.APPLE_KEY_ID is the 10-character Key ID of the Sign in with Apple key (Apple Developer → Keys)."
