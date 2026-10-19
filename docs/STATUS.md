@@ -2,8 +2,8 @@
 
 State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
 Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
-2026-10-19) and the push and remote-config core of M7 (2026-10-19); M4 and M7 are not
-deployed yet. Contract:
+2026-10-19) and the push and remote-config core of M7 (2026-10-19), all deployed
+(`b7e4a4a`, 2026-10-19) with the Sign in with Apple and APNs keys active. Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -80,7 +80,7 @@ agreed extras):
 | Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
 | Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
 
-**Train (M3b, 2026-10-19)** — deployed (`3a0e9a1`):
+**Train (M3b, 2026-10-19)** — deployed (`3a0e9a1`, now `b7e4a4a`):
 
 | Item | What | Where |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ agreed extras):
 | Records, progression | e1RM / max weight / max reps / max volume; `GET /v1/plans/today` targets from %-of-e1RM or linear progression with repeat and deload | `PersonalRecords`, `NextTargetKG` |
 | API | `/v1/exercises`, `/v1/plans`, `/v1/plans/today`, `/v1/sessions` (+ `…/complete`), `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, insight `pr`, `ryft.session.completed` | `cmd/api/train.go`, [`API.md`](API.md) → Train |
 
-**Sleep upgrades (M4, 2026-10-19)** — built and verified locally, not deployed yet
+**Sleep upgrades (M4, 2026-10-19)** — deployed (`b7e4a4a`)
 ([`SCORING.md`](SCORING.md) → Sleep, D65–D68):
 
 | Item | What | Where |
@@ -105,8 +105,8 @@ agreed extras):
 | Settings | `User.sleep_base_source` / `_learned_min` / `_learned_at`; `PATCH /v1/me` `sleep_base_manual` | `store.UpdateUser` |
 | Insights, trends | `sleep-consistency-low`, `nap-credit`, `baseline-learned`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min` | `internal/insights/rules.go` |
 
-**Push and remote config (M7 core, 2026-10-19)** — built and verified locally, not
-deployed yet; the weekly report stays in M7 (D69–D73):
+**Push and remote config (M7 core, 2026-10-19)** — deployed (`b7e4a4a`), APNs key
+active; the weekly report stays in M7 (D69–D73):
 
 | Item | What | Where |
 | --- | --- | --- |
@@ -154,19 +154,18 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
    was recreated by Terraform). Open: delete the local `terraform.tfstate*` files and
    `~/.ryft-tfstate-rescue/`, retire the S3 bucket (`OPERATIONS.md` → Terraform state).
 2. **Supabase in Frankfurt:** done; the new database was migrated by the deploy.
-3. **`infra/vault`:** applied with the new Supabase values and `GC_TOKEN`. **Blocked:
-   the Apple values.** The Apple Developer Program membership is pending, so the four
-   `service_secrets.api.APPLE_*` stay out of `terraform.tfvars`. Until then revocation
-   is off: `POST /v1/me/apple-authorization` answers `501`, `DELETE /v1/me` works and
-   reports `apple_token_revoked: null`. Once the membership is there: create the Sign in
-   with Apple key, add all four values, plan and apply, then
-   `kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager`.
+3. **`infra/vault`:** done. Applied with the Supabase values, `GC_TOKEN`, the four
+   `service_secrets.api.APPLE_*` (the Apple Developer Program membership was accepted on
+   2026-10-19) and `service_secrets.notify.APNS_*`. Sign in with Apple revocation is on:
+   the api starts without the "APPLE_* not set" warning. After every apply that adds
+   keys, `kubectl -n vault-secrets-operator-system rollout restart deploy
+   vault-secrets-operator-controller-manager` (the operator re-reads Vault only hourly).
 4. **`infra/aws/kubernetes`:** done (no changes left).
 5. **`infra/aws`:** done: budget, the API endpoint stays `0.0.0.0/0` (HCP Vault's
    TokenReview), the node tags (one full node rotation), three t3.large nodes (D57, D64). The budget's
    $165 is below the estimate; raise `monthly_budget_usd` or expect the alarm.
-6. **Images and deploy:** done; `3a0e9a1` runs for every service, the api starts
-   without the Apple keys.
+6. **Images and deploy:** done; `b7e4a4a` runs for every service (ingest, scoring,
+   api, notify, migrate).
 7. **`make monitoring-apply`:** applied, metrics arrive. If the Helm release is still
    `pending-upgrade`: `helm rollback grafana-cloud 5 -n monitoring`, then
    `make monitoring-apply` again. Open: the Grafana Cloud steps (remove the stale
@@ -176,7 +175,16 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
    `SUPABASE_SECRET_KEY` (open). Record the run here. It now also runs the Train checks,
    which leave a custom exercise, an enrolment and sessions on the smoke user.
 9. **Train (M3b):** done (`3a0e9a1`).
-10. **Sleep upgrades (M4) and push + remote config (M7 core):** open, one deploy.
+10. **Sleep upgrades (M4) and push + remote config (M7 core):** deployed 2026-10-19 at
+    `b7e4a4a`. Checked afterwards: every pod ready without restarts; migrate applied
+    0013–0015 and set four role passwords; JetStream has the consumers `scoring` and
+    `notify` with their subjects; the admin route lists the six seeded flags; the
+    public routes answer `401` without a token. The first `make k8s-apply-eks` stopped
+    with `nats-0` crash-looping: its Secret lacked `NATS_PASSWORD_NOTIFY` because the
+    operator had not re-read Vault yet; restarting the operator fixed it, and
+    `make k8s-apply-eks` now checks that first (`k8s-check-nats-secret`). **Open: confirm
+    the rescore and `learn-baselines` ran** (their output is the terminal's, not the
+    pods'). How it was rolled out:
     **Vault first**, because notify is a new service: its namespace, service account,
     role and NATS passwords, operator manifests (`overlays/vault-namespaces/notify`) and
     the api's `ADMIN_API_KEY` come from `infra/vault`, and NATS will not start without
@@ -203,10 +211,14 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
     Until the rescore, older days report their whole need as `base` and have no
     `sleep_quality` / `sleep_consistency` / `nap_min`; the Sleep screen already shows
     the new quality for them. The weekly estimate then runs on its own every Sunday.
-11. **APNs key** (blocked like the Apple keys in step 3): once the membership is
-    there, create the APNs key and add it to `service_secrets.notify`
-    (`OPERATIONS.md` → Push), plan and apply, then raise `push.enabled`
-    (`OPERATIONS.md` → Feature flags).
+11. **APNs key:** done. `service_secrets.notify` holds the APNs key (`ZMJ74PJSGJ`,
+    sandbox and production); notify logs `apns configured` for `dev.timkrebs.ryft`.
+    Apple accepts the provider token in both environments (a request with a dummy
+    device token answered `400 BadDeviceToken`, not `403`). **Open:** the first real
+    push needs the app to register a token (Xcode: Push Notifications capability,
+    `POST /v1/devices/{id}/push`). Then turn `push.enabled` on for yourself, and after
+    the first `MORNING_SCORE` (`ryft_push_notifications_total{result="sent"}`) for
+    everyone (`OPERATIONS.md` → Feature flags).
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
@@ -219,8 +231,8 @@ Known gaps, accepted for the alpha:
   not by Go tests against a database.
 - **M3 is deferred** (D58): no strain target or bands, and strength workouts without a
   logged session get no muscular load (M3's duration estimate).
-- **Push is unproven against Apple**: no APNs key yet, so no real send; the client is
-  tested against a local HTTP/2 server only. The morning push waits for quiet hours
+- **No push delivered to a device yet**: the key is accepted by Apple, but no app
+  build registers a token so far. The morning push waits for quiet hours
   through a JetStream redelivery (up to a day), and a failed publish of `ryft.scored`
   loses that morning's push. One notify replica.
 - **M4 calibration rests on the pins** in `SCORING.md` → Sleep: the 40 % restorative

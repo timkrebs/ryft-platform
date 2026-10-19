@@ -71,8 +71,18 @@ Local): `terraform init` in a fresh checkout connects to it after `terraform log
 A new service (notify, M7) needs `infra/vault` applied first: that creates its
 namespace, service account and secrets, writes its operator manifests to
 `deploy/k8s/overlays/vault-namespaces/notify`, and gives NATS the password hash it
-references. Without it `make k8s-apply-eks` stops at the missing directory, and NATS
-would not start with an undefined `$NATS_PASSWORD_NOTIFY`.
+references. Without it `make k8s-apply-eks` stops at the missing directory.
+
+**After an `infra/vault` apply that adds keys, let the operator sync before the
+deploy.** It re-reads Vault only hourly, so the Kubernetes Secrets lag behind Vault.
+NATS does not start while its config names a password its Secret lacks (2026-10-19:
+`nats-0` crash-looped on `NATS_PASSWORD_NOTIFY`); `make k8s-apply-eks` now checks that
+first (`k8s-check-nats-secret`) and stops with the fix:
+
+```bash
+kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager
+make k8s-check-nats-secret          # in a minute: every password nats.conf references is there
+```
 
 Order matters because Supabase's pooler blocks a database user for a while after
 repeated failed logins (`ECIRCUITBREAKER`). Starting the services next to migrate on
