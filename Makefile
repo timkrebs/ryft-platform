@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-images k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -67,6 +67,7 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 k8s-apply-eks: k8s-check-images
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s; done
+	@$(MAKE) --no-print-directory k8s-check-nats-secret
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
 	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
 	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
@@ -150,6 +151,18 @@ k8s-validate:
 	for f in infra/vault/tests/golden/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
+
+# NATS refuses to start when nats.conf names a password its Secret lacks: a new
+# service whose hash the Vault Secrets Operator has not synced yet (it re-reads
+# Vault hourly). Seen 2026-10-19 when notify was added: nats-0 crash-looped on
+# NATS_PASSWORD_NOTIFY. Check before rolling NATS.
+k8s-check-nats-secret:
+	@for k in $$(sed -nE 's/.*[$$](NATS_PASSWORD_[A-Z]+).*/\1/p' deploy/k8s/base/nats/nats.conf | sort -u); do \
+	  if [ -z "$$(kubectl -n ryft-nats get secret ryft-secrets -o jsonpath="{.data.$$k}")" ]; then \
+	    echo "✗ ryft-nats/ryft-secrets lacks $$k: apply infra/vault, then let the operator sync now:"; \
+	    echo "  kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager"; \
+	    echo "  and run this again in a minute."; exit 1; fi; \
+	done; echo "✓ ryft-nats/ryft-secrets has every password nats.conf references"
 
 # Every image the EKS overlay deploys must be a well-formed reference with a pinned
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in
