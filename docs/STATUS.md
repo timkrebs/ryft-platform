@@ -140,7 +140,8 @@ Known gaps, accepted for the alpha:
   HTTP traffic (D51).
 - **Insight texts are English only.** Handlers are covered by the smoke contract checks,
   not by Go tests against a database.
-- **Cost:** about €120–160 a month (`infra/aws/README.md`). The budget alarm watches
+- **Cost:** about $245–265 a month with three nodes (`infra/aws/README.md`), above the
+  budget's default of $165: raise `monthly_budget_usd` or expect the alarm. The budget alarm watches
   it.
 
 - **For the iOS side** (nothing in `../app` was changed):

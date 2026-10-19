@@ -12,11 +12,14 @@ endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 deletion_protection = true
 
+# Three nodes, one per zone (D57): 51 pod slots, and the NATS volume always has a
+# node in its zone. The module ignores desired_size after creation; change it with
+# aws eks update-nodegroup-config, then here.
 node_group = {
   instance_types = ["t3.medium"]
-  min_size       = 2
+  min_size       = 3
   max_size       = 4
-  desired_size   = 2
+  desired_size   = 3
 
   # Graviton is ~20 % cheaper; the RYFT images are multi-arch:
   # ami_type       = "AL2023_ARM_64_STANDARD"

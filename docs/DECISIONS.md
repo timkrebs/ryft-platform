@@ -778,3 +778,24 @@ only in `terraform.tfstate.backup`. The user moved state to HCP Terraform (organ
 - **CI** validates, lints and tests every root offline (`init -backend=false`): no HCP
   token and no credentials in GitHub, and CI never writes state. Speculative plans on
   pull requests would need remote execution.
+
+## D57 — Three nodes, one per zone; prefix delegation next
+
+On 2026-10-19 the deploy stopped with the migrate Job Pending: "0/2 nodes are available:
+Too many pods". A t3.medium takes 17 pods, one per secondary IP address. Two nodes held
+34, and the add-ons, the new Fluent Bit DaemonSet and rollouts stuck on a database
+without roles used all of them. The Grafana collector adds about ten more (alloy and
+beyla on every node, kube-state-metrics, beyla's cache, the SDK injector).
+
+- **Three nodes** (`min_size = desired_size = 3`). They give 51 slots, the capacity
+  `infra/aws/README.md` already planned for metrics. One node per zone also means the
+  single-replica NATS, whose EBS volume cannot leave its zone, always has a node to run
+  on. The cost is about $35 a month.
+- **Not yet prefix delegation.** It raises the limit to 110 pods per t3.medium for
+  free. It needs a further node rotation, though, and the kubelet then reserves about
+  1 GiB more memory per node, so memory becomes the limit. It is the next step when 51
+  slots get tight; the HPA maximums do not fit today.
+- **Not bigger instances.** A t3.large takes 35 pods. Two of them (70 slots) would add
+  about $70 a month against $35 for the third t3.medium, and they would leave one zone
+  without a node.
+

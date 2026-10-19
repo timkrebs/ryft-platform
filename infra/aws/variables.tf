@@ -52,14 +52,14 @@ variable "kubernetes_version" {
 }
 
 variable "node_group" {
-  description = "Managed node group all workloads run on. t3.medium fits RYFT plus the add-ons with room for the HPAs; t3.small (11 pods per node) does not."
+  description = "Managed node group all workloads run on. A t3.medium takes 17 pods; three hold RYFT, the add-ons and the Grafana collector (D57). t3.small (11 pods per node) does not fit."
   type = object({
     ami_type       = optional(string, "AL2023_x86_64_STANDARD")
     capacity_type  = optional(string, "ON_DEMAND")
     instance_types = optional(list(string), ["t3.medium"])
-    min_size       = optional(number, 2)
+    min_size       = optional(number, 3)
     max_size       = optional(number, 4)
-    desired_size   = optional(number, 2)
+    desired_size   = optional(number, 3)
   })
   default = {}
 
