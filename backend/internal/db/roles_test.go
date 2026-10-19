@@ -43,6 +43,9 @@ func TestScramVerifier(t *testing.T) {
 // Column grants (scoring's on workouts, notify's reads) are checked separately.
 var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 
+// journalTables are migration 0016's.
+var journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
+
 // trainTables are migration 0011's.
 var trainTables = []string{"exercises", "plans", "plan_days", "plan_exercises", "plan_enrollments",
 	"sessions", "session_exercises", "session_sets", "personal_records"}
@@ -69,6 +72,7 @@ var grants = map[string]map[string][]string{
 		"daily_scores": {"SELECT", "DELETE"}, "deleted_users": {"SELECT", "INSERT", "UPDATE"},
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
+		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -81,7 +85,8 @@ func TestServiceRoleGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
-		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"}, trainTables...)
+		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"},
+		append(trainTables, journalTables...)...)
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {

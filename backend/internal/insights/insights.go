@@ -45,6 +45,13 @@ type Day struct {
 	SleepBase    *int       // the baseline that day's need started from
 }
 
+// BehaviorSignal is a behavior logged "yes" for yesterday with its effect on
+// the recovery of the morning after (nil while locked).
+type BehaviorSignal struct {
+	Name     string // English, like every card
+	Recovery *model.BehaviorEffect
+}
+
 // Baseline is the user's sleep baseline as the baseline-learned card needs it.
 type Baseline struct {
 	Source    string     // model.Base*
@@ -64,6 +71,8 @@ type PR struct {
 type History struct {
 	Days     []Day
 	Baseline *Baseline
+	// Yesterday's journal: the behaviors logged as done, with their effects.
+	Behaviors []BehaviorSignal
 }
 
 // Rule inspects the history and returns a card, or nil.
@@ -82,6 +91,7 @@ var Rules = []Rule{
 	sleepConsistencyLow,
 	napCredit,
 	baselineLearned,
+	behaviorImpact,
 }
 
 var severityRank = map[string]int{model.SeverityWarn: 0, model.SeverityNotice: 1, model.SeverityInfo: 2}
@@ -129,6 +139,12 @@ func (h History) WithPRs(byDay map[string][]PR) History {
 	for k := range h.Days {
 		h.Days[k].PRs = byDay[h.Days[k].Day]
 	}
+	return h
+}
+
+// WithBehaviors adds yesterday's journal.
+func (h History) WithBehaviors(b []BehaviorSignal) History {
+	h.Behaviors = b
 	return h
 }
 

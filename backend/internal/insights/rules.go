@@ -306,3 +306,26 @@ func baselineLearned(h History) *model.Insight {
 			"recovered after an easy day. Strain, sleep debt and naps still move each night's need. You can set your "+
 			"own baseline in Settings.", hm(b.Min))}
 }
+
+// behaviorImpact: a behavior logged for yesterday whose effect on the morning
+// after is unlocked, significant and negative (the largest such).
+func behaviorImpact(h History) *model.Insight {
+	var pick *BehaviorSignal
+	for k, b := range h.Behaviors {
+		if b.Recovery == nil || !b.Recovery.Significant || b.Recovery.Delta >= 0 {
+			continue
+		}
+		if pick == nil || b.Recovery.Delta < pick.Recovery.Delta {
+			pick = &h.Behaviors[k]
+		}
+	}
+	if pick == nil || len(h.Days) < 2 {
+		return nil
+	}
+	e := pick.Recovery
+	return &model.Insight{ID: "behavior-impact", Severity: model.SeverityNotice, Metric: model.MetricRecovery,
+		Day:   h.Days[len(h.Days)-2].Day,
+		Title: pick.Name + " yesterday",
+		Body: fmt.Sprintf("On mornings after it your recovery is typically %.0f points lower (90 %% interval %.0f to %.0f; "+
+			"%d days with it, %d without). Today's score may show it.", -e.Delta, e.CILo, e.CIHi, e.NYes, e.NNo)}
+}

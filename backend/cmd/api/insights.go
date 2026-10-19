@@ -130,7 +130,46 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 		at := u.SleepBaseLearnedAt.In(loc)
 		baseline.LearnedAt = &at
 	}
-	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs).WithBaseline(baseline))
+	signals, err := h.yesterdaysBehaviors(r, today)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs).WithBaseline(baseline).
+		WithBehaviors(signals))
 	h.cache.put(ck, now, cards)
 	httpx.WriteJSON(w, 200, cards)
+}
+
+// yesterdaysBehaviors are the behaviors logged as done for yesterday, with
+// their effect on the morning after (computed for those only).
+func (h *handler) yesterdaysBehaviors(r *http.Request, today time.Time) ([]insights.BehaviorSignal, error) {
+	yesterday := today.AddDate(0, 0, -1).Format(dayLayout)
+	logged, err := h.st.JournalAnswers(r.Context(), userOf(r).ID, yesterday, yesterday)
+	if err != nil || len(logged) == 0 {
+		return nil, err
+	}
+	all, err := h.st.Behaviors(r.Context(), userOf(r).ID)
+	if err != nil {
+		return nil, err
+	}
+	var done []model.Behavior
+	for _, b := range all {
+		if a := logged[b.ID]; len(a) == 1 && a[0].Yes {
+			b.Enabled = true // computed even if turned off since
+			done = append(done, b)
+		}
+	}
+	if len(done) == 0 {
+		return nil, nil
+	}
+	impacts, err := h.impacts(r, today, done, "insight")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]insights.BehaviorSignal, 0, len(impacts))
+	for _, i := range impacts {
+		out = append(out, insights.BehaviorSignal{Name: i.Name, Recovery: i.Recovery})
+	}
+	return out, nil
 }

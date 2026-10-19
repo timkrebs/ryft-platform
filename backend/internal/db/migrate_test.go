@@ -146,7 +146,8 @@ func TestMigrateSupabaseShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
-		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"}, trainTables...)
+		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"},
+		append(trainTables, journalTables...)...)
 	for _, tbl := range tables {
 		if !scalar[bool](t, pool, `SELECT relrowsecurity FROM pg_class WHERE oid = $1::regclass`, "public."+tbl) {
 			t.Errorf("RLS must be enabled on %s", tbl)

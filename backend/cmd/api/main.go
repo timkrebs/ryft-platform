@@ -122,6 +122,13 @@ func main() {
 	api.HandleFunc("PUT /v1/sessions/{id}", h.putSession)
 	api.HandleFunc("DELETE /v1/sessions/{id}", h.deleteSession)
 	api.HandleFunc("POST /v1/sessions/{id}/complete", h.completeSession)
+	api.HandleFunc("GET /v1/behaviors", h.behaviors)
+	api.HandleFunc("PATCH /v1/behaviors", h.patchBehaviors)
+	api.HandleFunc("POST /v1/behaviors", h.createBehavior)
+	api.HandleFunc("DELETE /v1/behaviors/{id}", h.deleteBehavior)
+	api.HandleFunc("GET /v1/behaviors/impact", h.behaviorImpact)
+	api.HandleFunc("GET /v1/journal/{day}", h.journalDay)
+	api.HandleFunc("PUT /v1/journal/{day}", h.putJournal)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{

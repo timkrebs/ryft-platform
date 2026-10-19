@@ -291,3 +291,26 @@ func TestBaselineLearned(t *testing.T) {
 		t.Fatal("no older scores (first estimate): card")
 	}
 }
+
+func TestBehaviorImpact(t *testing.T) {
+	eff := func(d, lo, hi float64, sig bool) *model.BehaviorEffect {
+		return &model.BehaviorEffect{Delta: d, CILo: lo, CIHi: hi, Significant: sig, NYes: 12, NNo: 31}
+	}
+	h := hist(nil, nil, nil).WithBehaviors([]BehaviorSignal{
+		{Name: "Late meal", Recovery: eff(-6, -9, -2, true)},
+		{Name: "Alcohol", Recovery: eff(-14.2, -19.8, -8.1, true)},
+		{Name: "Sauna", Recovery: eff(5, 2, 8, true)},
+		{Name: "Meditation", Recovery: nil},
+	})
+	in := behaviorImpact(h)
+	if in == nil || in.ID != "behavior-impact" || in.Title != "Alcohol yesterday" || in.Day != "2026-10-17" ||
+		!strings.Contains(in.Body, "14 points lower") || !strings.Contains(in.Body, "12 days with it, 31 without") {
+		t.Fatalf("the largest negative effect: %+v", in)
+	}
+	if behaviorImpact(hist(nil, nil).WithBehaviors([]BehaviorSignal{{Name: "Alcohol", Recovery: eff(-8, -15, 1, false)}})) != nil {
+		t.Fatal("an interval that includes 0: no card")
+	}
+	if behaviorImpact(hist(nil, nil)) != nil {
+		t.Fatal("nothing logged: no card")
+	}
+}

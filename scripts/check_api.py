@@ -435,6 +435,66 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
 else:
     print("- morning push path not checked (needs NOTIFY_METRICS_URL, apikey mode)")
 
+# ---- journal and behavior impact (M5) -------------------------------------------
+ALCOHOL = "bad67883-7fb1-5f98-9761-feba0a813536"  # the fixed id API.md documents
+beh = get("/v1/behaviors")
+builtin = [b for b in beh if not b["is_custom"]]
+check(len(builtin) == 25 and {b["kind"] for b in builtin} == {"yes_no", "count", "time"}, f"{len(builtin)} built-in behaviors")
+by_slug = {b["slug"]: b for b in beh}
+check(by_slug["alcohol"]["id"] == ALCOHOL and by_slug["alcohol"]["name_de"] == "Alkohol", "alcohol's fixed id and names")
+status, _, de = raw("GET", "/v1/behaviors", headers={"Accept-Language": "de-DE"})
+check(next(b for b in de if b["id"] == ALCOHOL)["name"] == "Alkohol", "Accept-Language: de gives German names")
+sauna = by_slug["sauna"]
+status, _, l2 = raw("PATCH", "/v1/behaviors", jbody({"enabled": {sauna["id"]: not sauna["enabled"]}}))
+check(status == 200 and next(b for b in l2 if b["id"] == sauna["id"])["enabled"] != sauna["enabled"], f"PATCH /v1/behaviors: {status}")
+raw("PATCH", "/v1/behaviors", jbody({"enabled": {sauna["id"]: sauna["enabled"]}}))
+status, _, err = raw("PATCH", "/v1/behaviors", jbody({"enabled": {str(uuid.uuid4()): True}}))
+check(status == 422 and is_error(err), f"PATCH an unknown id: {status}")
+cid = str(uuid.uuid4())
+for want in (201, 200):  # the same id again updates
+    status, _, cb = raw("POST", "/v1/behaviors", jbody({"id": cid, "name": "Check behavior", "kind": "count"}))
+    check(status == want and cb["is_custom"] and cb["enabled"] and cb["slug"].startswith("check_behavior"), f"POST /v1/behaviors: {status} {cb}")
+for body, want in (({"id": ALCOHOL, "name": "x", "kind": "yes_no"}, 409), ({"id": str(uuid.uuid4()), "name": "x", "kind": "mood"}, 422)):
+    status, _, err = raw("POST", "/v1/behaviors", jbody(body))
+    check(status == want and is_error(err), f"POST /v1/behaviors {body}: {status}, want {want}")
+check(raw("DELETE", f"/v1/behaviors/{ALCOHOL}")[0] == 403, "a built-in cannot be deleted")
+check(raw("DELETE", f"/v1/behaviors/{cid}")[0] == 204 and all(b["id"] != cid for b in get("/v1/behaviors")), "DELETE a custom behavior")
+ok("/v1/behaviors: 25 built-ins with fixed ids, German names, choose, custom create/update/delete, 403/409/422")
+
+# The Done-when of M5: alcohol on the days before the five weakest-HRV mornings
+# of the last 14 (the journal is editable that far back), no alcohol on the others.
+tz_j = ZoneInfo(get("/v1/me")["tz"])
+today_j = datetime.now(tz_j).date()
+days_j = {d["day"]: d for d in get(f"/v1/days?from={(today_j - timedelta(days=15)).isoformat()}&to={today_j.isoformat()}")}
+cands = []
+for k in range(1, 15):
+    d = today_j - timedelta(days=k)
+    m = days_j.get((d + timedelta(days=1)).isoformat())
+    if m and m["hrv_ms"] is not None and m["recovery"] is not None:
+        cands.append((m["hrv_ms"], d.isoformat()))
+check(len(cands) >= 10, f"need 10+ scored mornings in the last 14 days for the journal check, have {len(cands)}")
+yes_days = {d for _, d in sorted(cands)[:5]}
+for _, d in cands:
+    status, _, jd = raw("PUT", f"/v1/journal/{d}", jbody({"entries": [{"behavior_id": ALCOHOL, "value_bool": d in yes_days}]}))
+    check(status == 200 and jd["answered"] and jd["editable"] and len(jd["entries"]) == 1, f"PUT /v1/journal/{d}: {status} {jd}")
+jd = get(f"/v1/journal/{cands[0][1]}")
+check(jd["entries"][0]["behavior_id"] == ALCOHOL and set(jd) == {"day", "answered", "answered_at", "editable", "entries"}, f"GET journal: {jd}")
+old = (today_j - timedelta(days=15)).isoformat()
+status, _, err = raw("PUT", f"/v1/journal/{old}", jbody({"entries": []}))
+check(status == 422 and is_error(err), f"15 days back is not editable: {status}")
+status, _, err = raw("PUT", f"/v1/journal/{cands[0][1]}", jbody({"entries": [{"behavior_id": by_slug["last_caffeine"]["id"], "value_bool": True}]}))
+check(status == 422, f"a time behavior without value_time: {status}")
+imp = get("/v1/behaviors/impact")
+check(imp["window_days"] == 90 and imp["impacts"], f"impact: {imp}")
+a = next(i for i in imp["impacts"] if i["behavior_id"] == ALCOHOL)
+r = a["recovery"]
+check(a["status"] == "unlocked" and a["n_yes"] == 5 and a["n_no"] >= 5 and r and r["delta"] < 0 and r["ci_hi"] < 0
+      and r["significant"] and a["hrv_pct"]["delta"] < 0, f"alcohol's effect: {a}")
+check(imp["impacts"][0]["status"] == "unlocked", "unlocked impacts come first")
+for i in imp["impacts"]:
+    check((i["status"] == "locked") == (i["recovery"] is None) and set(i["needed"]) == {"yes", "no"}, f"impact shape: {i}")
+ok(f"journal: alcohol before the 5 weakest mornings → recovery {r['delta']} (90 % {r['ci_lo']} to {r['ci_hi']}), HRV {a['hrv_pct']['delta']} %")
+
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
 # checked above). Its load must cover all 80 minutes, not just those before midnight.

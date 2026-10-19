@@ -104,6 +104,17 @@ var (
 		Help: "Device tokens dropped because APNs said they are gone (410, BadDeviceToken, DeviceTokenNotForTopic).",
 	})
 
+	// Journal (api).
+	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_journal_saves_total",
+		Help: "Journal days saved (PUT /v1/journal/{day}).",
+	})
+	BehaviorImpactSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ryft_behavior_impact_seconds",
+		Help:    "CPU time of the behavior-impact computation per request (GET /v1/behaviors/impact, the insight), by caller; above ~0.1 s at p95 it belongs in a worker (D76).",
+		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5},
+	}, []string{"caller"})
+
 	// Remote config (api).
 	FlagEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_flag_evaluations_total",

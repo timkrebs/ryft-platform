@@ -45,6 +45,11 @@ let sessions = await decode([SessionSummary].self, "/v1/sessions")
 for s in sessions.prefix(3) {
     await decode(Session.self, "/v1/sessions/\(s.id.uuidString.lowercased())")
 }
+let behaviors = await decode([Behavior].self, "/v1/behaviors")
+precondition(behaviors.filter { !$0.isCustom }.count == 25, "the built-in behaviors")
+await decode(JournalDay.self, "/v1/journal/\(today)")
+let impact = await decode(BehaviorImpacts.self, "/v1/behaviors/impact")
+precondition(impact.windowDays == 90, "impact window")
 let me = await decode(User.self, "/v1/me")
 precondition(Set(me.notifications.categories.keys) == Set(NotificationCategory.allCases.map(\.rawValue)), "every category")
 let config = await decode(RemoteConfig.self, "/v1/config")

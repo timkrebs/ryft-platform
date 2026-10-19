@@ -14,14 +14,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/behavior"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/train"
 )
 
-// The built-in exercise library and plan templates (Train, migration 0011).
+// The built-in exercise library and plan templates (Train, migration 0011) and
+// the journal's behaviors (migration 0016).
 //
-//go:embed seed/exercises.json seed/plans/*.json
+//go:embed seed/exercises.json seed/plans/*.json seed/behaviors.json
 var seeds embed.FS
+
+type seedBehavior struct {
+	Slug      string `json:"slug"`
+	NameEN    string `json:"name_en"`
+	NameDE    string `json:"name_de"`
+	Category  string `json:"category"`
+	Kind      string `json:"kind"`
+	DefaultOn bool   `json:"default_on"`
+	Sort      int    `json:"sort"`
+}
 
 type seedExercise struct {
 	Slug             string   `json:"slug"`
@@ -67,6 +79,7 @@ type seedPlan struct {
 type Builtins struct {
 	exercises []seedExercise
 	plans     []seedPlan
+	behaviors []seedBehavior
 }
 
 // LoadBuiltins parses and checks the embedded seeds.
@@ -120,6 +133,21 @@ func LoadBuiltins() (Builtins, error) {
 			}
 		}
 		b.plans = append(b.plans, p)
+	}
+	raw, err = seeds.ReadFile("seed/behaviors.json")
+	if err != nil {
+		return b, err
+	}
+	if err := json.Unmarshal(raw, &b.behaviors); err != nil {
+		return b, fmt.Errorf("seed/behaviors.json: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, s := range b.behaviors {
+		if seen[s.Slug] || s.Slug != behavior.Slug(s.Slug) || s.NameEN == "" || s.NameDE == "" ||
+			!slices.Contains(model.BehaviorKinds, s.Kind) || !slices.Contains(model.BehaviorCategories, s.Category) || s.Category == "custom" {
+			return b, fmt.Errorf("seed behavior %q: duplicate or malformed slug, a missing name, or an unknown kind or category", s.Slug)
+		}
+		seen[s.Slug] = true
 	}
 	return b, nil
 }
@@ -230,6 +258,23 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 		}
 		batch.Queue(`UPDATE plans SET archived=true, updated_at=now() WHERE user_id IS NULL AND NOT archived AND NOT (slug = ANY($1))`, plans)
 
+		behaviors := make([]string, 0, len(b.behaviors))
+		for _, s := range b.behaviors {
+			behaviors = append(behaviors, s.Slug)
+			batch.Queue(`INSERT INTO behaviors (id, slug, name_en, name_de, category, kind, default_on, sort)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+				ON CONFLICT (slug) WHERE user_id IS NULL DO UPDATE SET name_en=EXCLUDED.name_en, name_de=EXCLUDED.name_de,
+				  category=EXCLUDED.category, kind=EXCLUDED.kind, default_on=EXCLUDED.default_on, sort=EXCLUDED.sort,
+				  archived=false, updated_at=now()
+				WHERE (behaviors.name_en, behaviors.name_de, behaviors.category, behaviors.kind, behaviors.default_on,
+				       behaviors.sort, behaviors.archived)
+				  IS DISTINCT FROM (EXCLUDED.name_en, EXCLUDED.name_de, EXCLUDED.category, EXCLUDED.kind,
+				       EXCLUDED.default_on, EXCLUDED.sort, false)`,
+				behavior.BuiltinID(s.Slug), s.Slug, s.NameEN, s.NameDE, s.Category, s.Kind, s.DefaultOn, s.Sort)
+		}
+		// A built-in that left the seeds is archived: past journal entries keep it.
+		batch.Queue(`UPDATE behaviors SET archived=true, updated_at=now() WHERE user_id IS NULL AND NOT archived AND NOT (slug = ANY($1))`, behaviors)
+
 		res := tx.SendBatch(ctx, batch)
 		for k := 0; k < batch.Len(); k++ {
 			tag, err := res.Exec()
@@ -244,7 +289,8 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.InfoContext(ctx, "built-ins seeded", "exercises", len(b.exercises), "plans", len(b.plans), "rows_changed", changed)
+	log.InfoContext(ctx, "built-ins seeded", "exercises", len(b.exercises), "plans", len(b.plans), "behaviors", len(b.behaviors),
+		"rows_changed", changed)
 	return nil
 }
 

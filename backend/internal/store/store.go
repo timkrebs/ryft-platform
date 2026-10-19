@@ -144,6 +144,11 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
+			// Journal: entries before the custom behaviors they name.
+			`DELETE FROM journal_entries WHERE user_id=$1`,
+			`DELETE FROM journal_days WHERE user_id=$1`,
+			`DELETE FROM user_behaviors WHERE user_id=$1`,
+			`DELETE FROM behaviors WHERE user_id=$1`,
 			// Train: sessions cascade to their exercises and sets; plans to
 			// their days, exercises and enrolments.
 			`DELETE FROM personal_records WHERE user_id=$1`,

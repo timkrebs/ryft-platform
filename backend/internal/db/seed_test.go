@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/timkrebs/ryft/internal/behavior"
 	"github.com/timkrebs/ryft/internal/train"
 )
 
@@ -21,6 +22,15 @@ func TestBuiltinsParseAndCheck(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("missing plan templates: %v", want)
+	}
+	on := 0
+	for _, s := range b.behaviors {
+		if s.DefaultOn {
+			on++
+		}
+	}
+	if len(b.behaviors) != 25 || on != 8 {
+		t.Errorf("behaviors: %d, %d on by default; want 25 and 8", len(b.behaviors), on)
 	}
 }
 
@@ -54,6 +64,12 @@ func TestSeedIdempotent(t *testing.T) {
 	}
 	if n := scalar[int](t, pool, `SELECT count(*) FROM exercises WHERE id = $1 AND slug = 'back-squat'`, train.BuiltinExerciseID("back-squat")); n != 1 {
 		t.Error("back-squat must carry its fixed id")
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM behaviors WHERE user_id IS NULL AND NOT archived`); n != len(b.behaviors) {
+		t.Errorf("behaviors: %d, want %d", n, len(b.behaviors))
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM behaviors WHERE id = $1 AND slug = 'alcohol' AND default_on`, behavior.BuiltinID("alcohol")); n != 1 {
+		t.Error("alcohol must carry its fixed id and be on by default")
 	}
 	if n := scalar[int](t, pool, `SELECT count(*) FROM plan_days WHERE plan_id = $1`, train.BuiltinPlanID("weightlifting-4x")); n != 16 {
 		t.Errorf("weightlifting-4x days: %d, want 16", n)
