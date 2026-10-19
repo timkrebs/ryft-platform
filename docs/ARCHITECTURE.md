@@ -39,8 +39,8 @@ the same `samples` table with new `type` values — nothing else changes.
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
-| `scoring` | 8080 (health only) | Consume `ryft.ingested` (durable pull consumer); recompute touched days oldest-first; every 15 min recompute yesterday + today | Postgres, NATS |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute` — see [`API.md`](API.md) | Postgres, NATS |
+| `scoring` | 8080 (health only) | Consume `ryft.ingested` and `ryft.session.completed` (one durable pull consumer); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today | Postgres, NATS |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, and Train: `/v1/exercises`, `/v1/plans`, `/v1/sessions` — see [`API.md`](API.md) | Postgres, NATS |
 
 All three are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
 share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
@@ -83,15 +83,17 @@ pattern) → **Recover** (a panic becomes a JSON `500`, counted and logged with 
 `/v1/*` then goes through **auth** (verify the token → per-user token-bucket rate limit
 → `EnsureUser`) → **Timeout** (15 s for api, 50 s for sync, as a context deadline the
 database calls honour; running out answers `503`) → the route. Bodies are read with a
-size limit (64 KiB, 32 MiB for sync; over → `413`), and unexpected errors answer a
+size limit (64 KiB, 256 KiB for a Train session or plan, 32 MiB for sync; over → `413`), and unexpected errors answer a
 generic `500` with the request ID while the details go to the log. Logs are JSON with
 `request_id`, `user_id` and `route` on every line of a request (`internal/logx`).
 
-**Events.** Stream `RYFT`, subject `ryft.ingested`, work-queue retention, file
-storage, 7-day max age. Payload `{user_id, days[], reason, request_id}` (`request_id`:
-the request that caused it, for log correlation). Every service is its own NATS user
-(`deploy/k8s/base/nats/nats.conf`, shared by compose and Kubernetes): ingest and api
-may only publish `ryft.ingested`, and scoring alone may create the stream and its
+**Events.** Stream `RYFT`, subjects `ryft.>`, work-queue retention, file storage, 7-day
+max age. `ryft.ingested` carries `{user_id, days[], reason, request_id}` (`request_id`:
+the request that caused it, for log correlation); `ryft.session.completed` carries
+`{user_id, session_id, day, request_id}` and is handled like an ingest event for that
+day. Every service is its own NATS user (`deploy/k8s/base/nats/nats.conf`, shared by
+compose and Kubernetes): ingest may only publish `ryft.ingested`, api `ryft.ingested`
+(recompute, session edits) and `ryft.session.completed`, and scoring alone may create the stream and its
 consumer, pull from it and ack. Replies go to a per-service inbox (`_INBOX_<service>`),
 which is the only thing a service may subscribe to. `internal/events/permissions_test.go`
 checks this against a running NATS (CI smoke job). `reason: "recompute"`
@@ -107,15 +109,16 @@ timer catches up.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
-- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- **Train** (migrations 0011–0012, D57–D62): `exercises` and `plans` (built-ins with `user_id NULL` from the seeds, custom rows per user), `plan_days`, `plan_exercises`, `plan_enrollments` (one active per user), `sessions` → `session_exercises` → `session_sets` keyed by `(user_id, id)` with client-generated ids, `personal_records(user_id, exercise_id, kind)`. `workouts.muscular_load` / `session_id` say which workout carries a session's load.
 
 **Database roles** (migration 0009; `internal/db/roles_test.go` pins the matrix):
 
 | Role | May |
 | --- | --- |
 | `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only |
-| `ryft_scoring` | read the raw tables; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes` of `workouts` |
-| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read |
+| `ryft_scoring` | read the raw tables, exercises and sessions; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes`, `muscular_load`, `session_id` of `workouts`, and create and delete only its own (`ryft-session`); update only the load columns of `sessions` |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables |
 
 None of them may create, alter or drop anything, or truncate. Every new table must grant
 the roles what they need in the same migration, and the grants test must be extended.

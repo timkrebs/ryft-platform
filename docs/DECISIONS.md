@@ -799,3 +799,106 @@ beyla on every node, kube-state-metrics, beyla's cache, the SDK injector).
   about $70 a month against $35 for the third t3.medium, and they would leave one zone
   without a node.
 
+## D58 — Train without M3: muscular load only from logged sessions
+
+M3 (Strain Coach: a strain target, bands, a duration-based muscular-load estimate) is
+deferred until the account flows are verified on a device; M3b (Train) was built
+first, as the user decided. M3b only needs from M3 a place for muscular load and its
+addition to the day's TRIMP, so that is all it takes: `workouts.muscular_load`,
+`daily_scores.muscular_trimp`, added before the compression. Only logged sessions fill
+it. When M3 comes, its `k[activity] · duration_min` estimate fills `muscular_load`
+only for strength-type workouts *without* an attached session, and its target and bands
+build on the same strain.
+
+## D59 — The strength load model and its calibration
+
+The spec's formula, `reps × (weight / e1RM)² × muscleFactor`, cannot hit all of its own
+reference points. Against the e1RM of its own high-rep sets, a bodyweight set runs at
+intensity ≈ 0.7, so a 20-minute circuit scored near strain 15 instead of 5. Twelve
+Olympic singles scored near 6 instead of 8.
+
+- **muscleFactor = muscle mass × a load factor per exercise.** The mass comes from the
+  muscles (primary in full, secondary half; weights in `SCORING.md`). The load factor
+  defaults by kind and is set per built-in where the kind misleads: Olympic lifts
+  1.15, weighted pull-ups and dips 0.6. It is a column (`exercises.load_factor`), not
+  part of the API.
+- **Anchors: strain, not TRIMP.** The spec wrote "TRIMP ≈ 85 → strain ≈ 11". On the
+  existing compression (scale 80) TRIMP 85 is strain 13.7, and changing that scale would
+  move every heart-rate strain. The strain values are what users see, so they are
+  pinned: 11.0, 8.0 and 5.1 (TRIMP 59.3, 38.1, 22.3) with `strengthScale = 0.6`.
+- **e1RM as of the session, own sets included.** Rescoring old sessions gives the same
+  answer, and intensity cannot exceed 1. A first session is scored against itself, a
+  little high (≈ 0.86 for fives) until history exists.
+- **Body weight**: the session's, else the last one logged, else 75 kg. HealthKit body
+  mass is not synced (yet).
+- **Unilateral reps are per side**, so the load counts both sides; warm-ups a quarter;
+  time and distance sets the spec's per-minute / per-100 m rates times muscleFactor.
+
+## D60 — Which workout carries a session's load
+
+A HealthKit workout of activity `strength`, `functional_strength` or `crossfit` that
+overlaps at least half of the session (largest overlap, then the earlier start; one
+session per workout), else a workout scoring creates with a fixed id
+(`train.SessionWorkoutID`). The rule runs on every pass for the session's day, because
+the watch's workout often syncs after the app completed the session. Then the load moves
+to it, the created workout is deleted and `sessions.workout_id` changes; the API says
+so. A day's muscular TRIMP comes from its sessions, not from the workouts, so it cannot
+be counted twice. Workouts whose session is gone or no longer completed are released
+on any pass of that user.
+
+## D61 — Saving sessions: merge while in progress, a 409 that carries the server copy
+
+The app saves the whole session after every set and replays an offline queue, so saves
+arrive late and out of order.
+
+- **In progress: merge by id.** Exercises and sets in the body are written; ones only the
+  server has are kept. An old queued save therefore never deletes newer sets. The cost:
+  deleting a set while in progress is not possible by omission; the app unchecks it
+  (`completed_at: null`), and unchecked sets count nowhere.
+- **Conflict: per set, by the app's `updated_at`.** If a set exists on both sides and the
+  stored `updated_at` is later, nothing is written and the answer is `409` with the
+  server's whole `Session` as the body. The app merges by set id (later `updated_at`
+  wins) and saves again. Equal timestamps are a replay, not a conflict. The app's clock
+  is trusted for ordering its own edits; the server never invents one.
+- **Completed: replaced whole**, so edits after the workout can remove sets; `ended_at`
+  stays when the body has none. Status moves only forward: `completed` only via
+  `…/complete`, never back to `in_progress`; `discarded` takes a session out of every
+  total. An edit or delete of a completed session recomputes its records and rescores
+  its days (old and new).
+- Values are clamped (reps ≤ 100, kg ≤ 500, RPE 1–10, …) rather than rejected; structure
+  (positions, set indexes, unknown exercises) is rejected with `422`.
+- Session saves get their own rate-limit bucket with the sync budget (2/s, bursts of 60),
+  and Train documents a 256 KiB body limit.
+
+## D62 — Built-in content: seeds with fixed ids, loaded by the migrate job
+
+173 exercises (English and German names, muscles, equipment, load type, body-weight and
+load factors) and four plans (Full Body 3× 5×5 with linear progression, Upper/Lower 4×
+by RPE, Weightlifting 4× as a four-week %-of-e1RM wave, 5/3/1 4× with Boring But Big)
+live as JSON in `internal/db/seed` and are embedded in the migrate binary, which loads
+them after the migrations.
+
+- **Fixed ids** (UUIDv5 of the slug, and of the plan, week, day and position for plan
+  days and exercises). The app caches built-ins, and sessions refer to them, so an id
+  never changes; a test pins two of them.
+- **Idempotent**: upsert by slug and id, rows touched only when they changed. A
+  built-in that leaves the seeds is archived, never deleted (old sessions name it).
+  A removed plan day or exercise is deleted; sessions keep their sets and their reference
+  becomes `NULL`.
+- **Language**: `name` follows `Accept-Language` (German or English); both names are
+  always in the response, so a cached library does not depend on the device language.
+- Built-ins have `user_id NULL`: readable by everyone, changed only by the seeds (the api
+  answers `403`; on Supabase, RLS admits reads only).
+- **Numbers as double precision.** 0011 made them `real`, and they read back with float4
+  noise (75.1 as 75.0999…). 0012 converts them. It is a new migration because 0011 was
+  already applied to local databases.
+
+## D63 — Train ownership: api writes what the user enters, scoring what it derives
+
+The api writes exercises, plans, enrolments, sessions and records (`ryft_api` owns
+those tables). Scoring writes what it derives: a session's load columns (column grants
+only) and the workout that carries the load. It may create and delete only its own
+workouts (`source = 'ryft-session'`; restrictive RLS policies on Supabase) and set only
+`muscular_load` and `session_id` on the phone's. The api's `…/complete` computes the
+same load with the same code (`Engine.SessionLoadNow`), so the response is final in
+practice; scoring's later pass is authoritative and re-runs on every rescore.

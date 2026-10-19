@@ -1,6 +1,7 @@
 # RYFT platform — status
 
-State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18). Contract:
+State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18) and
+Train (M3b, 2026-10-19; M3 itself is deferred, D58). Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -77,6 +78,17 @@ agreed extras):
 | Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
 | Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
 
+**Train (M3b, 2026-10-19)** — built and verified locally, not deployed yet:
+
+| Item | What | Where |
+| --- | --- | --- |
+| Data | Exercise library (173 built-ins with English and German names, custom exercises), 4 plan templates with fixed ids, enrolments, sessions keyed by the app's ids, personal records; seeds loaded by the migrate job | migrations 0011–0012, `internal/db/seed`, `internal/store/train.go`, D62–D63 |
+| Session saves | `PUT /v1/sessions/{id}` merges by id while in progress, answers `409` with the server copy on a newer set, replaces completed sessions whole | `internal/train`, D61 |
+| Strength load | Logged sets become muscular load that joins the day's TRIMP before the compression; pinned on the seed library: 5×5 at 80 % → strain 11.0, 12 Olympic singles at 90 % → 8.0, 20-min bodyweight circuit → 5.1 | `internal/scoring/strength.go`, [`SCORING.md`](SCORING.md) → Strength, D59 |
+| Workouts | The load lands on a matching HealthKit strength workout (≥ 50 % overlap) or one scoring creates (`ryft-session`), re-decided on every pass | `scoring/strength_day.go`, D60 |
+| Records, progression | e1RM / max weight / max reps / max volume; `GET /v1/plans/today` targets from %-of-e1RM or linear progression with repeat and deload | `PersonalRecords`, `NextTargetKG` |
+| API | `/v1/exercises`, `/v1/plans`, `/v1/plans/today`, `/v1/sessions` (+ `…/complete`), `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, insight `pr`, `ryft.session.completed` | `cmd/api/train.go`, [`API.md`](API.md) → Train |
+
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
 contract checks in `make smoke`, Swift-side contract checks (`make check-swift`).
@@ -90,7 +102,8 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `golangci-lint run` (v2.15, `.golangci.yml`) | 0 issues |
 | `make down && make up && make smoke` on Podman, fresh volumes (six migrations at the time) | pass, incl. `scripts/check_api.py`: every endpoint, documented invariants, error paths, a workout across midnight |
 | `make up && make smoke` on the existing volume after M1 (migrations 0007 and 0008 over real data) | pass, incl. two-user isolation on a shared device and workout UUID, request IDs and security headers, `413`s, account deletion (data gone, `401` afterwards on api and ingest, repeatable), overlapping heart-rate, sleep and step sources; no warnings or errors in the service logs |
-| `make check-swift` | the Swift mirror in `API.md` decodes every endpoint; the app's current models (`../app`) decode every endpoint they call |
+| `make check-swift` | the Swift mirror in `API.md` decodes every endpoint, the Train ones included; the app's current models (`../app`) decode every endpoint they call |
+| Train (2026-10-19) | `go test ./...` with the strength calibration pinned; Postgres integration tests for the Train store (merge, conflict, replace, ownership, enrolment through a whole plan, account deletion), the seeds (idempotent, fixed ids), the grants and the Supabase shape, and the scoring engine (session-only day, hand-over to a later HealthKit workout, deletion); NATS permission tests (api may publish `ryft.session.completed`, ingest may not); `make up && make smoke` over the existing volume with 0011–0012 applied, incl. the Train block of `check_api.py`; `golangci-lint` 0 issues; `make k8s-validate` |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
 | `infra/vault` | `validate`, tflint clean, `terraform test` (mocked, 6 runs): keys per namespace, owner password only in migrate, bcrypt-only NATS, role bindings, policy, Pod Security, golden operator manifests (fails with the old namespace path) |
@@ -128,7 +141,13 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
 7. **`make monitoring-apply`** (open), then the Grafana Cloud steps: exclude `ryft-.*`
    pod logs, load the alerts.
 8. **`make smoke-supabase`** against `https://api.ryftapp.de` with
-   `SUPABASE_SECRET_KEY` (open). Record the run here.
+   `SUPABASE_SECRET_KEY` (open). Record the run here. It now also runs the Train checks,
+   which leave a custom exercise, an enrolment and sessions on the smoke user.
+9. **Train (M3b):** push; once CI is green, pin that image (it includes everything
+   above) and `make k8s-apply-eks`. The migrate job applies 0011 and 0012 and loads the
+   seeds; NATS rolls because its config changed (api may now publish
+   `ryft.session.completed`); scoring's consumer takes the new subject on start.
+   Nothing changes in Terraform or Vault.
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
@@ -139,6 +158,11 @@ Known gaps, accepted for the alpha:
   HTTP traffic (D51).
 - **Insight texts are English only.** Handlers are covered by the smoke contract checks,
   not by Go tests against a database.
+- **M3 is deferred** (D58): no strain target or bands, and strength workouts without a
+  logged session get no muscular load (M3's duration estimate).
+- **Train calibration rests on three reference sessions** (D59). Body weight comes from
+  the sessions, not from HealthKit; a first session of an exercise is scored against
+  its own sets.
 - **Cost:** about $245–265 a month with three nodes (`infra/aws/README.md`), above the
   budget's default of $165: raise `monthly_budget_usd` or expect the alarm. The budget alarm watches
   it.
@@ -167,6 +191,13 @@ Known gaps, accepted for the alpha:
     100 %. The API sends whole percentages (`API.md`, Conventions).
   - The app also reads `details` keys. They are frozen, but the typed fields
     (`baseline_days`, `DayDetail.sleep`, `DayDetail.strain`) are the contract.
+  - **Train** (`API.md` → Train, Swift mirror): a logged set is `SessionSet` in Swift.
+    `PUT /v1/sessions/{id}` after every set with the whole document; a `409` body is the
+    server's `Session` (merge by set id, later `updated_at` wins, save again). Omitting a
+    set never deletes it while in progress: uncheck it (`completed_at: null`). Send
+    `ended_at` with `…/complete` when completing from the offline queue. Send
+    `Accept-Language` for German exercise names. `workout_id` can change once the
+    watch's workout syncs; merge the activity row by `Workout.session_id`.
 
 ## Deploy
 

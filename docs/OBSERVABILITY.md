@@ -46,15 +46,18 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
-| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`) or `default`. The recompute gate (one per minute) is not counted here. |
+| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
-| `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | `ryft.ingested` publishes (`sync` from ingest, `recompute` from api), `ok`/`error`. A publish error does not fail the sync — this is the only place it shows. |
+| `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | Publishes, `ok`/`error`: `ryft.ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), and `ryft.session.completed` as `session_completed` (api). A publish error does not fail the sync — this is the only place it shows; a failed `…/complete` publish answers `503`. |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (10th delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted). |
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring | Messages received with a delivery count > 1. |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`), from events and the 15-minute timer. |
-| `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write. |
+| `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
+| `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
+| `ryft_train_sets_logged_total` | counter | — | api | Completed sets `PUT /v1/sessions/{id}` stored for the first time. |
+| `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -99,6 +102,15 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Requests by route | time series | `sum by (route) (rate(ryft_http_requests_total{app="api",route=~".*/v1/.*"}[5m]))` |
 | Latency p95 by route | time series | `histogram_quantile(0.95, sum by (route, le) (rate(ryft_http_request_duration_seconds_bucket{app="api"}[5m])))` |
 | 4xx / 5xx by route | time series | `sum by (route, code) (rate(ryft_http_requests_total{app="api",code=~"[45].."}[5m]))` |
+
+**Row: Train**
+
+| Panel | Type | Query |
+| --- | --- | --- |
+| Sessions completed (24 h) | stat | `sum(increase(ryft_train_sessions_completed_total[24h]))` |
+| Sets logged | time series, 1 h buckets | `sum(increase(ryft_train_sets_logged_total[1h]))` |
+| Records by kind | stacked bars, 1 d buckets | `sum by (kind) (increase(ryft_train_prs_total[1d]))` |
+| Session saves: 409 / 422 / 429 | time series | `sum by (code) (rate(ryft_http_requests_total{route="PUT /v1/sessions/{id}",code=~"409\|422\|429"}[5m]))` |
 
 **Row: Runtime** (repeat by `app`)
 

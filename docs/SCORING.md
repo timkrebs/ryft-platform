@@ -1,6 +1,7 @@
 # RYFT — scoring inputs
 
-How scoring treats the raw HealthKit data before any formula runs. The formulas
+How scoring treats the raw HealthKit data before any formula runs, and how logged
+strength sessions become load (**Strength**, below). The formulas
 (recovery, readiness, strain, sleep need) are described in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#scoring-internalscoringalgorithmsgo-unit-tested); the
 code is in `internal/scoring`.
@@ -39,6 +40,105 @@ and rounded to whole numbers (`DayTotal`). A sample counts on the day it starts,
 step sample from 23:55 to 00:05 belongs to the earlier day. `NULL` when no samples of
 that type arrived. They feed `DailyScore`, `DayDetail.strain` and the trend metrics
 `steps` and `active_kcal`, and nothing else; they do not change strain.
+
+## Strength (Train, M3b)
+
+Logged strength sessions (`PUT /v1/sessions/{id}`, completed with `…/complete`) become a
+**muscular load** on the TRIMP scale. It joins the day's heart-rate TRIMP *before* the
+strain compression, so a day with only a logged session has a strain, and a day with
+both gets more than either alone. Code: `internal/scoring/strength.go` (pure, tested) and
+`strength_day.go` (the day pass). Decisions: D58–D63.
+
+**Per set** (completed sets only, `completed_at` set):
+
+| Load type | Set load before the scale |
+| --- | --- |
+| `weight`, `bodyweight` | `reps × (weight / e1RM)² × muscleFactor`, intensity capped at 1 |
+| `time` | `duration_sec / 60 × 0.5 × muscleFactor` |
+| `distance` | `distance_m / 100 × 0.4 × muscleFactor` |
+
+- **Weight** is the bar for `weight` exercises; for `bodyweight` ones body weight ×
+  `bodyweight_factor` plus any added load (a belt). Body weight is the session's
+  `bodyweight_kg`, else the last one logged on an earlier session, else **75 kg**.
+- **e1RM** is Epley, `weight × (1 + reps/30)`, with reps capped at **12**: the athlete's
+  best over all completed working sets of that exercise up to the session's end, the
+  session's own sets included (so intensity never exceeds 1, and a first session is
+  scored against itself).
+- **Unilateral** exercises log reps per side: × 2. **Warm-up** sets count × 0.25 and
+  never set records.
+- **muscleFactor** = (Σ primary muscle mass + ½ Σ secondary) × the exercise's
+  **load factor**. Muscle mass, relative to the quads:
+
+  | quads, glutes | hamstrings | chest, lats | lower_back, upper_back | adductors, traps | front_delts, triceps | side_delts, biceps, calves, abs | rear_delts, obliques | forearms |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 1.0 | 0.8 | 0.7 | 0.6 | 0.4 | 0.35 | 0.3 | 0.25 | 0.2 |
+
+  Load factor by kind (custom exercises get these): barbell 1.0, dumbbell and
+  kettlebell 0.9, machine 0.8, cable 0.7, bodyweight 0.32, cardio 0.3. Built-ins may set
+  their own: the Olympic lifts and their variants **1.15** (speed and the whole body),
+  weighted pull-ups and dips 0.6.
+
+**Per session**: `muscular_trimp = Σ set load × 0.6`, one decimal; `strain` is that alone
+on the strain scale (`21 · (1 − e^(−TRIMP/80))`); `volume_kg` is Σ reps × weight of the
+completed working sets (both sides when unilateral).
+
+**Calibration**, pinned by `strength_test.go` on the real seed library:
+
+| Reference session | Muscular TRIMP | Strain |
+| --- | --- | --- |
+| 60 min, 5 × 5 back squat, bench press, barbell row at 80 % of e1RM, 80 kg athlete | 59.3 | **11.0** |
+| 12 singles at 90 %: 6 snatches, 6 clean & jerks | 38.1 | **8.0** |
+| 20-min bodyweight circuit: 4 × (10 push-ups, 15 bodyweight squats, 45 s plank), no history | 22.3 | **5.1** |
+
+The spec gave the first one as "TRIMP ≈ 85 → strain ≈ 11", but 85 is strain 13.7 on the
+existing compression; the strain values are what the user sees, so they are the anchors
+(D59). Without a per-exercise load factor the formula puts the circuit near 15 and the
+singles near 6.
+
+**The day.** Scoring's pass for a local day takes the completed sessions *started* that
+day and, for each one:
+
+1. computes its load as above and stores `muscular_trimp`, `strain`, `volume_kg` on the
+   session;
+2. attaches it to **one workout**: a HealthKit workout of activity `strength`,
+   `functional_strength` or `crossfit` that overlaps at least **half** of the session
+   (largest overlap wins), else a workout scoring creates for it (`source = 'ryft-session'`,
+   activity `strength`, the session's times, a fixed id), so the Strain screen lists it.
+   The workout's `muscular_load` and `session_id` are set; its strain becomes
+   `strain(heart-rate TRIMP + muscular load)`. Every pass re-decides: when the watch's
+   workout syncs later, the load moves to it and the created workout is deleted;
+   a deleted or discarded session's load comes off again;
+3. adds the load to the day: `strain = strain(heart-rate TRIMP + Σ muscular_trimp)`,
+   `strength_min` (minutes of those sessions), `volume_kg`, and
+   `details.strength_week` (minutes, sessions and volume per muscle — primary in full,
+   secondary half — over the 7 days ending that day).
+
+Sessions are recomputed whenever their day is: after `…/complete`
+(`ryft.session.completed`), after an edit or delete of a completed session
+(`ryft.ingested`, reason `session`), and by `scoring rescore`. So a change to these
+constants takes effect for history with `scripts/rescore_all.sh`.
+
+**Records** (`PersonalRecords`), recomputed from all completed working sets of an exercise
+whenever a session with it is completed, edited or deleted: `e1rm` (Epley as above),
+`max_weight`, `max_reps` and `max_volume` (reps × kg in one set) for `weight` exercises;
+`max_reps` (and `max_weight` of added load) for `bodyweight` ones; none for `time` and
+`distance`. The first set to reach a value keeps the record. The insight `pr` reports one
+set today or yesterday.
+
+**Progression** (`NextTargetKG`, the `target_kg` of `GET /v1/plans/today`), rounded to
+2.5 kg:
+
+- `pct_1rm`: `target_value` % of the current e1RM; none without logged sets.
+- `kg`: `target_value`, moved by a linear progression replayed over the history of that
+  plan exercise (oldest first): after an attempt with at least the prescribed number of
+  completed working sets at the top of the rep range (`reps_max`) and at least the
+  target, + `increment_kg`; after a miss the same target; after `deload_after` misses in
+  a row (default 3) 10 % less. Other progression types keep `target_value`.
+- `rpe`, `bodyweight`: no kg target.
+
+An attempt is a completed session whose exercise names the plan exercise
+(`plan_exercise_id`), or — when it names none — the same exercise on a session started
+from that plan day.
 
 ## What is left alone
 
