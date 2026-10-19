@@ -90,6 +90,7 @@ func main() {
 	api.HandleFunc("GET /v1/days", h.days)
 	api.HandleFunc("GET /v1/days/{day}", h.day)
 	api.HandleFunc("GET /v1/sleep", h.sleepRange)
+	api.HandleFunc("GET /v1/sleep/plan", h.sleepPlan)
 	api.HandleFunc("GET /v1/workouts", h.workouts)
 	api.HandleFunc("GET /v1/workouts/{id}", h.workout)
 	api.HandleFunc("GET /v1/trends", h.trends)
@@ -185,6 +186,10 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.SleepBaseMin != nil && (*p.SleepBaseMin < 240 || *p.SleepBaseMin > 720) {
 		httpx.WriteError(w, 422, "sleep_base_min out of range")
+		return
+	}
+	if p.SleepBaseMin != nil && p.SleepBaseManual != nil && !*p.SleepBaseManual {
+		httpx.WriteError(w, 422, "sleep_base_min sets the baseline by hand; it cannot go with sleep_base_manual false")
 		return
 	}
 	if p.TZ != nil {

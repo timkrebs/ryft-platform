@@ -155,16 +155,41 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(nights) > 0 {
 		if s, ok := scoring.NightSummary(nights[0]); ok {
-			from, to := scoring.NightWindow(d)
+			// The night as scoring took it: one source, morning naps split off.
+			from, to := scoring.DaySleepWindow(d)
 			segs, err := h.st.SleepEndingBetween(ctx, userOf(r).ID, from, to)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
 			}
-			out.Sleep = &model.SleepDetail{SleepSummary: s, Segments: scoring.Hypnogram(scoring.DedupSleepSources(segs))}
+			night, _ := scoring.SplitDay(segs, d)
+			out.Sleep = &model.SleepDetail{SleepSummary: s, Need: scoring.NeedOf(out.Score), Segments: scoring.Hypnogram(night)}
 		}
 	}
 	httpx.WriteJSON(w, 200, out)
+}
+
+// sleepPlan is the Sleep Planner: bedtimes for a wake time, from tonight's need.
+func (h *handler) sleepPlan(w http.ResponseWriter, r *http.Request) {
+	loc, err := h.location(r)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	now := time.Now().In(loc)
+	wake, err := scoring.NextWake(r.URL.Query().Get("wake"), now)
+	if err != nil {
+		httpx.WriteError(w, 422, err.Error())
+		return
+	}
+	today := now.Format(dayLayout)
+	tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc).Format(dayLayout)
+	hist, err := h.st.ScoreHistory(r.Context(), userOf(r).ID, tomorrow, 7)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, 200, scoring.TonightPlan(userOf(r).SleepBaseMin, today, hist, wake))
 }
 
 // sleepRanges are the Sleep screen's Week / Month tabs, in days ending at `to`.

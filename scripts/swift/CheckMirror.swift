@@ -11,6 +11,13 @@ for d in days.suffix(4) {
 }
 await decode(SleepRange.self, "/v1/sleep?range=week&to=\(today)")
 await decode(SleepRange.self, "/v1/sleep?range=month&to=\(today)")
+if let need = detail.sleep?.need {
+    precondition(need.total == need.base + need.strain + need.debt - need.napCredit, "the need terms must add up")
+}
+let plan = await decode(SleepPlan.self, "/v1/sleep/plan?wake=07:00")
+precondition(plan.bedtime100 < plan.bedtime85 && plan.bedtime85 < plan.bedtime70 && plan.bedtime70 < plan.wake,
+             "plan bedtimes must ascend towards the wake time")
+await decode(APIErrorBody.self, "/v1/sleep/plan?wake=7am", status: 422)
 let workouts = await decode([Workout].self, "/v1/workouts?to=\(today)")
 if let w = workouts.last {
     await decode(WorkoutDetail.self, "/v1/workouts/\(w.id.uuidString.lowercased())")

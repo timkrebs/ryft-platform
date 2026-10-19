@@ -124,7 +124,13 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 		d := p.AchievedAt.In(loc).Format(dayLayout)
 		prs[d] = append(prs[d], insights.PR{Exercise: p.Exercise, Kind: p.Kind, Value: p.Value})
 	}
-	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs))
+	u := userOf(r)
+	baseline := insights.Baseline{Source: u.SleepBaseSource, Min: u.SleepBaseMin}
+	if u.SleepBaseLearnedAt != nil {
+		at := u.SleepBaseLearnedAt.In(loc)
+		baseline.LearnedAt = &at
+	}
+	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs).WithBaseline(baseline))
 	h.cache.put(ck, now, cards)
 	httpx.WriteJSON(w, 200, cards)
 }

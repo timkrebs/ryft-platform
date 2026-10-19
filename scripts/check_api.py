@@ -102,6 +102,13 @@ sc = detail["score"]
 want = rnd(0.6 * sc["sleep_performance"] + 0.2 * s["efficiency"] + 0.2 * s["restorative"])
 check(s["quality"] == sc["sleep_quality"] == want,
       f"quality {s['quality']} / score {sc['sleep_quality']}, want 0.6·perf + 0.2·eff + 0.2·restorative = {want}")
+need = s["need"]
+check(set(need) == {"base", "strain", "debt", "nap_credit", "total"}, f"sleep.need keys {sorted(need)}")
+check(need["total"] == sc["sleep_need_min"] == need["base"] + need["strain"] + need["debt"] - need["nap_credit"],
+      f"sleep.need {need} vs score.sleep_need_min {sc['sleep_need_min']}")
+check([need[k] for k in ("base", "strain", "debt", "nap_credit")] ==
+      [sc[k] for k in ("sleep_need_base_min", "sleep_need_strain_min", "sleep_need_debt_min", "sleep_need_nap_min")],
+      f"sleep.need {need} != the score's sleep_need_* fields")
 segs = s["segments"]
 check(len(segs) > 0 and all(x["stage"] in STAGES + ["asleep"] for x in segs), "hypnogram segments")
 check(all(a["start"] <= b["start"] for a, b in zip(segs, segs[1:])), "hypnogram not sorted")
@@ -147,7 +154,7 @@ if NAP and 10 <= nap_local.hour and (nap_local + timedelta(minutes=NAP)).hour < 
     ok(f"nap: {NAP} min on {nap_day}, credited to {credit_day}'s need")
 else:
     print(f"- nap credit not checked (NAP={NAP}, the nap is at {nap_local:%H:%M} local)")
-ok(f"/v1/days/{TODAY}: quality {s['quality']} (performance {sc['sleep_performance']}), "
+ok(f"/v1/days/{TODAY}: quality {s['quality']} (performance {sc['sleep_performance']}), need {need}, "
    f"consistency {by_day[TODAY]['sleep_consistency']}")
 
 sr = get(f"/v1/sleep?range=week&to={TODAY}")
@@ -161,6 +168,22 @@ cons = [d["consistency"] for d in sr["days"] if d["consistency"] is not None]
 check(sr["avg_consistency"] == (rnd(sum(cons) / len(cons)) if cons else None), f"avg_consistency {sr['avg_consistency']}")
 ok(f"/v1/sleep?range=week: avg consistency {sr['avg_consistency']}, {len(sr['bedtimes'])} bedtimes")
 
+me = get("/v1/me")
+plan = get("/v1/sleep/plan?wake=07:00")
+pb = plan["basis"]
+wake = datetime.fromisoformat(plan["wake"].replace("Z", "+00:00"))
+check(wake.astimezone(tz_me).strftime("%H:%M") == "07:00" and timedelta(0) < wake - datetime.now(timezone.utc) <= timedelta(hours=24),
+      f"plan wake {plan['wake']} is not the next 07:00 local")
+beds = [datetime.fromisoformat(plan[k].replace("Z", "+00:00")) for k in ("bedtime_100", "bedtime_85", "bedtime_70")]
+check(beds[0] < beds[1] < beds[2] < wake, f"plan bedtimes not ascending: {[plan[k] for k in ('bedtime_100', 'bedtime_85', 'bedtime_70')]}")
+check(plan["need_min"] == pb["base"] + pb["strain_topup"] + pb["debt_topup"] - pb["nap_credit"] and pb["base"] == me["sleep_base_min"],
+      f"plan need {plan['need_min']} vs basis {pb}")
+check(plan["efficiency"] == pb["efficiency"] >= 85 and abs(plan["in_bed_min"] - plan["need_min"] * 100 / plan["efficiency"]) <= 1,
+      f"plan efficiency {plan['efficiency']}, in bed {plan['in_bed_min']}")
+check(abs((wake - beds[0]).total_seconds() / 60 - plan["in_bed_min"]) <= 1, "bedtime_100 must be wake − in_bed_min")
+for bad in ("", "7:00", "25:00", "07:00:00"):
+    check(isinstance(get(f"/v1/sleep/plan?wake={bad}", expect=422), dict), f"plan wake={bad!r} must be 422")
+ok(f"/v1/sleep/plan?wake=07:00: need {plan['need_min']}, bed {plan['bedtime_100']} / {plan['bedtime_85']} / {plan['bedtime_70']}; bad wake → 422")
 
 # ---- 2.3 workouts -------------------------------------------------------------
 wks = get(f"/v1/workouts?to={TODAY}")
@@ -278,6 +301,27 @@ status, _, body = raw("PATCH", "/v1/me", json.dumps({"tz": "Europe/Berlin", "nam
 check(status == 413 and is_error(body), f"a 70 KiB settings body must be 413, got {status} {body}")
 ok("X-Request-ID server-generated; security headers on api and ingest; oversized bodies 413")
 
+# ---- sleep baseline: manual and back (M4) -------------------------------------
+def patch_me(body, expect=200):
+    status, _, out = raw("PATCH", "/v1/me", json.dumps(body).encode())
+    check(status == expect, f"PATCH /v1/me {body}: {status} {out}")
+    return out
+
+
+me0 = get("/v1/me")
+check(me0["sleep_base_source"] in {"default", "learned", "manual"} and "sleep_base_learned_min" in me0
+      and "sleep_base_learned_at" in me0, f"/v1/me baseline fields: {me0}")
+m = patch_me({"sleep_base_min": 481})
+check(m["sleep_base_min"] == 481 and m["sleep_base_source"] == "manual", f"sleep_base_min makes it manual: {m}")
+check(is_error(patch_me({"sleep_base_min": 482, "sleep_base_manual": False}, expect=422)), "base with manual=false must be 422")
+m = patch_me({"sleep_base_manual": False})
+learned = me0["sleep_base_learned_min"]
+check(m["sleep_base_source"] == ("learned" if learned else "default") and m["sleep_base_min"] == (learned or 460),
+      f"manual off goes back to the learned value or 460: {m}")
+if me0["sleep_base_source"] == "manual":  # leave the account as it was
+    m = patch_me({"sleep_base_min": me0["sleep_base_min"]})
+check(m == me0, f"baseline not restored: {m} vs {me0}")
+ok(f"PATCH /v1/me: manual 481 → {m['sleep_base_source']} {m['sleep_base_min']}; base with manual=false → 422")
 
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
