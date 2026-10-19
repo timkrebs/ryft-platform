@@ -3,10 +3,13 @@ package store
 import (
 	"context"
 	"errors"
+	"net/url"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -76,5 +79,36 @@ func TestSleepBaselineSources(t *testing.T) {
 
 	if _, err := st.SetLearnedBase(ctx, uuid.New(), 480); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+// Scoring writes the weekly estimate with its own role: the column grants of
+// migration 0013 must cover SetLearnedBase's statement (FOR UPDATE included).
+func TestSetLearnedBaseAsScoringRole(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	id := uuid.New()
+	if _, err := st.EnsureUser(ctx, Identity{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	const pw = "pw-ryft_scoring-0123456789"
+	if err := db.SetRolePassword(ctx, pool, "ryft_scoring", pw); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword("ryft_scoring", pw)
+	sp, err := pgxpool.New(ctx, u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sp.Close)
+	if changed, err := New(sp).SetLearnedBase(ctx, id, 480); err != nil || !changed {
+		t.Fatalf("as ryft_scoring: changed=%v err=%v", changed, err)
+	}
+	if _, err := New(sp).UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(false)}); err == nil {
+		t.Fatal("scoring must not change the user's settings")
 	}
 }
