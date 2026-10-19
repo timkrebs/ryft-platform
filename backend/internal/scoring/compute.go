@@ -18,11 +18,17 @@ import (
 // the daily_scores row. Days must be computed in chronological order because
 // each day's baselines and sleep debt come from the rows before it.
 type Engine struct {
-	st  *store.Store
-	log *slog.Logger
+	st       *store.Store
+	log      *slog.Logger
+	onScored func(context.Context, model.ScoredEvent)
 }
 
 func NewEngine(st *store.Store, log *slog.Logger) *Engine { return &Engine{st: st, log: log} }
+
+// OnScored sets what runs when the user's local today first gets a recovery
+// after a night with sleep: scoring publishes ryft.scored (the morning push).
+// Rescores, the api's engine and past days never call it.
+func (e *Engine) OnScored(f func(context.Context, model.ScoredEvent)) { e.onScored = f }
 
 // MaxRangeDays bounds a recompute range (to − from); POST /v1/recompute rejects
 // larger ranges up front instead of letting the event fail ten times.
@@ -314,8 +320,13 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10
 		row.StrengthMin, row.VolumeKG = &minutes, &volume
 	}
-	if err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load}); err != nil {
+	first, err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load})
+	if err != nil {
 		return err
+	}
+	if first && sleep.AsleepMin > 0 && e.onScored != nil && day == time.Now().In(loc).Format("2006-01-02") {
+		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: day, Recovery: *recovery, Readiness: readiness,
+			State: state, SleepPerformance: sleepPerf, SleepMin: sleep.AsleepMin})
 	}
 	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", deref(strainScore), "muscular_trimp", strength.TRIMP,
 		"sleep_min", sleep.AsleepMin, "nap_min", napMin, "sleep_need", need, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)

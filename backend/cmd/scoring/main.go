@@ -84,9 +84,28 @@ func main() {
 		}
 	}()
 
+	// The morning push: notify sends it when today first gets a recovery. A
+	// failed publish loses that one push (the day is not "first" again); the
+	// score itself is stored either way.
+	engine.OnScored(func(ctx context.Context, ev model.ScoredEvent) {
+		if f := logx.FieldsFrom(ctx); f != nil {
+			ev.RequestID = f.RequestID
+		}
+		if err := bus.PublishScored(ctx, ev); err != nil {
+			log.ErrorContext(ctx, "publish scored", "day", ev.Day, "err", err)
+		}
+	})
+
 	handle := func(ctx context.Context, ev model.IngestedEvent) error {
 		ctx = logx.WithFields(ctx, &logx.Fields{RequestID: ev.RequestID, UserID: ev.UserID.String()})
 		err := handleEvent(ctx, engine, ev)
+		if err == nil && ev.SessionID != nil && len(ev.Days) == 1 {
+			// The session's load is final now: notify may announce it.
+			if perr := bus.PublishSessionScored(ctx, model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID,
+				Day: ev.Days[0], RequestID: ev.RequestID}); perr != nil {
+				log.ErrorContext(ctx, "publish session scored", "session_id", *ev.SessionID, "err", perr)
+			}
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			// The user was deleted after the event was queued.
 			return events.Permanent(err)

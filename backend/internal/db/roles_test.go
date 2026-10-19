@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -38,7 +39,8 @@ func TestScramVerifier(t *testing.T) {
 	}
 }
 
-// grants is what each role may do (migrations 0009–0011); everything else is denied.
+// grants is what each role may do (migrations 0009–0015); everything else is denied.
+// Column grants (scoring's on workouts, notify's reads) are checked separately.
 var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 
 // trainTables are migration 0011's.
@@ -57,13 +59,17 @@ var grants = map[string]map[string][]string{
 		"workouts": {"SELECT", "DELETE"}, "daily_scores": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
 		"exercises": {"SELECT"}, "sessions": {"SELECT"}, "session_exercises": {"SELECT"}, "session_sets": {"SELECT"},
 	},
+	"ryft_notify": {
+		"push_tokens": {"SELECT", "DELETE"}, "notifications_sent": crud, "personal_records": {"SELECT"},
+		"schema_migrations": {"SELECT"},
+	},
 	"ryft_api": {
 		"users": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "devices": {"SELECT", "DELETE"},
 		"samples": {"SELECT", "DELETE"}, "sleep_segments": {"SELECT", "DELETE"}, "workouts": {"SELECT", "DELETE"},
 		"daily_scores": {"SELECT", "DELETE"}, "deleted_users": {"SELECT", "INSERT", "UPDATE"},
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
-		"feature_flags": crud,
-		"exercises":     crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
+		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }
@@ -75,7 +81,7 @@ func TestServiceRoleGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
-		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags"}, trainTables...)
+		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"}, trainTables...)
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
@@ -118,6 +124,17 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
 		}
 	}
+	// notify reads a user's time zone and notification settings, nothing else (0015).
+	for col, want := range map[string]bool{"id": true, "tz": true, "notify_categories": true, "quiet_from": true,
+		"quiet_to": true, "email": false, "name": false, "sleep_base_min": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_notify', 'public.users', $1, 'SELECT')`, col).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("ryft_notify SELECT users.%s: %v, want %v", col, has, want)
+		}
+	}
 	// scoring writes the learned sleep baseline (0013), nothing else of a user.
 	for col, want := range map[string]bool{"sleep_base_min": true, "sleep_base_source": true, "sleep_base_learned_min": true,
 		"sleep_base_learned_at": true, "sleep_base_manual": false, "tz": false, "max_hr": false, "email": false} {
@@ -155,7 +172,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"ryft_ingest", "ryft_scoring", "ryft_api"} {
+	for _, role := range []string{"ryft_ingest", "ryft_scoring", "ryft_api", "ryft_notify"} {
 		if err := SetRolePassword(ctx, pool, role, "pw-"+role+"-0123456789"); err != nil {
 			t.Fatal(err)
 		}
@@ -197,6 +214,25 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	}
 	if _, err := scoring.Exec(ctx, `UPDATE users SET sleep_base_manual=false WHERE id=$1`, id); err == nil {
 		t.Fatal("only the user turns the manual baseline off")
+	}
+
+	notify := asRole(t, dsn, "ryft_notify", "pw-ryft_notify-0123456789")
+	var last *time.Time
+	if err := notify.QueryRow(ctx, `SELECT max(start_at) FROM samples WHERE user_id=$1 AND type='steps'`, id).Scan(&last); err != nil || last == nil {
+		t.Fatalf("notify reads when the last sample arrived, through RLS: %v %v", last, err)
+	}
+	var tz string
+	if err := notify.QueryRow(ctx, `SELECT tz FROM users WHERE id=$1`, id).Scan(&tz); err != nil {
+		t.Fatalf("notify reads the user's time zone: %v", err)
+	}
+	if _, err := notify.Exec(ctx, `INSERT INTO notifications_sent (user_id, day, category) VALUES ($1, current_date, 'MORNING_SCORE')`, id); err != nil {
+		t.Fatalf("notify claims a send: %v", err)
+	}
+	for _, q := range []string{`SELECT email FROM users`, `SELECT value FROM samples`, `UPDATE users SET tz='UTC'`,
+		`INSERT INTO push_tokens (user_id, device_id, token, env) VALUES ('` + id + `', gen_random_uuid(), repeat('a', 64), 'sandbox')`} {
+		if _, err := notify.Exec(ctx, q); err == nil {
+			t.Fatalf("notify must not: %s", q)
+		}
 	}
 
 	api := asRole(t, dsn, "ryft_api", "pw-ryft_api-0123456789")

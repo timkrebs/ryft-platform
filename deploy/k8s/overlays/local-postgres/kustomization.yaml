@@ -16,12 +16,14 @@ resources:
   - ../../services/ingest
   - ../../services/scoring
   - ../../services/api
+  - ../../services/notify
 
 # Each namespace gets only its own credentials (git-ignored secrets/*.env).
 secretGenerator:
   - { name: ryft-secrets, namespace: ryft-ingest, envs: [secrets/ingest.env] }
   - { name: ryft-secrets, namespace: ryft-scoring, envs: [secrets/scoring.env] }
   - { name: ryft-secrets, namespace: ryft-api, envs: [secrets/api.env] }
+  - { name: ryft-secrets, namespace: ryft-notify, envs: [secrets/notify.env] }
   - { name: ryft-secrets, namespace: ryft-nats, envs: [secrets/nats.env] }
   - { name: ryft-secrets, namespace: ryft-migrate, envs: [secrets/migrate.env] }
   - { name: ryft-secrets, namespace: ryft-postgres, envs: [secrets/postgres.env] }

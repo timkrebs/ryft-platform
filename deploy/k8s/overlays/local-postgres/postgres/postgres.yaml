@@ -69,6 +69,7 @@ spec:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-ingest } }
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-scoring } }
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-api } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-notify } }
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-migrate } }
         - podSelector: { matchLabels: { app: pg-backup } }
       ports:

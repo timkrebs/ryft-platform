@@ -1,0 +1,31 @@
+# In: the metrics collector only (9090). Out: NATS, the Supavisor pooler and
+# APNs (api.push.apple.com / api.sandbox.push.apple.com on 443). NetworkPolicy
+# cannot match host names, so APNs is any public address on 443, like the
+# others' egress (D34).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notify
+spec:
+  podSelector: { matchLabels: { app: notify } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports:
+        - { protocol: TCP, port: 9090 }
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-nats } }
+          podSelector: { matchLabels: { app: nats } }
+      ports:
+        - { protocol: TCP, port: 4222 }
+    # The pooler (5432) and APNs (443): public addresses only, nothing inside
+    # the VPC or the cluster.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 443 }

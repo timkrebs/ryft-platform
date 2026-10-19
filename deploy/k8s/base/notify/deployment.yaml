@@ -1,0 +1,59 @@
+# notify: ryft.scored / ryft.session.scored → APNs (role ryft_notify).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify
+  labels: { app: notify, part-of: ryft }
+spec:
+  # One is enough; a second would be safe (every send is claimed in
+  # notifications_sent first) but sends nothing more.
+  replicas: 1
+  selector:
+    matchLabels: { app: notify }
+  template:
+    metadata:
+      labels: { app: notify, part-of: ryft }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      # Created by infra/vault on EKS and by overlays/local-postgres elsewhere.
+      # The service never calls the Kubernetes API, so the pod gets no token.
+      serviceAccountName: notify
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: notify
+          image: ghcr.io/timkrebs/ryft/notify:latest
+          ports:
+            - { containerPort: 8080, name: http }      # probes
+            - { containerPort: 9090, name: metrics }   # /metrics only
+          envFrom:
+            - configMapRef: { name: ryft-config }
+            # Only this service's credentials: on EKS synced by the Vault Secrets
+            # Operator from Vault namespace ryft/notify (infra/vault).
+            - secretRef: { name: ryft-secrets }
+          # Waits for the migrate job (ryft_notify gets its password there) and
+          # for scoring's stream before it consumes.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 126
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 20m, memory: 48Mi }
+            limits: { memory: 128Mi }

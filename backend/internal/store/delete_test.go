@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +68,8 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 	err := pool.QueryRow(context.Background(), `SELECT
 		(SELECT count(*) FROM users WHERE id=$1) + (SELECT count(*) FROM devices WHERE user_id=$1) +
 		(SELECT count(*) FROM samples WHERE user_id=$1) + (SELECT count(*) FROM sleep_segments WHERE user_id=$1) +
-		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1) +
+		(SELECT count(*) FROM push_tokens WHERE user_id=$1) + (SELECT count(*) FROM notifications_sent WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +99,17 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day) VALUES ($1, current_date)`, id); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.RegisterPushToken(ctx, id, device, model.PushRegistration{Token: hexToken(id), Env: "sandbox", Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNotification(ctx, id, now.Format("2006-01-02"), model.NotifyMorningScore); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// hexToken is a well-formed, per-user APNs token.
+func hexToken(id uuid.UUID) string {
+	return strings.ReplaceAll(id.String(), "-", "") + strings.ReplaceAll(id.String(), "-", "")
 }
 
 func TestDeleteUserErasesEverythingAndStaysDeleted(t *testing.T) {

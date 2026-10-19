@@ -160,12 +160,57 @@ func TestNatsPermissionsScoringOnlyConsumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !v.saw(`Publish to "ryft.ingested"`) {
-		t.Error("scoring must not publish events")
+		t.Error("scoring must not publish its own input events")
 	}
 	js, _ := jetstream.New(nc)
 	short, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := js.DeleteStream(short, StreamName); err == nil || errors.Is(err, jetstream.ErrStreamNotFound) {
 		t.Errorf("scoring must not delete the stream: %v", err)
+	}
+}
+
+// scoring alone announces scored mornings and sessions; notify consumes them
+// with its own consumer and may do nothing else.
+func TestNatsPermissionsNotifySubjects(t *testing.T) {
+	ctx := context.Background()
+	scoring, err := Connect(ctx, natsURL(t), Options{Name: "scoring", User: "scoring", Password: devPassword("scoring"), OwnStream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scoring.Close()
+	for _, subject := range []string{SubjectScored, SubjectSessionScored} {
+		for svc, want := range map[string]bool{"scoring": true, "api": false, "ingest": false, "notify": false} {
+			nc, _ := connectAs(t, svc)
+			js, _ := jetstream.New(nc)
+			short, cancel := context.WithTimeout(ctx, 2*time.Second)
+			// A bad event (no day): the notify consumer terminates it.
+			_, err := js.Publish(short, subject, []byte("{}"))
+			cancel()
+			if (err == nil) != want {
+				t.Errorf("%s publishing %s: err=%v, want allowed=%v", svc, subject, err, want)
+			}
+		}
+	}
+	notify, err := Connect(ctx, natsURL(t), Options{Name: "notify", User: "notify", Password: devPassword("notify")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer notify.Close()
+	short, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_, err = notify.js.CreateOrUpdateConsumer(short, StreamName, jetstream.ConsumerConfig{Durable: ConsumerNotify,
+		FilterSubjects: []string{SubjectScored, SubjectSessionScored}, AckPolicy: jetstream.AckExplicitPolicy})
+	cancel()
+	if err != nil {
+		t.Fatalf("notify creates its consumer: %v", err)
+	}
+	nc, v := connectAs(t, "notify")
+	for _, subj := range []string{"$JS.API.CONSUMER.MSG.NEXT.RYFT.scoring", SubjectIngested, "$JS.API.STREAM.DELETE.RYFT"} {
+		if err := nc.Publish(subj, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !v.saw(`Publish to "` + subj + `"`) {
+			t.Errorf("notify must not publish %s", subj)
+		}
 	}
 }

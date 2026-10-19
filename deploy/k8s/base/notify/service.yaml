@@ -1,0 +1,11 @@
+# The metrics port by name (kubectl port-forward svc/notify 9090); the
+# collector scrapes the pod through its annotations.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notify
+  labels: { app: notify, part-of: ryft }
+spec:
+  selector: { app: notify }
+  ports:
+    - { name: metrics, port: 9090, targetPort: metrics }

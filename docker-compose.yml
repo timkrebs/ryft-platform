@@ -22,6 +22,7 @@ services:
       NATS_PASSWORD_INGEST: dev-ingest-nats-password
       NATS_PASSWORD_SCORING: dev-scoring-nats-password
       NATS_PASSWORD_API: dev-api-nats-password
+      NATS_PASSWORD_NOTIFY: dev-notify-nats-password
     ports: ["4222:4222", "8222:8222"]
     volumes:
       - natsdata:/data
@@ -37,6 +38,7 @@ services:
       DB_PASSWORD_INGEST: dev-ingest-db-password
       DB_PASSWORD_SCORING: dev-scoring-db-password
       DB_PASSWORD_API: dev-api-db-password
+      DB_PASSWORD_NOTIFY: dev-notify-db-password
     restart: "no"
     depends_on:
       postgres: { condition: service_healthy }
@@ -78,6 +80,19 @@ services:
       # Bearer of /v1/admin (feature flags); scripts/check_api.py uses it.
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me-0123456789abcdef}
     ports: ["8082:8080"]
+    depends_on: *deps
+
+  # No APNs key locally: notify consumes and decides, and counts what it would
+  # have sent (ryft_push_notifications_total{result="unconfigured"} on :9093,
+  # which scripts/check_api.py reads).
+  notify:
+    build: { context: ./backend, args: { SERVICE: notify } }
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://ryft_notify:dev-notify-db-password@postgres:5432/ryft?sslmode=disable
+      NATS_USER: notify
+      NATS_PASSWORD: dev-notify-nats-password
+    ports: ["9093:9090"]
     depends_on: *deps
 
 volumes:

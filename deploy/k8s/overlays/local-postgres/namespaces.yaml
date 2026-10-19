@@ -33,6 +33,16 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: ryft-notify
+  labels:
+    app.kubernetes.io/part-of: ryft
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: ryft-nats
   labels:
     app.kubernetes.io/part-of: ryft
@@ -73,6 +83,11 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: api, namespace: ryft-api }
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: notify, namespace: ryft-notify }
 automountServiceAccountToken: false
 ---
 apiVersion: v1

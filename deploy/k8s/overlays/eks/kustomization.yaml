@@ -1,6 +1,6 @@
 # RYFT on the EKS cluster from infra/aws (ryft-prod-euc1), served at
 # https://api.ryftapp.de and https://ryftapp.de. One namespace per workload:
-# ryft-ingest, ryft-scoring, ryft-api, ryft-nats and ryft-migrate come with their
+# ryft-ingest, ryft-scoring, ryft-api, ryft-notify, ryft-nats and ryft-migrate come with their
 # service accounts and Pod Security "restricted" from infra/vault, so this overlay
 # creates no Namespace objects for them; only ryft-web (the apex site), which holds
 # no secrets. Each namespace's Secret ryft-secrets is synced by the Vault Secrets
@@ -20,6 +20,7 @@ resources:
   - ../../services/ingest
   - ../../services/scoring
   - ../../services/api
+  - ../../services/notify
   - ../../services/web
   - ratelimit.yaml
   - metrics-from-nodes.yaml
@@ -48,4 +49,7 @@ images:
   - name: ghcr.io/timkrebs/ryft/api
     newTag: "3a0e9a1"
   - name: ghcr.io/timkrebs/ryft/migrate
+    newTag: "3a0e9a1"
+  # notify exists from the M7 commit on: pin all five to that build or later.
+  - name: ghcr.io/timkrebs/ryft/notify
     newTag: "3a0e9a1"

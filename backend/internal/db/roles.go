@@ -20,12 +20,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ServiceRoles maps each service to its database role (migration 0009). The
-// migrate command reads the role's password from DB_PASSWORD_<SERVICE>.
+// ServiceRoles maps each service to its database role (migrations 0009, 0015).
+// The migrate command reads the role's password from DB_PASSWORD_<SERVICE>.
 var ServiceRoles = map[string]string{
 	"ingest":  "ryft_ingest",
 	"scoring": "ryft_scoring",
 	"api":     "ryft_api",
+	"notify":  "ryft_notify",
 }
 
 // SetRolePassword enables LOGIN for role and sets its password. Postgres is

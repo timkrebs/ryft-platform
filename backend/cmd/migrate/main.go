@@ -5,7 +5,7 @@
 // service); the services themselves cannot change the schema.
 //
 //	DATABASE_URL          the owner (postgres on Supabase)
-//	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING and _API
+//	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING, _API and _NOTIFY
 package main
 
 import (

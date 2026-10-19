@@ -46,7 +46,7 @@ func New(c Config, client *http.Client) (*Client, error) {
 	if c.TeamID == "" || c.KeyID == "" || c.ClientID == "" {
 		return nil, errors.New("apple: team ID, key ID and client ID are required")
 	}
-	key, err := parseKey(c.PrivateKey)
+	key, err := ParseKey(c.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,10 @@ func New(c Config, client *http.Client) (*Client, error) {
 	return &Client{cfg: c, key: key, base: base, http: client, now: time.Now}, nil
 }
 
-func parseKey(s string) (*ecdsa.PrivateKey, error) {
+// ParseKey reads an Apple developer key (.p8): PEM, or the PEM base64-encoded
+// (how it fits in an environment variable). Sign in with Apple and APNs keys
+// have the same shape.
+func ParseKey(s string) (*ecdsa.PrivateKey, error) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "-----BEGIN") {
 		raw, err := base64.StdEncoding.DecodeString(s)

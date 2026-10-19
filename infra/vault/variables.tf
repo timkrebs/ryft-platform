@@ -84,6 +84,8 @@ variable "services" {
     ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
     scoring = { database = "role", nats = "client" }
     api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client", data_key = true, admin_key = true }
+    # Push (M7): its own role and NATS user; the APNs key from service_secrets.notify.
+    notify  = { database = "role", nats = "client" }
     nats    = { nats = "server", workload_kind = "StatefulSet" }
     migrate = { database = "owner", workload_kind = "" }
     # Grafana Cloud's k8s-monitoring collector (deploy/monitoring): node metrics,
@@ -191,6 +193,23 @@ variable "service_secrets" {
       try(base64decode(lookup(var.service_secrets, "api", {})["APPLE_KEY_P8"]), lookup(var.service_secrets, "api", {})["APPLE_KEY_P8"])
     )) > 0
     error_message = "service_secrets.api.APPLE_KEY_P8 must be the whole AuthKey_<key id>.p8 file, as PEM or base64-encoded."
+  }
+  validation {
+    condition = contains([0, 3], length(setintersection(keys(lookup(var.service_secrets, "notify", {})),
+    ["APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8"])))
+    error_message = "service_secrets.notify needs APNS_KEY_ID, APNS_TEAM_ID and APNS_KEY_P8 together or none of them: notify refuses to start with a partial set."
+  }
+  validation {
+    condition = !contains(keys(lookup(var.service_secrets, "notify", {})), "APNS_KEY_ID") || can(regex(
+    "^[A-Z0-9]{10}$", lookup(var.service_secrets, "notify", {})["APNS_KEY_ID"]))
+    error_message = "service_secrets.notify.APNS_KEY_ID is the 10-character Key ID of the APNs key (Apple Developer → Keys)."
+  }
+  validation {
+    condition = !contains(keys(lookup(var.service_secrets, "notify", {})), "APNS_KEY_P8") || length(regexall(
+      "-----BEGIN PRIVATE KEY-----\\s*[A-Za-z0-9+/=\\s]{100,}-----END PRIVATE KEY-----",
+      try(base64decode(lookup(var.service_secrets, "notify", {})["APNS_KEY_P8"]), lookup(var.service_secrets, "notify", {})["APNS_KEY_P8"])
+    )) > 0
+    error_message = "service_secrets.notify.APNS_KEY_P8 must be the whole AuthKey_<key id>.p8 file of the APNs key, as PEM or base64-encoded."
   }
 }
 

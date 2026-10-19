@@ -83,6 +83,15 @@ check "api_has_apple_keys" {
   }
 }
 
+# Without the APNs key notify runs but sends nothing (the Apple Developer
+# Program membership comes first): a warning, not an error.
+check "notify_has_apns_key" {
+  assert {
+    condition     = !contains(keys(local.services), "notify") || contains(local.private_keys["notify"], "APNS_KEY_P8")
+    error_message = "service_secrets.notify lacks APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_P8: notify runs but sends no push notifications."
+  }
+}
+
 check "monitoring_has_its_token" {
   assert {
     condition = !contains(keys(local.services), "monitoring") || (contains(local.private_keys["monitoring"], "GC_TOKEN")

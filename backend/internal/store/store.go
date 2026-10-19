@@ -34,12 +34,16 @@ func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 // ---- users / devices -------------------------------------------------------
 
 const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, sleep_base_source,
-	sleep_base_learned_min, sleep_base_learned_at`
+	sleep_base_learned_min, sleep_base_learned_at, notify_categories,
+	to_char(quiet_from, 'HH24:MI'), to_char(quiet_to, 'HH24:MI')`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
+	var cats map[string]bool
+	var from, to *string
 	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
-		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt}, extra...)...)
+		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to}, extra...)...)
+	u.Notifications = prefsOf(cats, from, to)
 	return u, err
 }
 
@@ -138,6 +142,8 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		}
 		for _, q := range []string{
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
+			`DELETE FROM push_tokens WHERE user_id=$1`,
+			`DELETE FROM notifications_sent WHERE user_id=$1`,
 			// Train: sessions cascade to their exercises and sets; plans to
 			// their days, exercises and enrolments.
 			`DELETE FROM personal_records WHERE user_id=$1`,
@@ -560,19 +566,22 @@ type ScoreRow struct {
 	Load  DayLoad
 }
 
-func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) error {
+func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (firstRecovery bool, err error) {
 	d, n, l := row.DailyScore, row.Sleep, row.Load
 	details, err := json.Marshal(d.Details)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var zones []byte
 	if l.ZoneMinutes != nil {
 		if zones, err = json.Marshal(roundZones(l.ZoneMinutes)); err != nil {
-			return err
+			return false, err
 		}
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO daily_scores
+	// firstRecovery: the row had no recovery before this write and has one now
+	// (the morning push, ryft.scored).
+	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery FROM daily_scores WHERE user_id=$1 AND day=$2::date)
+		INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
@@ -596,14 +605,15 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 muscular_trimp=EXCLUDED.muscular_trimp, strength_min=EXCLUDED.strength_min, volume_kg=EXCLUDED.volume_kg,
 		 nap_min=EXCLUDED.nap_min, sleep_quality=EXCLUDED.sleep_quality, sleep_consistency=EXCLUDED.sleep_consistency,
 		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
-		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min, computed_at=now()`,
+		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min, computed_at=now()
+		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
-		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin)
-	return err
+		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin).Scan(&firstRecovery)
+	return firstRecovery, err
 }
 
 // DayLoadOf returns the stored heart-rate load of one day (zero DayLoad when

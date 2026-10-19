@@ -67,4 +67,5 @@ curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KE
 
 echo "→ API contract checks"
 ADMIN_API_KEY="${ADMIN_API_KEY-$( [ "$AUTH_MODE" = apikey ] && echo dev-admin-key-change-me-0123456789abcdef)}" \
+NOTIFY_METRICS_URL="${NOTIFY_METRICS_URL-$( [ "$AUTH_MODE" = apikey ] && echo http://localhost:9093/metrics)}" \
 NAP="$NAP" AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"

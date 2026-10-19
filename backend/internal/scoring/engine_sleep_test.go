@@ -95,7 +95,7 @@ func TestEngineLearnsSleepBase(t *testing.T) {
 		for k := 0; k < 20; k++ {
 			day := time.Date(2026, 10, 2+k, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 			row := model.DailyScore{Day: day, Strain: &strain, Recovery: &recovery, SleepActualMin: &asleep}
-			if err := st.UpsertDailyScore(ctx, id, store.ScoreRow{DailyScore: row}); err != nil {
+			if _, err := st.UpsertDailyScore(ctx, id, store.ScoreRow{DailyScore: row}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -126,5 +126,33 @@ func TestEngineLearnsSleepBase(t *testing.T) {
 	if out, _ := engine.LearnBaseline(ctx, auto, "2026-10-21"); out != LearnInsufficient {
 		// The rescore replaced the 7 fabricated nights with real (empty) ones: 13 nights left.
 		t.Fatalf("after the rescore: %s", out)
+	}
+}
+
+// The morning hook: today's first recovery after a night with sleep calls it
+// once; a rescore of today, and past days, never.
+func TestEngineAnnouncesTodaysFirstRecovery(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	var got []model.ScoredEvent
+	engine.OnScored(func(_ context.Context, ev model.ScoredEvent) { got = append(got, ev) })
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	var segs []model.SleepSegment
+	for k := 3; k >= 0; k-- {
+		d := today.AddDate(0, 0, -k)
+		segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(6 * time.Hour), Stage: model.SleepCore, Source: "watch"})
+	}
+	if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
+		t.Fatal(err)
+	}
+	from, to := today.AddDate(0, 0, -3).Format("2006-01-02"), today.Format("2006-01-02")
+	if err := engine.ComputeRange(ctx, user, from, to); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Day != to || got[0].SleepMin != 420 || got[0].Recovery <= 0 {
+		t.Fatalf("one event, for today: %+v", got)
+	}
+	if err := engine.ComputeRange(ctx, user, from, to); err != nil || len(got) != 1 {
+		t.Fatalf("a rescore announces nothing: %d events", len(got))
 	}
 }

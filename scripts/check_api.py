@@ -365,6 +365,76 @@ if ADMIN and os.environ.get("AUTH_MODE", "apikey") == "apikey":
 else:
     ok(f"/v1/config: {sorted(k for k, v in cfg['flags'].items() if v)} on (admin checks need ADMIN_API_KEY, apikey mode)")
 
+# ---- push: token registry, preferences, the morning event (M7) -----------------
+def jbody(v):
+    return json.dumps(v).encode()
+
+
+dev, tok = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex
+for _ in range(2):  # registering again is an update
+    status, _, _ = raw("POST", f"/v1/devices/{dev}/push", jbody({"token": tok.upper(), "env": "sandbox", "locale": "de-DE"}))
+    check(status == 204, f"POST /v1/devices/{{id}}/push: {status}")
+for path, body, want in ((f"/v1/devices/{dev}/push", {"token": "xyz", "env": "sandbox", "locale": "en"}, 422),
+                         (f"/v1/devices/{dev}/push", {"token": tok, "env": "development", "locale": "en"}, 422),
+                         (f"/v1/devices/{dev}/push", {"token": tok, "env": "sandbox", "extra": 1}, 400),
+                         ("/v1/devices/not-a-uuid/push", {"token": tok, "env": "sandbox"}, 400)):
+    status, _, err = raw("POST", path, jbody(body))
+    check(status == want and is_error(err), f"POST {path} {body}: {status}, want {want}")
+for _ in range(2):
+    status, _, _ = raw("DELETE", f"/v1/devices/{dev}/push")
+    check(status == 204, f"DELETE /v1/devices/{{id}}/push: {status}")
+ok("/v1/devices/{id}/push: register (twice), 422/400 on bad input, delete (twice)")
+
+CATS = {"MORNING_SCORE", "SESSION_SCORED", "PR", "SYNC_STALE"}
+prefs0 = get("/v1/me")["notifications"]
+check(set(prefs0) == {"categories", "quiet_hours"} and set(prefs0["categories"]) == CATS
+      and all(isinstance(v, bool) for v in prefs0["categories"].values()), f"User.notifications: {prefs0}")
+status, _, p = raw("PATCH", "/v1/me/notifications", jbody({"categories": {"PR": False}, "quiet_hours": {"from": "22:30", "to": "07:00"}}))
+check(status == 200 and p["categories"]["PR"] is False and p["categories"]["MORNING_SCORE"] is True
+      and p["quiet_hours"] == {"from": "22:30", "to": "07:00"}, f"PATCH notifications: {status} {p}")
+status, _, p = raw("PATCH", "/v1/me/notifications", jbody({"quiet_hours": None}))
+check(status == 200 and p["quiet_hours"] is None and p["categories"]["PR"] is False, f"quiet_hours null clears only them: {p}")
+check(get("/v1/me")["notifications"] == p, "GET /v1/me shows the preferences")
+for body in ({"categories": {"NEWSLETTER": True}}, {"quiet_hours": {"from": "25:00", "to": "07:00"}},
+             {"quiet_hours": {"from": "22:00"}}):
+    status, _, err = raw("PATCH", "/v1/me/notifications", jbody(body))
+    check(status == 422 and is_error(err), f"PATCH notifications {body}: {status}")
+status, _, p = raw("PATCH", "/v1/me/notifications", jbody({"categories": prefs0["categories"], "quiet_hours": prefs0["quiet_hours"]}))
+check(status == 200 and p == prefs0, f"preferences not restored: {p}")
+ok("PATCH /v1/me/notifications: categories merge, quiet hours set and cleared, 422s; restored")
+
+# The morning path end to end (apikey mode, compose): a new user with a token syncs
+# a night ending today → scoring publishes ryft.scored → notify decides. Without an
+# APNs key it counts "unconfigured", which its /metrics shows.
+METRICS = os.environ.get("NOTIFY_METRICS_URL", "")
+if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
+    def pushed(category, result):
+        with urllib.request.urlopen(METRICS) as r:
+            text = r.read().decode()
+        line = f'ryft_push_notifications_total{{category="{category}",result="{result}"}} '
+        return next((float(l[len(line):]) for l in text.splitlines() if l.startswith(line)), 0.0)
+
+    C = str(uuid.uuid4())
+    KEY_C = f"{KEY}:{C}"
+    before = pushed("MORNING_SCORE", "unconfigured")
+    status, _, _ = raw("POST", f"/v1/devices/{uuid.uuid4()}/push", jbody({"token": uuid.uuid4().hex * 2, "env": "sandbox", "locale": "en"}), key=KEY_C)
+    check(status == 204, f"C registers a token: {status}")
+    tz_c = ZoneInfo(get("/v1/me", key=KEY_C)["tz"])
+    now_c = datetime.now(tz_c)
+    end = min(now_c - timedelta(minutes=10), now_c.replace(hour=7, minute=0, second=0, microsecond=0))
+    utc = lambda t: t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    night = [{"start": utc(end - timedelta(hours=7)), "end": utc(end), "stage": "core", "source": "check"}]
+    post("/v1/sync", {"device_id": str(uuid.uuid4()), "samples": [], "sleep": night, "workouts": []}, expect=200, base=INGEST, key=KEY_C)
+    for _ in range(30):
+        if pushed("MORNING_SCORE", "unconfigured") > before:
+            break
+        time.sleep(1)
+    check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's ryft.scored (scoring → NATS → notify)")
+    raw("DELETE", "/v1/me", key=KEY_C)
+    ok("morning push path: sync → scoring → ryft.scored → notify (no APNs key: counted, not sent)")
+else:
+    print("- morning push path not checked (needs NOTIFY_METRICS_URL, apikey mode)")
+
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
 # checked above). Its load must cover all 80 minutes, not just those before midnight.

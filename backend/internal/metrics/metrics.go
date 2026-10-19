@@ -90,6 +90,20 @@ var (
 		Help: "Weekly sleep-baseline estimates, by outcome (applied: the baseline in use moved and the last 7 days were rescored; kept: the same value, or set by hand; insufficient: too few qualifying nights; error).",
 	}, []string{"outcome"})
 
+	// Push (notify).
+	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_push_notifications_total",
+		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), stale, no_token, unconfigured (no APNs key).",
+	}, []string{"category", "result"})
+	APNsResponses = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_apns_responses_total",
+		Help: "APNs answers per device request, by push type (alert, background) and HTTP status (or error: no answer).",
+	}, []string{"push_type", "status"})
+	PushTokensPruned = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_push_tokens_pruned_total",
+		Help: "Device tokens dropped because APNs said they are gone (410, BadDeviceToken, DeviceTokenNotForTopic).",
+	})
+
 	// Remote config (api).
 	FlagEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_flag_evaluations_total",

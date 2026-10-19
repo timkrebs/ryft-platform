@@ -1,0 +1,12 @@
+# Non-secret settings. DATABASE_URL, the NATS credentials and the APNs key
+# (APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8) come from Secret ryft-secrets (Vault);
+# without the key notify runs and sends nothing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ryft-config
+data:
+  NATS_URL: nats://nats.ryft-nats.svc.cluster.local:4222
+  PORT: "8080"
+  LOG_LEVEL: info
+  APNS_TOPIC: dev.timkrebs.ryft   # the app's bundle id

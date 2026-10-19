@@ -101,3 +101,33 @@ func TestLoadAppleIsAllOrNothing(t *testing.T) {
 		t.Fatal("the Apple keys without the data key must be refused")
 	}
 }
+
+func TestLoadAPNs(t *testing.T) {
+	for _, k := range []string{"APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8", "APNS_TOPIC"} {
+		t.Setenv(k, "")
+	}
+	if a, ok, err := LoadAPNs(); err != nil || ok || a.Topic != DefaultAPNsTopic {
+		t.Fatalf("none set: off, default topic: %+v %v %v", a, ok, err)
+	}
+	t.Setenv("APNS_KEY_ID", "ABCDE12345")
+	if _, _, err := LoadAPNs(); err == nil {
+		t.Fatal("a partial set is refused")
+	}
+	t.Setenv("APNS_TEAM_ID", "TEAM123456")
+	t.Setenv("APNS_KEY_P8", "pem")
+	t.Setenv("APNS_TOPIC", "dev.example.app")
+	if a, ok, err := LoadAPNs(); err != nil || !ok || a.Topic != "dev.example.app" {
+		t.Fatalf("all set: %+v %v %v", a, ok, err)
+	}
+}
+
+func TestLoadAdmin(t *testing.T) {
+	t.Setenv("ADMIN_API_KEY", "")
+	if k, err := LoadAdmin(); err != nil || k != "" {
+		t.Fatal("unset: off")
+	}
+	t.Setenv("ADMIN_API_KEY", "short")
+	if _, err := LoadAdmin(); err == nil {
+		t.Fatal("a short key is refused")
+	}
+}

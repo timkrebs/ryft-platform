@@ -1,6 +1,6 @@
 REGISTRY ?= ghcr.io/timkrebs/ryft
 TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
-SERVICES := ingest scoring api migrate
+SERVICES := ingest scoring api notify migrate
 
 # Docker if it is installed, otherwise Podman (its `compose` runs the same file).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -55,7 +55,7 @@ check-swift:
 	./scripts/check_swift.sh
 
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
-NAMESPACES := nats migrate ingest scoring api
+NAMESPACES := nats migrate ingest scoring api notify
 LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 
 # EKS (api.ryftapp.de), after infra/aws/kubernetes and infra/vault are applied
@@ -72,7 +72,7 @@ k8s-apply-eks: k8s-check-images
 	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 	kubectl -n ryft-nats rollout status statefulset/nats --timeout=5m
 	kubectl apply -k deploy/k8s/overlays/eks
-	for s in ingest api scoring; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
+	for s in ingest api scoring notify; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
 # Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
 # its Fleet Management token is synced from Vault into namespace monitoring first.

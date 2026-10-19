@@ -19,6 +19,7 @@ variables {
       APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"
     }
     monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+    notify     = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----" }
   }
 }
 
@@ -75,9 +76,10 @@ run "each_namespace_holds_only_its_own_credentials" {
       ingest     = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
       scoring    = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
       api        = ["ADMIN_API_KEY", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
-      nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_SCORING"]
-      migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_SCORING"]
+      nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_NOTIFY", "NATS_PASSWORD_SCORING"]
+      migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_NOTIFY", "DB_PASSWORD_SCORING"]
       monitoring = ["GC_TOKEN", "PROM_USERNAME"]
+      notify     = ["APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
     })
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
   }
@@ -187,6 +189,7 @@ run "accepts_a_base64_encoded_apple_key" {
         APPLE_KEY_P8              = base64encode("-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----\n")
       }
       monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      notify     = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63", APNS_KEY_P8 = base64encode("-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----") }
     }
   }
 }
@@ -207,9 +210,46 @@ run "warns_without_the_apple_keys" {
   command = apply
 
   variables {
-    service_secrets = { api = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" } }
+    service_secrets = {
+      api    = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      notify = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----" }
+    }
   }
   expect_failures = [check.api_has_apple_keys]
+}
+
+run "rejects_a_partial_set_of_apns_keys" {
+  command = plan
+
+  variables {
+    service_secrets = {
+      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }
+      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      notify     = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63" }
+    }
+  }
+  expect_failures = [var.service_secrets]
+}
+
+run "warns_without_the_apns_key" {
+  command = apply
+
+  variables {
+    service_secrets = {
+      api = {
+        SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
+        APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
+        APPLE_KEY_P8              = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"
+      }
+      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+    }
+  }
+  expect_failures = [check.notify_has_apns_key]
+
+  assert {
+    condition     = jsonencode(output.secret_keys["notify"]) == jsonencode(["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"])
+    error_message = "without the key notify still gets its database and NATS credentials"
+  }
 }
 
 run "the_data_key_reaches_only_the_api" {
@@ -252,7 +292,7 @@ run "the_admin_key_reaches_only_the_api" {
   command = apply
 
   assert {
-    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate", "monitoring"] :
+    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate", "monitoring", "notify"] :
     !contains(output.secret_keys[s], "ADMIN_API_KEY")]) && contains(output.secret_keys["api"], "ADMIN_API_KEY")
     error_message = "only the api holds the admin key"
   }

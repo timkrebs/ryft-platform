@@ -3,6 +3,8 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -357,6 +359,8 @@ type User struct {
 	SleepBaseSource     string     `json:"sleep_base_source"`
 	SleepBaseLearnedMin *int       `json:"sleep_base_learned_min"`
 	SleepBaseLearnedAt  *time.Time `json:"sleep_base_learned_at"`
+	// Push preferences (PATCH /v1/me/notifications).
+	Notifications NotificationPrefs `json:"notifications"`
 }
 
 type UserPatch struct {
@@ -394,6 +398,98 @@ type RemoteConfig struct {
 	TTLSec      int             `json:"ttl_sec"`
 }
 
+// ---- Push (M7 core) ---------------------------------------------------------------
+
+// Notification categories (the app's UNNotificationCategory identifiers).
+const (
+	NotifyMorningScore  = "MORNING_SCORE"
+	NotifySessionScored = "SESSION_SCORED"
+	NotifyPR            = "PR"
+	NotifySyncStale     = "SYNC_STALE"
+)
+
+// NotifyCategories is every category a user can turn off, in display order.
+var NotifyCategories = []string{NotifyMorningScore, NotifySessionScored, NotifyPR, NotifySyncStale}
+
+// PushRegistration is POST /v1/devices/{id}/push.
+type PushRegistration struct {
+	Token  string `json:"token"`  // the APNs device token, hex
+	Env    string `json:"env"`    // sandbox | production (the app's aps-environment)
+	Locale string `json:"locale"` // the app's language, e.g. de or de-DE; en or de is kept
+}
+
+// PushToken is a registered app install.
+type PushToken struct {
+	DeviceID uuid.UUID
+	Token    string
+	Env      string
+	Locale   string
+}
+
+// QuietHours are local times "HH:MM"; from > to wraps midnight (22:00–07:00).
+type QuietHours struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// NotificationPrefs is User.notifications and the answer to PATCH
+// /v1/me/notifications: every category with whether it is on.
+type NotificationPrefs struct {
+	Categories map[string]bool `json:"categories"`
+	QuietHours *QuietHours     `json:"quiet_hours"`
+}
+
+// NotificationPatch is PATCH /v1/me/notifications: categories merge into the
+// stored ones; quiet_hours absent keeps them, null clears them.
+type NotificationPatch struct {
+	Categories map[string]bool `json:"categories"`
+	QuietHours OptionalQuiet   `json:"quiet_hours"`
+}
+
+// OptionalQuiet tells an absent quiet_hours (Set false) from null (Set, nil).
+type OptionalQuiet struct {
+	Set   bool
+	Value *QuietHours
+}
+
+func (o *OptionalQuiet) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if string(b) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var q QuietHours
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&q); err != nil {
+		return err
+	}
+	o.Value = &q
+	return nil
+}
+
+// ScoredEvent is published on ryft.scored when a local day first gets a
+// recovery after a night with sleep (scoring → notify: the morning push).
+type ScoredEvent struct {
+	UserID           uuid.UUID `json:"user_id"`
+	Day              string    `json:"day"`
+	Recovery         int       `json:"recovery"`
+	Readiness        *int      `json:"readiness"`
+	State            string    `json:"state"`
+	SleepPerformance *int      `json:"sleep_performance"`
+	SleepMin         int       `json:"sleep_min"`
+	RequestID        string    `json:"request_id,omitempty"`
+}
+
+// SessionScoredEvent is published on ryft.session.scored once scoring has
+// scored a completed session's day (scoring → notify).
+type SessionScoredEvent struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID uuid.UUID `json:"session_id"`
+	Day       string    `json:"day"`
+	RequestID string    `json:"request_id,omitempty"`
+}
+
 type RecomputeRequest struct {
 	From string `json:"from"` // YYYY-MM-DD
 	To   string `json:"to"`
@@ -407,6 +503,9 @@ type IngestedEvent struct {
 	// RequestID of the HTTP request that caused the event, so scoring's logs
 	// can be correlated with it.
 	RequestID string `json:"request_id,omitempty"`
+	// SessionID is set for a completed session (ryft.session.completed), so
+	// scoring can announce it once scored.
+	SessionID *uuid.UUID `json:"session_id,omitempty"`
 }
 
 // SessionCompletedEvent is published on NATS (ryft.session.completed) when a

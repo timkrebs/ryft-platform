@@ -58,7 +58,7 @@ func Load(service string) (Config, error) {
 		NatsURL:     getenv("NATS_URL", "nats://nats:4222"),
 		DBMaxConns:  4,
 	}
-	if service == "scoring" {
+	if service == "scoring" || service == "notify" {
 		c.DBMaxConns = 2
 	}
 	if c.DatabaseURL == "" {
@@ -136,6 +136,36 @@ func LoadAdmin() (string, error) {
 		return "", fmt.Errorf("ADMIN_API_KEY must have at least 32 characters")
 	}
 	return key, nil
+}
+
+// APNs configures notify's push sending: the APNs key (Apple Developer → Keys,
+// "Apple Push Notifications service"), the team and the app's bundle id.
+type APNs struct {
+	KeyID, TeamID, PrivateKey, Topic string
+}
+
+// DefaultAPNsTopic is the app's bundle id.
+const DefaultAPNsTopic = "dev.timkrebs.ryft"
+
+// LoadAPNs reads APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8 and APNS_TOPIC. The
+// three keys decide: all set enables sending, none disables it (ok false: notify
+// runs and counts what it would have sent), some is an error.
+func LoadAPNs() (a APNs, ok bool, err error) {
+	a = APNs{KeyID: strings.TrimSpace(os.Getenv("APNS_KEY_ID")), TeamID: strings.TrimSpace(os.Getenv("APNS_TEAM_ID")),
+		PrivateKey: os.Getenv("APNS_KEY_P8"), Topic: getenv("APNS_TOPIC", DefaultAPNsTopic)}
+	set := 0
+	for _, v := range []string{a.KeyID, a.TeamID, strings.TrimSpace(a.PrivateKey)} {
+		if v != "" {
+			set++
+		}
+	}
+	switch set {
+	case 0:
+		return a, false, nil
+	case 3:
+		return a, true, nil
+	}
+	return a, false, errors.New("set all of APNS_KEY_ID, APNS_TEAM_ID and APNS_KEY_P8, or none")
 }
 
 // Apple configures Sign in with Apple token revocation (api only): the

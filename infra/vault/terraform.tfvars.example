@@ -33,7 +33,17 @@ service_secrets = {
   # and the stack's Prometheus user (a number, not a secret) OpenCost reads with it.
   monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }
   # coach  = { ANTHROPIC_API_KEY = "sk-ant-…" }
-  # notify = { APNS_KEY_ID = "…", APNS_TEAM_ID = "…", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----…" }
+  # Push (docs/OPERATIONS.md → Push): Apple Developer → Keys → a key with "Apple Push
+  # Notifications service"; all three or none (without them notify sends nothing).
+  # notify = {
+  #   APNS_KEY_ID  = "<key id>"   # 10 characters
+  #   APNS_TEAM_ID = "M77SKHKG63" # Apple Developer → Membership
+  #   APNS_KEY_P8  = <<-EOT
+  #     -----BEGIN PRIVATE KEY-----
+  #     …the contents of AuthKey_<key id>.p8…
+  #     -----END PRIVATE KEY-----
+  #   EOT
+  # }
 }
 
 # Add a service: one line here creates its Vault namespace, Kubernetes namespace,
