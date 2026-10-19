@@ -167,11 +167,12 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
    $165 is below the estimate; raise `monthly_budget_usd` or expect the alarm.
 6. **Images and deploy:** done; `b7e4a4a` runs for every service (ingest, scoring,
    api, notify, migrate).
-7. **`make monitoring-apply`:** applied, metrics arrive. If the Helm release is still
-   `pending-upgrade`: `helm rollback grafana-cloud 5 -n monitoring`, then
-   `make monitoring-apply` again. Open: the Grafana Cloud steps (remove the stale
-   collectors, exclude `ryft-.*` pod logs, load the alerts), and delete the old Grafana
-   token.
+7. **`make monitoring-apply`:** done; the Helm release is `deployed` (revision 8), the
+   stale collectors are removed from Fleet Management (2026-10-19). Left as they are,
+   by choice: RYFT's pod logs also reach Grafana Cloud (not excluded), and
+   `deploy/monitoring/alerts.yaml` is not loaded. **Open risk:** the onboarding's
+   Grafana token, which was on a command line and in a chat, is still valid; delete it
+   under Cloud access policies.
 8. **`make smoke-supabase`** against `https://api.ryftapp.de` with
    `SUPABASE_SECRET_KEY` (open). Record the run here. It now also runs the Train checks,
    which leave a custom exercise, an enrolment and sessions on the smoke user.

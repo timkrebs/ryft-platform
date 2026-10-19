@@ -32,6 +32,9 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | (after Sign in with Apple) | let deletion revoke the Apple grant | `POST /v1/me/apple-authorization` |
 | Strain — Train | start a workout, today's plan, live session, summary with load and PRs | `GET /v1/plans/today`, `PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete` |
 | Strain — Train: plans | list, detail, plan builder, enrol / pause | `GET /v1/plans`, `GET`/`PUT`/`DELETE /v1/plans/{id}`, `POST /v1/plans/{id}/enroll`, `DELETE /v1/plans/enrollment` |
+| Journal (Today card, morning push) | yesterday's behaviors as toggles, a count or a time; edit 14 days back | `GET`/`PUT /v1/journal/{day}` |
+| Insights — Behaviors | "Alcohol · −14 recovery (n = 12/31)" with its interval; locked ones with the days still needed | `GET /v1/behaviors/impact` |
+| Profile — Journal | choose behaviors, add or remove custom ones | `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` |
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | (background) | HealthKit upload | `POST /v1/sync` |
 
@@ -129,6 +132,10 @@ user). Never exposed outside a developer machine.
 | `GET` | `/v1/sessions?from&to&status` | api | `[SessionSummary]` |
 | `GET`, `PUT`, `DELETE` | `/v1/sessions/{id}` | api | `Session`, `Session` (`409`: the server's `Session`), `204` |
 | `POST` | `/v1/sessions/{id}/complete` | api | `Session` |
+| `GET`, `PATCH`, `POST` | `/v1/behaviors` | api | `[Behavior]`, `[Behavior]`, `Behavior` |
+| `DELETE` | `/v1/behaviors/{id}` | api | `204` |
+| `GET` | `/v1/behaviors/impact` | api | `BehaviorImpacts` |
+| `GET`, `PUT` | `/v1/journal/{day}` | api | `JournalDay` |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | all | health, Prometheus (no auth, not routed by the Ingress) |
 
 ### `POST /v1/sync` — upload HealthKit data
@@ -658,6 +665,7 @@ for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 | `readiness-up` | info | Readiness rising ≥ 1 point/day over the last 7 days (least-squares fit, ≥ 5 days). |
 | `hrv-best-30d` | info | Last night's HRV is the highest of the last 30 days (≥ 14 nights of data). |
 | `pr` | info | A personal record in a session completed today or yesterday (the newest; an `e1rm` record before the others). Metric `volume_kg`. |
+| `behavior-impact` | notice | A behavior logged for yesterday whose effect on recovery is unlocked, significant and negative (the largest such): "Alcohol yesterday — your recovery is typically 14 points lower". Metric `recovery`. |
 | `sleep-consistency-low` | notice | `sleep_consistency` below 60 (over the last 7 nights). Metric `sleep_consistency`. |
 | `nap-credit` | info | A nap of ≥ 45 min today (or yesterday, before today syncs): tonight's need is that much lower. Metric `nap_min`. |
 | `baseline-learned` | info | The learned sleep baseline became the one in use in the last 2 days (`sleep_base_source` turned `learned`). Metric `sleep_min`. |
@@ -989,6 +997,127 @@ as `/v1/days`), newest first, optionally only one `status` (`422` on another val
 `GET /v1/sessions/{id}` returns the `Session` (`404` if unknown). `DELETE` removes it with
 its sets: `204`; a completed session's day is rescored.
 
+### Journal — behaviors and their impact
+
+The morning journal ("How was yesterday?"): yes/no toggles, and a count or a time for a
+few, about what the user did **on a day**. Once a behavior has enough days with and
+without it, RYFT shows how the **morning after** differs: recovery, HRV and sleep
+performance (`SCORING.md` → Journal). Built-in behaviors have fixed ids; custom ones get
+their id from the app, like custom exercises. `name` follows `Accept-Language` as in
+Train; `name_en` and `name_de` are always both present.
+
+**Closed enums:** behavior `kind` (`yes_no`, `count`, `time`), `category`
+(`substances`, `sleep`, `recovery`, `supplements`, `health`, `lifestyle`, `custom`),
+impact `status` (`locked`, `unlocked`).
+
+#### `GET /v1/behaviors` — the catalog with the user's choice
+
+Every built-in behavior and the user's own (not deleted), by `category`, then `sort`.
+
+```json
+[ { "id": "bad67883-7fb1-5f98-9761-feba0a813536", "slug": "alcohol", "name": "Alcohol",
+    "name_en": "Alcohol", "name_de": "Alkohol", "category": "substances", "kind": "yes_no",
+    "default_on": true, "enabled": true, "is_custom": false, "sort": 10 },
+  { "id": "89a9dd86-4767-5eed-9718-24370f52078b", "slug": "last_caffeine", "name": "Last caffeine",
+    "name_en": "Last caffeine", "name_de": "Letztes Koffein", "category": "substances", "kind": "time",
+    "default_on": false, "enabled": false, "is_custom": false, "sort": 40 } ]
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | uuid | Fixed for built-ins. |
+| `slug` | string | Unique per owner; derived from the name for custom behaviors. |
+| `name`, `name_en`, `name_de` | string | See Language above. |
+| `category` | string | Closed enum above; custom behaviors are `custom` unless given one. |
+| `kind` | string | `yes_no`; `count` (how many, e.g. drinks); `time` (a local `HH:MM`, e.g. the last coffee). |
+| `default_on` | bool | On for users who never changed it. |
+| `enabled` | bool | On the user's journal sheet. |
+| `is_custom` | bool | The user's own. |
+| `sort` | int | Order within the category. |
+
+#### `PATCH /v1/behaviors` — choose behaviors
+
+`{"enabled": {"<behavior id>": true, "<behavior id>": false}}` → `200` with the whole
+list as `GET` returns it. `422` for an id that is not a built-in or the user's own.
+
+#### `POST /v1/behaviors` · `DELETE /v1/behaviors/{id}` — custom behaviors
+
+```json
+{ "id": "3f1c…", "name": "Late screen meeting", "name_de": "Spätes Online-Meeting", "kind": "yes_no" }
+```
+
+Required: `id` (from the app), `name` (1–60 characters), `kind`. Optional: `name_de`
+(default `name`), `category` (default `custom`). `201` with the `Behavior`, enabled;
+repeating it with the same `id` updates it and answers `200`. `409` when the `id`
+belongs to a built-in or another user's behavior; `422` on invalid values or past 50
+custom behaviors. `DELETE` removes a custom behavior from the catalog (its past entries
+stay, without effect on the impact list): `204`, idempotent; `403` for a built-in.
+
+#### `GET /v1/journal/{day}` · `PUT /v1/journal/{day}` — one day's journal
+
+`{day}` is the day the behaviors happened (the morning sheet asks about yesterday).
+
+```json
+{ "day": "2026-10-18", "answered": true, "answered_at": "2026-10-19T06:41:12Z", "editable": true,
+  "entries": [
+    { "behavior_id": "bad67883-7fb1-5f98-9761-feba0a813536", "value_bool": true, "value_num": null, "value_time": null },
+    { "behavior_id": "8cf20bff-9124-5fba-95e5-fd2083b90318", "value_bool": true, "value_num": 2, "value_time": null },
+    { "behavior_id": "89a9dd86-4767-5eed-9718-24370f52078b", "value_bool": true, "value_num": null, "value_time": "16:30" },
+    { "behavior_id": "ce48b6cf-43e3-5c6b-baf9-0a13e5d767d9", "value_bool": false, "value_num": null, "value_time": null } ] }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `day` | string | `YYYY-MM-DD`, local. |
+| `answered` | bool | The day was saved at least once. A day never saved is unknown, not "no". The Today card asks until yesterday is answered. |
+| `answered_at` | timestamp? | Last save; `null` when not answered. |
+| `editable` | bool | Within the last 14 days and not in the future. |
+| `entries` | `[JournalEntry]` | `[]` when not answered. |
+
+`JournalEntry`: `behavior_id`; `value_bool` (bool, always: did it happen); `value_num`
+(int?, `count` behaviors: how many, ≥ 1 when `value_bool`); `value_time` (string?,
+`time` behaviors: local `HH:MM` when `value_bool`). Other kinds leave both `null`.
+
+`PUT` takes `{"entries": [JournalEntry, …]}` and **replaces** the day: send every
+behavior the sheet showed, the ones left off as `value_bool: false`. That is what makes
+them a "no"; a behavior not sent that day counts as unknown for it. Returns the
+`JournalDay`. `422` when the day is not `editable`, for a behavior that is not
+the user's, a duplicate, or a value that does not fit the kind; `400` for unknown fields.
+
+#### `GET /v1/behaviors/impact` — how behaviors change the morning after
+
+Computed on request from the last 90 days: every entry day D with a scored morning on
+D+1. A behavior is `unlocked` with at least 5 days with it and 5 without (`needed` says
+how many more). Each effect is the difference **yes − no** of the mean, with a 90 %
+bootstrap interval; `significant` when the interval excludes 0.
+
+```json
+{ "window_days": 90, "computed_at": "2026-10-19T06:45:03Z",
+  "impacts": [
+    { "behavior_id": "bad67883-7fb1-5f98-9761-feba0a813536", "slug": "alcohol", "name": "Alcohol", "kind": "yes_no",
+      "status": "unlocked", "n_yes": 12, "n_no": 31, "needed": { "yes": 0, "no": 0 },
+      "recovery":          { "delta": -14.2, "ci_lo": -19.8, "ci_hi": -8.1, "significant": true,  "n_yes": 12, "n_no": 31 },
+      "hrv_pct":           { "delta": -11.5, "ci_lo": -17.0, "ci_hi": -5.9, "significant": true,  "n_yes": 12, "n_no": 30 },
+      "sleep_performance": { "delta": -3.0,  "ci_lo": -8.2,  "ci_hi": 2.4,  "significant": false, "n_yes": 12, "n_no": 31 } },
+    { "behavior_id": "ce48b6cf-43e3-5c6b-baf9-0a13e5d767d9", "slug": "sauna", "name": "Sauna", "kind": "yes_no",
+      "status": "locked", "n_yes": 2, "n_no": 20, "needed": { "yes": 3, "no": 0 },
+      "recovery": null, "hrv_pct": null, "sleep_performance": null } ] }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `impacts` | `[BehaviorImpact]` | Every enabled behavior and every one with entries in the window: `unlocked` first, by the size of the recovery effect; then `locked`, fewest days needed first. |
+| `n_yes`, `n_no` | int | Entry days with and without it that have a scored morning after (recovery). |
+| `needed` | `{yes, no}` | More days needed to unlock; `0, 0` when unlocked. |
+| `recovery` | `BehaviorEffect?` | Recovery points (0–100) the morning after: yes − no. `null` while locked. |
+| `hrv_pct` | `BehaviorEffect?` | HRV, in % of the mean on "no" mornings. `null` while locked or with fewer than 5 + 5 nights with HRV. |
+| `sleep_performance` | `BehaviorEffect?` | Sleep performance points of the night after. `null` like `hrv_pct`. |
+
+`BehaviorEffect`: `delta`, `ci_lo`, `ci_hi` (one decimal), `significant`, and the `n_yes` /
+`n_no` it rests on. A yes is `value_bool` for every kind (a `count` of 0 or a `time`
+behavior that did not happen is a no). Show `−14 recovery` as points, not a percentage
+of recovery; the CI as a thin range bar.
+
 ### Health
 
 `GET /healthz` → `200 {"status":"ok"}` while the process runs.
@@ -1232,6 +1361,91 @@ struct User: Codable {
     let sleepBaseLearnedMin: Int?
     let sleepBaseLearnedAt: Date?
     let notifications: NotificationPrefs
+}
+
+// ---- Journal ----------------------------------------------------------------------
+
+enum BehaviorKind: String, Codable { case yesNo = "yes_no", count, time }
+enum BehaviorCategory: String, Codable { case substances, sleep, recovery, supplements, health, lifestyle, custom }
+enum ImpactStatus: String, Codable { case locked, unlocked }
+
+struct Behavior: Codable, Identifiable {   // GET /v1/behaviors
+    let id: UUID
+    let slug: String
+    let name: String
+    let nameEn: String
+    let nameDe: String
+    let category: BehaviorCategory
+    let kind: BehaviorKind
+    let defaultOn: Bool
+    let enabled: Bool
+    let isCustom: Bool
+    let sort: Int
+}
+
+struct BehaviorsPatch: Encodable {   // PATCH /v1/behaviors
+    let enabled: [String: Bool]       // behavior id (lowercase) → on
+}
+
+struct BehaviorInput: Encodable {   // POST /v1/behaviors
+    let id: UUID
+    let name: String
+    var nameDe: String? = nil
+    let kind: BehaviorKind
+    var category: BehaviorCategory? = nil
+}
+
+struct JournalEntry: Codable {
+    let behaviorId: UUID
+    let valueBool: Bool
+    var valueNum: Int? = nil         // count behaviors
+    var valueTime: String? = nil     // time behaviors, local "HH:MM"
+}
+
+struct JournalDay: Codable {   // GET/PUT /v1/journal/{day}
+    let day: String
+    let answered: Bool
+    let answeredAt: Date?
+    let editable: Bool
+    let entries: [JournalEntry]
+}
+
+struct JournalPut: Encodable {   // PUT /v1/journal/{day}
+    let entries: [JournalEntry]
+}
+
+struct BehaviorEffect: Codable {   // BehaviorImpact.recovery, .hrvPct, .sleepPerformance
+    let delta: Double
+    let ciLo: Double
+    let ciHi: Double
+    let significant: Bool
+    let nYes: Int
+    let nNo: Int
+}
+
+struct ImpactNeeded: Codable {
+    let yes: Int
+    let no: Int
+}
+
+struct BehaviorImpact: Codable {
+    let behaviorId: UUID
+    let slug: String
+    let name: String
+    let kind: BehaviorKind
+    let status: ImpactStatus
+    let nYes: Int
+    let nNo: Int
+    let needed: ImpactNeeded
+    let recovery: BehaviorEffect?
+    let hrvPct: BehaviorEffect?
+    let sleepPerformance: BehaviorEffect?
+}
+
+struct BehaviorImpacts: Codable {   // GET /v1/behaviors/impact
+    let windowDays: Int
+    let computedAt: Date
+    let impacts: [BehaviorImpact]
 }
 
 // ---- Remote config and push ----------------------------------------------------
@@ -1539,6 +1753,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-19 | **Journal and behavior impact** (M5): `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` (25 built-ins, custom behaviors with app ids), `GET`/`PUT /v1/journal/{day}` (a saved day; unsent behaviors are unknown, not "no"), `GET /v1/behaviors/impact` (recovery, HRV % and sleep performance the morning after, yes − no with a 90 % bootstrap interval, unlocked at 5 + 5 days), insight `behavior-impact`. Swift: `BehaviorKind`, `BehaviorCategory`, `ImpactStatus`, `Behavior`, `BehaviorsPatch`, `BehaviorInput`, `JournalEntry`, `JournalDay`, `JournalPut`, `BehaviorEffect`, `ImpactNeeded`, `BehaviorImpact`, `BehaviorImpacts`. |
 | 2026-10-19 | **Remote config and push** (M7 core): `GET /v1/config` (feature flags evaluated per user, `ttl_sec` 21600); `PATCH /v1/me/notifications` and `User.notifications`; `POST` / `DELETE /v1/devices/{id}/push`; the push notifications `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` and the silent refresh, with their localisation keys. Nothing is sent until the APNs key is configured. Swift: `RemoteConfig`, `NotificationCategory`, `QuietHours`, `NotificationPrefs`, `NotificationPatch`, `PushEnvironment`, `PushRegistration`, `RyftPushInfo`, `User.notifications`. |
 | 2026-10-19 | **Sleep upgrades** (M4): `DailyScore.nap_min`, `sleep_quality`, `sleep_consistency` and the need breakdown (`sleep_need_base_min`, `_strain_min`, `_debt_min`, `_nap_min`); `DayDetail.sleep.need` and `restorative`; `SleepRange.avg_consistency`, `bedtimes`, `days[].consistency` / `nap_min`; `User.sleep_base_source` / `sleep_base_learned_min` / `sleep_base_learned_at` and `UserPatch.sleep_base_manual`; `GET /v1/sleep/plan`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min`; insights `sleep-consistency-low`, `nap-credit`, `baseline-learned`. **Behaviour, no shape change:** `quality` is now its own score instead of a copy of sleep performance, so quality values and labels change; a nap lowers the following night's need; the baseline is learned weekly unless set by hand. Rescore history to fill past days. Swift: the new fields and types, `UserPatch` joins the mirror. |
 | 2026-10-19 | **Train** (M3b): exercise library (`/v1/exercises`, history and records), plans with an enrolment (`/v1/plans`, `/v1/plans/today`), and logged sessions (`PUT /v1/sessions/{id}` with merge and a `409` that carries the server's copy, `…/complete`, list, detail, delete). `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, trend metrics `strength_min` and `volume_kg`, insight `pr`, status `403`. **Behaviour:** `strain` now includes the muscular load of completed sessions, so a day (or workout) with a logged session but no heart rate has a strain. Swift: the Train types, `Workout` joins the mirror. |
