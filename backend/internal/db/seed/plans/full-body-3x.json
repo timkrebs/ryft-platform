@@ -1,0 +1,136 @@
+{
+ "slug": "full-body-3x",
+ "name": "Full Body 3×",
+ "goal": "strength",
+ "weeks": null,
+ "days_per_week": 3,
+ "description": "Three full-body days a week on the big barbell lifts, five sets of five. Start light (the empty bar is fine) and add 2.5 kg after every session in which all sets went up; a missed session repeats the weight, three misses in a row drop it by 10 %.",
+ "progression": {
+  "type": "linear",
+  "increment_kg": 2.5,
+  "on_fail": "repeat",
+  "deload_after": 3
+ },
+ "days": [
+  {
+   "week": null,
+   "day_index": 0,
+   "name": "A",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "barbell-row",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 30,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": null,
+   "day_index": 1,
+   "name": "B",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 40,
+     "rest_sec": 240,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": null,
+   "day_index": 2,
+   "name": "A",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 20,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "barbell-row",
+     "sets": 5,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "kg",
+     "target_value": 30,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}

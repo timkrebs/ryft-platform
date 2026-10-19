@@ -512,7 +512,7 @@ muscle; `kind` one kind; archived exercises only with `include_archived=true`. `
 an unknown `muscle` or `kind`.
 
 ```json
-[ { "id": "4d1c3c8e-6a0e-5b1e-9a43-1f0c2b7d9e51", "slug": "back-squat", "name": "Back squat",
+[ { "id": "053b5627-084e-5417-a033-a6602d812f86", "slug": "back-squat", "name": "Back squat",
     "name_en": "Back squat", "name_de": "Kniebeuge", "kind": "barbell",
     "primary_muscles": ["quads", "glutes"], "secondary_muscles": ["hamstrings", "adductors", "lower_back"],
     "equipment": ["barbell", "rack"], "load_type": "weight", "bodyweight_factor": 0,
@@ -565,8 +565,8 @@ The user's completed sessions with this exercise, newest first (`limit` 1–200,
 neither built-in nor the user's.
 
 ```json
-{ "exercise_id": "4d1c…",
-  "prs": [ { "exercise_id": "4d1c…", "kind": "e1rm", "value": 142.5, "set_id": "…", "session_id": "…",
+{ "exercise_id": "053b5627…",
+  "prs": [ { "exercise_id": "053b5627…", "kind": "e1rm", "value": 142.5, "set_id": "…", "session_id": "…",
              "achieved_at": "2026-10-17T17:41:00Z" } ],
   "sessions": [ { "session_id": "…", "date": "2026-10-17", "started_at": "2026-10-17T17:02:00Z",
                   "sets": [ Set, … ] } ],
@@ -617,7 +617,7 @@ Built-in or the user's own; `404` otherwise.
   "days_per_week": 3, "description": "…", "is_builtin": true, "archived": false,
   "progression": { "type": "linear", "increment_kg": 2.5, "on_fail": "repeat", "deload_after": 3 },
   "days": [ { "id": "…", "week": null, "day_index": 0, "name": "A",
-              "exercises": [ { "id": "…", "exercise_id": "4d1c…", "exercise": Exercise, "position": 0,
+              "exercises": [ { "id": "…", "exercise_id": "053b5627…", "exercise": Exercise, "position": 0,
                                "sets": 5, "reps_min": 5, "reps_max": 5, "target_kind": "kg",
                                "target_value": 20, "rest_sec": 180, "superset_group": null, "notes": "" } ] } ] }
 ```
@@ -675,7 +675,7 @@ day moves the enrolment to the next day (and week); after the last day of a plan
 
 ```json
 { "enrollment": Enrollment, "day": PlanDay,
-  "targets": [ { "plan_exercise_id": "…", "exercise_id": "4d1c…", "sets": 5, "reps_min": 5, "reps_max": 5,
+  "targets": [ { "plan_exercise_id": "…", "exercise_id": "053b5627…", "sets": 5, "reps_min": 5, "reps_max": 5,
                  "target_kind": "kg", "target_kg": 102.5, "rest_sec": 180,
                  "last_time": [ Set, … ] } ] }
 ```
@@ -697,7 +697,7 @@ session are ignored). Up to 256 KiB, 50 exercises, 50 sets per exercise.
 ```json
 { "id": "a7f2…", "title": "Upper A", "started_at": "2026-10-18T17:02:00Z", "ended_at": null,
   "status": "in_progress", "plan_day_id": "…", "notes": "", "bodyweight_kg": 80, "device_id": "…",
-  "exercises": [ { "id": "…", "exercise_id": "4d1c…", "plan_exercise_id": "…", "position": 0, "notes": "",
+  "exercises": [ { "id": "…", "exercise_id": "053b5627…", "plan_exercise_id": "…", "position": 0, "notes": "",
                    "sets": [ { "id": "…", "set_index": 0, "reps": 5, "weight_kg": 100, "rpe": 8,
                                "duration_sec": null, "distance_m": null, "is_warmup": false,
                                "completed_at": "2026-10-18T17:09:30Z", "updated_at": "2026-10-18T17:09:31Z" } ] } ] }

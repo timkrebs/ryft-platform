@@ -1,0 +1,316 @@
+{
+ "slug": "upper-lower-4x",
+ "name": "Upper/Lower 4×",
+ "goal": "hypertrophy",
+ "weeks": null,
+ "days_per_week": 4,
+ "description": "Four days a week, upper and lower body twice each, in rep ranges for muscle growth. Every set is taken to the RPE shown (8 = two reps left in the tank); add weight once you reach the top of the range.",
+ "progression": {
+  "type": "none"
+ },
+ "days": [
+  {
+   "week": null,
+   "day_index": 0,
+   "name": "Upper A",
+   "exercises": [
+    {
+     "exercise": "bench-press",
+     "sets": 4,
+     "reps_min": 6,
+     "reps_max": 8,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "barbell-row",
+     "sets": 4,
+     "reps_min": 6,
+     "reps_max": 8,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "dumbbell-shoulder-press",
+     "sets": 3,
+     "reps_min": 8,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "lat-pulldown",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "triceps-pushdown",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": 1,
+     "notes": ""
+    },
+    {
+     "exercise": "dumbbell-curl",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": 1,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": null,
+   "day_index": 1,
+   "name": "Lower A",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 4,
+     "reps_min": 6,
+     "reps_max": 8,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "romanian-deadlift",
+     "sets": 3,
+     "reps_min": 8,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "leg-press",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "lying-leg-curl",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "standing-calf-raise-machine",
+     "sets": 4,
+     "reps_min": 10,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hanging-leg-raise",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 15,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": null,
+   "day_index": 2,
+   "name": "Upper B",
+   "exercises": [
+    {
+     "exercise": "overhead-press",
+     "sets": 4,
+     "reps_min": 6,
+     "reps_max": 8,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "pull-up",
+     "sets": 4,
+     "reps_min": 6,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "incline-dumbbell-press",
+     "sets": 3,
+     "reps_min": 8,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "cable-row",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "lateral-raise",
+     "sets": 3,
+     "reps_min": 12,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hammer-curl",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": 1,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-triceps-extension",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": 1,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": null,
+   "day_index": 3,
+   "name": "Lower B",
+   "exercises": [
+    {
+     "exercise": "deadlift",
+     "sets": 3,
+     "reps_min": 4,
+     "reps_max": 6,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 210,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "front-squat",
+     "sets": 3,
+     "reps_min": 6,
+     "reps_max": 8,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bulgarian-split-squat",
+     "sets": 3,
+     "reps_min": 8,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "seated-leg-curl",
+     "sets": 3,
+     "reps_min": 10,
+     "reps_max": 12,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "seated-calf-raise",
+     "sets": 4,
+     "reps_min": 12,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "cable-crunch",
+     "sets": 3,
+     "reps_min": 12,
+     "reps_max": 15,
+     "target_kind": "rpe",
+     "target_value": 9,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}

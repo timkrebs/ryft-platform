@@ -1,0 +1,961 @@
+{
+ "slug": "five-three-one-4x",
+ "name": "5/3/1 4×",
+ "goal": "strength",
+ "weeks": 4,
+ "days_per_week": 4,
+ "description": "Jim Wendler's 5/3/1 with Boring But Big: one main lift per day on a four-week wave (5s, 3s, 5/3/1, deload), the last set as many reps as possible, then 5 × 10 at half weight. Percentages already use a training max of 90 % of your estimated 1RM.",
+ "progression": {
+  "type": "percent"
+ },
+ "days": [
+  {
+   "week": 1,
+   "day_index": 0,
+   "name": "Press (week 1)",
+   "exercises": [
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 58.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "chin-up",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 1,
+   "name": "Deadlift (week 1)",
+   "exercises": [
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 58.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "hanging-leg-raise",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 2,
+   "name": "Bench (week 1)",
+   "exercises": [
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 58.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "dumbbell-row",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 3,
+   "name": "Squat (week 1)",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 58.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "lying-leg-curl",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 0,
+   "name": "Press (week 2)",
+   "exercises": [
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 63.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 72.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 8,
+     "target_kind": "pct_1rm",
+     "target_value": 81.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "chin-up",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 1,
+   "name": "Deadlift (week 2)",
+   "exercises": [
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 63.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 72.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 8,
+     "target_kind": "pct_1rm",
+     "target_value": 81.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "hanging-leg-raise",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 2,
+   "name": "Bench (week 2)",
+   "exercises": [
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 63.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 72.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 8,
+     "target_kind": "pct_1rm",
+     "target_value": 81.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "dumbbell-row",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 3,
+   "name": "Squat (week 2)",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 63.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 72.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 8,
+     "target_kind": "pct_1rm",
+     "target_value": 81.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "lying-leg-curl",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 0,
+   "name": "Press (week 3)",
+   "exercises": [
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 1,
+     "reps_max": 6,
+     "target_kind": "pct_1rm",
+     "target_value": 85.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "chin-up",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 1,
+   "name": "Deadlift (week 3)",
+   "exercises": [
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 1,
+     "reps_max": 6,
+     "target_kind": "pct_1rm",
+     "target_value": 85.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "hanging-leg-raise",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 2,
+   "name": "Bench (week 3)",
+   "exercises": [
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 1,
+     "reps_max": 6,
+     "target_kind": "pct_1rm",
+     "target_value": 85.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "dumbbell-row",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 3,
+   "name": "Squat (week 3)",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 67.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 76.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 1,
+     "reps_max": 6,
+     "target_kind": "pct_1rm",
+     "target_value": 85.5,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": "as many reps as possible"
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": "Boring But Big"
+    },
+    {
+     "exercise": "lying-leg-curl",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 0,
+   "name": "Press (week 4)",
+   "exercises": [
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 36.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "overhead-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 54.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "chin-up",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 1,
+   "name": "Deadlift (week 4)",
+   "exercises": [
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 36.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "deadlift",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 54.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hanging-leg-raise",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "bodyweight",
+     "target_value": null,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 2,
+   "name": "Bench (week 4)",
+   "exercises": [
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 36.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "bench-press",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 54.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "dumbbell-row",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 3,
+   "name": "Squat (week 4)",
+   "exercises": [
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 36.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 45.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 1,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 54.0,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "lying-leg-curl",
+     "sets": 5,
+     "reps_min": 10,
+     "reps_max": 10,
+     "target_kind": "rpe",
+     "target_value": 8,
+     "rest_sec": 60,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}

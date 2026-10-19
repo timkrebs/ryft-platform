@@ -1,0 +1,697 @@
+{
+ "slug": "weightlifting-4x",
+ "name": "Weightlifting 4×",
+ "goal": "weightlifting",
+ "weeks": 4,
+ "days_per_week": 4,
+ "description": "A four-week wave for the snatch and the clean & jerk with squats and pulls, four days a week. Weights are a percentage of your estimated 1RM per lift (70 % in week 1 up to 85 %, heavy singles 10 % above); log a few sessions first so the estimates exist.",
+ "progression": {
+  "type": "percent"
+ },
+ "days": [
+  {
+   "week": 1,
+   "day_index": 0,
+   "name": "Snatch + back squat",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 4,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 1,
+   "name": "Clean & jerk + front squat",
+   "exercises": [
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "front-squat",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 2,
+   "name": "Power + press",
+   "exercises": [
+    {
+     "exercise": "hang-power-snatch",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 60,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hang-power-clean",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 60,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "push-press",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-balance",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 60,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 1,
+   "day_index": 3,
+   "name": "Heavy singles",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 210,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 0,
+   "name": "Snatch + back squat",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 4,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 1,
+   "name": "Clean & jerk + front squat",
+   "exercises": [
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "front-squat",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 2,
+   "name": "Power + press",
+   "exercises": [
+    {
+     "exercise": "hang-power-snatch",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hang-power-clean",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "push-press",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-balance",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 65,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 2,
+   "day_index": 3,
+   "name": "Heavy singles",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 210,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 0,
+   "name": "Snatch + back squat",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 90,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 4,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 1,
+   "name": "Clean & jerk + front squat",
+   "exercises": [
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 90,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "front-squat",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 2,
+   "name": "Power + press",
+   "exercises": [
+    {
+     "exercise": "hang-power-snatch",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hang-power-clean",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "push-press",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-balance",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 70,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 3,
+   "day_index": 3,
+   "name": "Heavy singles",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 90,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 90,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 210,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 0,
+   "name": "Snatch + back squat",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 95,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 4,
+     "reps_min": 5,
+     "reps_max": 5,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 1,
+   "name": "Clean & jerk + front squat",
+   "exercises": [
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 5,
+     "reps_min": 2,
+     "reps_max": 2,
+     "target_kind": "pct_1rm",
+     "target_value": 85,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-pull",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 95,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "front-squat",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 2,
+   "name": "Power + press",
+   "exercises": [
+    {
+     "exercise": "hang-power-snatch",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "hang-power-clean",
+     "sets": 4,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "push-press",
+     "sets": 4,
+     "reps_min": 4,
+     "reps_max": 4,
+     "target_kind": "pct_1rm",
+     "target_value": 80,
+     "rest_sec": 120,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "snatch-balance",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 75,
+     "rest_sec": 90,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "week": 4,
+   "day_index": 3,
+   "name": "Heavy singles",
+   "exercises": [
+    {
+     "exercise": "snatch",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 95,
+     "rest_sec": 150,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "clean-and-jerk",
+     "sets": 6,
+     "reps_min": 1,
+     "reps_max": 1,
+     "target_kind": "pct_1rm",
+     "target_value": 95,
+     "rest_sec": 180,
+     "superset_group": null,
+     "notes": ""
+    },
+    {
+     "exercise": "back-squat",
+     "sets": 3,
+     "reps_min": 3,
+     "reps_max": 3,
+     "target_kind": "pct_1rm",
+     "target_value": 90,
+     "rest_sec": 210,
+     "superset_group": null,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}

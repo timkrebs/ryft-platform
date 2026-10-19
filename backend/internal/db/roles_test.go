@@ -38,7 +38,13 @@ func TestScramVerifier(t *testing.T) {
 	}
 }
 
-// grants is what each role may do (migration 0009); everything else is denied.
+// grants is what each role may do (migrations 0009–0011); everything else is denied.
+var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+
+// trainTables are migration 0011's.
+var trainTables = []string{"exercises", "plans", "plan_days", "plan_exercises", "plan_enrollments",
+	"sessions", "session_exercises", "session_sets", "personal_records"}
+
 var grants = map[string]map[string][]string{
 	"ryft_ingest": {
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
@@ -48,13 +54,16 @@ var grants = map[string]map[string][]string{
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
-		"workouts": {"SELECT"}, "daily_scores": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
+		"workouts": {"SELECT", "DELETE"}, "daily_scores": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
+		"exercises": {"SELECT"}, "sessions": {"SELECT"}, "session_exercises": {"SELECT"}, "session_sets": {"SELECT"},
 	},
 	"ryft_api": {
 		"users": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "devices": {"SELECT", "DELETE"},
 		"samples": {"SELECT", "DELETE"}, "sleep_segments": {"SELECT", "DELETE"}, "workouts": {"SELECT", "DELETE"},
 		"daily_scores": {"SELECT", "DELETE"}, "deleted_users": {"SELECT", "INSERT", "UPDATE"},
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }
 
@@ -64,7 +73,8 @@ func TestServiceRoleGrants(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	tables := []string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores", "deleted_users", "schema_migrations", "apple_tokens"}
+	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
+		"deleted_users", "schema_migrations", "apple_tokens"}, trainTables...)
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
@@ -96,8 +106,9 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_ingest SELECT deleted_users.%s: %v, want %v", col, has, want)
 		}
 	}
-	// scoring may write only the load columns of a workout.
-	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "start_at": false, "avg_hr": false} {
+	// scoring may write only the load columns of a workout, and of a session.
+	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
+		"session_id": true, "start_at": false, "avg_hr": false, "activity": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
@@ -187,4 +198,21 @@ func asRoleErr(poolURL, role, password string) (*pgx.Conn, error) {
 	u, _ := url.Parse(poolURL)
 	u.User = url.UserPassword(role, password)
 	return pgx.Connect(context.Background(), u.String())
+}
+
+func TestScoringWritesOnlySessionLoad(t *testing.T) {
+	pool := freshDB(t, false)
+	if err := Migrate(context.Background(), pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	for col, want := range map[string]bool{"muscular_trimp": true, "strain": true, "volume_kg": true, "workout_id": true,
+		"status": false, "started_at": false, "title": false} {
+		var has bool
+		if err := pool.QueryRow(context.Background(), `SELECT has_column_privilege('ryft_scoring', 'public.sessions', $1, 'UPDATE')`, col).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("ryft_scoring UPDATE sessions.%s: %v, want %v", col, has, want)
+		}
+	}
 }

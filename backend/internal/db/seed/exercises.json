@@ -1,0 +1,3607 @@
+[
+ {
+  "slug": "back-squat",
+  "name_en": "Back squat",
+  "name_de": "Kniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "front-squat",
+  "name_en": "Front squat",
+  "name_de": "Frontkniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "overhead-squat",
+  "name_en": "Overhead squat",
+  "name_de": "Überkopfkniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "abs",
+   "traps"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "box-squat",
+  "name_en": "Box squat",
+  "name_de": "Box-Kniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack",
+   "box"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "pause-squat",
+  "name_en": "Pause squat",
+  "name_de": "Kniebeuge mit Pause",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "zercher-squat",
+  "name_en": "Zercher squat",
+  "name_de": "Zercher-Kniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "abs",
+   "biceps"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "deadlift",
+  "name_en": "Deadlift",
+  "name_de": "Kreuzheben",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "traps",
+   "forearms",
+   "upper_back"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "sumo-deadlift",
+  "name_en": "Sumo deadlift",
+  "name_de": "Sumo-Kreuzheben",
+  "kind": "barbell",
+  "primary_muscles": [
+   "glutes",
+   "quads",
+   "adductors"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "trap-bar-deadlift",
+  "name_en": "Trap-bar deadlift",
+  "name_de": "Kreuzheben mit Trap-Bar",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "traps",
+   "forearms"
+  ],
+  "equipment": [
+   "trap_bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "romanian-deadlift",
+  "name_en": "Romanian deadlift",
+  "name_de": "Rumänisches Kreuzheben",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "stiff-leg-deadlift",
+  "name_en": "Stiff-leg deadlift",
+  "name_de": "Kreuzheben mit gestreckten Beinen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "deficit-deadlift",
+  "name_en": "Deficit deadlift",
+  "name_de": "Defizit-Kreuzheben",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "traps",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell",
+   "plate"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "rack-pull",
+  "name_en": "Rack pull",
+  "name_de": "Rack Pull",
+  "kind": "barbell",
+  "primary_muscles": [
+   "lower_back",
+   "traps",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "forearms",
+   "upper_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "good-morning",
+  "name_en": "Good morning",
+  "name_de": "Good Morning",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "glutes"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "hip-thrust",
+  "name_en": "Hip thrust",
+  "name_de": "Hip Thrust",
+  "kind": "barbell",
+  "primary_muscles": [
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "quads"
+  ],
+  "equipment": [
+   "barbell",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "barbell-lunge",
+  "name_en": "Barbell lunge",
+  "name_de": "Ausfallschritt mit Langhantel",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "barbell-calf-raise",
+  "name_en": "Standing calf raise",
+  "name_de": "Wadenheben stehend",
+  "kind": "barbell",
+  "primary_muscles": [
+   "calves"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "bench-press",
+  "name_en": "Bench press",
+  "name_de": "Bankdrücken",
+  "kind": "barbell",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "incline-bench-press",
+  "name_en": "Incline bench press",
+  "name_de": "Schrägbankdrücken",
+  "kind": "barbell",
+  "primary_muscles": [
+   "chest",
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "decline-bench-press",
+  "name_en": "Decline bench press",
+  "name_de": "Negativbankdrücken",
+  "kind": "barbell",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "close-grip-bench-press",
+  "name_en": "Close-grip bench press",
+  "name_de": "Enges Bankdrücken",
+  "kind": "barbell",
+  "primary_muscles": [
+   "triceps",
+   "chest"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "pause-bench-press",
+  "name_en": "Pause bench press",
+  "name_de": "Bankdrücken mit Pause",
+  "kind": "barbell",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "floor-press",
+  "name_en": "Floor press",
+  "name_de": "Floor Press",
+  "kind": "barbell",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "overhead-press",
+  "name_en": "Overhead press",
+  "name_de": "Schulterdrücken stehend",
+  "kind": "barbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "side_delts",
+   "upper_back",
+   "abs"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "seated-overhead-press",
+  "name_en": "Seated overhead press",
+  "name_de": "Schulterdrücken sitzend",
+  "kind": "barbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "side_delts"
+  ],
+  "equipment": [
+   "barbell",
+   "bench",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "push-press",
+  "name_en": "Push press",
+  "name_de": "Push Press",
+  "kind": "barbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps",
+   "quads"
+  ],
+  "secondary_muscles": [
+   "side_delts",
+   "glutes",
+   "abs"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "thruster",
+  "name_en": "Thruster",
+  "name_de": "Thruster",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "upper_back"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "barbell-row",
+  "name_en": "Barbell row",
+  "name_de": "Langhantelrudern",
+  "kind": "barbell",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "pendlay-row",
+  "name_en": "Pendlay row",
+  "name_de": "Pendlay-Rudern",
+  "kind": "barbell",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "t-bar-row",
+  "name_en": "T-bar row",
+  "name_de": "T-Bar-Rudern",
+  "kind": "barbell",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "barbell",
+   "landmine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "upright-row",
+  "name_en": "Upright row",
+  "name_de": "Aufrechtes Rudern",
+  "kind": "barbell",
+  "primary_muscles": [
+   "side_delts",
+   "traps"
+  ],
+  "secondary_muscles": [
+   "biceps"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "barbell-shrug",
+  "name_en": "Barbell shrug",
+  "name_de": "Langhantel-Shrugs",
+  "kind": "barbell",
+  "primary_muscles": [
+   "traps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "barbell-curl",
+  "name_en": "Barbell curl",
+  "name_de": "Langhantel-Curl",
+  "kind": "barbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "ez-bar-curl",
+  "name_en": "EZ-bar curl",
+  "name_de": "SZ-Curl",
+  "kind": "barbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "ez_bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "preacher-curl",
+  "name_en": "Preacher curl",
+  "name_de": "Scott-Curl",
+  "kind": "barbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "ez_bar",
+   "preacher_bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "reverse-curl",
+  "name_en": "Reverse curl",
+  "name_de": "Reverse Curl",
+  "kind": "barbell",
+  "primary_muscles": [
+   "forearms",
+   "biceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "ez_bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "skull-crusher",
+  "name_en": "Skull crusher",
+  "name_de": "French Press",
+  "kind": "barbell",
+  "primary_muscles": [
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "ez_bar",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "landmine-squat",
+  "name_en": "Landmine squat",
+  "name_de": "Landmine-Kniebeuge",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "abs"
+  ],
+  "equipment": [
+   "barbell",
+   "landmine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "snatch",
+  "name_en": "Snatch",
+  "name_de": "Reißen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "side_delts",
+   "triceps",
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "platform"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "power-snatch",
+  "name_en": "Power snatch",
+  "name_de": "Standreißen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "side_delts",
+   "triceps",
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "platform"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "hang-snatch",
+  "name_en": "Hang snatch",
+  "name_de": "Reißen aus dem Hang",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "side_delts",
+   "triceps",
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "hang-power-snatch",
+  "name_en": "Hang power snatch",
+  "name_de": "Standreißen aus dem Hang",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "side_delts",
+   "triceps",
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "muscle-snatch",
+  "name_en": "Muscle snatch",
+  "name_de": "Muscle Snatch",
+  "kind": "barbell",
+  "primary_muscles": [
+   "traps",
+   "front_delts",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "side_delts",
+   "triceps",
+   "hamstrings",
+   "lower_back"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "snatch-balance",
+  "name_en": "Snatch balance",
+  "name_de": "Snatch Balance",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "triceps",
+   "upper_back",
+   "abs"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "clean-and-jerk",
+  "name_en": "Clean & jerk",
+  "name_de": "Stoßen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back",
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "side_delts",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "platform"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "clean",
+  "name_en": "Clean",
+  "name_de": "Umsetzen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "platform"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "power-clean",
+  "name_en": "Power clean",
+  "name_de": "Standumsetzen",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell",
+   "platform"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "hang-clean",
+  "name_en": "Hang clean",
+  "name_de": "Umsetzen aus dem Hang",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "hang-power-clean",
+  "name_en": "Hang power clean",
+  "name_de": "Standumsetzen aus dem Hang",
+  "kind": "barbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "hamstrings",
+   "lower_back",
+   "traps",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "forearms",
+   "abs",
+   "adductors"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "split-jerk",
+  "name_en": "Split jerk",
+  "name_de": "Ausfallstoß",
+  "kind": "barbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps",
+   "quads"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "side_delts",
+   "abs",
+   "upper_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "push-jerk",
+  "name_en": "Push jerk",
+  "name_de": "Schwungstoß",
+  "kind": "barbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps",
+   "quads"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "side_delts",
+   "abs",
+   "upper_back"
+  ],
+  "equipment": [
+   "barbell",
+   "rack"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "snatch-pull",
+  "name_en": "Snatch pull",
+  "name_de": "Reißzug",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes",
+   "traps",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "upper_back",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "clean-pull",
+  "name_en": "Clean pull",
+  "name_de": "Umsetzzug",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes",
+   "traps",
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "upper_back",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.15
+ },
+ {
+  "slug": "snatch-deadlift",
+  "name_en": "Snatch-grip deadlift",
+  "name_de": "Kreuzheben im Reißgriff",
+  "kind": "barbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes",
+   "lower_back",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "traps",
+   "forearms"
+  ],
+  "equipment": [
+   "barbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 1.0
+ },
+ {
+  "slug": "dumbbell-bench-press",
+  "name_en": "Dumbbell bench press",
+  "name_de": "Kurzhantel-Bankdrücken",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "incline-dumbbell-press",
+  "name_en": "Incline dumbbell press",
+  "name_de": "Kurzhantel-Schrägbankdrücken",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "chest",
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-fly",
+  "name_en": "Dumbbell fly",
+  "name_de": "Kurzhantel-Fliegende",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "chest"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-shoulder-press",
+  "name_en": "Dumbbell shoulder press",
+  "name_de": "Kurzhantel-Schulterdrücken",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "side_delts"
+  ],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "arnold-press",
+  "name_en": "Arnold press",
+  "name_de": "Arnold Press",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "front_delts",
+   "side_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "lateral-raise",
+  "name_en": "Lateral raise",
+  "name_de": "Seitheben",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "side_delts"
+  ],
+  "secondary_muscles": [
+   "traps"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "front-raise",
+  "name_en": "Front raise",
+  "name_de": "Frontheben",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "front_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "rear-delt-fly",
+  "name_en": "Rear delt fly",
+  "name_de": "Reverse Flys",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "rear_delts"
+  ],
+  "secondary_muscles": [
+   "upper_back"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-row",
+  "name_en": "One-arm dumbbell row",
+  "name_de": "Einarmiges Kurzhantelrudern",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "dumbbell",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "chest-supported-row",
+  "name_en": "Chest-supported row",
+  "name_de": "Brustgestütztes Rudern",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "upper_back",
+   "lats"
+  ],
+  "secondary_muscles": [
+   "rear_delts",
+   "biceps"
+  ],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-pullover",
+  "name_en": "Dumbbell pullover",
+  "name_de": "Kurzhantel-Überzüge",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "lats",
+   "chest"
+  ],
+  "secondary_muscles": [
+   "triceps"
+  ],
+  "equipment": [
+   "dumbbell",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-curl",
+  "name_en": "Dumbbell curl",
+  "name_de": "Kurzhantel-Curl",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "hammer-curl",
+  "name_en": "Hammer curl",
+  "name_de": "Hammer-Curl",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "biceps",
+   "forearms"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "incline-dumbbell-curl",
+  "name_en": "Incline dumbbell curl",
+  "name_de": "Schrägbank-Curl",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "concentration-curl",
+  "name_en": "Concentration curl",
+  "name_de": "Konzentrationscurl",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbell",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "wrist-curl",
+  "name_en": "Wrist curl",
+  "name_de": "Handgelenk-Curl",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "forearms"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "overhead-triceps-extension",
+  "name_en": "Overhead triceps extension",
+  "name_de": "Trizepsdrücken über Kopf",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-kickback",
+  "name_en": "Triceps kickback",
+  "name_de": "Trizeps-Kickback",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "dumbbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "goblet-squat",
+  "name_en": "Goblet squat",
+  "name_de": "Goblet Squat",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "adductors",
+   "abs"
+  ],
+  "equipment": [
+   "dumbbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "bulgarian-split-squat",
+  "name_en": "Bulgarian split squat",
+  "name_de": "Bulgarische Kniebeuge",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [
+   "dumbbells",
+   "bench"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-lunge",
+  "name_en": "Dumbbell lunge",
+  "name_de": "Ausfallschritt mit Kurzhanteln",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "walking-lunge",
+  "name_en": "Walking lunge",
+  "name_de": "Gehende Ausfallschritte",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors",
+   "calves"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "reverse-lunge",
+  "name_en": "Reverse lunge",
+  "name_de": "Ausfallschritt rückwärts",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "step-up",
+  "name_en": "Step-up",
+  "name_de": "Step-up",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "calves"
+  ],
+  "equipment": [
+   "dumbbells",
+   "box"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-romanian-deadlift",
+  "name_en": "Dumbbell Romanian deadlift",
+  "name_de": "Rumänisches Kreuzheben mit Kurzhanteln",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "forearms"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "single-leg-romanian-deadlift",
+  "name_en": "Single-leg Romanian deadlift",
+  "name_de": "Einbeiniges Rumänisches Kreuzheben",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "abs"
+  ],
+  "equipment": [
+   "dumbbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-shrug",
+  "name_en": "Dumbbell shrug",
+  "name_de": "Kurzhantel-Shrugs",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "traps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-snatch",
+  "name_en": "Dumbbell snatch",
+  "name_de": "Kurzhantel-Reißen",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "traps",
+   "abs"
+  ],
+  "equipment": [
+   "dumbbell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "dumbbell-thruster",
+  "name_en": "Dumbbell thruster",
+  "name_de": "Kurzhantel-Thruster",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "abs"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "farmers-walk",
+  "name_en": "Farmer's walk",
+  "name_de": "Farmer's Walk",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "forearms",
+   "traps"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "quads",
+   "glutes"
+  ],
+  "equipment": [
+   "dumbbells"
+  ],
+  "load_type": "distance",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "wall-ball",
+  "name_en": "Wall ball",
+  "name_de": "Wall Ball",
+  "kind": "dumbbell",
+  "primary_muscles": [
+   "quads",
+   "glutes",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "triceps",
+   "abs"
+  ],
+  "equipment": [
+   "medicine_ball"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-swing",
+  "name_en": "Kettlebell swing",
+  "name_de": "Kettlebell Swing",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "glutes",
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "abs",
+   "forearms",
+   "front_delts"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-deadlift",
+  "name_en": "Kettlebell deadlift",
+  "name_de": "Kettlebell-Kreuzheben",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "glutes",
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "quads",
+   "forearms"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-goblet-squat",
+  "name_en": "Kettlebell goblet squat",
+  "name_de": "Kettlebell Goblet Squat",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "adductors",
+   "abs"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-clean",
+  "name_en": "Kettlebell clean",
+  "name_de": "Kettlebell Clean",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "glutes",
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "forearms",
+   "traps",
+   "biceps"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-snatch",
+  "name_en": "Kettlebell snatch",
+  "name_de": "Kettlebell Snatch",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "glutes",
+   "hamstrings",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "traps",
+   "abs",
+   "forearms"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-press",
+  "name_en": "Kettlebell press",
+  "name_de": "Kettlebell Press",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "side_delts",
+   "abs"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-row",
+  "name_en": "Kettlebell row",
+  "name_de": "Kettlebell-Rudern",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "turkish-get-up",
+  "name_en": "Turkish get-up",
+  "name_de": "Türkisches Aufstehen",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "front_delts",
+   "abs",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "obliques",
+   "quads",
+   "triceps"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "kettlebell-windmill",
+  "name_en": "Kettlebell windmill",
+  "name_de": "Kettlebell Windmill",
+  "kind": "kettlebell",
+  "primary_muscles": [
+   "obliques"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "hamstrings",
+   "glutes"
+  ],
+  "equipment": [
+   "kettlebell"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.9
+ },
+ {
+  "slug": "leg-press",
+  "name_en": "Leg press",
+  "name_de": "Beinpresse",
+  "kind": "machine",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [
+   "leg_press"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "hack-squat",
+  "name_en": "Hack squat",
+  "name_de": "Hackenschmidt-Kniebeuge",
+  "kind": "machine",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "hack_squat"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "smith-machine-squat",
+  "name_en": "Smith machine squat",
+  "name_de": "Kniebeuge an der Multipresse",
+  "kind": "machine",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings"
+  ],
+  "equipment": [
+   "smith_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "belt-squat",
+  "name_en": "Belt squat",
+  "name_de": "Belt Squat",
+  "kind": "machine",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "adductors"
+  ],
+  "equipment": [
+   "belt_squat"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "leg-extension",
+  "name_en": "Leg extension",
+  "name_de": "Beinstrecker",
+  "kind": "machine",
+  "primary_muscles": [
+   "quads"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "leg_extension"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "lying-leg-curl",
+  "name_en": "Lying leg curl",
+  "name_de": "Beinbeuger liegend",
+  "kind": "machine",
+  "primary_muscles": [
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "calves"
+  ],
+  "equipment": [
+   "leg_curl"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "seated-leg-curl",
+  "name_en": "Seated leg curl",
+  "name_de": "Beinbeuger sitzend",
+  "kind": "machine",
+  "primary_muscles": [
+   "hamstrings"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "leg_curl"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "hip-adduction",
+  "name_en": "Hip adduction",
+  "name_de": "Adduktorenmaschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "adductors"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "adductor_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "hip-abduction",
+  "name_en": "Hip abduction",
+  "name_de": "Abduktorenmaschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "glutes"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "abductor_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "glute-kickback-machine",
+  "name_en": "Glute kickback machine",
+  "name_de": "Glute-Kickback an der Maschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings"
+  ],
+  "equipment": [
+   "glute_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "machine-chest-press",
+  "name_en": "Chest press machine",
+  "name_de": "Brustpresse",
+  "kind": "machine",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "chest_press"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "pec-deck",
+  "name_en": "Pec deck",
+  "name_de": "Butterfly",
+  "kind": "machine",
+  "primary_muscles": [
+   "chest"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "pec_deck"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "machine-shoulder-press",
+  "name_en": "Shoulder press machine",
+  "name_de": "Schulterpresse",
+  "kind": "machine",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "side_delts"
+  ],
+  "equipment": [
+   "shoulder_press"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "machine-lateral-raise",
+  "name_en": "Lateral raise machine",
+  "name_de": "Seitheben an der Maschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "side_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "lateral_raise_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "reverse-pec-deck",
+  "name_en": "Reverse pec deck",
+  "name_de": "Reverse Butterfly",
+  "kind": "machine",
+  "primary_muscles": [
+   "rear_delts"
+  ],
+  "secondary_muscles": [
+   "upper_back"
+  ],
+  "equipment": [
+   "pec_deck"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "machine-row",
+  "name_en": "Machine row",
+  "name_de": "Rudermaschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "row_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "assisted-dip",
+  "name_en": "Assisted dip machine",
+  "name_de": "Dips an der Maschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "dip_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "seated-calf-raise",
+  "name_en": "Seated calf raise",
+  "name_de": "Wadenheben sitzend",
+  "kind": "machine",
+  "primary_muscles": [
+   "calves"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "calf_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "standing-calf-raise-machine",
+  "name_en": "Calf raise machine",
+  "name_de": "Wadenheben an der Maschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "calves"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "calf_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "machine-crunch",
+  "name_en": "Crunch machine",
+  "name_de": "Bauchmaschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "obliques"
+  ],
+  "equipment": [
+   "ab_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "back-extension-machine",
+  "name_en": "Back extension machine",
+  "name_de": "Rückenstrecker an der Maschine",
+  "kind": "machine",
+  "primary_muscles": [
+   "lower_back"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "hamstrings"
+  ],
+  "equipment": [
+   "back_machine"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.8
+ },
+ {
+  "slug": "lat-pulldown",
+  "name_en": "Lat pulldown",
+  "name_de": "Latzug",
+  "kind": "cable",
+  "primary_muscles": [
+   "lats"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "upper_back",
+   "rear_delts"
+  ],
+  "equipment": [
+   "cable",
+   "lat_bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "close-grip-pulldown",
+  "name_en": "Close-grip pulldown",
+  "name_de": "Latzug eng",
+  "kind": "cable",
+  "primary_muscles": [
+   "lats"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "upper_back"
+  ],
+  "equipment": [
+   "cable",
+   "v_handle"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-row",
+  "name_en": "Seated cable row",
+  "name_de": "Rudern am Kabelzug",
+  "kind": "cable",
+  "primary_muscles": [
+   "lats",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "cable",
+   "v_handle"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "straight-arm-pulldown",
+  "name_en": "Straight-arm pulldown",
+  "name_de": "Überzüge am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "lats"
+  ],
+  "secondary_muscles": [
+   "triceps"
+  ],
+  "equipment": [
+   "cable",
+   "bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "face-pull",
+  "name_en": "Face pull",
+  "name_de": "Face Pull",
+  "kind": "cable",
+  "primary_muscles": [
+   "rear_delts",
+   "upper_back"
+  ],
+  "secondary_muscles": [
+   "traps",
+   "side_delts"
+  ],
+  "equipment": [
+   "cable",
+   "rope"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-fly",
+  "name_en": "Cable fly",
+  "name_de": "Cable Crossover",
+  "kind": "cable",
+  "primary_muscles": [
+   "chest"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "cable"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-lateral-raise",
+  "name_en": "Cable lateral raise",
+  "name_de": "Seitheben am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "side_delts"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "cable"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "triceps-pushdown",
+  "name_en": "Triceps pushdown",
+  "name_de": "Trizepsdrücken am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "cable",
+   "rope"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "overhead-cable-extension",
+  "name_en": "Overhead cable extension",
+  "name_de": "Trizepsstrecken über Kopf am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "triceps"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "cable",
+   "rope"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-curl",
+  "name_en": "Cable curl",
+  "name_de": "Bizeps-Curl am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "biceps"
+  ],
+  "secondary_muscles": [
+   "forearms"
+  ],
+  "equipment": [
+   "cable",
+   "bar"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-crunch",
+  "name_en": "Cable crunch",
+  "name_de": "Kabel-Crunches",
+  "kind": "cable",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "obliques"
+  ],
+  "equipment": [
+   "cable",
+   "rope"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "pallof-press",
+  "name_en": "Pallof press",
+  "name_de": "Pallof Press",
+  "kind": "cable",
+  "primary_muscles": [
+   "obliques",
+   "abs"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "cable"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-woodchop",
+  "name_en": "Woodchop",
+  "name_de": "Holzhacker am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "obliques"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "front_delts"
+  ],
+  "equipment": [
+   "cable"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-pull-through",
+  "name_en": "Cable pull-through",
+  "name_de": "Pull-through am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "glutes",
+   "hamstrings"
+  ],
+  "secondary_muscles": [
+   "lower_back"
+  ],
+  "equipment": [
+   "cable",
+   "rope"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "cable-kickback",
+  "name_en": "Cable glute kickback",
+  "name_de": "Glute-Kickback am Kabel",
+  "kind": "cable",
+  "primary_muscles": [
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings"
+  ],
+  "equipment": [
+   "cable",
+   "ankle_strap"
+  ],
+  "load_type": "weight",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.7
+ },
+ {
+  "slug": "push-up",
+  "name_en": "Push-up",
+  "name_de": "Liegestütz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "abs"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.64,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "incline-push-up",
+  "name_en": "Incline push-up",
+  "name_de": "Liegestütz erhöht",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "chest",
+   "triceps",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "abs"
+  ],
+  "equipment": [
+   "bench"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.45,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "diamond-push-up",
+  "name_en": "Diamond push-up",
+  "name_de": "Diamant-Liegestütz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "triceps",
+   "chest"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "abs"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.64,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "pike-push-up",
+  "name_en": "Pike push-up",
+  "name_de": "Pike Push-up",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "upper_back"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.7,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "handstand-push-up",
+  "name_en": "Handstand push-up",
+  "name_de": "Handstand-Liegestütz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "front_delts",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "traps",
+   "upper_back"
+  ],
+  "equipment": [
+   "wall"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "pull-up",
+  "name_en": "Pull-up",
+  "name_de": "Klimmzug",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "lats"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "upper_back",
+   "rear_delts",
+   "forearms"
+  ],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "chin-up",
+  "name_en": "Chin-up",
+  "name_de": "Klimmzug im Untergriff",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "lats",
+   "biceps"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "forearms"
+  ],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "weighted-pull-up",
+  "name_en": "Weighted pull-up",
+  "name_de": "Klimmzug mit Zusatzgewicht",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "lats"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "upper_back",
+   "rear_delts",
+   "forearms"
+  ],
+  "equipment": [
+   "pullup_bar",
+   "belt"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.6
+ },
+ {
+  "slug": "muscle-up",
+  "name_en": "Muscle-up",
+  "name_de": "Muscle-up",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "lats",
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "front_delts",
+   "abs"
+  ],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "dip",
+  "name_en": "Dip",
+  "name_de": "Dips",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "dip_bars"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.9,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "weighted-dip",
+  "name_en": "Weighted dip",
+  "name_de": "Dips mit Zusatzgewicht",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts"
+  ],
+  "equipment": [
+   "dip_bars",
+   "belt"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.9,
+  "is_unilateral": false,
+  "load_factor": 0.6
+ },
+ {
+  "slug": "ring-dip",
+  "name_en": "Ring dip",
+  "name_de": "Dips an den Ringen",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "chest",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "front_delts",
+   "abs"
+  ],
+  "equipment": [
+   "rings"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.9,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "inverted-row",
+  "name_en": "Inverted row",
+  "name_de": "Rudern am Körper",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "upper_back",
+   "lats"
+  ],
+  "secondary_muscles": [
+   "biceps",
+   "rear_delts"
+  ],
+  "equipment": [
+   "bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.5,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "air-squat",
+  "name_en": "Bodyweight squat",
+  "name_de": "Kniebeuge ohne Gewicht",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.6,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "bodyweight-lunge",
+  "name_en": "Lunge",
+  "name_de": "Ausfallschritt",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "adductors"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.6,
+  "is_unilateral": true,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "pistol-squat",
+  "name_en": "Pistol squat",
+  "name_de": "Pistol Squat",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings",
+   "abs"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.75,
+  "is_unilateral": true,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "jump-squat",
+  "name_en": "Jump squat",
+  "name_de": "Sprungkniebeuge",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "calves"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.7,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "box-jump",
+  "name_en": "Box jump",
+  "name_de": "Box Jump",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "hamstrings"
+  ],
+  "equipment": [
+   "box"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.8,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "burpee",
+  "name_en": "Burpee",
+  "name_de": "Burpee",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads",
+   "chest"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "triceps",
+   "front_delts",
+   "abs"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.6,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "glute-bridge",
+  "name_en": "Glute bridge",
+  "name_de": "Glute Bridge",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.5,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "nordic-curl",
+  "name_en": "Nordic hamstring curl",
+  "name_de": "Nordic Curl",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "hamstrings"
+  ],
+  "secondary_muscles": [],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.6,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "back-extension",
+  "name_en": "Back extension",
+  "name_de": "Rückenstrecker",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "lower_back",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "hamstrings"
+  ],
+  "equipment": [
+   "roman_chair"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.5,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "bodyweight-calf-raise",
+  "name_en": "Calf raise",
+  "name_de": "Wadenheben",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "calves"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "step"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 1.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "hanging-leg-raise",
+  "name_en": "Hanging leg raise",
+  "name_de": "Beinheben hängend",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "obliques",
+   "forearms"
+  ],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.35,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "toes-to-bar",
+  "name_en": "Toes to bar",
+  "name_de": "Toes to Bar",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "lats",
+   "forearms",
+   "obliques"
+  ],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.4,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "sit-up",
+  "name_en": "Sit-up",
+  "name_de": "Sit-up",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "obliques"
+  ],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.3,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "crunch",
+  "name_en": "Crunch",
+  "name_de": "Crunches",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.25,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "russian-twist",
+  "name_en": "Russian twist",
+  "name_de": "Russian Twist",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "obliques",
+   "abs"
+  ],
+  "secondary_muscles": [],
+  "equipment": [],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.3,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "ab-wheel",
+  "name_en": "Ab wheel rollout",
+  "name_de": "Ab-Roller",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [
+   "lats",
+   "front_delts"
+  ],
+  "equipment": [
+   "ab_wheel"
+  ],
+  "load_type": "bodyweight",
+  "bodyweight_factor": 0.4,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "plank",
+  "name_en": "Plank",
+  "name_de": "Unterarmstütz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs",
+   "obliques"
+  ],
+  "secondary_muscles": [
+   "lower_back",
+   "front_delts"
+  ],
+  "equipment": [],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "side-plank",
+  "name_en": "Side plank",
+  "name_de": "Seitstütz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "obliques"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "glutes"
+  ],
+  "equipment": [],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": true,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "hollow-hold",
+  "name_en": "Hollow hold",
+  "name_de": "Hollow Hold",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs"
+  ],
+  "secondary_muscles": [],
+  "equipment": [],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "l-sit",
+  "name_en": "L-sit",
+  "name_de": "L-Sitz",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "quads"
+  ],
+  "equipment": [
+   "parallettes"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "wall-sit",
+  "name_en": "Wall sit",
+  "name_de": "Wandsitzen",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "quads"
+  ],
+  "secondary_muscles": [
+   "glutes"
+  ],
+  "equipment": [
+   "wall"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "dead-hang",
+  "name_en": "Dead hang",
+  "name_de": "Hängen an der Stange",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "forearms",
+   "lats"
+  ],
+  "secondary_muscles": [],
+  "equipment": [
+   "pullup_bar"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "mountain-climber",
+  "name_en": "Mountain climbers",
+  "name_de": "Mountain Climber",
+  "kind": "bodyweight",
+  "primary_muscles": [
+   "abs",
+   "front_delts"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "obliques"
+  ],
+  "equipment": [],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.32
+ },
+ {
+  "slug": "rowing-erg",
+  "name_en": "Rowing machine",
+  "name_de": "Rudergerät",
+  "kind": "cardio",
+  "primary_muscles": [
+   "lats",
+   "quads"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "glutes",
+   "hamstrings",
+   "biceps"
+  ],
+  "equipment": [
+   "rower"
+  ],
+  "load_type": "distance",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "ski-erg",
+  "name_en": "Ski erg",
+  "name_de": "SkiErg",
+  "kind": "cardio",
+  "primary_muscles": [
+   "lats",
+   "triceps"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "front_delts"
+  ],
+  "equipment": [
+   "ski_erg"
+  ],
+  "load_type": "distance",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "assault-bike",
+  "name_en": "Air bike",
+  "name_de": "Air Bike",
+  "kind": "cardio",
+  "primary_muscles": [
+   "quads"
+  ],
+  "secondary_muscles": [
+   "glutes",
+   "front_delts",
+   "triceps"
+  ],
+  "equipment": [
+   "air_bike"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "sled-push",
+  "name_en": "Sled push",
+  "name_de": "Schlittenschieben",
+  "kind": "cardio",
+  "primary_muscles": [
+   "quads",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "calves",
+   "front_delts",
+   "triceps"
+  ],
+  "equipment": [
+   "sled"
+  ],
+  "load_type": "distance",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "sled-pull",
+  "name_en": "Sled pull",
+  "name_de": "Schlittenziehen",
+  "kind": "cardio",
+  "primary_muscles": [
+   "hamstrings",
+   "glutes"
+  ],
+  "secondary_muscles": [
+   "upper_back",
+   "forearms"
+  ],
+  "equipment": [
+   "sled"
+  ],
+  "load_type": "distance",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "jump-rope",
+  "name_en": "Jump rope",
+  "name_de": "Seilspringen",
+  "kind": "cardio",
+  "primary_muscles": [
+   "calves"
+  ],
+  "secondary_muscles": [
+   "quads",
+   "forearms"
+  ],
+  "equipment": [
+   "jump_rope"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ },
+ {
+  "slug": "battle-ropes",
+  "name_en": "Battle ropes",
+  "name_de": "Battle Ropes",
+  "kind": "cardio",
+  "primary_muscles": [
+   "front_delts",
+   "forearms"
+  ],
+  "secondary_muscles": [
+   "abs",
+   "biceps"
+  ],
+  "equipment": [
+   "battle_ropes"
+  ],
+  "load_type": "time",
+  "bodyweight_factor": 0.0,
+  "is_unilateral": false,
+  "load_factor": 0.3
+ }
+]

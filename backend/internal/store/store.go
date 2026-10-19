@@ -136,6 +136,13 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		}
 		for _, q := range []string{
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
+			// Train: sessions cascade to their exercises and sets; plans to
+			// their days, exercises and enrolments.
+			`DELETE FROM personal_records WHERE user_id=$1`,
+			`DELETE FROM sessions WHERE user_id=$1`,
+			`DELETE FROM plan_enrollments WHERE user_id=$1`,
+			`DELETE FROM plans WHERE user_id=$1`,
+			`DELETE FROM exercises WHERE user_id=$1`,
 			`DELETE FROM samples WHERE user_id=$1`,
 			`DELETE FROM sleep_segments WHERE user_id=$1`,
 			`DELETE FROM workouts WHERE user_id=$1`,
@@ -380,14 +387,16 @@ func (s *Store) SleepEndingBetween(ctx context.Context, userID uuid.UUID, from, 
 }
 
 func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source, strain
+	rows, err := s.pool.Query(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source, strain,
+		muscular_load, session_id
 		FROM workouts WHERE user_id=$1 AND start_at >= $2 AND start_at < $3 ORDER BY start_at`, userID, from, to)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
 		var w model.Workout
-		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain)
+		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
+			&w.MuscularLoad, &w.SessionID)
 		return w, err
 	})
 }
@@ -416,9 +425,9 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 	var w WorkoutRow
 	var zones []byte
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
-		source, strain, zone_minutes, trimp FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
+		source, strain, zone_minutes, trimp, muscular_load, session_id FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}
@@ -486,11 +495,12 @@ type SleepNight struct {
 // DayLoad is the heart-rate load behind a day's strain. Nil fields mean no
 // heart-rate data that day (or a row scored before migration 0004).
 type DayLoad struct {
-	TRIMP       *float64
-	HRMin       *int
-	ZoneMinutes []float64
-	Steps       *int // read back for DayStrain; written from DailyScore
-	ActiveKcal  *int
+	TRIMP         *float64
+	HRMin         *int
+	ZoneMinutes   []float64
+	MuscularTRIMP *float64 // the day's strength sessions; nil without
+	Steps         *int     // read back for DayStrain; written from DailyScore
+	ActiveKcal    *int
 }
 
 // ScoreRow is everything scoring writes for one day: the score the API serves
@@ -517,9 +527,10 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
-		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal, computed_at)
+		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
+		 muscular_trimp, strength_min, volume_kg, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -531,11 +542,13 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 awake_min=EXCLUDED.awake_min, sleep_has_stages=EXCLUDED.sleep_has_stages,
 		 zone_minutes=EXCLUDED.zone_minutes, trimp=EXCLUDED.trimp, hr_min=EXCLUDED.hr_min,
 		 hrv_baseline_ms=EXCLUDED.hrv_baseline_ms, rhr_baseline=EXCLUDED.rhr_baseline,
-		 baseline_days=EXCLUDED.baseline_days, steps=EXCLUDED.steps, active_kcal=EXCLUDED.active_kcal, computed_at=now()`,
+		 baseline_days=EXCLUDED.baseline_days, steps=EXCLUDED.steps, active_kcal=EXCLUDED.active_kcal,
+		 muscular_trimp=EXCLUDED.muscular_trimp, strength_min=EXCLUDED.strength_min, volume_kg=EXCLUDED.volume_kg, computed_at=now()`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
-		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal)
+		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
+		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG)
 	return err
 }
 
@@ -544,8 +557,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (DayLoad, error) {
 	var l DayLoad
 	var zones []byte
-	err := s.pool.QueryRow(ctx, `SELECT trimp, hr_min, zone_minutes, steps, active_kcal FROM daily_scores WHERE user_id=$1 AND day=$2::date`,
-		userID, day).Scan(&l.TRIMP, &l.HRMin, &zones, &l.Steps, &l.ActiveKcal)
+	err := s.pool.QueryRow(ctx, `SELECT trimp, hr_min, zone_minutes, muscular_trimp, steps, active_kcal FROM daily_scores
+		WHERE user_id=$1 AND day=$2::date`,
+		userID, day).Scan(&l.TRIMP, &l.HRMin, &zones, &l.MuscularTRIMP, &l.Steps, &l.ActiveKcal)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return l, nil
 	}
@@ -579,7 +593,8 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 }
 
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal, sleep_performance, sleep_need_min,
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
+		strength_min, volume_kg, sleep_performance, sleep_need_min,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
 		calibrating, details, computed_at
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
@@ -589,7 +604,8 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.DailyScore, error) {
 		var d model.DailyScore
 		var details []byte
-		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
+		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.StrengthMin, &d.VolumeKG,
+			&d.SleepPerformance, &d.SleepNeedMin, &d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
 			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt)
 		if err != nil {
@@ -610,15 +626,17 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 // trendColumns maps a trend metric to its daily_scores column. It is the
 // whitelist: only these names are ever interpolated into SQL.
 var trendColumns = map[string]string{
-	model.MetricReadiness:  "readiness",
-	model.MetricRecovery:   "recovery",
-	model.MetricStrain:     "strain",
-	model.MetricSleep:      "sleep_performance",
-	model.MetricSleepMin:   "sleep_actual_min",
-	model.MetricHRV:        "hrv_ms",
-	model.MetricRHR:        "rhr",
-	model.MetricSteps:      "steps",
-	model.MetricActiveKcal: "active_kcal",
+	model.MetricReadiness:   "readiness",
+	model.MetricRecovery:    "recovery",
+	model.MetricStrain:      "strain",
+	model.MetricSleep:       "sleep_performance",
+	model.MetricSleepMin:    "sleep_actual_min",
+	model.MetricHRV:         "hrv_ms",
+	model.MetricRHR:         "rhr",
+	model.MetricSteps:       "steps",
+	model.MetricActiveKcal:  "active_kcal",
+	model.MetricStrengthMin: "strength_min",
+	model.MetricVolumeKG:    "volume_kg",
 }
 
 var baselineColumns = map[string]string{

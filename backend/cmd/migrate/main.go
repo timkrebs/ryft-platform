@@ -1,5 +1,6 @@
-// migrate applies the database migrations as the schema owner and sets the
-// passwords of the services' least-privilege roles. It runs once per deploy,
+// migrate applies the database migrations as the schema owner, loads the
+// built-in exercises and plans, and sets the passwords of the services'
+// least-privilege roles. It runs once per deploy,
 // before the services (a Kubernetes Job in ryft-migrate, a one-shot compose
 // service); the services themselves cannot change the schema.
 //
@@ -40,6 +41,11 @@ func main() {
 	defer pool.Close()
 	if err := db.Migrate(ctx, pool, log); err != nil {
 		log.Error("migrate", "err", err)
+		os.Exit(1)
+	}
+	// Built-in exercises and plans (Train), idempotent.
+	if err := db.Seed(ctx, pool, log); err != nil {
+		log.Error("seed", "err", err)
 		os.Exit(1)
 	}
 

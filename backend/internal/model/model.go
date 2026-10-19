@@ -75,6 +75,10 @@ type Workout struct {
 	DistanceM  *float64  `json:"distance_m,omitempty"`
 	Source     string    `json:"source"`
 	Strain     *float64  `json:"strain,omitempty"` // read-only, filled by scoring
+	// Read-only, filled by scoring: the muscular load of the strength session
+	// attached to this workout, and that session.
+	MuscularLoad *float64   `json:"muscular_load,omitempty"`
+	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 }
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
@@ -100,8 +104,10 @@ type DailyScore struct {
 	State            string         `json:"state"`     // State* constant
 	Recovery         *int           `json:"recovery"`
 	Strain           *float64       `json:"strain"`
-	Steps            *int           `json:"steps"`       // day total, null without step samples
-	ActiveKcal       *int           `json:"active_kcal"` // day total of active energy, null without samples
+	Steps            *int           `json:"steps"`        // day total, null without step samples
+	ActiveKcal       *int           `json:"active_kcal"`  // day total of active energy, null without samples
+	StrengthMin      *int           `json:"strength_min"` // minutes of completed strength sessions, null without one
+	VolumeKG         *float64       `json:"volume_kg"`    // their Σ reps × kg, null without a session
 	SleepPerformance *int           `json:"sleep_performance"`
 	SleepNeedMin     *int           `json:"sleep_need_min"`
 	SleepActualMin   *int           `json:"sleep_actual_min"`
@@ -125,13 +131,16 @@ type DayDetail struct {
 	Workouts []Workout    `json:"workouts"`
 }
 
-// DayStrain is the heart-rate load behind DailyScore.strain.
+// DayStrain is the load behind DailyScore.strain: heart rate plus the muscular
+// load of the day's strength sessions.
 type DayStrain struct {
-	TRIMP      int   `json:"trimp"`       // Banister training impulse
-	HRMin      int   `json:"hr_min"`      // minutes of usable heart-rate data
-	ZoneMin    []int `json:"zone_min"`    // minutes in HRR zones 50-60, 60-70, 70-80, 80-90, 90+ %
-	Steps      *int  `json:"steps"`       // = DailyScore.steps
-	ActiveKcal *int  `json:"active_kcal"` // = DailyScore.active_kcal
+	TRIMP         int              `json:"trimp"`          // Banister training impulse
+	HRMin         int              `json:"hr_min"`         // minutes of usable heart-rate data
+	ZoneMin       []int            `json:"zone_min"`       // minutes in HRR zones 50-60, 60-70, 70-80, 80-90, 90+ %
+	Steps         *int             `json:"steps"`          // = DailyScore.steps
+	ActiveKcal    *int             `json:"active_kcal"`    // = DailyScore.active_kcal
+	MuscularTRIMP int              `json:"muscular_trimp"` // strength sessions; strain = f(trimp + muscular_trimp)
+	Sessions      []SessionSummary `json:"sessions"`       // the day's completed sessions, oldest first
 }
 
 // HRSample is one point of a workout's heart-rate curve.
@@ -220,20 +229,23 @@ type SleepRange struct {
 
 // Trend metrics (GET /v1/trends?metric=).
 const (
-	MetricReadiness  = "readiness"   // DailyScore.readiness
-	MetricRecovery   = "recovery"    // DailyScore.recovery
-	MetricStrain     = "strain"      // DailyScore.strain
-	MetricSleep      = "sleep"       // DailyScore.sleep_performance (%)
-	MetricSleepMin   = "sleep_min"   // DailyScore.sleep_actual_min (minutes asleep)
-	MetricHRV        = "hrv"         // DailyScore.hrv_ms
-	MetricRHR        = "rhr"         // DailyScore.rhr
-	MetricSteps      = "steps"       // DailyScore.steps
-	MetricActiveKcal = "active_kcal" // DailyScore.active_kcal
+	MetricReadiness   = "readiness"    // DailyScore.readiness
+	MetricRecovery    = "recovery"     // DailyScore.recovery
+	MetricStrain      = "strain"       // DailyScore.strain
+	MetricSleep       = "sleep"        // DailyScore.sleep_performance (%)
+	MetricSleepMin    = "sleep_min"    // DailyScore.sleep_actual_min (minutes asleep)
+	MetricHRV         = "hrv"          // DailyScore.hrv_ms
+	MetricRHR         = "rhr"          // DailyScore.rhr
+	MetricSteps       = "steps"        // DailyScore.steps
+	MetricActiveKcal  = "active_kcal"  // DailyScore.active_kcal
+	MetricStrengthMin = "strength_min" // DailyScore.strength_min
+	MetricVolumeKG    = "volume_kg"    // DailyScore.volume_kg
 )
 
 var KnownTrendMetrics = map[string]bool{
 	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
 	MetricSleepMin: true, MetricHRV: true, MetricRHR: true, MetricSteps: true, MetricActiveKcal: true,
+	MetricStrengthMin: true, MetricVolumeKG: true,
 }
 
 type TrendPoint struct {
@@ -300,4 +312,317 @@ type IngestedEvent struct {
 	// RequestID of the HTTP request that caused the event, so scoring's logs
 	// can be correlated with it.
 	RequestID string `json:"request_id,omitempty"`
+}
+
+// SessionCompletedEvent is published on NATS (ryft.session.completed) when a
+// strength session is completed, so scoring rescores its day.
+type SessionCompletedEvent struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID uuid.UUID `json:"session_id"`
+	Day       string    `json:"day"` // local day of the session's start
+	RequestID string    `json:"request_id,omitempty"`
+}
+
+// ---- Train (M3b): exercises, plans, sessions -----------------------------------
+
+// Exercise kinds and load types; closed in v1.
+const (
+	KindBarbell    = "barbell"
+	KindDumbbell   = "dumbbell"
+	KindKettlebell = "kettlebell"
+	KindBodyweight = "bodyweight"
+	KindMachine    = "machine"
+	KindCable      = "cable"
+	KindCardio     = "cardio"
+
+	LoadWeight     = "weight"     // reps × kg
+	LoadBodyweight = "bodyweight" // reps; weight_kg is added load
+	LoadTime       = "time"       // duration_sec
+	LoadDistance   = "distance"   // distance_m
+)
+
+var KnownExerciseKinds = map[string]bool{KindBarbell: true, KindDumbbell: true, KindKettlebell: true,
+	KindBodyweight: true, KindMachine: true, KindCable: true, KindCardio: true}
+
+var KnownLoadTypes = map[string]bool{LoadWeight: true, LoadBodyweight: true, LoadTime: true, LoadDistance: true}
+
+// Muscles is the closed muscle vocabulary of primary/secondary_muscles.
+var Muscles = []string{"chest", "lats", "upper_back", "traps", "front_delts", "side_delts", "rear_delts",
+	"biceps", "triceps", "forearms", "abs", "obliques", "lower_back", "glutes", "quads", "hamstrings",
+	"adductors", "calves"}
+
+var KnownPlanGoals = map[string]bool{"strength": true, "hypertrophy": true, "weightlifting": true, "general": true}
+
+// Plan target kinds.
+const (
+	TargetPct1RM      = "pct_1rm"
+	TargetRPE         = "rpe"
+	TargetKG          = "kg"
+	TargetBodyweight  = "bodyweight"
+	ProgressionLinear = "linear"
+	ProgressionPct    = "percent"
+	ProgressionNone   = "none"
+)
+
+var KnownTargetKinds = map[string]bool{TargetPct1RM: true, TargetRPE: true, TargetKG: true, TargetBodyweight: true}
+
+var KnownProgressions = map[string]bool{ProgressionLinear: true, ProgressionPct: true, ProgressionNone: true}
+
+// Session and enrolment states.
+const (
+	SessionInProgress = "in_progress"
+	SessionCompleted  = "completed"
+	SessionDiscarded  = "discarded"
+
+	EnrollmentActive    = "active"
+	EnrollmentPaused    = "paused"
+	EnrollmentCompleted = "completed"
+)
+
+var KnownSessionStatuses = map[string]bool{SessionInProgress: true, SessionCompleted: true, SessionDiscarded: true}
+
+// Personal record kinds.
+const (
+	PRE1RM      = "e1rm"
+	PRMaxWeight = "max_weight"
+	PRMaxReps   = "max_reps"
+	PRMaxVolume = "max_volume"
+)
+
+// SessionSource is the workouts.source of a workout created for a session that
+// has no matching HealthKit workout.
+const SessionSource = "ryft-session"
+
+type Exercise struct {
+	ID               uuid.UUID `json:"id"`
+	Slug             string    `json:"slug"`
+	Name             string    `json:"name"` // name_en or name_de, by Accept-Language
+	NameEN           string    `json:"name_en"`
+	NameDE           string    `json:"name_de"`
+	Kind             string    `json:"kind"`
+	PrimaryMuscles   []string  `json:"primary_muscles"`
+	SecondaryMuscles []string  `json:"secondary_muscles"`
+	Equipment        []string  `json:"equipment"`
+	LoadType         string    `json:"load_type"`
+	BodyweightFactor float64   `json:"bodyweight_factor"`
+	IsUnilateral     bool      `json:"is_unilateral"`
+	IsCustom         bool      `json:"is_custom"`
+	Archived         bool      `json:"archived"`
+	LoadFactor       float64   `json:"-"` // scoring only (SCORING.md → Strength)
+}
+
+// ExerciseInput is the body of POST /v1/exercises.
+type ExerciseInput struct {
+	ID               uuid.UUID `json:"id"`
+	Name             string    `json:"name"`
+	NameDE           *string   `json:"name_de,omitempty"`
+	Kind             string    `json:"kind"`
+	PrimaryMuscles   []string  `json:"primary_muscles"`
+	SecondaryMuscles []string  `json:"secondary_muscles,omitempty"`
+	Equipment        []string  `json:"equipment,omitempty"`
+	LoadType         string    `json:"load_type"`
+	BodyweightFactor *float64  `json:"bodyweight_factor,omitempty"`
+	IsUnilateral     *bool     `json:"is_unilateral,omitempty"`
+}
+
+// ExercisePatch is the body of PATCH /v1/exercises/{id}.
+type ExercisePatch struct {
+	Name             *string   `json:"name,omitempty"`
+	NameDE           *string   `json:"name_de,omitempty"`
+	Kind             *string   `json:"kind,omitempty"`
+	PrimaryMuscles   *[]string `json:"primary_muscles,omitempty"`
+	SecondaryMuscles *[]string `json:"secondary_muscles,omitempty"`
+	Equipment        *[]string `json:"equipment,omitempty"`
+	LoadType         *string   `json:"load_type,omitempty"`
+	BodyweightFactor *float64  `json:"bodyweight_factor,omitempty"`
+	IsUnilateral     *bool     `json:"is_unilateral,omitempty"`
+	Archived         *bool     `json:"archived,omitempty"`
+}
+
+// PR is a personal record: the best value of one kind for one exercise.
+type PR struct {
+	ExerciseID uuid.UUID `json:"exercise_id"`
+	Kind       string    `json:"kind"`
+	Value      float64   `json:"value"`
+	SetID      uuid.UUID `json:"set_id"`
+	SessionID  uuid.UUID `json:"session_id"`
+	AchievedAt time.Time `json:"achieved_at"`
+}
+
+// Set is one logged set (SessionSet in Swift).
+type Set struct {
+	ID          uuid.UUID  `json:"id"`
+	SetIndex    int        `json:"set_index"`
+	Reps        *int       `json:"reps"`
+	WeightKG    *float64   `json:"weight_kg"`
+	RPE         *float64   `json:"rpe"`
+	DurationSec *int       `json:"duration_sec"`
+	DistanceM   *float64   `json:"distance_m"`
+	IsWarmup    bool       `json:"is_warmup"`
+	CompletedAt *time.Time `json:"completed_at"`
+	UpdatedAt   time.Time  `json:"updated_at"` // the app's clock; decides conflicts
+}
+
+type SessionExercise struct {
+	ID             uuid.UUID  `json:"id"`
+	ExerciseID     uuid.UUID  `json:"exercise_id"`
+	PlanExerciseID *uuid.UUID `json:"plan_exercise_id"`
+	Position       int        `json:"position"`
+	Notes          string     `json:"notes"`
+	Sets           []Set      `json:"sets"`
+}
+
+// Session is a logged strength session: the body of PUT /v1/sessions/{id} and
+// the response of every session endpoint. MuscularTRIMP, Strain, VolumeKG,
+// WorkoutID, PRs and UpdatedAt are read-only.
+type Session struct {
+	ID            uuid.UUID         `json:"id"`
+	Title         string            `json:"title"`
+	StartedAt     time.Time         `json:"started_at"`
+	EndedAt       *time.Time        `json:"ended_at"`
+	Status        string            `json:"status"`
+	PlanDayID     *uuid.UUID        `json:"plan_day_id"`
+	WorkoutID     *uuid.UUID        `json:"workout_id"`
+	Notes         string            `json:"notes"`
+	BodyweightKG  *float64          `json:"bodyweight_kg"`
+	MuscularTRIMP *float64          `json:"muscular_trimp"`
+	Strain        *float64          `json:"strain"`
+	VolumeKG      *float64          `json:"volume_kg"`
+	DeviceID      *uuid.UUID        `json:"device_id"`
+	Exercises     []SessionExercise `json:"exercises"`
+	PRs           []PR              `json:"prs"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+// SessionSummary is one row of GET /v1/sessions and DayStrain.sessions.
+type SessionSummary struct {
+	ID            uuid.UUID  `json:"id"`
+	Title         string     `json:"title"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at"`
+	Status        string     `json:"status"`
+	PlanDayID     *uuid.UUID `json:"plan_day_id"`
+	WorkoutID     *uuid.UUID `json:"workout_id"`
+	DurationMin   *int       `json:"duration_min"`
+	ExerciseCount int        `json:"exercise_count"`
+	SetCount      int        `json:"set_count"` // completed working sets
+	VolumeKG      *float64   `json:"volume_kg"`
+	MuscularTRIMP *float64   `json:"muscular_trimp"`
+	Strain        *float64   `json:"strain"`
+	PRCount       int        `json:"pr_count"`
+}
+
+// SessionComplete is the body of POST /v1/sessions/{id}/complete.
+type SessionComplete struct {
+	BodyweightKG *float64   `json:"bodyweight_kg,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+}
+
+// ExerciseHistory backs the exercise detail screen.
+type ExerciseHistory struct {
+	ExerciseID uuid.UUID                `json:"exercise_id"`
+	PRs        []PR                     `json:"prs"`
+	Sessions   []ExerciseHistorySession `json:"sessions"` // newest first
+	E1RM       []TrendPoint             `json:"e1rm"`     // best per day, oldest first
+}
+
+type ExerciseHistorySession struct {
+	SessionID uuid.UUID `json:"session_id"`
+	Date      string    `json:"date"` // local day
+	StartedAt time.Time `json:"started_at"`
+	Sets      []Set     `json:"sets"`
+}
+
+// Progression is a plan's rule for moving kg targets.
+type Progression struct {
+	Type        string   `json:"type"`
+	IncrementKG *float64 `json:"increment_kg,omitempty"`
+	OnFail      *string  `json:"on_fail,omitempty"`
+	DeloadAfter *int     `json:"deload_after,omitempty"`
+}
+
+type PlanExercise struct {
+	ID            uuid.UUID `json:"id"`
+	ExerciseID    uuid.UUID `json:"exercise_id"`
+	Exercise      *Exercise `json:"exercise"` // resolved on read, ignored on PUT
+	Position      int       `json:"position"`
+	Sets          int       `json:"sets"`
+	RepsMin       int       `json:"reps_min"`
+	RepsMax       int       `json:"reps_max"`
+	TargetKind    string    `json:"target_kind"`
+	TargetValue   *float64  `json:"target_value"`
+	RestSec       int       `json:"rest_sec"`
+	SupersetGroup *int      `json:"superset_group"`
+	Notes         string    `json:"notes"`
+}
+
+type PlanDay struct {
+	ID        uuid.UUID      `json:"id"`
+	Week      *int           `json:"week"` // nil = every week
+	DayIndex  int            `json:"day_index"`
+	Name      string         `json:"name"`
+	Exercises []PlanExercise `json:"exercises"`
+}
+
+// Plan is a training plan; the body of PUT /v1/plans/{id} (Slug, IsBuiltin and
+// PlanExercise.Exercise are ignored there).
+type Plan struct {
+	ID          uuid.UUID    `json:"id"`
+	Slug        *string      `json:"slug"`
+	Name        string       `json:"name"`
+	Goal        string       `json:"goal"`
+	Weeks       *int         `json:"weeks"` // nil repeats forever
+	DaysPerWeek int          `json:"days_per_week"`
+	Description string       `json:"description"`
+	Progression *Progression `json:"progression"`
+	IsBuiltin   bool         `json:"is_builtin"`
+	Archived    bool         `json:"archived"`
+	Days        []PlanDay    `json:"days"`
+}
+
+type PlanSummary struct {
+	ID            uuid.UUID `json:"id"`
+	Slug          *string   `json:"slug"`
+	Name          string    `json:"name"`
+	Goal          string    `json:"goal"`
+	Weeks         *int      `json:"weeks"`
+	DaysPerWeek   int       `json:"days_per_week"`
+	Description   string    `json:"description"`
+	IsBuiltin     bool      `json:"is_builtin"`
+	Archived      bool      `json:"archived"`
+	DayCount      int       `json:"day_count"`
+	ExerciseCount int       `json:"exercise_count"`
+}
+
+type Enrollment struct {
+	ID              uuid.UUID `json:"id"`
+	PlanID          uuid.UUID `json:"plan_id"`
+	StartedAt       time.Time `json:"started_at"`
+	CurrentWeek     int       `json:"current_week"`      // 1-based
+	CurrentDayIndex int       `json:"current_day_index"` // 0-based
+	Status          string    `json:"status"`
+}
+
+type PlansOverview struct {
+	Builtin []PlanSummary `json:"builtin"`
+	Mine    []PlanSummary `json:"mine"`
+	Active  *Enrollment   `json:"active"`
+}
+
+type PlanTarget struct {
+	PlanExerciseID uuid.UUID `json:"plan_exercise_id"`
+	ExerciseID     uuid.UUID `json:"exercise_id"`
+	Sets           int       `json:"sets"`
+	RepsMin        int       `json:"reps_min"`
+	RepsMax        int       `json:"reps_max"`
+	TargetKind     string    `json:"target_kind"`
+	TargetKG       *float64  `json:"target_kg"`
+	RestSec        int       `json:"rest_sec"`
+	LastTime       []Set     `json:"last_time"`
+}
+
+type PlanToday struct {
+	Enrollment Enrollment   `json:"enrollment"`
+	Day        PlanDay      `json:"day"`
+	Targets    []PlanTarget `json:"targets"`
 }

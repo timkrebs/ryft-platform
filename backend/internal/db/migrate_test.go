@@ -124,7 +124,8 @@ func TestMigrateSupabaseShape(t *testing.T) {
 	if err := Migrate(context.Background(), pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	tables := []string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores", "deleted_users", "schema_migrations", "apple_tokens"}
+	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
+		"deleted_users", "schema_migrations", "apple_tokens"}, trainTables...)
 	for _, tbl := range tables {
 		if !scalar[bool](t, pool, `SELECT relrowsecurity FROM pg_class WHERE oid = $1::regclass`, "public."+tbl) {
 			t.Errorf("RLS must be enabled on %s", tbl)
@@ -135,8 +136,14 @@ func TestMigrateSupabaseShape(t *testing.T) {
 			}
 		}
 	}
-	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%own_row%'`); n != 6 {
-		t.Errorf("want 6 own-row policies, got %d", n)
+	// 0007: five tables + users; 0011: read and write on the four with built-ins, one on the other five.
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%own_row%'`); n != 6+4*2+5 {
+		t.Errorf("want %d own-row policies, got %d", 6+4*2+5, n)
+	}
+	// Built-ins (user_id NULL) are readable by every signed-in user, writable by none.
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='exercises'
+		AND cmd='SELECT' AND qual LIKE '%user_id IS NULL%'`); n != 1 {
+		t.Error("exercises: want a read policy that admits built-ins")
 	}
 	// Every table admits the service roles (migration 0009), or they would see nothing.
 	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%_services'`); n != len(tables) {
