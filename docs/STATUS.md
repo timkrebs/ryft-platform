@@ -107,26 +107,27 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 Built and tested, applied by nobody yet: everything in **After go-live**. Your steps,
 in this order:
 
-1. **Supabase in Frankfurt:** new project and the full checklist (`SUPABASE.md` → Moving
+1. **Remote state first.** The four roots now declare the S3 backend, so `terraform init`
+   fails without `infra/backend.hcl`. Run `infra/aws/state`, then
+   `make tf-migrate-state` (`OPERATIONS.md` → Terraform state).
+2. **Supabase in Frankfurt:** new project and the full checklist (`SUPABASE.md` → Moving
    the project to Frankfurt), including the Apple key for revocation
-   (`service_secrets.api.APPLE_*`).
-2. **`infra/vault`:** new Supabase values, the Apple values, and the rotated Grafana
+   (`service_secrets.api.APPLE_*`). Done on 2026-10-19.
+3. **`infra/vault`:** new Supabase values, the Apple values, and the rotated Grafana
    token (`service_secrets.monitoring.GC_TOKEN`); then plan and apply (monitoring
    namespace and Apple key included). Retire the hand-made Grafana secret first
    (`OPERATIONS.md` → Monitoring).
-3. **`infra/aws/kubernetes`:** plan and apply: Traefik with client IPs preserved,
+4. **`infra/aws/kubernetes`:** plan and apply: Traefik with client IPs preserved,
    Fluent Bit with its log group and key, the operator without `_raw`, cert-manager's
    public DNS-01 checks.
-4. **`infra/aws`:** `budget_alert_emails` in tfvars, plan and apply.
-5. **Images and deploy:** CI for the current commit, pin its short SHA (quoted), then
+5. **`infra/aws`:** `budget_alert_emails` in tfvars, plan and apply.
+6. **Images and deploy:** CI for the current commit, pin its short SHA (quoted), then
    `make k8s-apply-eks` (migrations 0009 and 0010, the edge limit, the metrics port,
    the apex site).
-6. **`make monitoring-apply`**, then the Grafana Cloud steps: exclude `ryft-.*` pod logs,
+7. **`make monitoring-apply`**, then the Grafana Cloud steps: exclude `ryft-.*` pod logs,
    load the alerts.
-7. **`make smoke-supabase`** against `https://api.ryftapp.de` with `SUPABASE_SECRET_KEY`.
+8. **`make smoke-supabase`** against `https://api.ryftapp.de` with `SUPABASE_SECRET_KEY`.
    Record the run here.
-8. **Remote state:** `infra/aws/state`, then `make tf-migrate-state`
-   (`OPERATIONS.md` → Terraform state).
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and

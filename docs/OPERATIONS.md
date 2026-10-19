@@ -52,7 +52,7 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
 | 8. App | `make k8s-apply-eks` | see below |
 | 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
-| 10. State | `infra/aws/state`, then `make tf-migrate-state` (once) | see **Terraform state** below |
+| 10. State | `infra/aws/state`, then `make tf-migrate-state` (once, before the next `terraform init` in any root) | see **Terraform state** below |
 
 All Terraform roots keep their state in S3 after step 10. A fresh checkout initialises
 each root with `terraform init -backend-config=$(git rev-parse --show-toplevel)/infra/backend.hcl`.
@@ -263,6 +263,11 @@ Cloud. Access to the Grafana stack is therefore access to the cluster's telemetr
 the stack's members to yourself.
 
 ## Terraform state
+
+**Do this before the next `terraform init` in any root:** the backend blocks need
+`infra/backend.hcl`, and without it `init` asks for a bucket and fails. To keep local
+state for a while instead, put a git-ignored `backend_override.tf` with
+`terraform { backend "local" {} }` into the root.
 
 Every root's state used to live on your machine. The states of `infra/vault` and
 `infra/aws` hold credentials, so they belong in an encrypted, versioned, locked store.
