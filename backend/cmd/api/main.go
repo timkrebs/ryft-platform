@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -235,17 +236,33 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 422, "sleep_base_min sets the baseline by hand; it cannot go with sleep_base_manual false")
 		return
 	}
+	if p.MaxHR != nil && p.MaxHRManual != nil && !*p.MaxHRManual {
+		httpx.WriteError(w, 422, "max_hr sets it by hand; it cannot go with max_hr_manual false")
+		return
+	}
+	year := time.Now().UTC().Year()
+	if p.BirthYear != nil && (*p.BirthYear < scoring.MinBirthYear || *p.BirthYear > year-scoring.MinAge) {
+		httpx.WriteError(w, 422, fmt.Sprintf("birth_year must be %d to %d", scoring.MinBirthYear, year-scoring.MinAge))
+		return
+	}
+	// The estimate for the birth year in effect after this patch (D81).
+	var estimate *int
+	if birth := cmp.Or(p.BirthYear, userOf(r).BirthYear); birth != nil {
+		e := scoring.EstimatedMaxHR(*birth, year)
+		estimate = &e
+	}
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil || *p.TZ == "" {
 			httpx.WriteError(w, 422, "tz must be an IANA time zone name")
 			return
 		}
 	}
-	u, err := h.st.UpdateUser(r.Context(), userOf(r).ID, p)
+	u, err := h.st.UpdateUser(r.Context(), userOf(r).ID, p, estimate)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
+	h.cache.forget(u.ID) // max_hr and the baseline feed cards
 	httpx.WriteJSON(w, 200, u)
 }
 

@@ -437,6 +437,55 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
 else:
     ok(f"beta: consent to {POLICY} on file")
 
+# ---- profile: birth year, max HR estimate, max-hr-observed (D81) ---------------
+check(me_c["max_hr_source"] in {"default", "estimated", "manual"} and "birth_year" in me_c, f"/v1/me max-HR fields: {me_c}")
+if os.environ.get("AUTH_MODE", "apikey") == "apikey":  # a fresh account, so the smoke user's max_hr stays
+    KEY_E = f"{KEY}:{uuid.uuid4()}"
+
+    def patch_e(body, expect=200):
+        status, _, out = raw("PATCH", "/v1/me", jbody(body), key=KEY_E)
+        check(status == expect, f"PATCH /v1/me {body}: {status} {out}")
+        return out
+
+    year = datetime.now(timezone.utc).year
+    tanaka = lambda born: (2080 - 7 * (year - born) + 5) // 10  # round(208 − 0.7 · age), half up
+    e = get("/v1/me", key=KEY_E)
+    check((e["max_hr"], e["max_hr_source"], e["birth_year"]) == (190, "default", None), f"a new account: {e}")
+    e = patch_e({"birth_year": 1990})
+    check((e["max_hr"], e["max_hr_source"], e["birth_year"]) == (tanaka(1990), "estimated", 1990), f"estimate: {e}")
+    e = patch_e({"max_hr": 197})
+    check((e["max_hr"], e["max_hr_source"]) == (197, "manual"), f"by hand: {e}")
+    e = patch_e({"birth_year": 1985})
+    check((e["max_hr"], e["max_hr_source"], e["birth_year"]) == (197, "manual", 1985), f"manual wins: {e}")
+    e = patch_e({"max_hr_manual": False})
+    est = tanaka(1985)
+    check((e["max_hr"], e["max_hr_source"]) == (est, "estimated"), f"back to the estimate: {e}")
+    for body in ({"max_hr": 180, "max_hr_manual": False}, {"birth_year": year - 12}, {"birth_year": 1919}):
+        check(is_error(patch_e(body, expect=422)), f"PATCH /v1/me {body} must be 422")
+    # Two workouts on two days, 9 and 6 bpm above the estimate: the card names est + 6.
+    consent(KEY_E)
+    fmt = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    samples, workouts = [], []
+    for back, peak in ((20, est + 9), (10, est + 6)):
+        t0 = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=back)
+        samples += [{"type": "heart_rate", "start": fmt(t0 + timedelta(minutes=m)), "end": fmt(t0 + timedelta(minutes=m)),
+                     "value": peak if m == 15 else 150, "unit": "bpm", "source": "check-e"} for m in range(31)]
+        workouts.append({"id": str(uuid.uuid4()), "activity": "running", "start": fmt(t0),
+                         "end": fmt(t0 + timedelta(minutes=30)), "source": "check-e"})
+    status, _, _ = raw("POST", "/v1/sync", jbody({"device_id": str(uuid.uuid4()), "samples": samples, "sleep": [],
+                                                 "workouts": workouts}), base=INGEST, key=KEY_E)
+    check(status == 200, f"sync E: {status}")
+    cards = {c["id"]: c for c in get("/v1/insights", key=KEY_E)}
+    card = cards.get("max-hr-observed")
+    check(card and card["title"] == f"Your max heart rate may be {est + 6}" and card["metric"] == "strain",
+          f"max-hr-observed: {card}")
+    patch_e({"max_hr": est + 6})
+    check("max-hr-observed" not in {c["id"] for c in get("/v1/insights", key=KEY_E)},
+          "after max_hr = the suggestion, one day is above it: no card (and PATCH dropped the cached cards)")
+    raw("DELETE", "/v1/me", key=KEY_E)
+    ok(f"profile: born 1990 → {tanaka(1990)} estimated, manual wins, back to {est}; 422s; "
+       f"max-hr-observed suggests {est + 6}, gone once set")
+
 # ---- push: token registry, preferences, the morning event (M7) -----------------
 dev, tok = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex
 for _ in range(2):  # registering again is an update

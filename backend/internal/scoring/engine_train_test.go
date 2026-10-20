@@ -59,7 +59,7 @@ func engineStore(t *testing.T) (*store.Store, *Engine, uuid.UUID) {
 	if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: ptrTo("UTC")}); err != nil {
+	if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: ptrTo("UTC")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.GrantConsent(ctx, user, "test", nil); err != nil {

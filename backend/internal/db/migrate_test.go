@@ -165,6 +165,28 @@ func TestMigrateKeepsExistingAccountsInTheBeta(t *testing.T) {
 	}
 }
 
+// 0019: a max_hr someone changed from the default was set by hand.
+func TestMigrateMarksChangedMaxHRManual(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 18); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, max_hr) VALUES
+		('cccccccc-0000-0000-0000-000000000019', 176), ('dddddddd-0000-0000-0000-000000000019', 190)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"cccccccc-0000-0000-0000-000000000019": "manual",
+		"dddddddd-0000-0000-0000-000000000019": "default"} {
+		if got := scalar[string](t, pool, `SELECT max_hr_source FROM users WHERE id=$1`, id); got != want {
+			t.Errorf("%s: max_hr_source %s, want %s", id, got, want)
+		}
+	}
+}
+
 func TestMigrateSupabaseShape(t *testing.T) {
 	pool := freshDB(t, true)
 	if err := Migrate(context.Background(), pool, quiet); err != nil {

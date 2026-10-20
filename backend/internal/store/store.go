@@ -39,7 +39,8 @@ const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, slee
 	(SELECT c.policy_version FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
 	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
 	(SELECT c.granted_at FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
-	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1)`
+	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
+	birth_year, max_hr_source`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
@@ -48,7 +49,7 @@ func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var consentAt *time.Time
 	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
 		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to,
-		&u.BetaAccess, &consent, &consentAt}, extra...)...)
+		&u.BetaAccess, &consent, &consentAt, &u.BirthYear, &u.MaxHRSource}, extra...)...)
 	u.Notifications = prefsOf(cats, from, to)
 	if consent != nil && consentAt != nil {
 		u.Consent = &model.Consent{PolicyVersion: *consent, GrantedAt: consentAt.UTC()}
@@ -252,13 +253,20 @@ func identityChanged(u model.User, id Identity) bool {
 		(id.Provider != "" && (u.Provider == nil || *u.Provider != id.Provider))
 }
 
-// defaultSleepBase is users.sleep_base_min's default (migration 0001).
-const defaultSleepBase = 460
+// defaultSleepBase and defaultMaxHR are the columns' defaults (migration 0001;
+// scoring.DefaultMaxHR).
+const (
+	defaultSleepBase = 460
+	defaultMaxHR     = 190
+)
 
 // UpdateUser applies a settings patch and returns the updated row. A
 // sleep_base_min makes the baseline manual; sleep_base_manual false goes back
-// to the learned estimate, or to the default without one (D67).
-func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch) (model.User, error) {
+// to the learned estimate, or to the default without one (D67). max_hr works
+// the same way with the estimate for the birth year in effect after the patch
+// (scoring.EstimatedMaxHR; nil without a birth year): a birth year replaces
+// max_hr unless it is manual (D81).
+func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch, maxHREstimate *int) (model.User, error) {
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil {
 			return model.User{}, fmt.Errorf("invalid tz: %w", err)
@@ -271,7 +279,21 @@ func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch)
 	}
 	u, err := scanUser(s.pool.QueryRow(ctx, `UPDATE users SET
 		tz = COALESCE($2, tz),
-		max_hr = COALESCE($3, max_hr),
+		birth_year = COALESCE($8::int, birth_year),
+		max_hr = CASE
+		  WHEN $3::int IS NOT NULL THEN $3::int
+		  WHEN $7::boolean THEN max_hr
+		  WHEN $7::boolean = false THEN COALESCE($9::int, $10::int)
+		  WHEN max_hr_source = 'manual' THEN max_hr
+		  WHEN $8::int IS NOT NULL THEN $9::int
+		  ELSE max_hr END,
+		max_hr_source = CASE
+		  WHEN $3::int IS NOT NULL OR $7::boolean THEN 'manual'
+		  WHEN $7::boolean = false AND $9::int IS NOT NULL THEN 'estimated'
+		  WHEN $7::boolean = false THEN 'default'
+		  WHEN max_hr_source = 'manual' THEN 'manual'
+		  WHEN $8::int IS NOT NULL THEN 'estimated'
+		  ELSE max_hr_source END,
 		sleep_base_manual = COALESCE($5, sleep_base_manual),
 		sleep_base_min = CASE
 		  WHEN $4::int IS NOT NULL THEN $4
@@ -282,7 +304,8 @@ func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch)
 		  WHEN $5 = false AND sleep_base_learned_min IS NOT NULL THEN 'learned'
 		  WHEN $5 = false THEN 'default'
 		  ELSE sleep_base_source END
-		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin, manual, defaultSleepBase))
+		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin, manual, defaultSleepBase,
+		p.MaxHRManual, p.BirthYear, maxHREstimate, defaultMaxHR))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}
@@ -442,6 +465,29 @@ func (s *Store) SleepEndingBetween(ctx context.Context, userID uuid.UUID, from, 
 		err := r.Scan(&x.Start, &x.End, &x.Stage, &x.Source)
 		return x, err
 	})
+}
+
+// WorkoutPeakHR is the highest heart-rate sample inside a workout, per local
+// day of the workout's start, for workouts starting at or after since (the
+// max-hr-observed card). The samples, not the app's max_hr: every source the
+// same way, as scoring sees them.
+func (s *Store) WorkoutPeakHR(ctx context.Context, userID uuid.UUID, since time.Time, tz string) (map[string]float64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT to_char(w.start_at AT TIME ZONE $3, 'YYYY-MM-DD'), max(s.value)
+		FROM workouts w JOIN samples s ON s.user_id = w.user_id AND s.type = 'heart_rate'
+		  AND s.start_at >= w.start_at AND s.start_at <= w.end_at
+		WHERE w.user_id = $1 AND w.start_at >= $2
+		GROUP BY 1`, userID, since, tz)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]float64{}
+	var day string
+	var bpm float64
+	_, err = pgx.ForEachRow(rows, []any{&day, &bpm}, func() error {
+		out[day] = bpm
+		return nil
+	})
+	return out, err
 }
 
 func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {

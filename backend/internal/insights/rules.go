@@ -1,8 +1,12 @@
 package insights
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
+	"strings"
 
 	"github.com/timkrebs/ryft/internal/model"
 )
@@ -23,6 +27,7 @@ const (
 	consistencyLow    = 60 // sleep consistency below this
 	napCreditMin      = 45 // a nap worth a card
 	learnedRescore    = 7  // days scoring rescores when a learned baseline is applied
+	maxHRMarginBPM    = 3  // a workout this far above max_hr, on two days, is no glitch
 )
 
 // hrvBelowBaseline: HRV under the 30-day baseline for 3+ consecutive nights.
@@ -328,4 +333,28 @@ func behaviorImpact(h History) *model.Insight {
 		Title: pick.Name + " yesterday",
 		Body: fmt.Sprintf("On mornings after it your recovery is typically %.0f points lower (90 %% interval %.0f to %.0f; "+
 			"%d days with it, %d without). Today's score may show it.", -e.Delta, e.CILo, e.CIHi, e.NYes, e.NNo)}
+}
+
+// maxHRObserved: workouts on two different days went at least 3 bpm above the
+// max HR in use (D81). One day can be a strap glitch; two are a pattern. The
+// card suggests the lower of the two highest days and changes nothing itself.
+func maxHRObserved(h History) *model.Insight {
+	m := h.MaxHR
+	if m == nil || len(m.Peaks) < 2 {
+		return nil
+	}
+	days := slices.Collect(maps.Keys(m.Peaks))
+	slices.SortFunc(days, func(a, b string) int {
+		return cmp.Or(cmp.Compare(m.Peaks[b], m.Peaks[a]), strings.Compare(b, a))
+	})
+	second := m.Peaks[days[1]]
+	if second < float64(m.Current+maxHRMarginBPM) {
+		return nil
+	}
+	likely := int(math.Round(second))
+	return &model.Insight{ID: "max-hr-observed", Severity: model.SeverityInfo, Metric: model.MetricStrain,
+		Day: max(days[0], days[1]), Title: fmt.Sprintf("Your max heart rate may be %d", likely),
+		Body: fmt.Sprintf("On two days in the last %d your heart rate went above the %d bpm RYFT uses as your "+
+			"maximum, up to %d bpm. A maximum set too low makes strain and heart-rate zones read high. If %d bpm is "+
+			"closer to your real maximum, set it in Settings.", MaxHRWindow, m.Current, likely, likely)}
 }

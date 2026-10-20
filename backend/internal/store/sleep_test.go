@@ -46,7 +46,7 @@ func TestSleepBaselineSources(t *testing.T) {
 		t.Fatal("the same estimate changes nothing")
 	}
 
-	u, err = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseMin: ptr(500)})
+	u, err = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseMin: ptr(500)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,12 +56,12 @@ func TestSleepBaselineSources(t *testing.T) {
 		t.Fatalf("estimate while manual: changed=%v err=%v", changed, err)
 	}
 	check("manual wins", reload(), 500, model.BaseManual, ptr(490))
-	u, _ = st.UpdateUser(ctx, id, model.UserPatch{MaxHR: ptr(185)})
+	u, _ = st.UpdateUser(ctx, id, model.UserPatch{MaxHR: ptr(185)}, nil)
 	check("another setting keeps the source", u, 500, model.BaseManual, ptr(490))
 
-	u, _ = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(false)})
+	u, _ = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(false)}, nil)
 	check("back to learned", u, 490, model.BaseLearned, ptr(490))
-	u, _ = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(true)})
+	u, _ = st.UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(true)}, nil)
 	check("freeze the current value", u, 490, model.BaseManual, ptr(490))
 	if changed, _ := st.SetLearnedBase(ctx, id, 470); changed {
 		t.Fatal("frozen: the estimate is not used")
@@ -72,9 +72,9 @@ func TestSleepBaselineSources(t *testing.T) {
 	if _, err := st.EnsureUser(ctx, Identity{ID: other}); err != nil {
 		t.Fatal(err)
 	}
-	u, _ = st.UpdateUser(ctx, other, model.UserPatch{SleepBaseMin: ptr(420)})
+	u, _ = st.UpdateUser(ctx, other, model.UserPatch{SleepBaseMin: ptr(420)}, nil)
 	check("other manual", u, 420, model.BaseManual, nil)
-	u, _ = st.UpdateUser(ctx, other, model.UserPatch{SleepBaseManual: ptr(false)})
+	u, _ = st.UpdateUser(ctx, other, model.UserPatch{SleepBaseManual: ptr(false)}, nil)
 	check("other default", u, 460, model.BaseDefault, nil)
 
 	if _, err := st.SetLearnedBase(ctx, uuid.New(), 480); !errors.Is(err, ErrNotFound) {
@@ -108,7 +108,7 @@ func TestSetLearnedBaseAsScoringRole(t *testing.T) {
 	if changed, err := New(sp).SetLearnedBase(ctx, id, 480); err != nil || !changed {
 		t.Fatalf("as ryft_scoring: changed=%v err=%v", changed, err)
 	}
-	if _, err := New(sp).UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(false)}); err == nil {
+	if _, err := New(sp).UpdateUser(ctx, id, model.UserPatch{SleepBaseManual: ptr(false)}, nil); err == nil {
 		t.Fatal("scoring must not change the user's settings")
 	}
 }

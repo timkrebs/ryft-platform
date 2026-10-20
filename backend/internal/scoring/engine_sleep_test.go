@@ -92,7 +92,7 @@ func TestEngineLearnsSleepBase(t *testing.T) {
 	if _, err := st.EnsureUser(ctx, store.Identity{ID: manual}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.UpdateUser(ctx, manual, model.UserPatch{TZ: ptrTo("UTC"), SleepBaseMin: ptrTo(450)}); err != nil {
+	if _, err := st.UpdateUser(ctx, manual, model.UserPatch{TZ: ptrTo("UTC"), SleepBaseMin: ptrTo(450)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	strain, recovery, asleep := 5.0, 80, 500

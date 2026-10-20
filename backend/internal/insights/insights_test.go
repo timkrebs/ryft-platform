@@ -314,3 +314,27 @@ func TestBehaviorImpact(t *testing.T) {
 		t.Fatal("nothing logged: no card")
 	}
 }
+
+func TestMaxHRObserved(t *testing.T) {
+	with := func(current int, peaks map[string]float64) History {
+		return NewHistory(today, 3, nil, nil).WithMaxHR(MaxHR{Current: current, Peaks: peaks})
+	}
+	in := maxHRObserved(with(190, map[string]float64{"2026-08-01": 201, "2026-09-12": 196.4, "2026-10-01": 192}))
+	if in == nil || in.ID != "max-hr-observed" || in.Severity != model.SeverityInfo || in.Metric != model.MetricStrain ||
+		in.Day != "2026-09-12" || !strings.Contains(in.Title, "196") || !strings.Contains(in.Body, "190 bpm") {
+		t.Fatalf("the lower of the two highest days, 196: %+v", in)
+	}
+	if maxHRObserved(with(190, map[string]float64{"2026-08-01": 205, "2026-09-12": 192.9})) != nil {
+		t.Fatal("one day above is a glitch, not a pattern (the second is under 193)")
+	}
+	if in := maxHRObserved(with(190, map[string]float64{"2026-08-01": 193, "2026-09-12": 193})); in == nil ||
+		in.Day != "2026-09-12" || !strings.Contains(in.Title, "193") {
+		t.Fatalf("exactly 3 above counts; the later day of a tie: %+v", in)
+	}
+	if maxHRObserved(with(190, map[string]float64{"2026-08-01": 199})) != nil || maxHRObserved(hist(nil)) != nil {
+		t.Fatal("needs two days of workouts")
+	}
+	if ids(Evaluate(with(180, map[string]float64{"2026-08-01": 185, "2026-08-02": 184}))) != "max-hr-observed" {
+		t.Fatal("Evaluate runs the rule")
+	}
+}

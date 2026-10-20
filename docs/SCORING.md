@@ -259,6 +259,30 @@ significant.
 **Computed on request**, not stored (D76): ~44 ms of CPU for 75 behaviors at once, under
 15 ms for 25 (`BenchmarkImpacts75x90`). `ryft_behavior_impact_seconds` watches it.
 
+## Max heart rate
+
+Strain and the zones use heart-rate reserve, so they need `max_hr`. It comes from one of
+three places (`users.max_hr_source`, migration 0019, D81):
+
+| Source | `max_hr` | When |
+| --- | --- | --- |
+| `default` | 190 | nothing is known |
+| `estimated` | `round(208 − 0.7 · age)` (Tanaka), age = this year − `birth_year` | `PATCH /v1/me` with a `birth_year`, unless manual |
+| `manual` | what the user set | `PATCH` with `max_hr` (or `max_hr_manual: true`) |
+
+`scoring.EstimatedMaxHR` computes it in integer tenths, so 35 years (183.5) rounds up to
+184 for certain (`TestEstimatedMaxHR` pins seven ages). The estimate is taken when the
+birth year or `max_hr_manual: false` is sent, not every January: a stored number never
+moves by itself. Accounts that had changed `max_hr` from 190 before the migration are
+`manual`. Changing it does not rescore history (`POST /v1/recompute`).
+
+**The card** `max-hr-observed` (info): the highest heart-rate sample inside a workout,
+per local day, over the last 90 days (`store.WorkoutPeakHR`: the samples, not the app's
+`max_hr`, so every source counts the same). When two different days reach `max_hr + 3`
+or more, the card suggests the lower of the two highest days, rounded. One day above can
+be a strap glitch; two are a pattern. Nothing changes until the user sets it; the cards
+are recomputed after every `PATCH /v1/me`.
+
 ## Model version
 
 `internal/scoring/version.go` names the model, `ModelVersion = "2026.10.1"`

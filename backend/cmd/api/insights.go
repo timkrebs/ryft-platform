@@ -135,8 +135,13 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
+	peaks, err := h.st.WorkoutPeakHR(r.Context(), u.ID, today.AddDate(0, 0, -(insights.MaxHRWindow-1)), u.TZ)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
 	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs).WithBaseline(baseline).
-		WithBehaviors(signals))
+		WithBehaviors(signals).WithMaxHR(insights.MaxHR{Current: u.MaxHR, Peaks: peaks}))
 	h.cache.put(ck, now, cards)
 	httpx.WriteJSON(w, 200, cards)
 }

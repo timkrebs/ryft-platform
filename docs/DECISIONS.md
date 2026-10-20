@@ -1236,3 +1236,26 @@ move" needs an answer.
   languages are served; `summary` follows `Accept-Language`.
 - Insights and behavior impact are computed on request from the stored scores, so they
   carry no version of their own.
+
+## D81 — Max HR: Tanaka from the birth year, manual wins, a card instead of learning
+
+190 for everyone overstates strain for most people over 30 and understates it for some
+younger ones. The beta asks for a birth year in onboarding.
+
+- **Tanaka (208 − 0.7 · age)** over 220 − age: it was fitted on far more people and
+  is less biased past 40; both are ± ~10 bpm for an individual, which is why the card
+  below exists. Age from the year alone: ± 1 year moves it < 1 bpm, and a birth date
+  is more personal data than the formula can use.
+- **Three sources like the sleep baseline (D67)**: `default`, `estimated`, `manual`.
+  A birth year never overrides a hand-set value; `max_hr_manual: false` goes back. The
+  estimate is computed on the PATCH, not re-derived each year: stored numbers move only
+  when someone acts (and the model version says why, D80). Accounts with a changed
+  `max_hr` before migration 0019 count as manual.
+- **Observed, not learned**: two different days with a workout peak ≥ `max_hr` + 3 bpm
+  produce the `max-hr-observed` card with the lower of the two highest days; the user
+  decides. Raising it automatically would let one bad optical sensor rewrite every
+  strain; one day can be a glitch, two days 3 bpm over is a pattern. Peaks come from
+  the heart-rate samples inside workouts, not the app's per-workout `max_hr`, so every
+  source is treated the same.
+- The rule is pure (`internal/scoring/maxhr.go`, integer tenths so 183.5 rounds up);
+  the store gets the estimate from the api because it cannot import scoring.

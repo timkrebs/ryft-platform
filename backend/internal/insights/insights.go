@@ -59,6 +59,16 @@ type Baseline struct {
 	LearnedAt *time.Time // in the user's timezone; nil before the first estimate
 }
 
+// MaxHRWindow is how many days of workouts the max-hr-observed card looks at.
+const MaxHRWindow = 90
+
+// MaxHR is the max heart rate in use and the highest heart rate of a workout
+// per local day over the last MaxHRWindow days (days without one are absent).
+type MaxHR struct {
+	Current int
+	Peaks   map[string]float64 // YYYY-MM-DD → bpm
+}
+
 // PR is a personal record as a card names it.
 type PR struct {
 	Exercise string  // English name
@@ -73,6 +83,7 @@ type History struct {
 	Baseline *Baseline
 	// Yesterday's journal: the behaviors logged as done, with their effects.
 	Behaviors []BehaviorSignal
+	MaxHR     *MaxHR
 }
 
 // Rule inspects the history and returns a card, or nil.
@@ -92,6 +103,7 @@ var Rules = []Rule{
 	napCredit,
 	baselineLearned,
 	behaviorImpact,
+	maxHRObserved,
 }
 
 var severityRank = map[string]int{model.SeverityWarn: 0, model.SeverityNotice: 1, model.SeverityInfo: 2}
@@ -151,6 +163,12 @@ func (h History) WithBehaviors(b []BehaviorSignal) History {
 // WithBaseline adds the user's sleep baseline.
 func (h History) WithBaseline(b Baseline) History {
 	h.Baseline = &b
+	return h
+}
+
+// WithMaxHR adds the workout peaks the max-hr-observed card needs.
+func (h History) WithMaxHR(m MaxHR) History {
+	h.MaxHR = &m
 	return h
 }
 

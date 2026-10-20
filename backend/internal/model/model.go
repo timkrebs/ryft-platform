@@ -368,7 +368,18 @@ type User struct {
 	// Beta: access through an invite code, and the current consent.
 	BetaAccess bool     `json:"beta_access"`
 	Consent    *Consent `json:"consent"`
+	// The birth year (for the max-HR estimate) and where max_hr comes from
+	// (default|estimated|manual).
+	BirthYear   *int   `json:"birth_year"`
+	MaxHRSource string `json:"max_hr_source"`
 }
+
+// Where User.max_hr comes from; closed in v1.
+const (
+	HRSourceDefault   = "default"   // 190, nothing known
+	HRSourceEstimated = "estimated" // Tanaka, from the birth year
+	HRSourceManual    = "manual"    // set with PATCH /v1/me
+)
 
 // Consent is the current, unrevoked consent to health-data processing.
 type Consent struct {
@@ -411,9 +422,12 @@ const (
 )
 
 type UserPatch struct {
-	TZ           *string `json:"tz,omitempty"`
-	MaxHR        *int    `json:"max_hr,omitempty"`
-	SleepBaseMin *int    `json:"sleep_base_min,omitempty"` // sets the source to manual
+	TZ    *string `json:"tz,omitempty"`
+	MaxHR *int    `json:"max_hr,omitempty"` // sets the source to manual
+	// false: back to the estimate (or 190 without a birth year); true: keep as manual.
+	MaxHRManual  *bool `json:"max_hr_manual,omitempty"`
+	BirthYear    *int  `json:"birth_year,omitempty"`
+	SleepBaseMin *int  `json:"sleep_base_min,omitempty"` // sets the source to manual
 	// false: back to the learned estimate (or the default); true: keep as manual.
 	SleepBaseManual *bool `json:"sleep_base_manual,omitempty"`
 }
