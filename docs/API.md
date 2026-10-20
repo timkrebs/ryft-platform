@@ -25,6 +25,12 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
+| Onboarding — invite | redeem the beta invite code | `POST /v1/me/invite`, `User.beta_access` |
+| Onboarding — consent; Profile → Privacy | agree to (or withdraw) health-data processing for the current policy | `GET /v1/config` → `privacy_policy_*`, `POST`/`DELETE /v1/me/consent`, `User.consent` |
+| Onboarding — about you | birth year, max HR | `PATCH /v1/me` (`birth_year`, `max_hr`, `max_hr_manual`) |
+| Profile — Data sources | which apps and devices send what | `User.sources` |
+| Profile — Report a problem | message, diagnostics, request IDs | `POST /v1/feedback` |
+| (any score) | which model computed it, and what changed | `model_version`, `GET /v1/model` |
 | Profile — Notifications | per-category toggles, quiet hours | `User.notifications`, `PATCH /v1/me/notifications` |
 | (launch, then every 6 h) | feature flags | `GET /v1/config` |
 | (after the first sync, on every token change; sign-out) | push registration | `POST` / `DELETE /v1/devices/{id}/push` |
@@ -62,7 +68,16 @@ Every error response has the same shape:
 
 ```json
 { "error": "human-readable message", "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c" }
+{ "error": "consent required", "code": "consent_required", "request_id": "01a1…" }
 ```
+
+`code` (string?) is present when the client should do something specific; branch on it,
+not on the message. Closed enum:
+
+| `code` | Status | Do |
+| --- | --- | --- |
+| `invite_required` | `403` | The beta is invite-only and this account has no access yet: show the invite screen, `POST /v1/me/invite`. Every `/v1/*` route answers it except `GET /v1/me`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback` and `DELETE /v1/me`. |
+| `consent_required` | `403` | `POST /v1/sync` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then sync again. Reads keep working. |
 
 `request_id` equals the `X-Request-ID` response header. It is present on every error the
 services produce; decode it as optional anyway (a proxy in front may answer on its own).
@@ -71,7 +86,7 @@ services produce; decode it as optional anyway (a proxy in front may answer on i
 | --- | --- |
 | `400` | Malformed JSON, unknown body field, malformed date / UUID in query or path |
 | `401` | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token, or the account was deleted (checked before routing, so any `/v1/*` path). Refresh the session once and retry; a second `401` means sign in again. |
-| `403` | Changing a built-in exercise or plan (`PATCH`/`DELETE /v1/exercises/{id}`, `PUT`/`DELETE /v1/plans/{id}`) |
+| `403` | Changing a built-in exercise, plan or behavior; and the two `code`s above: `invite_required` (no beta access), `consent_required` (sync without consent to the current policy) |
 | `404` | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method |
 | `409` | The id is taken by another user's or a built-in exercise or plan; completing a discarded session. **`PUT /v1/sessions/{id}`**: the server has newer sets — the body is then the server's `Session`, not the error shape. |
 | `413` | Request body over the limit (32 MiB for `POST /v1/sync`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB otherwise). For sync, send smaller pages. |
@@ -108,6 +123,10 @@ user). Never exposed outside a developer machine.
 | --- | --- | --- | --- |
 | `POST` | `/v1/sync` | ingest | `SyncResponse` |
 | `GET` | `/v1/config` | api | `RemoteConfig` |
+| `GET` | `/v1/model` | api | `ModelInfo` |
+| `POST`, `DELETE` | `/v1/me/consent` | api | `204`, `204` |
+| `POST` | `/v1/me/invite` | api | `204` |
+| `POST` | `/v1/feedback` | api | `204` |
 | `GET` | `/v1/me` | api | `User` |
 | `PATCH` | `/v1/me` | api | `User` |
 | `PATCH` | `/v1/me/notifications` | api | `NotificationPrefs` |
@@ -146,12 +165,17 @@ Request `SyncRequest`:
 | --- | --- | --- |
 | `device_id` | uuid | Required. Stable per app install. |
 | `device_name` | string? | Optional, shown nowhere yet. |
+| `app_version` | string? | The app's version and build, e.g. `0.9.0 (41)`; kept on the device row for support (the admin view). |
+| `os_version` | string? | e.g. `iOS 26.1`. |
 | `samples` | `[Sample]` | May be empty. |
 | `sleep` | `[SleepSegment]` | May be empty. |
 | `workouts` | `[Workout]` | May be empty. `strain` is ignored on input. |
 
 `Sample`: `type` (enum below), `start`, `end` (timestamps, `end ≥ start`), `value`
-(number), `unit` (string, informational), `source` (string, HealthKit source name).
+(number), `unit` (string, informational), `source` (string, HealthKit source name),
+`source_bundle_id` (string?, the HealthKit source's bundle identifier, e.g.
+`com.ouraring.oura`; `User.sources` shows it). `SleepSegment` and `Workout` take
+`source_bundle_id` too.
 
 | `type` | Unit of `value` |
 | --- | --- |
@@ -179,7 +203,8 @@ Response `200 SyncResponse`:
 `samples`/`sleep`/`workouts` count rows written (sleep counts only new segments).
 `days_touched` are the local days queued for rescoring. Errors: `400` bad JSON,
 `422` validation (`device_id` missing, unknown `type`/`stage`, `end` before `start`,
-workout without `id`).
+workout without `id`), `403` `invite_required` / `consent_required` (Errors above): keep
+the HealthKit anchors and send the same pages again once that is resolved.
 
 ### `GET /v1/me` — user settings
 
@@ -188,11 +213,17 @@ workout without `id`).
   "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 455,
   "sleep_base_source": "learned", "sleep_base_learned_min": 455, "sleep_base_learned_at": "2026-10-18T02:00:04Z",
   "notifications": { "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
-                     "quiet_hours": { "from": "22:30", "to": "07:00" } } }
+                     "quiet_hours": { "from": "22:30", "to": "07:00" } },
+  "beta_access": true,
+  "consent": { "policy_version": "2026-10-20", "granted_at": "2026-10-20T09:12:44Z" },
+  "birth_year": 1990, "max_hr_source": "estimated",
+  "sources": [ { "name": "Tim's Apple Watch", "bundle_id": "com.apple.health.81E2…", "kinds": ["energy", "hr", "hrv", "resp", "sleep", "spo2", "workout"], "last_seen": "2026-10-20T06:58:00Z" },
+               { "name": "Tim's iPhone", "bundle_id": "com.apple.health.3F0A…", "kinds": ["steps"], "last_seen": "2026-10-20T08:40:00Z" } ] }
 ```
 
 The user is created on the first authenticated request with `tz = Europe/Berlin`,
-`max_hr = 190`, `sleep_base_min = 460`; set real values with `PATCH /v1/me`.
+`max_hr = 190` (`max_hr_source: default`), `sleep_base_min = 460`; set real values with
+`PATCH /v1/me`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -206,6 +237,11 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `sleep_base_source` | string | `default` (460 min, nothing learned yet), `learned` (the weekly estimate below), `manual` (set with `PATCH`). Closed enum. |
 | `sleep_base_learned_min` | int? | The latest learned estimate, also while `manual` (for "learned 7 h 35 min · override"); `null` until there is one. |
 | `sleep_base_learned_at` | timestamp? | When that estimate was computed. |
+| `beta_access` | bool | The account redeemed an invite code (or existed before the gate). Without it, and with the gate on, other routes answer `403 invite_required`. |
+| `consent` | `Consent?` | The latest consent to health-data processing that was not withdrawn: `{policy_version, granted_at}`; `null` when there is none. Syncing needs `policy_version` to equal `GET /v1/config` → `privacy_policy_version`. |
+| `birth_year` | int? | For the max-HR estimate; nothing finer is stored. |
+| `max_hr_source` | string | `default` (190, nothing known), `estimated` (208 − 0.7 · age, Tanaka, from `birth_year`), `manual` (set with `PATCH`). Closed enum. |
+| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`), `last_seen` (the latest record's time). |
 | `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
 
 **Learned baseline.** Every Sunday from 04:00 local time, scoring estimates the
@@ -217,12 +253,17 @@ seven days are rescored with it.
 
 ### `PATCH /v1/me` — change settings
 
-Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230),
+Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230;
+sets `max_hr_source` to `manual`), `max_hr_manual` (bool; `false` goes back to the
+estimate, or to 190 without a birth year), `birth_year` (int, 1920 to this year − 13;
+while the source is not `manual`, `max_hr` becomes `round(208 − 0.7 · (this year −
+birth_year))` and the source `estimated`),
 `sleep_base_min` (int, 240–720; sets `sleep_base_source` to `manual`, so learning no
 longer changes it), `sleep_base_manual` (bool; `false` goes back to the learned estimate,
 or to the default 460 when there is none; `true` keeps the current value as manual).
-Returns the updated `User`. `422` on an unknown zone, an out-of-range value, or
-`sleep_base_min` together with `sleep_base_manual: false`; `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
+Returns the updated `User`. `422` on an unknown zone, an out-of-range value,
+`sleep_base_min` together with `sleep_base_manual: false`, or `max_hr` together with
+`max_hr_manual: false`; `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
 `POST /v1/recompute`.
 
 ### `DELETE /v1/me` — delete the account
@@ -285,7 +326,8 @@ the last answer (and compiled-in defaults) when offline.
 ```json
 { "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
              "coach.enabled": false, "push.enabled": false, "physiology.card": false },
-  "evaluated_at": "2026-10-19T06:12:00Z", "ttl_sec": 21600 }
+  "evaluated_at": "2026-10-19T06:12:00Z", "ttl_sec": 21600,
+  "privacy_policy_version": "2026-10-20", "privacy_policy_url": "https://ryftapp.de/privacy" }
 ```
 
 | Field | Type | Notes |
@@ -293,6 +335,8 @@ the last answer (and compiled-in defaults) when offline.
 | `flags` | `{string: bool}` | Every flag the platform has, on or off for this user. Keys are **open**: ignore unknown ones, and use the compiled default for one that is missing. |
 | `evaluated_at` | timestamp | When this answer was computed. |
 | `ttl_sec` | int | How long to use it: 21600 (6 h). |
+| `privacy_policy_version` | string | The privacy policy in force. Consent (`POST /v1/me/consent`) is given to this version; when it changes, every user consents again before the next sync. |
+| `privacy_policy_url` | string | Where it is published, in German and English. |
 
 A flag is on for a user when it is enabled and the user is on its allow-list or in its
 first `rollout_pct` of 100 buckets: bucket = the first four bytes of SHA-256 of
@@ -398,6 +442,59 @@ The keys, as the app ships them in `Localizable.xcstrings` (`%@` and positional
 | `SYNC_STALE_BODY` | Nothing new from your watch for %@ hours. Open RYFT to sync. | Seit %@ Stunden nichts Neues von deiner Uhr. Öffne RYFT zum Synchronisieren. |
 | `SYNC_STALE_TITLE` | No new data | Keine neuen Daten |
 
+### `POST /v1/me/consent` · `DELETE /v1/me/consent` — consent to health-data processing
+
+Heart rate, sleep and the rest are health data (GDPR Art. 9); RYFT processes them on
+the user's explicit consent to the current privacy policy. `POST` records it:
+
+```json
+{ "policy_version": "2026-10-20", "app_version": "0.9.0 (41)" }
+```
+
+`204`. `422` when `policy_version` is not `GET /v1/config` → `privacy_policy_version`
+(the app showed an outdated text). Repeating it for the same version keeps the first
+`granted_at`. `DELETE` withdraws it (`204`, also when there was none): from then on
+`POST /v1/sync` answers `403 consent_required`, at once. Withdrawing deletes nothing; the
+app offers export and deletion next to it (`DELETE /v1/me`). Every grant and withdrawal
+is kept with its time, policy version and app version.
+
+### `POST /v1/me/invite` — redeem an invite code
+
+`{"code": "RYFT-7K3M-QX9P"}` → `204`, and `User.beta_access` becomes `true`. Case,
+spaces and dashes do not matter. `422 "invalid or used code"` for an unknown, expired or
+used-up code (one message for all three). At most 5 attempts per user and hour (`429`).
+An account that already has access gets `204` without using the code.
+
+### `GET /v1/model` — the scoring model and what changed
+
+```json
+{ "current": "2026.10.1",
+  "changelog": [ { "version": "2026.10.1", "date": "2026-10-20",
+                   "summary": "The model at the start of the beta: …",
+                   "summary_en": "The model at the start of the beta: …",
+                   "summary_de": "Das Modell zum Start der Beta: …",
+                   "affects": ["readiness", "recovery", "strain", "sleep", "sleep_quality"] } ] }
+```
+
+Newest first. `summary` follows `Accept-Language`. `affects` names trend metrics
+(`GET /v1/trends`). Scores with an older `model_version` move when they are rescored;
+the app can say "recalculated with model 2026.11.1" and show the entry.
+
+### `POST /v1/feedback` — report a problem
+
+```json
+{ "message": "Recovery 41 after a great night?", "category": "data",
+  "app_version": "0.9.0", "build": "41", "device_model": "iPhone17,1", "os_version": "iOS 26.1",
+  "request_ids": ["01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c"],
+  "diagnostics": { "last_sync": "2026-10-20T06:58:00Z", "healthkit_types": 9 } }
+```
+
+`message` 1–4000 characters; `category` `bug`, `idea`, `data` or `other` (default);
+`app_version`, `build`, `device_model`, `os_version` strings up to 64 characters;
+`request_ids` up to 20 (each up to 64); `diagnostics` any JSON object up to 32 KiB.
+`204`. At most 10 per user and day (`429`). Deleted with the account. Do not put health
+values into `message` or `diagnostics` that the user did not write themselves.
+
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
 
 Both parameters optional; default is the 30 days ending today (local). Returns the
@@ -448,6 +545,7 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `calibrating` | bool | `baseline_days < 7`. |
 | `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
+| `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
 
 ### `GET /v1/days/{day}` — one day
 
@@ -582,6 +680,7 @@ oldest first.
 | `strain` | number? | 0–21, filled by scoring, including an attached session's muscular load. Omitted until scored. |
 | `muscular_load` | number? | Muscular load (TRIMP-equivalent) of the strength session attached to this workout. Omitted when none. |
 | `session_id` | uuid? | That session. Omitted when none. A workout with `source` `ryft-session` was created for a session that has no matching HealthKit workout. |
+| `model_version` | string? | The scoring model of its `strain`, as on `DailyScore`. Omitted until scored. |
 
 ### `GET /v1/workouts/{id}` — one workout
 
@@ -665,6 +764,8 @@ for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 | `readiness-up` | info | Readiness rising ≥ 1 point/day over the last 7 days (least-squares fit, ≥ 5 days). |
 | `hrv-best-30d` | info | Last night's HRV is the highest of the last 30 days (≥ 14 nights of data). |
 | `pr` | info | A personal record in a session completed today or yesterday (the newest; an `e1rm` record before the others). Metric `volume_kg`. |
+| `no-heart-rate-source` | info | Data arrived in the last 7 days (steps, sleep) but no heart rate: strain, recovery and readiness need a watch or ring that writes heart rate to Apple Health. Fixed copy. Metric `strain`. |
+| `max-hr-observed` | info | In the last 90 days a workout went at least 3 bpm above `max_hr` on two different days; the card names the lower of the two highest days' peaks as a likely max HR (nothing changes by itself). Metric `strain`. |
 | `behavior-impact` | notice | A behavior logged for yesterday whose effect on recovery is unlocked, significant and negative (the largest such): "Alcohol yesterday — your recovery is typically 14 points lower". Metric `recovery`. |
 | `sleep-consistency-low` | notice | `sleep_consistency` below 60 (over the last 7 nights). Metric `sleep_consistency`. |
 | `nap-credit` | info | A nap of ≥ 45 min today (or yesterday, before today syncs): tonight's need is that much lower. Metric `nap_min`. |
@@ -1172,6 +1273,7 @@ struct DailyScore: Codable, Identifiable {
     let baselineDays: Int
     let calibrating: Bool
     let computedAt: Date
+    let modelVersion: String?
     var id: String { day }
 }
 
@@ -1233,6 +1335,7 @@ struct Workout: Codable, Identifiable {
     var strain: Double?
     let muscularLoad: Double?
     let sessionId: UUID?
+    let modelVersion: String?
 }
 
 struct DayDetail: Codable {
@@ -1361,6 +1464,64 @@ struct User: Codable {
     let sleepBaseLearnedMin: Int?
     let sleepBaseLearnedAt: Date?
     let notifications: NotificationPrefs
+    let betaAccess: Bool
+    let consent: Consent?
+    let birthYear: Int?
+    let maxHrSource: MaxHRSource
+    let sources: [UserSource]
+}
+
+// ---- Beta: consent, invite, profile, sources, model, feedback ---------------------
+
+enum MaxHRSource: String, Codable { case `default`, estimated, manual }
+enum SourceKind: String, Codable { case energy, hr, hrv, resp, sleep, spo2, steps, workout }
+
+struct Consent: Codable {
+    let policyVersion: String
+    let grantedAt: Date
+}
+
+struct UserSource: Codable {
+    let name: String
+    let bundleId: String?
+    let kinds: [SourceKind]
+    let lastSeen: Date
+}
+
+struct ConsentPost: Encodable {   // POST /v1/me/consent
+    let policyVersion: String
+    var appVersion: String? = nil
+}
+
+struct InvitePost: Encodable {   // POST /v1/me/invite
+    let code: String
+}
+
+struct ModelChange: Codable {
+    let version: String
+    let date: String
+    let summary: String
+    let summaryEn: String
+    let summaryDe: String
+    let affects: [String]
+}
+
+struct ModelInfo: Codable {   // GET /v1/model
+    let current: String
+    let changelog: [ModelChange]
+}
+
+enum FeedbackCategory: String, Codable { case bug, idea, data, other }
+
+struct FeedbackPost: Encodable {   // POST /v1/feedback
+    let message: String
+    var category: FeedbackCategory? = nil
+    var appVersion: String? = nil
+    var build: String? = nil
+    var deviceModel: String? = nil
+    var osVersion: String? = nil
+    var requestIds: [String] = []
+    var diagnostics: [String: String]? = nil   // the server takes any JSON object up to 32 KiB
 }
 
 // ---- Journal ----------------------------------------------------------------------
@@ -1454,6 +1615,8 @@ struct RemoteConfig: Codable {   // GET /v1/config
     let flags: [String: Bool]     // open keys
     let evaluatedAt: Date
     let ttlSec: Int
+    let privacyPolicyVersion: String
+    let privacyPolicyUrl: String
 }
 
 enum NotificationCategory: String, Codable, CaseIterable {
@@ -1501,6 +1664,8 @@ struct RyftPushInfo: Decodable {   // userInfo["ryft"] of a notification
 struct UserPatch: Codable {   // PATCH /v1/me, every field optional
     var tz: String?
     var maxHr: Int?
+    var maxHrManual: Bool?
+    var birthYear: Int?
     var sleepBaseMin: Int?
     var sleepBaseManual: Bool?
 }
@@ -1743,8 +1908,11 @@ struct SessionComplete: Codable {   // POST /v1/sessions/{id}/complete
     let endedAt: Date?
 }
 
+enum APIErrorCode: String, Codable { case inviteRequired = "invite_required", consentRequired = "consent_required" }
+
 struct APIErrorBody: Codable {
     let error: String
+    var code: APIErrorCode? = nil  // closed enum; branch on it
     let requestId: String?   // same as the X-Request-ID header
 }
 ```
@@ -1753,6 +1921,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-20 | **Beta** (external TestFlight): error `code` (`invite_required`, `consent_required`; `APIErrorBody.code`); consent to health-data processing (`POST`/`DELETE /v1/me/consent`, `User.consent`, `GET /v1/config` → `privacy_policy_version` / `privacy_policy_url`; `POST /v1/sync` needs it); invite codes (`POST /v1/me/invite`, `User.beta_access`); `User.birth_year` / `max_hr_source` and `PATCH /v1/me` `birth_year` / `max_hr_manual` (Tanaka estimate); `User.sources`; `SyncRequest.app_version` / `os_version` and `source_bundle_id` on samples, sleep segments and workouts; `model_version` on `DailyScore` and `Workout`, `GET /v1/model`; `POST /v1/feedback`; insights `no-heart-rate-source`, `max-hr-observed`. **Behaviour:** sync answers `403 consent_required` until the user consents; with the beta gate on, accounts without a redeemed code get `403 invite_required`. Swift: `APIErrorCode`, `Consent`, `UserSource`, `SourceKind`, `MaxHRSource`, `ConsentPost`, `InvitePost`, `ModelInfo`, `ModelChange`, `FeedbackCategory`, `FeedbackPost`, the new fields. |
 | 2026-10-19 | **Journal and behavior impact** (M5): `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` (25 built-ins, custom behaviors with app ids), `GET`/`PUT /v1/journal/{day}` (a saved day; unsent behaviors are unknown, not "no"), `GET /v1/behaviors/impact` (recovery, HRV % and sleep performance the morning after, yes − no with a 90 % bootstrap interval, unlocked at 5 + 5 days), insight `behavior-impact`. Swift: `BehaviorKind`, `BehaviorCategory`, `ImpactStatus`, `Behavior`, `BehaviorsPatch`, `BehaviorInput`, `JournalEntry`, `JournalDay`, `JournalPut`, `BehaviorEffect`, `ImpactNeeded`, `BehaviorImpact`, `BehaviorImpacts`. |
 | 2026-10-19 | **Remote config and push** (M7 core): `GET /v1/config` (feature flags evaluated per user, `ttl_sec` 21600); `PATCH /v1/me/notifications` and `User.notifications`; `POST` / `DELETE /v1/devices/{id}/push`; the push notifications `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` and the silent refresh, with their localisation keys. Nothing is sent until the APNs key is configured. Swift: `RemoteConfig`, `NotificationCategory`, `QuietHours`, `NotificationPrefs`, `NotificationPatch`, `PushEnvironment`, `PushRegistration`, `RyftPushInfo`, `User.notifications`. |
 | 2026-10-19 | **Sleep upgrades** (M4): `DailyScore.nap_min`, `sleep_quality`, `sleep_consistency` and the need breakdown (`sleep_need_base_min`, `_strain_min`, `_debt_min`, `_nap_min`); `DayDetail.sleep.need` and `restorative`; `SleepRange.avg_consistency`, `bedtimes`, `days[].consistency` / `nap_min`; `User.sleep_base_source` / `sleep_base_learned_min` / `sleep_base_learned_at` and `UserPatch.sleep_base_manual`; `GET /v1/sleep/plan`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min`; insights `sleep-consistency-low`, `nap-credit`, `baseline-learned`. **Behaviour, no shape change:** `quality` is now its own score instead of a copy of sleep performance, so quality values and labels change; a nap lowers the following night's need; the baseline is learned weekly unless set by hand. Rescore history to fill past days. Swift: the new fields and types, `UserPatch` joins the mirror. |
