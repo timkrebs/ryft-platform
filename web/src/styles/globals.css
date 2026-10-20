@@ -82,8 +82,11 @@ a:hover {
   text-decoration-color: currentColor;
 }
 
+/* Emphasis in Medium, as the app does: Bold stays available but isn't fetched by any page,
+   which keeps the long texts at two font files (D4). */
 strong {
-  font-weight: 700;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 img,
@@ -155,8 +158,6 @@ math {
 }
 
 math[display='block'] {
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 4px 0;
 }
 

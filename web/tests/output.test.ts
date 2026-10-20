@@ -91,4 +91,19 @@ describe.skipIf(!built)('built site', () => {
       expect(page, f).toMatch(/<link rel="alternate" hrefLang="en"/);
     }
   });
+
+  it('lists the app’s and the site’s components with their licences on /licenses', () => {
+    const page = readFileSync(join(OUT, 'licenses.html'), 'utf8');
+    for (const name of [
+      'supabase-swift',
+      'swift-crypto',
+      '>next<',
+      '>react<',
+      'Satoshi',
+      'ITF Free Font License',
+    ]) {
+      expect(page).toContain(name);
+    }
+    expect(page).toContain('Permission is hereby granted');
+  });
 });

@@ -77,11 +77,7 @@ function Group({
                 <p>
                   {t.source}: <a href={c.url}>{c.url.replace(/^https?:\/\//, '')}</a>
                 </p>
-                {c.text ? (
-                  <pre aria-label={`${t.text}: ${c.name}`}>{c.text}</pre>
-                ) : (
-                  <p>{format(t.noText, { license: c.license })}</p>
-                )}
+                {c.text ? <pre>{c.text}</pre> : <p>{format(t.noText, { license: c.license })}</p>}
               </div>
             </details>
           </li>

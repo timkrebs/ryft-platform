@@ -13,7 +13,8 @@ export function Formula({ tex }: { tex: string }) {
     .renderToString(tex, { displayMode: true, annotate: true, throwOnError: true })
     // Temml sets display:block math inline; the stylesheet does it (CSP: no inline styles).
     .replace(/\s+style="[^"]*"/g, '');
-  return <div className={styles.formula} dangerouslySetInnerHTML={{ __html: mathml }} />;
+  // Wide formulas scroll sideways inside their box, which must then be reachable by keyboard.
+  return <div className={styles.formula} tabIndex={0} dangerouslySetInnerHTML={{ __html: mathml }} />;
 }
 
 /** The long-text frame: measure, rhythm, tables and links in the app's tokens. */

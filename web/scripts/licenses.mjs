@@ -94,15 +94,18 @@ const seen = new Set();
 const web = [];
 for (const n of nodes.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))) {
   const key = `${n.name}@${n.version}`;
-  if (n.path === ROOT || devOnly.has(n.name) || seen.has(key)) continue;
+  // `location` is relative to the project (npm masks UUID-like segments in absolute paths).
+  // Optional dependencies for other platforms appear in the tree without being installed.
+  const dir = join(ROOT, n.location ?? '');
+  if (!n.location || devOnly.has(n.name) || seen.has(key) || !existsSync(dir)) continue;
   seen.add(key);
-  const file = readdirSync(n.path).find((f) => /^(licen[cs]e|copying)(\.|-|$)/i.test(f));
+  const file = readdirSync(dir).find((f) => /^(licen[cs]e|copying)(\.|-|$)/i.test(f));
   web.push({
     name: n.name,
     version: n.version,
     license: typeof n.license === 'string' ? n.license : (n.license?.type ?? 'see text'),
     url: repoUrl(n),
-    text: file ? readFileSync(join(n.path, file), 'utf8').trim() : null,
+    text: file ? readFileSync(join(dir, file), 'utf8').trim() : null,
   });
 }
 web.push(satoshi);

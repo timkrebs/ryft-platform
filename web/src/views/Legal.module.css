@@ -15,12 +15,12 @@
 }
 
 .draftTitle {
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
 .draft p:last-child:not(.draftTitle) {
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .header {

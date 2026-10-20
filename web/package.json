@@ -17,7 +17,7 @@
     "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs",
     "build": "next build",
     "postbuild": "node scripts/postbuild.mjs && node scripts/csp.mjs && node scripts/check-brand.mjs --out-only",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "lint": "eslint . && prettier --check . && node scripts/check-brand.mjs && node scripts/check-messages.mjs",
     "format": "prettier --write .",
     "brand": "node scripts/check-brand.mjs",
@@ -31,7 +31,9 @@
     "og": "node scripts/og.mjs",
     "image": "node scripts/container.mjs build",
     "serve": "node scripts/container.mjs run",
-    "serve:stop": "node scripts/container.mjs stop"
+    "serve:stop": "node scripts/container.mjs stop",
+    "e2e": "playwright test",
+    "links": "linkinator http://localhost:8080/ --config linkinator.config.json"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",
