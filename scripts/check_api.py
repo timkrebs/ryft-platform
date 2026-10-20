@@ -385,6 +385,20 @@ def consent(key=None):
 
 cfg_b = get("/v1/config")
 check(cfg_b["privacy_policy_url"].startswith("https://") and POLICY, f"/v1/config privacy fields: {cfg_b}")
+
+# ---- scoring model (GET /v1/model, model_version) -----------------------------
+MODEL = get("/v1/model")
+check(MODEL["current"] and MODEL["changelog"] and MODEL["changelog"][0]["version"] == MODEL["current"]
+      and all(set(c) == {"version", "date", "summary", "summary_en", "summary_de", "affects"} for c in MODEL["changelog"]),
+      f"/v1/model shape: {MODEL}")
+check(all(c["summary"] == c["summary_en"] for c in MODEL["changelog"]), "summary is English by default")
+_, _, model_de = raw("GET", "/v1/model", headers={"Accept-Language": "de-DE,de;q=0.9"})
+check(all(c["summary"] == c["summary_de"] for c in model_de["changelog"]), "summary follows Accept-Language")
+latest = get(f"/v1/days?to={TODAY}")
+check(latest and latest[-1]["model_version"] == MODEL["current"]
+      and all(d["model_version"] in (None, MODEL["current"]) for d in latest),
+      f"days carry the current model_version: {[(d['day'], d['model_version']) for d in latest[-3:]]}")
+ok(f"/v1/model: {MODEL['current']}, {len(MODEL['changelog'])} entries; the last scored day carries it")
 me_c = get("/v1/me")
 check(me_c["consent"] and me_c["consent"]["policy_version"] == POLICY and me_c["beta_access"] in (True, False),
       f"User.consent after smoke.sh consented: {me_c.get('consent')}")

@@ -96,6 +96,7 @@ func main() {
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/config", h.remoteConfig)
+	api.HandleFunc("GET /v1/model", h.modelInfo)
 	api.HandleFunc("GET /v1/me", h.me)
 	api.HandleFunc("PATCH /v1/me", h.patchMe)
 	api.HandleFunc("POST /v1/me/apple-authorization", h.appleAuthorization)

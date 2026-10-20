@@ -1,0 +1,9 @@
+[
+  {
+    "version": "2026.10.1",
+    "date": "2026-10-20",
+    "summary_en": "The model at the start of the beta. Recovery compares last night's HRV, resting heart rate and breathing with your own last 30 days, plus sleep. Strain is heart-rate load on a 0–21 scale, with logged strength sessions added as muscular load. Sleep need is your baseline (learned weekly) plus strain and debt, minus naps; sleep quality weighs performance, efficiency and deep + REM sleep. Overlapping sources count once.",
+    "summary_de": "Das Modell zum Start der Beta. Die Erholung vergleicht HRV, Ruhepuls und Atmung der letzten Nacht mit deinen eigenen letzten 30 Tagen, dazu den Schlaf. Die Belastung ist die Herzfrequenz-Last auf einer Skala von 0 bis 21, eingetragene Krafteinheiten zählen als Muskellast dazu. Der Schlafbedarf ist dein (wöchentlich gelernter) Grundbedarf plus Belastung und Schlafschuld, minus Nickerchen; die Schlafqualität gewichtet Leistung, Effizienz sowie Tief- und REM-Schlaf. Überlappende Quellen zählen einmal.",
+    "affects": ["readiness", "recovery", "sleep", "sleep_consistency", "sleep_quality", "strain"]
+  }
+]

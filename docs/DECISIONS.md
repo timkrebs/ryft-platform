@@ -1172,3 +1172,67 @@ asked for is cheaper than keeping them fresh: ~44 ms of CPU for 75 unlocked beha
   and medication beyond them were left out of the built-ins (custom behaviors cover
   them for whoever wants them).
 
+
+## D78 — Consent: recorded per policy version, enforced where data comes in and is processed
+
+Heart rate, HRV and sleep are health data (GDPR Art. 9); for a consumer app the basis is
+the user's explicit consent (Art. 9(2)(a)), and it has to be provable and withdrawable.
+
+- **A row per grant**, `revoked_at` on withdrawal, nothing ever updated otherwise
+  (`consents`, migration 0017): the history answers "what did this user agree to, when,
+  in which app version". Repeating a grant for the same version keeps the first row.
+- **The policy version** lives in config (`PRIVACY_POLICY_VERSION`, served in
+  `GET /v1/config`), not in a table: a new text ships with a deploy, and a POST for any
+  other version is a `422` (the app showed an outdated text).
+- **Enforced at the two places health data is processed**: ingest refuses a sync with
+  `403 consent_required` before it reads the body (no current consent, or one to an older
+  version), and scoring computes nothing for a user without an unrevoked consent
+  (`ErrNoConsent`; any version, since new data cannot arrive under an old one anyway).
+  Reads, export and `DELETE /v1/me` stay open: withdrawing must not lock the user out of
+  their own data or out of deleting it. Withdrawal deletes nothing; erasure is its own
+  right and its own button.
+- **Read with the user row** (scalar subqueries in `userColumns`), never cached: a
+  withdrawal stops the next sync and the next scoring pass, not 60 s later.
+- **Existing accounts get no consent backfilled**: consent cannot be presumed. Until an
+  app build with the consent screen ships, the user's own account consents once with
+  `POST /v1/me/consent` and its token; until then its syncs answer `403`.
+
+## D79 — The invite gate: server-side, codes with ~40 bits, one message for every failure
+
+TestFlight's public link travels, and Sign in with Apple lets anyone with the app make an
+account, so the gate is the server's: with `BETA_GATE=on` every `/v1` route answers
+`403 invite_required` for an account without access, except what onboarding needs
+(`GET /v1/me`, `GET /v1/config`, `GET /v1/model`, consent, `POST /v1/me/invite`,
+`POST /v1/feedback`, `DELETE /v1/me`). Off by default (local, smoke); production turns it
+on through Vault (`BETA_GATE` in the api and ingest secrets).
+
+- **Codes**: `RYFT` + 8 characters from 31 (digits 2–9 and letters without I, L, O, so
+  nothing is misread), drawn with rejection sampling from `crypto/rand`: ~40 bits, shown
+  `RYFT-7K3M-QX9P`, stored upper case without dashes. Case, spaces and dashes do not matter
+  when redeeming. `max_uses` (1–1000), optional `expires_at`, a note for whom it was.
+- **No oracle**: unknown, expired and used-up codes get the same `422`; 5 attempts per user
+  and hour (per pod), against ~10¹² codes.
+- **Redeeming locks the user row**, so two concurrent redemptions use one code once; an
+  account that already has access gets `204` without using one.
+- **Every account that existed at the migration keeps access** (the user, smoke and test
+  accounts), so turning the gate on breaks none of them.
+- The operator manages codes with `ADMIN_API_KEY` (`/v1/admin/invites`); admin calls log a
+  fingerprint of the key (first 4 bytes of its SHA-256), never the key.
+
+## D80 — A model version per stored row, the changelog in the binary
+
+Beta testers will compare numbers across weeks; when a rule changes, "why did my recovery
+move" needs an answer.
+
+- **`ModelVersion` in code** (`internal/scoring/version.go`), `year.month.n`: it names a
+  state of the rules, it promises no compatibility, so no semver. Bumped by any change that
+  moves a stored number (docs/SCORING.md → Model version).
+- **Written on every row scoring writes** (`daily_scores`, the workout load), not per user:
+  after a partial rescore, each number still says which model made it. Rows from before
+  have `null`; nothing is backfilled, because nobody knows which rules made them.
+- **The changelog is embedded JSON**, versioned with the code it describes: no table, no
+  admin route, it cannot disagree with the deployed binary. A test pins newest-first, the
+  newest entry equal to `ModelVersion`, and `affects` naming real trend metrics. Both
+  languages are served; `summary` follows `Accept-Language`.
+- Insights and behavior impact are computed on request from the stored scores, so they
+  carry no version of their own.

@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -57,6 +58,10 @@ const (
 	nightEndOffset   = 13 * time.Hour
 )
 
+// ErrNoConsent: the user has withdrawn (or never given) consent to processing
+// their health data, so nothing is scored (D78). Callers count it, not fail on it.
+var ErrNoConsent = errors.New("no consent to health-data processing")
+
 // ComputeRange recomputes every day in [from, to], inclusive, oldest first.
 func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to string) error {
 	n, err := RangeDays(from, to)
@@ -66,9 +71,13 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 	if n > MaxRangeDays {
 		return fmt.Errorf("range too large (max %d days)", MaxRangeDays)
 	}
-	_, loc, err := e.st.GetUser(ctx, userID)
+	user, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if user.Consent == nil {
+		metrics.DaysScored.WithLabelValues("no_consent").Add(float64(n))
+		return ErrNoConsent
 	}
 	a, _ := time.ParseInLocation("2006-01-02", from, loc)
 	b, _ := time.ParseInLocation("2006-01-02", to, loc)
@@ -80,11 +89,14 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 	return nil
 }
 
-// ComputeDay scores one local calendar day.
+// ComputeDay scores one local calendar day; ErrNoConsent without consent.
 func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) error {
 	start := time.Now()
 	err := e.computeDay(ctx, userID, day)
 	result := metrics.Result(err)
+	if errors.Is(err, ErrNoConsent) {
+		result = "no_consent"
+	}
 	metrics.DaysScored.WithLabelValues(result).Inc()
 	metrics.ScoringDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
 	return err
@@ -94,6 +106,9 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	user, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if user.Consent == nil {
+		return ErrNoConsent
 	}
 	d, err := time.ParseInLocation("2006-01-02", day, loc)
 	if err != nil {
@@ -225,7 +240,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		} else if w.AvgHR != nil {
 			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
 		}
-		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, strainOf(load, w), load.TRIMP, load.ZoneMinutes); err != nil {
+		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, strainOf(load, w), load.TRIMP, load.ZoneMinutes, ModelVersion); err != nil {
 			return err
 		}
 	}
@@ -305,6 +320,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	}
 
 	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
+	version := ModelVersion
 
 	row := model.DailyScore{
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, Steps: steps, ActiveKcal: kcal,
@@ -315,6 +331,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		Calibrating:  rec.Calibrating, Details: details,
 		SleepNeedBaseMin: &parts.Base, SleepNeedStrainMin: &parts.Strain, SleepNeedDebtMin: &parts.Debt,
 		SleepNeedNapMin: &parts.Nap, NapMin: &napMin, SleepQuality: quality, SleepConsistency: consistency,
+		ModelVersion: &version,
 	}
 	if strength.Sessions > 0 {
 		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10

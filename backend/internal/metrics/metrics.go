@@ -77,7 +77,7 @@ var (
 	// scoring.
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_days_scored_total",
-		Help: "Days scored, by result (ok, error).",
+		Help: "Days scored, by result (ok, error, no_consent: skipped, the user withdrew consent).",
 	}, []string{"result"})
 	ScoringDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ryft_scoring_duration_seconds",

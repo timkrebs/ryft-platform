@@ -81,6 +81,8 @@ type Workout struct {
 	// attached to this workout, and that session.
 	MuscularLoad *float64   `json:"muscular_load,omitempty"`
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
+	// Read-only: the scoring model of strain (ignored on upload).
+	ModelVersion *string `json:"model_version,omitempty"`
 }
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
@@ -132,6 +134,8 @@ type DailyScore struct {
 	Calibrating        bool           `json:"calibrating"`     // baseline_days < 7
 	Details            map[string]any `json:"details"`
 	ComputedAt         time.Time      `json:"computed_at"`
+	// The scoring model that computed the row; nil before versions existed.
+	ModelVersion *string `json:"model_version"`
 }
 
 type DayDetail struct {
@@ -521,6 +525,22 @@ type BehaviorImpacts struct {
 	WindowDays int              `json:"window_days"`
 	ComputedAt time.Time        `json:"computed_at"`
 	Impacts    []BehaviorImpact `json:"impacts"`
+}
+
+// ModelInfo is GET /v1/model.
+type ModelInfo struct {
+	Current   string             `json:"current"`
+	Changelog []ModelChangeEntry `json:"changelog"`
+}
+
+// ModelChangeEntry is one changelog entry, its summary in the request's language.
+type ModelChangeEntry struct {
+	Version   string   `json:"version"`
+	Date      string   `json:"date"`
+	Summary   string   `json:"summary"`
+	SummaryEN string   `json:"summary_en"`
+	SummaryDE string   `json:"summary_de"`
+	Affects   []string `json:"affects"`
 }
 
 // ---- Remote config (GET /v1/config) --------------------------------------------

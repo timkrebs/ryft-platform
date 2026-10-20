@@ -454,7 +454,8 @@ the user's explicit consent to the current privacy policy. `POST` records it:
 `204`. `422` when `policy_version` is not `GET /v1/config` → `privacy_policy_version`
 (the app showed an outdated text). Repeating it for the same version keeps the first
 `granted_at`. `DELETE` withdraws it (`204`, also when there was none): from then on
-`POST /v1/sync` answers `403 consent_required`, at once. Withdrawing deletes nothing; the
+`POST /v1/sync` answers `403 consent_required`, at once, and no day is scored any more
+(stored scores stay readable). Withdrawing deletes nothing; the
 app offers export and deletion next to it (`DELETE /v1/me`). Every grant and withdrawal
 is kept with its time, policy version and app version.
 

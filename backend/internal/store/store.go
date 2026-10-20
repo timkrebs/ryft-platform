@@ -446,7 +446,7 @@ func (s *Store) SleepEndingBetween(ctx context.Context, userID uuid.UUID, from, 
 
 func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source, strain,
-		muscular_load, session_id
+		muscular_load, session_id, model_version
 		FROM workouts WHERE user_id=$1 AND start_at >= $2 AND start_at < $3 ORDER BY start_at`, userID, from, to)
 	if err != nil {
 		return nil, err
@@ -454,20 +454,20 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
 		var w model.Workout
 		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
-			&w.MuscularLoad, &w.SessionID)
+			&w.MuscularLoad, &w.SessionID, &w.ModelVersion)
 		return w, err
 	})
 }
 
 // SetWorkoutLoad stores what scoring computed for one workout: strain, TRIMP
 // and minutes in the five heart-rate-reserve zones.
-func (s *Store) SetWorkoutLoad(ctx context.Context, userID, id uuid.UUID, strain, trimp float64, zones [5]float64) error {
+func (s *Store) SetWorkoutLoad(ctx context.Context, userID, id uuid.UUID, strain, trimp float64, zones [5]float64, version string) error {
 	z, err := json.Marshal(roundZones(zones[:]))
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$3, trimp=$4, zone_minutes=$5 WHERE user_id=$1 AND id=$2`,
-		userID, id, strain, math.Round(trimp*10)/10, z)
+	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$3, trimp=$4, zone_minutes=$5, model_version=$6 WHERE user_id=$1 AND id=$2`,
+		userID, id, strain, math.Round(trimp*10)/10, z, version)
 	return err
 }
 
@@ -483,9 +483,9 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 	var w WorkoutRow
 	var zones []byte
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
-		source, strain, zone_minutes, trimp, muscular_load, session_id FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
+		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}
@@ -602,9 +602,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
 		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
 		 muscular_trimp, strength_min, volume_kg, nap_min, sleep_quality, sleep_consistency,
-		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, computed_at)
+		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, model_version, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -620,14 +620,15 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 muscular_trimp=EXCLUDED.muscular_trimp, strength_min=EXCLUDED.strength_min, volume_kg=EXCLUDED.volume_kg,
 		 nap_min=EXCLUDED.nap_min, sleep_quality=EXCLUDED.sleep_quality, sleep_consistency=EXCLUDED.sleep_consistency,
 		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
-		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min, computed_at=now()
+		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min,
+		 model_version=EXCLUDED.model_version, computed_at=now()
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
-		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin).Scan(&firstRecovery)
+		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin, d.ModelVersion).Scan(&firstRecovery)
 	return firstRecovery, err
 }
 
@@ -677,7 +678,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		strength_min, volume_kg, sleep_performance, sleep_need_min,
 		sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, nap_min, sleep_quality, sleep_consistency,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
-		calibrating, details, computed_at
+		calibrating, details, computed_at, model_version
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
 	if err != nil {
 		return nil, err
@@ -690,7 +691,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 			&d.SleepNeedBaseMin, &d.SleepNeedStrainMin, &d.SleepNeedDebtMin, &d.SleepNeedNapMin, &d.NapMin, &d.SleepQuality, &d.SleepConsistency,
 			&d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
-			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt)
+			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt, &d.ModelVersion)
 		if err != nil {
 			return d, err
 		}

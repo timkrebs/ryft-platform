@@ -125,7 +125,7 @@ func TestServiceRoleGrants(t *testing.T) {
 	}
 	// scoring may write only the load columns of a workout, and of a session.
 	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
-		"session_id": true, "start_at": false, "avg_hr": false, "activity": false} {
+		"session_id": true, "model_version": true, "start_at": false, "avg_hr": false, "activity": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)

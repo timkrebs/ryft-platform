@@ -298,3 +298,10 @@ func TestNeedOf(t *testing.T) {
 		t.Fatalf("terms: %+v", n)
 	}
 }
+
+func TestChangelog(t *testing.T) {
+	c, err := Changelog()
+	if err != nil || len(c) == 0 || c[0].Version != ModelVersion {
+		t.Fatalf("changelog: %v %v", c, err)
+	}
+}

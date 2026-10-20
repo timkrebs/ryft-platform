@@ -135,6 +135,14 @@ func main() {
 }
 
 func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
+	err := scoreEvent(ctx, engine, ev)
+	if errors.Is(err, scoring.ErrNoConsent) {
+		return nil // withdrawn since the sync: nothing to score, nothing to retry (D78)
+	}
+	return err
+}
+
+func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
 	days := append([]string(nil), ev.Days...)
 	sort.Strings(days) // oldest first so baselines chain correctly
 	if ev.Reason == "recompute" && len(days) == 2 {
@@ -163,6 +171,9 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		if err != nil {
 			log.ErrorContext(ctx, "periodic: user", "err", err)
 			continue
+		}
+		if user.Consent == nil {
+			continue // withdrawn: no scores, no baseline estimate (D78)
 		}
 		today := time.Now().In(loc)
 		for _, d := range []time.Time{today.AddDate(0, 0, -1), today} {

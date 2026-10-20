@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,6 +62,9 @@ func engineStore(t *testing.T) (*store.Store, *Engine, uuid.UUID) {
 	if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: ptrTo("UTC")}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.GrantConsent(ctx, user, "test", nil); err != nil {
+		t.Fatal(err)
+	}
 	return st, NewEngine(st, quiet), user
 }
 
@@ -103,7 +107,8 @@ func TestEngineScoresStrengthSessions(t *testing.T) {
 	}
 	wid := train.SessionWorkoutID(user, s.ID)
 	w, err := st.Workout(ctx, user, wid)
-	if err != nil || w.Source != model.SessionSource || w.Strain == nil || *w.Strain != *d.Strain || w.SessionID == nil {
+	if err != nil || w.Source != model.SessionSource || w.Strain == nil || *w.Strain != *d.Strain || w.SessionID == nil ||
+		w.ModelVersion == nil || *w.ModelVersion != ModelVersion {
 		t.Fatalf("created workout: %+v %v", w, err)
 	}
 	got, _ := st.Session(ctx, user, s.ID)
@@ -145,5 +150,27 @@ func TestEngineScoresStrengthSessions(t *testing.T) {
 	scores, _ = st.DailyScores(ctx, user, day, day)
 	if scores[0].Strain != nil || scores[0].StrengthMin != nil {
 		t.Fatalf("no strain left without heart rate or sessions: %+v", scores[0])
+	}
+}
+
+// D78: after a withdrawal nothing is scored, neither one day nor a range.
+func TestEngineSkipsWithoutConsent(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	if err := engine.ComputeDay(ctx, user, "2026-10-18"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeConsent(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ComputeDay(ctx, user, "2026-10-19"); !errors.Is(err, ErrNoConsent) {
+		t.Fatalf("ComputeDay without consent: %v", err)
+	}
+	if err := engine.ComputeRange(ctx, user, "2026-10-17", "2026-10-19"); !errors.Is(err, ErrNoConsent) {
+		t.Fatalf("ComputeRange without consent: %v", err)
+	}
+	days, err := st.DailyScores(ctx, user, "2026-10-01", "2026-10-31")
+	if err != nil || len(days) != 1 || days[0].Day != "2026-10-18" {
+		t.Fatalf("only the day before the withdrawal is scored: %+v %v", days, err)
 	}
 }

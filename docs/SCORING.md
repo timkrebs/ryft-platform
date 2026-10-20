@@ -259,12 +259,42 @@ significant.
 **Computed on request**, not stored (D76): ~44 ms of CPU for 75 behaviors at once, under
 15 ms for 25 (`BenchmarkImpacts75x90`). `ryft_behavior_impact_seconds` watches it.
 
+## Model version
+
+`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.1"`
+(year.month.n). Scoring writes it on every `daily_scores` row and every workout it puts
+a load on (`model_version`, migration 0018); rows scored before 2026-10-20 have `null`
+until they are rescored. `GET /v1/model` serves it with the changelog
+(`internal/scoring/changelog.json`, embedded; newest first, English and German, the
+trend metrics it moves), so the app can say why a number changed (D80).
+
+**The bump rule:** any change that moves a stored number (a formula, a constant, a
+source or de-duplication rule, a new input) bumps the version in the same commit,
+with a changelog entry whose `affects` lists the metrics it moves, and the commit
+message says why. A refactor that keeps every number does not. After the deploy:
+
+```bash
+scripts/rescore_all.sh        # every user with consent, 400 days; the last line names the version
+```
+
+`TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
+refuses entries out of order, an unknown metric or an unsorted `affects`.
+
+## Consent
+
+Scoring computes nothing for a user without a current consent to health-data
+processing (D78): a day or a range returns `ErrNoConsent` (counted as
+`ryft_days_scored_total{result="no_consent"}`, the event acknowledged, not retried);
+the 15-minute pass and `scoring rescore` / `learn-baselines` skip the user. Their
+stored scores stay readable until they delete the account.
+
 ## What is left alone
 
 Not de-duplicated: HRV, resting heart rate, respiratory rate and SpO₂. They are a few
 readings per night that are averaged (or the latest one is taken), so a second source
 moves the value slightly but never doubles it.
 
-Changing these rules changes stored scores. After a deploy, rescore history with
-`scripts/rescore_all.sh` (`OPERATIONS.md` → EKS), which runs `scoring rescore` for
-every user; a single user can still use `POST /v1/recompute`.
+Changing these rules changes stored scores, so it bumps the model version (above).
+After a deploy, rescore history with `scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
+which runs `scoring rescore` for every user with consent; a single user can still use
+`POST /v1/recompute`.

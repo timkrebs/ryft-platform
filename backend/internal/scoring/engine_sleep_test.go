@@ -75,6 +75,11 @@ func TestEngineSleepNapConsistencyQuality(t *testing.T) {
 	if q := d21.SleepQuality; q == nil || *q == *d21.SleepPerformance {
 		t.Fatalf("quality %v must be its own score (performance %d)", q, *d21.SleepPerformance)
 	}
+	for _, d := range days {
+		if d.ModelVersion == nil || *d.ModelVersion != ModelVersion {
+			t.Fatalf("%s: model_version %v, want %s", d.Day, d.ModelVersion, ModelVersion)
+		}
+	}
 }
 
 // Learning: 20 good nights of 500 minutes after easy days. The default user

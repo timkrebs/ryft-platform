@@ -41,12 +41,17 @@ func rescore(args []string) int {
 		log.Error("list users", "err", err)
 		return 1
 	}
-	start, failed := time.Now(), 0
+	start, failed, skipped := time.Now(), 0, 0
 	for i, id := range users {
-		_, loc, err := st.GetUser(ctx, id)
+		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
 			log.Warn("load user", "user_id", id, "err", err)
 			failed++
+			continue
+		}
+		if user.Consent == nil {
+			log.Info("user skipped, no consent", "user_id", id, "n", i+1, "of", len(users))
+			skipped++
 			continue
 		}
 		today := time.Now().In(loc)
@@ -58,7 +63,8 @@ func rescore(args []string) int {
 		}
 		log.Info("user rescored", "user_id", id, "from", from, "n", i+1, "of", len(users))
 	}
-	log.Info("rescore done", "users", len(users), "failed", failed, "took", time.Since(start).Round(time.Second).String())
+	log.Info("rescore done", "users", len(users), "skipped", skipped, "failed", failed, "model_version", scoring.ModelVersion,
+		"took", time.Since(start).Round(time.Second).String())
 	if failed > 0 {
 		return 1
 	}
@@ -104,10 +110,14 @@ func learnBaselines(args []string) int {
 	}
 	outcomes, failed := map[string]int{}, 0
 	for _, id := range users {
-		_, loc, err := st.GetUser(ctx, id)
+		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
 			log.Warn("load user", "user_id", id, "err", err)
 			failed++
+			continue
+		}
+		if user.Consent == nil {
+			outcomes["no_consent"]++
 			continue
 		}
 		outcome, err := engine.LearnBaseline(ctx, id, time.Now().In(loc).Format("2006-01-02"))
@@ -119,7 +129,7 @@ func learnBaselines(args []string) int {
 		outcomes[outcome]++
 	}
 	log.Info("learn-baselines done", "users", len(users), "applied", outcomes[scoring.LearnApplied],
-		"kept", outcomes[scoring.LearnKept], "insufficient", outcomes[scoring.LearnInsufficient], "failed", failed)
+		"kept", outcomes[scoring.LearnKept], "insufficient", outcomes[scoring.LearnInsufficient], "no_consent", outcomes["no_consent"], "failed", failed)
 	if failed > 0 {
 		return 1
 	}
