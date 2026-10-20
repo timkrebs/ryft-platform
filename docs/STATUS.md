@@ -176,10 +176,10 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Not done / not verified
 
-**Beta: your steps, in this order** (nothing of it is applied yet):
+**Beta: your steps, in this order:**
 
-1. **Supabase Pro** before the first tester's data: the free plan keeps no backups and
-   pauses inactive projects (`OPERATIONS.md` → Backups). PITR is optional.
+1. **Supabase Pro:** done (2026-10-20): daily backups, kept 7 days; PITR optional
+   (`OPERATIONS.md` → Backups). The first restore drill is still open.
 2. **DPAs:** accept Supabase's and AWS's data processing agreements in their consoles
    (and Grafana Labs', if the logs keep going there: decide in step 4).
 3. **Deploy** (`OPERATIONS.md` → Deploy and roll back): push, let CI build, set every

@@ -161,7 +161,7 @@ alerts-check:
 
 alerts-apply: alerts-check
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
-	   "$${GRAFANA_PROM_USER:?the stack's Prometheus (metrics) instance id}" \
+	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" \
