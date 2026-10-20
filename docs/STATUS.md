@@ -254,21 +254,15 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    k8s-apply-eks` **once**; migrate should log `role password unchanged` four times. In
    Supabase → Database → Settings → **Network Bans**, remove any ban on `63.188.104.25`
    or `3.120.13.212` that is still listed.
-1. **Deploy:** done (`4dd5aa1`, 2026-10-20; commit your `newTag` edit). What it said: (`OPERATIONS.md` → Deploy and roll back): commit your `newTag: "21eb0fa"`
-   edit (or let the new one replace it), push, let CI build, set every `newTag` to the
-   new SHA, `make k8s-apply-eks`. migrate applies 0022–0025; NATS restarts with the new
-   permissions (scoring may publish `ryft.refresh`, notify dead-letter
-   `ryft.dlq.refresh`); scoring widens `RYFT` to five subjects and notify's consumer
-   takes `ryft.refresh`. Order does not matter: a refresh scoring may not publish yet is
-   logged, not retried.
-2. **`CONSENT_ENFORCE=warn`**, open: `infra/vault/terraform.tfvars` has it (both gates
-   `warn`), but the cluster's `ryft-secrets` have neither key yet, and the api logs
-   `gate off, consent on`: apply it. The operator only restarts the services, which is
-   safe; only migrate rewrote passwords. Until the app's consent screen is on TestFlight (the first
-   incident), **only after step 1**: `21eb0fa` accepts `BETA_GATE` `on` or `off` only and
-   does not start with `warn`. In `infra/vault/terraform.tfvars`, `shared_secrets = { CONSENT_ENFORCE =
-   "warn" }` (and `BETA_GATE = "warn"` if you want the invite gate counted already; left
-   out, it stays `off`). Then:
+1. **Deploy:** done (`4dd5aa1`, 2026-10-20; commit your `newTag` edit). migrate applied
+   0022–0025; NATS restarted with the new permissions; scoring widened `RYFT` to five
+   subjects and notify's consumer took `ryft.refresh`.
+2. **The gates in `warn`** until the app's invite and consent screens are on TestFlight
+   (the first incident): `infra/vault/terraform.tfvars` has `shared_secrets = {
+   BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }`, but the cluster's `ryft-secrets`
+   have neither key yet (the api logs `gate off, consent on`). Apply it; safe at any
+   time now, since the operator only restarts the services and only migrate rewrote
+   passwords (never with `21eb0fa`, which does not start with `warn`):
 
    ```bash
    (cd infra/vault && terraform plan -out=tfplan && terraform apply tfplan)
