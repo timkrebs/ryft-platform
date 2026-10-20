@@ -1,0 +1,54 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "M77SKHKG63.dev.timkrebs.ryft"
+        ],
+        "components": [
+          {
+            "/": "/day/*",
+            "comment": "a day (Today, its detail)"
+          },
+          {
+            "/": "/sleep/*",
+            "comment": "a night, /sleep/plan"
+          },
+          {
+            "/": "/insights/*",
+            "comment": "a card, /insights/behaviors"
+          },
+          {
+            "/": "/train/sessions/*",
+            "comment": "a logged session"
+          },
+          {
+            "/": "/train/session/*",
+            "comment": "the same, as the push table writes it"
+          },
+          {
+            "/": "/train/exercises/*",
+            "comment": "an exercise"
+          },
+          {
+            "/": "/train/plan/*",
+            "comment": "a plan"
+          },
+          {
+            "/": "/train/history",
+            "comment": "the training history"
+          },
+          {
+            "/": "/auth/*",
+            "comment": "email confirmation and password reset"
+          }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "M77SKHKG63.dev.timkrebs.ryft"
+    ]
+  }
+}

@@ -54,4 +54,41 @@ describe.skipIf(!built)('built site', () => {
       expect(page.replace(/<svg[\s\S]*?<\/svg>/g, ''), f).not.toMatch(/\sstyle="/);
     }
   });
+
+  it('runs no script that could read the URL (auth callbacks carry tokens)', () => {
+    for (const f of html) {
+      for (const [, body] of readFileSync(f, 'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
+        expect(body, f).not.toMatch(/location|document\.URL|\bhref\b|\bhash\b|\bsearch\b|referrer|history/);
+      }
+    }
+  });
+
+  it('keeps the app-link fallback, drafts, the styleguide and 404 out of search engines', () => {
+    const noindex = (f: string) =>
+      /<meta name="robots" content="noindex/.test(readFileSync(join(OUT, f), 'utf8'));
+    for (const f of ['open.html', '404.html', 'styleguide.html']) expect(noindex(f), f).toBe(true);
+    for (const f of ['privacy.html', 'de/privacy.html', 'terms.html', 'impressum.html', 'support.html']) {
+      const page = readFileSync(join(OUT, f), 'utf8');
+      if (/Draft — not yet in force|Entwurf – noch nicht in Kraft/.test(page))
+        expect(noindex(f), f).toBe(true);
+    }
+    const sitemap = readFileSync(join(OUT, 'sitemap.xml'), 'utf8');
+    for (const p of ['/styleguide', '/open', '/404']) expect(sitemap).not.toContain(`ryftapp.de${p}<`);
+    expect(sitemap).toContain('<loc>https://ryftapp.de/de/science</loc>');
+  });
+
+  it('links every translated page to its other language', () => {
+    for (const f of [
+      'index.html',
+      'science.html',
+      'beta.html',
+      'privacy.html',
+      'de.html',
+      'de/privacy.html',
+    ]) {
+      const page = readFileSync(join(OUT, f), 'utf8');
+      expect(page, f).toMatch(/<link rel="alternate" hrefLang="de"/);
+      expect(page, f).toMatch(/<link rel="alternate" hrefLang="en"/);
+    }
+  });
 });

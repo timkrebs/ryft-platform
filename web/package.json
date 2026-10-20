@@ -27,7 +27,8 @@
     "screenshots": "node scripts/screenshots.mjs",
     "licenses": "node scripts/licenses.mjs",
     "check:policy": "node scripts/check-policy-version.mjs",
-    "licenses:check": "node scripts/licenses.mjs --check"
+    "licenses:check": "node scripts/licenses.mjs --check",
+    "og": "node scripts/og.mjs"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",
