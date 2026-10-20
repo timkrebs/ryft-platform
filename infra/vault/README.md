@@ -96,6 +96,12 @@ waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
 `terraform output -raw admin_api_key`; rotate with
 `terraform apply -replace='random_password.admin_key["api"]'`.
 
+**The App Review demo password** (`docs/OPERATIONS.md` → App Review demo account):
+generated into the operator-only mount `operator/demo` of the project namespace (no
+workload policy reaches it); `terraform output -raw demo_password`; rotate with
+`terraform apply -replace=random_password.demo`, then `scripts/seed_demo.sh` and App
+Store Connect. `demo_email` defaults to `review@ryftapp.de`.
+
 **The APNs key** (notify, `docs/OPERATIONS.md` → Push): `service_secrets.notify` with
 `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_KEY_P8`, all three or none (validated). Without
 them the plan warns (`check.notify_has_apns_key`) and notify sends nothing.

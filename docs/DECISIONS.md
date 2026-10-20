@@ -1362,3 +1362,29 @@ and counted). A bad payload from a new device type would vanish.
   client: a sandbox token reaches only the sandbox host, production tokens (TestFlight
   builds) only the production one, and 410 drops the token.
 - Invite notes are no longer logged: a note may name the person the code is for.
+
+## D86 — Legal drafts from what the system does; a demo account rebuilt per submission
+
+- **The drafts describe the system, not a template**: every data type the app uploads,
+  every table that holds personal data, every processor with the region it actually
+  runs in (Supabase and AWS in Frankfurt, Grafana Cloud in London, Apple for sign-in and
+  push), the retention that is configured (logs 14 days, backups 7 on Supabase Pro, dead
+  letters 30). Two facts are easy to miss and are named: push texts carry scores through
+  APNs, and the services' logs currently reach Grafana Cloud. What only the operator can
+  decide or know is a visible `TODO(user)`, never a guess: controller, contact, DPAs,
+  legal bases' review, the authority, minimum age (the API accepts 13, Art. 8 GDPR says
+  16 in Germany), liability, governing law. No certification is claimed. Every page is
+  marked `DRAFT` and `noindex` until the operator publishes it.
+- **English at `/privacy`, German at `/de/privacy`**: `PRIVACY_POLICY_URL` stays the
+  stable English URL the app opens; the Impressum is German (§ 5 DDG), with an English
+  pointer page.
+- **The app's universal-link paths** are the ones its `AppRoute` parses (the app's own
+  list, which adds `/train/plan/*` and `/train/history` to the spec's); in a browser they
+  get an "Open in RYFT" page instead of a 404.
+- **The demo account is recreated, not topped up**: `DELETE /v1/me` and a new account each
+  time, so the data always ends today, and the deletion path the reviewer may try is the
+  one the script uses. The password is generated in `infra/vault` into an operator-only
+  KV mount (no workload policy), so it never needs typing into a file. The account gets an
+  invite code whenever the admin key is given, so it keeps working once the gate is on.
+  The data is `synth.py --demo` (named sources with bundle ids, workouts three days a
+  week); its default output is unchanged, so the smoke's expectations stay.

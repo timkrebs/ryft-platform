@@ -30,6 +30,7 @@ spec:
             - { name: nginx, mountPath: /etc/nginx/conf.d, readOnly: true }
             - { name: site, mountPath: /usr/share/nginx/html/index.html, subPath: index.html, readOnly: true }
             - { name: site, mountPath: /usr/share/nginx/html/.well-known/apple-app-site-association, subPath: apple-app-site-association, readOnly: true }
+            - { name: pages, mountPath: /usr/share/nginx/html/pages, readOnly: true }
             - { name: tmp, mountPath: /tmp }
             - { name: cache, mountPath: /var/cache/nginx }
           readinessProbe:
@@ -50,6 +51,8 @@ spec:
           configMap: { name: web-nginx }
         - name: site
           configMap: { name: web-site }
+        - name: pages
+          configMap: { name: web-pages }
         - name: tmp
           emptyDir: {}
         - name: cache

@@ -44,6 +44,12 @@ output "login_check" {
   }
 }
 
+output "demo_password" {
+  description = "Password of the App Review demo account, also in Vault at operator/demo (docs/OPERATIONS.md → App Review demo account)"
+  value       = random_password.demo.result
+  sensitive   = true
+}
+
 output "admin_api_key" {
   description = "Bearer of the api's /v1/admin routes (docs/OPERATIONS.md → Feature flags)"
   value       = try(random_password.admin_key["api"].result, null)

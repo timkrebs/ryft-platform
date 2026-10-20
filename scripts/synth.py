@@ -4,9 +4,11 @@ with stages, overnight HRV/respiration/SpO2, a daily resting HR, all-day heart
 rate at ~1-minute resolution, steps and active energy in 10-minute buckets (plus a
 phone that also counts steps, so source de-duplication has work) and a workout every
 other day. --nap MIN adds a nap of MIN minutes yesterday from 13:00 UTC (15:00 in
-Berlin), which credits today's sleep need.
+Berlin), which credits today's sleep need. --demo (scripts/seed_demo.py) names the
+sources like a real Apple Watch and iPhone, with bundle ids, and puts the workouts on
+Mondays, Wednesdays and Saturdays; without it the output is unchanged.
 
-Usage: synth.py [days] [--nap MIN] > payload.json
+Usage: synth.py [days] [--nap MIN] [--demo] > payload.json
 """
 import json, random, sys, uuid
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,9 @@ if "--nap" in args:
     k = args.index("--nap")
     nap = int(args[k + 1])
     del args[k:k + 2]
+demo = "--demo" in args
+if demo:
+    args.remove("--demo")
 days = int(args[0]) if args else 10
 random.seed(42)
 now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -53,7 +58,7 @@ for d in range(days, 0, -1):
     end_of_day = min(day0 + timedelta(days=1), now)
     t = wake
     workout = None
-    if d % 2 == 0:
+    if (day0.weekday() in (0, 2, 5)) if demo else d % 2 == 0:
         ws = day0 + timedelta(hours=17, minutes=30)
         we = ws + timedelta(minutes=random.choice([40, 55, 70]))
         workout = (ws, we)
@@ -84,4 +89,11 @@ if nap:
     t = (now - timedelta(days=1)).replace(hour=13, minute=0)
     sleep.append({"start": iso(t), "end": iso(t + timedelta(minutes=nap)), "stage": "core", "source": "synth"})
 
-print(json.dumps({"device_id": device, "device_name": "synth", "samples": samples, "sleep": sleep, "workouts": workouts}))
+out = {"device_id": device, "device_name": "synth", "samples": samples, "sleep": sleep, "workouts": workouts}
+if demo:
+    names = {"synth": ("Apple Watch", "com.apple.health.5C1D2E3F-0A1B-4C2D-9E8F-7A6B5C4D3E2F"),
+             "synth-phone": ("iPhone", "com.apple.health.9F8E7D6C-5B4A-4392-8170-6F5E4D3C2B1A")}
+    for rec in samples + sleep + workouts:
+        rec["source"], rec["source_bundle_id"] = names[rec["source"]]
+    out.update(device_name="iPhone", app_version="seed_demo", os_version="iOS 26")
+print(json.dumps(out))

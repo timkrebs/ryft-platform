@@ -837,7 +837,11 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     a_wk = wks[-1]
     get(f"/v1/workouts/{a_wk['id']}", expect=404, key=KEY_B)
 
-    strip = lambda rows: [{k: v for k, v in r.items() if k != "computed_at"} for r in rows]
+    # Yesterday and today are left out: scoring's 15-minute pass rescores them, and
+    # after the session logged two days back (above) their need and debt can still
+    # move when it does. B's data is 50 days back.
+    settled = (date.fromisoformat(TODAY) - timedelta(days=1)).isoformat()
+    strip = lambda rows: [{k: v for k, v in r.items() if k != "computed_at"} for r in rows if r["day"] < settled]
     a_days = strip(get(f"/v1/days?to={TODAY}"))
     # User B on the same iPhone as A: same device ID, and a workout that reuses
     # A's HealthKit UUID with B's own times. Both must stay separate.

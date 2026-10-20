@@ -143,6 +143,17 @@ variable "database" {
   }
 }
 
+variable "demo_email" {
+  description = "Email of the App Review demo account (scripts/seed_demo.sh); its password is generated into operator/demo"
+  type        = string
+  default     = "review@ryftapp.de"
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[a-z]{2,}$", var.demo_email))
+    error_message = "demo_email must be an email address."
+  }
+}
+
 variable "database_owner_password" {
   description = "Password of the schema owner (the Supabase database password). Only the migrate namespace receives it."
   type        = string

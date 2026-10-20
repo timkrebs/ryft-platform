@@ -318,3 +318,20 @@ run "the_beta_gate_reaches_api_and_ingest" {
     error_message = "ingest gets the value"
   }
 }
+
+run "the_demo_password_stays_with_the_operator" {
+  command = apply
+
+  assert {
+    condition     = vault_kv_secret_v2.demo.namespace == vault_namespace.project.path_fq && vault_kv_secret_v2.demo.mount == "operator"
+    error_message = "the demo password lives in the project namespace's operator mount"
+  }
+  assert {
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.demo.data_json).email) == "review@ryftapp.de"
+    error_message = "the demo account is review@ryftapp.de"
+  }
+  assert {
+    condition     = alltrue([for s, v in vault_policy.service : !strcontains(v.policy, "operator")])
+    error_message = "no service policy reaches the operator mount"
+  }
+}
