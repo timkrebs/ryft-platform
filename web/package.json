@@ -33,7 +33,8 @@
     "serve": "node scripts/container.mjs run",
     "serve:stop": "node scripts/container.mjs stop",
     "e2e": "playwright test",
-    "links": "linkinator http://localhost:8080/ --config linkinator.config.json"
+    "links": "linkinator http://localhost:8080/ --config linkinator.config.json",
+    "brand:report": "node scripts/brand-report.mjs"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",

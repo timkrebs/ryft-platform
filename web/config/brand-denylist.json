@@ -71,5 +71,5 @@
     }
   ],
   "allow": [],
-  "warnIgnore": ["tests/brand.test.ts", "config/brand-denylist.json"]
+  "warnIgnore": ["tests/brand.test.ts", "config/brand-denylist.json", "docs/BRAND_CHECK.md"]
 }
