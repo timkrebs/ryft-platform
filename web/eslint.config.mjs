@@ -10,6 +10,8 @@ export default defineConfig([
       // Pages are static HTML without the Next runtime (docs/DECISIONS.md, D2): plain
       // links are the norm, and a client component would ship nothing.
       '@next/next/no-html-link-for-pages': 'off',
+      // <head> in an App Router root layout (RootDocument) is the documented way.
+      '@next/next/no-head-element': 'off',
     },
   },
   globalIgnores([

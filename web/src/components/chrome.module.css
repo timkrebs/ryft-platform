@@ -1,0 +1,212 @@
+.main {
+  display: block;
+  outline: none;
+}
+
+/* Header: thin, sticky, the background slightly translucent over content. */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--background) 90%, transparent);
+  backdrop-filter: saturate(140%) blur(12px);
+  -webkit-backdrop-filter: saturate(140%) blur(12px);
+  border-bottom: var(--hairline) solid var(--separator);
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: 'home nav lang';
+  align-items: center;
+  gap: 8px 24px;
+  min-height: 60px;
+}
+
+.home {
+  grid-area: home;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: none;
+  color: var(--text-primary);
+}
+
+.nav {
+  grid-area: nav;
+}
+
+.nav ul {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav a,
+.lang a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--text-secondary);
+  font-size: var(--type-callout);
+  text-decoration: none;
+  transition: color var(--motion-quick) ease-out;
+}
+
+.nav a:hover,
+.nav a[aria-current='page'],
+.lang a:hover {
+  color: var(--text-primary);
+}
+
+.lang {
+  grid-area: lang;
+}
+
+@media (max-width: 40rem) {
+  .headerRow {
+    grid-template-columns: auto auto;
+    grid-template-areas:
+      'home lang'
+      'nav nav';
+    justify-content: space-between;
+    padding-block: 4px;
+    gap: 0 16px;
+  }
+
+  .nav ul {
+    justify-content: flex-start;
+  }
+}
+
+.language {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  font-size: var(--type-callout);
+}
+
+.languageCurrent {
+  color: var(--text-primary);
+}
+
+.language a {
+  color: var(--text-secondary);
+}
+
+/* Footer */
+.footer {
+  margin-top: calc(var(--section-spacing) * 2);
+  border-top: var(--hairline) solid var(--separator);
+  padding-block: calc(var(--section-spacing) * 2) calc(var(--section-spacing) * 1.5);
+  font-size: var(--type-callout);
+  color: var(--text-secondary);
+}
+
+.footerGrid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  grid-template-areas:
+    'brand nav controls'
+    'meta meta meta';
+  gap: calc(var(--section-spacing) * 1.5) var(--section-spacing);
+}
+
+@media (max-width: 48rem) {
+  .footerGrid {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'brand' 'nav' 'controls' 'meta';
+  }
+}
+
+.footerBrand {
+  grid-area: brand;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.wellness {
+  color: var(--text-secondary);
+}
+
+.footerNav {
+  grid-area: nav;
+}
+
+.footerNav ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.footerNav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.footerNav a:hover,
+.footerNav a[aria-current='page'] {
+  color: var(--text-primary);
+}
+
+.footerControls {
+  grid-area: controls;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  justify-items: start;
+}
+
+.footerMeta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding-top: var(--section-spacing);
+  border-top: var(--hairline) solid var(--separator);
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+.footerMeta p {
+  margin: 0;
+}
+
+/* Theme switch: the app's SegmentedPicker in miniature. */
+.theme {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.theme button {
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-caption);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-quick) ease-out,
+    color var(--motion-quick) ease-out;
+}
+
+.theme button[aria-pressed='true'] {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}

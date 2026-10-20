@@ -1,1 +1,54 @@
-{ "site": { "name": "RYFT", "tagline": "Your whole health." } }
+{
+  "site": {
+    "name": "RYFT",
+    "tagline": "Your whole health.",
+    "description": "RYFT turns the heart rate, HRV, sleep and workouts your watch or ring writes to Apple Health into daily scores for Readiness, Recovery, Strain and Sleep. Hosted in the EU."
+  },
+  "a11y": {
+    "skip": "Skip to content",
+    "home": "RYFT, home",
+    "mainNav": "Main",
+    "footerNav": "Legal and support",
+    "language": "Language",
+    "theme": "Colour theme",
+    "sampleData": "Sample data"
+  },
+  "nav": {
+    "how": "How it works",
+    "science": "Science",
+    "beta": "Beta",
+    "menu": "Menu"
+  },
+  "theme": {
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "language": {
+    "name": "English",
+    "switchLabel": "Deutsch",
+    "switchHint": "Diese Seite auf Deutsch"
+  },
+  "footer": {
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "support": "Support",
+    "licenses": "Licences",
+    "impressum": "Impressum",
+    "science": "Science",
+    "beta": "Beta",
+    "wellness": "Wellness, not medical advice.",
+    "copyright": "© {year} RYFT",
+    "noTracking": "No cookies, no analytics, nothing loaded from third parties."
+  },
+  "styleguide": {
+    "title": "Styleguide",
+    "description": "RYFT's web tokens and components, generated from the app."
+  },
+  "notFound": {
+    "title": "Page not found",
+    "body": "There's nothing at this address. The page may have moved, or the link has a typo.",
+    "home": "Go to the home page",
+    "support": "Support"
+  }
+}

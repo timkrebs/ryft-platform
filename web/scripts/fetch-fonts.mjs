@@ -9,35 +9,20 @@
 //   node scripts/fetch-fonts.mjs --if-missing fetch only when a file is missing or differs
 //
 // When Fontshare publishes new files the hashes stop matching: read the licence again,
-// then update PINS.
+// then update config/fonts.json.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const URL = 'https://api.fontshare.com/v2/fonts/download/satoshi';
+const CONFIG = JSON.parse(readFileSync(join(ROOT, 'config/fonts.json'), 'utf8'));
+const URL = CONFIG.url;
 const DEST = join(ROOT, 'src/fonts');
-
 /** File in the zip → [file name here, SHA-256]. */
-const PINS = {
-  'Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Regular.woff2': [
-    'Satoshi-Regular.woff2',
-    '5aa97d938f523dd893c52473c3a021a0bf4ba0f95290edcc0749c088717f951f',
-  ],
-  'Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Medium.woff2': [
-    'Satoshi-Medium.woff2',
-    'd492ce178ab9042bd6bcad1b9ef49b1436ba5f4f833dee4a7a2ed94e9d8c922e',
-  ],
-  'Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Bold.woff2': [
-    'Satoshi-Bold.woff2',
-    '6f979e75eb9d6de6af2eacc0c72fd2cbe613922b27db92217dd204c8080de930',
-  ],
-  'Satoshi_Complete/License/FFL.txt': [
-    'FFL.txt',
-    '145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554',
-  ],
-};
+const PINS = Object.fromEntries(
+  Object.entries(CONFIG.files).map(([entry, f]) => [entry, [f.name, f.sha256]]),
+);
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const present = () =>
@@ -62,7 +47,7 @@ for (const [entry, [name, hash]] of Object.entries(PINS)) {
   if (!data) fail(`${entry} is missing from the download`);
   const actual = sha256(data);
   if (actual !== hash)
-    fail(`${entry} changed upstream (sha256 ${actual}); check the licence, then update PINS`);
+    fail(`${entry} changed upstream (sha256 ${actual}); check the licence, then update config/fonts.json`);
   writeFileSync(join(DEST, name), data);
 }
 console.log(`fonts: Satoshi Regular, Medium, Bold and the licence in src/fonts/ (verified).`);

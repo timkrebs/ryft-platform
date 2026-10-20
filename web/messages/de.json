@@ -1,1 +1,54 @@
-{ "site": { "name": "RYFT", "tagline": "Deine ganze Gesundheit." } }
+{
+  "site": {
+    "name": "RYFT",
+    "tagline": "Deine ganze Gesundheit.",
+    "description": "RYFT macht aus Herzfrequenz, HRV, Schlaf und Trainings, die deine Uhr oder dein Ring in Apple Health schreibt, tägliche Werte für Bereitschaft, Erholung, Belastung und Schlaf. Gehostet in der EU."
+  },
+  "a11y": {
+    "skip": "Zum Inhalt springen",
+    "home": "RYFT, Startseite",
+    "mainNav": "Hauptnavigation",
+    "footerNav": "Rechtliches und Support",
+    "language": "Sprache",
+    "theme": "Farbschema",
+    "sampleData": "Beispieldaten"
+  },
+  "nav": {
+    "how": "So funktioniert's",
+    "science": "Wissenschaft",
+    "beta": "Beta",
+    "menu": "Menü"
+  },
+  "theme": {
+    "system": "System",
+    "light": "Hell",
+    "dark": "Dunkel"
+  },
+  "language": {
+    "name": "Deutsch",
+    "switchLabel": "English",
+    "switchHint": "This page in English"
+  },
+  "footer": {
+    "privacy": "Datenschutz",
+    "terms": "Nutzungsbedingungen",
+    "support": "Support",
+    "licenses": "Lizenzen",
+    "impressum": "Impressum",
+    "science": "Wissenschaft",
+    "beta": "Beta",
+    "wellness": "Wellness, keine medizinische Beratung.",
+    "copyright": "© {year} RYFT",
+    "noTracking": "Keine Cookies, keine Analyse, nichts von Drittanbietern."
+  },
+  "styleguide": {
+    "title": "Styleguide",
+    "description": "Die Web-Tokens und Komponenten von RYFT, erzeugt aus der App."
+  },
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "body": "Unter dieser Adresse gibt es nichts. Vielleicht ist die Seite umgezogen, oder im Link steckt ein Tippfehler.",
+    "home": "Zur Startseite",
+    "support": "Support"
+  }
+}

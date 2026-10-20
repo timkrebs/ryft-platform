@@ -27,3 +27,6 @@ playwright-report/
 # The session prompt names the brand this repository must never mention
 # (scripts/check-brand.mjs). It stays on disk, outside git.
 CLAUDE_PROMPT.md
+
+# local screenshot helper
+scripts/.*.tmp.mjs

@@ -1,0 +1,22 @@
+{
+  "$comment": "Satoshi from Fontshare (ITF Free Font License). scripts/fetch-fonts.mjs downloads the zip, takes these entries and checks each SHA-256. Update only after reading the licence again.",
+  "url": "https://api.fontshare.com/v2/fonts/download/satoshi",
+  "files": {
+    "Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Regular.woff2": {
+      "name": "Satoshi-Regular.woff2",
+      "sha256": "5aa97d938f523dd893c52473c3a021a0bf4ba0f95290edcc0749c088717f951f"
+    },
+    "Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Medium.woff2": {
+      "name": "Satoshi-Medium.woff2",
+      "sha256": "d492ce178ab9042bd6bcad1b9ef49b1436ba5f4f833dee4a7a2ed94e9d8c922e"
+    },
+    "Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Bold.woff2": {
+      "name": "Satoshi-Bold.woff2",
+      "sha256": "6f979e75eb9d6de6af2eacc0c72fd2cbe613922b27db92217dd204c8080de930"
+    },
+    "Satoshi_Complete/License/FFL.txt": {
+      "name": "FFL.txt",
+      "sha256": "145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554"
+    }
+  }
+}

@@ -13,3 +13,4 @@ playwright-report
 CLAUDE_PROMPT.md
 *.md
 *.mdx
+src/styles/swatches.css
