@@ -200,17 +200,28 @@ func (h *handler) deleteMe(w http.ResponseWriter, r *http.Request) {
 	// Finish even if the client gives up: half a deletion helps nobody.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), deleteTimeout)
 	defer cancel()
-	if err := h.st.DeleteUser(ctx, p.UserID); err != nil {
-		metrics.AccountDeletions.WithLabelValues("data", "error").Inc()
-		httpx.Fail(w, r, fmt.Errorf("delete account: %w", err))
+	gone, err := h.eraseAccount(ctx, p.UserID)
+	if err != nil {
+		httpx.Fail(w, r, err)
 		return
 	}
+	httpx.WriteJSON(w, http.StatusOK, gone)
+}
+
+// eraseAccount is the account deletion path (DELETE /v1/me, and a merge for
+// the account merged away): every row, then the Sign in with Apple grant, then
+// the Supabase auth user.
+func (h *handler) eraseAccount(ctx context.Context, id uuid.UUID) (AccountDeleted, error) {
+	if err := h.st.DeleteUser(ctx, id); err != nil {
+		metrics.AccountDeletions.WithLabelValues("data", "error").Inc()
+		return AccountDeleted{}, fmt.Errorf("delete account: %w", err)
+	}
 	metrics.AccountDeletions.WithLabelValues("data", "ok").Inc()
-	h.cache.forget(p.UserID)
-	appleRevoked := h.accounts.revokeApple(ctx, p.UserID)
-	authDeleted := h.accounts.deleteAuthUser(ctx, p.UserID)
-	h.log.InfoContext(ctx, "account deleted", "auth_user_deleted", authDeleted, "apple_token_revoked", appleRevoked)
-	httpx.WriteJSON(w, http.StatusOK, AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked})
+	h.cache.forget(id)
+	appleRevoked := h.accounts.revokeApple(ctx, id)
+	authDeleted := h.accounts.deleteAuthUser(ctx, id)
+	h.log.InfoContext(ctx, "account deleted", "deleted_user", id, "auth_user_deleted", authDeleted, "apple_token_revoked", appleRevoked)
+	return AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked}, nil
 }
 
 // appleAuthorization is the POST /v1/me/apple-authorization body: the

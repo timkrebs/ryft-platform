@@ -419,6 +419,36 @@ logs for them (`{namespace="ryft-api"} |= "<request id>"`, and the same id in in
 scoring) to see what the tester saw. `ryft_feedback_received_total` going up alerts the
 operator (Monitoring).
 
+## Two accounts for one person
+
+**How it happens:** someone signs in with email and later with Apple (or the other way
+round). Supabase links the two only when Apple hands over the same verified email; with
+"Hide My Email" it is a relay address, and a second account appears. The app syncs into
+whichever is signed in, so the data splits.
+
+**How to see it:** `scripts/beta_report.sh` → `dup` (accounts that synced from the same
+device id in the last 30 days); `scripts/user.sh <id>` names them under "possible
+duplicate", with provider, last sync and days scored. The app is told too
+(`GET /v1/me` → `account_hint`, API.md).
+
+**How to merge** (D90): the smaller account into the one with the history. The plan
+first, then the merge, which moves everything in one transaction, rescores the kept
+account over the moved days, and deletes the other one like `DELETE /v1/me` (Supabase
+sign-in and Apple grant included):
+
+```bash
+scripts/user.sh <from> --merge-into <to> --dry-run      # per table: moved, dropped (to's row kept), and why
+scripts/user.sh <from> --merge-into <to>                # shows the plan again, asks for MERGE
+```
+
+Where both accounts have the same row (a sample, a device id, a session id, a journal
+day, a custom exercise's slug), the kept account's wins and the other's is counted as
+dropped. A consent and beta access are copied only when the kept account has none.
+Merging the account with more scored days into the smaller one is refused (`409`) unless
+`--force`. A second run answers `404` (from is gone). Afterwards, the person signs in the
+way the kept account uses; if both identities should open it, they link Apple to the
+email account in the app (Supabase **manual linking**, `SUPABASE.md`).
+
 ## Feature flags
 
 `GET /v1/config` serves the flags in table `feature_flags` (D69). Change them with the

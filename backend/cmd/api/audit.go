@@ -156,6 +156,7 @@ func adminRoutes(h *handler, key string, timeout time.Duration) http.Handler {
 	adm.HandleFunc("GET /v1/admin/users/{id}", a.userDetail)
 	adm.HandleFunc("POST /v1/admin/users/{id}/access", a.grantAccess)
 	adm.HandleFunc("DELETE /v1/admin/users/{id}/access", a.revokeAccess)
+	adm.HandleFunc("POST /v1/admin/users/{id}/merge-into/{to}", a.merge)
 	adm.HandleFunc("GET /v1/admin/audit", a.audit)
 	adm.HandleFunc("/v1/admin/", httpx.NotFound)
 	return adminOnly(key, a.audited(httpx.Timeout(timeout, httpx.WithRoutes(adm))))

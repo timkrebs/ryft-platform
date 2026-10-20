@@ -78,7 +78,7 @@ var grants = map[string]map[string][]string{
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
-		"consents": crud, "beta_invite_codes": crud, "user_sources": {"SELECT", "DELETE"}, "feedback": crud,
+		"consents": crud, "beta_invite_codes": crud, "user_sources": crud, "feedback": crud,
 		"admin_audit": {"SELECT", "INSERT"},
 		"exercises":   crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
@@ -134,6 +134,22 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 		if has != want {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
+		}
+	}
+	// api may move a merged account's raw data: the owner column only (0024, D90).
+	for _, table := range []string{"samples", "sleep_segments", "workouts", "devices"} {
+		for col, want := range map[string]bool{"user_id": true, "start_at": false, "value": false, "last_sync_at": false} {
+			var exists, has bool
+			if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)`,
+				table, col).Scan(&exists); err != nil || !exists {
+				continue
+			}
+			if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_api', 'public.'||$1, $2, 'UPDATE')`, table, col).Scan(&has); err != nil {
+				t.Fatal(err)
+			}
+			if has != want {
+				t.Errorf("ryft_api UPDATE %s.%s: %v, want %v", table, col, has, want)
+			}
 		}
 	}
 	// notify may only stamp a delivered push on its token (0023).

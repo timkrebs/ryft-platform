@@ -198,9 +198,15 @@ func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.Us
 	}
 }
 
+// publisher is what the handlers publish (*events.Bus; a fake in tests).
+type publisher interface {
+	PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error
+	PublishSessionCompleted(ctx context.Context, ev model.SessionCompletedEvent, dedupID string) error
+}
+
 type handler struct {
 	st       *store.Store
-	bus      *events.Bus
+	bus      publisher
 	log      *slog.Logger
 	cache    *insightCache
 	accounts *accounts

@@ -1448,3 +1448,23 @@ sent, and whether a second account shares its phone.
 - **What a sync carried** is kept on the device row (`last_sync_summary`), and a push
   token's last delivery on the token (`last_success_at`, the only column notify may
   update): two small columns instead of a sync log.
+
+## D90 — Merging accounts: one transaction in the api, then the deletion path
+
+- **In the api, as an admin route**, not a script with database credentials: the
+  operator already holds the admin key; the merge is audited like every admin call, and
+  the deletion of the merged account goes through the same code as `DELETE /v1/me`
+  (Supabase auth user, Apple grant, tombstone). The api's role gains exactly the owner
+  column of the raw tables (`UPDATE (user_id)` on samples, sleep, workouts, devices) and
+  writes on `user_sources`; it can already read and delete those rows, so moving them adds
+  integrity risk, not confidentiality risk.
+- **Kept account wins on every conflict**, counted per table: a merge never overwrites
+  what the person sees in the account they keep. Rows tied to a parent by `(user_id, id)`
+  (sessions with their exercises and sets, journal days with their entries) are copied
+  for exactly the parents that move, and the originals go with the deleted account.
+  Custom exercises and behaviors of the same slug collapse into the kept one, with the
+  moved sessions and entries pointing to it. Scores are not moved but rescored, and
+  personal records recomputed.
+- **The dry run runs the same transaction and rolls it back**, so its counts are the real
+  ones. The direction check (more scored days into fewer needs `force=1`) and the second
+  call's `404` keep a typo from merging the wrong way twice.

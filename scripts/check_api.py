@@ -534,10 +534,35 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":  # a fresh account, so the
               and det["possible_duplicates"] == [] and det["account"]["identities"] is None
               and "identities_note" in det["account"], f"GET /v1/admin/users/{{short id}}: {status} {det}")
         check(raw("GET", "/v1/admin/users/zzzzzzzz", key=ADMIN)[0] == 404, "an unknown short id is 404")
+
+        # ---- two accounts on one phone (D89, D90): the duplicate shows, the merge fixes it
+        KEY_G, KEY_H, phone = f"{KEY}:{uuid.uuid4()}", f"{KEY}:{uuid.uuid4()}", str(uuid.uuid4())
+        for k, src in ((KEY_G, "check-g"), (KEY_H, "check-h")):
+            consent(k)
+            t0 = iso_now()
+            status, _, _ = raw("POST", "/v1/sync", jbody({"device_id": phone, "samples": [{"type": "steps", "start": t0, "end": t0,
+                               "value": 7, "unit": "count", "source": src}], "sleep": [], "workouts": []}), base=INGEST, key=k)
+            check(status == 200, f"sync of {src}: {status}")
+        g_id, h_id = get("/v1/me", key=KEY_G)["id"], get("/v1/me", key=KEY_H)["id"]
+        status, _, det = raw("GET", f"/v1/admin/users/{h_id[:8]}", key=ADMIN)
+        check(status == 200 and [d["id"] for d in det["possible_duplicates"]] == [g_id], f"the duplicate: {status} {det}")
+        status, _, plan = raw("POST", f"/v1/admin/users/{g_id[:8]}/merge-into/{h_id[:8]}?dry_run=1&force=1", key=ADMIN)
+        moved = {t["table"]: (t["moved"], t["dropped"]) for t in plan["tables"]} if status == 200 else {}
+        check(status == 200 and plan["dry_run"] and plan["deleted"] is None and moved.get("samples") == (1, 0)
+              and moved.get("devices") == (0, 1) and plan["consent"] == "kept", f"the merge plan: {status} {plan}")
+        status, _, done = raw("POST", f"/v1/admin/users/{g_id}/merge-into/{h_id}?force=1", key=ADMIN)
+        check(status == 200 and not done["dry_run"] and done["deleted"]["status"] == "deleted" and done["rescore"],
+              f"the merge: {status} {done}")
+        check(raw("POST", f"/v1/admin/users/{g_id}/merge-into/{h_id}?force=1", key=ADMIN)[0] == 404, "a second merge: 404")
+        check(raw("GET", "/v1/me", key=KEY_G)[0] == 401, "the merged account is gone")
+        h_sources = {x["name"] for x in get("/v1/me", key=KEY_H)["sources"]}
+        check(h_sources == {"check-g", "check-h"}, f"to has both accounts' data: {h_sources}")
+        raw("DELETE", "/v1/me", key=KEY_H)
     raw("DELETE", "/v1/me", key=KEY_F)
     ok(f"profile: born 1990 → {tanaka(1990)} estimated, manual wins, back to {est}; 422s; "
        f"max-hr-observed suggests {est + 6}, gone once set")
-    ok("feedback: 204, 422s, 429 after 10 a day" + ("; admin feedback, resolve, users without emails" if ADMIN else ""))
+    ok("feedback: 204, 422s, 429 after 10 a day" + ("; admin feedback, resolve, users without emails, the user detail, "
+                                                     "two accounts on one phone merged (plan first, 404 the second time)" if ADMIN else ""))
 
 # ---- push: token registry, preferences, the morning event (M7) -----------------
 dev, tok = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex

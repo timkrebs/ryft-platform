@@ -43,6 +43,13 @@ either.
      `service_secrets.api.APPLE_*` in `infra/vault/terraform.tfvars`. The same key may
      also sign the Supabase provider's web secret.
 
+   - **Manual identity linking** (Authentication → Settings → *Allow manual linking*):
+     on, so a signed-in user can add Sign in with Apple to an email account (or the
+     reverse) from the app instead of getting a second account. Supabase links
+     identities of the same verified email by itself, but not Apple's "Hide My Email"
+     relay address. Two accounts that already exist are merged by the operator
+     (`OPERATIONS.md` → Two accounts for one person).
+
    Dashboard labels move between Supabase releases; the settings above are what
    matters.
 4. **Turn off the Data API** (Project Settings → Data API), or at least remove `public`

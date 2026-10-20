@@ -162,7 +162,8 @@ func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedE
 func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
 	days := append([]string(nil), ev.Days...)
 	sort.Strings(days) // oldest first so baselines chain correctly
-	if ev.Reason == "recompute" && len(days) == 2 {
+	// A range: a recompute, or the days of an account merged into this one.
+	if (ev.Reason == "recompute" || ev.Reason == "merge") && len(days) == 2 {
 		return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
 	}
 	for _, d := range days {
