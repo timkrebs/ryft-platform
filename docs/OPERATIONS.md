@@ -203,6 +203,18 @@ one.
 4. **On failure:** set `newTag` back to the previous SHA (`git log -p
    deploy/k8s/overlays/eks/kustomization.yaml`), `make k8s-apply-eks`, `make smoke-prod`.
 
+**The database refuses every connection** (`ECIRCUITBREAKER: too many authentication
+failures` in every service's log, pods unready): Supabase's pooler blocks the project for
+the cluster's NAT address (`63.188.104.25`, `3.120.13.212`) for 120 s after 10 failed
+logins in 150 s, and repeated failures get the address banned on the database host.
+**Do not re-run `make k8s-apply-eks`**: before D93 every migrate run rewrote the role
+passwords and caused the next round of failures. Wait two minutes; find the failing
+login (`kubectl -n ryft-<svc> logs -l app=<svc> --tail=-1 --since=15m | grep -v
+ECIRCUITBREAKER | grep -i 'password\|28P01'`), and look at Supabase → Database →
+Settings → Network Bans (or `supabase network-bans get --project-ref <ref>`) and remove
+bans on those addresses. The pods reconnect on their own (incident of 2026-10-20 20:43,
+`STATUS.md`).
+
 **No down-migrations.** Migrations only add (tables, nullable or defaulted columns,
 grants, backfills; never a drop or a rename), so the previous release runs on the newer
 schema: it ignores what it does not know, and its migrate job skips every file it has

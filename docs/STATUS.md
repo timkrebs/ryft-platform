@@ -6,8 +6,9 @@ Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
 behavior impact (M5, 2026-10-19), all deployed (`82506fa`, 2026-10-20) with the Sign in
 with Apple and APNs keys active. The **Beta** for friends on TestFlight (2026-10-20) is
 deployed (`21eb0fa`). The follow-up **operator tooling, account mix-ups and server-side
-sync state** (2026-10-20, `61db1c4`…`cbfc8d0` and the docs commit) is committed and **not
-deployed yet**: see **Accounts and sync: your steps** below, and **Incidents**.
+sync state** (2026-10-20, `61db1c4`…`4dd5aa1`) is **deployed** (`4dd5aa1`, 2026-10-20,
+after a 17-minute database outage during the rollout); the migrate fix that prevents it
+is committed, not deployed: see **Accounts and sync: your steps** below, and **Incidents**.
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -191,6 +192,31 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Incidents
 
+**2026-10-20, 20:43–21:00 UTC: every service lost the database during the deploy of `4dd5aa1`.**
+
+- **What:** from 20:43:49 every new connection through Supabase's pooler answered
+  `ECIRCUITBREAKER: too many authentication failures, new connections are temporarily
+  blocked`, from 20:48 also `Failed to connect to database: econnrefused` (the pooler
+  could not reach Postgres). Every pod of api, ingest, scoring and notify, old and new,
+  went unready; each migrate retry failed at its first ping; Supabase listed network
+  bans. Migrations 0022–0025 had been applied by the first migrate run at 20:43.
+- **Why:** migrate sets the four role passwords on every run, each time as a verifier
+  with a new random salt, even when the password is the same. Supavisor caches each
+  role's verifier; after a change, every connection it checks with the stale salt fails
+  once (`28P01`, "password was recently changed"), and it blocks a project and client
+  address for 120 s after 10 such failures in 150 s. All pods leave through the
+  cluster's NAT addresses (`63.188.104.25`, `3.120.13.212`), and the deploy restarted
+  all of them right after migrate. Each re-run of `make k8s-apply-eks` ran migrate
+  again; the repeated failed logins got addresses banned on the database host. Every
+  earlier deploy rewrote the verifiers the same way; why this one tipped over (more pods
+  reconnecting at once, the repeated runs) is not known.
+- **Recovery:** the migrate run at 20:59:56 completed (nothing pending), and the pods
+  connected from about 21:00; no data was lost (a sync during the outage failed and is
+  re-sent by the app).
+- **Fix:** migrate logs in as each role first and writes its password only when that
+  fails (D93). Runbook: on `ECIRCUITBREAKER`, do not re-run the deploy; wait two
+  minutes, and check Supabase's network bans (`OPERATIONS.md` → Deploy and roll back).
+
 **2026-10-20, 10:37–19:04 UTC: the operator's own account could not sync.**
 
 - **What:** after the Beta deploy (`21eb0fa`), every `POST /v1/sync` of account `53d437eb`
@@ -223,14 +249,22 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 **Accounts and sync: your steps, in this order:**
 
-1. **Deploy** (`OPERATIONS.md` → Deploy and roll back): commit your `newTag: "21eb0fa"`
+0. **The migrate fix** (D93, the incident above) goes out before anything else that runs
+   `make k8s-apply-eks`: push, let CI build, set every `newTag` to it, `make
+   k8s-apply-eks` **once**; migrate should log `role password unchanged` four times. In
+   Supabase → Database → Settings → **Network Bans**, remove any ban on `63.188.104.25`
+   or `3.120.13.212` that is still listed.
+1. **Deploy:** done (`4dd5aa1`, 2026-10-20; commit your `newTag` edit). What it said: (`OPERATIONS.md` → Deploy and roll back): commit your `newTag: "21eb0fa"`
    edit (or let the new one replace it), push, let CI build, set every `newTag` to the
    new SHA, `make k8s-apply-eks`. migrate applies 0022–0025; NATS restarts with the new
    permissions (scoring may publish `ryft.refresh`, notify dead-letter
    `ryft.dlq.refresh`); scoring widens `RYFT` to five subjects and notify's consumer
    takes `ryft.refresh`. Order does not matter: a refresh scoring may not publish yet is
    logged, not retried.
-2. **`CONSENT_ENFORCE=warn`** until the app's consent screen is on TestFlight (the
+2. **`CONSENT_ENFORCE=warn`**, open: `infra/vault/terraform.tfvars` has it (both gates
+   `warn`), but the cluster's `ryft-secrets` have neither key yet, and the api logs
+   `gate off, consent on`: apply it. The operator only restarts the services, which is
+   safe; only migrate rewrote passwords. Until the app's consent screen is on TestFlight (the first
    incident), **only after step 1**: `21eb0fa` accepts `BETA_GATE` `on` or `off` only and
    does not start with `warn`. In `infra/vault/terraform.tfvars`, `shared_secrets = { CONSENT_ENFORCE =
    "warn" }` (and `BETA_GATE = "warn"` if you want the invite gate counted already; left

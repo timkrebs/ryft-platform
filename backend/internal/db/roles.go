@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -47,6 +48,81 @@ func SetRolePassword(ctx context.Context, pool *pgxpool.Pool, role, password str
 	_, err = pool.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s WITH LOGIN PASSWORD '%s'`,
 		pgx.Identifier{role}.Sanitize(), verifier))
 	return err
+}
+
+// EnsureRolePassword sets role's password unless the role can already log in
+// with it, and says whether it did. Setting a password draws a new SCRAM salt
+// even when the password is the same, and Supabase's pooler (Supavisor) caches
+// each role's verifier: until it notices, every service connection fails once
+// ("password was recently changed"), and ten failures from one address in
+// 150 s block that address, the whole cluster behind its NAT, for two minutes
+// (D93). migrate runs on every deploy, so it only writes a password that
+// changed. ownerURL is pool's connection string (DATABASE_URL): the role logs
+// in at the same place, as the pooler's user for it ("postgres.<ref>" →
+// "ryft_api.<ref>"). Any other failure of that login is returned: credentials
+// are not rewritten blindly.
+func EnsureRolePassword(ctx context.Context, pool *pgxpool.Pool, ownerURL, role, password string) (bool, error) {
+	if !slices.Contains(roleNames(), role) {
+		return false, fmt.Errorf("unknown service role %q", role)
+	}
+	if password == "" {
+		return false, errors.New("empty password")
+	}
+	current, err := rolePasswordCurrent(ctx, pool, ownerURL, role, password)
+	if err != nil || current {
+		return false, err
+	}
+	return true, SetRolePassword(ctx, pool, role, password)
+}
+
+// rolePasswordCurrent logs in as role with password: true when that works,
+// false when the role has no LOGIN or the server refuses the password.
+func rolePasswordCurrent(ctx context.Context, pool *pgxpool.Pool, ownerURL, role, password string) (bool, error) {
+	var canLogin bool
+	if err := pool.QueryRow(ctx, `SELECT rolcanlogin FROM pg_roles WHERE rolname = $1`, role).Scan(&canLogin); err != nil {
+		return false, fmt.Errorf("role %s: %w", role, err)
+	}
+	if !canLogin {
+		return false, nil
+	}
+	cfg, err := pgx.ParseConfig(ownerURL)
+	if err != nil {
+		return false, err
+	}
+	cfg.User, cfg.Password = poolerUser(cfg.User, role), password
+	for attempt := 0; ; attempt++ {
+		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		conn, err := pgx.ConnectConfig(cctx, cfg)
+		cancel()
+		if err == nil {
+			_ = conn.Close(ctx)
+			return true, nil
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || !strings.HasPrefix(pgErr.Code, "28") {
+			return false, fmt.Errorf("log in as %s to check its password: %w", role, err)
+		}
+		// Supavisor refused with a verifier it had cached before the last change
+		// (the same 28P01): it has the new one now, so one more try tells.
+		if attempt == 0 && strings.Contains(pgErr.Hint, "recently changed") {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		return false, nil
+	}
+}
+
+// poolerUser is role's user name where owner logs in: Supavisor names the
+// project after a dot ("postgres.<ref>"), Postgres itself does not.
+func poolerUser(owner, role string) string {
+	if _, tenant, ok := strings.Cut(owner, "."); ok {
+		return role + "." + tenant
+	}
+	return role
 }
 
 func roleNames() []string {

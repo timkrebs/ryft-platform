@@ -296,6 +296,63 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	}
 }
 
+// D93: migrate rewrites a role's verifier only when its password changed; the
+// same password again leaves it (and its salt, which the pooler caches) alone.
+func TestEnsureRolePassword(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	// ryft_api: no other package's tests log in as it (roles are cluster-wide).
+	const role, pw, rotated = "ryft_api", "pw-ryft_api-0123456789", "pw-ryft_api-rotated-0123"
+	dsn := pool.Config().ConnString()
+	verifier := func() string {
+		t.Helper()
+		var v string
+		if err := pool.QueryRow(ctx, `SELECT rolpassword FROM pg_authid WHERE rolname = $1`, role).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	ensure := func(step, password string, want bool) {
+		t.Helper()
+		changed, err := EnsureRolePassword(ctx, pool, dsn, role, password)
+		if err != nil || changed != want {
+			t.Fatalf("%s: changed %v, err %v; want changed %v", step, changed, err, want)
+		}
+	}
+	if _, err := pool.Exec(ctx, `ALTER ROLE ryft_api NOLOGIN`); err != nil {
+		t.Fatal(err)
+	}
+	ensure("NOLOGIN, as migration 0009 creates it", pw, true)
+	set := verifier()
+	ensure("the same password", pw, false)
+	if verifier() != set {
+		t.Fatal("the same password must leave the verifier (and its salt) as it is")
+	}
+	ensure("a new password", rotated, true)
+	if _, err := asRoleErr(dsn, role, pw); err == nil {
+		t.Fatal("the old password must no longer log in")
+	}
+	_ = asRole(t, dsn, role, rotated)
+	ensure("back", pw, true)
+	if _, err := EnsureRolePassword(ctx, pool, dsn, "postgres", "x"); err == nil {
+		t.Fatal("only service roles may be changed")
+	}
+	if _, err := EnsureRolePassword(ctx, pool, dsn, role, ""); err == nil {
+		t.Fatal("an empty password is refused")
+	}
+}
+
+func TestPoolerUser(t *testing.T) {
+	for owner, want := range map[string]string{"postgres.ydgbemufggwnegbnjhkm": "ryft_api.ydgbemufggwnegbnjhkm", "postgres": "ryft_api"} {
+		if got := poolerUser(owner, "ryft_api"); got != want {
+			t.Errorf("%s: %s, want %s", owner, got, want)
+		}
+	}
+}
+
 func asRoleErr(poolURL, role, password string) (*pgx.Conn, error) {
 	u, _ := url.Parse(poolURL)
 	u.User = url.UserPassword(role, password)

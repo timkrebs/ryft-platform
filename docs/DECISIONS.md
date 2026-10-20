@@ -1515,3 +1515,25 @@ sent, and whether a second account shares its phone.
   delivery (`ryft_event_handler_panics_total`). The NATS permission test had also
   narrowed the live notify consumer to its old subjects; the test and the code now share
   the filter list.
+
+## D93 — migrate writes a role's password only when it changed
+
+- **Why:** the deploy of `4dd5aa1` took the database away from every service for 17
+  minutes (STATUS → Incidents). migrate set the four role passwords on every run, each
+  time with a new SCRAM salt; Supabase's pooler caches the verifiers, fails each
+  connection checked against a stale one once, and blocks a project and client address
+  for 120 s after 10 failures in 150 s. All pods share the cluster's NAT addresses, and
+  a deploy restarts them right after migrate.
+- **How:** before `ALTER ROLE`, migrate logs in as the role, at the owner's host with the
+  pooler's user name for it (`ryft_api.<ref>`). That works: nothing is written. The role
+  has no LOGIN, or the server refuses the password (`28xxx`): it is set. The pooler
+  refuses with "recently changed": one more try after a second. Anything else (network,
+  the circuit breaker) fails migrate rather than rewriting credentials blindly.
+- **Not chosen:** a salt derived from the password (the same verifier on every run, but
+  the salt is handed to anyone who starts a login, and it would be a fast hash of the
+  password); a table of password fingerprints (a fast hash at rest, and its first run
+  would still rewrite every verifier). The login costs one connection per role per
+  deploy; a really rotated password costs one failed login per role, four at most.
+- **Still true:** rotating a password (`terraform apply -replace='random_password.db[…]'`)
+  fails the running pods' new connections until they restart with it; rotate one role at
+  a time.

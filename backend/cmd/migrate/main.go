@@ -1,6 +1,6 @@
 // migrate applies the database migrations as the schema owner, loads the
 // built-in exercises and plans, and sets the passwords of the services'
-// least-privilege roles. It runs once per deploy,
+// least-privilege roles where they changed. It runs once per deploy,
 // before the services (a Kubernetes Job in ryft-migrate, a one-shot compose
 // service); the services themselves cannot change the schema.
 //
@@ -63,11 +63,16 @@ func main() {
 			log.Warn("no password given; role left unchanged", "role", role, "env", env)
 			continue
 		}
-		if err := db.SetRolePassword(ctx, pool, role, pw); err != nil {
+		changed, err := db.EnsureRolePassword(ctx, pool, url, role, pw)
+		if err != nil {
 			log.Error("set role password", "role", role, "err", err)
 			os.Exit(1)
 		}
-		log.Info("role password set", "role", role)
+		if changed {
+			log.Info("role password set", "role", role)
+		} else {
+			log.Info("role password unchanged", "role", role)
+		}
 	}
 	log.Info("schema current")
 }
