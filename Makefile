@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test test-scripts build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -48,6 +48,10 @@ smoke-supabase:
 	AUTH_MODE=supabase ./scripts/smoke.sh; \
 	if [ -n "$$SUPABASE_SECRET_KEY" ]; then ./scripts/check_accounts.py; \
 	else echo "accounts: skipped (set SUPABASE_SECRET_KEY to test sign-up, isolation and deletion with throwaway users)"; fi
+
+# The operator scripts (scripts/tests): a fake kubectl, and the compose api when it is up.
+test-scripts:
+	@set -e; for t in scripts/tests/*_test.sh; do bash "$$t"; done
 
 # After a production deploy (docs/OPERATIONS.md → Deploy and roll back): the edge, the
 # dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.

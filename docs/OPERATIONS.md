@@ -379,6 +379,27 @@ ADMIN_API_KEY=$ADMIN scripts/beta_report.sh feedback 2026-10-20     # reports si
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/feedback/42/resolve    # no longer open
 ```
 
+**The scripts find the admin key themselves** (`scripts/lib/admin.sh`): `ADMIN_API_KEY`
+from the environment, else `terraform -chdir=infra/vault output -raw admin_api_key`, else
+Vault (`VAULT_NAMESPACE=admin/ryft/api vault kv get -mount=kv -field=ADMIN_API_KEY
+config`); they say which one they used, and what to log in to when none works. `API_URL`
+defaults to production.
+
+**Tracing a request** a tester reports by its id:
+
+```bash
+scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4        # also with a lost hyphen, as the app once showed it
+```
+
+It reads every pod of api, ingest, scoring and notify (`--tail=-1`, `--since 48h`), prints
+each line with the id as compact JSON (time, service, pod, method, path, status, code,
+gate, user, duration, error), then the account it belonged to. Older than the pods: in
+CloudWatch (OBSERVABILITY → Logs).
+
+**One account:** `scripts/user.sh <id | first 8 digits | email> [--emails]` shows the
+detail below as a page; `--grant` / `--revoke` set beta access without a code; `--json`
+the raw answer.
+
 **One account in detail** (`GET /v1/admin/users/{id or first 8 digits}[?emails=1]`, D89):
 how it signs in (every identity from Supabase: Apple, email; whether the email is
 Apple's "Hide My Email" relay; the last sign-in), beta access, the consent with the app
