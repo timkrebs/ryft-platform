@@ -16,7 +16,7 @@
     "dev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs --if-missing && next dev",
     "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs",
     "build": "next build",
-    "postbuild": "node scripts/postbuild.mjs && node scripts/check-brand.mjs --out-only",
+    "postbuild": "node scripts/postbuild.mjs && node scripts/csp.mjs && node scripts/check-brand.mjs --out-only",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check . && node scripts/check-brand.mjs && node scripts/check-messages.mjs",
     "format": "prettier --write .",
@@ -28,7 +28,10 @@
     "licenses": "node scripts/licenses.mjs",
     "check:policy": "node scripts/check-policy-version.mjs",
     "licenses:check": "node scripts/licenses.mjs --check",
-    "og": "node scripts/og.mjs"
+    "og": "node scripts/og.mjs",
+    "image": "node scripts/container.mjs build",
+    "serve": "node scripts/container.mjs run",
+    "serve:stop": "node scripts/container.mjs stop"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",
