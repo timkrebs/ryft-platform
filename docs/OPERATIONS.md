@@ -194,8 +194,9 @@ one.
 2. **Apply:** `make k8s-apply-eks` (migrate first, then the services; it waits for the
    rollouts).
 3. **Smoke:** `make smoke-prod` with the dedicated smoke user (`SUPABASE_URL`,
-   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`): the edge for api and ingest,
-   sign-in, `/v1/me` (consent posted if missing), one tiny sync, and the day read back
+   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`, and once `ADMIN_API_KEY`, which
+   gives the smoke user a one-use invite code so it passes with `BETA_GATE` on): the edge
+   for api and ingest, sign-in, `/v1/me` (consent posted if missing), one tiny sync, and the day read back
    once scoring has scored it with the model `GET /v1/model` serves. After a model bump,
    `scripts/rescore_all.sh`.
 4. **On failure:** set `newTag` back to the previous SHA (`git log -p

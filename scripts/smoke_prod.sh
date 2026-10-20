@@ -6,6 +6,8 @@
 #
 #   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=... \
 #   SMOKE_EMAIL=smoke@ryftapp.de SMOKE_PASSWORD=... make smoke-prod
+# With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
+# (once; it keeps the access), so the smoke also passes with BETA_GATE on.
 set -euo pipefail
 API=${API_URL:-https://api.ryftapp.de}
 INGEST=${INGEST_URL:-$API}
@@ -31,7 +33,18 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" 
 [ "$code" = 404 ] || fail "GET $INGEST/v1/sync: $code, want ingest's own 404 (only POST exists)"
 
 me=$(call "$API/v1/me") || fail "GET /v1/me"
-[ "$(echo "$me" | json 'd["beta_access"]')" = True ] || fail "the smoke user has no beta access (redeem a code: docs/OPERATIONS.md → Beta)"
+if [ "$(echo "$me" | json 'd["beta_access"]')" != True ]; then
+  if [ -n "${ADMIN_API_KEY:-}" ]; then
+    code=$(curl -fsS -X POST "$API/v1/admin/invites" -H "Authorization: Bearer $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+      -d '{"note": "smoke-prod", "max_uses": 1}' | json 'd["code"]') || fail "create an invite code (ADMIN_API_KEY)"
+    call -X POST "$API/v1/me/invite" -d "{\"code\": \"$code\"}" || fail "redeem the invite code"
+    echo "→ smoke user: beta access with a one-use invite code"
+  elif [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$API/v1/days")" = 403 ]; then
+    fail "BETA_GATE is on and the smoke user has no access: run again with ADMIN_API_KEY (terraform -chdir=infra/vault output -raw admin_api_key)"
+  else
+    echo "! the smoke user has no beta access: fine while BETA_GATE is off; run once with ADMIN_API_KEY before turning it on"
+  fi
+fi
 policy=$(call "$API/v1/config" | json 'd["privacy_policy_version"]') || fail "GET /v1/config"
 if [ "$(echo "$me" | json '(d["consent"] or {}).get("policy_version")')" != "$policy" ]; then
   call -X POST "$API/v1/me/consent" -d "{\"policy_version\": \"$policy\", \"app_version\": \"smoke-prod\"}" \
