@@ -104,6 +104,20 @@ var (
 		Help: "Device tokens dropped because APNs said they are gone (410, BadDeviceToken, DeviceTokenNotForTopic).",
 	})
 
+	// Beta (api, ingest).
+	BetaDenied = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_beta_denied_total",
+		Help: "Requests refused with 403 and a code: invite_required (beta gate) or consent_required (sync without consent), by service.",
+	}, []string{"code", "service"})
+	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_consents_total",
+		Help: "Consent changes: granted, revoked, stale (POST with an outdated policy version).",
+	}, []string{"action"})
+	InviteRedemptions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_invite_redemptions_total",
+		Help: "POST /v1/me/invite: ok (a use spent), already (the account had access), invalid.",
+	}, []string{"result"})
+
 	// Journal (api).
 	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_journal_saves_total",

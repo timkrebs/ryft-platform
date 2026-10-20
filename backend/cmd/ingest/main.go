@@ -65,8 +65,14 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("auth", "mode", authCfg.Mode)
+	beta, err := config.LoadBeta()
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	log.Info("beta", "gate", beta.Gate, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
-	h := &handler{st: st, bus: bus, log: log}
+	h := &handler{st: st, bus: bus, log: log, beta: beta}
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -118,12 +124,36 @@ func requestID(r *http.Request) string {
 }
 
 type handler struct {
-	st  *store.Store
-	bus *events.Bus
-	log *slog.Logger
+	st   *store.Store
+	bus  *events.Bus
+	log  *slog.Logger
+	beta config.Beta
+}
+
+// admitted says whether user may upload: beta access while the gate is on, and
+// a consent to the current privacy policy always (GDPR Art. 9(2)(a), D78). The
+// user row, consent included, is read fresh for every request, so a withdrawal
+// counts at once.
+func (h *handler) admitted(w http.ResponseWriter, user model.User) bool {
+	if h.beta.Gate && !user.BetaAccess {
+		metrics.BetaDenied.WithLabelValues(model.CodeInviteRequired, "ingest").Inc()
+		httpx.WriteCodedError(w, http.StatusForbidden, model.CodeInviteRequired, "this beta needs an invite code")
+		return false
+	}
+	if user.Consent == nil || user.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion {
+		metrics.BetaDenied.WithLabelValues(model.CodeConsentRequired, "ingest").Inc()
+		httpx.WriteCodedError(w, http.StatusForbidden, model.CodeConsentRequired,
+			"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
+		return false
+	}
+	return true
 }
 
 func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
+	// Before reading the body: a refused upload costs no 32 MiB parse.
+	if user, _ := auth.UserFrom(r.Context()); !h.admitted(w, user) {
+		return
+	}
 	var req model.SyncRequest
 	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodySync); err != nil {
 		httpx.WriteDecodeError(w, err)

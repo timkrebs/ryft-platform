@@ -330,7 +330,8 @@ ok(f"PATCH /v1/me: manual 481 → {m['sleep_base_source']} {m['sleep_base_min']}
 # ---- remote config (GET /v1/config, /v1/admin/flags) ---------------------------
 APP_FLAGS = {"train.enabled", "sleep.planner", "today.redesign", "coach.enabled", "push.enabled", "physiology.card"}
 cfg = get("/v1/config")
-check(set(cfg) == {"flags", "evaluated_at", "ttl_sec"} and cfg["ttl_sec"] == 21600, f"/v1/config shape: {cfg}")
+check(set(cfg) == {"flags", "evaluated_at", "ttl_sec", "privacy_policy_version", "privacy_policy_url"} and cfg["ttl_sec"] == 21600,
+      f"/v1/config shape: {cfg}")
 check(APP_FLAGS <= set(cfg["flags"]) and all(isinstance(v, bool) for v in cfg["flags"].values()),
       f"/v1/config must evaluate the app's flags: {cfg['flags']}")
 check(get("/v1/config")["flags"] == cfg["flags"], "the same user gets the same flags")
@@ -365,11 +366,64 @@ if ADMIN and os.environ.get("AUTH_MODE", "apikey") == "apikey":
 else:
     ok(f"/v1/config: {sorted(k for k, v in cfg['flags'].items() if v)} on (admin checks need ADMIN_API_KEY, apikey mode)")
 
-# ---- push: token registry, preferences, the morning event (M7) -----------------
+# ---- beta: consent and invite codes ---------------------------------------------
+def iso_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def jbody(v):
     return json.dumps(v).encode()
 
 
+POLICY = get("/v1/config")["privacy_policy_version"]
+
+
+def consent(key=None):
+    status, _, body = raw("POST", "/v1/me/consent", jbody({"policy_version": POLICY, "app_version": "check_api"}), key=key)
+    check(status == 204, f"POST /v1/me/consent: {status} {body}")
+
+
+cfg_b = get("/v1/config")
+check(cfg_b["privacy_policy_url"].startswith("https://") and POLICY, f"/v1/config privacy fields: {cfg_b}")
+me_c = get("/v1/me")
+check(me_c["consent"] and me_c["consent"]["policy_version"] == POLICY and me_c["beta_access"] in (True, False),
+      f"User.consent after smoke.sh consented: {me_c.get('consent')}")
+status, _, err = raw("POST", "/v1/me/consent", jbody({"policy_version": "1999-01-01"}))
+check(status == 422 and is_error(err), f"an outdated policy version: {status}")
+if os.environ.get("AUTH_MODE", "apikey") == "apikey":
+    D = str(uuid.uuid4())
+    KEY_D = f"{KEY}:{D}"
+    tiny = {"device_id": str(uuid.uuid4()), "samples": [{"type": "steps", "start": iso_now(), "end": iso_now(), "value": 10,
+            "unit": "count", "source": "check-d"}], "sleep": [], "workouts": []}
+    status, _, err = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
+    check(status == 403 and err.get("code") == "consent_required" and is_error({k: v for k, v in err.items() if k != "code"}),
+          f"sync without consent: {status} {err}")
+    consent(KEY_D)
+    status, _, _ = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
+    check(status == 200, f"sync after consent: {status}")
+    check(raw("DELETE", "/v1/me/consent", key=KEY_D)[0] == 204, "withdraw consent")
+    status, _, err = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
+    check(status == 403 and err.get("code") == "consent_required", f"sync after withdrawing: {status} {err}")
+    check(get("/v1/me", key=KEY_D)["consent"] is None, "no consent after withdrawing")
+    if ADMIN:
+        status, _, inv = raw("POST", "/v1/admin/invites", jbody({"note": "check_api", "max_uses": 1}), key=ADMIN)
+        check(status == 201 and inv["code"].startswith("RYFT-") and len(inv["code"]) == 14, f"create invite: {status} {inv}")
+        check(get("/v1/me", key=KEY_D)["beta_access"] is False, "a new account has no beta access")
+        status, _, err = raw("POST", "/v1/me/invite", jbody({"code": "RYFT-ZZZZ-ZZZZ"}), key=KEY_D)
+        check(status == 422 and err["error"] == "invalid or used code", f"unknown code: {status} {err}")
+        check(raw("POST", "/v1/me/invite", jbody({"code": inv["code"].lower().replace("-", " ")}), key=KEY_D)[0] == 204, "redeem")
+        check(get("/v1/me", key=KEY_D)["beta_access"] is True, "beta access after the code")
+        E = f"{KEY}:{uuid.uuid4()}"
+        status, _, err = raw("POST", "/v1/me/invite", jbody({"code": inv["code"]}), key=E)
+        check(status == 422 and err["error"] == "invalid or used code", f"a used-up code: {status}")
+        check(raw("DELETE", f"/v1/admin/invites/{inv['code']}", key=ADMIN)[0] == 204, "delete the code")
+        raw("DELETE", "/v1/me", key=E)
+    raw("DELETE", "/v1/me", key=KEY_D)
+    ok("beta: sync 403 consent_required without (and after withdrawing) consent, 200 with; invite codes redeem once, 422 otherwise")
+else:
+    ok(f"beta: consent to {POLICY} on file")
+
+# ---- push: token registry, preferences, the morning event (M7) -----------------
 dev, tok = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex
 for _ in range(2):  # registering again is an update
     status, _, _ = raw("POST", f"/v1/devices/{dev}/push", jbody({"token": tok.upper(), "env": "sandbox", "locale": "de-DE"}))
@@ -419,6 +473,7 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
     before = pushed("MORNING_SCORE", "unconfigured")
     status, _, _ = raw("POST", f"/v1/devices/{uuid.uuid4()}/push", jbody({"token": uuid.uuid4().hex * 2, "env": "sandbox", "locale": "en"}), key=KEY_C)
     check(status == 204, f"C registers a token: {status}")
+    consent(KEY_C)
     tz_c = ZoneInfo(get("/v1/me", key=KEY_C)["tz"])
     now_c = datetime.now(tz_c)
     end = min(now_c - timedelta(minutes=10), now_c.replace(hour=7, minute=0, second=0, microsecond=0))
@@ -666,6 +721,7 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     KEY_B = f"{KEY}:{B}"
     me_b = get("/v1/me", key=KEY_B)
     check(me_b["id"] == B and me_b["provider"] == "apikey", f"/v1/me for a new user: {me_b}")
+    consent(KEY_B)
     check(get(f"/v1/days?to={TODAY}", key=KEY_B) == [], "a new user must see no days")
     check(get("/v1/insights", key=KEY_B) == [], "a new user must not get another user's insight cards")
     a_wk = wks[-1]

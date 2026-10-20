@@ -69,6 +69,12 @@ func main() {
 		log.Error("admin config", "err", err)
 		os.Exit(1)
 	}
+	beta, err := config.LoadBeta()
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	log.Info("beta", "gate", beta.Gate, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
@@ -77,7 +83,7 @@ func main() {
 	}
 	go acct.reconcileEvery(ctx, reconcileEvery)
 
-	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct, engine: scoring.NewEngine(st, log)}
+	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct, engine: scoring.NewEngine(st, log), beta: beta}
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -94,6 +100,9 @@ func main() {
 	api.HandleFunc("PATCH /v1/me", h.patchMe)
 	api.HandleFunc("POST /v1/me/apple-authorization", h.appleAuthorization)
 	api.HandleFunc("PATCH /v1/me/notifications", h.patchNotifications)
+	api.HandleFunc("POST /v1/me/consent", h.postConsent)
+	api.HandleFunc("DELETE /v1/me/consent", h.deleteConsent)
+	api.HandleFunc("POST /v1/me/invite", h.redeemInvite)
 	api.HandleFunc("POST /v1/devices/{id}/push", h.registerPush)
 	api.HandleFunc("DELETE /v1/devices/{id}/push", h.deletePush)
 	api.HandleFunc("GET /v1/days", h.days)
@@ -145,14 +154,17 @@ func main() {
 	del.HandleFunc("DELETE /v1/me", h.deleteMe)
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
 	authOpts.OnAuth = auth.LoadUser(ensureUser(st))
-	mux.Handle("/v1/", auth.Middleware(authOpts, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))
+	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(beta.Gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
 	// The operator's routes: ADMIN_API_KEY instead of a user token; absent
 	// without a key.
 	if adminKey != "" {
-		a, adm := admin{h}, http.NewServeMux()
+		a, adm := admin{h: h, keyID: keyFingerprint(adminKey)}, http.NewServeMux()
 		adm.HandleFunc("GET /v1/admin/flags", a.flags)
 		adm.HandleFunc("PUT /v1/admin/flags/{key}", a.putFlag)
 		adm.HandleFunc("DELETE /v1/admin/flags/{key}", a.deleteFlag)
+		adm.HandleFunc("POST /v1/admin/invites", a.createInvite)
+		adm.HandleFunc("GET /v1/admin/invites", a.invites)
+		adm.HandleFunc("DELETE /v1/admin/invites/{code}", a.deleteInvite)
 		adm.HandleFunc("/v1/admin/", httpx.NotFound)
 		mux.Handle("/v1/admin/", adminOnly(adminKey, httpx.Timeout(readTimeout, httpx.WithRoutes(adm))))
 		log.Info("admin routes enabled")
@@ -197,6 +209,7 @@ type handler struct {
 	cache    *insightCache
 	accounts *accounts
 	engine   *scoring.Engine // pure scoring with store lookups, for session completion
+	beta     config.Beta
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

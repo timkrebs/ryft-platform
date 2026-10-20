@@ -127,6 +127,32 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
+// Beta configures the invite gate and the privacy policy consent is given to
+// (api and ingest).
+type Beta struct {
+	Gate                 bool   // BETA_GATE=on: accounts without a redeemed code are refused
+	PrivacyPolicyVersion string // PRIVACY_POLICY_VERSION, e.g. 2026-10-20
+	PrivacyPolicyURL     string // PRIVACY_POLICY_URL
+}
+
+// LoadBeta reads BETA_GATE (on|off, default off), PRIVACY_POLICY_VERSION and
+// PRIVACY_POLICY_URL (both with the current defaults).
+func LoadBeta() (Beta, error) {
+	b := Beta{PrivacyPolicyVersion: getenv("PRIVACY_POLICY_VERSION", "2026-10-20"),
+		PrivacyPolicyURL: getenv("PRIVACY_POLICY_URL", "https://ryftapp.de/privacy")}
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("BETA_GATE"))); v {
+	case "", "off":
+	case "on":
+		b.Gate = true
+	default:
+		return b, fmt.Errorf("BETA_GATE must be on or off, got %q", v)
+	}
+	if len(b.PrivacyPolicyVersion) > 32 {
+		return b, errors.New("PRIVACY_POLICY_VERSION has at most 32 characters")
+	}
+	return b, nil
+}
+
 // LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin
 // routes (api only; infra/vault generates it). Empty disables them; a short key
 // is refused rather than guessable.

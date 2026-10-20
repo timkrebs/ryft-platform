@@ -35,15 +35,24 @@ func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, sleep_base_source,
 	sleep_base_learned_min, sleep_base_learned_at, notify_categories,
-	to_char(quiet_from, 'HH24:MI'), to_char(quiet_to, 'HH24:MI')`
+	to_char(quiet_from, 'HH24:MI'), to_char(quiet_to, 'HH24:MI'), beta_access_at IS NOT NULL,
+	(SELECT c.policy_version FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
+	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
+	(SELECT c.granted_at FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
+	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1)`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
 	var cats map[string]bool
-	var from, to *string
+	var from, to, consent *string
+	var consentAt *time.Time
 	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
-		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to}, extra...)...)
+		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to,
+		&u.BetaAccess, &consent, &consentAt}, extra...)...)
 	u.Notifications = prefsOf(cats, from, to)
+	if consent != nil && consentAt != nil {
+		u.Consent = &model.Consent{PolicyVersion: *consent, GrantedAt: consentAt.UTC()}
+	}
 	return u, err
 }
 
@@ -143,6 +152,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		for _, q := range []string{
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
+			`DELETE FROM consents WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
 			// Journal: entries before the custom behaviors they name.
 			`DELETE FROM journal_entries WHERE user_id=$1`,

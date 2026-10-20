@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -25,7 +27,8 @@ func (h *handler) remoteConfig(w http.ResponseWriter, r *http.Request) {
 	for k, on := range out {
 		metrics.FlagEvaluations.WithLabelValues(k, onOff(on)).Inc()
 	}
-	httpx.WriteJSON(w, 200, model.RemoteConfig{Flags: out, EvaluatedAt: time.Now().UTC().Truncate(time.Second), TTLSec: flags.TTL})
+	httpx.WriteJSON(w, 200, model.RemoteConfig{Flags: out, EvaluatedAt: time.Now().UTC().Truncate(time.Second), TTLSec: flags.TTL,
+		PrivacyPolicyVersion: h.beta.PrivacyPolicyVersion, PrivacyPolicyURL: h.beta.PrivacyPolicyURL})
 }
 
 func onOff(on bool) string {
@@ -38,9 +41,20 @@ func onOff(on bool) string {
 // maxAllowList bounds a flag's allow-list (testers, not a user segment).
 const maxAllowList = 1000
 
-// admin serves the operator's /v1/admin routes (feature flags). They are not
-// user routes: the bearer is ADMIN_API_KEY, no user is looked up.
-type admin struct{ h *handler }
+// admin serves the operator's /v1/admin routes (feature flags, invite codes).
+// They are not user routes: the bearer is ADMIN_API_KEY, no user is looked up.
+// keyID (the key's fingerprint) goes into the log of every change.
+type admin struct {
+	h     *handler
+	keyID string
+}
+
+// keyFingerprint names an admin key in logs without revealing it: the first 8
+// hex digits of its SHA-256.
+func keyFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:4])
+}
 
 func (a admin) flags(w http.ResponseWriter, r *http.Request) {
 	all, err := a.h.st.Flags(r.Context())
@@ -86,7 +100,7 @@ func (a admin) putFlag(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	a.h.log.InfoContext(r.Context(), "feature flag set", "key", f.Key, "enabled", f.Enabled,
-		"rollout_pct", f.RolloutPct, "allow_users", len(f.AllowUserIDs), "created", created)
+		"rollout_pct", f.RolloutPct, "allow_users", len(f.AllowUserIDs), "created", created, "admin_key", a.keyID)
 	status := 200
 	if created {
 		status = 201
@@ -108,7 +122,7 @@ func (a admin) deleteFlag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "feature flag deleted", "key", key)
+	a.h.log.InfoContext(r.Context(), "feature flag deleted", "key", key, "admin_key", a.keyID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -9,3 +9,7 @@ data:
   PORT: "8080"
   AUTH_MODE: supabase
   LOG_LEVEL: info
+  # The privacy policy users consent to (API.md → consent). A new version makes
+  # everyone consent again before the next sync: change it with the published text.
+  PRIVACY_POLICY_VERSION: "2026-10-20"
+  PRIVACY_POLICY_URL: https://ryftapp.de/privacy

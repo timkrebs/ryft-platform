@@ -56,6 +56,16 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, body)
 }
 
+// WriteCodedError is WriteError with the body's code, which tells the client
+// what to do (model.Code*).
+func WriteCodedError(w http.ResponseWriter, status int, code, msg string) {
+	body := map[string]string{"error": msg, "code": code}
+	if id := w.Header().Get(RequestIDHeader); id != "" {
+		body["request_id"] = id
+	}
+	WriteJSON(w, status, body)
+}
+
 // Fail answers an unexpected server-side error. The client gets a generic
 // message and the request ID; the details go to the log. A request that ran
 // out of time is a 503 (retry), anything else a 500.

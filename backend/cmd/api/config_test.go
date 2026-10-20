@@ -68,7 +68,7 @@ func TestRemoteConfig(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPut, "/v1/admin/flags/"+key, strings.NewReader(body))
 		r.SetPathValue("key", key)
 		rec := httptest.NewRecorder()
-		admin{h}.putFlag(rec, r)
+		admin{h: h}.putFlag(rec, r)
 		return rec.Code
 	}
 	if code := put("today.redesign", `{"enabled": true, "rollout_pct": 0, "allow_user_ids": ["`+b.String()+`"]}`); code != 200 {
@@ -92,7 +92,7 @@ func TestRemoteConfig(t *testing.T) {
 	r := httptest.NewRequest(http.MethodDelete, "/v1/admin/flags/check.new_flag", nil)
 	r.SetPathValue("key", "check.new_flag")
 	rec := httptest.NewRecorder()
-	admin{h}.deleteFlag(rec, r)
+	admin{h: h}.deleteFlag(rec, r)
 	if _, still := get(ua).Flags["check.new_flag"]; rec.Code != 204 || still {
 		t.Fatalf("delete: %d", rec.Code)
 	}

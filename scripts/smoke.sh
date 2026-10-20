@@ -35,6 +35,11 @@ for url in "$INGEST_URL" "$API_URL"; do
   done
 done
 
+echo "→ consent to the current privacy policy (POST /v1/sync needs it)"
+POLICY=$(curl -fsS "$API_URL/v1/config" -H "Authorization: Bearer $API_KEY" | python3 -c 'import json,sys;print(json.load(sys.stdin)["privacy_policy_version"])')
+curl -fsS -o /dev/null -X POST "$API_URL/v1/me/consent" -H "Authorization: Bearer $API_KEY" \
+  -H 'Content-Type: application/json' -d "{\"policy_version\":\"$POLICY\",\"app_version\":\"smoke\"}"
+
 echo "→ generating $DAYS synthetic days"
 python3 "$HERE/synth.py" "$DAYS" --nap "$NAP" > /tmp/ryft-synth.json
 

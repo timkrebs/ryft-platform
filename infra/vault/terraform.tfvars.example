@@ -14,6 +14,11 @@ database                = { host = "aws-<n>-eu-central-1.pooler.supabase.com" } 
 database_owner_password = "<database password>"
 
 # Per-service credentials. Keys land only in that service's kv/config.
+# Shared settings, each delivered only to the services that list it in secret_keys.
+# BETA_GATE = "on": accounts need a redeemed invite code (api and ingest;
+# docs/OPERATIONS.md → Beta). Without it the gate is off.
+# shared_secrets = { BETA_GATE = "on" }
+
 service_secrets = {
   api = {
     SUPABASE_SERVICE_ROLE_KEY = "sb_secret_…" # Project Settings → API Keys; account deletion

@@ -43,8 +43,11 @@ func TestScramVerifier(t *testing.T) {
 // Column grants (scoring's on workouts, notify's reads) are checked separately.
 var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 
-// journalTables are migration 0016's.
-var journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
+// journalTables are migration 0016's, betaTables 0017's onwards.
+var (
+	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
+	betaTables    = []string{"consents", "beta_invite_codes"}
+)
 
 // trainTables are migration 0011's.
 var trainTables = []string{"exercises", "plans", "plan_days", "plan_exercises", "plan_enrollments",
@@ -54,13 +57,14 @@ var grants = map[string]map[string][]string{
 	"ryft_ingest": {
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
 		"samples": {"SELECT", "INSERT", "UPDATE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE"},
-		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
+		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
 		// deleted_users: only the id column (below), never the stored Apple token
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
 		"workouts": {"SELECT", "DELETE"}, "daily_scores": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
 		"exercises": {"SELECT"}, "sessions": {"SELECT"}, "session_exercises": {"SELECT"}, "session_sets": {"SELECT"},
+		"consents": {"SELECT"},
 	},
 	"ryft_notify": {
 		"push_tokens": {"SELECT", "DELETE"}, "notifications_sent": crud, "personal_records": {"SELECT"},
@@ -73,6 +77,7 @@ var grants = map[string]map[string][]string{
 		"schema_migrations": {"SELECT"}, "apple_tokens": {"SELECT", "INSERT", "UPDATE", "DELETE"},
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
+		"consents": crud, "beta_invite_codes": crud,
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -86,7 +91,7 @@ func TestServiceRoleGrants(t *testing.T) {
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
 		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"},
-		append(trainTables, journalTables...)...)
+		append(append(trainTables, journalTables...), betaTables...)...)
 	for role, allowed := range grants {
 		for _, tbl := range tables {
 			for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {

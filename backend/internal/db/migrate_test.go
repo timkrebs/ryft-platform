@@ -140,6 +140,31 @@ func TestMigrateMarksChangedSleepBaseManual(t *testing.T) {
 	}
 }
 
+// 0017: every account from before the beta gate keeps access.
+func TestMigrateKeepsExistingAccountsInTheBeta(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 16); err != nil {
+		t.Fatal(err)
+	}
+	old := "cccccccc-0000-0000-0000-000000000017"
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id) VALUES ($1)`, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	if !scalar[bool](t, pool, `SELECT beta_access_at IS NOT NULL FROM users WHERE id=$1`, old) {
+		t.Fatal("an existing account must keep beta access")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id) VALUES ('dddddddd-0000-0000-0000-000000000017')`); err != nil {
+		t.Fatal(err)
+	}
+	if scalar[bool](t, pool, `SELECT beta_access_at IS NOT NULL FROM users WHERE id='dddddddd-0000-0000-0000-000000000017'`) {
+		t.Fatal("a new account starts without access")
+	}
+}
+
 func TestMigrateSupabaseShape(t *testing.T) {
 	pool := freshDB(t, true)
 	if err := Migrate(context.Background(), pool, quiet); err != nil {
@@ -147,7 +172,7 @@ func TestMigrateSupabaseShape(t *testing.T) {
 	}
 	tables := append([]string{"users", "devices", "samples", "sleep_segments", "workouts", "daily_scores",
 		"deleted_users", "schema_migrations", "apple_tokens", "feature_flags", "push_tokens", "notifications_sent"},
-		append(trainTables, journalTables...)...)
+		append(append(trainTables, journalTables...), betaTables...)...)
 	for _, tbl := range tables {
 		if !scalar[bool](t, pool, `SELECT relrowsecurity FROM pg_class WHERE oid = $1::regclass`, "public."+tbl) {
 			t.Errorf("RLS must be enabled on %s", tbl)

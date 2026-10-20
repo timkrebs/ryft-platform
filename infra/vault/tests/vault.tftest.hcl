@@ -301,3 +301,20 @@ run "the_admin_key_reaches_only_the_api" {
     error_message = "the api gets the generated admin key"
   }
 }
+
+run "the_beta_gate_reaches_api_and_ingest" {
+  command = apply
+
+  variables {
+    shared_secrets = { BETA_GATE = "on" }
+  }
+  assert {
+    condition = contains(output.secret_keys["api"], "BETA_GATE") && contains(output.secret_keys["ingest"], "BETA_GATE") && alltrue([
+    for s in ["scoring", "notify", "nats", "migrate", "monitoring"] : !contains(output.secret_keys[s], "BETA_GATE")])
+    error_message = "BETA_GATE goes to the api and ingest only"
+  }
+  assert {
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["ingest"].data_json).BETA_GATE) == "on"
+    error_message = "ingest gets the value"
+  }
+}

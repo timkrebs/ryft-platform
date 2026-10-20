@@ -53,6 +53,10 @@ services:
         # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
         AUTH_MODE: apikey
         ALLOW_INSECURE_APIKEY_AUTH: "true"
+        # The invite gate is off locally (BETA_GATE=on make up to try it); consent to
+        # the policy below is always needed before a sync.
+        BETA_GATE: ${BETA_GATE:-off}
+        PRIVACY_POLICY_VERSION: "2026-10-20"
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: ingest
       NATS_PASSWORD: dev-ingest-nats-password

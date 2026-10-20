@@ -115,6 +115,24 @@ def main():
               f"/v1/me must create A's row from the token: {status} {me}")
         ok("/v1/me created the user row (email, provider email)")
 
+        # Beta: a new account needs a code while the gate is on (ADMIN_API_KEY makes
+        # one per user), and a consent to the current policy before it may sync.
+        status, cfg = a.api("GET", "/v1/config")
+        check(status == 200 and cfg.get("privacy_policy_version"), f"/v1/config: {status} {cfg}")
+        for u in (a, b):
+            status, me_u = u.api("GET", "/v1/me")
+            if not me_u.get("beta_access"):
+                admin = os.environ.get("ADMIN_API_KEY", "")
+                check(admin, "the beta gate is on: set ADMIN_API_KEY so the check can make invite codes")
+                status, inv = call("POST", API + "/v1/admin/invites", {"note": f"check_accounts {u.label}", "max_uses": 1},
+                                   {"Authorization": f"Bearer {admin}"})
+                check(status == 201, f"create an invite: {status} {inv}")
+                status, body = u.api("POST", "/v1/me/invite", {"code": inv["code"]})
+                check(status == 204, f"redeem {u.label}: {status} {body}")
+            status, body = u.api("POST", "/v1/me/consent", {"policy_version": cfg["privacy_policy_version"], "app_version": "check_accounts"})
+            check(status == 204, f"consent {u.label}: {status} {body}")
+        ok("beta: access (redeemed codes where the gate asked) and consent for both users")
+
         wid = sync_one_day(a)
         days = []
         for _ in range(60):

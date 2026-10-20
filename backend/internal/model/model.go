@@ -361,7 +361,50 @@ type User struct {
 	SleepBaseLearnedAt  *time.Time `json:"sleep_base_learned_at"`
 	// Push preferences (PATCH /v1/me/notifications).
 	Notifications NotificationPrefs `json:"notifications"`
+	// Beta: access through an invite code, and the current consent.
+	BetaAccess bool     `json:"beta_access"`
+	Consent    *Consent `json:"consent"`
 }
+
+// Consent is the current, unrevoked consent to health-data processing.
+type Consent struct {
+	PolicyVersion string    `json:"policy_version"`
+	GrantedAt     time.Time `json:"granted_at"`
+}
+
+// ConsentPost is POST /v1/me/consent.
+type ConsentPost struct {
+	PolicyVersion string  `json:"policy_version"`
+	AppVersion    *string `json:"app_version"`
+}
+
+// InvitePost is POST /v1/me/invite.
+type InvitePost struct {
+	Code string `json:"code"`
+}
+
+// BetaInvite is an invite code as the admin routes show it.
+type BetaInvite struct {
+	Code      string     `json:"code"` // RYFT-7K3M-QX9P
+	Note      string     `json:"note"`
+	MaxUses   int        `json:"max_uses"`
+	Uses      int        `json:"uses"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// BetaInviteInput is POST /v1/admin/invites.
+type BetaInviteInput struct {
+	Note      string     `json:"note"`
+	MaxUses   *int       `json:"max_uses"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// Error codes (the error body's code), closed in v1.
+const (
+	CodeInviteRequired  = "invite_required"
+	CodeConsentRequired = "consent_required"
+)
 
 type UserPatch struct {
 	TZ           *string `json:"tz,omitempty"`
@@ -502,9 +545,11 @@ type FlagInput struct {
 
 // RemoteConfig is GET /v1/config: every flag evaluated for the caller.
 type RemoteConfig struct {
-	Flags       map[string]bool `json:"flags"`
-	EvaluatedAt time.Time       `json:"evaluated_at"`
-	TTLSec      int             `json:"ttl_sec"`
+	Flags                map[string]bool `json:"flags"`
+	EvaluatedAt          time.Time       `json:"evaluated_at"`
+	TTLSec               int             `json:"ttl_sec"`
+	PrivacyPolicyVersion string          `json:"privacy_policy_version"`
+	PrivacyPolicyURL     string          `json:"privacy_policy_url"`
 }
 
 // ---- Push (M7 core) ---------------------------------------------------------------
