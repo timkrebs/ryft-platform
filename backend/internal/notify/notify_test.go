@@ -408,3 +408,46 @@ func TestCheckStale(t *testing.T) {
 		t.Fatal("not at night")
 	}
 }
+
+// D92: a silent refresh after a sync's days are scored, at most one a user every
+// RefreshEvery, shared with the morning one; not claimed per day.
+func TestRefreshAfterSync(t *testing.T) {
+	now := time.Date(2026, 10, 21, 8, 0, 0, 0, berlin)
+	s, st, ap := service(now, model.NotificationPrefs{})
+	clock := now
+	s.Now = func() time.Time { return clock }
+	ev := events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: st.recipient.ID, Day: "2026-10-21"}}
+	if err := s.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if ap.count(apns.PushBackground) != len(tokens) || len(st.claims) != 0 {
+		t.Fatalf("one silent push per device, no daily claim: %d sent, claims %v", ap.count(apns.PushBackground), st.claims)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(ap.sent[0].Payload, &payload)
+	if r, _ := payload["ryft"].(map[string]any); r["kind"] != "refresh" || r["day"] != "2026-10-21" || ap.sent[0].CollapseID != "refresh-2026-10-21" {
+		t.Fatalf("payload %s, collapse %s", ap.sent[0].Payload, ap.sent[0].CollapseID)
+	}
+	clock = now.Add(4 * time.Minute)
+	_ = s.Handle(context.Background(), ev)
+	if ap.count(apns.PushBackground) != len(tokens) {
+		t.Fatal("within five minutes: throttled")
+	}
+	clock = now.Add(6 * time.Minute)
+	_ = s.Handle(context.Background(), ev)
+	if ap.count(apns.PushBackground) != 2*len(tokens) {
+		t.Fatal("after five minutes: sent again")
+	}
+	// The morning push's own refresh counts too: a sync's refresh right after waits.
+	s2, st2, ap2 := service(now, model.NotificationPrefs{})
+	morning := morningEvent("2026-10-21")
+	morning.Scored.UserID = st2.recipient.ID
+	if err := s2.Handle(context.Background(), morning); err != nil {
+		t.Fatal(err)
+	}
+	before := ap2.count(apns.PushBackground)
+	_ = s2.Handle(context.Background(), events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: st2.recipient.ID, Day: "2026-10-21"}})
+	if ap2.count(apns.PushBackground) != before {
+		t.Fatal("right after the morning refresh: throttled")
+	}
+}

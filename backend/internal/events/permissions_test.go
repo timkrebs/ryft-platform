@@ -179,7 +179,7 @@ func TestNatsPermissionsNotifySubjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer scoring.Close()
-	for _, subject := range []string{SubjectScored, SubjectSessionScored} {
+	for _, subject := range []string{SubjectScored, SubjectSessionScored, SubjectRefresh} {
 		for svc, want := range map[string]bool{"scoring": true, "api": false, "ingest": false, "notify": false} {
 			nc, _ := connectAs(t, svc)
 			js, _ := jetstream.New(nc)
@@ -199,7 +199,7 @@ func TestNatsPermissionsNotifySubjects(t *testing.T) {
 	defer notify.Close()
 	short, cancel := context.WithTimeout(ctx, 3*time.Second)
 	_, err = notify.js.CreateOrUpdateConsumer(short, StreamName, jetstream.ConsumerConfig{Durable: ConsumerNotify,
-		FilterSubjects: []string{SubjectScored, SubjectSessionScored}, AckPolicy: jetstream.AckExplicitPolicy})
+		FilterSubjects: notifySubjects, AckPolicy: jetstream.AckExplicitPolicy})
 	cancel()
 	if err != nil {
 		t.Fatalf("notify creates its consumer: %v", err)
@@ -229,7 +229,8 @@ func TestNatsPermissionsDeadLetters(t *testing.T) {
 	}{
 		{"scoring", DLQSubject(SubjectIngested), true}, {"scoring", DLQSubject(SubjectSessionCompleted), true},
 		{"scoring", DLQSubject(SubjectScored), false}, {"notify", DLQSubject(SubjectScored), true},
-		{"notify", DLQSubject(SubjectSessionScored), true}, {"notify", DLQSubject(SubjectIngested), false},
+		{"notify", DLQSubject(SubjectSessionScored), true}, {"notify", DLQSubject(SubjectRefresh), true},
+		{"notify", DLQSubject(SubjectIngested), false},
 		{"api", DLQSubject(SubjectIngested), false}, {"ingest", DLQSubject(SubjectIngested), false},
 	} {
 		nc, _ := connectAs(t, c.svc)

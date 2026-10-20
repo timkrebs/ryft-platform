@@ -129,6 +129,15 @@ var (
 		Name: "ryft_users_by_last_sync",
 		Help: "Accounts by the age of their newest device sync (scoring, every 15 min): under_6h, 6h_to_24h, 1d_to_3d, over_3d, never.",
 	}, []string{"age"})
+	SyncToScore = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ryft_sync_to_score_seconds",
+		Help:    "From ingest accepting a sync to scoring finishing one of the days it queued (per day; D92).",
+		Buckets: []float64{1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800},
+	})
+	ConsumerPanics = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_event_handler_panics_total",
+		Help: "Event handlers that panicked (the message is retried and, at the last delivery, dead-lettered), by subject.",
+	}, []string{"subject"})
 	EventsDLQ = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_dlq_total",
 		Help: "Events moved to the dead-letter stream RYFT_DLQ, by original subject: ok, or error (the publish failed; the message stayed in RYFT).",

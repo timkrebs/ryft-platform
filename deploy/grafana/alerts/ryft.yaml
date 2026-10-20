@@ -79,6 +79,12 @@ groups:
         expr: sum(rate(ryft_events_published_total{result="error"}[10m])) > 0
         for: 10m
         labels: { severity: warning }
+      - alert: SyncToScoreSlow
+        # Testers wait over two minutes for their scores after a sync (p95 of the days scored).
+        expr: histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[15m]))) > 120
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Scores take over 2 minutes after a sync (p95)" }
       - alert: ScoringErrors
         expr: sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0
         for: 15m

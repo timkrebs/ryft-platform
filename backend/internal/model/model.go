@@ -934,6 +934,14 @@ type ScoredEvent struct {
 	RequestID        string    `json:"request_id,omitempty"`
 }
 
+// RefreshEvent is published on ryft.refresh when scoring has finished the
+// days a sync queued (scoring → notify: a silent push so the app refetches; D92).
+type RefreshEvent struct {
+	UserID    uuid.UUID `json:"user_id"`
+	Day       string    `json:"day"` // the newest day the sync touched
+	RequestID string    `json:"request_id,omitempty"`
+}
+
 // SessionScoredEvent is published on ryft.session.scored once scoring has
 // scored a completed session's day (scoring → notify).
 type SessionScoredEvent struct {

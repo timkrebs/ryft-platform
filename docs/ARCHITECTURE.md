@@ -39,9 +39,9 @@ the same `samples` table with new `type` values — nothing else changes.
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
 | `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ryft.ingested` with the local days touched | Postgres, NATS |
-| `scoring` | 8080 (health only) | Consume `ryft.ingested` and `ryft.session.completed` (one durable pull consumer); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `ryft.scored` (today's first recovery) and `ryft.session.scored` | Postgres, NATS |
+| `scoring` | 8080 (health only) | Consume `ryft.ingested` and `ryft.session.completed` (one durable pull consumer); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `ryft.scored` (today's first recovery), `ryft.session.scored` and `ryft.refresh` (a sync's days scored) | Postgres, NATS |
 | `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, NATS |
-| `notify`  | 8080 (health only) | Consume `ryft.scored` and `ryft.session.scored` (its own durable consumer); send APNs pushes; every 15 min the no-data check | Postgres, NATS, APNs |
+| `notify`  | 8080 (health only) | Consume `ryft.scored`, `ryft.session.scored` and `ryft.refresh` (its own durable consumer); send APNs pushes; every 15 min the no-data check | Postgres, NATS, APNs |
 
 All four are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
 share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
@@ -85,7 +85,8 @@ Supabase deletions and erases accounts that reappeared, e.g. after a restore.
 (`POST /v1/devices/{id}/push`, table `push_tokens`) and its preferences
 (`PATCH /v1/me/notifications`, columns on `users`). scoring announces two moments:
 `ryft.scored` when today first gets a recovery after a night with sleep, and
-`ryft.session.scored` once a completed session's day is scored. notify consumes both,
+`ryft.session.scored` once a completed session's day is scored, plus `ryft.refresh` once a
+sync's days are scored (a silent push, at most one per account every 5 minutes, D92). notify consumes all three,
 loads what the message needs as `ryft_notify`, checks the category and quiet hours,
 claims `(user, day, category)` in `notifications_sent` and sends one APNs request per
 device (`internal/apns`, token-based, HTTP/2), with localisation keys the app resolves.
@@ -104,7 +105,7 @@ size limit (64 KiB, 256 KiB for a Train session or plan, 32 MiB for sync; over �
 generic `500` with the request ID while the details go to the log. Logs are JSON with
 `request_id`, `user_id` and `route` on every line of a request (`internal/logx`).
 
-**Events.** Stream `RYFT`, the four subjects below (listed, not `ryft.>`, which would
+**Events.** Stream `RYFT`, the five subjects below (listed, not `ryft.>`, which would
 overlap the dead letters), work-queue retention, file storage, 7-day max age. What cannot
 be handled moves to stream `RYFT_DLQ` (`ryft.dlq.>`, 30 days; OPERATIONS → Dead letters,
 D84). `ryft.ingested` carries `{user_id, days[], reason, request_id}` (`request_id`:
@@ -112,11 +113,11 @@ the request that caused it, for log correlation); `ryft.session.completed` carri
 `{user_id, session_id, day, request_id}` and is handled like an ingest event for that
 day. `ryft.scored` (`{user_id, day, recovery, readiness, state, sleep_performance,
 sleep_min, request_id}`) and `ryft.session.scored` (`{user_id, session_id, day,
-request_id}`) go from scoring to notify. A work-queue stream gives each subject exactly
+request_id}`) and `ryft.refresh` (`{user_id, day, request_id}`) go from scoring to notify. A work-queue stream gives each subject exactly
 one consumer: scoring's for the first two, notify's for these (D71). Every service is its own NATS user (`deploy/k8s/base/nats/nats.conf`, shared by
 compose and Kubernetes): ingest may only publish `ryft.ingested`, api `ryft.ingested`
-(recompute, session edits) and `ryft.session.completed`, scoring `ryft.scored` and
-`ryft.session.scored`; scoring alone may create the streams and its
+(recompute, session edits) and `ryft.session.completed`, scoring `ryft.scored`,
+`ryft.session.scored` and `ryft.refresh`; scoring alone may create the streams and its
 consumer, pull from it and ack, and notify only its own consumer. Each consumer may
 dead-letter its own subjects only; scoring reads and deletes dead letters. Replies go to a per-service inbox (`_INBOX_<service>`),
 which is the only thing a service may subscribe to. `internal/events/permissions_test.go`

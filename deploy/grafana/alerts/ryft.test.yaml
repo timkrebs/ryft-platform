@@ -67,6 +67,23 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
+  - name: sync to score over two minutes
+    interval: 1m
+    input_series:
+      # Ten days scored a minute, all between 2 and 5 minutes after their sync.
+      - { series: 'ryft_sync_to_score_seconds_bucket{le="60"}', values: '0x40' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{le="120"}', values: '0x40' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{le="300"}', values: '0+10x40' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{le="+Inf"}', values: '0+10x40' }
+      # Elsewhere: a quick scoring, under a minute.
+      - { series: 'ryft_sync_to_score_seconds_bucket{le="60",x="fast"}', values: '0x40' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: SyncToScoreSlow, exp_alerts: [] }
+      - eval_time: 35m
+        alertname: SyncToScoreSlow
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95)" }
   - name: feedback and certificates
     interval: 1m
     input_series:

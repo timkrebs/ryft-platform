@@ -92,9 +92,12 @@ func main() {
 	log.Info("consuming scored events")
 	err = bus.ConsumeNotify(ctx, log, func(ctx context.Context, m events.NotifyMessage) error {
 		f := &logx.Fields{}
-		if m.Scored != nil {
+		switch {
+		case m.Scored != nil:
 			f.UserID, f.RequestID = m.Scored.UserID.String(), m.Scored.RequestID
-		} else {
+		case m.Refresh != nil:
+			f.UserID, f.RequestID = m.Refresh.UserID.String(), m.Refresh.RequestID
+		case m.SessionScored != nil:
 			f.UserID, f.RequestID = m.SessionScored.UserID.String(), m.SessionScored.RequestID
 		}
 		return svc.Handle(logx.WithFields(ctx, f), m)

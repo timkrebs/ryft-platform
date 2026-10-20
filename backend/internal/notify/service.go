@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,9 @@ type Service struct {
 	APNs Sender // nil: no APNs key configured; nothing is sent or claimed
 	Log  *slog.Logger
 	Now  func() time.Time
+
+	refreshMu   sync.Mutex // the last silent refresh per user (RefreshEvery)
+	lastRefresh map[uuid.UUID]time.Time
 }
 
 const (
@@ -64,8 +68,11 @@ func count(category, result string) {
 
 // Handle is one event from ConsumeNotify.
 func (s *Service) Handle(ctx context.Context, m events.NotifyMessage) error {
-	if m.Scored != nil {
+	switch {
+	case m.Scored != nil:
 		return s.morning(ctx, *m.Scored)
+	case m.Refresh != nil:
+		return s.refresh(ctx, *m.Refresh)
 	}
 	return s.session(ctx, *m.SessionScored)
 }
@@ -103,6 +110,7 @@ func (s *Service) morning(ctx context.Context, ev model.ScoredEvent) error {
 	}); err != nil {
 		return err
 	}
+	s.refreshed(ev.UserID, now) // the per-sync refresh right after waits its turn
 	if !Allowed(r.Prefs, model.NotifyMorningScore) {
 		count(model.NotifyMorningScore, "muted")
 		return nil
@@ -232,6 +240,31 @@ func (s *Service) deliver(ctx context.Context, r *store.Recipient, category, day
 		count(category, "duplicate")
 		return nil
 	}
+	accepted, lastErr := s.sendAll(ctx, r, category, pushType, build)
+	if accepted == 0 && lastErr != nil {
+		if err := s.St.ReleaseNotification(ctx, r.ID, day, category); err != nil {
+			s.Log.WarnContext(ctx, "release claim", "err", err)
+		}
+		count(category, "failed")
+		return lastErr
+	}
+	if err := s.St.NotificationSent(ctx, r.ID, day, category, accepted); err != nil {
+		s.Log.WarnContext(ctx, "record send", "err", err)
+	}
+	result := "sent"
+	if accepted == 0 {
+		result = "failed"
+	}
+	count(category, result)
+	s.Log.InfoContext(ctx, "push", "category", category, "day", day, "user_id", r.ID, "devices", accepted, "of", len(r.Tokens))
+	return nil
+}
+
+// sendAll sends to every device of r, built per device language, and drops the
+// tokens APNs reports as gone: how many devices took it, and the last error of
+// one APNs could not be reached for.
+func (s *Service) sendAll(ctx context.Context, r *store.Recipient, category, pushType string,
+	build func(lang string) (payload []byte, collapse string, expires time.Time)) (int, error) {
 	accepted := 0
 	var lastErr error
 	kept := r.Tokens[:0:0]
@@ -267,21 +300,58 @@ func (s *Service) deliver(ctx context.Context, r *store.Recipient, category, day
 		}
 	}
 	r.Tokens = kept // a later send of the same event skips the dropped ones
-	if accepted == 0 && lastErr != nil {
-		if err := s.St.ReleaseNotification(ctx, r.ID, day, category); err != nil {
-			s.Log.WarnContext(ctx, "release claim", "err", err)
-		}
-		count(category, "failed")
-		return lastErr
+	return accepted, lastErr
+}
+
+// RefreshEvery is the least time between two silent refreshes of a user: iOS
+// budgets background pushes, and the app polls GET /v1/me/sync meanwhile (D92).
+const RefreshEvery = 5 * time.Minute
+
+// refreshed reports whether user got a silent refresh within RefreshEvery,
+// and records now otherwise (one notify replica: memory is enough).
+func (s *Service) refreshed(user uuid.UUID, now time.Time) bool {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	if s.lastRefresh == nil {
+		s.lastRefresh = map[uuid.UUID]time.Time{}
 	}
-	if err := s.St.NotificationSent(ctx, r.ID, day, category, accepted); err != nil {
-		s.Log.WarnContext(ctx, "record send", "err", err)
+	if last, ok := s.lastRefresh[user]; ok && now.Sub(last) < RefreshEvery {
+		return true
 	}
+	if len(s.lastRefresh) > 50_000 {
+		clear(s.lastRefresh)
+	}
+	s.lastRefresh[user] = now
+	return false
+}
+
+// refresh: the silent push after scoring finished a sync's days, at most one
+// per user every RefreshEvery (shared with the morning one), collapsed per day.
+func (s *Service) refresh(ctx context.Context, ev model.RefreshEvent) error {
+	if s.APNs == nil {
+		count(Refresh, "unconfigured")
+		return nil
+	}
+	r, ok, err := s.recipient(ctx, ev.UserID, Refresh)
+	if !ok {
+		return err
+	}
+	now := s.Now()
+	if s.refreshed(ev.UserID, now) {
+		count(Refresh, "throttled")
+		return nil
+	}
+	accepted, lastErr := s.sendAll(ctx, &r, Refresh, apns.PushBackground, func(string) ([]byte, string, time.Time) {
+		return SilentPayload(ev.Day), "refresh-" + ev.Day, now.Add(6 * time.Hour)
+	})
+	// A refresh minutes late is no use: a failure is logged and counted, not retried.
 	result := "sent"
 	if accepted == 0 {
 		result = "failed"
+		if lastErr != nil {
+			s.Log.WarnContext(ctx, "refresh push", "user_id", ev.UserID, "err", lastErr)
+		}
 	}
-	count(category, result)
-	s.Log.InfoContext(ctx, "push", "category", category, "day", day, "user_id", r.ID, "devices", accepted, "of", len(r.Tokens))
+	count(Refresh, result)
 	return nil
 }

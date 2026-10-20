@@ -646,9 +646,16 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
         line = f'ryft_push_notifications_total{{category="{category}",result="{result}"}} '
         return next((float(l[len(line):]) for l in text.splitlines() if l.startswith(line)), 0.0)
 
+    def handled(reason, result):
+        with urllib.request.urlopen(METRICS) as r:
+            text = r.read().decode()
+        line = f'ryft_events_handled_total{{reason="{reason}",result="{result}"}} '
+        return next((float(l[len(line):]) for l in text.splitlines() if l.startswith(line)), 0.0)
+
     C = str(uuid.uuid4())
     KEY_C = f"{KEY}:{C}"
     before = pushed("MORNING_SCORE", "unconfigured")
+    refreshes = handled("refresh", "ok")
     status, _, _ = raw("POST", f"/v1/devices/{uuid.uuid4()}/push", jbody({"token": uuid.uuid4().hex * 2, "env": "sandbox", "locale": "en"}), key=KEY_C)
     check(status == 204, f"C registers a token: {status}")
     consent(KEY_C)
@@ -663,8 +670,13 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
             break
         time.sleep(1)
     check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's ryft.scored (scoring → NATS → notify)")
+    for _ in range(30):  # and the silent refresh for the sync's scored days (D92)
+        if handled("refresh", "ok") > refreshes:
+            break
+        time.sleep(1)
+    check(handled("refresh", "ok") > refreshes, "notify never handled C's ryft.refresh (scoring → NATS → notify)")
     raw("DELETE", "/v1/me", key=KEY_C)
-    ok("morning push path: sync → scoring → ryft.scored → notify (no APNs key: counted, not sent)")
+    ok("morning push path: sync → scoring → ryft.scored and ryft.refresh → notify (no APNs key: counted, not sent)")
 else:
     print("- morning push path not checked (needs NOTIFY_METRICS_URL, apikey mode)")
 

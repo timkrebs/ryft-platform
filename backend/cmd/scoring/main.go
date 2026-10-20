@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"syscall"
 	"time"
@@ -116,6 +117,13 @@ func main() {
 			if perr := bus.PublishSessionScored(ctx, model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID,
 				Day: ev.Days[0], RequestID: ev.RequestID}); perr != nil {
 				log.ErrorContext(ctx, "publish session scored", "session_id", *ev.SessionID, "err", perr)
+			}
+		}
+		if err == nil && ev.Reason == "sync" && len(ev.Days) > 0 {
+			// The sync's days are scored: a silent push lets the app refetch (D92).
+			newest := slices.Max(ev.Days)
+			if perr := bus.PublishRefresh(ctx, model.RefreshEvent{UserID: ev.UserID, Day: newest, RequestID: ev.RequestID}); perr != nil {
+				log.ErrorContext(ctx, "publish refresh", "day", newest, "err", perr)
 			}
 		}
 		if errors.Is(err, store.ErrNotFound) {

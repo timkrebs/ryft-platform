@@ -39,9 +39,11 @@ const (
 	// model.SessionScoredEvent (scoring → notify).
 	SubjectScored        = "ryft.scored"
 	SubjectSessionScored = "ryft.session.scored"
-	ConsumerScoring      = "scoring"
-	ConsumerNotify       = "notify"
-	maxDeliver           = 10
+	// SubjectRefresh carries a model.RefreshEvent (scoring → notify).
+	SubjectRefresh  = "ryft.refresh"
+	ConsumerScoring = "scoring"
+	ConsumerNotify  = "notify"
+	maxDeliver      = 10
 
 	DLQStreamName = "RYFT_DLQ"
 	dlqPrefix     = "ryft.dlq."
@@ -49,7 +51,11 @@ const (
 
 // streamSubjects are RYFT's subjects. A new event subject must be added here:
 // the stream no longer takes ryft.>, which would overlap the DLQ's ryft.dlq.>.
-var streamSubjects = []string{SubjectIngested, SubjectSessionCompleted, SubjectScored, SubjectSessionScored}
+var streamSubjects = []string{SubjectIngested, SubjectSessionCompleted, SubjectScored, SubjectSessionScored, SubjectRefresh}
+
+// notifySubjects are what notify's consumer takes (a test that sets up the
+// consumer must use them too, or it narrows the live one).
+var notifySubjects = []string{SubjectScored, SubjectSessionScored, SubjectRefresh}
 
 // DLQSubject is where a message of subject goes when it cannot be handled.
 func DLQSubject(subject string) string { return dlqPrefix + strings.TrimPrefix(subject, "ryft.") }
@@ -253,6 +259,12 @@ func (b *Bus) PublishSessionScored(ctx context.Context, ev model.SessionScoredEv
 	return b.publish(ctx, SubjectSessionScored, "session_scored", ev, "session-scored:"+ev.SessionID.String())
 }
 
+// PublishRefresh tells notify that a sync's days are scored; at most one per
+// user and day within JetStream's duplicate window (notify throttles further).
+func (b *Bus) PublishRefresh(ctx context.Context, ev model.RefreshEvent) error {
+	return b.publish(ctx, SubjectRefresh, "refresh", ev, "refresh:"+ev.UserID.String()+":"+ev.Day)
+}
+
 func (b *Bus) publish(ctx context.Context, subject, reason string, v any, dedupID string) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -343,6 +355,19 @@ func (b *Bus) DeleteDeadLetter(ctx context.Context, seq uint64) error {
 	return s.DeleteMsg(ctx, seq)
 }
 
+// guarded runs a handler and turns a panic into an error, so one bad message
+// is retried and dead-lettered instead of crashing the consumer's service.
+func guarded(log *slog.Logger, subject string, fn func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			metrics.ConsumerPanics.WithLabelValues(subject).Inc()
+			log.Error("event handler panicked", "subject", subject, "panic", fmt.Sprint(p))
+			err = fmt.Errorf("handler panicked: %v", p)
+		}
+	}()
+	return fn()
+}
+
 // permanentError marks a handler failure that retrying cannot fix.
 type permanentError struct{ err error }
 
@@ -412,7 +437,7 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 			b.deadLetter(ctx, log, msg, ConsumerScoring, delivered, err)
 			return
 		}
-		if err := fn(ctx, ev); err != nil {
+		if err := guarded(log, msg.Subject(), func() error { return fn(ctx, ev) }); err != nil {
 			var perm permanentError
 			if errors.As(err, &perm) {
 				log.Warn("event cannot be handled, dropping", "err", err, "user_id", ev.UserID, "request_id", ev.RequestID)
@@ -445,16 +470,20 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 	return nil
 }
 
-// NotifyMessage is one event for notify: exactly one of the two is set.
+// NotifyMessage is one event for notify: exactly one of the three is set.
 type NotifyMessage struct {
 	Scored        *model.ScoredEvent
 	SessionScored *model.SessionScoredEvent
+	Refresh       *model.RefreshEvent
 }
 
 // Reason is the metric label of the message.
 func (m NotifyMessage) Reason() string {
-	if m.Scored != nil {
+	switch {
+	case m.Scored != nil:
 		return "scored"
+	case m.Refresh != nil:
+		return "refresh"
 	}
 	return "session_scored"
 }
@@ -469,6 +498,14 @@ func decodeNotify(msg jetstream.Msg) (NotifyMessage, error) {
 		}
 		if m.Scored.Day == "" {
 			return m, errors.New("scored event without a day")
+		}
+	case SubjectRefresh:
+		m.Refresh = &model.RefreshEvent{}
+		if err := json.Unmarshal(msg.Data(), m.Refresh); err != nil {
+			return m, fmt.Errorf("bad refresh event: %w", err)
+		}
+		if m.Refresh.Day == "" {
+			return m, errors.New("refresh event without a day")
 		}
 	case SubjectSessionScored:
 		m.SessionScored = &model.SessionScoredEvent{}
@@ -491,7 +528,7 @@ func decodeNotify(msg jetstream.Msg) (NotifyMessage, error) {
 func (b *Bus) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(context.Context, NotifyMessage) error) error {
 	cfg := jetstream.ConsumerConfig{
 		Durable:        ConsumerNotify,
-		FilterSubjects: []string{SubjectScored, SubjectSessionScored},
+		FilterSubjects: notifySubjects,
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        time.Minute,
 		// Deferrals count as deliveries: quiet hours hand a message back once or
@@ -525,7 +562,7 @@ func (b *Bus) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(conte
 			b.deadLetter(ctx, log, msg, ConsumerNotify, delivered, err)
 			return
 		}
-		err = fn(ctx, m)
+		err = guarded(log, msg.Subject(), func() error { return fn(ctx, m) })
 		var perm permanentError
 		var later deferError
 		switch {

@@ -107,8 +107,12 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	start := time.Now()
 	err := e.computeDay(ctx, userID, day)
 	if err == nil { // GET /v1/me/sync: this day is no longer pending (D91)
-		if _, _, merr := e.st.MarkScored(ctx, userID, day, start); merr != nil {
+		queued, ok, merr := e.st.MarkScored(ctx, userID, day, start)
+		switch {
+		case merr != nil:
 			e.log.WarnContext(ctx, "mark scored", "day", day, "err", merr)
+		case ok:
+			metrics.SyncToScore.Observe(time.Since(queued).Seconds())
 		}
 	}
 	result := metrics.Result(err)

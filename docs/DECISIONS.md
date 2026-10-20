@@ -1495,3 +1495,23 @@ sent, and whether a second account shares its phone.
   type in the app must not stop every sync of that user.
 - **`resync_requested_at`** is a timestamp, not a flag the server clears: the app compares
   it with its own last full re-sync, so nobody has to tell the server it happened.
+
+## D92 — The sync-to-score time is measured, and the app is told when scores are there
+
+- **`ryft_sync_to_score_seconds`** is observed when scoring marks a queued day done
+  (D91): from ingest accepting the sync to the score written, per day. That is the wait
+  a tester sees, unlike the scoring duration alone (which leaves out the queue). Alert at
+  a p95 over 2 minutes for 15 minutes; the dashboard shows p50 and p95.
+- **A silent refresh after every sync's scored days**, not only the morning score: on a
+  new subject `ryft.refresh` (scoring → notify, its own consumer filter and permissions),
+  the newest day of the sync, collapsed per day. One per account every 5 minutes,
+  shared with the morning refresh, in notify's memory (one replica): iOS rations
+  background pushes, and a burst of syncs during a backfill needs one, not twenty. Not
+  claimed per day and not retried: a refresh minutes late is no use, and the app polls
+  `GET /v1/me/sync` meanwhile.
+- **A handler panic no longer takes a consumer down.** The first refresh event crashed
+  notify in the local smoke (a field lookup assumed only two event kinds); event handlers
+  now run guarded, so a panic is an error, retried, and dead-lettered at the last
+  delivery (`ryft_event_handler_panics_total`). The NATS permission test had also
+  narrowed the live notify consumer to its old subjects; the test and the code now share
+  the filter list.

@@ -68,6 +68,8 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
 | `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events moved to `RYFT_DLQ` (unparseable, or failed on the last delivery), by original subject: `ok`, or `error` (the publish failed; the message stayed in RYFT). D84. |
+| `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
+| `ryft_event_handler_panics_total` | counter | `subject` | scoring, notify | Event handlers that panicked: the message is retried and, at its last delivery, dead-lettered, instead of the service crashing (D92). Any is a bug. |
 | `ryft_nats_consumer_pending` | gauge | `consumer` | scoring, notify | Messages of the consumer not yet delivered, polled every 30 s. |
 | `ryft_nats_consumer_ack_pending` | gauge | `consumer` | scoring, notify | Delivered but not yet acknowledged (being handled, or waiting for a redelivery). |
 | `ryft_nats_stream_messages` | gauge | `stream` | scoring | Messages in `RYFT` and `RYFT_DLQ` (scoring owns both). |
@@ -75,7 +77,7 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_db_ping_failures_total` | counter | `service` | all | Failed pings: Supabase or its pooler unreachable, or the role refused. |
 | `ryft_users_by_last_sync` | gauge | `age` | scoring | Accounts by the age of their newest device sync (every 15 min): `under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`. Counts only, no user ids. |
 | `ryft_feedback_received_total` | counter | `category` | api | Reports stored by `POST /v1/feedback` (`bug`, `idea`, `data`, `other`). The alert on any increase is how the operator hears about them (D83); read them with `scripts/beta_report.sh feedback`. |
-| `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
+| `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `throttled` (a silent refresh within 5 minutes of the last), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
 | `ryft_apns_responses_total` | counter | `push_type`, `status` | notify | APNs answers per device request: `alert` or `background`, HTTP status (`200`, `400`, `403`, `410`, `429`, `5xx`) or `error` (no answer). |
 | `ryft_push_tokens_pruned_total` | counter | — | notify | Device tokens dropped because APNs said they are gone. |
 | `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
@@ -164,6 +166,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 
 | Panel | Type | Query |
 | --- | --- | --- |
+| Sync to score p50 / p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[15m])))` (repeat for 0.5) |
 | Consumer backlog | time series | `max by (consumer) (ryft_nats_consumer_pending)`, `max by (consumer) (ryft_nats_consumer_ack_pending)` |
 | Stream sizes | stat | `max by (stream) (ryft_nats_stream_messages)` (`RYFT_DLQ` above 0: `scoring dlq`) |
 | Dead letters | stacked bars, 1 h buckets | `sum by (subject, result) (increase(ryft_events_dlq_total[1h]))` |
@@ -204,6 +207,7 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
 | RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
 | JetStreamBacklog | warning | > 100 events waiting for `scoring` or `notify`, 15 min | is the consumer running, its logs |
+| SyncToScoreSlow | warning | p95 from sync to score over 2 min, 15 min | scoring's CPU and database time, the backlog, a large backfill |
 | DeadLetters | warning | an event moved to `RYFT_DLQ` | `scoring dlq` (OPERATIONS → Dead letters) |
 | DeadLetterPublishFailing | critical | not even the dead-letter publish worked | NATS, its permissions |
 | PublishFailing | warning | syncs stored but events not published, 10 min | NATS; the 15-minute pass catches up |
