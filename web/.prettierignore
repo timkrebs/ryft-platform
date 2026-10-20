@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+src/generated
+src/styles/tokens.css
+src/styles/tokens.json
+public
+package-lock.json
+test-results
+playwright-report
+.lighthouseci
+.cache
+CLAUDE_PROMPT.md
+*.md
+*.mdx

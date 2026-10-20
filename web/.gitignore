@@ -1,0 +1,29 @@
+# dependencies and build output
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Satoshi (ITF Free Font License): free to self-host on our own site, not to
+# redistribute through a repository. `npm run fonts` fetches and verifies them.
+src/fonts/*.woff2
+src/fonts/FFL.txt
+.cache/
+
+# generated at build time
+src/generated/
+nginx/csp.conf
+
+# test output
+test-results/
+playwright-report/
+.lighthouseci/
+
+# local
+.env*.local
+.DS_Store
+
+# The session prompt names the brand this repository must never mention
+# (scripts/check-brand.mjs). It stays on disk, outside git.
+CLAUDE_PROMPT.md

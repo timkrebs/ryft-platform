@@ -1,0 +1,57 @@
+{
+  "name": "ryft-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ryftapp.de: the RYFT landing page, legal pages and app-link plumbing, as a static site.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.11"
+  },
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
+    "fonts": "node scripts/fetch-fonts.mjs",
+    "tokens": "node scripts/tokens.mjs",
+    "tokens:check": "node scripts/tokens.mjs --check",
+    "screenshots": "node scripts/screenshots.mjs",
+    "icons": "node scripts/icons.mjs",
+    "og": "node scripts/og.mjs",
+    "licenses": "node scripts/licenses.mjs",
+    "dev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs --if-missing && next dev",
+    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs",
+    "build": "next build",
+    "postbuild": "node scripts/postbuild.mjs && node scripts/csp.mjs && node scripts/check-brand.mjs --out-only",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check . && node scripts/check-brand.mjs && node scripts/check-messages.mjs",
+    "format": "prettier --write .",
+    "brand": "node scripts/check-brand.mjs",
+    "brand:report": "node scripts/brand-report.mjs",
+    "check:policy": "node scripts/check-policy-version.mjs",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "image": "node scripts/image.mjs"
+  },
+  "dependencies": {
+    "@mdx-js/mdx": "3.1.1",
+    "gray-matter": "4.0.3",
+    "next": "16.4.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remark-gfm": "4.0.1",
+    "temml": "0.14.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
+    "linkinator": "8.1.0",
+    "prettier": "3.9.10",
+    "sharp": "0.35.5",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "$comment": "scripts/check-brand.mjs. Text is normalised first (NFKD, marks and zero-width characters removed, HTML entities and \\u escapes decoded), then matched line by line. 'hard' fails the check; 'warn' prints a warning. The competitor's name is never written out here: the patterns spell it as character classes, and the tests encode their fixtures.",
+  "hard": [
+    {
+      "id": "brand-name",
+      "note": "The denylisted wearable brand, any case, with leetspeak and look-alike letters (also inside longer words: flagged on purpose, health copy has no reason to use it).",
+      "pattern": "(?:w|vv|\\\\/\\\\/|ω|ш)[hн](?:[o0οоø]|\\(\\))(?:[o0οоø]|\\(\\))[pрρ]",
+      "flags": "iu"
+    },
+    {
+      "id": "brand-name-spaced",
+      "note": "The same name with one repeated separator between every letter (spaces, dots, dashes, underscores).",
+      "pattern": "(?:w|vv|ω|ш)([^\\p{L}\\p{N}\\n]{1,3})[hн]\\1(?:[o0οоø]|\\(\\))\\1(?:[o0οоø]|\\(\\))\\1[pрρ]",
+      "flags": "iu"
+    }
+  ],
+  "warn": [
+    {
+      "id": "comparison-alternative",
+      "note": "No competitor comparisons: 'alternative to …'.",
+      "pattern": "\\balternative (?:to|for)\\b|\\bAlternative (?:zu|für)\\b",
+      "flags": "iu"
+    },
+    {
+      "id": "comparison-versus",
+      "note": "No competitor comparisons: 'vs. <Name>'.",
+      "pattern": "\\b(?:[Vv]s\\.?|[Vv]ersus)\\s+\\p{Lu}",
+      "flags": "u"
+    },
+    {
+      "id": "comparison-than",
+      "note": "No competitor comparisons: 'better than <Name>', 'compared to <Name>', 'unlike <Name>'.",
+      "pattern": "\\b(?i:(?:better|cheaper|more accurate|smarter) than|compared (?:to|with)|unlike|besser als|günstiger als|genauer als|im vergleich (?:zu|mit)|anders als) \\p{Lu}",
+      "flags": "u"
+    },
+    {
+      "id": "comparison-others",
+      "note": "No competitor comparisons: 'unlike other trackers', 'anders als andere …'.",
+      "pattern": "\\b(?:unlike (?:other|most|traditional)|anders als (?:andere|die meisten))\\b",
+      "flags": "iu"
+    },
+    {
+      "id": "comparison-like-but",
+      "note": "No competitor comparisons: 'like <Name>, but …' / 'wie <Name>, aber …'.",
+      "pattern": "\\b(?:[Ll]ike|[Ww]ie) \\p{Lu}[\\p{L}\\d]*(?: \\p{Lu}[\\p{L}\\d]*)?,? (?:but|aber)\\b",
+      "flags": "u"
+    },
+    {
+      "id": "comparison-killer",
+      "note": "No competitor comparisons: '<Name> killer'.",
+      "pattern": "\\b[\\p{L}\\d]+[- ]killer\\b",
+      "flags": "iu"
+    },
+    {
+      "id": "subscription-jab",
+      "note": "No subscription-pricing jabs. 'No subscription' as a plain fact is fine.",
+      "pattern": "\\b(?:monthly fee|subscription (?:trap|lock-?in|fatigue)|pay (?:monthly|every month)|Abo-?Falle|Abo-?Zwang|monatliche Gebühr)\\b",
+      "flags": "iu"
+    },
+    {
+      "id": "borrowed-feature-name",
+      "note": "Feature names from another wearable brand's product vocabulary. Use RYFT's own words.",
+      "pattern": "\\b(?:strain coach|sleep coach|stress monitor|health monitor|strength trainer|health ?span|pace of aging)\\b",
+      "flags": "iu"
+    },
+    {
+      "id": "borrowed-age-name",
+      "note": "'<Brand> Age' feature names. 'RYFT Age' only once the roadmap ships it.",
+      "pattern": "\\b(?!RYFT\\b)\\p{Lu}[\\p{L}]+ Age\\b",
+      "flags": "u"
+    }
+  ],
+  "allow": [],
+  "warnIgnore": ["tests/brand.test.ts", "config/brand-denylist.json"]
+}
