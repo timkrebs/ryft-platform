@@ -8,7 +8,7 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  background: color-mix(in srgb, var(--background) 90%, transparent);
+  background: color-mix(in srgb, var(--background) 96%, transparent);
   backdrop-filter: saturate(140%) blur(12px);
   -webkit-backdrop-filter: saturate(140%) blur(12px);
   border-bottom: var(--hairline) solid var(--separator);

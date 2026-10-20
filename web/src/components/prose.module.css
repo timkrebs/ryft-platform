@@ -1,0 +1,108 @@
+.prose {
+  max-width: 46rem;
+  font-size: var(--type-body);
+  line-height: 1.65;
+}
+
+.prose > * + * {
+  margin-top: 1em;
+}
+
+.prose h2 {
+  margin-top: calc(var(--section-spacing) * 2.5);
+  padding-top: var(--section-spacing);
+  border-top: var(--hairline) solid var(--separator);
+  font-size: var(--type-title);
+  scroll-margin-top: 5rem;
+}
+
+.prose h3 {
+  margin-top: calc(var(--section-spacing) * 1.25);
+  font-size: var(--type-headline);
+}
+
+.prose h2 + *,
+.prose h3 + * {
+  margin-top: 0.75em;
+}
+
+.prose p,
+.prose li {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25em;
+}
+
+.prose li + li {
+  margin-top: 0.4em;
+}
+
+.prose li::marker {
+  color: var(--text-tertiary);
+}
+
+.prose a {
+  color: var(--accent);
+}
+
+.prose strong {
+  font-weight: 700;
+}
+
+.prose code {
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border-radius: var(--tile-radius);
+  background: var(--surface);
+}
+
+.tableWrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-callout);
+  line-height: 1.45;
+}
+
+.tableWrap th,
+.tableWrap td {
+  padding: 10px 14px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tableWrap th {
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-secondary);
+}
+
+.tableWrap tr + tr td,
+.tableWrap tbody tr:first-child td {
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.formula {
+  padding: 14px 18px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--tile-radius) var(--tile-radius) 0;
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.formula :global(math) {
+  display: block math;
+  margin: 0;
+  font-size: 1.15em;
+}

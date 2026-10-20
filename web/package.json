@@ -23,7 +23,8 @@
     "brand": "node scripts/check-brand.mjs",
     "test": "vitest run",
     "icons": "node scripts/icons.mjs",
-    "preview": "node scripts/preview.mjs"
+    "preview": "node scripts/preview.mjs",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",

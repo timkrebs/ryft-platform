@@ -2,17 +2,18 @@ import { describe, expect, it } from 'vitest';
 import de from '../messages/de.json';
 import en from '../messages/en.json';
 
-type Tree = { [key: string]: string | Tree };
-
-function leaves(tree: Tree, prefix = ''): [string, string][] {
-  return Object.entries(tree).flatMap(([k, v]) =>
-    typeof v === 'string' ? [[`${prefix}${k}`, v] as [string, string]] : leaves(v, `${prefix}${k}.`),
-  );
+/** Every string in a nested object or array, with its dotted path (arrays by index). */
+function leaves(tree: unknown, prefix = ''): [string, string][] {
+  if (typeof tree === 'string') return [[prefix.slice(0, -1), tree]];
+  if (tree && typeof tree === 'object') {
+    return Object.entries(tree).flatMap(([k, v]) => leaves(v, `${prefix}${k}.`));
+  }
+  throw new Error(`${prefix}: not a string`);
 }
 
 describe('UI strings', () => {
-  const enKeys = new Map(leaves(en as Tree));
-  const deKeys = new Map(leaves(de as Tree));
+  const enKeys = new Map(leaves(en));
+  const deKeys = new Map(leaves(de));
 
   it('have the same keys in English and German', () => {
     expect([...deKeys.keys()].sort()).toEqual([...enKeys.keys()].sort());

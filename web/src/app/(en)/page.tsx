@@ -1,12 +1,8 @@
-import { PageShell } from '@/components/chrome';
-import { Container, Section } from '@/components/ui';
+import { HomePage } from '@/views/Home';
+import { pageMetadata } from '@/lib/metadata';
+
+export const metadata = pageMetadata({ locale: 'en', path: '/' });
 
 export default function Page() {
-  return (
-    <PageShell locale="en" path="/">
-      <Container>
-        <Section headingLevel={1} title="Your whole health." />
-      </Container>
-    </PageShell>
-  );
+  return <HomePage locale="en" />;
 }

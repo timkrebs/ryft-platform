@@ -1,0 +1,27 @@
+.img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* A plain outline: a rounded body with a hairline edge, the screen inset. Proportions
+   in container units (of .device) so the frame scales with its width. */
+.device {
+  container-type: inline-size;
+  width: 100%;
+}
+
+.body {
+  padding: 2.6cqw;
+  border-radius: 15cqw;
+  background: var(--graphite);
+  box-shadow:
+    0 0 0 var(--hairline) var(--surface-raised),
+    0 30px 60px -30px color-mix(in srgb, var(--graphite) 60%, transparent);
+}
+
+.screen {
+  overflow: hidden;
+  border-radius: 12.6cqw;
+  background: var(--background);
+}

@@ -50,5 +50,328 @@
     "body": "Unter dieser Adresse gibt es nichts. Vielleicht ist die Seite umgezogen, oder im Link steckt ein Tippfehler.",
     "home": "Zur Startseite",
     "support": "Support"
+  },
+  "home": {
+    "title": "RYFT — Deine ganze Gesundheit.",
+    "hero": {
+      "eyebrow": "iPhone · Beta über TestFlight",
+      "title": "Deine ganze Gesundheit.",
+      "lead": "RYFT macht aus Herzfrequenz, HRV, Schlaf und Trainings, die deine Uhr oder dein Ring schon in Apple Health schreibt, vier tägliche Werte – und zeigt dir, wie jeder davon berechnet wird.",
+      "primary": "Zur Beta",
+      "secondary": "So funktioniert's",
+      "facts": ["Gehostet in der EU", "Keine eigene Hardware", "Kein Abo"]
+    },
+    "today": {
+      "greeting": "Guten Morgen,",
+      "state": "Deine Gesundheit ist im Gleichgewicht.",
+      "readiness": "Gesamtbereitschaft",
+      "sleep": "Schlaf",
+      "recovery": "Erholung",
+      "strain": "Belastung",
+      "sleepValue": "7h 48m",
+      "trendTitle": "Bereitschaft",
+      "trendWindow": "7 T",
+      "chartLabel": "Bereitschaft der letzten 7 Tage, Beispieldaten: {values}. Heute {today}.",
+      "weekdays": "M,D,M,D,F,S,S",
+      "sample": "Beispieldaten, gezeichnet wie der Heute-Bildschirm der App."
+    },
+    "how": {
+      "label": "So funktioniert's",
+      "title": "Von deiner Uhr zu einer Zahl",
+      "intro": "RYFT hat keine eigene Hardware. Es arbeitet mit dem, was du schon trägst.",
+      "steps": [
+        {
+          "title": "Deine Uhr oder dein Ring misst",
+          "body": "Jede Uhr und jeder Ring, die Herzfrequenz und Schlaf in Apple Health schreiben: eine Apple Watch oder eine Garmin oder Oura über deren eigene Apps. Ein iPhone allein zählt Schritte, misst aber keine Herzfrequenz."
+        },
+        {
+          "title": "RYFT liest Apple Health",
+          "body": "Nur die Datenarten, die du freigibst, und erst nach deiner Einwilligung. Die App synchronisiert beim Öffnen und im Hintergrund, verschlüsselt, auf Server in Frankfurt."
+        },
+        {
+          "title": "Jeden Morgen vier Werte",
+          "body": "Die Erholung vergleicht die letzte Nacht mit deinem eigenen Ausgangswert. Die Bereitschaft verbindet sie mit deinem Schlaf zu der Zahl ganz oben auf Heute."
+        }
+      ]
+    },
+    "scores": {
+      "label": "Die Werte",
+      "title": "Vier Zahlen, jede mit einer Formel",
+      "intro": "Für jeden Wert sind Eingaben, Gewichte und Bereiche veröffentlicht, und jeder gespeicherte Wert nennt die Modellversion, die ihn berechnet hat.",
+      "range": "Bereich",
+      "measures": "Was er misst",
+      "inputs": "Was einfließt",
+      "bands": "Bereiche",
+      "more": "So rechnen wir",
+      "disclaimer": "RYFT ist eine Wellness-App, kein Medizinprodukt. Die Werte sind Schätzungen, keine Diagnose. Sprich bei Beschwerden mit einer Ärztin oder einem Arzt.",
+      "items": {
+        "readiness": {
+          "name": "Bereitschaft",
+          "range": "1–100",
+          "measures": "Wie bereit du für die Belastung des Tages bist: die Zahl ganz oben auf Heute.",
+          "inputs": [
+            ["Erholung", "60 %"],
+            ["Schlafleistung der letzten Nacht", "40 %"]
+          ],
+          "note": "Abzüglich bis zu 10 Punkten nach einem harten Tag bei niedriger Erholung.",
+          "bands": [
+            ["67–100", "Ein guter Tag für hohe Belastung"],
+            ["34–66", "Belaste dich heute moderat"],
+            ["1–33", "Geh es ruhig an, schütze deinen Schlaf"]
+          ]
+        },
+        "recovery": {
+          "name": "Erholung",
+          "range": "1–100",
+          "measures": "Wie dein Körper die letzte Nacht verkraftet hat, gemessen an deinem eigenen Ausgangswert.",
+          "inputs": [
+            ["Herzfrequenzvariabilität", "45 %"],
+            ["Ruhepuls", "25 %"],
+            ["Schlafleistung", "25 %"],
+            ["Atemfrequenz", "5 %"]
+          ],
+          "note": "Jeweils im Vergleich zu deinen letzten 30 Tagen.",
+          "bands": [
+            ["67–100", "Hoch"],
+            ["34–66", "Mittel"],
+            ["1–33", "Niedrig"]
+          ]
+        },
+        "strain": {
+          "name": "Belastung",
+          "range": "0–21",
+          "measures": "Wie viel Last dein Herz heute getragen hat.",
+          "inputs": [
+            ["Herzfrequenzreserve, Minute für Minute", "TRIMP"],
+            ["Erfasstes Krafttraining", "+ Last"]
+          ],
+          "note": "Eine Stunde zügiges Gehen ergibt etwa 2, ein 60-Minuten-Lauf bei 75 % der Herzfrequenzreserve etwa 14.",
+          "bands": [
+            ["0–9,9", "Leicht"],
+            ["10–13,9", "Mittel"],
+            ["14–17,9", "Hoch"],
+            ["18–21", "Maximal"]
+          ]
+        },
+        "sleep": {
+          "name": "Schlaf",
+          "range": "0–100 %",
+          "measures": "Wie viel des Schlafs, den du gebraucht hast, du bekommen hast.",
+          "inputs": [
+            ["Schlafdauer", "Ist"],
+            ["Dein Bedarf: gelernter Grundbedarf + Belastung + Defizit − Nickerchen", "Soll"]
+          ],
+          "note": "Die Qualität nimmt Effizienz und erholsamen Schlaf dazu: 60 % Leistung, 20 % Effizienz, 20 % Tief- und REM-Schlaf.",
+          "bands": [
+            ["80–100", "Gute Qualität"],
+            ["60–79", "Mittel"],
+            ["0–59", "Schlecht"]
+          ]
+        }
+      },
+      "shots": {
+        "sleep": "Der Schlaf-Bildschirm der RYFT-App: 7 Std. 48 Min. Gesamtschlaf, ein Balken aus Tief-, Leicht- und REM-Phasen mit ihren Minuten, Schlafqualität 82 Prozent, bewertet als gut, Zubettgehen 22:50 Uhr, Aufwachen 7:00 Uhr. Die Aufnahme zeigt die englische Oberfläche.",
+        "strain": "Der Belastungs-Bildschirm der RYFT-App: eine Woche Tagesbelastung als Ringe, heute 12,4 von 21, Minuten in fünf Herzfrequenzzonen und ein Lauf am Morgen. Die Aufnahme zeigt die englische Oberfläche."
+      }
+    },
+    "features": {
+      "label": "Mehr als Werte",
+      "title": "Training, Journal, Insights",
+      "train": {
+        "title": "Training",
+        "body": "Pläne, Einheiten und Sätze, mit Pausentimer, den Werten vom letzten Mal und deinen Bestleistungen. Jede erfasste Einheit bringt ihre muskuläre Last in die Tagesbelastung ein.",
+        "alt": "Eine Krafttrainingseinheit in RYFT: ein Pausentimer bei 1:35 vor dem nächsten Satz, darunter Bankdrücken, 4 Sätze à 5 mit 80 Kilogramm, zwei Sätze erledigt. Die Aufnahme zeigt die englische Oberfläche."
+      },
+      "journal": {
+        "title": "Journal",
+        "body": "Ein kurzer Morgenbogen über gestern: Alkohol, Koffein, Stress, Krankheit. Nach fünf Tagen damit und fünf ohne zeigt RYFT, wie eine Gewohnheit deine Erholung am Morgen danach verändert hat – mit einem 90-%-Intervall statt einer Vermutung.",
+        "behavior": "Alkohol",
+        "effect": "Erholung −8,4 Punkte",
+        "interval": "90-%-Intervall: −12,1 bis −4,6",
+        "days": "14 Tage damit, 21 ohne",
+        "card": "Morgen danach"
+      },
+      "insights": {
+        "title": "Insights",
+        "body": "Karten in klarer Sprache, wenn sich etwas ändert, etwa eine HRV über deinem Ausgangswert oder eine Schlafenszeit, die nach hinten wandert. Trends über 7, 30 und 90 Tage, immer gemessen an deinem eigenen Bereich.",
+        "alt": "Der Insights-Bildschirm von RYFT: drei Karten – HRV über dem Ausgangswert, spätere Schlafenszeit, Belastung übersteigt Erholung – über den Trends. Die Aufnahme zeigt die englische Oberfläche."
+      }
+    },
+    "principles": {
+      "label": "Prinzipien",
+      "title": "Wie RYFT gebaut ist",
+      "items": [
+        {
+          "title": "Zahlen zuerst, KI zuletzt",
+          "body": "Die Werte kommen aus Formeln, die du nachlesen kannst. Sollte es je generierten Text geben, bleibt er freiwillig und steht unter den Zahlen."
+        },
+        {
+          "title": "Jeder Wert erklärbar",
+          "body": "Eingaben, Gewichte, Ausgangswerte und Bereiche jedes Werts stehen auf der Wissenschaftsseite."
+        },
+        {
+          "title": "Keine stillen Änderungen",
+          "body": "Jeder gespeicherte Wert trägt die Version des Modells, das ihn berechnet hat. Eine neue Version kommt mit einem Änderungsprotokoll, was sich bewegt hat."
+        },
+        {
+          "title": "Deine Daten gehören dir",
+          "body": "Exportiere alles als JSON oder lösche dein Konto in der App, jederzeit. Das Löschen geschieht sofort."
+        },
+        {
+          "title": "Ehrliche Unsicherheit",
+          "body": "Die ersten 7 Nächte sind als Kalibrierung markiert. Effekte von Gewohnheiten zeigen ein Intervall und bleiben gesperrt, bis genug Daten da sind."
+        }
+      ]
+    },
+    "privacy": {
+      "label": "Datenschutz",
+      "title": "Datenschutz auf einen Blick",
+      "items": [
+        {
+          "title": "Gehostet in der EU",
+          "body": "Die RYFT-Server und die Datenbank laufen in Frankfurt am Main. Die Datenschutzerklärung nennt jeden Auftragsverarbeiter."
+        },
+        {
+          "title": "Gesundheitsdaten nur mit Einwilligung",
+          "body": "RYFT bittet vor der ersten Übertragung um deine ausdrückliche Einwilligung. Du kannst sie in der App widerrufen."
+        },
+        {
+          "title": "Keine Werbung, kein Tracking",
+          "body": "Keine Werbe- oder Analyse-SDKs in der App. Diese Website setzt keine Cookies und lädt nichts von Drittanbietern."
+        },
+        {
+          "title": "Exportieren und löschen",
+          "body": "Profil → Daten → Meine Daten exportieren. Profil → Konto → Konto löschen entfernt alles auf einmal."
+        }
+      ],
+      "link": "Zur Datenschutzerklärung"
+    },
+    "faq": {
+      "label": "FAQ",
+      "title": "Fragen",
+      "items": [
+        {
+          "q": "Welche Geräte funktionieren?",
+          "a": "Jede Uhr und jeder Ring, die Herzfrequenz und Schlaf in Apple Health schreiben, zum Beispiel eine Apple Watch oder eine Garmin oder Oura über deren eigene Apps. Dazu brauchst du ein iPhone mit iOS 17 oder neuer. Ein iPhone allein zählt Schritte, misst aber keine Herzfrequenz – ohne Uhr oder Ring bleiben Belastung, Erholung und Bereitschaft leer."
+        },
+        {
+          "q": "Kostet RYFT etwas?",
+          "a": "Nein. RYFT ist während der Beta kostenlos, und es gibt kein Abo."
+        },
+        {
+          "q": "Wo liegen meine Daten?",
+          "a": "Auf den RYFT-Servern und in der Datenbank in Frankfurt am Main. Apple stellt „Mit Apple anmelden“ und Mitteilungen zu, die Überwachung läuft bei Grafana Cloud in London. Die Datenschutzerklärung nennt jeden Auftragsverarbeiter und was er erhält."
+        },
+        {
+          "q": "Wie lange dauert es, bis die Werte stimmen?",
+          "a": "Die Erholung vergleicht jede Nacht mit deinen eigenen letzten 30 Tagen. Bis 7 Nächte da sind, nutzt RYFT Bevölkerungswerte und markiert den Tag als Kalibrierung. Trag dein Geburtsjahr oder deine gemessene maximale Herzfrequenz in der App ein, dann ist die Belastung vom ersten Tag an genauer."
+        },
+        {
+          "q": "Ist RYFT ein Medizinprodukt?",
+          "a": "Nein. RYFT ist eine Wellness-App. Die Werte sind Schätzungen, keine Diagnose, und RYFT trifft keine Entscheidungen über dich. Frag bei Beschwerden oder, wenn du Vorerkrankungen hast, vor einer Änderung deines Trainings eine Ärztin oder einen Arzt."
+        },
+        {
+          "q": "Gibt es eine Android-Version?",
+          "a": "Nein. RYFT liest Apple Health, und das gibt es nur auf dem iPhone."
+        },
+        {
+          "q": "Was, wenn ich eine Uhr und einen Ring trage?",
+          "a": "Das funktioniert. Wenn zwei Quellen dieselbe Stunde aufzeichnen, nimmt RYFT die mit mehr Messungen in dieser Stunde, statt sie zu addieren. Für eine Nacht nimmt es die Quelle, die am meisten Schlaf gemessen hat."
+        },
+        {
+          "q": "Wie lösche ich meine Daten?",
+          "a": "In der App: Profil → Konto → Konto löschen. Das entfernt sofort alles, was RYFT über dich speichert. Wenn du vorher eine Kopie willst: Profil → Daten → Meine Daten exportieren."
+        },
+        {
+          "q": "Was passiert, wenn ich meine Einwilligung widerrufe?",
+          "a": "Übertragung und Berechnung enden sofort. Was schon gespeichert ist, bleibt, bis du das Konto löschst – du kannst es also weiter exportieren."
+        },
+        {
+          "q": "Wie mache ich mit?",
+          "a": "Die Beta läuft über TestFlight und braucht einen Einladungscode. Die Beta-Seite erklärt die Schritte."
+        }
+      ]
+    },
+    "cta": {
+      "title": "Probier RYFT in der Beta",
+      "body": "Kostenlos, über TestFlight, mit Einladungscode.",
+      "button": "Zur Beta"
+    }
+  },
+  "beta": {
+    "title": "Beta",
+    "description": "So machst du bei der RYFT-Beta auf TestFlight mit: für wen sie ist, was du brauchst und was Tester tun.",
+    "label": "TestFlight",
+    "heading": "Die RYFT-Beta",
+    "lead": "RYFT ist in einer geschlossenen Beta über TestFlight, Apples App zum Testen. Die Beta ist kostenlos, ändert sich oft, und manche Teile funktionieren vielleicht noch nicht wie beschrieben.",
+    "who": {
+      "title": "Für wen sie ist",
+      "items": [
+        "Du hast ein iPhone mit iOS 17 oder neuer.",
+        "Du trägst eine Uhr oder einen Ring, die Herzfrequenz und Schlaf in Apple Health schreiben.",
+        "Du willst deine Zahlen sehen und sagst uns Bescheid, wenn eine falsch aussieht."
+      ]
+    },
+    "steps": {
+      "title": "So machst du mit",
+      "items": [
+        {
+          "title": "Hol dir eine Einladung",
+          "body": "Die Beta ist nur mit Einladung zugänglich. Frag die Person, die dir von RYFT erzählt hat, oder frag uns per E-Mail."
+        },
+        {
+          "title": "Installiere TestFlight",
+          "body": "Lade TestFlight aus dem App Store und öffne dann den RYFT-Link aus deiner Einladung."
+        },
+        {
+          "title": "Löse deinen Code ein",
+          "body": "Öffne RYFT, erstelle ein Konto oder melde dich an und gib deinen Einladungscode ein."
+        },
+        {
+          "title": "Erlaube Apple Health",
+          "body": "Wähle die Datenarten, die RYFT lesen darf, und gib deine Einwilligung. Die Belastung erscheint im Lauf des Tages, Erholung und Bereitschaft nach deiner ersten Nacht."
+        }
+      ]
+    },
+    "testers": {
+      "title": "Was Tester tun",
+      "items": [
+        "Trag deine Uhr oder deinen Ring wie gewohnt, auch nachts.",
+        "Vergleich die Werte mit deinem Gefühl und sag uns, wenn beides nicht zusammenpasst.",
+        "Schick Feedback: Mach in RYFT ein Bildschirmfoto, um es über TestFlight zu senden, oder schreib dem Support."
+      ]
+    },
+    "testflight": "In TestFlight öffnen",
+    "invite": "Um eine Einladung bitten",
+    "inviteSubject": "Einladung zur RYFT-Beta",
+    "inviteBody": "Hallo, ich würde gern bei der RYFT-Beta mitmachen. Meine E-Mail-Adresse für TestFlight: ",
+    "noForm": "Auf dieser Seite gibt es kein Formular: Der Button öffnet dein Mailprogramm, und wir nutzen deine Adresse nur für die Antwort.",
+    "privacy": "Beta-Daten werden so behandelt, wie es die Datenschutzerklärung beschreibt. Du kannst sie in der App jederzeit exportieren oder löschen.",
+    "privacyLink": "Datenschutzerklärung",
+    "missingEmail": "TODO(user): Support-E-Mail-Adresse"
+  },
+  "open": {
+    "title": "In RYFT öffnen",
+    "body": "Dieser Link öffnet einen Bildschirm in der RYFT-App. Du siehst diese Seite, weil RYFT auf diesem Gerät nicht installiert ist oder der Link nicht auf dem iPhone geöffnet wurde.",
+    "beta": "RYFT ist eine iPhone-App, in der Beta über TestFlight.",
+    "testflight": "In TestFlight öffnen",
+    "about": "Über RYFT"
+  },
+  "science": {
+    "title": "Wissenschaft",
+    "label": "Wissenschaft",
+    "onThisPage": "Auf dieser Seite",
+    "model": "Bewertungsmodell {model} · geprüft am {date}",
+    "toc": {
+      "sources": "Eine Quelle pro Messung",
+      "baselines": "Ausgangswerte und Kalibrierung",
+      "recovery": "Erholung",
+      "readiness": "Bereitschaft",
+      "strain": "Belastung",
+      "sleep": "Schlaf",
+      "journal": "Journal",
+      "versions": "Modellversionen",
+      "limitations": "Grenzen"
+    }
   }
 }

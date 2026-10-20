@@ -50,5 +50,328 @@
     "body": "There's nothing at this address. The page may have moved, or the link has a typo.",
     "home": "Go to the home page",
     "support": "Support"
+  },
+  "home": {
+    "title": "RYFT — Your whole health.",
+    "hero": {
+      "eyebrow": "iPhone · Beta on TestFlight",
+      "title": "Your whole health.",
+      "lead": "RYFT turns the heart rate, HRV, sleep and workouts your watch or ring already writes to Apple Health into four daily scores, and shows how each one is calculated.",
+      "primary": "Join the beta",
+      "secondary": "How it works",
+      "facts": ["Hosted in the EU", "No hardware", "No subscription"]
+    },
+    "today": {
+      "greeting": "Good morning,",
+      "state": "Your health is in balance.",
+      "readiness": "Overall readiness",
+      "sleep": "Sleep",
+      "recovery": "Recovery",
+      "strain": "Strain",
+      "sleepValue": "7h 48m",
+      "trendTitle": "Readiness",
+      "trendWindow": "7 d",
+      "chartLabel": "Readiness over the last 7 days, sample data: {values}. Today {today}.",
+      "weekdays": "M,T,W,T,F,S,S",
+      "sample": "Sample data, drawn the way the app's Today screen shows it."
+    },
+    "how": {
+      "label": "How it works",
+      "title": "From your watch to one number",
+      "intro": "RYFT has no hardware of its own. It works with what you already wear.",
+      "steps": [
+        {
+          "title": "Your watch or ring records",
+          "body": "Any watch or ring that writes heart rate and sleep to Apple Health: an Apple Watch, or a Garmin or Oura through their own apps. An iPhone alone counts steps but measures no heart rate."
+        },
+        {
+          "title": "RYFT reads Apple Health",
+          "body": "Only the data types you allow, and only after you consent. The app syncs when you open it and in the background, encrypted, to servers in Frankfurt."
+        },
+        {
+          "title": "Four scores each morning",
+          "body": "Recovery compares last night with your own baseline. Readiness combines it with your sleep into the number at the top of Today."
+        }
+      ]
+    },
+    "scores": {
+      "label": "The scores",
+      "title": "Four numbers, each with a formula",
+      "intro": "Every score has published inputs, weights and ranges, and every stored score names the model version that computed it.",
+      "range": "Range",
+      "measures": "What it measures",
+      "inputs": "What goes into it",
+      "bands": "Bands",
+      "more": "How we calculate it",
+      "disclaimer": "RYFT is a wellness app, not a medical device. Its scores are estimates, not a diagnosis. Talk to a doctor about symptoms.",
+      "items": {
+        "readiness": {
+          "name": "Readiness",
+          "range": "1–100",
+          "measures": "How ready you are for today's strain: the number at the top of Today.",
+          "inputs": [
+            ["Recovery", "60 %"],
+            ["Last night's sleep performance", "40 %"]
+          ],
+          "note": "Minus up to 10 points after a hard day on low recovery.",
+          "bands": [
+            ["67–100", "A good day for high strain"],
+            ["34–66", "Keep today's strain moderate"],
+            ["1–33", "Take it easy, protect your sleep"]
+          ]
+        },
+        "recovery": {
+          "name": "Recovery",
+          "range": "1–100",
+          "measures": "How your body handled last night, against your own baseline.",
+          "inputs": [
+            ["Heart rate variability", "45 %"],
+            ["Resting heart rate", "25 %"],
+            ["Sleep performance", "25 %"],
+            ["Respiratory rate", "5 %"]
+          ],
+          "note": "Each one compared with your previous 30 days.",
+          "bands": [
+            ["67–100", "High"],
+            ["34–66", "Moderate"],
+            ["1–33", "Low"]
+          ]
+        },
+        "strain": {
+          "name": "Strain",
+          "range": "0–21",
+          "measures": "How much load your heart carried today.",
+          "inputs": [
+            ["Heart-rate reserve, minute by minute", "TRIMP"],
+            ["Logged strength sessions", "+ load"]
+          ],
+          "note": "An hour's brisk walk is about 2; a 60-minute run at 75 % of heart-rate reserve about 14.",
+          "bands": [
+            ["0–9.9", "Light"],
+            ["10–13.9", "Moderate"],
+            ["14–17.9", "High"],
+            ["18–21", "All out"]
+          ]
+        },
+        "sleep": {
+          "name": "Sleep",
+          "range": "0–100 %",
+          "measures": "How much of the sleep you needed you got.",
+          "inputs": [
+            ["Time asleep", "actual"],
+            ["Your need: learned base + strain + debt − naps", "need"]
+          ],
+          "note": "Quality adds efficiency and restorative sleep: 60 % performance, 20 % efficiency, 20 % deep and REM.",
+          "bands": [
+            ["80–100", "Good quality"],
+            ["60–79", "Fair"],
+            ["0–59", "Poor"]
+          ]
+        }
+      },
+      "shots": {
+        "sleep": "RYFT's Sleep screen in the app: 7 h 48 min total sleep, a bar of deep, light and REM stages with their minutes, sleep quality 82 percent rated good, bedtime 10:50 PM and wake time 7:00 AM.",
+        "strain": "RYFT's Strain screen in the app: a week of daily strain rings, today's strain of 12.4 out of 21, minutes in five heart-rate zones, and a morning run."
+      }
+    },
+    "features": {
+      "label": "Beyond the scores",
+      "title": "Train, Journal, Insights",
+      "train": {
+        "title": "Train",
+        "body": "Plans, sessions and sets, with a rest timer, last time's numbers and your personal records. Every logged session adds its muscular load to the day's strain.",
+        "alt": "A strength session in RYFT: a rest timer at 1:35 before the next set, then bench press, 4 sets of 5 at 80 kilograms, two sets done."
+      },
+      "journal": {
+        "title": "Journal",
+        "body": "A short morning sheet about yesterday: alcohol, caffeine, stress, feeling sick. After five days with and five without, RYFT shows how a habit moved your recovery the morning after, with a 90 % interval instead of a guess.",
+        "behavior": "Alcohol",
+        "effect": "Recovery −8.4 points",
+        "interval": "90 % interval: −12.1 to −4.6",
+        "days": "14 days with, 21 without",
+        "card": "Morning after"
+      },
+      "insights": {
+        "title": "Insights",
+        "body": "Plain-language cards when something changes, such as HRV above your baseline or a bedtime drifting later. Trends over 7, 30 and 90 days, always against your own range.",
+        "alt": "RYFT's Insights screen: three cards titled HRV above your baseline, Bedtime drifting later, and Strain outpacing recovery, above the trends."
+      }
+    },
+    "principles": {
+      "label": "Principles",
+      "title": "How RYFT is built",
+      "items": [
+        {
+          "title": "Numbers first, AI last",
+          "body": "Scores come from formulas you can read. If generated text ever arrives, it stays opt-in and below the numbers."
+        },
+        {
+          "title": "Every score explainable",
+          "body": "Inputs, weights, baselines and ranges for every score are on the science page."
+        },
+        {
+          "title": "No silent changes",
+          "body": "Every stored score carries the version of the model that computed it. A new version comes with a changelog of what moved."
+        },
+        {
+          "title": "Your data is yours",
+          "body": "Export everything as JSON, or delete your account in the app, at any time. Deletion is immediate."
+        },
+        {
+          "title": "Honest uncertainty",
+          "body": "The first 7 nights are marked as calibrating. Habit effects show an interval and stay locked until there is enough data."
+        }
+      ]
+    },
+    "privacy": {
+      "label": "Privacy",
+      "title": "Privacy at a glance",
+      "items": [
+        {
+          "title": "Hosted in the EU",
+          "body": "The RYFT servers and database run in Frankfurt, Germany. The privacy policy lists every processor."
+        },
+        {
+          "title": "Health data only with consent",
+          "body": "RYFT asks for your explicit consent before the first upload. You can withdraw it in the app."
+        },
+        {
+          "title": "No ads, no tracking",
+          "body": "No advertising or analytics SDKs in the app. This website sets no cookies and loads nothing from third parties."
+        },
+        {
+          "title": "Export and delete",
+          "body": "Profile → Data → Export my data. Profile → Account → Delete account removes everything at once."
+        }
+      ],
+      "link": "Read the privacy policy"
+    },
+    "faq": {
+      "label": "FAQ",
+      "title": "Questions",
+      "items": [
+        {
+          "q": "Which devices work?",
+          "a": "Any watch or ring that writes heart rate and sleep to Apple Health, for example an Apple Watch, or a Garmin or Oura through their own apps. You also need an iPhone with iOS 17 or later. An iPhone alone counts steps but measures no heart rate, so Strain, Recovery and Readiness stay empty without a watch or ring."
+        },
+        {
+          "q": "Does RYFT cost anything?",
+          "a": "No. RYFT is free during the beta, and there is no subscription."
+        },
+        {
+          "q": "Where is my data?",
+          "a": "On RYFT's servers and database in Frankfurt, Germany. Apple delivers sign-in with Apple and push notifications, and monitoring runs on Grafana Cloud in London. The privacy policy lists every processor and what each one receives."
+        },
+        {
+          "q": "How long until the scores are accurate?",
+          "a": "Recovery compares each night with your own previous 30 days. Until 7 nights exist, RYFT uses population values and marks the day as calibrating. Enter your birth year or your measured maximum heart rate in the app, and Strain is closer from the first day."
+        },
+        {
+          "q": "Is RYFT a medical device?",
+          "a": "No. RYFT is a wellness app. Its scores are estimates, not a diagnosis, and it makes no decisions about you. Ask a doctor about symptoms, or before changing your training if you have a health condition."
+        },
+        {
+          "q": "Is there an Android version?",
+          "a": "No. RYFT reads Apple Health, which exists only on iPhone."
+        },
+        {
+          "q": "What if I wear a watch and a ring?",
+          "a": "That works. When two sources record the same hour, RYFT uses the one with more readings in that hour instead of adding them up. For a night, it uses the source that measured the most sleep."
+        },
+        {
+          "q": "How do I delete my data?",
+          "a": "In the app: Profile → Account → Delete account. It removes everything RYFT stores about you at once. To keep a copy first, use Profile → Data → Export my data."
+        },
+        {
+          "q": "What happens if I withdraw my consent?",
+          "a": "Uploads and scoring stop at once. What is already stored stays until you delete the account, so you can still export it."
+        },
+        {
+          "q": "How do I join?",
+          "a": "The beta runs on TestFlight and needs an invite code. The beta page explains the steps."
+        }
+      ]
+    },
+    "cta": {
+      "title": "Try RYFT in the beta",
+      "body": "Free, on TestFlight, with an invite code.",
+      "button": "Join the beta"
+    }
+  },
+  "beta": {
+    "title": "Beta",
+    "description": "How to join the RYFT beta on TestFlight: who it's for, what you need, and what testers do.",
+    "label": "TestFlight",
+    "heading": "The RYFT beta",
+    "lead": "RYFT is in a closed beta on TestFlight, Apple's app for testing. It's free, it changes often, and some parts may not work as described yet.",
+    "who": {
+      "title": "Who it's for",
+      "items": [
+        "You have an iPhone with iOS 17 or later.",
+        "You wear a watch or ring that writes heart rate and sleep to Apple Health.",
+        "You want to see your numbers, and you're fine telling us when one looks wrong."
+      ]
+    },
+    "steps": {
+      "title": "How to join",
+      "items": [
+        {
+          "title": "Get an invite",
+          "body": "The beta is invite-only. Ask the person who told you about RYFT, or ask us by email."
+        },
+        {
+          "title": "Install TestFlight",
+          "body": "Get TestFlight from the App Store, then open the RYFT link from your invite."
+        },
+        {
+          "title": "Redeem your code",
+          "body": "Open RYFT, create an account or sign in, and enter your invite code."
+        },
+        {
+          "title": "Allow Apple Health",
+          "body": "Choose the data types RYFT may read and give your consent. Strain shows up during the day; Recovery and Readiness after your first night."
+        }
+      ]
+    },
+    "testers": {
+      "title": "What testers do",
+      "items": [
+        "Wear your watch or ring as usual, including at night.",
+        "Check the scores against how you feel, and tell us when they disagree.",
+        "Send feedback: take a screenshot in RYFT to send it through TestFlight, or write to support."
+      ]
+    },
+    "testflight": "Open in TestFlight",
+    "invite": "Ask for an invite",
+    "inviteSubject": "RYFT beta invite",
+    "inviteBody": "Hi, I'd like to join the RYFT beta. The email address I use for TestFlight: ",
+    "noForm": "There's no form on this site: the button opens your mail app, and we use your address only to reply.",
+    "privacy": "Beta data is handled as the privacy policy describes. You can export or delete it in the app at any time.",
+    "privacyLink": "Privacy policy",
+    "missingEmail": "TODO(user): support email address"
+  },
+  "open": {
+    "title": "Open this in RYFT",
+    "body": "This link opens a screen in the RYFT app. You're seeing this page because RYFT isn't installed on this device, or the link was opened outside the iPhone.",
+    "beta": "RYFT is an iPhone app, in beta on TestFlight.",
+    "testflight": "Open in TestFlight",
+    "about": "About RYFT"
+  },
+  "science": {
+    "title": "Science",
+    "label": "Science",
+    "onThisPage": "On this page",
+    "model": "Scoring model {model} · checked {date}",
+    "toc": {
+      "sources": "One reading per source",
+      "baselines": "Baselines and calibration",
+      "recovery": "Recovery",
+      "readiness": "Readiness",
+      "strain": "Strain",
+      "sleep": "Sleep",
+      "journal": "Journal",
+      "versions": "Model versions",
+      "limitations": "Limitations"
+    }
   }
 }
