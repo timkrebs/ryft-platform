@@ -193,9 +193,11 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    - Then `make smoke-prod` (the dedicated smoke user; it consents itself) and
      `scripts/rescore_all.sh`, so every row carries `model_version` `2026.10.1` (accounts
      without consent are skipped: consent first).
-4. **Grafana Cloud:** `make alerts-apply` (`GRAFANA_PROM_URL`, `GRAFANA_PROM_USER`,
-   `GRAFANA_RULES_TOKEN`), then a contact point (email and the Grafana mobile app) and a
-   notification policy for `critical`, `warning`, `info`. Decide whether RYFT's pod logs
+4. **Grafana Cloud:** the 20 rules are loaded (`make alerts-apply`, 2026-10-20: group
+   `ryft` in namespace `ryft`, Prometheus instance `3085952`). Open: a contact point
+   (email and the Grafana mobile app) and a notification policy for `critical`,
+   `warning`, `info`. Until the Beta is deployed, the rules on its new metrics
+   (`ryft_db_up`, the backlog, dead letters, feedback) have no series and stay quiet. Decide whether RYFT's pod logs
    keep going to Grafana Cloud (exclude `ryft-.*` in Fleet Management, or name Grafana
    Labs as a processor; the privacy draft says it does now). Delete the old onboarding
    token (still open, below).
