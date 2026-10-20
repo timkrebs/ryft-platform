@@ -7,7 +7,8 @@
 #   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=... \
 #   SMOKE_EMAIL=smoke@ryftapp.de SMOKE_PASSWORD=... make smoke-prod
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
-# (once; it keeps the access), so the smoke also passes with BETA_GATE on.
+# (once; it keeps the access), so the smoke also passes with BETA_GATE on. Against
+# production the key is found like the other operator scripts do (scripts/lib/admin.sh).
 #
 # It then reports what the gates do (on, warn or off): it withdraws the smoke user's
 # consent for one sync and, with ADMIN_API_KEY, its beta access for one read, and
@@ -21,6 +22,12 @@ if [ -z "${SMOKE_TOKEN:-}" ]; then   # SMOKE_TOKEN: a bearer instead of the sign
   : "${SMOKE_EMAIL:?set SMOKE_EMAIL (the dedicated smoke user)}" "${SMOKE_PASSWORD:?set SMOKE_PASSWORD}"
 fi
 fail() { echo "✗ smoke-prod: $*" >&2; exit 1; }
+# Only for production: infra/vault's key is never sent to another URL.
+if [ -z "${ADMIN_API_KEY:-}" ] && [ "$API" = https://api.ryftapp.de ]; then
+  . "$(dirname "$0")/lib/admin.sh"
+  if ryft_admin_key 2>/dev/null; then echo "admin key: found by scripts/lib/admin.sh"
+  else echo "! no admin key found (scripts/lib/admin.sh): the beta gate is not probed"; fi
+fi
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/me")

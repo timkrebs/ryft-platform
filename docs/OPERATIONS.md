@@ -194,8 +194,9 @@ one.
 2. **Apply:** `make k8s-apply-eks` (migrate first, then the services; it waits for the
    rollouts).
 3. **Smoke:** `make smoke-prod` with the dedicated smoke user (`SUPABASE_URL`,
-   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`, and once `ADMIN_API_KEY`, which
-   gives the smoke user a one-use invite code so it passes with `BETA_GATE` on): the edge
+   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`; the admin key, found like the
+   other scripts do (Beta), gives the smoke user a one-use invite code so it passes with
+   `BETA_GATE` on, and lets it probe both gates): the edge
    for api and ingest, sign-in, `/v1/me` (consent posted if missing), one tiny sync, and the day read back
    once scoring has scored it with the model `GET /v1/model` serves. After a model bump,
    `scripts/rescore_all.sh`.
@@ -217,6 +218,12 @@ stream first, with the current release:
 kubectl -n ryft-scoring exec deploy/scoring -- /app dlq          # keep a copy of what is in it
 kubectl -n ryft-scoring exec deploy/scoring -- /app dlq drop
 ```
+
+**Rolling back past the refresh subject** (to a release before `scoring: sync-to-score
+latency, silent refresh per scored day`) needs nothing: that release's scoring narrows
+`RYFT` back to four subjects and its notify drops `ryft.refresh` from its filter, which
+NATS 2.11 accepts, and the next release widens both again (tried on a throwaway NATS
+2.11). Refresh events still in the stream then wait unread until their 7-day age.
 
 ## Dead letters
 
@@ -450,6 +457,28 @@ Merging the account with more scored days into the smaller one is refused (`409`
 `--force`. A second run answers `404` (from is gone). Afterwards, the person signs in the
 way the kept account uses; if both identities should open it, they link Apple to the
 email account in the app (Supabase **manual linking**, `SUPABASE.md`).
+
+## When a tester's scores do not appear
+
+What the app sees is `GET /v1/me/sync` (D91): which gate it is behind, the last sync and
+device, the newest record per kind, today's state (`pending`: synced, scoring has not
+finished; `waiting_for_sleep`: no night yet; `stale`: nothing for 20 hours; `scored`),
+the days still queued and how long scoring takes now (`expected_within_sec`, the p95 of
+the last 6 hours). The operator sees the same and more:
+
+```bash
+scripts/trace.sh <request id>        # the sync: status, code, gate; then scoring's lines for the same id
+scripts/user.sh <id>                 # devices, what the last sync carried and ignored, days, duplicates
+```
+
+| Sign | Means | Do |
+| --- | --- | --- |
+| sync `403`, `code` on the access line | a gate refused (`consent_required`, `invite_required`) | the gate's mode (Beta), the account's consent and access in `user.sh` |
+| last sync carried 0 accepted, many `ignored.*.duplicate` | the phone re-sends what the server has | nothing; new data comes with the next sync |
+| many `ignored.*.unknown_type` / `outside_window` | an app build sending a type the server does not know, or a clock far off | the app's version in `user.sh`; the API's sample types |
+| days stay `pending` for minutes | scoring is behind or failing | `SyncToScoreSlow`, `JetStreamBacklog`, `DeadLetters`; scoring's logs for the id |
+| no sync for days, the phone has data | the app's background sync or its anchors | `user.sh <id> --resync-hint`: the app re-reads its window without anchors |
+| scored, but the app shows yesterday | the silent refresh did not arrive (iOS budgets them) | `ryft_push_notifications_total{category="REFRESH"}`; the app polls `GET /v1/me/sync` too |
 
 ## Feature flags
 
