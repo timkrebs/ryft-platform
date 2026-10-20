@@ -26,6 +26,7 @@ type Store interface {
 	ReleaseNotification(ctx context.Context, userID uuid.UUID, day, category string) error
 	NotificationSent(ctx context.Context, userID uuid.UUID, day, category string, devices int) error
 	DropPushToken(ctx context.Context, token string) error
+	PushDelivered(ctx context.Context, token string) error
 }
 
 // Sender is APNs (*apns.Client).
@@ -251,6 +252,9 @@ func (s *Service) deliver(ctx context.Context, r *store.Recipient, category, day
 		switch {
 		case res.OK():
 			accepted++
+			if err := s.St.PushDelivered(ctx, t.Token); err != nil {
+				s.Log.WarnContext(ctx, "record push delivered", "err", err)
+			}
 		case res.Gone():
 			if err := s.St.DropPushToken(ctx, t.Token); err != nil {
 				s.Log.WarnContext(ctx, "drop push token", "err", err)

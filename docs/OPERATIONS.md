@@ -379,6 +379,20 @@ ADMIN_API_KEY=$ADMIN scripts/beta_report.sh feedback 2026-10-20     # reports si
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/feedback/42/resolve    # no longer open
 ```
 
+**One account in detail** (`GET /v1/admin/users/{id or first 8 digits}[?emails=1]`, D89):
+how it signs in (every identity from Supabase: Apple, email; whether the email is
+Apple's "Hide My Email" relay; the last sign-in), beta access, the consent with the app
+version it came from, `max_hr` and its source; every device with app and iOS version,
+first and last sync, what the last sync carried, the push environment and its last
+delivered push; the data of the last 14 days, the newest record per kind, open feedback;
+and **possible duplicates**: other accounts that synced from one of its devices in the
+last 30 days (`dup` in the list). Emails are masked (`t***@g***.com`) unless
+`?emails=1`; every read is audited.
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/users/53d437eb | jq
+```
+
 **Feedback** (`POST /v1/feedback`, 10 per tester a day) carries `request_ids`: search the
 logs for them (`{namespace="ryft-api"} |= "<request id>"`, and the same id in ingest and
 scoring) to see what the tester saw. `ryft_feedback_received_total` going up alerts the

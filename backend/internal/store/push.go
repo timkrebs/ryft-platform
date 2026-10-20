@@ -184,6 +184,13 @@ func (s *Store) DropPushToken(ctx context.Context, token string) error {
 	return err
 }
 
+// PushDelivered records that APNs accepted a notification for token (the
+// admin view's "last success").
+func (s *Store) PushDelivered(ctx context.Context, token string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE push_tokens SET last_success_at = now() WHERE token=$1`, token)
+	return err
+}
+
 // SessionNotice is what the session and record notifications say.
 type SessionNotice struct {
 	Title         string

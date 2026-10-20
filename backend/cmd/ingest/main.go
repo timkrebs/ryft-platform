@@ -203,6 +203,10 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	days := touchedDays(&req, loc)
+	summary := map[string]any{"samples": ns, "sleep": nsl, "workouts": nw, "days": len(days), "app_version": req.AppVersion}
+	if err := h.st.RecordSync(ctx, userID, req.DeviceID, summary); err != nil {
+		h.log.ErrorContext(ctx, "record sync", "err", err)
+	}
 	if len(days) > 0 {
 		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, ""); err != nil {
 			// Data is stored; scoring's periodic pass will catch up. Report, don't fail the sync.

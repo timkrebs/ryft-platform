@@ -1427,3 +1427,24 @@ Admin routes take a user's full id or its first 8 hex digits (`409` when those a
 unique), the form the logs and `beta_report.sh` show. An operator can grant beta access
 without a code (`POST /v1/admin/users/{id}/access`), for an account that exists before
 the app can redeem codes.
+
+## D89 — The admin user view: one read answers "why can't this person sync"
+
+`GET /v1/admin/users/{id}` puts together what the incident of 2026-10-20 needed from
+four places: how the account signs in, what the gates know of it, what its devices
+sent, and whether a second account shares its phone.
+
+- **Identities come from Supabase** (`/auth/v1/admin/users/{id}`), asked on each read
+  with the api's existing admin key, not copied into our tables: the source of truth for
+  "Apple or email, and which address", and nothing to keep in sync. Without the key
+  (apikey mode) the view says so.
+- **Emails are masked** to `t***@g***.com` unless `?emails=1`, like the list (D83); the
+  view is for finding broken data. Apple relay addresses are flagged, since they are the
+  usual reason one person has two accounts.
+- **Duplicates by device id**: an install's `device_id` is per install, so two accounts
+  on one id within 30 days are one phone signed in two ways (or shared). Counted in the
+  list (`dup`), named in the detail. "Data volume" is days scored and the newest record,
+  not a row count of a year of heart rate.
+- **What a sync carried** is kept on the device row (`last_sync_summary`), and a push
+  token's last delivery on the token (`last_success_at`, the only column notify may
+  update): two small columns instead of a sync log.

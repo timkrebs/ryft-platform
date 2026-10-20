@@ -528,6 +528,12 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":  # a fresh account, so the
               and row["days_scored_14d"] == 0 and all("email" not in u for u in users),
               f"GET /v1/admin/users (no emails without ?emails=1): {status} {row}")
         check(raw("GET", "/v1/admin/users", key=KEY_F)[0] == 401, "the admin view needs the admin key")
+        check(row and row["dup"] == 0, f"the dup column: {row}")
+        status, _, det = raw("GET", f"/v1/admin/users/{f_id[:8]}", key=ADMIN)
+        check(status == 200 and det["account"]["id"] == f_id and det["data"]["open_feedback"] == 9
+              and det["possible_duplicates"] == [] and det["account"]["identities"] is None
+              and "identities_note" in det["account"], f"GET /v1/admin/users/{{short id}}: {status} {det}")
+        check(raw("GET", "/v1/admin/users/zzzzzzzz", key=ADMIN)[0] == 404, "an unknown short id is 404")
     raw("DELETE", "/v1/me", key=KEY_F)
     ok(f"profile: born 1990 → {tanaka(1990)} estimated, manual wins, back to {est}; 422s; "
        f"max-hr-observed suggests {est + 6}, gone once set")

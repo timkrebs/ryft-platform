@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,5 +72,32 @@ func TestAdminDeleteUser(t *testing.T) {
 		if err := secret.DeleteUser(context.Background(), id); err == nil {
 			t.Errorf("%d must be an error (retried later)", s)
 		}
+	}
+}
+
+func TestAdminGetUser(t *testing.T) {
+	id := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/auth/v1/admin/users/"+id.String() || r.Header.Get("apikey") != "sb_secret_abc123" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"` + id.String() + `","email":"x7k2@privaterelay.appleid.com",
+			"last_sign_in_at":"2026-10-20T17:40:00Z",
+			"identities":[{"provider":"apple","identity_data":{"email":"x7k2@privaterelay.appleid.com"},"last_sign_in_at":"2026-10-20T17:40:00Z"},
+			              {"provider":"email","identity_data":{"email":"tim@example.com"}}]}`))
+	}))
+	defer srv.Close()
+	a, err := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc123", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := a.GetUser(context.Background(), id)
+	if err != nil || u.Email != "x7k2@privaterelay.appleid.com" || u.LastSignInAt == nil || len(u.Identities) != 2 ||
+		u.Identities[0].Provider != "apple" || u.Identities[1].Email != "tim@example.com" || u.Identities[1].LastSignInAt != nil {
+		t.Fatalf("user: %+v %v", u, err)
+	}
+	if _, err := a.GetUser(context.Background(), uuid.New()); !errors.Is(err, ErrNoAuthUser) {
+		t.Fatalf("unknown user: %v", err)
 	}
 }

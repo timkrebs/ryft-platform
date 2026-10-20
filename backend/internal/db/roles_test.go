@@ -136,6 +136,16 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
 		}
 	}
+	// notify may only stamp a delivered push on its token (0023).
+	for col, want := range map[string]bool{"last_success_at": true, "token": false, "env": false, "user_id": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_notify', 'public.push_tokens', $1, 'UPDATE')`, col).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("ryft_notify UPDATE push_tokens.%s: %v, want %v", col, has, want)
+		}
+	}
 	// notify reads a user's time zone and notification settings, nothing else (0015).
 	for col, want := range map[string]bool{"id": true, "tz": true, "notify_categories": true, "quiet_from": true,
 		"quiet_to": true, "email": false, "name": false, "sleep_base_min": false} {

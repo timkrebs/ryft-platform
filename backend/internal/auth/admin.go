@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,67 @@ func jwtRole(key string) (string, bool) {
 	}
 	return c.Role, true
 }
+
+// AdminUserInfo is what the Supabase admin API says about a user: how they
+// sign in. Emails as Supabase holds them; the caller masks them.
+type AdminUserInfo struct {
+	Email        string
+	LastSignInAt *time.Time
+	Identities   []AdminIdentity
+}
+
+// AdminIdentity is one way into the account (an Apple id, an email password).
+type AdminIdentity struct {
+	Provider     string
+	Email        string
+	LastSignInAt *time.Time
+}
+
+// GetUser reads the auth user: email, last sign-in and identities. ErrNoAuthUser
+// when Supabase has none with that id.
+func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.base+"/admin/users/"+id.String(), nil)
+	if err != nil {
+		return AdminUserInfo{}, err
+	}
+	req.Header.Set("apikey", a.key)
+	if a.jwt {
+		req.Header.Set("Authorization", "Bearer "+a.key)
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return AdminUserInfo{}, ErrNoAuthUser
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var u struct {
+		Email        string     `json:"email"`
+		LastSignInAt *time.Time `json:"last_sign_in_at"`
+		Identities   []struct {
+			Provider     string         `json:"provider"`
+			IdentityData map[string]any `json:"identity_data"`
+			LastSignInAt *time.Time     `json:"last_sign_in_at"`
+		} `json:"identities"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&u); err != nil {
+		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %w", err)
+	}
+	out := AdminUserInfo{Email: u.Email, LastSignInAt: u.LastSignInAt}
+	for _, i := range u.Identities {
+		email, _ := i.IdentityData["email"].(string)
+		out.Identities = append(out.Identities, AdminIdentity{Provider: i.Provider, Email: email, LastSignInAt: i.LastSignInAt})
+	}
+	return out, nil
+}
+
+// ErrNoAuthUser: Supabase has no auth user with that id.
+var ErrNoAuthUser = errors.New("supabase admin: no such user")
 
 // DeleteUser deletes the auth user for good (with its identities and
 // sessions, so the Apple sign-in starts from scratch). A user that does not

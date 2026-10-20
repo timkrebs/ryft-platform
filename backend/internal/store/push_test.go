@@ -125,6 +125,14 @@ func TestNotifyReadsAndClaims(t *testing.T) {
 		t.Fatalf("stale candidates %+v %v", cands, err)
 	}
 
+	if err := ns.PushDelivered(ctx, hexToken(a)); err != nil {
+		t.Fatalf("notify stamps a delivered push: %v", err)
+	}
+	var stamped bool
+	if err := pool.QueryRow(ctx, `SELECT last_success_at IS NOT NULL FROM push_tokens WHERE token=$1`, hexToken(a)).Scan(&stamped); err != nil || !stamped {
+		t.Fatalf("last_success_at: %v %v", stamped, err)
+	}
+
 	day := now.Format("2006-01-02")
 	if ok, err := ns.ClaimNotification(ctx, a, day, model.NotifyMorningScore); !ok || err != nil {
 		t.Fatalf("first claim: %v %v", ok, err)

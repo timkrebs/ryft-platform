@@ -105,7 +105,9 @@ func (s *Store) AdminUsers(ctx context.Context, emails bool) ([]model.AdminUser,
 		  q.days, q.staged, q.hrv,
 		  (SELECT s.calibrating FROM daily_scores s WHERE s.user_id = u.id ORDER BY s.day DESC LIMIT 1),
 		  u.max_hr_source,
-		  (SELECT count(*) FROM feedback f WHERE f.user_id = u.id AND f.resolved_at IS NULL)
+		  (SELECT count(*) FROM feedback f WHERE f.user_id = u.id AND f.resolved_at IS NULL),
+		  (SELECT count(DISTINCT od.user_id) FROM devices mine JOIN devices od ON od.id = mine.id AND od.user_id <> u.id
+		    WHERE mine.user_id = u.id AND od.last_sync_at > now() - interval '30 days')
 		FROM users u
 		LEFT JOIN LATERAL (SELECT app_version, os_version, last_sync_at FROM devices
 		  WHERE user_id = u.id ORDER BY last_sync_at DESC NULLS LAST LIMIT 1) d ON true
@@ -121,7 +123,7 @@ func (s *Store) AdminUsers(ctx context.Context, emails bool) ([]model.AdminUser,
 	var a model.AdminUser
 	_, err = pgx.ForEachRow(rows, []any{&a.ID, &a.CreatedAt, &a.Provider, &a.Email, &a.BetaAccess, &a.ConsentVersion,
 		&a.AppVersion, &a.OSVersion, &a.LastSyncAt, &a.Sources, &a.DaysScored14, &a.NightsStaged14, &a.DaysHRV14,
-		&a.Calibrating, &a.MaxHRSource, &a.OpenFeedback}, func() error {
+		&a.Calibrating, &a.MaxHRSource, &a.OpenFeedback, &a.Duplicates}, func() error {
 		a.ShortID = a.ID.String()[:8]
 		out = append(out, a)
 		a = model.AdminUser{}

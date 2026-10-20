@@ -109,6 +109,9 @@ func TestPushEnvironmentsReachTheirHosts(t *testing.T) {
 	if len(st.dropped) != 1 || st.dropped[0] != "dead03" {
 		t.Errorf("410 Unregistered drops the token: %v", st.dropped)
 	}
+	if got := count(st.delivered); len(got) != 2 || got["aaaa01"] != 2 || got["bbbb02"] != 2 {
+		t.Errorf("each accepted push is recorded on its token: %v", st.delivered)
+	}
 	if st.claims[key("2026-10-19", model.NotifyMorningScore)] != 2 {
 		t.Errorf("sent to the two live devices: %v", st.claims)
 	}

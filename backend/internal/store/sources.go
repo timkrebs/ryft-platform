@@ -3,6 +3,7 @@ package store
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -76,6 +77,18 @@ func (s *Store) UpsertSources(ctx context.Context, userID uuid.UUID, seen []Sour
 			userID, x.Name, x.Kind, x.BundleID, x.LastSeen)
 	}
 	return s.pool.SendBatch(ctx, b).Close()
+}
+
+// RecordSync stores what a device's sync carried on the device row (the admin
+// view's "last sync").
+func (s *Store) RecordSync(ctx context.Context, userID, deviceID uuid.UUID, summary map[string]any) error {
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE devices SET last_sync_summary = $3::jsonb WHERE user_id = $1 AND id = $2`,
+		userID, deviceID, string(raw))
+	return err
 }
 
 // UserSources lists the sources with a kind seen since the given time, one per

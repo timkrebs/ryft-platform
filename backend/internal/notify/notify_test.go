@@ -168,6 +168,7 @@ type fakeStore struct {
 	stale     []store.Recipient
 	claims    map[string]int // day/category → devices
 	dropped   []string
+	delivered []string
 }
 
 func key(day, category string) string { return day + "/" + category }
@@ -203,6 +204,12 @@ func (f *fakeStore) NotificationSent(_ context.Context, _ uuid.UUID, day, catego
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims[key(day, category)] = devices
+	return nil
+}
+func (f *fakeStore) PushDelivered(_ context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delivered = append(f.delivered, token)
 	return nil
 }
 func (f *fakeStore) DropPushToken(_ context.Context, token string) error {
