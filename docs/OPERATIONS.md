@@ -219,6 +219,12 @@ kubectl -n ryft-scoring exec deploy/scoring -- /app dlq          # keep a copy o
 kubectl -n ryft-scoring exec deploy/scoring -- /app dlq drop
 ```
 
+**Rolling back past the gate modes** (to a release before `beta: gate modes and admin
+access grant`, e.g. `21eb0fa`) with `BETA_GATE = "warn"` in `infra/vault`: that release
+knows only `on` and `off` and api and ingest do not start ("BETA_GATE must be on or
+off"). Set it to `off` or `on` first (apply, restart the operator), then roll back.
+`CONSENT_ENFORCE` it ignores: consent is then enforced again.
+
 **Rolling back past the refresh subject** (to a release before `scoring: sync-to-score
 latency, silent refresh per scored day`) needs nothing: that release's scoring narrows
 `RYFT` back to four subjects and its notify drops `ryft.refresh` from its filter, which

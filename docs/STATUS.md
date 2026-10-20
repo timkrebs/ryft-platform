@@ -231,7 +231,8 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    takes `ryft.refresh`. Order does not matter: a refresh scoring may not publish yet is
    logged, not retried.
 2. **`CONSENT_ENFORCE=warn`** until the app's consent screen is on TestFlight (the
-   incident): in `infra/vault/terraform.tfvars`, `shared_secrets = { CONSENT_ENFORCE =
+   incident), **only after step 1**: `21eb0fa` accepts `BETA_GATE` `on` or `off` only and
+   does not start with `warn`. In `infra/vault/terraform.tfvars`, `shared_secrets = { CONSENT_ENFORCE =
    "warn" }` (and `BETA_GATE = "warn"` if you want the invite gate counted already; left
    out, it stays `off`). Then:
 
