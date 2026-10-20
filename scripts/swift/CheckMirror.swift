@@ -3,7 +3,7 @@ import Foundation
 
 let days = await decode([DailyScore].self, "/v1/days?to=\(today)")
 let detail = await decode(DayDetail.self, "/v1/days/\(today)")
-precondition(detail.sleep != nil && detail.strain != nil, "today must have sleep and strain")
+precondition(detail.sleep != nil && detail.strain != nil, "today must have sleep and strain: run make smoke first (it syncs synthetic days up to today)")
 // Today may have no steps yet (the synthetic day starts moving at ~06:30 UTC).
 precondition(days.contains { $0.steps != nil && $0.activeKcal != nil }, "a day must have steps and active kcal")
 for d in days.suffix(4) {

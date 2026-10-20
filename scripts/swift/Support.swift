@@ -22,12 +22,20 @@ let decoder: JSONDecoder = {
     return d
 }()
 
+// fetch waits out a 429 (Retry-After, up to three times) as the app does: run
+// right after `make smoke`, the checks start with the user's burst used up.
 func fetch(_ path: String, status want: Int = 200) async -> Data {
     var req = URLRequest(url: URL(string: apiURL + path)!)
     req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
     do {
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let got = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        var (data, resp) = try await URLSession.shared.data(for: req)
+        var got = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        for _ in 0..<3 where got == 429 && want != 429 {
+            let after = Double((resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 1
+            try await Task.sleep(nanoseconds: UInt64(min(max(after, 1), 5) * 1_000_000_000))
+            (data, resp) = try await URLSession.shared.data(for: req)
+            got = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        }
         if got != want {
             print("✗ GET \(path): status \(got), want \(want)")
             exit(1)

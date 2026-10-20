@@ -488,7 +488,9 @@ imp = get("/v1/behaviors/impact")
 check(imp["window_days"] == 90 and imp["impacts"], f"impact: {imp}")
 a = next(i for i in imp["impacts"] if i["behavior_id"] == ALCOHOL)
 r = a["recovery"]
-check(a["status"] == "unlocked" and a["n_yes"] == 5 and a["n_no"] >= 5 and r and r["delta"] < 0 and r["ci_hi"] < 0
+# n_yes ≥ 5, not = 5: entries of earlier runs that have left the editable 14 days
+# stay in the 90-day window (they were chosen the same way, so they agree).
+check(a["status"] == "unlocked" and a["n_yes"] >= 5 and a["n_no"] >= 5 and r and r["delta"] < 0 and r["ci_hi"] < 0
       and r["significant"] and a["hrv_pct"]["delta"] < 0, f"alcohol's effect: {a}")
 check(imp["impacts"][0]["status"] == "unlocked", "unlocked impacts come first")
 for i in imp["impacts"]:

@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -64,9 +64,9 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 # (label ryft.dev/stage=first), and the services only once migrate has set their
 # role passwords. The finished migrate Job is deleted first because a Job's pod
 # template cannot change.
-k8s-apply-eks: k8s-check-images
-	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s; done
-	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s; done
+k8s-apply-eks: k8s-check-images k8s-check-auth
+	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
+	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
 	@$(MAKE) --no-print-directory k8s-check-nats-secret
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
 	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
@@ -78,7 +78,7 @@ k8s-apply-eks: k8s-check-images
 # Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
 # its Fleet Management token is synced from Vault into namespace monitoring first.
 K8S_MONITORING_VERSION := 4.5.3
-monitoring-apply:
+monitoring-apply: k8s-check-auth
 	kubectl apply -k deploy/k8s/overlays/vault-namespaces/monitoring
 	kubectl -n monitoring wait --for=create secret/ryft-secrets --timeout=120s
 	helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
@@ -151,6 +151,17 @@ k8s-validate:
 	for f in infra/vault/tests/golden/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
+
+# kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
+# make every call fail with "the server has asked for the client to provide
+# credentials" (2026-10-20). Say so before applying anything.
+k8s-check-auth:
+	@if ! kubectl auth whoami >/dev/null 2>&1; then \
+	  echo "✗ kubectl is not logged in to $$(kubectl config current-context 2>/dev/null)."; \
+	  aws sts get-caller-identity --query Arn --output text 2>&1 | sed '/^$$/d; s/^/  aws sts: /' | head -2; \
+	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \
+	  exit 1; fi
+	@echo "✓ kubectl is logged in to $$(kubectl config current-context) as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
 
 # NATS refuses to start when nats.conf names a password its Secret lacks: a new
 # service whose hash the Vault Secrets Operator has not synced yet (it re-reads

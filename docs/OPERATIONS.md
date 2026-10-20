@@ -60,8 +60,13 @@ Local): `terraform init` in a fresh checkout connects to it after `terraform log
 
 `make k8s-apply-eks` runs these steps, waiting at each one:
 
+0. It checks that kubectl is logged in (`k8s-check-auth`): kubectl takes its EKS
+   token from `aws eks get-token`, so expired AWS credentials fail every call with
+   "the server has asked for the client to provide credentials". Refresh them and
+   check with `aws sts get-caller-identity`. Then `NATS_PASSWORD_*` (`k8s-check-nats-secret`,
+   after step 1).
 1. It applies the operator objects for every namespace and waits until each
-   `ryft-secrets` exists.
+   `ryft-secrets` exists; it stops at the first one that fails.
 2. It deletes the finished migrate Job, since a Job's pod template is immutable.
 3. It applies the first stage, NATS and the migrate Job (label `ryft.dev/stage=first`),
    and waits for the Job and NATS.

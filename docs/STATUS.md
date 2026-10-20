@@ -2,9 +2,9 @@
 
 State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
 Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
-2026-10-19) and the push and remote-config core of M7 (2026-10-19), all deployed
-(`b7e4a4a`, 2026-10-19) with the Sign in with Apple and APNs keys active, and the journal
-with behavior impact (M5, 2026-10-19, not deployed yet). Contract:
+2026-10-19), the push and remote-config core of M7 (2026-10-19) and the journal with
+behavior impact (M5, 2026-10-19), all deployed (`82506fa`, 2026-10-20) with the Sign in
+with Apple and APNs keys active. Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
@@ -81,7 +81,7 @@ agreed extras):
 | Apex | `ryftapp.de` page, `www` redirect, `apple-app-site-association` (webcredentials, applinks) | `deploy/k8s/base/web`, D55 |
 | Supabase | Checklist for email accounts, redirects, templates, rate limits, Apple key; the move to Frankfurt (decided) | `SUPABASE.md`, D49 |
 
-**Train (M3b, 2026-10-19)** — deployed (`3a0e9a1`, now `b7e4a4a`):
+**Train (M3b, 2026-10-19)** — deployed (`3a0e9a1`, now `82506fa`):
 
 | Item | What | Where |
 | --- | --- | --- |
@@ -92,7 +92,7 @@ agreed extras):
 | Records, progression | e1RM / max weight / max reps / max volume; `GET /v1/plans/today` targets from %-of-e1RM or linear progression with repeat and deload | `PersonalRecords`, `NextTargetKG` |
 | API | `/v1/exercises`, `/v1/plans`, `/v1/plans/today`, `/v1/sessions` (+ `…/complete`), `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, insight `pr`, `ryft.session.completed` | `cmd/api/train.go`, [`API.md`](API.md) → Train |
 
-**Sleep upgrades (M4, 2026-10-19)** — deployed (`b7e4a4a`)
+**Sleep upgrades (M4, 2026-10-19)** — deployed (`b7e4a4a`, now `82506fa`)
 ([`SCORING.md`](SCORING.md) → Sleep, D65–D68):
 
 | Item | What | Where |
@@ -106,7 +106,7 @@ agreed extras):
 | Settings | `User.sleep_base_source` / `_learned_min` / `_learned_at`; `PATCH /v1/me` `sleep_base_manual` | `store.UpdateUser` |
 | Insights, trends | `sleep-consistency-low`, `nap-credit`, `baseline-learned`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min` | `internal/insights/rules.go` |
 
-**Push and remote config (M7 core, 2026-10-19)** — deployed (`b7e4a4a`), APNs key
+**Push and remote config (M7 core, 2026-10-19)** — deployed (`b7e4a4a`, now `82506fa`), APNs key
 active; the weekly report stays in M7 (D69–D73):
 
 | Item | What | Where |
@@ -119,8 +119,8 @@ active; the weekly report stays in M7 (D69–D73):
 | Payloads | `loc-key` + `loc-args`, en/de texts pinned in `notify.Catalog` and listed in `API.md`; arguments formatted per install language | `internal/notify/messages.go` |
 | Ops | Manifests (Deployment, Service, NetworkPolicy with 443 for APNs), local-postgres and EKS overlays, CI image, `infra/vault` service entry with all-or-none APNs keys, metrics and two alerts | `deploy/k8s/base/notify`, `infra/vault`, `OBSERVABILITY.md` |
 
-**Journal and behavior impact (M5, 2026-10-19)** — built and verified locally, not
-deployed yet (`SCORING.md` → Journal, D74–D77):
+**Journal and behavior impact (M5, 2026-10-19)** — deployed (`82506fa`, 2026-10-20)
+(`SCORING.md` → Journal, D74–D77):
 
 | Item | What | Where |
 | --- | --- | --- |
@@ -177,8 +177,8 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
 5. **`infra/aws`:** done: budget, the API endpoint stays `0.0.0.0/0` (HCP Vault's
    TokenReview), the node tags (one full node rotation), three t3.large nodes (D57, D64). The budget's
    $165 is below the estimate; raise `monthly_budget_usd` or expect the alarm.
-6. **Images and deploy:** done; `b7e4a4a` runs for every service (ingest, scoring,
-   api, notify, migrate).
+6. **Images and deploy:** done; `82506fa` runs for every service (ingest, scoring,
+   api, notify, migrate, web).
 7. **`make monitoring-apply`:** done; the Helm release is `deployed` (revision 8), the
    stale collectors are removed from Fleet Management (2026-10-19). Left as they are,
    by choice: RYFT's pod logs also reach Grafana Cloud (not excluded), and
@@ -233,9 +233,14 @@ Applied on 2026-10-19 except where marked open. Your steps, in this order:
     `POST /v1/devices/{id}/push`). Then turn `push.enabled` on for yourself, and after
     the first `MORNING_SCORE` (`ryft_push_notifications_total{result="sent"}`) for
     everyone (`OPERATIONS.md` → Feature flags).
-12. **Journal (M5):** open. Push; once CI is green, pin its short SHA (all five
-    `newTag`) and `make k8s-apply-eks`. The migrate job applies 0016 and seeds the 25
-    behaviors; nothing changes in Terraform, Vault or NATS, no new service.
+12. **Journal (M5):** deployed 2026-10-20 at `82506fa`. Checked afterwards: every pod
+    ready without restarts; migrate reports the schema current and seeded the 25
+    behaviors (0016 is applied); `/v1/behaviors`, `/v1/journal/{day}` and
+    `/v1/behaviors/impact` answer `401` without a token. The first
+    `make k8s-apply-eks` failed on expired AWS credentials ("the server has asked for
+    the client to provide credentials"); it now checks the login first
+    (`k8s-check-auth`) and stops at the first failing apply. Open: the app side
+    (journal sheet, Behavior Insights, Profile → Journal).
 
 Known gaps, accepted for the alpha:
 - **Failure-path metrics:** `ryft_events_handled_total{result="retry|failed"}` and
