@@ -215,7 +215,7 @@
         },
         {
           "title": "Deine Daten gehören dir",
-          "body": "Exportiere alles als JSON oder lösche dein Konto in der App, jederzeit. Das Löschen geschieht sofort."
+          "body": "Exportiere dein Konto, deine Werte, Trainings und Einheiten als JSON oder lösche dein Konto in der App, jederzeit. Das Löschen geschieht sofort."
         },
         {
           "title": "Ehrliche Unsicherheit",
@@ -373,5 +373,61 @@
       "versions": "Modellversionen",
       "limitations": "Grenzen"
     }
+  },
+  "legal": {
+    "draftTitle": "Entwurf – noch nicht in Kraft",
+    "version": "Version {version}",
+    "inForce": "In Kraft seit {date}",
+    "notInForce": "Noch nicht in Kraft",
+    "previous": "Frühere Versionen",
+    "none": "noch keine",
+    "archived": "Das ist eine frühere Version.",
+    "toCurrent": "Zur aktuellen Version",
+    "privacyTitle": "Datenschutzerklärung",
+    "termsTitle": "Nutzungsbedingungen",
+    "impressumTitle": "Impressum",
+    "supportTitle": "Support",
+    "steps": {
+      "title": "Daten exportieren oder löschen, Schritt für Schritt",
+      "export": {
+        "title": "Daten exportieren",
+        "items": [
+          "Öffne RYFT und geh zu Profil.",
+          "Tippe unter Daten auf Meine Daten exportieren.",
+          "Sichere oder teile die JSON-Datei, die dabei entsteht."
+        ]
+      },
+      "delete": {
+        "title": "Konto löschen",
+        "items": [
+          "Öffne RYFT und geh zu Profil.",
+          "Tippe unter Konto auf Konto löschen.",
+          "Bestätige. Alles, was RYFT über dich speichert, wird sofort entfernt."
+        ]
+      },
+      "alt": "Die Konto-Karte im Profil von RYFT: Buttons für Passwort ändern, Abmelden und, in Rot, Konto löschen. Die Aufnahme zeigt die englische Oberfläche."
+    },
+    "contact": {
+      "title": "Schreib uns",
+      "button": "E-Mail an den Support",
+      "response": "Wie schnell wir antworten:",
+      "responseTodo": "TODO(user): Antwortzeit, z. B. innerhalb von zwei Werktagen"
+    }
+  },
+  "licenses": {
+    "title": "Lizenzen",
+    "description": "Die Open-Source-Software und die Schrift in der RYFT-App und auf dieser Website, mit jeder Lizenz im vollen Wortlaut.",
+    "label": "Open Source",
+    "copyright": "RYFT, die App, diese Website und ihre Gestaltung: © {year} {holder}. Alle Rechte vorbehalten.",
+    "holderTodo": "TODO(user): Rechteinhaber, wie im Impressum",
+    "intro": "RYFT baut auf Open-Source-Software und der Schrift Satoshi auf. Die App zeigt dieselbe Liste unter Profil → Über RYFT → Lizenzen.",
+    "app": "In der App",
+    "appIntro": "Swift-Pakete in den Versionen, die die App festlegt, und die Schrift.",
+    "web": "Auf dieser Website",
+    "webIntro": "Die Pakete, mit denen diese Seite gebaut wird. Dein Browser lädt nur HTML, CSS und die Schrift Satoshi, kein Skript von Dritten.",
+    "source": "Quelle",
+    "text": "Lizenztext",
+    "noText": "Das Paket enthält keine eigene Lizenzdatei; es gibt {license} an. Siehe seine Quelle.",
+    "count": "{n} Komponenten"
   }
 }

@@ -13,8 +13,8 @@
     "fonts": "node scripts/fetch-fonts.mjs",
     "tokens": "node scripts/tokens.mjs",
     "tokens:check": "node scripts/tokens.mjs --check",
-    "dev": "node scripts/fetch-fonts.mjs --if-missing && next dev",
-    "prebuild": "node scripts/fetch-fonts.mjs --if-missing",
+    "dev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs --if-missing && next dev",
+    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs",
     "build": "next build",
     "postbuild": "node scripts/postbuild.mjs && node scripts/check-brand.mjs --out-only",
     "typecheck": "tsc --noEmit",
@@ -24,7 +24,10 @@
     "test": "vitest run",
     "icons": "node scripts/icons.mjs",
     "preview": "node scripts/preview.mjs",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "licenses": "node scripts/licenses.mjs",
+    "check:policy": "node scripts/check-policy-version.mjs",
+    "licenses:check": "node scripts/licenses.mjs --check"
   },
   "dependencies": {
     "@mdx-js/mdx": "3.1.1",

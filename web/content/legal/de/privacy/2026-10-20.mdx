@@ -1,0 +1,75 @@
+---
+title: "Datenschutzerklärung"
+version: '2026-10-20'
+effective: null
+status: draft
+versionNote: "die App bittet um deine Einwilligung zu dieser Version"
+draftNote: "ENTWURF — vor der Veröffentlichung prüfen. Der Text beschreibt, was das RYFT-System am 20. Oktober 2026 tut. Er ist keine Rechtsberatung; der Verantwortliche muss ihn prüfen und ergänzen (jedes TODO(user))."
+portedFrom: 'plattform/deploy/k8s/base/web/site/pages/privacy.de.html'
+---
+
+## 1. Verantwortlicher
+
+Verantwortlicher: <Todo>TODO(user): Name, Anschrift, E-Mail-Adresse</Todo>. Datenschutzbeauftragter: <Todo>TODO(user): Name und Kontakt, falls einer benannt werden muss</Todo>.
+
+## 2. Was RYFT ist
+
+RYFT ist eine iPhone-App. Mit deiner Erlaubnis liest sie Daten aus Apple Health, überträgt sie an die RYFT-Server und berechnet daraus Erholung, Belastung, Schlaf und Bereitschaft. Derzeit ist sie eine geschlossene Beta über TestFlight.
+
+## 3. Welche Daten wir verarbeiten
+
+- **Dein Konto:** eine Konto-Kennung; deine E-Mail-Adresse (bei „Mit Apple anmelden“ eventuell eine weitergeleitete Adresse von Apple); dein Name, wenn du ihn teilst; die Anmeldeart; bei „Mit Apple anmelden“ ein Token, das wir nur nutzen, um die Anmeldung beim Löschen deines Kontos zu widerrufen; der eingelöste Beta-Einladungscode; deine Zeitzone; wann du die App zuletzt genutzt hast.
+- **Gesundheitsdaten aus Apple Health**, nur die Arten, die du freigibst: Herzfrequenz, Herzfrequenzvariabilität (SDNN), Ruhepuls, Atemfrequenz, Blutsauerstoff (SpO₂), VO₂max, aktive Energie, Schritte, Schlaf (im Bett, schlafend, Kern-, Tief-, REM-Schlaf, wach), Trainings (Art, Beginn und Ende, durchschnittliche und maximale Herzfrequenz, Energie, Strecke) sowie Namen und Bundle-Kennungen der Apps und Geräte, die sie aufgezeichnet haben.
+- **Was RYFT daraus berechnet:** Tageswerte (Erholung, Belastung, Bereitschaft, Schlafleistung, -bedarf, -schuld, -qualität und -regelmäßigkeit), Schritt- und Energiesummen, deine persönlichen Ausgangswerte, Hinweise und die Version des Bewertungsmodells, das sie berechnet hat.
+- **Was du eingibst:** Geburtsjahr und maximale Herzfrequenz (zur Schätzung deiner maximalen Herzfrequenz), deinen Schlaf-Grundbedarf, Krafttraining (Übungen, Pläne, Einheiten, Sätze, Gewichte, Körpergewicht, Bestleistungen), dein Tagebuch (zum Beispiel Alkohol, Koffein, Nikotin, Cannabis, Nahrungsergänzung, Krankheit, Verletzung, Stress) und deine Benachrichtigungseinstellungen.
+- **Geräte und Benachrichtigungen:** eine zufällige Kennung je Installation der App, den Gerätenamen, App- und iOS-Version, die letzte Synchronisierung; das Push-Token, das Apple der App zuweist, mit Umgebung und Sprache.
+- **Deine Einwilligung:** zu welcher Version dieser Erklärung du eingewilligt hast, wann, mit welcher App-Version, und wann du sie widerrufen hast.
+- **Feedback, das du sendest:** deine Nachricht, ihre Kategorie, App-Version und Build, Gerätemodell, iOS-Version, die Anfrage-Kennungen und die Diagnosedaten, die die App beifügt.
+- **Technische Protokolle:** je Anfrage Zeit, Pfad, Ergebnis, Dauer, deine Konto-Kennung und eine Anfrage-Kennung; der Bewertungsdienst protokolliert außerdem die berechneten Tageswerte. Inhalte von Anfragen und E-Mail-Adressen werden nicht protokolliert.
+
+## 4. Zwecke und Rechtsgrundlagen
+
+- **Gesundheitsdaten** (und gesundheitsbezogene Eingaben wie das Tagebuch): um deine Werte zu berechnen und dir anzuzeigen, auf Grundlage deiner **ausdrücklichen Einwilligung** (Art. 9 Abs. 2 lit. a DSGVO), um die die App vor der ersten Übertragung bittet. Ohne sie nimmt RYFT keine Daten an und berechnet nichts.
+- **Konto, Einstellungen, Training, Geräte und Benachrichtigungen:** um die App bereitzustellen, für die du dich angemeldet hast (Art. 6 Abs. 1 lit. b DSGVO). Benachrichtigungen erst, nachdem du sie in iOS erlaubt hast.
+- **Protokolle und Ratenbegrenzung:** für Sicherheit und Betrieb des Dienstes (berechtigte Interessen, Art. 6 Abs. 1 lit. f DSGVO).
+- **Feedback:** um es zu beantworten und Gemeldetes zu beheben (Art. 6 Abs. 1 lit. b und f DSGVO).
+- **Einwilligungsnachweise:** um deine Einwilligung nachweisen zu können (Art. 6 Abs. 1 lit. c i. V. m. Art. 7 Abs. 1 DSGVO).
+
+<Todo>TODO(user): rechtliche Prüfung dieser Grundlagen</Todo>
+
+## 5. Empfänger und Speicherorte
+
+- **Supabase** (Datenbank und Anmeldung), auf Servern in Frankfurt am Main (AWS-Region eu-central-1). <Todo>TODO(user): Auftragsverarbeitungsvertrag mit Supabase und Grundlage für einen etwaigen Zugriff von außerhalb der EU</Todo>
+- **Amazon Web Services** (die Server, auf denen RYFT läuft, ihre Protokolle, DNS und Load Balancer), in Frankfurt am Main (eu-central-1). <Todo>TODO(user): Auftragsverarbeitungsvertrag mit AWS</Todo>
+- **Apple:** „Mit Apple anmelden“; der Apple Push Notification Service, über den dein Push-Token und der Benachrichtigungstext laufen, und der Text kann deine Werte enthalten (zum Beispiel „Erholung 82 %“); TestFlight, nach Apples Bedingungen. Deine Gesundheitsdaten in Apple Health bleiben auf deinem iPhone; RYFT liest sie dort.
+- **Grafana Labs** (Grafana Cloud, Überwachung), in London, Vereinigtes Königreich: Betriebskennzahlen ohne personenbezogene Daten und derzeit auch die Protokolle der Dienste aus Abschnitt 3. <Todo>TODO(user): entscheiden, ob Protokolle an Grafana Cloud gehen; wenn ja, Auftragsverarbeitungsvertrag und Übermittlungsgrundlage (Angemessenheitsbeschluss für das Vereinigte Königreich)</Todo>
+
+Wir verkaufen keine Daten und nutzen sie nicht für Werbung. Die App enthält keine Werbe- oder Analyse-SDKs.
+
+## 6. Speicherdauer
+
+- Alles, was zu deinem Konto gehört, bis du das Konto in der App löschst. Das Löschen entfernt die Daten sofort aus der Datenbank, löscht deine Anmeldung bei Supabase und widerruft die Autorisierung von „Mit Apple anmelden“. Eine zufällige Konto-Kennung bleibt erhalten, damit das Konto nicht wieder auftaucht.
+- Datenbank-Sicherungen bei Supabase werden 7 Tage aufbewahrt; gelöschte Daten verschwinden in dieser Zeit auch aus ihnen. <Todo>TODO(user): bestätigen, sobald das Projekt auf Supabase Pro läuft</Todo>
+- Protokolle: 14 Tage. <Todo>TODO(user): Aufbewahrung bei Grafana Cloud, falls Protokolle dorthin gehen</Todo>
+- Ereignisse, die nicht verarbeitet werden konnten: bis zu 30 Tage in einer internen Warteschlange (deine Konto-Kennung und die betroffenen Tage, bei Benachrichtigungen auch deine Morgenwerte).
+- Widerrufst du deine Einwilligung, enden Übertragung und Berechnung sofort; Gespeichertes bleibt, bis du das Konto löschst.
+
+## 7. Deine Rechte
+
+Du hast das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17; in der App: Konto löschen), Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20; in der App: Meine Daten exportieren, als JSON) und Widerspruch gegen Verarbeitungen auf Grundlage berechtigter Interessen (Art. 21). Deine Einwilligung kannst du jederzeit in der App widerrufen (Art. 7 Abs. 3); die bis dahin erfolgte Verarbeitung bleibt davon unberührt. Du kannst dich bei einer Aufsichtsbehörde beschweren (Art. 77), <Todo>TODO(user): die zuständige Behörde</Todo>. Kontakt: <Todo>TODO(user): E-Mail-Adresse für Datenschutzanfragen</Todo>.
+
+## 8. Sicherheit
+
+Alle Verbindungen sind verschlüsselt (TLS). Jeder RYFT-Dienst hat eine eigene Datenbankrolle und eigene Zugangsdaten und erreicht nur, was er braucht; Zugangsdaten liegen in einem Secrets-Tresor; die Daten werden bei Supabase und AWS verschlüsselt gespeichert. Administrativen Zugang hat nur der Betreiber.
+
+## 9. Alter
+
+<Todo>TODO(user): Mindestalter: einwilligungsbasierte Dienste brauchen in Deutschland unter 16 Jahren die Zustimmung der Eltern (Art. 8 DSGVO); die App akzeptiert derzeit Geburtsjahre bis vor 13 Jahren</Todo>
+
+## 10. Keine automatisierten Entscheidungen
+
+Die Werte sind Informationen für dich. RYFT trifft keine Entscheidungen über dich mit rechtlicher oder ähnlich erheblicher Wirkung. RYFT ist kein Medizinprodukt.
+
+## 11. Änderungen
+
+Eine geänderte Erklärung erhält eine neue Versionsnummer, und die App bittet vor der nächsten Übertragung erneut um deine Einwilligung.

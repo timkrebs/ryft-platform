@@ -1,0 +1,47 @@
+{
+  "$comment": "Snapshot of ../app Package.resolved pins. Refresh: npm run licenses -- --sync",
+  "pins": [
+    {
+      "identity": "supabase-swift",
+      "location": "https://github.com/supabase/supabase-swift",
+      "version": "2.55.4",
+      "revision": "fee4bd78997f8b4e919c1c9711e0cfb346fd7a55"
+    },
+    {
+      "identity": "swift-asn1",
+      "location": "https://github.com/apple/swift-asn1.git",
+      "version": "1.7.3",
+      "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2"
+    },
+    {
+      "identity": "swift-clocks",
+      "location": "https://github.com/pointfreeco/swift-clocks",
+      "version": "1.1.0",
+      "revision": "72d749bf341b78851203066ab421869b783ec42a"
+    },
+    {
+      "identity": "swift-concurrency-extras",
+      "location": "https://github.com/pointfreeco/swift-concurrency-extras",
+      "version": "1.3.2",
+      "revision": "5a3825302b1a0d744183200915a47b508c828e6f"
+    },
+    {
+      "identity": "swift-crypto",
+      "location": "https://github.com/apple/swift-crypto.git",
+      "version": "4.2.0",
+      "revision": "6f70fa9eab24c1fd982af18c281c4525d05e3095"
+    },
+    {
+      "identity": "swift-http-types",
+      "location": "https://github.com/apple/swift-http-types.git",
+      "version": "1.5.1",
+      "revision": "45eb0224913ea070ec4fba17291b9e7ecf4749ca"
+    },
+    {
+      "identity": "xctest-dynamic-overlay",
+      "location": "https://github.com/pointfreeco/xctest-dynamic-overlay",
+      "version": "1.9.0",
+      "revision": "dfd70507def84cb5fb821278448a262c6ff2bbad"
+    }
+  ]
+}

@@ -215,7 +215,7 @@
         },
         {
           "title": "Your data is yours",
-          "body": "Export everything as JSON, or delete your account in the app, at any time. Deletion is immediate."
+          "body": "Export your account, scores, workouts and sessions as JSON, or delete your account in the app, at any time. Deletion is immediate."
         },
         {
           "title": "Honest uncertainty",
@@ -373,5 +373,61 @@
       "versions": "Model versions",
       "limitations": "Limitations"
     }
+  },
+  "legal": {
+    "draftTitle": "Draft — not yet in force",
+    "version": "Version {version}",
+    "inForce": "In force since {date}",
+    "notInForce": "Not yet in force",
+    "previous": "Previous versions",
+    "none": "none yet",
+    "archived": "This is an earlier version.",
+    "toCurrent": "Read the current version",
+    "privacyTitle": "Privacy policy",
+    "termsTitle": "Terms of use",
+    "impressumTitle": "Legal notice",
+    "supportTitle": "Support",
+    "steps": {
+      "title": "Export or delete your data, step by step",
+      "export": {
+        "title": "Export your data",
+        "items": [
+          "Open RYFT and go to Profile.",
+          "Under Data, tap Export my data.",
+          "Save or share the JSON file it creates."
+        ]
+      },
+      "delete": {
+        "title": "Delete your account",
+        "items": [
+          "Open RYFT and go to Profile.",
+          "Under Account, tap Delete account.",
+          "Confirm. Everything RYFT stores about you is removed at once."
+        ]
+      },
+      "alt": "The Account card in RYFT's Profile: buttons for Change password, Log out and, in red, Delete account."
+    },
+    "contact": {
+      "title": "Write to us",
+      "button": "Email support",
+      "response": "How soon we answer:",
+      "responseTodo": "TODO(user): response time, e.g. within two working days"
+    }
+  },
+  "licenses": {
+    "title": "Licences",
+    "description": "The open-source software and the typeface in the RYFT app and on this website, with every licence in full.",
+    "label": "Open source",
+    "copyright": "RYFT, the app, this website and their designs: © {year} {holder}. All rights reserved.",
+    "holderTodo": "TODO(user): rights holder, as in the legal notice",
+    "intro": "RYFT is built on open-source software and the Satoshi typeface. The app shows the same list under Profile → About → Licences.",
+    "app": "In the app",
+    "appIntro": "Swift packages at the versions the app pins, and the typeface.",
+    "web": "On this website",
+    "webIntro": "The packages this site is built with. What your browser loads is HTML, CSS and the Satoshi font; no third-party script.",
+    "source": "Source",
+    "text": "Licence text",
+    "noText": "The package ships no separate licence file; it declares {license}. See its source.",
+    "count": "{n} components"
   }
 }

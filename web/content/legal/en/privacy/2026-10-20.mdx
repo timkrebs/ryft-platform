@@ -1,0 +1,75 @@
+---
+title: "Privacy policy"
+version: '2026-10-20'
+effective: null
+status: draft
+versionNote: "the app asks for your consent to this version"
+draftNote: "DRAFT — review before publishing. This text describes what the RYFT system does as of 20 October 2026. It is not legal advice; the controller must review and complete it (every TODO(user))."
+portedFrom: 'plattform/deploy/k8s/base/web/site/pages/privacy.en.html'
+---
+
+## 1. Who is responsible
+
+Controller: <Todo>TODO(user): name, postal address, email address</Todo>. Data protection officer: <Todo>TODO(user): name and contact, if one is required</Todo>.
+
+## 2. What RYFT is
+
+RYFT is an iPhone app. With your permission it reads data from Apple Health, sends it to the RYFT servers and computes recovery, strain, sleep and readiness from it. It is currently a closed beta distributed through TestFlight.
+
+## 3. What we process
+
+- **Your account:** an account identifier; your email address (with Sign in with Apple possibly a private relay address from Apple); your name, if you share it; how you sign in; for Sign in with Apple a token we use only to revoke the sign-in when you delete your account; the beta invite code you redeemed; your time zone; when you last used the app.
+- **Health data from Apple Health**, only the types you allow: heart rate, heart rate variability (SDNN), resting heart rate, respiratory rate, blood oxygen (SpO₂), VO₂ max, active energy, steps, sleep (in bed, asleep, core, deep, REM, awake), workouts (type, start and end, average and maximum heart rate, energy, distance), and the names and bundle identifiers of the apps and devices that recorded them.
+- **What RYFT computes from it:** daily scores (recovery, strain, readiness, sleep performance, need, debt, quality and consistency), step and energy totals, your personal baselines, insights, and which version of the scoring model computed them.
+- **What you enter:** birth year and maximum heart rate (to estimate your maximum heart rate), your sleep baseline, strength training (exercises, plans, sessions, sets, weights, body weight, personal records), your journal (for example alcohol, caffeine, nicotine, cannabis, supplements, feeling sick, injury, stress), and your notification settings.
+- **Devices and notifications:** a random identifier per installation of the app, the device name, app and iOS version, when it last synced; the push token Apple assigns to the app, with its environment and language.
+- **Your consent:** which version of this policy you consented to, when, with which app version, and when you withdrew it.
+- **Feedback you send:** your message, its category, app version and build, device model, iOS version, the request identifiers and the diagnostics the app attaches.
+- **Technical logs:** for every request the time, path, result, duration, your account identifier and a request identifier; the scoring service also logs the daily scores it computed. Request contents and email addresses are not logged.
+
+## 4. Why, and on which legal basis
+
+- **Health data** (and the health-related parts of what you enter, such as the journal): to compute your scores and show them to you, on your **explicit consent** (Art. 9(2)(a) GDPR), which the app asks for before the first upload. Without it RYFT accepts no uploads and computes nothing.
+- **Account, settings, training, devices and notifications:** to provide the app you signed up for (Art. 6(1)(b) GDPR). Notifications only after you allow them in iOS.
+- **Logs and rate limits:** to keep the service secure and running (legitimate interests, Art. 6(1)(f) GDPR).
+- **Feedback:** to answer it and fix what you report (Art. 6(1)(b) and (f) GDPR).
+- **Consent records:** to be able to show that you consented (Art. 6(1)(c) with Art. 7(1) GDPR).
+
+<Todo>TODO(user): legal review of these bases</Todo>
+
+## 5. Who else processes data, and where
+
+- **Supabase** (database and sign-in), on servers in Frankfurt, Germany (AWS region eu-central-1). <Todo>TODO(user): data processing agreement with Supabase, and the basis for any access from outside the EU</Todo>
+- **Amazon Web Services** (the servers that run RYFT, their logs, DNS and load balancer), in Frankfurt, Germany (eu-central-1). <Todo>TODO(user): data processing agreement with AWS</Todo>
+- **Apple:** Sign in with Apple; the Apple Push Notification service, through which your push token and the notification text pass, and the text can contain your scores (for example “Recovery 82 %”); TestFlight, under Apple's terms. Your health data in Apple Health stays on your iPhone; RYFT reads it there.
+- **Grafana Labs** (Grafana Cloud, monitoring), in London, United Kingdom: service metrics without personal data, and currently also the services' logs described in section 3. <Todo>TODO(user): decide whether logs go to Grafana Cloud; if so, data processing agreement and the transfer basis (UK adequacy decision)</Todo>
+
+We do not sell data and do not use it for advertising. The app contains no advertising or analytics SDKs.
+
+## 6. How long we keep it
+
+- Everything tied to your account until you delete the account in the app. Deleting erases it from the database at once, removes your sign-in at Supabase and revokes the Sign in with Apple authorization. A random account identifier is kept so that the account cannot reappear.
+- Database backups at Supabase are kept for 7 days; deleted data leaves them within that time. <Todo>TODO(user): confirm once the project is on Supabase Pro</Todo>
+- Logs: 14 days. <Todo>TODO(user): Grafana Cloud's retention, if logs go there</Todo>
+- Events that could not be processed: up to 30 days in an internal queue (your account identifier and the days concerned, for notifications also your morning scores).
+- If you withdraw your consent, uploads and the computation of scores stop at once; what is stored stays until you delete the account.
+
+## 7. Your rights
+
+You have the right of access (Art. 15 GDPR), rectification (Art. 16), erasure (Art. 17; in the app: delete account), restriction (Art. 18), data portability (Art. 20; in the app: export my data, as JSON), and to object to processing based on legitimate interests (Art. 21). You can withdraw your consent at any time in the app (Art. 7(3)); this does not affect processing before. You can complain to a supervisory authority (Art. 77), <Todo>TODO(user): the competent authority</Todo>. Contact: <Todo>TODO(user): email address for privacy requests</Todo>.
+
+## 8. Security
+
+All connections are encrypted (TLS). Each RYFT service has its own database role and credentials and can reach only what it needs; credentials are kept in a secrets vault; data is stored encrypted at Supabase and AWS. Only the operator has administrative access.
+
+## 9. Age
+
+<Todo>TODO(user): minimum age: consent-based services need parental consent under 16 in Germany (Art. 8 GDPR); the app currently accepts birth years up to 13 years ago</Todo>
+
+## 10. No automated decisions
+
+The scores are information for you. RYFT makes no decisions about you with legal or similarly significant effects. RYFT is not a medical device.
+
+## 11. Changes
+
+A changed policy gets a new version number, and the app asks for your consent again before the next upload.
