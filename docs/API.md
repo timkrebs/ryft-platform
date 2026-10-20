@@ -241,7 +241,7 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `consent` | `Consent?` | The latest consent to health-data processing that was not withdrawn: `{policy_version, granted_at}`; `null` when there is none. Syncing needs `policy_version` to equal `GET /v1/config` → `privacy_policy_version`. |
 | `birth_year` | int? | For the max-HR estimate; nothing finer is stored. |
 | `max_hr_source` | string | `default` (190, nothing known), `estimated` (208 − 0.7 · age, Tanaka, from `birth_year`), `manual` (set with `PATCH`). Closed enum. |
-| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`), `last_seen` (the latest record's time). |
+| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max), `last_seen` (the latest record's time). `[]` when nothing arrived. |
 | `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
 
 **Learned baseline.** Every Sunday from 04:00 local time, scoring estimates the

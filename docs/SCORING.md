@@ -34,6 +34,24 @@ Where it applies:
 - **Sleep totals, stages and the hypnogram** use the night's winning source.
 - **Steps and active energy** are summed per local day after de-duplication (below).
 
+**Golden fixtures** (`internal/scoring/testdata/sources/*.json`): what HealthKit hands
+over for four set-ups, Apple Watch + iPhone, Oura + iPhone, iPhone only (eight days, no
+sleep tracking), Garmin one day and Apple Watch the next. Each file says in its `notes`
+what must happen and works the numbers out: heart-rate hours per source, minutes, zone
+minutes and the strain (constant heart rate per stretch makes it arithmetic), resting
+heart rate, steps, energy, the night's source and minutes, each workout's curve source,
+`User.sources`, the no-heart-rate card. Nothing is snapshotted from the code.
+`TestSourceFixtures` runs them through the functions `computeDay` uses (no database, so
+always); `TestEngineSourceFixtures` stores them as ingest does and lets the engine
+score them (with `RYFT_TEST_POSTGRES_URL`), adding readiness and state: iPhone only stays
+`calibrating` with no readiness on day 8 as on day 1. A change to a source rule shows up
+here first.
+
+**No heart rate** (`no-heart-rate-source`, info): data arrived in the last 7 days but no
+heart rate (an iPhone alone, or a tracker that does not share it with Apple Health).
+Strain, recovery and readiness all start from heart rate, so the card says what is
+missing instead of leaving the user with empty scores.
+
 ## Steps and active energy
 
 `daily_scores.steps` and `active_kcal` are the local day's de-duplicated samples, summed

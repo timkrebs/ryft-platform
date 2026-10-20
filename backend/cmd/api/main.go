@@ -215,7 +215,22 @@ type handler struct {
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteJSON(w, 200, userOf(r))
+	u, err := h.withSources(r, userOf(r))
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, 200, u)
+}
+
+// sourcesWindow is how far back User.sources looks.
+const sourcesWindow = 30 * 24 * time.Hour
+
+// withSources adds User.sources, which the per-request user row does not load.
+func (h *handler) withSources(r *http.Request, u model.User) (model.User, error) {
+	src, err := h.st.UserSources(r.Context(), u.ID, time.Now().Add(-sourcesWindow))
+	u.Sources = src
+	return u, err
 }
 
 func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +278,10 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.cache.forget(u.ID) // max_hr and the baseline feed cards
+	if u, err = h.withSources(r, u); err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
 	httpx.WriteJSON(w, 200, u)
 }
 

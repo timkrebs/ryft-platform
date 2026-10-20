@@ -1,0 +1,172 @@
+{
+  "name": "Oura ring and iPhone",
+  "notes": [
+    "A ring, no watch. The ring writes heart rate only at night, HRV, breathing, resting heart rate and sleep stages; the phone counts every step (60 x 100) and the energy (60 x 6).",
+    "Heart rate covers 7 hours of the day (00:00-07:00): 83 gaps of 5 = 415 min, all at 55 bpm, 5/140 = 4 % of reserve with a resting rate of 50: under the floor, so the strain is 0.0. It exists (there is heart rate), but there is no daytime heart rate, and RYFT does not invent one.",
+    "The ring's stages (110 + 60 + 90 + 60 + 75 + 25 = 420 min asleep) beat the phone's time in bed."
+  ],
+  "tz": "Europe/Berlin",
+  "days": [
+    {
+      "day": "2026-10-19",
+      "series": [
+        {
+          "type": "heart_rate",
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "from": "-1d23:30",
+          "to": "07:00",
+          "every_s": 300,
+          "value": 55
+        },
+        {
+          "type": "hrv_sdnn",
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "from": "03:00",
+          "to": "03:01",
+          "every_s": 60,
+          "value": 45
+        },
+        {
+          "type": "respiratory_rate",
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "from": "03:00",
+          "to": "03:01",
+          "every_s": 60,
+          "value": 14.5
+        },
+        {
+          "type": "resting_hr",
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "from": "07:00",
+          "to": "07:01",
+          "every_s": 60,
+          "value": 50
+        },
+        {
+          "type": "steps",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "22:00",
+          "every_s": 900,
+          "value": 100
+        },
+        {
+          "type": "active_energy",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "22:00",
+          "every_s": 900,
+          "value": 6
+        }
+      ],
+      "sleep": [
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "core",
+          "from": "-1d23:40",
+          "to": "01:30"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "deep",
+          "from": "01:30",
+          "to": "02:30"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "core",
+          "from": "02:30",
+          "to": "04:00"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "rem",
+          "from": "04:00",
+          "to": "05:00"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "awake",
+          "from": "05:00",
+          "to": "05:15"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "core",
+          "from": "05:15",
+          "to": "06:30"
+        },
+        {
+          "source": "Oura",
+          "bundle_id": "com.ouraring.oura",
+          "stage": "rem",
+          "from": "06:30",
+          "to": "06:55"
+        },
+        {
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "stage": "inbed",
+          "from": "-1d23:00",
+          "to": "07:00"
+        }
+      ],
+      "workouts": [],
+      "expect": {
+        "hr_hours": {
+          "Oura": 7
+        },
+        "rhr": 50,
+        "hr_min": 415,
+        "zone_min": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "strain": 0.0,
+        "steps": 6000,
+        "active_kcal": 360,
+        "sleep_source": "Oura",
+        "asleep_min": 420,
+        "has_stages": true,
+        "workout_source": ""
+      }
+    }
+  ],
+  "sources": [
+    {
+      "name": "Oura",
+      "bundle_id": "com.ouraring.oura",
+      "kinds": [
+        "hr",
+        "hrv",
+        "resp",
+        "sleep"
+      ]
+    },
+    {
+      "name": "Tim's iPhone",
+      "bundle_id": "com.apple.health.3F0A9C12",
+      "kinds": [
+        "energy",
+        "sleep",
+        "steps"
+      ]
+    }
+  ],
+  "no_hr_card": false
+}

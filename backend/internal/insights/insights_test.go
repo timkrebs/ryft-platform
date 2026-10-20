@@ -338,3 +338,18 @@ func TestMaxHRObserved(t *testing.T) {
 		t.Fatal("Evaluate runs the rule")
 	}
 }
+
+func TestNoHeartRateSource(t *testing.T) {
+	with := func(k map[string]bool) History { return NewHistory(today, 3, nil, nil).WithSourceKinds(k) }
+	in := noHeartRateSource(with(map[string]bool{model.KindSteps: true, model.KindSleep: true}))
+	if in == nil || in.ID != "no-heart-rate-source" || in.Severity != model.SeverityInfo || in.Metric != model.MetricStrain ||
+		in.Day != "2026-10-18" {
+		t.Fatalf("steps and sleep, no heart rate: %+v", in)
+	}
+	if noHeartRateSource(with(map[string]bool{model.KindSteps: true, model.KindHR: true})) != nil {
+		t.Fatal("heart rate arrived: no card")
+	}
+	if noHeartRateSource(with(map[string]bool{})) != nil || noHeartRateSource(hist(nil)) != nil {
+		t.Fatal("nothing arrived at all (or unknown): no card, the app shows its own empty state")
+	}
+}

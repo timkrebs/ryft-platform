@@ -1259,3 +1259,36 @@ younger ones. The beta asks for a birth year in onboarding.
   source is treated the same.
 - The rule is pure (`internal/scoring/maxhr.go`, integer tenths so 183.5 rounds up);
   the store gets the estimate from the api because it cannot import scoring.
+
+## D82 — Sources: a small table kept by ingest, fixtures for four set-ups
+
+Beta testers will bring an Apple Watch, a ring, a Garmin, or only a phone. "Why is my
+strain empty" and "which device does RYFT use" need an answer on the screen and in
+support.
+
+- **`user_sources`** (user, HealthKit source name, kind): the bundle id and the latest
+  record's end, upserted by ingest from each sync (`store.SourcesOf`). `last_seen` only
+  moves forward, a bundle id once sent is kept. The alternative, a `DISTINCT` over
+  samples on every `GET /v1/me`, scans a month of heart rate per request. Migration
+  0020 backfills the last 30 days (without bundle ids, which were never sent). A failed
+  upsert is logged and does not fail the sync: the data itself is stored.
+- **Kinds, not sample types**: eight kinds a person recognises (heart rate, HRV,
+  breathing, SpO₂, energy, steps, sleep, workouts). VO₂max counts as heart rate (Apple
+  estimates it from heart rate); resting heart rate too.
+- **Bundle ids are not stored per sample**: only the sources table keeps them. Nothing in
+  scoring needs them; source names stay the de-duplication key (D40).
+- **`User.sources` is loaded by `GET`/`PATCH /v1/me` only**, not with the per-request
+  user row.
+- **`app_version` / `os_version`** on the device row, nil keeping the stored value, for
+  support (the admin view) and to know which builds are still out there.
+- **The `no-heart-rate-source` card**: data in the last 7 days but no `hr` kind. Fixed
+  copy; nothing is computed from what is missing.
+- **Golden fixtures** (`internal/scoring/testdata/sources`): synthetic HealthKit data for
+  Watch + iPhone, Oura + iPhone, iPhone only (eight days) and Garmin one day, Watch the
+  next, as declarative series (constant values per stretch), so every expectation, the
+  strain included, is worked out by hand in the file instead of snapshotted. They run
+  twice: through the pure functions `computeDay` uses (always, in CI), and stored the way
+  ingest stores a sync, then scored by the engine (opt-in Postgres, like the other engine
+  tests). The handler itself is not in the loop: its part is `validate` and the store
+  calls, both tested on their own. No model version bump: they test the rules, they
+  change none.

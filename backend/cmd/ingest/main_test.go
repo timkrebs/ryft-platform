@@ -5,8 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/model"
@@ -36,6 +39,34 @@ func TestAdmitted(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &body)
 		if ok != (c.code == "") || body.Code != c.code || (!ok && rec.Code != 403) {
 			t.Errorf("%s: admitted=%v status=%d code=%q", c.name, ok, rec.Code, body.Code)
+		}
+	}
+}
+
+func TestValidateBetaFields(t *testing.T) {
+	long := func(n int) *string { s := strings.Repeat("x", n); return &s }
+	now := time.Now()
+	base := func() model.SyncRequest {
+		return model.SyncRequest{DeviceID: uuid.New(), AppVersion: long(64), OSVersion: long(64),
+			Samples:  []model.Sample{{Type: model.SampleSteps, Start: now, End: now, SourceBundleID: long(255)}},
+			Sleep:    []model.SleepSegment{{Start: now, End: now.Add(time.Hour), Stage: "core", SourceBundleID: long(255)}},
+			Workouts: []model.Workout{{ID: uuid.New(), Start: now, End: now.Add(time.Hour), SourceBundleID: long(255)}}}
+	}
+	ok := base()
+	if err := validate(&ok); err != nil {
+		t.Fatalf("at the limits: %v", err)
+	}
+	for name, breakIt := range map[string]func(*model.SyncRequest){
+		"app_version": func(r *model.SyncRequest) { r.AppVersion = long(65) },
+		"os_version":  func(r *model.SyncRequest) { r.OSVersion = long(65) },
+		"sample":      func(r *model.SyncRequest) { r.Samples[0].SourceBundleID = long(256) },
+		"sleep":       func(r *model.SyncRequest) { r.Sleep[0].SourceBundleID = long(256) },
+		"workout":     func(r *model.SyncRequest) { r.Workouts[0].SourceBundleID = long(256) },
+	} {
+		r := base()
+		breakIt(&r)
+		if err := validate(&r); err == nil {
+			t.Errorf("%s too long must be refused", name)
 		}
 	}
 }

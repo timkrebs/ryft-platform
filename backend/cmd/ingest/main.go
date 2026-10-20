@@ -171,7 +171,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, fmt.Errorf("user tz: %w", err))
 		return
 	}
-	if err := h.st.TouchDevice(ctx, userID, req.DeviceID, req.DeviceName); err != nil {
+	if err := h.st.TouchDevice(ctx, userID, req.DeviceID, req.DeviceName, req.AppVersion, req.OSVersion); err != nil {
 		httpx.Fail(w, r, fmt.Errorf("device: %w", err))
 		return
 	}
@@ -191,6 +191,10 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, fmt.Errorf("workouts: %w", err))
 		return
 	}
+	// User.sources only: the data is stored, so a failure here does not fail the sync.
+	if err := h.st.UpsertSources(ctx, userID, store.SourcesOf(req.Samples, req.Sleep, req.Workouts)); err != nil {
+		h.log.ErrorContext(ctx, "sources", "err", err)
+	}
 
 	days := touchedDays(&req, loc)
 	if len(days) > 0 {
@@ -204,9 +208,20 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days})
 }
 
+// Limits of the free-text fields (migration 0020).
+const (
+	maxVersionLen  = 64
+	maxBundleIDLen = 255
+)
+
+func tooLong(s *string, n int) bool { return s != nil && len(*s) > n }
+
 func validate(req *model.SyncRequest) error {
 	if req.DeviceID == uuid.Nil {
 		return fmt.Errorf("device_id is required")
+	}
+	if tooLong(req.AppVersion, maxVersionLen) || tooLong(req.OSVersion, maxVersionLen) {
+		return fmt.Errorf("app_version and os_version: at most %d characters", maxVersionLen)
 	}
 	for i := range req.Samples {
 		s := &req.Samples[i]
@@ -219,6 +234,9 @@ func validate(req *model.SyncRequest) error {
 		if s.End.Before(s.Start) {
 			return fmt.Errorf("samples[%d]: end before start", i)
 		}
+		if tooLong(s.SourceBundleID, maxBundleIDLen) {
+			return fmt.Errorf("samples[%d]: source_bundle_id too long", i)
+		}
 	}
 	for i := range req.Sleep {
 		s := &req.Sleep[i]
@@ -228,6 +246,9 @@ func validate(req *model.SyncRequest) error {
 		if !s.End.After(s.Start) {
 			return fmt.Errorf("sleep[%d]: end must be after start", i)
 		}
+		if tooLong(s.SourceBundleID, maxBundleIDLen) {
+			return fmt.Errorf("sleep[%d]: source_bundle_id too long", i)
+		}
 	}
 	for i := range req.Workouts {
 		wk := &req.Workouts[i]
@@ -236,6 +257,9 @@ func validate(req *model.SyncRequest) error {
 		}
 		if !wk.End.After(wk.Start) {
 			return fmt.Errorf("workouts[%d]: end must be after start", i)
+		}
+		if tooLong(wk.SourceBundleID, maxBundleIDLen) {
+			return fmt.Errorf("workouts[%d]: source_bundle_id too long", i)
 		}
 		if wk.Activity == "" {
 			wk.Activity = "other"

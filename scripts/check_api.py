@@ -400,6 +400,13 @@ check(latest and latest[-1]["model_version"] == MODEL["current"]
       f"days carry the current model_version: {[(d['day'], d['model_version']) for d in latest[-3:]]}")
 ok(f"/v1/model: {MODEL['current']}, {len(MODEL['changelog'])} entries; the last scored day carries it")
 me_c = get("/v1/me")
+KINDS = ["energy", "hr", "hrv", "resp", "sleep", "spo2", "steps", "workout"]
+ts = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+check(isinstance(me_c["sources"], list) and me_c["sources"]
+      and all(set(s) == {"name", "bundle_id", "kinds", "last_seen"} and s["kinds"] and set(s["kinds"]) <= set(KINDS)
+              and s["kinds"] == sorted(s["kinds"]) for s in me_c["sources"])
+      and [ts(s["last_seen"]) for s in me_c["sources"]] == sorted((ts(s["last_seen"]) for s in me_c["sources"]), reverse=True),
+      f"User.sources of the smoke user: {me_c['sources']}")
 check(me_c["consent"] and me_c["consent"]["policy_version"] == POLICY and me_c["beta_access"] in (True, False),
       f"User.consent after smoke.sh consented: {me_c.get('consent')}")
 status, _, err = raw("POST", "/v1/me/consent", jbody({"policy_version": "1999-01-01"}))
@@ -407,14 +414,20 @@ check(status == 422 and is_error(err), f"an outdated policy version: {status}")
 if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     D = str(uuid.uuid4())
     KEY_D = f"{KEY}:{D}"
-    tiny = {"device_id": str(uuid.uuid4()), "samples": [{"type": "steps", "start": iso_now(), "end": iso_now(), "value": 10,
-            "unit": "count", "source": "check-d"}], "sleep": [], "workouts": []}
+    tiny = {"device_id": str(uuid.uuid4()), "app_version": "0.9.0 (41)", "os_version": "iOS 26.1",
+            "samples": [{"type": "steps", "start": iso_now(), "end": iso_now(), "value": 10, "unit": "count",
+                         "source": "check-d", "source_bundle_id": "com.example.check-d"}], "sleep": [], "workouts": []}
     status, _, err = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
     check(status == 403 and err.get("code") == "consent_required" and is_error({k: v for k, v in err.items() if k != "code"}),
           f"sync without consent: {status} {err}")
     consent(KEY_D)
     status, _, _ = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
     check(status == 200, f"sync after consent: {status}")
+    src = get("/v1/me", key=KEY_D)["sources"]
+    check(len(src) == 1 and src[0]["name"] == "check-d" and src[0]["bundle_id"] == "com.example.check-d"
+          and src[0]["kinds"] == ["steps"] and src[0]["last_seen"], f"User.sources after a steps-only sync: {src}")
+    check("no-heart-rate-source" in {c["id"] for c in get("/v1/insights", key=KEY_D)},
+          "steps but no heart rate this week: the no-heart-rate-source card")
     check(raw("DELETE", "/v1/me/consent", key=KEY_D)[0] == 204, "withdraw consent")
     status, _, err = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
     check(status == 403 and err.get("code") == "consent_required", f"sync after withdrawing: {status} {err}")
@@ -433,7 +446,8 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
         check(raw("DELETE", f"/v1/admin/invites/{inv['code']}", key=ADMIN)[0] == 204, "delete the code")
         raw("DELETE", "/v1/me", key=E)
     raw("DELETE", "/v1/me", key=KEY_D)
-    ok("beta: sync 403 consent_required without (and after withdrawing) consent, 200 with; invite codes redeem once, 422 otherwise")
+    ok("beta: sync 403 consent_required without (and after withdrawing) consent, 200 with; invite codes redeem once, "
+       "422 otherwise; a steps-only source in User.sources and the no-heart-rate-source card")
 else:
     ok(f"beta: consent to {POLICY} on file")
 

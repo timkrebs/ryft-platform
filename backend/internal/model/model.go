@@ -57,13 +57,43 @@ type Sample struct {
 	Value  float64   `json:"value"`
 	Unit   string    `json:"unit"`
 	Source string    `json:"source"`
+	// The HealthKit source's bundle identifier (input only, for User.sources).
+	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 }
 
 type SleepSegment struct {
-	Start  time.Time `json:"start"`
-	End    time.Time `json:"end"`
-	Stage  string    `json:"stage"`
-	Source string    `json:"source"`
+	Start          time.Time `json:"start"`
+	End            time.Time `json:"end"`
+	Stage          string    `json:"stage"`
+	Source         string    `json:"source"`
+	SourceBundleID *string   `json:"source_bundle_id,omitempty"` // input only
+}
+
+// Source kinds (UserSource.kinds); closed in v1.
+const (
+	KindEnergy  = "energy"
+	KindHR      = "hr"
+	KindHRV     = "hrv"
+	KindResp    = "resp"
+	KindSleep   = "sleep"
+	KindSpO2    = "spo2"
+	KindSteps   = "steps"
+	KindWorkout = "workout"
+)
+
+// SampleKinds maps a sample type to the kind a source is shown with. VO₂max
+// counts as heart rate: Apple estimates it from heart rate on walks and runs.
+var SampleKinds = map[string]string{
+	SampleHeartRate: KindHR, SampleRestingHR: KindHR, SampleVO2Max: KindHR, SampleHRVSDNN: KindHRV,
+	SampleRespiratoryRate: KindResp, SampleSpO2: KindSpO2, SampleActiveEnergy: KindEnergy, SampleSteps: KindSteps,
+}
+
+// UserSource is an app or device that sent data recently (User.sources).
+type UserSource struct {
+	Name     string    `json:"name"`
+	BundleID *string   `json:"bundle_id"`
+	Kinds    []string  `json:"kinds"` // sorted
+	LastSeen time.Time `json:"last_seen"`
 }
 
 type Workout struct {
@@ -83,12 +113,16 @@ type Workout struct {
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 	// Read-only: the scoring model of strain (ignored on upload).
 	ModelVersion *string `json:"model_version,omitempty"`
+	// Input only, as on Sample.
+	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 }
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
 type SyncRequest struct {
 	DeviceID   uuid.UUID      `json:"device_id"`
 	DeviceName string         `json:"device_name,omitempty"`
+	AppVersion *string        `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
+	OSVersion  *string        `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
 	Samples    []Sample       `json:"samples"`
 	Sleep      []SleepSegment `json:"sleep"`
 	Workouts   []Workout      `json:"workouts"`
@@ -372,6 +406,9 @@ type User struct {
 	// (default|estimated|manual).
 	BirthYear   *int   `json:"birth_year"`
 	MaxHRSource string `json:"max_hr_source"`
+	// Apps and devices that sent data in the last 30 days, newest first; set by
+	// GET and PATCH /v1/me (the per-request user row does not load them).
+	Sources []UserSource `json:"sources"`
 }
 
 // Where User.max_hr comes from; closed in v1.

@@ -187,6 +187,40 @@ func TestMigrateMarksChangedMaxHRManual(t *testing.T) {
 	}
 }
 
+// 0020: user_sources starts from what the last 30 days show.
+func TestMigrateBackfillsSources(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 19); err != nil {
+		t.Fatal(err)
+	}
+	id := "cccccccc-0000-0000-0000-000000000020"
+	for _, q := range []string{
+		`INSERT INTO users (id) VALUES ($1)`,
+		`INSERT INTO samples (user_id, type, start_at, end_at, value, source) VALUES
+		   ($1, 'heart_rate', now() - interval '1 hour', now() - interval '1 hour', 60, 'Watch'),
+		   ($1, 'vo2max', now() - interval '2 days', now() - interval '2 days', 44, 'Watch'),
+		   ($1, 'steps', now() - interval '3 hours', now() - interval '2 hours', 100, 'Phone'),
+		   ($1, 'steps', now() - interval '40 days', now() - interval '40 days', 100, 'Old phone'),
+		   ($1, 'steps', now(), now(), 1, '')`,
+		`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source) VALUES
+		   ($1, now() - interval '9 hours', now() - interval '1 hour', 'deep', 'Oura')`,
+		`INSERT INTO workouts (id, user_id, activity, start_at, end_at, source) VALUES
+		   (gen_random_uuid(), $1, 'running', now() - interval '1 day', now() - interval '23 hours', 'Watch')`,
+	} {
+		if _, err := pool.Exec(ctx, q, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	got := scalar[string](t, pool, `SELECT string_agg(name || ':' || kind, ',' ORDER BY name, kind) FROM user_sources WHERE user_id=$1`, id)
+	if want := "Oura:sleep,Phone:steps,Watch:hr,Watch:workout"; got != want {
+		t.Fatalf("backfilled %s, want %s", got, want)
+	}
+}
+
 func TestMigrateSupabaseShape(t *testing.T) {
 	pool := freshDB(t, true)
 	if err := Migrate(context.Background(), pool, quiet); err != nil {

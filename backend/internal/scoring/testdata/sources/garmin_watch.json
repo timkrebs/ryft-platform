@@ -1,0 +1,376 @@
+{
+  "name": "Garmin one day, Apple Watch the next",
+  "notes": [
+    "Monday: the Garmin, from the night before until 22:00, then the Apple Watch for the night. Tuesday: the watch all day. The phone counts steps on both days but loses every hour it shares (3 samples against 4 or 6).",
+    "Monday's heart rate: the Garmin's 22 hours, the watch's 2 (22:00-24:00), never both in an hour. Minutes: 539 + 1 gaps of 2 to 18:00 (1080), 60 of the run, 89 gaps of 2 to 21:58 (178), the gap to the watch's 22:45 capped at 5, 14 gaps of 5 (70): 1393. The run, 145 bpm with a resting rate of 52, is 93/138 = 67 % of reserve (zone 60-70): TRIMP 60 x 1.071 = 64.2, strain 11.6.",
+    "Monday's steps: the Garmin every hour 07:00-23:00, 16 x 4 x 90 = 5760; energy 16 x 4 x 6 = 384. The Garmin's night (100 + 70 + 110 + 60 + 70 + 30 = 440 min) beats the phone's time in bed.",
+    "Tuesday: the watch's heart rate all 24 hours (a 35-min gap at 07:00 capped at 5): 415 + 5 + 625 + 5 + 30 + 325 = 1405 min. The intervals, 160 bpm with a resting rate of 54, are 106/136 = 78 % (zone 70-80): TRIMP 30 x 1.752 = 52.6, strain 10.1. Steps: the phone at 07:00 and 22:00 (3 x 100 each), the watch in between (14 x 6 x 60): 5640; energy the watch's 84 x 4 = 336. The watch's night: 440 min."
+  ],
+  "tz": "Europe/Berlin",
+  "days": [
+    {
+      "day": "2026-10-19",
+      "series": [
+        {
+          "type": "heart_rate",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "00:00",
+          "to": "18:00",
+          "every_s": 120,
+          "value": 64
+        },
+        {
+          "type": "heart_rate",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "18:00",
+          "to": "19:00",
+          "every_s": 60,
+          "value": 145
+        },
+        {
+          "type": "heart_rate",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "19:00",
+          "to": "22:00",
+          "every_s": 120,
+          "value": 64
+        },
+        {
+          "type": "heart_rate",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "22:45",
+          "to": "24:00",
+          "every_s": 300,
+          "value": 58
+        },
+        {
+          "type": "resting_hr",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "07:30",
+          "to": "07:31",
+          "every_s": 60,
+          "value": 52
+        },
+        {
+          "type": "steps",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 900,
+          "value": 90
+        },
+        {
+          "type": "steps",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 1200,
+          "value": 100
+        },
+        {
+          "type": "active_energy",
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 900,
+          "value": 6
+        }
+      ],
+      "sleep": [
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "core",
+          "from": "-1d23:20",
+          "to": "01:00"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "deep",
+          "from": "01:00",
+          "to": "02:10"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "core",
+          "from": "02:10",
+          "to": "04:00"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "rem",
+          "from": "04:00",
+          "to": "05:00"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "awake",
+          "from": "05:00",
+          "to": "05:10"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "core",
+          "from": "05:10",
+          "to": "06:20"
+        },
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "stage": "rem",
+          "from": "06:20",
+          "to": "06:50"
+        },
+        {
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "stage": "inbed",
+          "from": "-1d23:00",
+          "to": "07:00"
+        }
+      ],
+      "workouts": [
+        {
+          "source": "Garmin Connect",
+          "bundle_id": "com.garmin.connect.mobile",
+          "activity": "running",
+          "from": "18:00",
+          "to": "18:55"
+        }
+      ],
+      "expect": {
+        "hr_hours": {
+          "Garmin Connect": 22,
+          "Tim's Apple Watch": 2
+        },
+        "rhr": 52,
+        "hr_min": 1393,
+        "zone_min": [
+          0,
+          60,
+          0,
+          0,
+          0
+        ],
+        "strain": 11.6,
+        "steps": 5760,
+        "active_kcal": 384,
+        "sleep_source": "Garmin Connect",
+        "asleep_min": 440,
+        "has_stages": true,
+        "workout_source": "Garmin Connect"
+      }
+    },
+    {
+      "day": "2026-10-20",
+      "series": [
+        {
+          "type": "heart_rate",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "00:00",
+          "to": "07:00",
+          "every_s": 300,
+          "value": 56
+        },
+        {
+          "type": "heart_rate",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "07:30",
+          "to": "18:00",
+          "every_s": 300,
+          "value": 72
+        },
+        {
+          "type": "heart_rate",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "18:00",
+          "to": "18:30",
+          "every_s": 5,
+          "value": 160
+        },
+        {
+          "type": "heart_rate",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "18:30",
+          "to": "24:00",
+          "every_s": 300,
+          "value": 72
+        },
+        {
+          "type": "resting_hr",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "12:00",
+          "to": "12:01",
+          "every_s": 60,
+          "value": 54
+        },
+        {
+          "type": "steps",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "08:00",
+          "to": "22:00",
+          "every_s": 600,
+          "value": 60
+        },
+        {
+          "type": "steps",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 1200,
+          "value": 100
+        },
+        {
+          "type": "active_energy",
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "from": "08:00",
+          "to": "22:00",
+          "every_s": 600,
+          "value": 4
+        }
+      ],
+      "sleep": [
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "core",
+          "from": "-1d23:10",
+          "to": "01:00"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "deep",
+          "from": "01:00",
+          "to": "02:00"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "core",
+          "from": "02:00",
+          "to": "03:30"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "rem",
+          "from": "03:30",
+          "to": "04:30"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "awake",
+          "from": "04:30",
+          "to": "04:40"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "core",
+          "from": "04:40",
+          "to": "06:00"
+        },
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "stage": "rem",
+          "from": "06:00",
+          "to": "06:40"
+        },
+        {
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "stage": "inbed",
+          "from": "-1d22:45",
+          "to": "06:50"
+        }
+      ],
+      "workouts": [
+        {
+          "source": "Tim's Apple Watch",
+          "bundle_id": "com.apple.health.81E2F5A1",
+          "activity": "running",
+          "from": "18:00",
+          "to": "18:30"
+        }
+      ],
+      "expect": {
+        "hr_hours": {
+          "Tim's Apple Watch": 24
+        },
+        "rhr": 54,
+        "hr_min": 1405,
+        "zone_min": [
+          0,
+          0,
+          30,
+          0,
+          0
+        ],
+        "strain": 10.1,
+        "steps": 5640,
+        "active_kcal": 336,
+        "sleep_source": "Tim's Apple Watch",
+        "asleep_min": 440,
+        "has_stages": true,
+        "workout_source": "Tim's Apple Watch"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "name": "Garmin Connect",
+      "bundle_id": "com.garmin.connect.mobile",
+      "kinds": [
+        "energy",
+        "hr",
+        "sleep",
+        "steps",
+        "workout"
+      ]
+    },
+    {
+      "name": "Tim's Apple Watch",
+      "bundle_id": "com.apple.health.81E2F5A1",
+      "kinds": [
+        "energy",
+        "hr",
+        "sleep",
+        "steps",
+        "workout"
+      ]
+    },
+    {
+      "name": "Tim's iPhone",
+      "bundle_id": "com.apple.health.3F0A9C12",
+      "kinds": [
+        "sleep",
+        "steps"
+      ]
+    }
+  ],
+  "no_hr_card": false
+}

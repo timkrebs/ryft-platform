@@ -154,6 +154,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
 			`DELETE FROM consents WHERE user_id=$1`,
+			`DELETE FROM user_sources WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
 			// Journal: entries before the custom behaviors they name.
 			`DELETE FROM journal_entries WHERE user_id=$1`,
@@ -328,14 +329,17 @@ func (s *Store) SetLearnedBase(ctx context.Context, id uuid.UUID, minutes int) (
 	return changed, err
 }
 
-// TouchDevice records a sync from a device. Device IDs are per install, so
-// one phone used by two accounts has a row per account.
-func (s *Store) TouchDevice(ctx context.Context, userID, deviceID uuid.UUID, name string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO devices (id, user_id, name, last_sync_at)
-		VALUES ($1,$2,$3,now())
+// TouchDevice records a sync from a device, with the app and OS version it
+// sent (nil keeps the stored one). Device IDs are per install, so one phone
+// used by two accounts has a row per account.
+func (s *Store) TouchDevice(ctx context.Context, userID, deviceID uuid.UUID, name string, appVersion, osVersion *string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO devices (id, user_id, name, last_sync_at, app_version, os_version)
+		VALUES ($1,$2,$3,now(),$4,$5)
 		ON CONFLICT (user_id, id) DO UPDATE SET last_sync_at = now(),
-		  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE devices.name END`,
-		deviceID, userID, name)
+		  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE devices.name END,
+		  app_version = COALESCE(EXCLUDED.app_version, devices.app_version),
+		  os_version = COALESCE(EXCLUDED.os_version, devices.os_version)`,
+		deviceID, userID, name, appVersion, osVersion)
 	return err
 }
 

@@ -140,8 +140,19 @@ func (h *handler) insights(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
+	sources, err := h.st.UserSources(r.Context(), u.ID, today.AddDate(0, 0, -(insights.SourceWindow-1)))
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	kinds := map[string]bool{}
+	for _, s := range sources {
+		for _, k := range s.Kinds {
+			kinds[k] = true
+		}
+	}
 	cards := insights.Evaluate(insights.NewHistory(today, insights.Window, scores, bedtimes).WithPRs(prs).WithBaseline(baseline).
-		WithBehaviors(signals).WithMaxHR(insights.MaxHR{Current: u.MaxHR, Peaks: peaks}))
+		WithBehaviors(signals).WithMaxHR(insights.MaxHR{Current: u.MaxHR, Peaks: peaks}).WithSourceKinds(kinds))
 	h.cache.put(ck, now, cards)
 	httpx.WriteJSON(w, 200, cards)
 }

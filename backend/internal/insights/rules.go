@@ -358,3 +358,18 @@ func maxHRObserved(h History) *model.Insight {
 			"maximum, up to %d bpm. A maximum set too low makes strain and heart-rate zones read high. If %d bpm is "+
 			"closer to your real maximum, set it in Settings.", MaxHRWindow, m.Current, likely, likely)}
 }
+
+// noHeartRateSource: data arrived this week, heart rate did not. Strain,
+// recovery and readiness all start from heart rate, so an iPhone alone (or a
+// tracker that does not share it) gives steps and time in bed and nothing
+// else. Fixed copy (D82).
+func noHeartRateSource(h History) *model.Insight {
+	if len(h.SourceKinds) == 0 || h.SourceKinds[model.KindHR] || len(h.Days) == 0 {
+		return nil
+	}
+	return &model.Insight{ID: "no-heart-rate-source", Severity: model.SeverityInfo, Metric: model.MetricStrain,
+		Day: h.Days[len(h.Days)-1].Day, Title: "No heart rate from Apple Health",
+		Body: "RYFT received data from Apple Health this week, but no heart rate. Strain, recovery and readiness " +
+			"need a watch or ring that writes heart rate to Apple Health. Check that it syncs with the Health app " +
+			"and that RYFT may read heart rate in the Health settings."}
+}

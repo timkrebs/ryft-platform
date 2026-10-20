@@ -69,6 +69,10 @@ type MaxHR struct {
 	Peaks   map[string]float64 // YYYY-MM-DD → bpm
 }
 
+// SourceWindow is how many days (today included) the no-heart-rate-source card
+// looks back for data.
+const SourceWindow = 7
+
 // PR is a personal record as a card names it.
 type PR struct {
 	Exercise string  // English name
@@ -84,6 +88,9 @@ type History struct {
 	// Yesterday's journal: the behaviors logged as done, with their effects.
 	Behaviors []BehaviorSignal
 	MaxHR     *MaxHR
+	// The kinds of data (model.Kind*) any source sent in the last SourceWindow
+	// days; nil when unknown.
+	SourceKinds map[string]bool
 }
 
 // Rule inspects the history and returns a card, or nil.
@@ -104,6 +111,7 @@ var Rules = []Rule{
 	baselineLearned,
 	behaviorImpact,
 	maxHRObserved,
+	noHeartRateSource,
 }
 
 var severityRank = map[string]int{model.SeverityWarn: 0, model.SeverityNotice: 1, model.SeverityInfo: 2}
@@ -163,6 +171,12 @@ func (h History) WithBehaviors(b []BehaviorSignal) History {
 // WithBaseline adds the user's sleep baseline.
 func (h History) WithBaseline(b Baseline) History {
 	h.Baseline = &b
+	return h
+}
+
+// WithSourceKinds adds the kinds of data that arrived in the last SourceWindow days.
+func (h History) WithSourceKinds(k map[string]bool) History {
+	h.SourceKinds = k
 	return h
 }
 
