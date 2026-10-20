@@ -15,9 +15,10 @@ database_owner_password = "<database password>"
 
 # Per-service credentials. Keys land only in that service's kv/config.
 # Shared settings, each delivered only to the services that list it in secret_keys.
-# BETA_GATE = "on": accounts need a redeemed invite code (api and ingest;
-# docs/OPERATIONS.md → Beta). Without it the gate is off.
-# shared_secrets = { BETA_GATE = "on" }
+# BETA_GATE (api, ingest; default off) and CONSENT_ENFORCE (api, ingest, scoring;
+# default on) are off|warn|on: warn serves the request and flags it in X-RYFT-Gate
+# (docs/OPERATIONS.md → Beta). Before the first external invite both are on.
+# shared_secrets = { BETA_GATE = "on", CONSENT_ENFORCE = "on" }
 
 service_secrets = {
   api = {

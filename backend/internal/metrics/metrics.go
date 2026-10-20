@@ -105,10 +105,10 @@ var (
 	})
 
 	// Beta (api, ingest).
-	BetaDenied = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "ryft_beta_denied_total",
-		Help: "Requests refused with 403 and a code: invite_required (beta gate) or consent_required (sync without consent), by service.",
-	}, []string{"code", "service"})
+	GateRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_gate_refusals_total",
+		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (sync without consent); mode on = refused with 403, warn = served with X-RYFT-Gate.",
+	}, []string{"code", "mode", "service"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
 		Help: "Consent changes: granted, revoked, stale (POST with an outdated policy version).",

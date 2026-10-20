@@ -46,7 +46,7 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 // journalTables are migration 0016's, betaTables 0017's onwards.
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
-	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback"}
+	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit"}
 )
 
 // trainTables are migration 0011's.
@@ -79,7 +79,8 @@ var grants = map[string]map[string][]string{
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"consents": crud, "beta_invite_codes": crud, "user_sources": {"SELECT", "DELETE"}, "feedback": crud,
-		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"admin_audit": {"SELECT", "INSERT"},
+		"exercises":   crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }

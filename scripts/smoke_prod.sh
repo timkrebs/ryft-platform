@@ -8,6 +8,11 @@
 #   SMOKE_EMAIL=smoke@ryftapp.de SMOKE_PASSWORD=... make smoke-prod
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
 # (once; it keeps the access), so the smoke also passes with BETA_GATE on.
+#
+# It then reports what the gates do (on, warn or off): it withdraws the smoke user's
+# consent for one sync and, with ADMIN_API_KEY, its beta access for one read, and
+# restores both. SMOKE_EXPECT_GATES=on fails unless both are on (before the first
+# external invite: docs/OPERATIONS.md → Beta).
 set -euo pipefail
 API=${API_URL:-https://api.ryftapp.de}
 INGEST=${INGEST_URL:-$API}
@@ -61,14 +66,52 @@ sync=$(call -X POST "$INGEST/v1/sync" -d "{\"device_id\": \"5e0c0a5e-0000-4000-8
   \"sleep\": [], \"workouts\": []}") || fail "POST /v1/sync"
 echo "$sync" | json '"'"$today"'" in d["days_touched"] or sys.exit(1)' >/dev/null || fail "the sync did not touch $today: $sync"
 
+scored=
 for _ in $(seq 1 60); do
   day=$(call "$API/v1/days/$today") || fail "GET /v1/days/$today"
   if echo "$day" | json 'd["score"]["computed_at"] >= "'"${now%Z}"'" or sys.exit(1)' >/dev/null 2>&1; then
     got=$(echo "$day" | json 'd["score"]["model_version"]')
     [ "$got" = "$model" ] || fail "$today scored with model $got, the api serves $model"
-    echo "✓ smoke-prod: edge, sign-in, /v1/me, consent $policy, a sync, $today scored with model $model"
-    exit 0
+    scored=1
+    break
   fi
   sleep 1
 done
-fail "$today was not rescored within 60 s of the sync (scoring, NATS: docs/OPERATIONS.md → Dead letters)"
+[ -n "$scored" ] || fail "$today was not rescored within 60 s of the sync (scoring, NATS: docs/OPERATIONS.md → Dead letters)"
+
+# ---- the gates: on (403 with the code), warn (served, X-RYFT-Gate), off ------------
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mode_of() {   # status file, headers file, body file, code → on|warn|off|unknown
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, sys
+status, hdrs, body, code = open(sys.argv[1]).read().strip(), open(sys.argv[2]).read().lower(), sys.argv[3], sys.argv[4]
+try: got = json.load(open(body)).get("code") if status == "403" else None
+except Exception: got = None
+if status == "403" and got == code: print("on")
+elif status.startswith("2") and ("x-ryft-gate:" in hdrs and code in hdrs.split("x-ryft-gate:", 1)[1].split("\n", 1)[0]): print("warn")
+elif status.startswith("2"): print("off")
+else: print("unknown")
+PY
+}
+probe() {   # method url code [data] → the gate's mode for that request
+  local method=$1 url=$2 code=$3 data=${4:-}
+  curl -s -o "$tmp/body" -D "$tmp/hdrs" -w '%{http_code}' -X "$method" -H "Authorization: Bearer $TOKEN"     -H 'Content-Type: application/json' ${data:+-d "$data"} "$url" > "$tmp/status"
+  mode_of "$tmp/status" "$tmp/hdrs" "$tmp/body" "$code"
+}
+call -X DELETE "$API/v1/me/consent" >/dev/null || fail "withdraw the smoke user's consent (gate probe)"
+consent_mode=$(probe POST "$INGEST/v1/sync" consent_required '{"device_id": "5e0c0a5e-0000-4000-8000-0000000000aa", "samples": [], "sleep": [], "workouts": []}')
+call -X POST "$API/v1/me/consent" -d "{\"policy_version\": \"$policy\", \"app_version\": \"smoke-prod\"}" >/dev/null \
+  || fail "consent again after the probe (the smoke user is left without consent)"
+invite_mode="unknown (no ADMIN_API_KEY)"
+if [ -n "${ADMIN_API_KEY:-}" ]; then
+  me_id=$(echo "$me" | json 'd["id"]')
+  admin() { curl -fsS -X "$1" -H "Authorization: Bearer $ADMIN_API_KEY" "$API/v1/admin/users/$me_id/access"; }
+  admin DELETE >/dev/null || fail "take the smoke user's beta access (gate probe)"
+  invite_mode=$(probe GET "$API/v1/days" invite_required)
+  admin POST >/dev/null || fail "give the smoke user its beta access back (it is left without)"
+fi
+echo "✓ smoke-prod: edge, sign-in, /v1/me, consent $policy, a sync, $today scored with model $model; gates: invite $invite_mode, consent $consent_mode"
+if [ "${SMOKE_EXPECT_GATES:-}" = on ] && { [ "$invite_mode" != on ] || [ "$consent_mode" != on ]; }; then
+  fail "SMOKE_EXPECT_GATES=on, but the gates are: invite $invite_mode, consent $consent_mode"
+fi

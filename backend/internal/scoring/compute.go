@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -22,9 +23,21 @@ type Engine struct {
 	st       *store.Store
 	log      *slog.Logger
 	onScored func(context.Context, model.ScoredEvent)
+	consent  config.Mode
 }
 
-func NewEngine(st *store.Store, log *slog.Logger) *Engine { return &Engine{st: st, log: log} }
+// NewEngine scores with the consent check on (CONSENT_ENFORCE's default).
+func NewEngine(st *store.Store, log *slog.Logger) *Engine {
+	return &Engine{st: st, log: log, consent: config.ModeOn}
+}
+
+// SetConsentMode is CONSENT_ENFORCE: off or warn score accounts without a
+// consent too (warn counts them), before the beta opens (D87).
+func (e *Engine) SetConsentMode(m config.Mode) { e.consent = m }
+
+// Admits says whether user's data may be scored: a current consent, or the
+// consent check not on.
+func (e *Engine) Admits(u model.User) bool { return u.Consent != nil || e.consent != config.ModeOn }
 
 // OnScored sets what runs when the user's local today first gets a recovery
 // after a night with sleep: scoring publishes ryft.scored (the morning push).
@@ -75,7 +88,7 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 	if err != nil {
 		return err
 	}
-	if user.Consent == nil {
+	if !e.Admits(user) {
 		metrics.DaysScored.WithLabelValues("no_consent").Add(float64(n))
 		return ErrNoConsent
 	}
@@ -107,8 +120,11 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	if err != nil {
 		return err
 	}
-	if user.Consent == nil {
+	if !e.Admits(user) {
 		return ErrNoConsent
+	}
+	if user.Consent == nil && e.consent == config.ModeWarn {
+		metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(config.ModeWarn), "scoring").Inc()
 	}
 	d, err := time.ParseInLocation("2006-01-02", day, loc)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -172,5 +173,15 @@ func TestEngineSkipsWithoutConsent(t *testing.T) {
 	days, err := st.DailyScores(ctx, user, "2026-10-01", "2026-10-31")
 	if err != nil || len(days) != 1 || days[0].Day != "2026-10-18" {
 		t.Fatalf("only the day before the withdrawal is scored: %+v %v", days, err)
+	}
+	// CONSENT_ENFORCE=warn (or off), before the beta opens: scored all the same (D87).
+	for _, m := range []config.Mode{config.ModeWarn, config.ModeOff} {
+		engine.SetConsentMode(m)
+		if err := engine.ComputeDay(ctx, user, "2026-10-19"); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+	}
+	if days, _ := st.DailyScores(ctx, user, "2026-10-19", "2026-10-19"); len(days) != 1 {
+		t.Fatal("warn scores without consent")
 	}
 }

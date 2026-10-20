@@ -71,7 +71,7 @@ func main() {
 		log.Error("beta config", "err", err)
 		os.Exit(1)
 	}
-	log.Info("beta", "gate", beta.Gate, "privacy_policy_version", beta.PrivacyPolicyVersion)
+	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
 	h := &handler{st: st, bus: bus, log: log, beta: beta}
 
@@ -131,28 +131,33 @@ type handler struct {
 	beta config.Beta
 }
 
-// admitted says whether user may upload: beta access while the gate is on, and
-// a consent to the current privacy policy always (GDPR Art. 9(2)(a), D78). The
-// user row, consent included, is read fresh for every request, so a withdrawal
-// counts at once.
-func (h *handler) admitted(w http.ResponseWriter, user model.User) bool {
-	if h.beta.Gate && !user.BetaAccess {
-		metrics.BetaDenied.WithLabelValues(model.CodeInviteRequired, "ingest").Inc()
-		httpx.WriteCodedError(w, http.StatusForbidden, model.CodeInviteRequired, "this beta needs an invite code")
+// admitted says whether user may upload: beta access (BETA_GATE) and a consent
+// to the current privacy policy (CONSENT_ENFORCE; GDPR Art. 9(2)(a), D78). A
+// gate in warn mode lets the sync through with the code in X-RYFT-Gate (D87).
+// The user row, consent included, is read fresh for every request, so a
+// withdrawal counts at once.
+func (h *handler) admitted(w http.ResponseWriter, r *http.Request, user model.User) bool {
+	check := func(mode config.Mode, failed bool, code, msg string) bool {
+		if mode == config.ModeOff || !failed {
+			return true
+		}
+		metrics.GateRefusals.WithLabelValues(code, string(mode), "ingest").Inc()
+		if mode == config.ModeWarn {
+			w.Header().Add(httpx.GateHeader, code)
+			return true
+		}
+		httpx.WriteCodedError(w, r, http.StatusForbidden, code, msg)
 		return false
 	}
-	if user.Consent == nil || user.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion {
-		metrics.BetaDenied.WithLabelValues(model.CodeConsentRequired, "ingest").Inc()
-		httpx.WriteCodedError(w, http.StatusForbidden, model.CodeConsentRequired,
+	return check(h.beta.Gate, !user.BetaAccess, model.CodeInviteRequired, "this beta needs an invite code") &&
+		check(h.beta.Consent, user.Consent == nil || user.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion,
+			model.CodeConsentRequired,
 			"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
-		return false
-	}
-	return true
 }
 
 func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	// Before reading the body: a refused upload costs no 32 MiB parse.
-	if user, _ := auth.UserFrom(r.Context()); !h.admitted(w, user) {
+	if user, _ := auth.UserFrom(r.Context()); !h.admitted(w, r, user) {
 		return
 	}
 	var req model.SyncRequest

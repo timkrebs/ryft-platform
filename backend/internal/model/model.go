@@ -510,6 +510,18 @@ type AdminUser struct {
 	OpenFeedback   int           `json:"open_feedback"`
 }
 
+// AuditRecord is one admin call as GET /v1/admin/audit shows it.
+type AuditRecord struct {
+	ID             int64           `json:"id"`
+	At             time.Time       `json:"at"`
+	KeyFingerprint string          `json:"key_fingerprint"`
+	Action         string          `json:"action"` // the route pattern
+	TargetUser     *uuid.UUID      `json:"target_user"`
+	Status         int             `json:"status"`
+	RequestID      string          `json:"request_id"`
+	Details        json.RawMessage `json:"details"`
+}
+
 // AdminSource is a source in the admin view: name and kinds.
 type AdminSource struct {
 	Name  string   `json:"name"`

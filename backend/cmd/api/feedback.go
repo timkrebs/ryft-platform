@@ -104,6 +104,7 @@ func (a admin) feedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
+	auditDetail(r, "n", len(list))
 	a.h.log.InfoContext(r.Context(), "admin feedback read", "since", since, "n", len(list), "admin_key", a.keyID)
 	httpx.WriteJSON(w, 200, list)
 }
@@ -156,6 +157,8 @@ func (a admin) users(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
+	auditDetail(r, "emails", emails)
+	auditDetail(r, "n", len(list))
 	a.h.log.InfoContext(r.Context(), "admin users read", "emails", emails, "n", len(list), "admin_key", a.keyID)
 	httpx.WriteJSON(w, 200, list)
 }

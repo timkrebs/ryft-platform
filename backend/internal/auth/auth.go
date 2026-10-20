@@ -174,6 +174,7 @@ func fail(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 		ae = Unavailable("internal", err)
 	}
 	metrics.AuthFailures.WithLabelValues(ae.Reason).Inc()
+	httpx.SetCode(r, ae.Reason)
 	if ae.Status == http.StatusUnauthorized {
 		log.InfoContext(r.Context(), "auth rejected", "reason", ae.Reason, "err", errString(ae.Err))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="ryft", error="invalid_token"`)

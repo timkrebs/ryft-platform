@@ -81,9 +81,9 @@ variable "services" {
     extra_restarts  = optional(list(object({ kind = string, name = string })), [])
   }))
   default = {
-    ingest  = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE"], database = "role", nats = "client" }
-    scoring = { database = "role", nats = "client" }
-    api     = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE"], database = "role", nats = "client", data_key = true, admin_key = true }
+    ingest  = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client" }
+    scoring = { secret_keys = ["CONSENT_ENFORCE"], database = "role", nats = "client" }
+    api     = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client", data_key = true, admin_key = true }
     # Push (M7): its own role and NATS user; the APNs key from service_secrets.notify.
     notify  = { database = "role", nats = "client" }
     nats    = { nats = "server", workload_kind = "StatefulSet" }

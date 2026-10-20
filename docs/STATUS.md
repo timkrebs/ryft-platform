@@ -174,6 +174,36 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | `actionlint .github/workflows/ci.yml` | pass |
 | Independent review of the full diff | nothing that crashes, loses data or breaks a deploy; four wrong-result bugs found and fixed (`DECISIONS.md` D22), one with a new end-to-end check |
 
+## Incidents
+
+**2026-10-20, 10:37–19:04 UTC: the operator's own account could not sync.**
+
+- **What:** after the Beta deploy (`21eb0fa`), every `POST /v1/sync` of account `53d437eb`
+  (Sign in with Apple, with data and beta access) answered `403 consent_required`, 41 times.
+  The app has no consent screen yet and shows any `403` as "RYFT didn't accept your
+  sign-in", on every screen. Reads (days, insights, plans) answered `200` throughout.
+- **Why:** consent is enforced on every sync (D78) and nothing was backfilled, by design.
+  The deploy step "consent first for your own account" could not be done: the app has no
+  screen for it, and an Apple account has no password to get a token with by hand.
+- **Not the cause:** the beta gate, which is off (the api logs `"gate":false`;
+  `ryft-secrets` has no `BETA_GATE` key), and a second account. Since the deploy, the logs
+  show no account but this one and the smoke user's. The email and Apple sign-ins reached
+  the api as the same user.
+- **Why it took long to see:**
+  - The request id the app showed had lost a hyphen: `01a15a69-71427a8b-…` instead of
+    `01a15a69-7142-7a8b-…`. It is ours, a UUIDv7 from 17:43:42 UTC.
+  - `kubectl logs -l` reads 10 lines per pod unless `--tail=-1`, and `logs deploy/api`
+    reads one pod of two.
+  - The request was ingest's, not the api's.
+  - The access line did not say which gate refused.
+  - `beta_report.sh` needed the admin key typed in.
+- **Fix:**
+  - `CONSENT_ENFORCE=warn` until the app ships its consent screen (D87).
+  - The refusal's `code` on the access line.
+  - `scripts/trace.sh` and the admin-key lookup.
+  - For the app: show request ids exactly as received, and tell `consent_required` and
+    `invite_required` apart from sign-in failures.
+
 ## Not done / not verified
 
 **Beta: your steps, in this order:**

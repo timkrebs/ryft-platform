@@ -64,7 +64,7 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_behavior_impact_seconds` | histogram | `caller` | api | CPU time of the behavior-impact computation: `caller="impact"` (`GET /v1/behaviors/impact`) or `insight` (yesterday's behaviors for the card). Its p95 passing ~0.1 s is the signal to move it into a worker (D76). |
 | `ryft_flag_evaluations_total` | counter | `key`, `result` | api | Feature flags evaluated for `GET /v1/config`, `on` or `off` per flag key. |
 | `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `unauthorized` (wrong or no `ADMIN_API_KEY`), `invalid`, `error`. |
-| `ryft_beta_denied_total` | counter | `code`, `service` | api, ingest | Requests refused with `403`: `invite_required` (the beta gate, D79) or `consent_required` (a sync without consent, D78). After a policy bump, `consent_required` rises until the testers open the app. |
+| `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync, or in scoring a day, without consent, D78). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. (Was `ryft_beta_denied_total` until 2026-10-21.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
 | `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events moved to `RYFT_DLQ` (unparseable, or failed on the last delivery), by original subject: `ok`, or `error` (the publish failed; the message stayed in RYFT). D84. |
@@ -174,7 +174,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Panel | Type | Query |
 | --- | --- | --- |
 | Testers by last sync | bar gauge | `max by (age) (ryft_users_by_last_sync)` (`under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`; who: `scripts/beta_report.sh`) |
-| Refused: invite / consent | time series | `sum by (code, service) (increase(ryft_beta_denied_total[1h]))` |
+| Refused or flagged: invite / consent | time series | `sum by (code, mode) (increase(ryft_gate_refusals_total[1h]))` |
 | Consents | stacked bars, 1 d buckets | `sum by (action) (increase(ryft_consents_total[1d]))` |
 | Feedback (7 d) | stat | `sum by (category) (increase(ryft_feedback_received_total[7d]))` |
 
@@ -231,7 +231,9 @@ One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
 | `client_request_id` | same | A client-sent `X-Request-ID` (if it looks like an ID). Logged only, never used as ours. |
 | `user_id` | once the token is verified; scoring per event and per user in the 15-minute pass | The Supabase user ID (`sub`). |
 | `route` | request lines once routed | ServeMux pattern, e.g. `GET /v1/days/{day}`. |
-| `method`, `path`, `status`, `bytes`, `dur_ms` | the access line (`msg="http"`, one per request) | |
+| `method`, `path`, `status`, `bytes`, `dur_ms` | the access line (`msg="http"`, one per request) | `status` `499`: the client gave up before the answer (logged at info, not an error). |
+| `code` | the access line of a refused request | The error code (`invite_required`, `consent_required`) or, for a `401`/auth `503`, the reason (`expired`, `signature`, `deleted`, …). |
+| `gate` | the access line of a request a gate in `warn` mode let through | The code(s) it would have been refused with, as in `X-RYFT-Gate`. |
 | `err` | errors and warnings | The internal error. Clients only ever see `"internal error"` and the request ID. |
 
 Never logged: tokens, the `Authorization` header, email addresses, request bodies.
@@ -242,9 +244,13 @@ them no longer than you need.
 **Finding a request** a user reports (the app shows or logs `request_id`):
 
 ```sh
-for s in ingest api scoring; do kubectl -n ryft-$s logs -l app=$s --prefix --since=24h --max-log-requests=10; done \
+for s in ingest api scoring notify; do
+  kubectl -n ryft-$s logs -l app=$s --tail=-1 --prefix --since=48h --max-log-requests=10; done \
   | grep 01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c
 ```
+
+`--tail=-1` matters: with `-l`, `kubectl logs` shows only the last 10 lines of each pod
+by default, so a grep finds nothing. `logs deploy/<name>` reads one pod of several.
 
 Pod logs only reach back to the last restart. Everything older is in CloudWatch.
 

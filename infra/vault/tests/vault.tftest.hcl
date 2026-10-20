@@ -335,3 +335,24 @@ run "the_demo_password_stays_with_the_operator" {
     error_message = "no service policy reaches the operator mount"
   }
 }
+
+run "the_consent_mode_reaches_api_ingest_and_scoring" {
+  command = apply
+
+  variables {
+    shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }
+  }
+  assert {
+    condition = alltrue([for s in ["api", "ingest", "scoring"] : contains(output.secret_keys[s], "CONSENT_ENFORCE")]) && alltrue([
+    for s in ["notify", "nats", "migrate", "monitoring"] : !contains(output.secret_keys[s], "CONSENT_ENFORCE")])
+    error_message = "CONSENT_ENFORCE goes to api, ingest and scoring only"
+  }
+  assert {
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["scoring"].data_json).CONSENT_ENFORCE) == "warn"
+    error_message = "scoring gets the value"
+  }
+  assert {
+    condition     = !contains(output.secret_keys["scoring"], "BETA_GATE")
+    error_message = "scoring has no use for the beta gate"
+  }
+}

@@ -1388,3 +1388,42 @@ and counted). A bad payload from a new device type would vanish.
   invite code whenever the admin key is given, so it keeps working once the gate is on.
   The data is `synth.py --demo` (named sources with bundle ids, workouts three days a
   week); its default output is unchanged, so the smoke's expectations stay.
+
+## D87 — Gate modes: off, warn, on
+
+The app cannot pass the gates yet (no invite or consent screen), and the operator's own
+account was locked out of syncing by the consent check (STATUS → Incidents, 2026-10-20).
+Both checks get three modes, `BETA_GATE` and `CONSENT_ENFORCE`:
+
+- **`warn` serves the request** as if the account had access or consent, adds
+  `X-RYFT-Gate` with the code(s) it would have refused with, counts it
+  (`ryft_gate_refusals_total{mode="warn"}`) and flags the access line (`gate`). An app
+  that knows the gates can prompt; one that does not keeps working.
+  `GET /v1/me/sync` → `gate` carries it too.
+- **Scoring follows `CONSENT_ENFORCE`**: a sync that `warn` lets through is scored as
+  well, otherwise `warn` would accept data and show nothing. This processes health data
+  without a recorded consent, which is only acceptable while nobody but the operator is
+  in: the runbook makes "both `on`" the step before the first external invite, and
+  `make smoke-prod` proves it (it takes the smoke user's consent and access away for one
+  request each).
+- **Defaults stay what production runs:** `BETA_GATE` off (unset today), `CONSENT_ENFORCE`
+  on. A new default must not lock anyone out or open a gate on deploy.
+- `ryft_beta_denied_total` becomes `ryft_gate_refusals_total{code,mode,service}`;
+  refusals in `on` carry `mode="on"`.
+- The access line now carries the refusal's `code` (or a 401's reason), and a client that
+  hangs up is logged as `499` at info instead of a `500` error (two such "errors" were
+  noise in the incident).
+
+## D88 — Every admin call is audited, in the database
+
+`admin_audit` (migration 0022) gets a row for every authorized `/v1/admin` call after it
+is answered: the route pattern, the status, the request id, the admin key's fingerprint
+(never the key), the user acted on and a few details (counts, the emails flag, a merge's
+plan). A middleware writes it, so no handler can forget; handlers only add the target and
+details. Calls without the key are not audited (there is no key to name; the metric counts
+them). The table is append-only for the api (`SELECT`, `INSERT`) and has no foreign key on
+the user, so it outlives deleted and merged accounts; it holds the pseudonymous id only.
+Admin routes take a user's full id or its first 8 hex digits (`409` when those are not
+unique), the form the logs and `beta_report.sh` show. An operator can grant beta access
+without a code (`POST /v1/admin/users/{id}/access`), for an account that exists before
+the app can redeem codes.

@@ -49,7 +49,7 @@ func rescore(args []string) int {
 			failed++
 			continue
 		}
-		if user.Consent == nil {
+		if !engine.Admits(user) {
 			log.Info("user skipped, no consent", "user_id", id, "n", i+1, "of", len(users))
 			skipped++
 			continue
@@ -86,7 +86,16 @@ func offline(log *slog.Logger) (context.Context, *store.Store, *scoring.Engine, 
 		return nil, nil, nil, nil, err
 	}
 	st := store.New(pool)
-	return ctx, st, scoring.NewEngine(st, log), func() { pool.Close(); stop() }, nil
+	engine := scoring.NewEngine(st, log)
+	beta, err := config.LoadBeta()
+	if err != nil {
+		pool.Close()
+		stop()
+		log.Error("beta config", "err", err)
+		return nil, nil, nil, nil, err
+	}
+	engine.SetConsentMode(beta.Consent)
+	return ctx, st, engine, func() { pool.Close(); stop() }, nil
 }
 
 // learnBaselines runs the weekly sleep-baseline estimate for every user now,
@@ -116,7 +125,7 @@ func learnBaselines(args []string) int {
 			failed++
 			continue
 		}
-		if user.Consent == nil {
+		if !engine.Admits(user) {
 			outcomes["no_consent"]++
 			continue
 		}

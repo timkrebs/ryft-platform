@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -18,27 +19,34 @@ import (
 func TestAdmitted(t *testing.T) {
 	current := &model.Consent{PolicyVersion: "2026-10-20", GrantedAt: time.Now()}
 	old := &model.Consent{PolicyVersion: "2026-01-01", GrantedAt: time.Now()}
+	off, warn, on := config.ModeOff, config.ModeWarn, config.ModeOn
 	for _, c := range []struct {
-		name string
-		gate bool
-		user model.User
-		code string // "" = admitted
+		name          string
+		gate, consent config.Mode
+		user          model.User
+		code          string // "" = admitted
+		header        string // X-RYFT-Gate when admitted in warn mode
 	}{
-		{"consented, gate off", false, model.User{Consent: current}, ""},
-		{"no consent", false, model.User{BetaAccess: true}, model.CodeConsentRequired},
-		{"an older policy", false, model.User{BetaAccess: true, Consent: old}, model.CodeConsentRequired},
-		{"gate on, no access", true, model.User{Consent: current}, model.CodeInviteRequired},
-		{"gate on, access and consent", true, model.User{BetaAccess: true, Consent: current}, ""},
-		{"gate on, neither: the invite first", true, model.User{}, model.CodeInviteRequired},
+		{"consented, gate off", off, on, model.User{Consent: current}, "", ""},
+		{"no consent", off, on, model.User{BetaAccess: true}, model.CodeConsentRequired, ""},
+		{"an older policy", off, on, model.User{BetaAccess: true, Consent: old}, model.CodeConsentRequired, ""},
+		{"gate on, no access", on, on, model.User{Consent: current}, model.CodeInviteRequired, ""},
+		{"gate on, access and consent", on, on, model.User{BetaAccess: true, Consent: current}, "", ""},
+		{"gate on, neither: the invite first", on, on, model.User{}, model.CodeInviteRequired, ""},
+		{"consent warn: served, flagged", off, warn, model.User{BetaAccess: true}, "", "consent_required"},
+		{"both warn: both flagged", warn, warn, model.User{}, "", "invite_required,consent_required"},
+		{"gate warn, consent on: still refused", warn, on, model.User{}, model.CodeConsentRequired, ""},
+		{"consent off", off, off, model.User{}, "", ""},
 	} {
 		h := &handler{log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-			beta: config.Beta{Gate: c.gate, PrivacyPolicyVersion: "2026-10-20"}}
+			beta: config.Beta{Gate: c.gate, Consent: c.consent, PrivacyPolicyVersion: "2026-10-20"}}
 		rec := httptest.NewRecorder()
-		ok := h.admitted(rec, c.user)
+		ok := h.admitted(rec, httptest.NewRequest(http.MethodPost, "/v1/sync", nil), c.user)
 		var body struct{ Code string }
 		_ = json.Unmarshal(rec.Body.Bytes(), &body)
-		if ok != (c.code == "") || body.Code != c.code || (!ok && rec.Code != 403) {
-			t.Errorf("%s: admitted=%v status=%d code=%q", c.name, ok, rec.Code, body.Code)
+		header := strings.Join(rec.Header().Values("X-RYFT-Gate"), ",")
+		if ok != (c.code == "") || body.Code != c.code || (!ok && rec.Code != 403) || (ok && header != c.header) {
+			t.Errorf("%s: admitted=%v status=%d code=%q header=%q", c.name, ok, rec.Code, body.Code, header)
 		}
 	}
 }

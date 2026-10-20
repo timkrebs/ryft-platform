@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,7 +59,8 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 
 // WriteCodedError is WriteError with the body's code, which tells the client
 // what to do (model.Code*).
-func WriteCodedError(w http.ResponseWriter, status int, code, msg string) {
+func WriteCodedError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	SetCode(r, code)
 	body := map[string]string{"error": msg, "code": code}
 	if id := w.Header().Get(RequestIDHeader); id != "" {
 		body["request_id"] = id
@@ -66,14 +68,35 @@ func WriteCodedError(w http.ResponseWriter, status int, code, msg string) {
 	WriteJSON(w, status, body)
 }
 
+// SetCode records the answer's error code (or auth reason) for the access line.
+func SetCode(r *http.Request, code string) {
+	if ri := Info(r.Context()); ri != nil {
+		ri.Code = code
+	}
+}
+
+// GateHeader carries, in warn mode, the code(s) a gate would have refused the
+// request with (API.md → Errors).
+const GateHeader = "X-RYFT-Gate"
+
+// StatusClientClosed is logged (and counted) when the client gave up before
+// the answer: nginx's 499. The client never sees it.
+const StatusClientClosed = 499
+
 // Fail answers an unexpected server-side error. The client gets a generic
 // message and the request ID; the details go to the log. A request that ran
-// out of time is a 503 (retry), anything else a 500.
+// out of time is a 503 (retry); one the client abandoned is no server error
+// and is logged at info as 499; anything else a 500.
 func Fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, msg := http.StatusInternalServerError, "internal error"
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded):
 		status, msg = http.StatusServiceUnavailable, "request timed out"
 		w.Header().Set("Retry-After", "5")
+	case errors.Is(r.Context().Err(), context.Canceled):
+		slog.Default().InfoContext(r.Context(), "client closed the request", "err", err)
+		WriteError(w, StatusClientClosed, "client closed request")
+		return
 	}
 	slog.Default().ErrorContext(r.Context(), "request failed", "status", status, "err", err)
 	WriteError(w, status, msg)
@@ -182,8 +205,14 @@ func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 		}
 		metrics.HTTPRequests.WithLabelValues(route, strconv.Itoa(sw.status)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(dur.Seconds())
-		log.InfoContext(ctx, "http", "method", r.Method, "path", r.URL.Path, "status", sw.status,
-			"bytes", sw.bytes, "dur_ms", dur.Milliseconds())
+		attrs := []any{"method", r.Method, "path", r.URL.Path, "status", sw.status, "bytes", sw.bytes, "dur_ms", dur.Milliseconds()}
+		if f.Code != "" {
+			attrs = append(attrs, "code", f.Code)
+		}
+		if g := w.Header().Values(GateHeader); len(g) > 0 {
+			attrs = append(attrs, "gate", strings.Join(g, ","))
+		}
+		log.InfoContext(ctx, "http", attrs...)
 	})
 }
 

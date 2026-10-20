@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -20,19 +21,25 @@ var gateOpen = map[string]bool{
 	"POST /v1/me/consent": true, "DELETE /v1/me/consent": true, "POST /v1/feedback": true,
 }
 
-// betaGate refuses accounts without beta access (403 invite_required) while
-// the gate is on. It runs after the user row is loaded.
-func betaGate(on bool, next http.Handler) http.Handler {
-	if !on {
+// betaGate acts on accounts without beta access outside the open routes: on
+// refuses them (403 invite_required), warn serves them with X-RYFT-Gate (D87).
+// It runs after the user row is loaded.
+func betaGate(mode config.Mode, next http.Handler) http.Handler {
+	if mode == config.ModeOff {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !userOf(r).BetaAccess && !gateOpen[r.Method+" "+r.URL.Path] {
-			metrics.BetaDenied.WithLabelValues(model.CodeInviteRequired, "api").Inc()
-			httpx.WriteCodedError(w, http.StatusForbidden, model.CodeInviteRequired, "this beta needs an invite code")
+		if userOf(r).BetaAccess || gateOpen[r.Method+" "+r.URL.Path] {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		metrics.GateRefusals.WithLabelValues(model.CodeInviteRequired, string(mode), "api").Inc()
+		if mode == config.ModeWarn {
+			w.Header().Add(httpx.GateHeader, model.CodeInviteRequired)
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeInviteRequired, "this beta needs an invite code")
 	})
 }
 

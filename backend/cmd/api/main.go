@@ -76,7 +76,7 @@ func main() {
 		log.Error("beta config", "err", err)
 		os.Exit(1)
 	}
-	log.Info("beta", "gate", beta.Gate, "privacy_policy_version", beta.PrivacyPolicyVersion)
+	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
@@ -162,18 +162,7 @@ func main() {
 	// The operator's routes: ADMIN_API_KEY instead of a user token; absent
 	// without a key.
 	if adminKey != "" {
-		a, adm := admin{h: h, keyID: keyFingerprint(adminKey)}, http.NewServeMux()
-		adm.HandleFunc("GET /v1/admin/flags", a.flags)
-		adm.HandleFunc("PUT /v1/admin/flags/{key}", a.putFlag)
-		adm.HandleFunc("DELETE /v1/admin/flags/{key}", a.deleteFlag)
-		adm.HandleFunc("POST /v1/admin/invites", a.createInvite)
-		adm.HandleFunc("GET /v1/admin/invites", a.invites)
-		adm.HandleFunc("DELETE /v1/admin/invites/{code}", a.deleteInvite)
-		adm.HandleFunc("GET /v1/admin/feedback", a.feedback)
-		adm.HandleFunc("POST /v1/admin/feedback/{id}/resolve", a.resolveFeedback)
-		adm.HandleFunc("GET /v1/admin/users", a.users)
-		adm.HandleFunc("/v1/admin/", httpx.NotFound)
-		mux.Handle("/v1/admin/", adminOnly(adminKey, httpx.Timeout(readTimeout, httpx.WithRoutes(adm))))
+		mux.Handle("/v1/admin/", adminRoutes(h, adminKey, readTimeout))
 		log.Info("admin routes enabled")
 	} else {
 		mux.HandleFunc("/v1/admin/", httpx.NotFound)

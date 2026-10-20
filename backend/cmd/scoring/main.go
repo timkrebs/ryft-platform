@@ -65,6 +65,13 @@ func main() {
 	go db.Watch(ctx, pool, "scoring", log)
 	st := store.New(pool)
 	engine := scoring.NewEngine(st, log)
+	beta, err := config.LoadBeta()
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	engine.SetConsentMode(beta.Consent)
+	log.Info("beta", "consent", beta.Consent)
 
 	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass, OwnStream: true}, log)
 	if err != nil {
@@ -182,7 +189,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 			log.ErrorContext(ctx, "periodic: user", "err", err)
 			continue
 		}
-		if user.Consent == nil {
+		if !engine.Admits(user) {
 			continue // withdrawn: no scores, no baseline estimate (D78)
 		}
 		today := time.Now().In(loc)

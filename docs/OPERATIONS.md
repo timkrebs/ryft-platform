@@ -318,14 +318,42 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"polic
 ```
 
 A new policy text: change `PRIVACY_POLICY_VERSION` in both configmaps (and the page),
-deploy; every tester consents again before the next sync, `ryft_beta_denied_total{code=
+deploy; every tester consents again before the next sync, `ryft_gate_refusals_total{code=
 "consent_required"}` shows who has not yet.
 
-**The gate.** Off until `BETA_GATE = "on"` is in `infra/vault/terraform.tfvars` →
-`shared_secrets` (the user applies; the operator syncs hourly, or restart it as in EKS
-above, and restarts api and ingest itself). Then accounts without a redeemed code get
-`403 invite_required` everywhere but onboarding. Accounts that existed at migration 0017
-keep access.
+**The gates and their modes** (D87). Two checks, each `off`, `warn` or `on`, set in
+`infra/vault/terraform.tfvars` → `shared_secrets` (the user applies):
+
+| Variable | Checks | Default | `on` | `warn` |
+| --- | --- | --- | --- | --- |
+| `BETA_GATE` | a redeemed code or an operator grant (api, ingest) | `off` | `403 invite_required` everywhere but onboarding | served, `X-RYFT-Gate: invite_required` |
+| `CONSENT_ENFORCE` | a consent to the current policy (ingest, scoring) | `on` | `403 consent_required` on sync, nothing scored | synced and scored, `X-RYFT-Gate: consent_required` |
+
+`warn` is for before the beta opens, while the app cannot pass a gate yet (it has no
+invite or consent screen): the operator's own account keeps working, and every request
+that would have been refused is counted (`ryft_gate_refusals_total{mode="warn"}`) and
+flagged on its access line (`gate`). **Before the first external invite both are `on`,
+and `make smoke-prod` proves it:** with `ADMIN_API_KEY` it takes the smoke user's consent
+and access away for one request each, reports what each gate did, and gives them back;
+`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused.
+
+```bash
+# infra/vault/terraform.tfvars:  shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }   (later both "on")
+(cd infra/vault && terraform plan -out=tfplan && terraform apply tfplan)
+kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager
+# the operator rewrites ryft-secrets and restarts api, ingest and scoring; then:
+for s in api ingest scoring; do kubectl -n ryft-$s logs -l app=$s --tail=-1 --since=10m | grep '"msg":"beta"'; done
+ADMIN_API_KEY=$ADMIN make smoke-prod          # … gates: invite warn, consent warn
+```
+
+Accounts that existed at migration 0017 keep access. One account without a code gets it
+from the operator (audited, D88):
+
+```bash
+curl -s -X POST   -H "Authorization: Bearer $ADMIN" $API/v1/admin/users/<id or first 8 digits>/access   # 204
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/users/<id>/access                     # takes it away
+curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=2026-10-21" | jq                 # who did what, when
+```
 
 ```bash
 # A code for one person (or max_uses for a group), optionally expiring:

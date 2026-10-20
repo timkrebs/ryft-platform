@@ -131,3 +131,29 @@ func TestLoadAdmin(t *testing.T) {
 		t.Fatal("a short key is refused")
 	}
 }
+
+// D87: both gates off|warn|on; the beta gate defaults to off, the consent check to on.
+func TestLoadBetaModes(t *testing.T) {
+	t.Setenv("BETA_GATE", "")
+	t.Setenv("CONSENT_ENFORCE", "")
+	b, err := LoadBeta()
+	if err != nil || b.Gate != ModeOff || b.Consent != ModeOn {
+		t.Fatalf("defaults: %+v %v", b, err)
+	}
+	t.Setenv("BETA_GATE", "Warn")
+	t.Setenv("CONSENT_ENFORCE", " warn ")
+	if b, err = LoadBeta(); err != nil || b.Gate != ModeWarn || b.Consent != ModeWarn {
+		t.Fatalf("warn: %+v %v", b, err)
+	}
+	t.Setenv("BETA_GATE", "on")
+	t.Setenv("CONSENT_ENFORCE", "off")
+	if b, err = LoadBeta(); err != nil || b.Gate != ModeOn || b.Consent != ModeOff {
+		t.Fatalf("on/off: %+v %v", b, err)
+	}
+	for _, bad := range []string{"true", "1", "enforce"} {
+		t.Setenv("CONSENT_ENFORCE", bad)
+		if _, err := LoadBeta(); err == nil {
+			t.Errorf("CONSENT_ENFORCE=%s must be refused", bad)
+		}
+	}
+}

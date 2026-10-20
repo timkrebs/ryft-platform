@@ -27,7 +27,7 @@ func TestBetaGate(t *testing.T) {
 		{"PATCH", "/v1/me", without, 403}, {"GET", "/v1/days", with, 204},
 	} {
 		rec := httptest.NewRecorder()
-		betaGate(true, inner).ServeHTTP(rec, asUser(httptest.NewRequest(c.method, c.path, nil), c.user, ""))
+		betaGate(config.ModeOn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(c.method, c.path, nil), c.user, ""))
 		if rec.Code != c.want {
 			t.Errorf("%s %s (access %v): %d, want %d", c.method, c.path, c.user.BetaAccess, rec.Code, c.want)
 		}
@@ -36,9 +36,22 @@ func TestBetaGate(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	betaGate(false, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/days", nil), without, ""))
-	if rec.Code != 204 {
-		t.Fatal("gate off: everyone passes")
+	betaGate(config.ModeOff, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/days", nil), without, ""))
+	if rec.Code != 204 || rec.Header().Get("X-RYFT-Gate") != "" {
+		t.Fatal("gate off: everyone passes, no header")
+	}
+	// warn: served, with the code it would have been refused with.
+	for _, c := range []struct {
+		user   model.User
+		path   string
+		header string
+	}{{without, "/v1/days", "invite_required"}, {with, "/v1/days", ""}, {without, "/v1/me", ""}} {
+		rec := httptest.NewRecorder()
+		betaGate(config.ModeWarn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, c.path, nil), c.user, ""))
+		if rec.Code != 204 || rec.Header().Get("X-RYFT-Gate") != c.header {
+			t.Errorf("warn, %s, access %v: %d, X-RYFT-Gate %q, want 204 %q", c.path, c.user.BetaAccess, rec.Code,
+				rec.Header().Get("X-RYFT-Gate"), c.header)
+		}
 	}
 }
 

@@ -23,6 +23,9 @@ type Fields struct {
 	ClientRequestID string // X-Request-ID the client sent, if any (not trusted)
 	UserID          string
 	Route           string // ServeMux pattern, e.g. "GET /v1/days/{day}"
+	// The answer's error code (model.Code*) or, for a 401 or an auth 503, the
+	// reason; only the access line carries it.
+	Code string
 }
 
 type fieldsKey struct{}

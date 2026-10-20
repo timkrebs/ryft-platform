@@ -127,25 +127,48 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
-// Beta configures the invite gate and the privacy policy consent is given to
-// (api and ingest).
+// Mode is how a gate acts on a request it would refuse (D87).
+type Mode string
+
+const (
+	ModeOff  Mode = "off"  // not checked
+	ModeWarn Mode = "warn" // served, with the code in X-RYFT-Gate, counted and logged
+	ModeOn   Mode = "on"   // refused with 403 and the code
+)
+
+func parseMode(name, def string) (Mode, error) {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if v == "" {
+		v = def
+	}
+	switch m := Mode(v); m {
+	case ModeOff, ModeWarn, ModeOn:
+		return m, nil
+	}
+	return "", fmt.Errorf("%s must be off, warn or on, got %q", name, v)
+}
+
+// Beta configures the invite gate, the consent check and the privacy policy
+// consent is given to (api, ingest; scoring reads Consent).
 type Beta struct {
-	Gate                 bool   // BETA_GATE=on: accounts without a redeemed code are refused
+	Gate                 Mode   // BETA_GATE: accounts without a redeemed code (default off)
+	Consent              Mode   // CONSENT_ENFORCE: syncs and scoring without consent (default on)
 	PrivacyPolicyVersion string // PRIVACY_POLICY_VERSION, e.g. 2026-10-20
 	PrivacyPolicyURL     string // PRIVACY_POLICY_URL
 }
 
-// LoadBeta reads BETA_GATE (on|off, default off), PRIVACY_POLICY_VERSION and
+// LoadBeta reads BETA_GATE (off|warn|on, default off), CONSENT_ENFORCE (off|warn|on,
+// default on), PRIVACY_POLICY_VERSION and
 // PRIVACY_POLICY_URL (both with the current defaults).
 func LoadBeta() (Beta, error) {
 	b := Beta{PrivacyPolicyVersion: getenv("PRIVACY_POLICY_VERSION", "2026-10-20"),
 		PrivacyPolicyURL: getenv("PRIVACY_POLICY_URL", "https://ryftapp.de/privacy")}
-	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("BETA_GATE"))); v {
-	case "", "off":
-	case "on":
-		b.Gate = true
-	default:
-		return b, fmt.Errorf("BETA_GATE must be on or off, got %q", v)
+	var err error
+	if b.Gate, err = parseMode("BETA_GATE", string(ModeOff)); err != nil {
+		return b, err
+	}
+	if b.Consent, err = parseMode("CONSENT_ENFORCE", string(ModeOn)); err != nil {
+		return b, err
 	}
 	if len(b.PrivacyPolicyVersion) > 32 {
 		return b, errors.New("PRIVACY_POLICY_VERSION has at most 32 characters")
