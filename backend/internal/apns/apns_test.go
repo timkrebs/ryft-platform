@@ -153,3 +153,11 @@ func TestNewRefusesBadConfig(t *testing.T) {
 		}
 	}
 }
+
+// The real hosts: a TestFlight or App Store build registers production tokens,
+// a debug build from Xcode sandbox ones.
+func TestHosts(t *testing.T) {
+	if hosts[Production] != "https://api.push.apple.com" || hosts[Sandbox] != "https://api.sandbox.push.apple.com" || len(hosts) != 2 {
+		t.Fatalf("APNs hosts: %v", hosts)
+	}
+}

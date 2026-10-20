@@ -1,0 +1,85 @@
+# promtool unit tests for ryft.yaml (make alerts-check): each alert fires on the
+# series it is about and stays quiet just under its threshold.
+rule_files: [/rules/ryft.rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: 5xx over 2 % for 10 minutes
+    interval: 1m
+    input_series:
+      # api: 100 requests a minute, 5 of them 500 (5 %); ingest: 1 % fails.
+      - { series: 'ryft_http_requests_total{namespace="ryft-api",route="GET /v1/me",code="200"}', values: '0+95x30' }
+      - { series: 'ryft_http_requests_total{namespace="ryft-api",route="GET /v1/me",code="500"}', values: '0+5x30' }
+      - { series: 'ryft_http_requests_total{namespace="ryft-ingest",route="POST /v1/sync",code="200"}', values: '0+99x30' }
+      - { series: 'ryft_http_requests_total{namespace="ryft-ingest",route="POST /v1/sync",code="503"}', values: '0+1x30' }
+    alert_rule_test:
+      - { eval_time: 8m, alertname: HTTP5xxRatio, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: HTTP5xxRatio
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-api }
+            exp_annotations: { summary: "ryft-api: more than 2 % of requests answer 5xx" }
+  - name: crash loop
+    interval: 5m
+    input_series:
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0 1 2 3 4 5 6' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-1",container="api"}', values: '0 0 1 1 1 1 1' }
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PodRestarting
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1 }
+            exp_annotations: { summary: "scoring-1 restarted more than 3 times in 30 minutes" }
+  - name: backlog, dead letters, database
+    interval: 1m
+    input_series:
+      - { series: 'ryft_nats_consumer_pending{consumer="scoring"}', values: '150x30' }
+      - { series: 'ryft_nats_consumer_pending{consumer="notify"}', values: '100x30' }
+      - { series: 'ryft_events_dlq_total{subject="ryft.ingested",result="ok"}', values: '0 0 1 1 1' }
+      - { series: 'ryft_db_up{service="api"}', values: '1 1 0 0 0 0 0 0' }
+      - { series: 'ryft_db_up{service="ingest"}', values: '1 1 1 1 1 1 1 1' }
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JetStreamBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, consumer: scoring }
+            exp_annotations: { summary: "scoring: over 100 events waiting for 15 minutes" }
+      - eval_time: 4m
+        alertname: DeadLetters
+        exp_alerts:
+          - exp_labels: { severity: warning, subject: ryft.ingested }
+            exp_annotations: { summary: "ryft.ingested: an event was dead-lettered (scoring dlq)" }
+      - eval_time: 5m
+        alertname: DatabaseDown
+        exp_alerts:
+          - exp_labels: { severity: critical, service: api }
+            exp_annotations: { summary: "api cannot reach the database" }
+  - name: APNs failures over 10 %, 410 not counted
+    interval: 1m
+    input_series:
+      - { series: 'ryft_apns_responses_total{push_type="alert",status="200"}', values: '0+8x40' }
+      - { series: 'ryft_apns_responses_total{push_type="alert",status="410"}', values: '0+4x40' }
+      # From minute 21, 3 a minute answer 400: 60 of 420 in the last 30 minutes (14 %).
+      - { series: 'ryft_apns_responses_total{push_type="alert",status="400"}', values: '0x20 0+3x20' }
+    alert_rule_test:
+      - { eval_time: 15m, alertname: APNsFailing, exp_alerts: [] }
+      - eval_time: 40m
+        alertname: APNsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
+  - name: feedback and certificates
+    interval: 1m
+    input_series:
+      - { series: 'ryft_feedback_received_total{category="bug"}', values: '0 0 0 1 1' }
+      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="ryft-web",name="ryftapp-tls"}', values: '864000x90' }
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NewFeedback
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
+      - eval_time: 70m
+        alertname: CertificateExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: ryft-web, name: ryftapp-tls }
+            exp_annotations: { summary: "Certificate ryft-web/ryftapp-tls expires in under 14 days" }

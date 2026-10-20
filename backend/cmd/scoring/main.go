@@ -23,6 +23,7 @@ import (
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
@@ -41,6 +42,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "learn-baselines" {
 		os.Exit(learnBaselines(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "dlq" {
+		os.Exit(dlq(os.Args[2:]))
+	}
 	log := httpx.Logger("scoring")
 	cfg, err := config.Load("scoring")
 	if err != nil {
@@ -58,6 +62,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	go db.Watch(ctx, pool, "scoring", log)
 	st := store.New(pool)
 	engine := scoring.NewEngine(st, log)
 
@@ -123,6 +128,11 @@ func main() {
 				return
 			case <-t.C:
 				refreshActive(ctx, log, st, engine, &learn)
+				if ages, err := st.SyncAges(ctx); err == nil {
+					for age, n := range ages {
+						metrics.UsersByLastSync.WithLabelValues(age).Set(float64(n))
+					}
+				}
 			}
 		}
 	}()

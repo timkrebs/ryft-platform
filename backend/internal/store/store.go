@@ -353,6 +353,31 @@ func (s *Store) UserIDs(ctx context.Context) ([]uuid.UUID, error) {
 	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }
 
+// SyncAges counts accounts by the age of their newest device sync, for the
+// "testers by last sync" panel (ryft_users_by_last_sync): no user ids leave
+// the database.
+func (s *Store) SyncAges(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT CASE
+		    WHEN d.last IS NULL THEN 'never'
+		    WHEN d.last > now() - interval '6 hours' THEN 'under_6h'
+		    WHEN d.last > now() - interval '24 hours' THEN '6h_to_24h'
+		    WHEN d.last > now() - interval '3 days' THEN '1d_to_3d'
+		    ELSE 'over_3d' END, count(*)
+		FROM users u LEFT JOIN (SELECT user_id, max(last_sync_at) AS last FROM devices GROUP BY user_id) d ON d.user_id = u.id
+		GROUP BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int{"under_6h": 0, "6h_to_24h": 0, "1d_to_3d": 0, "over_3d": 0, "never": 0}
+	var age string
+	var n int
+	_, err = pgx.ForEachRow(rows, []any{&age, &n}, func() error {
+		out[age] = n
+		return nil
+	})
+	return out, err
+}
+
 // ActiveUsers lists users with a device that synced since the given time.
 func (s *Store) ActiveUsers(ctx context.Context, since time.Time) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx, `SELECT DISTINCT user_id FROM devices WHERE last_sync_at >= $1`, since)

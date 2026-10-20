@@ -50,6 +50,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	go db.Watch(ctx, pool, "api", log)
 	st := store.New(pool)
 
 	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "api", User: cfg.NatsUser, Password: cfg.NatsPass}, log)

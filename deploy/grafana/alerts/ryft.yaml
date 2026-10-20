@@ -1,0 +1,126 @@
+# RYFT alert rules for Grafana Cloud (Prometheus rule format, D85). Check and load:
+#   make alerts-check     # promtool check rules + the unit tests in ryft.test.yaml (containers)
+#   make alerts-apply     # mimirtool rules load into the stack's ruler (GRAFANA_PROM_URL, _USER, GRAFANA_RULES_TOKEN)
+# Then route them: Alerting → Contact points (email and the Grafana mobile app) and a
+# notification policy for severity critical, warning and info. Expressions, thresholds
+# and what to do: docs/OBSERVABILITY.md → Alerts. Labels namespace and pod come from the
+# collector's pod discovery.
+namespace: ryft
+groups:
+  - name: ryft
+    rules:
+      # ---- the services -----------------------------------------------------------
+      - alert: HTTP5xxRatio
+        # More than 2 % of api or ingest requests fail with a 5xx for 10 minutes.
+        expr: |
+          sum by (namespace) (rate(ryft_http_requests_total{namespace=~"ryft-(api|ingest)", code=~"5.."}[5m]))
+            / sum by (namespace) (rate(ryft_http_requests_total{namespace=~"ryft-(api|ingest)"}[5m])) > 0.02
+        for: 10m
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.namespace }}: more than 2 % of requests answer 5xx" }
+      - alert: PodRestarting
+        # A RYFT pod restarted more than three times in 30 minutes (crash loop, OOM).
+        expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-.*"}[30m])) > 3
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.pod }} restarted more than 3 times in 30 minutes" }
+      - alert: Panics
+        expr: sum(increase(ryft_http_panics_total[15m])) > 0
+        labels: { severity: critical }
+      - alert: SyncSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Syncs take over 10 s (p95)" }
+      - alert: RateLimited
+        # A client stuck in a retry loop, or limits too tight.
+        expr: sum(rate(ryft_rate_limited_total[10m])) > 1
+        for: 10m
+        labels: { severity: warning }
+      - alert: AuthUnavailable
+        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_.*|internal"}[5m])) > 0
+        for: 5m
+        labels: { severity: critical }
+      - alert: DatabaseDown
+        # A service cannot reach Supabase (pings every 30 s): pooler down, role
+        # refused, circuit breaker (ECIRCUITBREAKER) after failed logins.
+        expr: min by (service) (ryft_db_up) == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.service }} cannot reach the database" }
+      - alert: DatabaseFlapping
+        expr: sum by (service) (increase(ryft_db_ping_failures_total[15m])) > 3
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.service }}: database pings keep failing" }
+      - alert: CertificateExpiring
+        # cert-manager renews 30 days ahead; under 14 days left, renewal has been failing for two weeks.
+        expr: min by (namespace, name) (certmanager_certificate_expiration_timestamp_seconds - time()) < 14 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 14 days" }
+
+      # ---- events -----------------------------------------------------------------
+      - alert: JetStreamBacklog
+        # scoring or notify is not keeping up (or not consuming at all).
+        expr: max by (consumer) (ryft_nats_consumer_pending) > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.consumer }}: over 100 events waiting for 15 minutes" }
+      - alert: DeadLetters
+        # An event could not be handled and moved to RYFT_DLQ (docs/OPERATIONS.md → Dead letters).
+        expr: sum by (subject) (increase(ryft_events_dlq_total{result="ok"}[1h])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (scoring dlq)" }
+      - alert: DeadLetterPublishFailing
+        # Not even the dead-letter publish worked: the message stayed in RYFT.
+        expr: sum(increase(ryft_events_dlq_total{result="error"}[1h])) > 0
+        labels: { severity: critical }
+      - alert: PublishFailing
+        # Syncs are stored but scoring does not hear of them (the 15-minute pass catches up).
+        expr: sum(rate(ryft_events_published_total{result="error"}[10m])) > 0
+        for: 10m
+        labels: { severity: warning }
+      - alert: ScoringErrors
+        expr: sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0
+        for: 15m
+        labels: { severity: warning }
+      - alert: NoSync
+        # No phone has synced for six hours (the gauge lives in ingest's memory;
+        # absent() also fires when nothing reports it, e.g. after a restart).
+        # Per tester: the panel "Testers by last sync", not a page.
+        expr: (time() - max(ryft_last_sync_timestamp_seconds) > 6 * 3600) or absent(ryft_last_sync_timestamp_seconds)
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "No RYFT sync for over six hours" }
+
+      # ---- push -------------------------------------------------------------------
+      - alert: APNsFailing
+        # More than 10 % of APNs requests failed over 30 minutes (at least 5 requests).
+        # 410 Unregistered is not a failure: the app was deleted, the token is dropped.
+        expr: |
+          (sum(increase(ryft_apns_responses_total{status!~"200|410"}[30m]))
+            / sum(increase(ryft_apns_responses_total[30m])) > 0.1)
+          and sum(increase(ryft_apns_responses_total[30m])) >= 5
+        labels: { severity: warning }
+        annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
+      - alert: PushFailing
+        # notify reached no device for a notification (APNs unreachable after retries,
+        # or every device refused it). "unconfigured" (no APNs key yet) is not a failure.
+        expr: sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "Push notifications are not reaching devices" }
+      - alert: APNsRejectsOurKey
+        # 403: InvalidProviderToken and friends — the APNs key was revoked, or key ID / team ID do not match.
+        expr: sum(increase(ryft_apns_responses_total{status="403"}[15m])) > 0
+        labels: { severity: critical }
+        annotations: { summary: "APNs refuses notify's provider token (check APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8)" }
+
+      # ---- accounts and the beta --------------------------------------------------
+      - alert: AccountDeletionIncomplete
+        expr: sum(increase(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h])) > 0
+        labels: { severity: warning }
+        annotations: { summary: "A deleted account still has its Supabase sign-in or Apple grant" }
+      - alert: NewFeedback
+        # A tester sent feedback: read it with scripts/beta_report.sh feedback.
+        expr: sum(increase(ryft_feedback_received_total[10m])) > 0
+        labels: { severity: info }
+        annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }

@@ -1311,3 +1311,54 @@ support.
   with the key's fingerprint and whether emails were shown: the view is for finding
   broken data, not for knowing who the testers are.
 - **`scripts/beta_report.sh`** formats it with `jq` and `column`, no web UI.
+
+## D84 — Dead letters in a stream of their own, written by the consumer
+
+A message that fails its last delivery, or cannot be parsed, used to be dropped (logged
+and counted). A bad payload from a new device type would vanish.
+
+- **The consumer republishes it** to `ryft.dlq.<subject without "ryft.">` and terminates
+  it in `RYFT`, with the original subject, consumer, delivery count and error (≤ 512 bytes)
+  in headers. Listening to JetStream's max-deliveries advisories instead would need a
+  further subscription, the system account's subjects, and a lookup of the message by
+  sequence after the fact. If even the dead-letter publish fails, the message is NAKed
+  and stays in `RYFT` (until its 7 days), and an alert says so.
+- **`RYFT_DLQ`**: limits retention, 30 days, 64 MiB, oldest first out. Since stream
+  subjects may not overlap, `RYFT` lists its four subjects instead of `ryft.>`; a new event
+  subject is added to that list (`events.streamSubjects`). scoring updates `RYFT` first,
+  then creates the DLQ. A rollback to a release before this one needs `scoring dlq drop`
+  first, because that release sets `ryft.>` again.
+- **Re-driving is handling again, not republishing**: `scoring dlq redrive` runs scoring's
+  handler on its own letters with its own role, and deletes them when that works. No
+  service gains the right to publish another's input subject. notify's letters are only
+  listed and deleted: a morning push hours late is wrong, and the scores are stored.
+- Permanent failures (the user was deleted) are still terminated without a letter:
+  nothing to look at.
+- **Backlog metrics come from the consumers** (`ryft_nats_consumer_pending`, polled every
+  30 s with the consumer-info right each already has), not from a NATS exporter, which
+  would need the monitoring port opened to the collector and another pod.
+
+## D85 — Alerts as tested code; the operational checks
+
+- **Prometheus rule format** under `deploy/grafana/alerts`, loaded into Grafana Cloud's
+  ruler with mimirtool, rather than Grafana-managed rules exported as JSON: the format
+  promtool can unit-test, and the rules are readable in review. `make alerts-check` runs
+  promtool and mimirtool from their images, so neither needs installing; the tests make
+  each new alert fire on synthetic series and stay quiet under its threshold. Routing
+  (email, the Grafana mobile app) is the operator's, in Grafana Cloud.
+- **The database alert has its own signal**: every service pings the database every 30 s
+  (`ryft_db_up`, `ryft_db_ping_failures_total`). 5xx ratios need traffic; at beta volume
+  an outage at night would go unseen until the first morning sync failed.
+- **5xx as a ratio** (> 2 %) instead of a rate, and 410 Unregistered is not an APNs
+  failure (the app was deleted; the token is dropped). The APNs alert needs ≥ 5 requests in
+  its 30 minutes, so one failed push out of two is no page.
+- **Sync staleness per tester is a panel, not an alert**, and the metric is aggregate:
+  `ryft_users_by_last_sync{age}` counts accounts per bucket, so no user id leaves the
+  cluster for Grafana Cloud; who is behind is `scripts/beta_report.sh`.
+- **`make smoke-prod` is read-mostly**: one step from a dedicated user, no account
+  creation or deletion (that is `smoke-supabase`'s, against throwaway accounts), so it
+  can run after every deploy. `SMOKE_TOKEN` lets it run against the compose stack.
+- **Push environments** are tested end to end with two fake APNs hosts behind the real
+  client: a sandbox token reaches only the sandbox host, production tokens (TestFlight
+  builds) only the production one, and 410 drops the token.
+- Invite notes are no longer logged: a note may name the person the code is for.

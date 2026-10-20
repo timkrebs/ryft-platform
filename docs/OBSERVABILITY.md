@@ -35,8 +35,8 @@ CloudWatch instead (D52). The collector can read every container's log file
 exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore that
 `{namespace=~"ryft-.*"}` returns nothing.
 
-Alert rules: `deploy/monitoring/alerts.yaml` (Prometheus format; load with `mimirtool
-rules load`, or recreate them under Alerting); the table below explains them.
+Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
+alerts-check` / `make alerts-apply`; see **Alerts** below.
 
 A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace
@@ -55,7 +55,7 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | Publishes, `ok`/`error`: `ryft.ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), and `ryft.session.completed` as `session_completed` (api). A publish error does not fail the sync — this is the only place it shows; a failed `…/complete` publish answers `503`. |
-| `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (last delivery failed — dropped), `bad` (unparseable), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored` and `session_scored`. |
+| `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (last delivery failed — dead-lettered), `bad` (unparseable — dead-lettered), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored` and `session_scored`. |
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received with a delivery count > 1 (`consumer` `scoring` or `notify`; a deferral counts). |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`; `no_consent`: skipped, consent withdrawn, D78), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
@@ -67,6 +67,13 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_beta_denied_total` | counter | `code`, `service` | api, ingest | Requests refused with `403`: `invite_required` (the beta gate, D79) or `consent_required` (a sync without consent, D78). After a policy bump, `consent_required` rises until the testers open the app. |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
+| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events moved to `RYFT_DLQ` (unparseable, or failed on the last delivery), by original subject: `ok`, or `error` (the publish failed; the message stayed in RYFT). D84. |
+| `ryft_nats_consumer_pending` | gauge | `consumer` | scoring, notify | Messages of the consumer not yet delivered, polled every 30 s. |
+| `ryft_nats_consumer_ack_pending` | gauge | `consumer` | scoring, notify | Delivered but not yet acknowledged (being handled, or waiting for a redelivery). |
+| `ryft_nats_stream_messages` | gauge | `stream` | scoring | Messages in `RYFT` and `RYFT_DLQ` (scoring owns both). |
+| `ryft_db_up` | gauge | `service` | all | 1 when the last database ping (every 30 s, 5 s timeout) succeeded. |
+| `ryft_db_ping_failures_total` | counter | `service` | all | Failed pings: Supabase or its pooler unreachable, or the role refused. |
+| `ryft_users_by_last_sync` | gauge | `age` | scoring | Accounts by the age of their newest device sync (every 15 min): `under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`. Counts only, no user ids. |
 | `ryft_feedback_received_total` | counter | `category` | api | Reports stored by `POST /v1/feedback` (`bug`, `idea`, `data`, `other`). The alert on any increase is how the operator hears about them (D83); read them with `scripts/beta_report.sh feedback`. |
 | `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
 | `ryft_apns_responses_total` | counter | `push_type`, `status` | notify | APNs answers per device request: `alert` or `background`, HTTP status (`200`, `400`, `403`, `410`, `429`, `5xx`) or `error` (no answer). |
@@ -153,31 +160,64 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Goroutines | time series | `go_goroutines{namespace=~"$namespace"}` |
 | CPU | time series | `rate(process_cpu_seconds_total{namespace=~"$namespace"}[5m])` |
 
-NATS exposes its own monitoring on `:8222` (`/varz`, `/jsz`); the
-`prometheus-nats-exporter` turns it into metrics if you want stream depth (it needs a
-NetworkPolicy rule in `ryft-nats` for 8222). For the in-cluster Postgres of
-`local-postgres`, `postgres_exporter` with a read-only role.
+**Row: Events and the database**
 
-## Suggested alerts
-
-| Alert | Expression | For |
+| Panel | Type | Query |
 | --- | --- | --- |
-| NoSync | `time() - max(ryft_last_sync_timestamp_seconds) > 6*3600` | 15m |
-| ScoringErrors | `sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0` | 15m |
-| EventsDropped | `sum(increase(ryft_events_handled_total{result=~"failed\|bad"}[1h])) > 0` | 0m |
-| AuthUnavailable | `sum(rate(ryft_auth_failures_total{reason=~"jwks_.*\|internal"}[5m])) > 0` | 5m |
-| PublishFailing | `sum(rate(ryft_events_published_total{result="error"}[10m])) > 0` | 10m |
-| API5xx | `sum(rate(ryft_http_requests_total{code=~"5.."}[5m])) > 0.05` | 10m |
-| Panics | `sum(increase(ryft_http_panics_total[15m])) > 0` | 0m |
-| AccountDeletionIncomplete | `sum(increase(ryft_account_deletions_total{step=~"auth\|apple",result=~"error\|skipped"}[1h])) > 0` (deleted accounts whose Supabase sign-in or Apple grant still exists; check the keys) | 0m |
-| RateLimited | `sum(rate(ryft_rate_limited_total[10m])) > 1` (a client stuck in a retry loop, or limits too tight) | 10m |
-| SyncSlow | `histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10` | 15m |
-| PushFailing | `sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0` (no device reached; `unconfigured` before the APNs key exists is not a failure) | 0m |
-| APNsRejectsOurKey | `sum(increase(ryft_apns_responses_total{status="403"}[15m])) > 0` (the APNs key revoked, or key/team ID wrong) | 0m |
+| Consumer backlog | time series | `max by (consumer) (ryft_nats_consumer_pending)`, `max by (consumer) (ryft_nats_consumer_ack_pending)` |
+| Stream sizes | stat | `max by (stream) (ryft_nats_stream_messages)` (`RYFT_DLQ` above 0: `scoring dlq`) |
+| Dead letters | stacked bars, 1 h buckets | `sum by (subject, result) (increase(ryft_events_dlq_total[1h]))` |
+| Database up | state timeline | `min by (service) (ryft_db_up)` |
 
-`NoSync` needs a scrape since the last ingest restart (the gauge is in memory); after
-a restart it is absent until the next sync, so pair it with `absent()` if you want it
-to fire then too.
+**Row: Beta**
+
+| Panel | Type | Query |
+| --- | --- | --- |
+| Testers by last sync | bar gauge | `max by (age) (ryft_users_by_last_sync)` (`under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`; who: `scripts/beta_report.sh`) |
+| Refused: invite / consent | time series | `sum by (code, service) (increase(ryft_beta_denied_total[1h]))` |
+| Consents | stacked bars, 1 d buckets | `sum by (action) (increase(ryft_consents_total[1d]))` |
+| Feedback (7 d) | stat | `sum by (category) (increase(ryft_feedback_received_total[7d]))` |
+
+NATS also exposes its own monitoring on `:8222` (`/varz`, `/jsz`), reachable only
+inside its pod; the backlog and stream sizes above come from the consumers. For the
+in-cluster Postgres of `local-postgres`, `postgres_exporter` with a read-only role.
+
+## Alerts
+
+The rules are code: `deploy/grafana/alerts/ryft.yaml` (Prometheus format, D85), with
+unit tests in `ryft.test.yaml`. `make alerts-check` runs `promtool check rules`, the tests
+and `mimirtool rules check` (in containers); `make alerts-apply` loads them into the
+stack's ruler with `GRAFANA_PROM_URL`, `GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN` (an
+access policy token with `rules:read` and `rules:write`). Routing is the operator's, in
+Grafana Cloud → Alerting: a contact point with email and the Grafana mobile app, and a
+notification policy for `severity` `critical`, `warning` and `info` (feedback).
+
+| Alert | Severity | Fires when | First look |
+| --- | --- | --- | --- |
+| HTTP5xxRatio | critical | api or ingest answers > 2 % of requests with 5xx, 10 min | logs of that namespace, `err` on `level=ERROR` |
+| PodRestarting | critical | a `ryft-*` pod restarted > 3× in 30 min | `kubectl -n <ns> describe pod`, the previous container's log |
+| Panics | critical | a handler panicked | the `msg="panic"` line with the stack |
+| AuthUnavailable | critical | JWKS unavailable or the user lookup fails, 5 min | Supabase status, `ryft_db_up` |
+| DatabaseDown | critical | a service's database ping failed for 2 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins (OPERATIONS → EKS) |
+| DatabaseFlapping | warning | > 3 failed pings in 15 min | the same, intermittently |
+| CertificateExpiring | warning | a cert-manager certificate expires in < 14 days, 1 h | `kubectl get certificate -A`, the issuer's events |
+| SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
+| RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
+| JetStreamBacklog | warning | > 100 events waiting for `scoring` or `notify`, 15 min | is the consumer running, its logs |
+| DeadLetters | warning | an event moved to `RYFT_DLQ` | `scoring dlq` (OPERATIONS → Dead letters) |
+| DeadLetterPublishFailing | critical | not even the dead-letter publish worked | NATS, its permissions |
+| PublishFailing | warning | syncs stored but events not published, 10 min | NATS; the 15-minute pass catches up |
+| ScoringErrors | warning | days fail to score, 15 min | scoring's logs |
+| NoSync | warning | no sync from anyone for 6 h (or ingest restarted since) | the app's background refresh, ingest; per tester: the panel below |
+| APNsFailing | warning | > 10 % of APNs requests fail over 30 min (≥ 5; 410 does not count) | `status`: 400 = a token sent to the wrong environment, 403 = the key |
+| PushFailing | warning | a notification reached no device | the same |
+| APNsRejectsOurKey | critical | APNs answered 403 | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8` |
+| AccountDeletionIncomplete | warning | a deleted account kept its Supabase sign-in or Apple grant | the reconciler's log, the keys |
+| NewFeedback | info | a tester sent feedback | `scripts/beta_report.sh feedback` |
+
+`NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
+`absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
+is no incident.
 
 ## Logs
 

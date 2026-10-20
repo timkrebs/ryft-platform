@@ -214,3 +214,73 @@ func TestNatsPermissionsNotifySubjects(t *testing.T) {
 		}
 	}
 }
+
+// Each consumer may dead-letter only its own subjects; publishers none.
+func TestNatsPermissionsDeadLetters(t *testing.T) {
+	ctx := context.Background()
+	scoring, err := Connect(ctx, natsURL(t), Options{Name: "scoring", User: "scoring", Password: devPassword("scoring"), OwnStream: true})
+	if err != nil {
+		t.Fatalf("scoring creates both streams: %v", err)
+	}
+	defer scoring.Close()
+	for _, c := range []struct {
+		svc, subject string
+		want         bool
+	}{
+		{"scoring", DLQSubject(SubjectIngested), true}, {"scoring", DLQSubject(SubjectSessionCompleted), true},
+		{"scoring", DLQSubject(SubjectScored), false}, {"notify", DLQSubject(SubjectScored), true},
+		{"notify", DLQSubject(SubjectSessionScored), true}, {"notify", DLQSubject(SubjectIngested), false},
+		{"api", DLQSubject(SubjectIngested), false}, {"ingest", DLQSubject(SubjectIngested), false},
+	} {
+		nc, _ := connectAs(t, c.svc)
+		js, _ := jetstream.New(nc)
+		short, cancel := context.WithTimeout(ctx, 2*time.Second)
+		ack, err := js.Publish(short, c.subject, []byte(`{"check":"permissions"}`))
+		cancel()
+		if (err == nil) != c.want {
+			t.Errorf("%s publishing %s: err=%v, want allowed=%v", c.svc, c.subject, err, c.want)
+		}
+		if err == nil {
+			if err := scoring.DeleteDeadLetter(ctx, ack.Sequence); err != nil {
+				t.Errorf("scoring deletes dead letters: %v", err)
+			}
+		}
+	}
+}
+
+// A bad event is dead-lettered by the running scoring (make up), with why.
+func TestNatsDeadLetterBadEvent(t *testing.T) {
+	ctx := context.Background()
+	scoring, err := Connect(ctx, natsURL(t), Options{Name: "scoring", User: "scoring", Password: devPassword("scoring"), OwnStream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scoring.Close()
+	nc, _ := connectAs(t, "api")
+	js, _ := jetstream.New(nc)
+	marker := `{"session_id":"00000000-0000-0000-0000-00000000d1a0","user_id":"00000000-0000-0000-0000-00000000d1a0"}`
+	if _, err := js.Publish(ctx, SubjectSessionCompleted, []byte(marker)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		letters, err := scoring.DeadLetters(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range letters {
+			if l.Data == marker {
+				if l.Subject != SubjectSessionCompleted || l.Consumer != ConsumerScoring || l.Deliveries != "1" ||
+					!strings.Contains(l.Error, "without a day") {
+					t.Errorf("dead letter %+v", l)
+				}
+				if err := scoring.DeleteDeadLetter(ctx, l.Seq); err != nil {
+					t.Error(err)
+				}
+				return
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatal("the bad event did not reach RYFT_DLQ within 15 s (is scoring running? make up)")
+}

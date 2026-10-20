@@ -6,6 +6,10 @@
 // recompute request; and ryft.scored and ryft.session.scored (scoring has
 // scored a morning or a session), which notify consumes with its own. RYFT is
 // a work queue: a subject has exactly one consumer (D71).
+//
+// A message that cannot be handled, unparseable or failed on its last
+// delivery, moves to stream RYFT_DLQ as ryft.dlq.<subject without "ryft.">
+// (ryft.dlq.ingested), with the reason in its headers (D84).
 package events
 
 import (
@@ -14,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -36,6 +42,27 @@ const (
 	ConsumerScoring      = "scoring"
 	ConsumerNotify       = "notify"
 	maxDeliver           = 10
+
+	DLQStreamName = "RYFT_DLQ"
+	dlqPrefix     = "ryft.dlq."
+)
+
+// streamSubjects are RYFT's subjects. A new event subject must be added here:
+// the stream no longer takes ryft.>, which would overlap the DLQ's ryft.dlq.>.
+var streamSubjects = []string{SubjectIngested, SubjectSessionCompleted, SubjectScored, SubjectSessionScored}
+
+// DLQSubject is where a message of subject goes when it cannot be handled.
+func DLQSubject(subject string) string { return dlqPrefix + strings.TrimPrefix(subject, "ryft.") }
+
+// OriginalSubject is the inverse of DLQSubject.
+func OriginalSubject(dlq string) string { return "ryft." + strings.TrimPrefix(dlq, dlqPrefix) }
+
+// Headers on a dead-lettered message.
+const (
+	HeaderSubject    = "Ryft-Subject"    // the subject it was published to
+	HeaderConsumer   = "Ryft-Consumer"   // who gave up on it
+	HeaderDeliveries = "Ryft-Deliveries" // how often it was delivered
+	HeaderError      = "Ryft-Error"      // the last error, at most 512 bytes
 )
 
 type Bus struct {
@@ -80,9 +107,10 @@ func Connect(ctx context.Context, url string, o Options) (*Bus, error) {
 	if !o.OwnStream {
 		return &Bus{nc: nc, js: js}, nil
 	}
+	// RYFT first: until it gives up ryft.>, the DLQ's subjects would overlap it.
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      StreamName,
-		Subjects:  []string{"ryft.>"},
+		Subjects:  streamSubjects,
 		Retention: jetstream.WorkQueuePolicy,
 		Storage:   jetstream.FileStorage,
 		MaxAge:    7 * 24 * time.Hour,
@@ -90,7 +118,73 @@ func Connect(ctx context.Context, url string, o Options) (*Bus, error) {
 		nc.Close()
 		return nil, fmt.Errorf("ensure stream: %w", err)
 	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      DLQStreamName,
+		Subjects:  []string{dlqPrefix + ">"},
+		Retention: jetstream.LimitsPolicy,
+		Storage:   jetstream.FileStorage,
+		MaxAge:    30 * 24 * time.Hour,
+		MaxBytes:  64 << 20,
+		Discard:   jetstream.DiscardOld,
+	}); err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("ensure dead-letter stream: %w", err)
+	}
 	return &Bus{nc: nc, js: js}, nil
+}
+
+// deadLetter moves msg to RYFT_DLQ and terminates it in RYFT. When that
+// publish fails, the message is NAKed instead: it stays in RYFT (until its
+// MaxAge), so nothing vanishes.
+func (b *Bus) deadLetter(ctx context.Context, log *slog.Logger, msg jetstream.Msg, consumer string, delivered uint64, cause error) {
+	out := nats.NewMsg(DLQSubject(msg.Subject()))
+	out.Data = msg.Data()
+	out.Header.Set(HeaderSubject, msg.Subject())
+	out.Header.Set(HeaderConsumer, consumer)
+	out.Header.Set(HeaderDeliveries, strconv.FormatUint(delivered, 10))
+	reason := cause.Error()
+	if len(reason) > 512 {
+		reason = reason[:512]
+	}
+	out.Header.Set(HeaderError, reason)
+	short, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := b.js.PublishMsg(short, out); err != nil {
+		metrics.EventsDLQ.WithLabelValues(msg.Subject(), "error").Inc()
+		log.Error("dead-letter publish failed, the message stays in RYFT", "err", err, "subject", msg.Subject())
+		_ = msg.NakWithDelay(30 * time.Second)
+		return
+	}
+	metrics.EventsDLQ.WithLabelValues(msg.Subject(), "ok").Inc()
+	log.Warn("event dead-lettered", "subject", msg.Subject(), "dlq", out.Subject, "deliveries", delivered, "err", cause)
+	_ = msg.Term()
+}
+
+// watch reports a consumer's backlog every 30 s until ctx ends, and for
+// scoring (the streams' owner) the size of both streams.
+func (b *Bus) watch(ctx context.Context, cons jetstream.Consumer, name string) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		short, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if info, err := cons.Info(short); err == nil {
+			metrics.ConsumerPending.WithLabelValues(name).Set(float64(info.NumPending))
+			metrics.ConsumerAckPending.WithLabelValues(name).Set(float64(info.NumAckPending))
+		}
+		if name == ConsumerScoring {
+			for _, stream := range []string{StreamName, DLQStreamName} {
+				if s, err := b.js.Stream(short, stream); err == nil {
+					metrics.StreamMessages.WithLabelValues(stream).Set(float64(s.CachedInfo().State.Msgs))
+				}
+			}
+		}
+		cancel()
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // Open is Connect, retried with backoff for up to five minutes while NATS is
@@ -174,9 +268,14 @@ const ReasonSessionCompleted = "session_completed"
 
 // decode turns a message of either subject into the event scoring handles.
 func decode(msg jetstream.Msg) (model.IngestedEvent, error) {
-	if msg.Subject() == SubjectSessionCompleted {
+	return DecodeIngested(msg.Subject(), msg.Data())
+}
+
+// DecodeIngested is decode for a subject and payload (a dead letter's, too).
+func DecodeIngested(subject string, data []byte) (model.IngestedEvent, error) {
+	if subject == SubjectSessionCompleted {
 		var s model.SessionCompletedEvent
-		if err := json.Unmarshal(msg.Data(), &s); err != nil {
+		if err := json.Unmarshal(data, &s); err != nil {
 			return model.IngestedEvent{}, err
 		}
 		if s.Day == "" {
@@ -186,9 +285,62 @@ func decode(msg jetstream.Msg) (model.IngestedEvent, error) {
 		return model.IngestedEvent{UserID: s.UserID, Days: []string{s.Day}, Reason: ReasonSessionCompleted,
 			RequestID: s.RequestID, SessionID: &id}, nil
 	}
+	if subject != SubjectIngested {
+		return model.IngestedEvent{}, fmt.Errorf("not a scoring subject: %s", subject)
+	}
 	var ev model.IngestedEvent
-	err := json.Unmarshal(msg.Data(), &ev)
+	err := json.Unmarshal(data, &ev)
 	return ev, err
+}
+
+// DeadLetter is one message in RYFT_DLQ.
+type DeadLetter struct {
+	Seq        uint64    `json:"seq"`
+	Time       time.Time `json:"time"`
+	Subject    string    `json:"subject"` // the original subject
+	Consumer   string    `json:"consumer"`
+	Deliveries string    `json:"deliveries"`
+	Error      string    `json:"error"`
+	Data       string    `json:"data"` // as published, possibly not JSON
+}
+
+// DeadLetters lists RYFT_DLQ, oldest first.
+func (b *Bus) DeadLetters(ctx context.Context) ([]DeadLetter, error) {
+	s, err := b.js.Stream(ctx, DLQStreamName)
+	if err != nil {
+		return nil, err
+	}
+	state := s.CachedInfo().State
+	var out []DeadLetter
+	for seq := state.FirstSeq; state.Msgs > 0 && seq <= state.LastSeq; seq++ {
+		m, err := s.GetMsg(ctx, seq)
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			continue // deleted
+		}
+		if err != nil {
+			return out, err
+		}
+		out = append(out, DeadLetter{Seq: seq, Time: m.Time, Subject: OriginalSubject(m.Subject),
+			Consumer: m.Header.Get(HeaderConsumer), Deliveries: m.Header.Get(HeaderDeliveries),
+			Error: m.Header.Get(HeaderError), Data: string(m.Data)})
+	}
+	return out, nil
+}
+
+// DropDeadLetterStream deletes RYFT_DLQ. Only for rolling back to a release
+// from before it, whose scoring sets RYFT back to ryft.>, which would overlap
+// it (docs/OPERATIONS.md → Deploy and roll back).
+func (b *Bus) DropDeadLetterStream(ctx context.Context) error {
+	return b.js.DeleteStream(ctx, DLQStreamName)
+}
+
+// DeleteDeadLetter removes one message from RYFT_DLQ.
+func (b *Bus) DeleteDeadLetter(ctx context.Context, seq uint64) error {
+	s, err := b.js.Stream(ctx, DLQStreamName)
+	if err != nil {
+		return err
+	}
+	return s.DeleteMsg(ctx, seq)
 }
 
 // permanentError marks a handler failure that retrying cannot fix.
@@ -255,9 +407,9 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 		}
 		ev, err := decode(msg)
 		if err != nil {
-			log.Error("bad event, dropping", "err", err)
+			log.Error("bad event, dead-lettering", "err", err, "subject", msg.Subject())
 			metrics.EventsHandled.WithLabelValues("unknown", "bad").Inc()
-			_ = msg.Term()
+			b.deadLetter(ctx, log, msg, ConsumerScoring, delivered, err)
 			return
 		}
 		if err := fn(ctx, ev); err != nil {
@@ -269,14 +421,15 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 				return
 			}
 			if delivered >= maxDeliver {
-				log.Error("handle event failed on last delivery, giving up", "err", err, "days", ev.Days,
+				log.Error("handle event failed on last delivery, dead-lettering", "err", err, "days", ev.Days,
 					"user_id", ev.UserID, "request_id", ev.RequestID)
 				metrics.EventsHandled.WithLabelValues(ev.Reason, "failed").Inc()
-			} else {
-				log.Error("handle event failed, will retry", "err", err, "days", ev.Days, "delivery", delivered,
-					"user_id", ev.UserID, "request_id", ev.RequestID)
-				metrics.EventsHandled.WithLabelValues(ev.Reason, "retry").Inc()
+				b.deadLetter(ctx, log, msg, ConsumerScoring, delivered, err)
+				return
 			}
+			log.Error("handle event failed, will retry", "err", err, "days", ev.Days, "delivery", delivered,
+				"user_id", ev.UserID, "request_id", ev.RequestID)
+			metrics.EventsHandled.WithLabelValues(ev.Reason, "retry").Inc()
 			_ = msg.NakWithDelay(30 * time.Second)
 			return
 		}
@@ -286,6 +439,7 @@ func (b *Bus) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(con
 	if err != nil {
 		return err
 	}
+	go b.watch(ctx, cons, ConsumerScoring)
 	<-ctx.Done()
 	cc.Stop()
 	return nil
@@ -310,13 +464,19 @@ func decodeNotify(msg jetstream.Msg) (NotifyMessage, error) {
 	switch msg.Subject() {
 	case SubjectScored:
 		m.Scored = &model.ScoredEvent{}
-		if err := json.Unmarshal(msg.Data(), m.Scored); err != nil || m.Scored.Day == "" {
+		if err := json.Unmarshal(msg.Data(), m.Scored); err != nil {
 			return m, fmt.Errorf("bad scored event: %w", err)
+		}
+		if m.Scored.Day == "" {
+			return m, errors.New("scored event without a day")
 		}
 	case SubjectSessionScored:
 		m.SessionScored = &model.SessionScoredEvent{}
-		if err := json.Unmarshal(msg.Data(), m.SessionScored); err != nil || m.SessionScored.Day == "" {
+		if err := json.Unmarshal(msg.Data(), m.SessionScored); err != nil {
 			return m, fmt.Errorf("bad session scored event: %w", err)
+		}
+		if m.SessionScored.Day == "" {
+			return m, errors.New("session scored event without a day")
 		}
 	default:
 		return m, fmt.Errorf("unexpected subject %s", msg.Subject())
@@ -360,9 +520,9 @@ func (b *Bus) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(conte
 		}
 		m, err := decodeNotify(msg)
 		if err != nil {
-			log.Error("bad event, dropping", "err", err, "subject", msg.Subject())
+			log.Error("bad event, dead-lettering", "err", err, "subject", msg.Subject())
 			metrics.EventsHandled.WithLabelValues("unknown", "bad").Inc()
-			_ = msg.Term()
+			b.deadLetter(ctx, log, msg, ConsumerNotify, delivered, err)
 			return
 		}
 		err = fn(ctx, m)
@@ -379,19 +539,20 @@ func (b *Bus) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(conte
 			log.Warn("event cannot be handled, dropping", "err", err)
 			metrics.EventsHandled.WithLabelValues(m.Reason(), "dropped").Inc()
 			_ = msg.Term()
+		case delivered >= maxDeliver+5:
+			log.Error("handle event failed on last delivery, dead-lettering", "err", err, "delivery", delivered)
+			metrics.EventsHandled.WithLabelValues(m.Reason(), "failed").Inc()
+			b.deadLetter(ctx, log, msg, ConsumerNotify, delivered, err)
 		default:
-			result := "retry"
-			if delivered >= maxDeliver+5 {
-				result = "failed"
-			}
-			log.Error("handle event failed", "err", err, "delivery", delivered, "result", result)
-			metrics.EventsHandled.WithLabelValues(m.Reason(), result).Inc()
+			log.Error("handle event failed, will retry", "err", err, "delivery", delivered)
+			metrics.EventsHandled.WithLabelValues(m.Reason(), "retry").Inc()
 			_ = msg.NakWithDelay(30 * time.Second)
 		}
 	})
 	if err != nil {
 		return err
 	}
+	go b.watch(ctx, cons, ConsumerNotify)
 	<-ctx.Done()
 	cc.Stop()
 	return nil

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/retry"
 )
 
@@ -167,4 +168,44 @@ func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// WatchEvery is how often Watch pings the database.
+const WatchEvery = 30 * time.Second
+
+// Watch pings the database every WatchEvery until ctx ends and reports it as
+// ryft_db_up{service} (1 or 0) and ryft_db_ping_failures_total{service}: the
+// Supabase connection alert, independent of traffic. A failure and the
+// recovery after it are logged once each.
+func Watch(ctx context.Context, pool *pgxpool.Pool, service string, log *slog.Logger) {
+	t := time.NewTicker(WatchEvery)
+	defer t.Stop()
+	up := true
+	for {
+		short, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := pool.Ping(short)
+		cancel()
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			metrics.DBPingFailures.WithLabelValues(service).Inc()
+			metrics.DBUp.WithLabelValues(service).Set(0)
+			if up {
+				log.Warn("database unreachable", "err", err)
+			}
+			up = false
+		default:
+			metrics.DBUp.WithLabelValues(service).Set(1)
+			if !up {
+				log.Info("database reachable again")
+			}
+			up = true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

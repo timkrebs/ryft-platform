@@ -117,6 +117,34 @@ var (
 		Name: "ryft_invite_redemptions_total",
 		Help: "POST /v1/me/invite: ok (a use spent), already (the account had access), invalid.",
 	}, []string{"result"})
+	DBUp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_db_up",
+		Help: "1 when the service's last database ping (every 30 s) succeeded, 0 when it failed.",
+	}, []string{"service"})
+	DBPingFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_db_ping_failures_total",
+		Help: "Failed database pings (every 30 s, 5 s timeout): Supabase or its pooler unreachable, or the role refused.",
+	}, []string{"service"})
+	UsersByLastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_users_by_last_sync",
+		Help: "Accounts by the age of their newest device sync (scoring, every 15 min): under_6h, 6h_to_24h, 1d_to_3d, over_3d, never.",
+	}, []string{"age"})
+	EventsDLQ = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_events_dlq_total",
+		Help: "Events moved to the dead-letter stream RYFT_DLQ, by original subject: ok, or error (the publish failed; the message stayed in RYFT).",
+	}, []string{"subject", "result"})
+	ConsumerPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_nats_consumer_pending",
+		Help: "Messages of a JetStream consumer not yet delivered (polled every 30 s by the consumer's service).",
+	}, []string{"consumer"})
+	ConsumerAckPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_nats_consumer_ack_pending",
+		Help: "Messages of a JetStream consumer delivered but not yet acknowledged.",
+	}, []string{"consumer"})
+	StreamMessages = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_nats_stream_messages",
+		Help: "Messages stored in a JetStream stream, RYFT or RYFT_DLQ (polled every 30 s by scoring, the streams' owner).",
+	}, []string{"stream"})
 	FeedbackReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_feedback_received_total",
 		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",

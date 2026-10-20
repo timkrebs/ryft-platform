@@ -183,6 +183,58 @@ the workload on a change.
   Secret at once; it does at the next hourly refresh at the latest
   (`kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets`).
 
+## Deploy and roll back
+
+Every release is one image SHA for every service (`newTag` in
+`deploy/k8s/overlays/eks/kustomization.yaml`), so rolling back is pinning the previous
+one.
+
+1. **Pin:** CI pushed `ghcr.io/timkrebs/ryft/*:<sha>`; set every `newTag` to it and
+   commit (`make k8s-check-images` checks they are pinned and well-formed).
+2. **Apply:** `make k8s-apply-eks` (migrate first, then the services; it waits for the
+   rollouts).
+3. **Smoke:** `make smoke-prod` with the dedicated smoke user (`SUPABASE_URL`,
+   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`): the edge for api and ingest,
+   sign-in, `/v1/me` (consent posted if missing), one tiny sync, and the day read back
+   once scoring has scored it with the model `GET /v1/model` serves. After a model bump,
+   `scripts/rescore_all.sh`.
+4. **On failure:** set `newTag` back to the previous SHA (`git log -p
+   deploy/k8s/overlays/eks/kustomization.yaml`), `make k8s-apply-eks`, `make smoke-prod`.
+
+**No down-migrations.** Migrations only add (tables, nullable or defaulted columns,
+grants, backfills; never a drop or a rename), so the previous release runs on the newer
+schema: it ignores what it does not know, and its migrate job skips every file it has
+and does not mind newer rows in `schema_migrations`. A rollback is therefore never a
+schema change.
+
+**Rolling back past the dead-letter stream** (to a release before `ops: alerts, push
+envs, rollback, DLQ`): that release's scoring sets stream `RYFT` back to `ryft.>`, which
+overlaps `RYFT_DLQ`, and NATS refuses it, so scoring would not start. Drop the dead-letter
+stream first, with the current release:
+
+```bash
+kubectl -n ryft-scoring exec deploy/scoring -- /app dlq          # keep a copy of what is in it
+kubectl -n ryft-scoring exec deploy/scoring -- /app dlq drop
+```
+
+## Dead letters
+
+An event that cannot be handled, unparseable or failed on its tenth delivery (notify:
+fifteenth), is not dropped: it moves to stream `RYFT_DLQ` as `ryft.dlq.<subject>`
+(`ryft.dlq.ingested`, …) with the subject, consumer, delivery count and error in its
+headers, and stays 30 days (64 MiB at most, oldest first out; D84). The alert
+`DeadLetters` fires on the first one. scoring's own NATS user reads and re-drives them:
+
+```bash
+kubectl -n ryft-scoring exec deploy/scoring -- /app dlq                   # one JSON line each: seq, time, subject, error, data
+kubectl -n ryft-scoring exec deploy/scoring -- /app dlq redrive 7         # handle scoring's again (or: all); deleted when it works
+kubectl -n ryft-scoring exec deploy/scoring -- /app dlq delete all        # e.g. notify's: a morning push hours late is wrong
+```
+
+Re-drive after fixing the cause (a deploy, a data fix). Scoring's events only name a user
+and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same thing if a
+letter is gone. notify's are listed and deleted, never re-sent.
+
 ## Self-hosted (overlays/local-postgres)
 
 In-cluster Postgres in `ryft-postgres`, the shared API key instead of Supabase Auth,
@@ -393,7 +445,9 @@ restarts both collectors when it changes. It is never passed on a command line:
 5. **In Grafana Cloud:**
    - In the Fleet Management pipelines for pod logs, exclude namespaces matching
      `ryft-.*`; RYFT's logs go to CloudWatch.
-   - Load `deploy/monitoring/alerts.yaml` with `mimirtool rules load`.
+   - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
+     point (email and the Grafana mobile app) and a notification policy for
+     `severity` `critical`, `warning` and `info`.
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      single `alloy` collector before 2026-10-19).
    - Check that the cluster appears in Kubernetes Monitoring, that
@@ -474,11 +528,33 @@ curl -sI https://ryftapp.de/.well-known/apple-app-site-association          # 20
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
 ```
 
+## Data protection (logs)
+
+- **What is logged:** one access line per request (method, path, status, bytes, duration,
+  route, request id, user id) and what the services decide (a sync's counts, a scored day
+  with its scores, errors). **Never logged:** request or response bodies, query strings,
+  tokens, the `Authorization` header, email addresses, feedback messages, invite notes.
+  Paths carry dates and resource ids (`/v1/days/2026-10-19`, `/v1/workouts/<uuid>`).
+  scoring's `scored day` lines carry a user's daily scores next to the user id: the logs
+  are health data.
+- **Where and how long:** stdout of each pod (on the node until the pod goes); CloudWatch
+  Logs (Fluent Bit ships the `ryft-*` namespaces), **14 days**, encrypted with a key only
+  `/ryft/*` groups may use (`infra/aws/kubernetes/logs.tf`, D52). By the user's choice
+  (2026-10-19) the pod logs also reach **Grafana Cloud** (stack in eu-west-2, London):
+  retention there is the stack plan's (the free tier keeps logs 14 days; check under
+  Billing), and Grafana Labs is then a processor of health data, so the privacy policy
+  names it. Excluding `ryft-.*` from pod-log collection in Fleet Management ends that.
+- **Who can read them:** the AWS account's administrators (CloudWatch, `kubectl logs`)
+  and the Grafana stack's members. Nobody else has either.
+
 ## Backups
 
 **Supabase (EKS).** The database is Supabase's, and so are the backups: Database →
-Backups (daily on paid plans, point-in-time recovery as an add-on; the free plan keeps
-none). There is no dump job in the cluster. Before restoring a backup:
+Backups. **The free plan keeps none and pauses a project after a week without
+activity**, so the project moves to **Pro** before the first tester's data arrives: daily
+backups kept 7 days; point-in-time recovery is an add-on (worth it once losing a day of
+syncs matters more than its price; the app re-uploads only what HealthKit still holds).
+There is no dump job in the cluster. Before restoring a backup:
 
 1. In the SQL editor, run `SELECT * FROM deleted_users` and download the result as CSV.
    Accounts deleted after the backup was taken would otherwise come back.
@@ -489,11 +565,21 @@ none). There is no dump job in the cluster. Before restoring a backup:
    case the backup predates them. The api's deletion reconciler erases the restored
    accounts at start-up.
 
-**Restore drill, monthly** (paid plan): restore the latest backup into a new scratch
-project (Database → Backups → *Restore to a new project*). Then compare `SELECT
-count(*)` of `users`, `samples` and `daily_scores` with production, and note how long it
-took in `STATUS.md`. Delete the scratch project afterwards; it holds real health data.
-On the free plan there is nothing to restore, so check the plan before inviting people.
+**Restore drill, monthly** (Pro): restore the latest backup into a new scratch project
+(Database → Backups → *Restore to a new project*). Then:
+
+1. Compare `SELECT count(*)` of `users`, `samples` and `daily_scores` with production.
+2. Run the services against it and smoke them: the compose stack in Supabase mode with
+   the scratch project's pooler URL (`DATABASE_URL`, its `postgres` user) and project ref,
+   then `make smoke-supabase` with the scratch project's `SUPABASE_URL` and anon key and
+   the smoke user (restored with the backup, auth included):
+
+   ```bash
+   AUTH_MODE=supabase SUPABASE_PROJECT_REF=<scratch ref> DATABASE_URL='postgres://postgres.<scratch ref>:…@aws-…pooler.supabase.com:5432/postgres?sslmode=require' make up
+   SUPABASE_URL=https://<scratch ref>.supabase.co SUPABASE_ANON_KEY=… SMOKE_EMAIL=… SMOKE_PASSWORD=… make smoke-supabase
+   ```
+3. Note the date and how long the restore took in `STATUS.md`, then delete the scratch
+   project and `make down`: it holds real health data.
 
 **In-cluster Postgres (`local-postgres`).** `pg-backup` in `ryft-postgres` runs
 `pg_dump --format=custom` nightly at 03:30 Europe/Berlin into the `pg-backups` PVC

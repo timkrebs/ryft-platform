@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test build images push up down logs smoke smoke-supabase check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -48,6 +48,11 @@ smoke-supabase:
 	AUTH_MODE=supabase ./scripts/smoke.sh; \
 	if [ -n "$$SUPABASE_SECRET_KEY" ]; then ./scripts/check_accounts.py; \
 	else echo "accounts: skipped (set SUPABASE_SECRET_KEY to test sign-up, isolation and deletion with throwaway users)"; fi
+
+# After a production deploy (docs/OPERATIONS.md → Deploy and roll back): the edge, the
+# dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
+smoke-prod:
+	./scripts/smoke_prod.sh
 
 # After smoke, on macOS: decode every endpoint with the Swift mirror in docs/API.md
 # and with the app's current models (../app). See scripts/check_swift.sh.
@@ -141,6 +146,27 @@ k8s-delete-local:
 # Vault Secrets Operator manifests infra/vault generated (if any) and the golden
 # copies its tests pin.
 KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+# Alert rules as code (deploy/grafana/alerts, D85): promtool checks the rules and runs
+# their unit tests; mimirtool loads them into Grafana Cloud's ruler. Containers, so
+# neither tool has to be installed.
+PROMTOOL_IMAGE := docker.io/prom/prometheus:v3.5.0
+MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool:2.16.0
+alerts-check:
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
+	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
+	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
+
+alerts-apply: alerts-check
+	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
+	   "$${GRAFANA_PROM_USER:?the stack's Prometheus (metrics) instance id}" \
+	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
+	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" \
+	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+
 k8s-validate:
 	@set -e; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \

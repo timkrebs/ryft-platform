@@ -104,8 +104,10 @@ size limit (64 KiB, 256 KiB for a Train session or plan, 32 MiB for sync; over â
 generic `500` with the request ID while the details go to the log. Logs are JSON with
 `request_id`, `user_id` and `route` on every line of a request (`internal/logx`).
 
-**Events.** Stream `RYFT`, subjects `ryft.>`, work-queue retention, file storage, 7-day
-max age. `ryft.ingested` carries `{user_id, days[], reason, request_id}` (`request_id`:
+**Events.** Stream `RYFT`, the four subjects below (listed, not `ryft.>`, which would
+overlap the dead letters), work-queue retention, file storage, 7-day max age. What cannot
+be handled moves to stream `RYFT_DLQ` (`ryft.dlq.>`, 30 days; OPERATIONS â†’ Dead letters,
+D84). `ryft.ingested` carries `{user_id, days[], reason, request_id}` (`request_id`:
 the request that caused it, for log correlation); `ryft.session.completed` carries
 `{user_id, session_id, day, request_id}` and is handled like an ingest event for that
 day. `ryft.scored` (`{user_id, day, recovery, readiness, state, sleep_performance,
@@ -114,8 +116,9 @@ request_id}`) go from scoring to notify. A work-queue stream gives each subject 
 one consumer: scoring's for the first two, notify's for these (D71). Every service is its own NATS user (`deploy/k8s/base/nats/nats.conf`, shared by
 compose and Kubernetes): ingest may only publish `ryft.ingested`, api `ryft.ingested`
 (recompute, session edits) and `ryft.session.completed`, scoring `ryft.scored` and
-`ryft.session.scored`; scoring alone may create the stream and its
-consumer, pull from it and ack, and notify only its own consumer. Replies go to a per-service inbox (`_INBOX_<service>`),
+`ryft.session.scored`; scoring alone may create the streams and its
+consumer, pull from it and ack, and notify only its own consumer. Each consumer may
+dead-letter its own subjects only; scoring reads and deletes dead letters. Replies go to a per-service inbox (`_INBOX_<service>`),
 which is the only thing a service may subscribe to. `internal/events/permissions_test.go`
 checks this against a running NATS (CI smoke job). `reason: "recompute"`
 with two days means an inclusive range. Failures NAK with a 30 s delay, max 10

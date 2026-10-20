@@ -128,7 +128,8 @@ func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "invite created", "note", inv.Note, "max_uses", inv.MaxUses, "admin_key", a.keyID)
+	// Not the note: it may name the person the code is for.
+	a.h.log.InfoContext(r.Context(), "invite created", "max_uses", inv.MaxUses, "admin_key", a.keyID)
 	httpx.WriteJSON(w, 201, inv)
 }
 
