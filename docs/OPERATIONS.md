@@ -397,8 +397,10 @@ gate, user, duration, error), then the account it belonged to. Older than the po
 CloudWatch (OBSERVABILITY → Logs).
 
 **One account:** `scripts/user.sh <id | first 8 digits | email> [--emails]` shows the
-detail below as a page; `--grant` / `--revoke` set beta access without a code; `--json`
-the raw answer.
+detail below as a page; `--grant` / `--revoke` set beta access without a code;
+`--resync-hint` asks the app for a full re-sync (it sees `resync_requested_at` in
+`GET /v1/me/sync` and re-reads its HealthKit window without anchors), for an account
+whose phone has data the server lacks; `--merge-into` below; `--json` the raw answer.
 
 **One account in detail** (`GET /v1/admin/users/{id or first 8 digits}[?emails=1]`, D89):
 how it signs in (every identity from Supabase: Apple, email; whether the email is

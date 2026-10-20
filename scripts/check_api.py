@@ -386,6 +386,26 @@ def consent(key=None):
 cfg_b = get("/v1/config")
 check(cfg_b["privacy_policy_url"].startswith("https://") and POLICY, f"/v1/config privacy fields: {cfg_b}")
 
+# ---- sync state (GET /v1/me/sync, scoring_state; D91) ---------------------------
+SCORING_STATES = {"scored", "pending", "waiting_for_sleep", "stale"}
+KINDS_ALL = ["energy", "hr", "hrv", "resp", "sleep", "spo2", "steps", "workout"]
+for _ in range(30):  # smoke.sh's sync and recompute: scoring finishes the queued days
+    ss = get("/v1/me/sync")
+    if not ss["pending_days"]:
+        break
+    time.sleep(1)
+check(set(ss) == {"gate", "last_sync_at", "last_sync_device", "latest", "today", "pending_days", "expected_within_sec",
+                  "resync_requested_at"} and ss["pending_days"] == [] and ss["today"]["day"] == TODAY
+      and ss["today"]["state"] in SCORING_STATES and ss["today"]["model_version"] and ss["last_sync_at"]
+      and set(ss["latest"]) <= set(KINDS_ALL) and ss["latest"].get("hr") and ss["expected_within_sec"] >= 1,
+      f"GET /v1/me/sync: {ss}")
+check(ss["gate"] is None, f"the smoke user consented: {ss['gate']}")
+rows = get(f"/v1/days?to={TODAY}")
+check(all(d["scoring_state"] in SCORING_STATES for d in rows) and all(d["scoring_state"] == "scored" for d in rows if d["day"] < TODAY),
+      f"scoring_state: {[(d['day'], d['scoring_state']) for d in rows[-3:]]}")
+check(get(f"/v1/days/{TODAY}")["score"]["scoring_state"] == ss["today"]["state"], "the day's state is today's")
+ok(f"/v1/me/sync: nothing pending after scoring, today {ss['today']['state']}, expected within {ss['expected_within_sec']} s")
+
 # ---- scoring model (GET /v1/model, model_version) -----------------------------
 MODEL = get("/v1/model")
 check(MODEL["current"] and MODEL["changelog"] and MODEL["changelog"][0]["version"] == MODEL["current"]
@@ -423,6 +443,23 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     consent(KEY_D)
     status, _, _ = raw("POST", "/v1/sync", jbody(tiny), base=INGEST, key=KEY_D)
     check(status == 200, f"sync after consent: {status}")
+    # The same page again, plus a type the server does not know: counted, not refused (D91).
+    again = {**tiny, "samples": tiny["samples"] + [{"type": "blood_glucose", "start": iso_now(), "end": iso_now(), "value": 5,
+                                                    "unit": "mmol/L", "source": "check-d"}]}
+    status, _, sr = raw("POST", "/v1/sync", jbody(again), base=INGEST, key=KEY_D)
+    check(status == 200 and sr["accepted"] == {"samples": 0, "sleep": 0, "workouts": 0} and sr["samples"] == 0
+          and sr["ignored"]["samples"] == {"duplicate": 1, "outside_window": 0, "unknown_type": 1}
+          and sr["scoring"]["queued_days"] == sr["days_touched"] and sr["scoring"]["expected_within_sec"] >= 1,
+          f"SyncResponse: accepted, ignored, scoring: {status} {sr}")
+    # A new account on D's phone: the account hint (only with the device header).
+    KEY_J = f"{KEY}:{uuid.uuid4()}"
+    status, _, mj = raw("GET", "/v1/me", headers={"X-RYFT-Device-ID": tiny["device_id"]}, key=KEY_J)
+    hint = mj.get("account_hint") if status == 200 else None
+    check(hint and hint["kind"] == "other_account_on_device" and hint["other_provider"] == "apikey" and hint["other_last_sync"]
+          and set(hint) == {"kind", "other_provider", "other_last_sync"}, f"account_hint: {status} {mj}")
+    check(get("/v1/me", key=KEY_J)["account_hint"] is None, "no hint without the device header")
+    check(get("/v1/me", key=KEY_D, )["account_hint"] is None, "no hint for the account itself")
+    raw("DELETE", "/v1/me", key=KEY_J)
     src = get("/v1/me", key=KEY_D)["sources"]
     check(len(src) == 1 and src[0]["name"] == "check-d" and src[0]["bundle_id"] == "com.example.check-d"
           and src[0]["kinds"] == ["steps"] and src[0]["last_seen"], f"User.sources after a steps-only sync: {src}")

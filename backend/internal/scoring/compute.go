@@ -106,6 +106,11 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) error {
 	start := time.Now()
 	err := e.computeDay(ctx, userID, day)
+	if err == nil { // GET /v1/me/sync: this day is no longer pending (D91)
+		if _, _, merr := e.st.MarkScored(ctx, userID, day, start); merr != nil {
+			e.log.WarnContext(ctx, "mark scored", "day", day, "err", merr)
+		}
+	}
 	result := metrics.Result(err)
 	if errors.Is(err, ErrNoConsent) {
 		result = "no_consent"

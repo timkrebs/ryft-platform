@@ -133,6 +133,72 @@ type SyncResponse struct {
 	Sleep    int      `json:"sleep"`
 	Workouts int      `json:"workouts"`
 	Days     []string `json:"days_touched"` // YYYY-MM-DD, local to the user's tz
+	// What was stored, what was not and why, and when the scores will be there (D91).
+	Accepted SyncCounts  `json:"accepted"`
+	Ignored  SyncIgnored `json:"ignored"`
+	Scoring  SyncScoring `json:"scoring"`
+}
+
+// SyncCounts are records per kind.
+type SyncCounts struct {
+	Samples  int `json:"samples"`
+	Sleep    int `json:"sleep"`
+	Workouts int `json:"workouts"`
+}
+
+// IgnoredCounts are records not stored, by reason.
+type IgnoredCounts struct {
+	Duplicate     int `json:"duplicate"`      // identical to one stored
+	OutsideWindow int `json:"outside_window"` // > 24 h in the future, or ended > 400 days ago
+	UnknownType   int `json:"unknown_type"`   // a sample type or sleep stage the server does not know
+}
+
+// SyncIgnored is IgnoredCounts per kind.
+type SyncIgnored struct {
+	Samples  IgnoredCounts `json:"samples"`
+	Sleep    IgnoredCounts `json:"sleep"`
+	Workouts IgnoredCounts `json:"workouts"`
+}
+
+// SyncScoring is what scoring will do with a sync.
+type SyncScoring struct {
+	QueuedDays        []string `json:"queued_days"`
+	ExpectedWithinSec int      `json:"expected_within_sec"`
+}
+
+// Scoring states (DailyScore.scoring_state, SyncStatus.today.state); closed in v1.
+const (
+	ScoringScored          = "scored"
+	ScoringPending         = "pending"
+	ScoringWaitingForSleep = "waiting_for_sleep"
+	ScoringStale           = "stale"
+)
+
+// AccountHint is GET /v1/me → account_hint: another account on this device.
+type AccountHint struct {
+	Kind          string    `json:"kind"` // "other_account_on_device"
+	OtherProvider *string   `json:"other_provider"`
+	OtherLastSync time.Time `json:"other_last_sync"`
+}
+
+// TodayState is SyncStatus.today.
+type TodayState struct {
+	Day          string     `json:"day"`
+	State        string     `json:"state"`
+	ScoredAt     *time.Time `json:"scored_at"`
+	ModelVersion string     `json:"model_version"`
+}
+
+// SyncStatus is GET /v1/me/sync.
+type SyncStatus struct {
+	Gate              *string              `json:"gate"`
+	LastSyncAt        *time.Time           `json:"last_sync_at"`
+	LastSyncDevice    *string              `json:"last_sync_device"`
+	Latest            map[string]time.Time `json:"latest"`
+	Today             TodayState           `json:"today"`
+	PendingDays       []string             `json:"pending_days"`
+	ExpectedWithinSec int                  `json:"expected_within_sec"`
+	ResyncRequestedAt *time.Time           `json:"resync_requested_at"`
 }
 
 // DailyScore is what the app renders on the Today / Trends screens.
@@ -170,6 +236,8 @@ type DailyScore struct {
 	ComputedAt         time.Time      `json:"computed_at"`
 	// The scoring model that computed the row; nil before versions existed.
 	ModelVersion *string `json:"model_version"`
+	// Set by the api on read: scored, pending, waiting_for_sleep (today), stale (today).
+	ScoringState string `json:"scoring_state"`
 }
 
 type DayDetail struct {
@@ -409,6 +477,8 @@ type User struct {
 	// Apps and devices that sent data in the last 30 days, newest first; set by
 	// GET and PATCH /v1/me (the per-request user row does not load them).
 	Sources []UserSource `json:"sources"`
+	// GET /v1/me only: another account on the X-RYFT-Device-ID device (D91).
+	AccountHint *AccountHint `json:"account_hint"`
 }
 
 // Where User.max_hr comes from; closed in v1.

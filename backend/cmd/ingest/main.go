@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -129,6 +130,10 @@ type handler struct {
 	bus  *events.Bus
 	log  *slog.Logger
 	beta config.Beta
+
+	expMu  sync.Mutex // the cached sync-to-score estimate
+	expSec int
+	expAt  time.Time
 }
 
 // admitted says whether user may upload: beta access (BETA_GATE) and a consent
@@ -169,6 +174,8 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	ignored := screen(&req, time.Now())
+	sent := model.SyncCounts{Samples: len(req.Samples), Sleep: len(req.Sleep), Workouts: len(req.Workouts)}
 	ctx := r.Context()
 	user, _ := auth.UserFrom(ctx)
 	userID := user.ID
@@ -203,9 +210,15 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	days := touchedDays(&req, loc)
-	summary := map[string]any{"samples": ns, "sleep": nsl, "workouts": nw, "days": len(days), "app_version": req.AppVersion}
+	ignored.Samples.Duplicate, ignored.Sleep.Duplicate, ignored.Workouts.Duplicate = sent.Samples-ns, sent.Sleep-nsl, sent.Workouts-nw
+	summary := map[string]any{"samples": ns, "sleep": nsl, "workouts": nw, "days": len(days), "app_version": req.AppVersion,
+		"ignored": ignored}
 	if err := h.st.RecordSync(ctx, userID, req.DeviceID, summary); err != nil {
 		h.log.ErrorContext(ctx, "record sync", "err", err)
+	}
+	// GET /v1/me/sync's pending days: also only informative, the data is stored.
+	if err := h.st.QueueDays(ctx, userID, days); err != nil {
+		h.log.ErrorContext(ctx, "queue days", "err", err)
 	}
 	if len(days) > 0 {
 		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, ""); err != nil {
@@ -215,7 +228,78 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	}
 	countIngested(&req)
 	h.log.InfoContext(ctx, "sync", "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
-	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days})
+	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days,
+		Accepted: model.SyncCounts{Samples: ns, Sleep: nsl, Workouts: nw}, Ignored: ignored,
+		Scoring: model.SyncScoring{QueuedDays: days, ExpectedWithinSec: h.expectedSec(ctx)}})
+}
+
+// The window a record must fall in (SyncResponse → ignored.outside_window): a
+// day of clock skew ahead, and as far back as a score reaches.
+const (
+	futureSlack = 24 * time.Hour
+	pastWindow  = 400 * 24 * time.Hour
+)
+
+// screen drops the records the server does not store and counts them: unknown
+// sample types and sleep stages (an app reading a new HealthKit type keeps
+// syncing instead of failing with 422), and records outside the window.
+func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
+	var ig model.SyncIgnored
+	outside := func(start, end time.Time) bool {
+		return start.After(now.Add(futureSlack)) || end.Before(now.Add(-pastWindow))
+	}
+	samples := req.Samples[:0]
+	for _, s := range req.Samples {
+		switch {
+		case !model.KnownSampleTypes[s.Type]:
+			ig.Samples.UnknownType++
+		case outside(s.Start, s.End):
+			ig.Samples.OutsideWindow++
+		default:
+			samples = append(samples, s)
+		}
+	}
+	req.Samples = samples
+	sleep := req.Sleep[:0]
+	for _, s := range req.Sleep {
+		switch {
+		case !model.KnownSleepStages[s.Stage]:
+			ig.Sleep.UnknownType++
+		case outside(s.Start, s.End):
+			ig.Sleep.OutsideWindow++
+		default:
+			sleep = append(sleep, s)
+		}
+	}
+	req.Sleep = sleep
+	workouts := req.Workouts[:0]
+	for _, wk := range req.Workouts {
+		if outside(wk.Start, wk.End) {
+			ig.Workouts.OutsideWindow++
+			continue
+		}
+		workouts = append(workouts, wk)
+	}
+	req.Workouts = workouts
+	return ig
+}
+
+// expectedEvery is how long ingest reuses the sync-to-score estimate.
+const expectedEvery = time.Minute
+
+// expectedSec is scoring's recent sync-to-score p95, refreshed once a minute.
+func (h *handler) expectedSec(ctx context.Context) int {
+	h.expMu.Lock()
+	defer h.expMu.Unlock()
+	if time.Since(h.expAt) < expectedEvery && h.expSec > 0 {
+		return h.expSec
+	}
+	sec, err := h.st.ExpectedScoreSec(ctx)
+	if err != nil {
+		h.log.WarnContext(ctx, "expected score time", "err", err)
+	}
+	h.expSec, h.expAt = sec, time.Now()
+	return sec
 }
 
 // Limits of the free-text fields (migration 0020).
@@ -235,9 +319,6 @@ func validate(req *model.SyncRequest) error {
 	}
 	for i := range req.Samples {
 		s := &req.Samples[i]
-		if !model.KnownSampleTypes[s.Type] {
-			return fmt.Errorf("samples[%d]: unknown type %q", i, s.Type)
-		}
 		if s.Start.IsZero() {
 			return fmt.Errorf("samples[%d]: start is required", i)
 		}
@@ -250,9 +331,6 @@ func validate(req *model.SyncRequest) error {
 	}
 	for i := range req.Sleep {
 		s := &req.Sleep[i]
-		if !model.KnownSleepStages[s.Stage] {
-			return fmt.Errorf("sleep[%d]: unknown stage %q", i, s.Stage)
-		}
 		if !s.End.After(s.Start) {
 			return fmt.Errorf("sleep[%d]: end must be after start", i)
 		}

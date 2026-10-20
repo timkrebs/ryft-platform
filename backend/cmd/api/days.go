@@ -98,6 +98,14 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []model.DailyScore{}
 	}
+	today, _, err := h.localToday(r)
+	if err == nil {
+		err = h.withScoringStates(r.Context(), userOf(r).ID, today, rows)
+	}
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
 	httpx.WriteJSON(w, 200, rows)
 }
 
@@ -166,6 +174,13 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 			out.Sleep = &model.SleepDetail{SleepSummary: s, Need: scoring.NeedOf(out.Score), Segments: scoring.Hypnogram(night)}
 		}
 	}
+	today := time.Now().In(loc).Format(dayLayout)
+	states := []model.DailyScore{out.Score}
+	if err := h.withScoringStates(ctx, userOf(r).ID, today, states); err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	out.Score.ScoringState = states[0].ScoringState
 	httpx.WriteJSON(w, 200, out)
 }
 

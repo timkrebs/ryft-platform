@@ -17,7 +17,7 @@ import (
 // redeem a code, consent, read what it is, report a problem (API.md → Errors).
 // DELETE /v1/me has its own mux and is never gated.
 var gateOpen = map[string]bool{
-	"GET /v1/me": true, "GET /v1/config": true, "GET /v1/model": true, "POST /v1/me/invite": true,
+	"GET /v1/me": true, "GET /v1/me/sync": true, "GET /v1/config": true, "GET /v1/model": true, "POST /v1/me/invite": true,
 	"POST /v1/me/consent": true, "DELETE /v1/me/consent": true, "POST /v1/feedback": true,
 }
 

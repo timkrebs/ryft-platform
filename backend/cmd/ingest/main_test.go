@@ -78,3 +78,29 @@ func TestValidateBetaFields(t *testing.T) {
 		}
 	}
 }
+
+func TestScreen(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) time.Time { return now.Add(d) }
+	req := model.SyncRequest{
+		Samples: []model.Sample{{Type: model.SampleSteps, Start: at(-time.Hour), End: at(-time.Hour)},
+			{Type: "blood_glucose", Start: at(-time.Hour), End: at(-time.Hour)},
+			{Type: model.SampleSteps, Start: at(30 * time.Hour), End: at(30 * time.Hour)},
+			{Type: model.SampleSteps, Start: at(-401 * 24 * time.Hour), End: at(-401 * 24 * time.Hour)},
+			{Type: model.SampleSteps, Start: at(23 * time.Hour), End: at(23 * time.Hour)}},
+		Sleep: []model.SleepSegment{{Start: at(-8 * time.Hour), End: at(-time.Hour), Stage: "core"},
+			{Start: at(-8 * time.Hour), End: at(-time.Hour), Stage: "nap"}},
+		Workouts: []model.Workout{{ID: uuid.New(), Start: at(-2 * time.Hour), End: at(-time.Hour)},
+			{ID: uuid.New(), Start: at(48 * time.Hour), End: at(49 * time.Hour)}},
+	}
+	ig := screen(&req, now)
+	want := model.SyncIgnored{Samples: model.IgnoredCounts{OutsideWindow: 2, UnknownType: 1},
+		Sleep: model.IgnoredCounts{UnknownType: 1}, Workouts: model.IgnoredCounts{OutsideWindow: 1}}
+	if ig != want || len(req.Samples) != 2 || len(req.Sleep) != 1 || len(req.Workouts) != 1 {
+		t.Fatalf("ignored %+v, kept %d/%d/%d", ig, len(req.Samples), len(req.Sleep), len(req.Workouts))
+	}
+	// An unknown type no longer fails the sync (it is ignored instead).
+	if err := validate(&model.SyncRequest{DeviceID: uuid.New(), Samples: []model.Sample{{Type: "x", Start: now, End: now}}}); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}

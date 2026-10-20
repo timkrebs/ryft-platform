@@ -156,6 +156,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM consents WHERE user_id=$1`,
 			`DELETE FROM user_sources WHERE user_id=$1`,
 			`DELETE FROM feedback WHERE user_id=$1`,
+			`DELETE FROM score_queue WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
 			// Journal: entries before the custom behaviors they name.
 			`DELETE FROM journal_entries WHERE user_id=$1`,
@@ -408,9 +409,11 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 	}
 	b := &pgx.Batch{}
 	for _, x := range in {
+		// An identical re-send is neither rewritten nor counted (SyncResponse → ignored.duplicate).
 		b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
-			ON CONFLICT (user_id, type, start_at, end_at, source) DO UPDATE SET value = EXCLUDED.value`,
+			ON CONFLICT (user_id, type, start_at, end_at, source) DO UPDATE SET value = EXCLUDED.value
+			WHERE samples.value IS DISTINCT FROM EXCLUDED.value`,
 			userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source)
 	}
 	return s.runBatch(ctx, b)
@@ -439,7 +442,10 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT (user_id, id) DO UPDATE SET activity=EXCLUDED.activity, start_at=EXCLUDED.start_at, end_at=EXCLUDED.end_at,
 			  avg_hr=EXCLUDED.avg_hr, max_hr=EXCLUDED.max_hr, energy_kcal=EXCLUDED.energy_kcal,
-			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source`,
+			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source
+			WHERE (workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
+			  workouts.distance_m, workouts.source) IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at,
+			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)`,
 			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source)
 	}
 	return s.runBatch(ctx, b)

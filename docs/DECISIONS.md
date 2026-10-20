@@ -1468,3 +1468,30 @@ sent, and whether a second account shares its phone.
 - **The dry run runs the same transaction and rolls it back**, so its counts are the real
   ones. The direction check (more scored days into fewer needs `force=1`) and the second
   call's `404` keep a typo from merging the wrong way twice.
+
+## D91 — Sync state on the server, so the app can stop guessing
+
+- **`score_queue`** (migration 0025): ingest records the days a sync queued, scoring marks
+  each done when a computation that *started after* the queueing finishes (a sync during a
+  computation stays pending), and prunes after a day. `GET /v1/me/sync` → `pending_days`
+  and today's state come from it; the same rows give the sync-to-score latency without a
+  metrics backend in the request path. A small table, not NATS introspection: the queue
+  says what is outstanding per message, not per user and day.
+- **Today's state, in order:** `pending` (a queued day, or fresh data without a score),
+  `stale` (nothing new for 20 h: the watch is off, or the app is not syncing),
+  `waiting_for_sleep` (scored, no night yet), `scored`. Past days are `pending` or
+  `scored`. `expected_within_sec` is the recent p95 over every account (6 hours, 30 s
+  until there are 5 entries), so the app polls at the pace scoring actually keeps.
+- **`gate` is reported in `warn` mode too**: that is how an app that knows the gates
+  learns to prompt before they are switched on.
+- **`account_hint` only for an account without data**, from the device id the app sends
+  in `X-RYFT-Device-ID`, and only "another account, its provider, its last sync": no id,
+  no email, nothing that tells a stranger on a shared phone more than that someone else
+  uses RYFT here. An account that has data is not second-guessed.
+- **The sync answer counts what it ignored:** an identical re-send is a `duplicate` (and
+  is no longer rewritten: `ON CONFLICT … WHERE … IS DISTINCT FROM`), a record more than a
+  day in the future or older than 400 days is `outside_window`, and an unknown sample type
+  or sleep stage is `unknown_type` instead of a `422` for the whole page. A new HealthKit
+  type in the app must not stop every sync of that user.
+- **`resync_requested_at`** is a timestamp, not a flag the server clears: the app compares
+  it with its own last full re-sync, so nobody has to tell the server it happened.

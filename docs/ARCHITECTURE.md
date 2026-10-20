@@ -132,6 +132,9 @@ timer catches up.
 - `devices` — one row per user and app install (`(user_id, id)`), `last_sync_at`, the `app_version` and `os_version` the app last sent.
 - `consents` — every grant and withdrawal of consent to health-data processing, with the policy and app version (D78); `beta_invite_codes` — invite codes with their uses (D79); `users.beta_access_at` / `beta_invite_code`.
 - `feedback` — reports from the app with versions, request ids and diagnostics; `resolved_at` is set by the operator (D83). Deleted with the account.
+- `score_queue` — the days a sync queued for scoring, and when scoring finished each (`GET /v1/me/sync` → `pending_days`, the sync-to-score latency; D91). `users.resync_requested_at`: the operator's request for a full re-sync.
+- `admin_audit` — every authorized admin call: route, status, request id, key fingerprint, target user, details (D88). Append-only, no foreign key on the user.
+- `devices.last_sync_summary` (what the last sync carried) and `push_tokens.last_success_at` (the last delivered push) feed the admin user view (D89).
 - `user_sources` — per user, HealthKit source name and kind (`hr`, `steps`, `sleep`, …): the bundle id and the latest record's time. Ingest keeps it on every sync; `User.sources` and the `no-heart-rate-source` card read it (D82).
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.

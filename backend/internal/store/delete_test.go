@@ -70,7 +70,8 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM samples WHERE user_id=$1) + (SELECT count(*) FROM sleep_segments WHERE user_id=$1) +
 		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1) +
 		(SELECT count(*) FROM push_tokens WHERE user_id=$1) + (SELECT count(*) FROM notifications_sent WHERE user_id=$1) +
-		(SELECT count(*) FROM user_sources WHERE user_id=$1) + (SELECT count(*) FROM feedback WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM user_sources WHERE user_id=$1) + (SELECT count(*) FROM feedback WHERE user_id=$1) +
+		(SELECT count(*) FROM score_queue WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,9 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 		t.Fatal(err)
 	}
 	if _, err := st.AddFeedback(ctx, id, model.FeedbackPost{Message: "bye"}, model.FeedbackOther); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.QueueDays(ctx, id, []string{now.Format("2006-01-02")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.ClaimNotification(ctx, id, now.Format("2006-01-02"), model.NotifyMorningScore); err != nil {

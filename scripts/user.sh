@@ -7,6 +7,7 @@
 #   scripts/user.sh <id> --grant | --revoke          # beta access without a code
 #   scripts/user.sh <id> --merge-into <id> [--dry-run] [--force] [--yes]
 #                                                    # move everything to the other account, delete this one
+#   scripts/user.sh <id> --resync-hint               # the app runs a full re-sync next time (GET /v1/me/sync)
 #   scripts/user.sh <id> --json                      # the raw answer
 #
 # The admin key: ADMIN_API_KEY, else infra/vault's terraform output, else Vault
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry=1; shift ;;
     --force) force=1; shift ;;
     --yes) yes=1; shift ;;
+    --resync-hint) action=resync; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) who=$1; shift ;;
@@ -47,6 +49,8 @@ esac
 
 case "$action" in
   grant) ryft_admin POST "/v1/admin/users/$id/access" >/dev/null && echo "✓ beta access granted to $id" ;;
+  resync) ryft_admin POST "/v1/admin/users/$id/resync-hint" >/dev/null \
+    && echo "✓ $id: the app runs a full re-sync the next time it reads GET /v1/me/sync" ;;
   revoke) ryft_admin DELETE "/v1/admin/users/$id/access" >/dev/null && echo "✓ beta access taken from $id" ;;
   merge)
     plan() {   # the answer of a merge as a table

@@ -122,6 +122,25 @@ func (a admin) setAccess(w http.ResponseWriter, r *http.Request, grant bool) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// resyncHint is POST /v1/admin/users/{id}/resync-hint: GET /v1/me/sync then
+// tells the app to run a full re-sync (resync_requested_at), for an account
+// missing data the phone still has.
+func (a admin) resyncHint(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.resolve(w, r, "id")
+	if !ok {
+		return
+	}
+	auditTarget(r, id)
+	if err := a.h.st.RequestResync(r.Context(), id); err != nil {
+		metrics.AdminRequests.WithLabelValues("error").Inc()
+		httpx.Fail(w, r, err)
+		return
+	}
+	metrics.AdminRequests.WithLabelValues("ok").Inc()
+	a.h.log.InfoContext(r.Context(), "full re-sync requested", "target_user", id.String()[:8], "admin_key", a.keyID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // audit is GET /v1/admin/audit?since= (RFC 3339 or YYYY-MM-DD; default 7 days).
 func (a admin) audit(w http.ResponseWriter, r *http.Request) {
 	since, err := parseSince(r.URL.Query().Get("since"), time.Now())
@@ -157,6 +176,7 @@ func adminRoutes(h *handler, key string, timeout time.Duration) http.Handler {
 	adm.HandleFunc("POST /v1/admin/users/{id}/access", a.grantAccess)
 	adm.HandleFunc("DELETE /v1/admin/users/{id}/access", a.revokeAccess)
 	adm.HandleFunc("POST /v1/admin/users/{id}/merge-into/{to}", a.merge)
+	adm.HandleFunc("POST /v1/admin/users/{id}/resync-hint", a.resyncHint)
 	adm.HandleFunc("GET /v1/admin/audit", a.audit)
 	adm.HandleFunc("/v1/admin/", httpx.NotFound)
 	return adminOnly(key, a.audited(httpx.Timeout(timeout, httpx.WithRoutes(adm))))

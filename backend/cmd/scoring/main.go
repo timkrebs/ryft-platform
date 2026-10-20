@@ -135,6 +135,9 @@ func main() {
 				return
 			case <-t.C:
 				refreshActive(ctx, log, st, engine, &learn)
+				if err := st.PruneScoreQueue(ctx); err != nil {
+					log.Warn("prune score queue", "err", err)
+				}
 				if ages, err := st.SyncAges(ctx); err == nil {
 					for age, n := range ages {
 						metrics.UsersByLastSync.WithLabelValues(age).Set(float64(n))
