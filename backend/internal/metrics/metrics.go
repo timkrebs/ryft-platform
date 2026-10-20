@@ -117,6 +117,10 @@ var (
 		Name: "ryft_invite_redemptions_total",
 		Help: "POST /v1/me/invite: ok (a use spent), already (the account had access), invalid.",
 	}, []string{"result"})
+	FeedbackReceived = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_feedback_received_total",
+		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",
+	}, []string{"category"})
 
 	// Journal (api).
 	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{

@@ -497,8 +497,41 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":  # a fresh account, so the
     check("max-hr-observed" not in {c["id"] for c in get("/v1/insights", key=KEY_E)},
           "after max_hr = the suggestion, one day is above it: no card (and PATCH dropped the cached cards)")
     raw("DELETE", "/v1/me", key=KEY_E)
+
+    # ---- feedback and the admin view (D83), a fresh account for the 10-a-day limit
+    KEY_F = f"{KEY}:{uuid.uuid4()}"
+    note = f"check_api {uuid.uuid4()}"
+    body = {"message": note, "category": "data", "app_version": "0.9.0", "build": "41", "device_model": "iPhone17,1",
+            "os_version": "iOS 26.1", "request_ids": ["01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c"],
+            "diagnostics": {"last_sync": iso_now(), "healthkit_types": 9}}
+    since = iso_now()
+    check(raw("POST", "/v1/feedback", jbody(body), key=KEY_F)[0] == 204, "POST /v1/feedback")
+    for bad in ({"message": " "}, {"message": "x" * 4001}, {"message": "x", "category": "rant"},
+                {"message": "x", "request_ids": ["r"] * 21}, {"message": "x", "diagnostics": [1]}):
+        status, _, err = raw("POST", "/v1/feedback", jbody(bad), key=KEY_F)
+        check(status == 422 and is_error(err), f"POST /v1/feedback {str(bad)[:60]}: {status}")
+    for _ in range(9):
+        raw("POST", "/v1/feedback", jbody({"message": "again"}), key=KEY_F)
+    status, hdrs, err = raw("POST", "/v1/feedback", jbody({"message": "one too many"}), key=KEY_F)
+    check(status == 429 and int(hdrs.get("Retry-After", "0")) > 3600 and is_error(err), f"the 11th report today: {status}")
+    if ADMIN:
+        status, _, fb = raw("GET", f"/v1/admin/feedback?since={since}", key=ADMIN)
+        mine = [f for f in fb if f["message"] == note] if status == 200 else []
+        check(len(mine) == 1 and mine[0]["category"] == "data" and mine[0]["diagnostics"]["healthkit_types"] == 9
+              and mine[0]["request_ids"] == body["request_ids"] and mine[0]["resolved_at"] is None,
+              f"GET /v1/admin/feedback: {status} {mine}")
+        check(raw("POST", f"/v1/admin/feedback/{mine[0]['id']}/resolve", key=ADMIN)[0] == 204, "resolve")
+        status, _, users = raw("GET", "/v1/admin/users", key=ADMIN)
+        f_id = get("/v1/me", key=KEY_F)["id"]
+        row = next((u for u in users if u["id"] == f_id), None) if status == 200 else None
+        check(row and row["short_id"] == f_id[:8] and row["open_feedback"] == 9 and row["sources"] == []
+              and row["days_scored_14d"] == 0 and all("email" not in u for u in users),
+              f"GET /v1/admin/users (no emails without ?emails=1): {status} {row}")
+        check(raw("GET", "/v1/admin/users", key=KEY_F)[0] == 401, "the admin view needs the admin key")
+    raw("DELETE", "/v1/me", key=KEY_F)
     ok(f"profile: born 1990 → {tanaka(1990)} estimated, manual wins, back to {est}; 422s; "
        f"max-hr-observed suggests {est + 6}, gone once set")
+    ok("feedback: 204, 422s, 429 after 10 a day" + ("; admin feedback, resolve, users without emails" if ADMIN else ""))
 
 # ---- push: token registry, preferences, the morning event (M7) -----------------
 dev, tok = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex

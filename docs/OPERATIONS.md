@@ -245,6 +245,64 @@ for i in $(seq 1 150); do curl -s -o /dev/null -w '%{http_code}\n' https://api.r
 The services' own per-user limit (D36) applies after the token, so the two complement
 each other.
 
+## Beta
+
+Friends on TestFlight (D78–D83). Everything here uses the api's `ADMIN_API_KEY`:
+
+```bash
+ADMIN=$(terraform -chdir=infra/vault output -raw admin_api_key)    # locally: dev-admin-key-change-me-0123456789abcdef
+API=https://api.ryftapp.de
+```
+
+**Consent.** `POST /v1/sync` answers `403 consent_required` until the account consented
+to the current `PRIVACY_POLICY_VERSION` (configmaps of api and ingest, `2026-10-20`), and
+scoring computes nothing for an account without consent. Nothing was backfilled, so the
+operator's own account consents once too: with the app build that has the consent
+screen, or by hand with its access token:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"policy_version": "2026-10-20"}'
+```
+
+A new policy text: change `PRIVACY_POLICY_VERSION` in both configmaps (and the page),
+deploy; every tester consents again before the next sync, `ryft_beta_denied_total{code=
+"consent_required"}` shows who has not yet.
+
+**The gate.** Off until `BETA_GATE = "on"` is in `infra/vault/terraform.tfvars` →
+`shared_secrets` (the user applies; the operator syncs hourly, or restart it as in EKS
+above, and restarts api and ingest itself). Then accounts without a redeemed code get
+`403 invite_required` everywhere but onboarding. Accounts that existed at migration 0017
+keep access.
+
+```bash
+# A code for one person (or max_uses for a group), optionally expiring:
+curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
+  -d '{"note": "Anna", "max_uses": 1, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # uses so far
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites/RYFT-7K3M-QX9P
+```
+
+**Whose data is broken.** `scripts/beta_report.sh` prints one line per tester from
+`GET /v1/admin/users`: short id, created, provider, beta access, consent version, app
+version, last sync, sources, days scored / nights with stages / days with HRV in the
+last 14 (UTC) days, calibrating, max-HR source, open feedback. Signs: `sources` without
+`hr` (strain and recovery stay empty; the app shows `no-heart-rate-source`), `staged/14`
+at 0 with `sleep` in the sources (a tracker writing only "asleep"), `scored/14` well under
+the days since the first sync (syncs failing: `consent_required`, or the app's background
+refresh). Emails only with `--emails` (`?emails=1`); every call is logged with the admin
+key's fingerprint (`admin_key`).
+
+```bash
+ADMIN_API_KEY=$ADMIN scripts/beta_report.sh
+ADMIN_API_KEY=$ADMIN scripts/beta_report.sh feedback 2026-10-20     # reports since a day
+curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/feedback/42/resolve    # no longer open
+```
+
+**Feedback** (`POST /v1/feedback`, 10 per tester a day) carries `request_ids`: search the
+logs for them (`{namespace="ryft-api"} |= "<request id>"`, and the same id in ingest and
+scoring) to see what the tester saw. `ryft_feedback_received_total` going up alerts the
+operator (Monitoring).
+
 ## Feature flags
 
 `GET /v1/config` serves the flags in table `feature_flags` (D69). Change them with the

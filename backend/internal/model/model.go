@@ -452,6 +452,70 @@ type BetaInviteInput struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 
+// Feedback categories; closed in v1.
+const (
+	FeedbackBug   = "bug"
+	FeedbackIdea  = "idea"
+	FeedbackData  = "data"
+	FeedbackOther = "other"
+)
+
+// FeedbackPost is POST /v1/feedback.
+type FeedbackPost struct {
+	Message     string          `json:"message"`
+	Category    *string         `json:"category"`
+	AppVersion  *string         `json:"app_version"`
+	Build       *string         `json:"build"`
+	DeviceModel *string         `json:"device_model"`
+	OSVersion   *string         `json:"os_version"`
+	RequestIDs  []string        `json:"request_ids"`
+	Diagnostics json.RawMessage `json:"diagnostics"` // any JSON object
+}
+
+// Feedback is a stored report as GET /v1/admin/feedback shows it.
+type Feedback struct {
+	ID          int64           `json:"id"`
+	UserID      uuid.UUID       `json:"user_id"`
+	Category    string          `json:"category"`
+	Message     string          `json:"message"`
+	AppVersion  *string         `json:"app_version"`
+	Build       *string         `json:"build"`
+	DeviceModel *string         `json:"device_model"`
+	OSVersion   *string         `json:"os_version"`
+	RequestIDs  []string        `json:"request_ids"`
+	Diagnostics json.RawMessage `json:"diagnostics"` // null when none
+	CreatedAt   time.Time       `json:"created_at"`
+	ResolvedAt  *time.Time      `json:"resolved_at"`
+}
+
+// AdminUser is one row of GET /v1/admin/users: who the tester is (no email
+// unless asked) and whether their data looks right.
+type AdminUser struct {
+	ID             uuid.UUID     `json:"id"`
+	ShortID        string        `json:"short_id"`
+	CreatedAt      time.Time     `json:"created_at"`
+	Provider       *string       `json:"provider"`
+	Email          *string       `json:"email,omitempty"` // only with ?emails=1
+	BetaAccess     bool          `json:"beta_access"`
+	ConsentVersion *string       `json:"consent_version"`
+	AppVersion     *string       `json:"app_version"` // of the device that synced last
+	OSVersion      *string       `json:"os_version"`
+	LastSyncAt     *time.Time    `json:"last_sync_at"`
+	Sources        []AdminSource `json:"sources"` // the last 30 days
+	DaysScored14   int           `json:"days_scored_14d"`
+	NightsStaged14 int           `json:"nights_with_stages_14d"`
+	DaysHRV14      int           `json:"days_with_hrv_14d"`
+	Calibrating    *bool         `json:"calibrating"` // the latest scored day; null without one
+	MaxHRSource    string        `json:"max_hr_source"`
+	OpenFeedback   int           `json:"open_feedback"`
+}
+
+// AdminSource is a source in the admin view: name and kinds.
+type AdminSource struct {
+	Name  string   `json:"name"`
+	Kinds []string `json:"kinds"`
+}
+
 // Error codes (the error body's code), closed in v1.
 const (
 	CodeInviteRequired  = "invite_required"

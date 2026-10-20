@@ -155,6 +155,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM push_tokens WHERE user_id=$1`,
 			`DELETE FROM consents WHERE user_id=$1`,
 			`DELETE FROM user_sources WHERE user_id=$1`,
+			`DELETE FROM feedback WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
 			// Journal: entries before the custom behaviors they name.
 			`DELETE FROM journal_entries WHERE user_id=$1`,

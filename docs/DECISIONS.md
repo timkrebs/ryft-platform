@@ -1292,3 +1292,22 @@ support.
   tests). The handler itself is not in the loop: its part is `validate` and the store
   calls, both tested on their own. No model version bump: they test the rules, they
   change none.
+
+## D83 — Feedback in the database, the admin view as a query
+
+- **A table, not an email or a third-party form**: the report stays next to the data it is
+  about, is deleted with the account, and needs no new processor in the privacy policy.
+  `request_ids` link it to the logs; `diagnostics` is any JSON object up to 32 KiB, so the
+  app can add fields without a contract change. The message is never logged.
+- **10 a day, counted in the database** (rolling 24 hours, under the user lock): the
+  per-pod token buckets would allow replicas × 10, and a limit that sends a frustrated
+  tester away should be exact. `429` with `Retry-After` until the oldest of the ten stops
+  counting.
+- **Open or resolved**: `resolved_at`, set with `POST /v1/admin/feedback/{id}/resolve`, so
+  the report's "open feedback" means something without a ticket system.
+- **The admin view is one query per call** (`GET /v1/admin/users`), not a table kept up
+  to date: a handful of testers, read by one operator. The 14 days are UTC days; the app
+  version is the device that synced last. Emails only with `?emails=1`, every call logged
+  with the key's fingerprint and whether emails were shown: the view is for finding
+  broken data, not for knowing who the testers are.
+- **`scripts/beta_report.sh`** formats it with `jq` and `column`, no web UI.
