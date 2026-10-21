@@ -152,10 +152,30 @@ run >/dev/null || fail "promote failed with the ambiguity shim"
 [ "${#sha}" = 7 ] && pr_file "$sha" | grep -q "newTag: \"$sha\"" || fail "the tag must be the first 7 characters of HEAD"
 rm "$tmp/bin/git"
 
-# 11. a re-run finds its own branch and open PR: replaced, kept, not closed, not created twice
-new_repo rerun; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main; reset_logs
-GH_OPEN_PRS='[{"number":5,"headRefName":"deploy/'"$sha"'"}]' run >/dev/null || fail "re-run failed"
-! grep -q 'gh pr close' "$GH_LOG" && ! grep -q 'gh pr create' "$GH_LOG" || fail "a re-run must keep its PR: $(cat "$GH_LOG")"
-grep -q "gh pr merge deploy/$sha --auto --squash" "$GH_LOG" || fail "auto-merge on the re-run"
+# 11. re-runs, never a force-push
+# 11a. the PR of the attempt before is open: reported, auto-merge asserted, older deploy PRs closed, no push
+new_repo rerun-open; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main
+tip=$(git rev-parse "origin/deploy/$sha"); git branch -q -D "deploy/$sha"; reset_logs
+out=$(GH_OPEN_PRS='[{"number":5,"headRefName":"deploy/'"$sha"'"},{"number":4,"headRefName":"deploy/abc1234"},{"number":3,"headRefName":"feature/x"}]' run) || fail "re-run with an open PR failed"
+echo "$out" | grep -q 'already open: #5' || fail "no 'already open': $out"
+! grep -q 'gh pr create' "$GH_LOG" && ! grep -q 'gh pr close 5 ' "$GH_LOG" && ! grep -q 'gh pr close 3 ' "$GH_LOG" || fail "a re-run must keep its PR: $(cat "$GH_LOG")"
+grep -q 'gh pr close 4 --delete-branch' "$GH_LOG" || fail "older deploy PRs are still closed"
+grep -q "gh pr merge deploy/$sha --auto --squash" "$GH_LOG" || fail "auto-merge is asserted again"
+[ "$(git ls-remote origin "refs/heads/deploy/$sha" | cut -f1)" = "$tip" ] || fail "the remote branch was touched"
+# 11b. the branch exists, no open PR, same pins: the PR is opened from it, the branch is not pushed again
+new_repo rerun-branch; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main
+tip=$(git rev-parse "origin/deploy/$sha"); git branch -q -D "deploy/$sha"; reset_logs
+run >/dev/null || fail "re-run with an identical branch failed"
+grep -q "gh pr create --base main --head deploy/$sha" "$GH_LOG" || fail "no PR from the existing branch: $(cat "$GH_LOG")"
+grep -q "gh pr merge deploy/$sha --auto --squash" "$GH_LOG" || fail "no auto-merge"
+[ "$(git ls-remote origin "refs/heads/deploy/$sha" | cut -f1)" = "$tip" ] || fail "the existing branch must stay as it is"
+# 11c. the branch exists with other pins: exit 1, names the branch and the fix, nothing created
+new_repo rerun-differs; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main
+git switch -q -c scratch "origin/deploy/$sha"; ./scripts/pin_images.sh 1234567 web "$OVERLAY" >/dev/null; git commit -qam "other pins"; git push -q origin "scratch:deploy/$sha"
+tip=$(git rev-parse HEAD); git switch -q main; git branch -q -D "deploy/$sha" scratch; reset_logs
+out=$(run 2>&1) && fail "a branch with other pins must fail the job"
+echo "$out" | grep -q "git push origin --delete deploy/$sha" || fail "the message must name the fix: $out"
+! grep -q 'gh pr create' "$GH_LOG" || fail "no PR from a branch with other pins"
+[ "$(git ls-remote origin "refs/heads/deploy/$sha" | cut -f1)" = "$tip" ] || fail "the remote branch must not be overwritten"
 
 echo "✓ promote_test: per-group pins in one PR, superseded PRs closed, docs/pin commits/holds skipped, registry first, 7-char tag"

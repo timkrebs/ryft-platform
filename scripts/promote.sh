@@ -46,11 +46,38 @@ uid=$(gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
 git config user.name "${SLUG}[bot]"
 git config user.email "${uid}+${SLUG}[bot]@users.noreply.github.com"
 branch="deploy/$sha"
-git switch -q -C "$branch"
+# Every older deploy/* PR edits the same lines and would conflict: close them all as
+# superseded (the web ones too: each new PR pins a superset of what any older one pinned,
+# because main is linear). This run's own branch is kept.
+close_older() {
+  local n
+  for n in $(gh pr list --state open --json number,headRefName --jq ".[] | select((.headRefName | startswith(\"deploy/\")) and .headRefName != \"$branch\") | .number"); do
+    gh pr close "$n" --delete-branch --comment "Superseded by deploy: images $sha."
+  done
+}
+# A re-run of this job (nothing is force-pushed): the PR from the attempt before is open.
+mine=$(gh pr list --state open --json number,headRefName --jq ".[] | select(.headRefName == \"$branch\") | .number")
+if [ -n "$mine" ]; then
+  echo "promote: already open: #$mine"
+  close_older
+  gh pr merge "$branch" --auto --squash
+  exit 0
+fi
+git switch -q -c "$branch"
 ./scripts/pin_images.sh "$sha" "${groups[@]}" "$file" >/dev/null
 git commit -qam "deploy: images $sha"
-# A re-run of this job finds its own branch from the attempt before: it is the bot's, replace it.
-git push -q --force origin "$branch"
+if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+  # An earlier run died after its push, before the PR: reuse the branch when it holds what
+  # this run would push.
+  git fetch -q origin "$branch"
+  if [ "$(git show "FETCH_HEAD:$file")" != "$(cat "$file")" ]; then
+    echo "promote: origin/$branch exists with other pins than this run would make. Delete it and re-run the job: git push origin --delete $branch" >&2
+    exit 1
+  fi
+  echo "promote: origin/$branch already holds these pins: opening the PR from it"
+else
+  git push -q origin "$branch"
+fi
 
 body=$(mktemp)
 trap 'rm -f "$body"' EXIT
@@ -78,16 +105,7 @@ dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
   done
 } > "$body"
 
-# An older deploy PR edits the same lines and would conflict: close them all as
-# superseded (every deploy/* PR, the web ones too: each new PR pins a superset of what any
-# older one pinned, because main is linear). The branch of this very run is kept when a
-# re-run finds its PR open.
-for n in $(gh pr list --state open --json number,headRefName --jq ".[] | select((.headRefName | startswith(\"deploy/\")) and .headRefName != \"$branch\") | .number"); do
-  gh pr close "$n" --delete-branch --comment "Superseded by deploy: images $sha."
-done
-mine=$(gh pr list --state open --json number,headRefName --jq ".[] | select(.headRefName == \"$branch\") | .number")
-if [ -z "$mine" ]; then
-  gh pr create --base main --head "$branch" --title "deploy: images $sha" --body-file "$body"
-fi
+close_older
+gh pr create --base main --head "$branch" --title "deploy: images $sha" --body-file "$body"
 gh pr merge "$branch" --auto --squash
 echo "promote: ${groups[*]} → $sha in a PR"
