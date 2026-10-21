@@ -330,7 +330,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 **RabbitMQ: your steps, one release at a time** (D102; OPERATIONS → RabbitMQ → The
 cutover). Before: the GitOps steps above, done. The releases are the four commits of
-branch `rabbitmq-cutover` (R1 `03e9164`, R2 `7f51b19`, R3 `9c59462`, R4 `f4bd3e5`);
+branch `rabbitmq-cutover` (R1 `b07e7be`, R2 `da67f71`, R3 `9fa1741`, R4 `986237b`);
 cherry-pick each onto main when the one before is verified.
 
 0. **Main as it is** deploys like any commit (promote PR): migration 0026 and the outbox,
@@ -341,22 +341,22 @@ cherry-pick each onto main when the one before is verified.
    kubectl describe nodes | grep -A8 'Allocated resources'      # 1 GiB free on each of three nodes
    kubectl get clusterissuer ryft-internal                        # READY True (infra/aws/kubernetes, done)
    kubectl -n ryft-rabbitmq get secret                            # amqp-user-ingest/api/scoring/notify (infra/vault, done)
-   git cherry-pick 03e9164 && git push                            # the applications
+   git cherry-pick b07e7be && git push                            # the applications
    kubectl -n argocd get applications -w                          # vault-rabbitmq, rabbitmq-operators, broker-rabbitmq Healthy
    ```
 
    Then the checks in OPERATIONS → RabbitMQ → Healthy is, and the management UI at
    `https://rabbitmq.ryftapp.de` (comes with the broker, D103), user and password from
    `kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'`.
-2. **R2, dual consume:** `git cherry-pick 7f51b19 && git push`; Argo CD syncs ryft-platform
+2. **R2, dual consume:** `git cherry-pick da67f71 && git push`; Argo CD syncs ryft-platform
    (scoring and notify restart). Check `kubectl -n ryft-scoring logs deploy/scoring |
    grep -i amqp`, `ryft_amqp_connected` 1 for both, `make smoke-prod`.
-3. **R3, publish on RabbitMQ:** `git cherry-pick 9c59462 && git push`. Check `make
+3. **R3, publish on RabbitMQ:** `git cherry-pick 9fa1741 && git push`. Check `make
    smoke-prod`, the queue depths and the outbox at 0; wait a day of normal syncs
    (`ryft_sync_to_score_seconds` p95 as before, `scripts/dlq.sh list` empty).
 4. **R4, NATS goes:** first `kubectl -n ryft-scoring exec deploy/scoring -- /app dlq`
    (redrive or delete each letter) and `ryft_nats_consumer_pending` 0 for both. Then
-   `git cherry-pick f4bd3e5 && git push` (CI builds images without NATS; the promote PR
+   `git cherry-pick 986237b && git push` (CI builds images without NATS; the promote PR
    deploys them). Then `(cd infra/vault && terraform plan -out=tfplan && terraform apply
    tfplan)` (deletes namespace `ryft-nats` with its volume), commit the removed
    `vault-namespaces/nats`, and `scripts/rescore_all.sh 3`.
