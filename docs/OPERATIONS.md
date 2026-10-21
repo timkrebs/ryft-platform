@@ -508,9 +508,10 @@ screen, or by hand with its access token:
 curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"policy_version": "2026-10-20"}'
 ```
 
-A new policy text: change `PRIVACY_POLICY_VERSION` in both configmaps (and the page),
-deploy; every tester consents again before the next sync, `ryft_gate_refusals_total{code=
-"consent_required"}` shows who has not yet.
+A new policy text: change `PRIVACY_POLICY_VERSION` in both configmaps (api and ingest)
+**and** add `content/legal/{en,de}/privacy/<version>.mdx` in ryft-web (its CI warns while
+they differ), release both; every tester consents again before the next sync,
+`ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
 
 **The gates and their modes** (D87). Two checks, each `off`, `warn` or `on`, set in
 `infra/vault/terraform.tfvars` → `shared_secrets` (the user applies):
@@ -827,31 +828,73 @@ when the month is forecast to exceed it.
 
 ## Apex site and apple-app-site-association
 
-`https://ryftapp.de` serves a minimal page from `ryft-web`; `www.ryftapp.de` redirects
-to it. Everything it serves is a ConfigMap (`deploy/k8s/base/web`), so a change is a merged
-commit (Argo CD rolls the site):
+`https://ryftapp.de` is the `ryft-web` image (D106): `ghcr.io/timkrebs/ryft/web:<short-sha>`,
+built and pushed by **`timkrebs/ryft-web`** on every green `main` (a public package, pulled
+anonymously like the service images). Everything the site serves lives in that
+repository: the pages, the legal texts (`content/legal/{en,de}/`), nginx's config and the
+AASA. `www.ryftapp.de` redirects to the apex. This repository only runs it: the
+Deployment (`deploy/k8s/base/web`, uid 101, read-only root filesystem, `/healthz`), its
+Service and NetworkPolicy, and in `overlays/eks` the Ingress, the `www` redirect, the rate
+limit and **web's pin** (`newTag`, the short SHA of a green ryft-web `main` run, quoted;
+not a SHA of this repository).
 
 - **`/.well-known/apple-app-site-association`:** `webcredentials` for password AutoFill
   with email accounts, and `applinks` for the paths the app's `AppRoute` parses
   (`../app/docs/API_REQUESTS.md`): `/day/*`, `/sleep/*`, `/insights/*`,
   `/train/sessions/*`, `/train/session/*`, `/train/exercises/*`, `/train/plan/*`,
-  `/train/history`, `/auth/*`. The app's entitlements list `webcredentials:ryftapp.de` and
-  `applinks:ryftapp.de`.
+  `/train/history`, `/invite/*` (since 2026-10-21), `/auth/*`. The app's entitlements
+  list `webcredentials:ryftapp.de` and `applinks:ryftapp.de`.
 - **Those paths in a browser** (a phone without the app) get an "Open in RYFT" page.
 - **The legal pages**, English at `/privacy`, `/terms`, `/support`, `/impressum`, German
-  under `/de/…` (`site/pages/*.html`). **They are drafts:** every page says `DRAFT — review
-  before publishing`, and every `TODO(user)` (controller, address, contact, DPAs, the
-  competent authority, minimum age, liability, law) is the operator's to fill in. When
-  done, remove the banner and the `noindex`. `/privacy` is `PRIVACY_POLICY_URL`, and its
-  version is `PRIVACY_POLICY_VERSION` (OPERATIONS → Beta): a changed text with a new
-  version asks everyone to consent again.
+  under `/de/…`, each version of the privacy policy also at `/privacy/<version>`.
+  `/privacy` is `PRIVACY_POLICY_URL`, its version `PRIVACY_POLICY_VERSION` (OPERATIONS →
+  Beta).
+- **A change to the site** is a PR in ryft-web, then a web release here.
+
+**A web release:** a one-line PR that moves web's `newTag` in
+`deploy/k8s/overlays/eks/kustomization.yaml` to the short SHA of a green ryft-web `main`
+run (`gh run list -R timkrebs/ryft-web --workflow ci --branch main --status success
+--limit 1 --json headSha --jq '.[0].headSha[:7]'`, quoted). `manifests` checks that the
+image exists (`scripts/check_registry.sh`), the merge deploys it (Argo CD rolls `web`;
+the old pods serve until the new ones are ready), a revert rolls back. Once ryft-web's
+promote job is switched on (its PR #11, with the `ryft-deploy` App's client ID and key in
+ryft-web), it opens these PRs itself on branches `deploy/web-<sha>`; this repository's
+`promote.sh` leaves them alone.
 
 ```bash
-curl -sI https://ryftapp.de/.well-known/apple-app-site-association          # 200, application/json, no redirect
+kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo
+for p in "" privacy terms support impressum de/privacy de/impressum privacy/2026-10-20 day/2026-10-19 auth/callback invite/TEST; do
+  curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
+curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
+curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1: the script hashes
+curl -sI https://www.ryftapp.de/ | grep -i location                                                         # https://ryftapp.de/
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
-for p in privacy terms support impressum de/privacy de/impressum day/2026-10-19; do
-  curl -s -o /dev/null -w "%{http_code} %{content_type} $p\n" https://ryftapp.de/$p; done   # 200 text/html each
 ```
+
+## Mail for ryftapp.de
+
+The site prints `support@ryftapp.de` (support, the privacy contact, the Impressum), and
+the zone has **no MX record**: mail to it bounces until a mail service is set up. The
+records go into the `ryftapp.de` zone in `infra/aws/dns` (Terraform, the user applies),
+next to the CAA records, as `aws_route53_record`s:
+
+- **MX** at the apex, the service's mail servers with their priorities.
+- **TXT at the apex: one record set** with every value that belongs there, the SPF
+  (`v=spf1 include:<the service> -all`) and the service's verification string. Route 53
+  holds one TXT set per name; the apex has none today, and ExternalDNS keeps its ownership
+  records under prefixed names (`a-www.ryftapp.de`), so nothing collides.
+- **DKIM:** the service's selector records (`<selector>._domainkey`, CNAME or TXT, as it
+  says).
+- **DMARC:** TXT at `_dmarc`, starting with `v=DMARC1; p=none; rua=mailto:…` (a report
+  address at the service, not a private one), tightened to `quarantine` once the reports
+  are clean.
+
+How: the user picks an EU mail service with forwarding and send-as, pastes the records it
+asks for into the session, and they come back as a PR to `infra/aws/dns` (with a test in
+`tests/dns.tftest.hcl`); then `(cd infra/aws/dns && terraform plan -out=tfplan &&
+terraform apply tfplan)` and `dig +short MX ryftapp.de`. **The forwarding target, the
+user's private address, is configured in the mail service only**: it never appears in a
+DNS record, this repository or a Terraform variable.
 
 ## App Review demo account
 
@@ -890,13 +933,13 @@ scripts/seed_demo.py`.
   are health data.
 - **Where and how long:** stdout of each pod (on the node until the pod goes); CloudWatch
   Logs (Fluent Bit ships the `ryft-*` namespaces), **14 days**, encrypted with a key only
-  `/ryft/*` groups may use (`infra/aws/kubernetes/logs.tf`, D52). By the user's choice
-  (2026-10-19) the pod logs also reach **Grafana Cloud** (stack in eu-west-2, London):
-  retention there is the stack plan's (the free tier keeps logs 14 days; check under
-  Billing), and Grafana Labs is then a processor of health data, so the privacy policy
-  names it. Excluding `ryft-.*` from pod-log collection in Fleet Management ends that.
-- **Who can read them:** the AWS account's administrators (CloudWatch, `kubectl logs`)
-  and the Grafana stack's members. Nobody else has either.
+  `/ryft/*` groups may use (`infra/aws/kubernetes/logs.tf`, D52). **Not in Grafana
+  Cloud** (the user's decision, 2026-10-21): `ryft-.*` is excluded from pod-log
+  collection in Fleet Management, so Grafana Labs receives the services' metrics only
+  (counters and route labels, no user data), and the privacy text names it for that. Check
+  in Grafana → Explore → Loki that `{namespace=~"ryft-.*"}` returns nothing.
+- **Who can read them:** the AWS account's administrators (CloudWatch, `kubectl logs`).
+  Nobody else.
 
 ## Backups
 

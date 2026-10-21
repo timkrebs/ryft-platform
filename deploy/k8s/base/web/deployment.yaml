@@ -14,7 +14,7 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101           # nginx in the unprivileged image
+        runAsUser: 101           # nginx in the ryft-web image
         runAsGroup: 101
         seccompProfile: { type: RuntimeDefault }
       topologySpreadConstraints:
@@ -24,13 +24,11 @@ spec:
           labelSelector: { matchLabels: { app: web } }
       containers:
         - name: nginx
-          image: nginxinc/nginx-unprivileged:1.27-alpine
+          # The whole site (pages, nginx config, AASA) is one image, built and pushed by
+          # timkrebs/ryft-web on every green main. The tag is pinned in overlays/eks.
+          image: ghcr.io/timkrebs/ryft/web
           ports: [{ containerPort: 8080, name: http }]
           volumeMounts:
-            - { name: nginx, mountPath: /etc/nginx/conf.d, readOnly: true }
-            - { name: site, mountPath: /usr/share/nginx/html/index.html, subPath: index.html, readOnly: true }
-            - { name: site, mountPath: /usr/share/nginx/html/.well-known/apple-app-site-association, subPath: apple-app-site-association, readOnly: true }
-            - { name: pages, mountPath: /usr/share/nginx/html/pages, readOnly: true }
             - { name: tmp, mountPath: /tmp }
             - { name: cache, mountPath: /var/cache/nginx }
           readinessProbe:
@@ -47,12 +45,6 @@ spec:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
       volumes:
-        - name: nginx
-          configMap: { name: web-nginx }
-        - name: site
-          configMap: { name: web-site }
-        - name: pages
-          configMap: { name: web-pages }
         - name: tmp
           emptyDir: {}
         - name: cache

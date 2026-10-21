@@ -1,27 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# The apex site ryftapp.de: a static page and /.well-known/apple-app-site-association.
-# Namespace-neutral; services/web puts it into ryft-web.
+# The apex site ryftapp.de: one image from timkrebs/ryft-web (the static pages, the legal
+# texts, nginx's config and /.well-known/apple-app-site-association). Namespace-neutral;
+# services/web puts it into ryft-web.
 resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
-configMapGenerator:
-  # The hash suffix rolls the Deployment when the content changes.
-  - name: web-site
-    files:
-      - site/index.html
-      - apple-app-site-association=site/.well-known/apple-app-site-association
-  - name: web-pages
-    files:
-      - site/pages/privacy.en.html
-      - site/pages/privacy.de.html
-      - site/pages/terms.en.html
-      - site/pages/terms.de.html
-      - site/pages/support.en.html
-      - site/pages/support.de.html
-      - site/pages/impressum.en.html
-      - site/pages/impressum.de.html
-      - site/pages/open.html
-  - name: web-nginx
-    files: [default.conf]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # promote.sh in a throwaway repository with a fake gh and a local remote
 # (make test-scripts): a backend change is pinned in a PR by the App's bot; nothing
-# under backend/ does nothing; an older deploy PR is closed; the merged pin commit
-# does not promote itself.
+# under backend/ does nothing; an older deploy PR is closed, ryft-web's pin PR is
+# not; the merged pin commit does not promote itself.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d)
@@ -14,7 +14,11 @@ cat > "$tmp/bin/gh" <<'G'
 echo "gh $*" >> "$GH_LOG"
 case "$1 $2" in
   "api /users/"*) echo 4242 ;;
-  "pr list") [ -n "${GH_OPEN_PR:-}" ] && echo "$GH_OPEN_PR" ;;
+  # The open PRs as GitHub lists them, filtered by the caller's own --jq.
+  "pr list")
+    jq_expr=""; prev=""
+    for a in "$@"; do [ "$prev" = "--jq" ] && jq_expr=$a; prev=$a; done
+    [ -n "${GH_OPEN_PRS:-}" ] && printf '%s' "$GH_OPEN_PRS" | jq -r "$jq_expr" ;;
 esac
 exit 0
 G
@@ -38,11 +42,14 @@ out=$(run) && echo "$out" | grep -q 'nothing under backend/' || fail "a docs-onl
 # 2. a backend change: pinned on deploy/<sha>, PR with the commits, auto-merge
 echo v2 > backend/main.go && git commit -qam "scoring: a change"
 sha=$(git rev-parse --short=7 HEAD)
-GH_OPEN_PR=7 run >/dev/null || fail "promote failed"
+GH_OPEN_PRS='[{"number":7,"headRefName":"deploy/abc1234"},{"number":9,"headRefName":"deploy/web-f437747"},{"number":3,"headRefName":"feature/x"}]' \
+  run >/dev/null || fail "promote failed"
 git show "origin/deploy/$sha:deploy/k8s/overlays/eks/kustomization.yaml" | grep -q "newTag: \"$sha\"" || fail "the branch does not pin $sha"
 [ "$(git log -1 --format='%an <%ae> %s' "origin/deploy/$sha")" = "ryft-deploy[bot] <4242+ryft-deploy[bot]@users.noreply.github.com> deploy: images $sha" ] \
   || fail "the pin commit is not the bot's: $(git log -1 --format='%an <%ae> %s' "origin/deploy/$sha")"
 grep -q "gh pr close 7 --delete-branch" "$tmp/gh.log" || fail "the older deploy PR is not closed"
+! grep -q "gh pr close 9 " "$tmp/gh.log" || fail "ryft-web's pin PR (deploy/web-*) must stay open"
+! grep -q "gh pr close 3 " "$tmp/gh.log" || fail "a PR that is no deploy PR must stay open"
 grep -q "gh pr create --base main --head deploy/$sha --title deploy: images $sha" "$tmp/gh.log" || fail "no PR: $(cat "$tmp/gh.log")"
 grep -q "gh pr merge deploy/$sha --auto --squash" "$tmp/gh.log" || fail "no auto-merge"
 
@@ -51,4 +58,4 @@ git switch -q main && git merge -q --squash "deploy/$sha" >/dev/null && git comm
 : > "$tmp/gh.log"
 out=$(run) && echo "$out" | grep -q 'nothing under backend/' || fail "the pin commit must not promote itself: $out"
 
-echo "✓ promote_test: backend changes pinned in a PR by the bot, docs and pin commits skipped, older PRs closed"
+echo "✓ promote_test: backend changes pinned in a PR by the bot, docs and pin commits skipped, older PRs closed, web pin PRs kept"

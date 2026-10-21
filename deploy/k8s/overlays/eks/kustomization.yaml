@@ -52,5 +52,6 @@ images:
     newTag: "0fd4256"
   - name: ghcr.io/timkrebs/ryft/notify
     newTag: "0fd4256"
+  # web: the short SHA of a green main run in timkrebs/ryft-web, not of this repository.
   - name: ghcr.io/timkrebs/ryft/web
-    newTag: "1015bc7"
+    newTag: "f437747"
