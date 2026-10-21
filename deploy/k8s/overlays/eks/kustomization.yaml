@@ -34,7 +34,8 @@ patches:
   - path: ingress-ingest.yaml
   # The RabbitMQ cutover (D102), one release at a time, in each Deployment's env (it
   # overrides ryft-config, and a change rolls the pods). R2: scoring and notify
-  # consume NATS and RabbitMQ; everything still publishes on NATS.
+  # consume NATS and RabbitMQ. R3: ingest, api and scoring publish on RabbitMQ (through
+  # their outboxes); the consumers still drain NATS.
   - path: events.yaml
 
 # Pin to the commit CI built (ghcr.io/timkrebs/ryft/<image>:<short-sha>): the short SHA

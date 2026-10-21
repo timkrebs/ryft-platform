@@ -2,6 +2,28 @@
 # (EVENTS_CONSUME), per release of the RabbitMQ cutover (D102). Unset is nats.
 apiVersion: apps/v1
 kind: Deployment
+metadata: { name: ingest, namespace: ryft-ingest }
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingest
+          env:
+            - { name: EVENTS_BACKEND, value: amqp }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api, namespace: ryft-api }
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - { name: EVENTS_BACKEND, value: amqp }
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata: { name: scoring, namespace: ryft-scoring }
 spec:
   template:
@@ -9,6 +31,7 @@ spec:
       containers:
         - name: scoring
           env:
+            - { name: EVENTS_BACKEND, value: amqp }
             - { name: EVENTS_CONSUME, value: "nats,amqp" }
 ---
 apiVersion: apps/v1
