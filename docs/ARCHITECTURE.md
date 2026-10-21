@@ -1,9 +1,9 @@
 # RYFT — architecture
 
-A self-hosted Whoop: a Garmin watch feeds Apple Health, an iOS app ships that data to
-Go microservices on Kubernetes, and the services turn it into daily **Readiness**,
-**Recovery**, **Strain** and **Sleep** scores the app renders. The HTTP contract with
-the app is [`API.md`](API.md).
+RYFT, self-hosted: a watch or ring (a Garmin, in development) feeds Apple Health, an iOS
+app ships that data to Go microservices on Kubernetes, and the services turn it into
+daily **Readiness**, **Recovery**, **Strain** and **Sleep** scores the app renders. The
+HTTP contract with the app is [`API.md`](API.md).
 
 ```
  Garmin watch ──BLE──▶ Garmin Connect (iOS) ──▶ Apple Health (HealthKit)
@@ -165,7 +165,7 @@ the roles what they need in the same migration, and the grants test must be exte
 
 A "day" is a local calendar day in `users.tz`. The night that *ends* on day D belongs to
 D (sleep ending between D-1 20:00 and D 13:00), so the morning's recovery and the
-day's strain line up like Whoop.
+day's strain line up.
 
 ## Scoring (`internal/scoring/algorithms.go`, unit-tested)
 
