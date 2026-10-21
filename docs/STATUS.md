@@ -326,9 +326,9 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    (no `smoke` subcommand: "DATABASE_URL is required"); the sync of `9332aad` (11:10 UTC,
    images `057e4ce`) applied 0026 and rolled out all four; its smoke failed for want of
    `service_secrets.smoke` in `infra/vault` (added, applied); `smoke passed` at 11:44
-   UTC. **Still to do:** auto-sync, `git cherry-pick 0905a93 && git push` (branch
-   `argo-automate-platform`).
-7. **Prove the loop:** a merge that changes nothing, a real promote PR, and a revert of
+   UTC. Auto-sync on since `d733f68` (pushed 11:53 UTC, applied by the root at 11:54).
+7. **Prove the loop:** a merge that changes nothing: done (`d733f68`: ryft-platform
+   stayed Synced, no sync, no hooks). Still to do: a real promote PR and a revert of
    that pin (and of the revert); note the times (merge → healthy) here.
 
 **RabbitMQ: your steps, one release at a time** (D102; OPERATIONS → RabbitMQ → The
