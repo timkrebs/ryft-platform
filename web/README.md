@@ -33,7 +33,7 @@ they're missing.
 ## The image
 
 ```bash
-npm run image      # docker or podman build → ryft-site:local
+npm run image      # docker or podman build → ryft-web:local
 npm run serve      # http://localhost:8080, read-only root FS, non-root, like the cluster
 npm run e2e        # Playwright against it: every page en/de, light/dark, axe, routes, headers
 npm run links      # internal and external links

@@ -1,5 +1,5 @@
 {
-  "name": "ryft-site",
+  "name": "ryft-web",
   "version": "0.1.0",
   "private": true,
   "description": "ryftapp.de: the RYFT landing page, legal pages and app-link plumbing, as a static site.",

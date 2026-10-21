@@ -3,15 +3,15 @@
 // CONTAINER_CLI overrides), the way the cluster runs it: read-only root filesystem,
 // writable /tmp and /var/cache/nginx, non-root, all capabilities dropped.
 //
-//   node scripts/container.mjs build        → image ryft-site:local
+//   node scripts/container.mjs build        → image ryft-web:local
 //   node scripts/container.mjs run [port]   → http://localhost:<port> (default 8080), detached
 //   node scripts/container.mjs stop
 import { execFileSync, spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const IMAGE = process.env.IMAGE ?? 'ryft-site:local';
-const NAME = 'ryft-site-local';
+const IMAGE = process.env.IMAGE ?? 'ryft-web:local';
+const NAME = 'ryft-web-local';
 const cli = process.env.CONTAINER_CLI ?? (has('docker') ? 'docker' : has('podman') ? 'podman' : null);
 if (!cli) {
   console.error('container: neither docker nor podman found (set CONTAINER_CLI).');
