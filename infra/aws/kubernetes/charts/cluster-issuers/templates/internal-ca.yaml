@@ -1,0 +1,43 @@
+{{- /*
+The cluster's internal CA (D98): TLS between the services and RabbitMQ. A self-signed
+issuer signs one root (ECDSA P-256, ten years) in the cert-manager namespace, and the CA
+ClusterIssuer ryft-internal signs from it. Every namespace that talks AMQPS gets its own
+Certificate from ryft-internal (deploy/rabbitmq): the broker its server certificate, the
+clients one whose ca.crt they trust. Nothing outside the cluster trusts this CA.
+*/}}
+{{- if .Values.internalCA.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-internal-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ryft-internal-ca
+  namespace: {{ .Release.Namespace }}
+spec:
+  isCA: true
+  commonName: RYFT internal CA
+  secretName: ryft-internal-ca
+  duration: 87600h # ten years; rotating it re-issues every certificate below it
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    name: ryft-internal-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-internal
+spec:
+  ca:
+    secretName: ryft-internal-ca
+{{- end }}

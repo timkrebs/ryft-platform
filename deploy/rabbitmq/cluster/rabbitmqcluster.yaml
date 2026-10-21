@@ -1,0 +1,55 @@
+# RabbitMQ for the RYFT events (D97): three nodes, one per node of the cluster, quorum
+# queues replicated on all three. Service rabbitmq.ryft-rabbitmq.svc (AMQPS 5671 only).
+# Messages are triggers, not records (Postgres is the truth), so there is no backup
+# beyond the topology in git.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: rabbitmq
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 3
+  # 4.3.6, the operator's tested series (its default is 4.3.4); 4.4 once it has a patch
+  # release. Pinned by digest: official tags are rebuilt.
+  image: docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+  # The operator's default is a week, so a node could hold a drain that long; ten minutes
+  # is ample for quorum queues of a few messages to hand over.
+  terminationGracePeriodSeconds: 600
+  persistence:
+    storageClassName: gp3-encrypted
+    storage: 10Gi
+  # The operator's default is 1 CPU / 2Gi per node; the nodes have 1930m CPU each and
+  # one already has 1700m requested. RabbitMQ idles at well under 100m here (< 1 msg/s).
+  resources:
+    requests: { cpu: 200m, memory: 1Gi }
+    limits: { memory: 1536Mi }
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels: { app.kubernetes.io/name: rabbitmq }
+          topologyKey: kubernetes.io/hostname
+  tls:
+    secretName: rabbitmq-tls
+    caSecretName: rabbitmq-tls
+    # AMQP only on 5671 (TLS), management only on 15671 (port-forward).
+    disableNonTLSListeners: true
+  rabbitmq:
+    additionalConfig: |
+      # Metrics stay plain on 15692 for the collectors' scrape (counters, queue names,
+      # no messages); per queue, for the backlog alerts.
+      prometheus.tcp.port = 15692
+      prometheus.return_per_object_metrics = true
+      vm_memory_high_watermark.relative = 0.6
+      disk_free_limit.absolute = 1GB
+      log.console.formatter = json
+  override:
+    statefulSet:
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/scrape: "true"
+              prometheus.io/port: "15692"
+              prometheus.io/path: /metrics

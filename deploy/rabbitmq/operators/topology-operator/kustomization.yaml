@@ -1,0 +1,28 @@
+# The RabbitMQ Messaging Topology Operator v1.20.4, vendored unchanged
+# (operators/SHA256SUMS; https://github.com/rabbitmq/messaging-topology-operator/releases/download/v1.20.4/messaging-topology-operator-with-certmanager.yaml).
+# Patches: the Namespace comes from ../namespace.yaml; smaller requests; and the internal
+# CA in its trust store. It talks to the broker's management API over HTTPS
+# (management-tls, 15671) and trusts the system pool, so ca.crt from ../ca.yaml is
+# mounted into /etc/ssl/certs (the operator's documented way).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - messaging-topology-operator-1.20.4.yaml
+patches:
+  - target: { kind: Namespace, name: rabbitmq-system }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata: { name: rabbitmq-system }
+  - target: { kind: Deployment, name: messaging-topology-operator }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value: { requests: { cpu: 20m, memory: 128Mi }, limits: { memory: 512Mi } }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: ryft-internal-ca, mountPath: /etc/ssl/certs/ryft-internal-ca.crt, subPath: ca.crt, readOnly: true }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: ryft-internal-ca, secret: { secretName: ryft-internal-ca, items: [{ key: ca.crt, path: ca.crt }] } }

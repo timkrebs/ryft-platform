@@ -1651,3 +1651,72 @@ sent, and whether a second account shares its phone.
 - **`make k8s-apply-eks` is break-glass** (Argo CD down): it warns that self-heal reverts
   what git does not hold, applies `eks-nats` and the platform without the PostSync smoke,
   and still checks the registry first.
+
+## D97 — RabbitMQ replaces NATS JetStream (supersedes the messaging review)
+
+- **What it reverses:** `docs/MESSAGING_DESIGN.md` (2026-10-19) recommended keeping NATS
+  and asked to record that as D48. It never was (D48 is Apple's token revocation); this
+  entry supersedes the review itself.
+- **Why, in the user's words:** familiarity with RabbitMQ and AMQP; the management UI to
+  look at queues, messages and dead letters by hand; and dead-letter exchanges, delivery
+  limits and TTL queues that the broker does, instead of code (JetStream needed our own
+  dead-letter stream, D84).
+- **The costs, as they are:**
+  - **Memory:** three Erlang nodes at 1 GiB requested each (1.5 GiB limit), against one
+    NATS pod using about 64 MB, plus two operators (128 MiB each requested): about
+    3.3 GiB more requested, a sixth of the cluster's memory. CPU: 600m for the nodes
+    (not the 1.5 CPU the spec's 500m each would be; below), 40m for the operators.
+  - **Storage:** 3 × 10 GiB gp3 instead of 2 GiB, about $2.40 a month.
+  - **No publish dedup:** JetStream dropped a repeat within two minutes (`Nats-Msg-Id`);
+    RabbitMQ delivers it. Every handler must be idempotent, and the tests must show it
+    (D100).
+  - **Least privilege rebuilt** from vhost and topic permissions (D99), with a new test.
+  - **A cutover** in four releases with both brokers side by side (D101).
+- **Kept:** events are triggers, not records; Postgres is the truth; `POST
+  /v1/recompute` replays; at-least-once delivery with idempotent handlers.
+- **The pieces:** the official RabbitMQ Cluster Operator 2.23.1 and Messaging Topology
+  Operator 1.20.4, their release manifests vendored byte for byte
+  (`deploy/rabbitmq/operators/SHA256SUMS`, checked by `make k8s-validate`), changed only
+  by kustomize patches. Not Bitnami: its images and charts stopped on 2025-08-28
+  (`bitnamilegacy` is frozen, there is no `bitnamisecure/rabbitmq`, the chart stops at
+  16.0.14). RabbitMQ 4.3.6, pinned by digest, the operator's tested series (its default
+  is 4.3.4); 4.4.0 came out the day before and waits for a patch release.
+- **The cluster:** named `rabbitmq` (the spec said `ryft`, but its own `AMQP_URL` names
+  `rabbitmq.ryft-rabbitmq.svc`); three replicas with required anti-affinity, one per
+  node; its own PDB (`maxUnavailable: 1`, the operator makes none); a termination grace
+  of 10 minutes instead of the operator's week, which could hold a node drain that long;
+  requests 200m / 1 GiB instead of the spec's 500m: the nodes are CPU-bound (1930m
+  allocatable each, one had 1700m requested), and RabbitMQ idles far below that at
+  under one message a second. The operators' own 200m and 300m are patched to 20m.
+- **Two deviations in the client's interface:** `ConsumeIngested`/`ConsumeNotify` stay
+  typed instead of one `Consume(queue, handler)`, as the call sites use them; and a
+  `Permanent` error is dropped and counted (`dropped`), not dead-lettered: an event for a
+  deleted account cannot succeed and need not, and in the DLQ it would page
+  (`DeadLetters`) for nothing, as on NATS (D84).
+
+## D98 — TLS inside the cluster from an internal CA in cert-manager
+
+- **The CA:** ClusterIssuer `ryft-internal` in `infra/aws/kubernetes`'s `cluster-issuers`
+  chart (cert-manager is Terraform's): a self-signed bootstrap issuer signs one ten-year
+  ECDSA root in the `cert-manager` namespace; the CA issuer signs from it. Nothing
+  outside the cluster trusts it.
+- **One Certificate per namespace that speaks AMQPS:** the broker's server certificate
+  (the Service's and each node's names); in each client namespace one whose `ca.crt` the
+  service trusts (and which mTLS with the EXTERNAL mechanism could use later); in
+  `rabbitmq-system` one for the Topology Operator, which talks to the management API over
+  HTTPS and trusts the system pool, so its `ca.crt` is mounted into `/etc/ssl/certs`.
+- **Not Vault, not trust-manager:** Vault would need a PKI engine or a CA made by
+  Terraform, its private key in Vault and state, and a second synced Secret per
+  namespace; trust-manager is one more add-on and, for Secret targets, reads every
+  Secret in the cluster. A Certificate per namespace gives the same `ca.crt` with nothing
+  new, renewed by cert-manager.
+- **Listeners:** AMQP only on 5671 (TLS), the management UI only on 15671 (port-forward);
+  plain AMQP is off (`disableNonTLSListeners`). Metrics stay plain on 15692 (counters and
+  queue names, no message contents), set back in `additionalConfig`, because the
+  collectors scrape by annotation over HTTP and the operator's TLS mode drops 15692.
+  Erlang distribution between the nodes is plain TCP inside the namespace's
+  NetworkPolicy; inter-node TLS needs the cert-manager CSI driver, not worth it here.
+- **Renewal, not yet seen:** the server certificate lives a year and is renewed 30 days
+  early. Whether RabbitMQ serves the new one without a restart (Erlang caches PEM
+  files) is untested; `CertificateExpiring` fires 14 days before expiry, and a rolling
+  restart of the cluster is the fallback (OPERATIONS → RabbitMQ).

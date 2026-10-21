@@ -1,0 +1,20 @@
+# The RabbitMQ Cluster Operator v2.23.1, vendored unchanged (operators/SHA256SUMS;
+# https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.1/cluster-operator.yml).
+# Changes are patches here: the Namespace comes from ../namespace.yaml, and the requests
+# fit nodes that are short of CPU (the release asks 200m for an operator that idles).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cluster-operator-2.23.1.yml
+patches:
+  - target: { kind: Namespace, name: rabbitmq-system }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata: { name: rabbitmq-system }
+  - target: { kind: Deployment, name: rabbitmq-cluster-operator }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value: { requests: { cpu: 20m, memory: 128Mi }, limits: { memory: 500Mi } }

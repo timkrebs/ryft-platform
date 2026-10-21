@@ -3,3 +3,7 @@ email: ""
 region: ""
 hostedZoneID: ""
 dnsZone: ""
+
+# The internal CA for AMQPS (templates/internal-ca.yaml).
+internalCA:
+  enabled: true

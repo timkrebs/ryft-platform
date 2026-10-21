@@ -1,0 +1,10 @@
+# The broker in ryft-rabbitmq (namespace, service account and Vault from infra/vault).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft-rabbitmq
+resources:
+  - ../../k8s/base/common
+  - tls.yaml
+  - rabbitmqcluster.yaml
+  - pdb.yaml
+  - networkpolicy.yaml

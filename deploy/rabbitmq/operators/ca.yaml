@@ -1,0 +1,15 @@
+# The topology operator's trust in the internal CA (ClusterIssuer ryft-internal from
+# infra/aws/kubernetes): a certificate it never presents, issued only for its ca.crt.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ryft-internal-ca
+  namespace: rabbitmq-system
+spec:
+  commonName: messaging-topology-operator
+  secretName: ryft-internal-ca
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256 }
+  usages: [client auth]
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }

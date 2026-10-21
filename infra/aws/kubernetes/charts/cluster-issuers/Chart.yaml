@@ -1,5 +1,5 @@
 apiVersion: v2
 name: cluster-issuers
-description: Let's Encrypt ClusterIssuers (staging and prod) solving DNS-01 in Route 53, for RYFT
+description: Let's Encrypt ClusterIssuers (staging and prod) solving DNS-01 in Route 53, and the internal CA ryft-internal, for RYFT
 type: application
-version: 0.1.0
+version: 0.2.0  # bump on every template change, or the Helm provider does not upgrade it

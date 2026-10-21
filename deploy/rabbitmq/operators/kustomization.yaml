@@ -1,0 +1,12 @@
+# Argo CD application rabbitmq-operators (project ryft-operators, D97): both RabbitMQ
+# operators in rabbitmq-system. They need cert-manager (their webhooks' certificates,
+# failurePolicy Fail on 9443) and the ClusterIssuer ryft-internal (infra/aws/kubernetes).
+# Upgrading: vendor the new release files byte for byte, update SHA256SUMS, read the
+# release notes (a Cluster Operator upgrade rolls every RabbitmqCluster).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - cluster-operator
+  - topology-operator
+  - ca.yaml

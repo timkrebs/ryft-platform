@@ -1,0 +1,21 @@
+# The broker's server certificate from the internal CA (ClusterIssuer ryft-internal,
+# infra/aws/kubernetes). Its Secret also holds ca.crt (tls.caSecretName). The names
+# are the Service the clients and the topology operator dial, and each node's.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rabbitmq-tls
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: rabbitmq-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [server auth, client auth]
+  dnsNames:
+    - rabbitmq.ryft-rabbitmq.svc
+    - rabbitmq.ryft-rabbitmq.svc.cluster.local
+    - "*.rabbitmq-nodes.ryft-rabbitmq.svc"
+    - "*.rabbitmq-nodes.ryft-rabbitmq.svc.cluster.local"
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }
