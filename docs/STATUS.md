@@ -10,7 +10,10 @@ sync state** (2026-10-20, `61db1c4`…`4dd5aa1`) is **deployed** (`4dd5aa1`, 202
 after a 17-minute database outage during the rollout), and so is the migrate fix that
 prevents it (`1015bc7`, 2026-10-21 05:33 UTC, "role password unchanged" ×4). **GitOps
 with Argo CD** (2026-10-21, `618c306`…) is committed, not applied: see **GitOps: your
-steps**. The move from NATS to RabbitMQ follows it (D97).
+steps**. The move from **NATS to RabbitMQ** (2026-10-21, `c93a857`…) is committed too:
+main still publishes and consumes on NATS (now through the outbox, migration 0026); the
+four releases that move it are on branch `rabbitmq-cutover`: see **RabbitMQ: your
+steps** (D97–D102).
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -159,6 +162,29 @@ active; the weekly report stays in M7 (D69–D73):
 | Promotion | CI's promote job opens "deploy: images <sha>" (GitHub App) and auto-merges it; skips without a backend change; supersedes older deploy PRs; `manifests` checks every pinned image exists; no `:latest` | `scripts/promote.sh`, `.github/workflows/ci.yml`, D96 |
 | Alerts | ArgoSyncFailed, ArgoAppDegraded, ArgoAppOutOfSync, ArgoMetricsMissing (25 rules) | `deploy/grafana/alerts` |
 
+**NATS → RabbitMQ** (2026-10-21, committed on main without changing the broker; the
+releases on branch `rabbitmq-cutover`, not applied):
+
+| Item | What | Where |
+| --- | --- | --- |
+| Broker | RabbitMQ 4.3.6 (by digest), three nodes with anti-affinity and a PDB, 10 Gi gp3 each, TLS only (5671, management 15671), metrics on 15692; Cluster Operator 2.23.1 and Topology Operator 1.20.4 vendored byte for byte (`SHA256SUMS`); two Argo CD applications | `deploy/rabbitmq`, D97 |
+| TLS | internal CA `ryft-internal` (cert-manager ClusterIssuer); the broker's certificate, a client certificate per service, mutual TLS | `infra/aws/kubernetes/charts/cluster-issuers`, D98 |
+| Topology and rights | vhost `ryft`, exchanges, quorum queues, retry tiers (5 s, 30 s, 5 min) and notify's wait tiers, DLQs (14 days), policies, users without configure, topic permissions per routing key; one Go source, generated for the Topology Operator and compose; a permission test against a broker | `internal/events/amqpbus/topology.go`, `cmd/rabbitmq-topology`, D99 |
+| Client | `events.Bus` with `natsbus` and `amqpbus`: confirms, `mandatory`, persistent, decode by type, retry tiers then DLQ, deferral, reconnect with backoff, readiness | `internal/events`, `internal/eventbus` |
+| Idempotency | scoring and notify proven idempotent by tests instead of publish dedup | D100 |
+| Outbox | every event a row in `outbox` (with the sync's days and the session's completion in one transaction), a relay per publisher, set-aside after 50 failures, a week kept | migration 0026, `internal/events/outbox`, D101 |
+| Users | a password per service in `infra/vault`, written to the service and, as `amqp-user-<svc>`, to `ryft-rabbitmq` for the Topology Operator | `infra/vault`, `vault-namespaces/rabbitmq` (generated on apply) |
+| Operating | `scripts/dlq.sh` (list, show, replay, purge), OPERATIONS → RabbitMQ; 8 alerts (33 rules), dashboard panels | `scripts/dlq.sh`, `deploy/grafana/alerts` |
+| Compose | RabbitMQ with the generated definitions and dev certificates; publishes on RabbitMQ, consumes both | `docker-compose.yml`, `scripts/dev-amqp-certs.sh` |
+| The cutover | four releases, configuration only until R4 (D102) | branch `rabbitmq-cutover` |
+
+**Cost delta** (after R4, against NATS): about 3.3 GiB more memory requested (three
+nodes at 1 GiB, two operators, minus NATS's 64 MiB), 640m more CPU, 30 GiB gp3 instead
+of 2 GiB (about $2.40 a month). The memory is a sixth of the three t3.large's: check
+the nodes' requests before R1 (`kubectl describe nodes | grep -A8 'Allocated
+resources'`); if a node lacks 1 GiB, a RabbitMQ pod stays Pending (anti-affinity, one
+per node) and R1 waits for a bigger node group.
+
 **Accounts and sync** (2026-10-20, deployed):
 
 | Item | What | Where |
@@ -191,6 +217,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | Journal and behavior impact (M5, 2026-10-19) | `go test -race ./...`: the fixed ids pinned, the 14-day window, entry checks per kind, the effect (a clear one significant, none not, the same seed the same interval, relative HRV), the pairing with the morning after, locked counts and the order; `BenchmarkImpacts75x90` ~44 ms. Postgres integration tests: migration 0016 and the grants (vanilla and Supabase shape), the seeds (25 behaviors, fixed ids, idempotent), the catalog and choice, custom behaviors (update by id, someone else's id, the limit, unique slugs, archive), a journal day's round trip with count and time, replacement, account deletion of the journal; the api handlers (422s, the impact of a known effect: −15 recovery, −16.4 % HRV, significant; the `behavior-impact` card). `make up && make smoke`: catalog, choice, custom behaviors, 403/409/422 and **the roadmap's done-when**: alcohol before the five weakest-HRV mornings of the last 14 days → recovery −11.6 (90 % −18 to −4.7), HRV −7 %; `make check-swift` (the mirror decodes `[Behavior]`, `JournalDay`, `BehaviorImpacts`; the app's models still decode); `golangci-lint` 0 issues; `make k8s-validate`. |
 | Beta (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0017–0021 on plain Postgres and the Supabase shape (grants, RLS; existing accounts keep beta access, changed `max_hr` becomes manual, sources backfilled), consent and invites in the store, Tanaka pinned for seven ages, the max-HR and no-heart-rate cards, the four source fixtures through the pure functions **and** stored and scored by the engine (iPhone only: calibrating, no readiness on day 8), feedback limits and the admin view, push routing through the real APNs client to two fake hosts (410 drops the token), the dead-letter permissions and a bad event dead-lettered by the running scoring; `golangci-lint` 0 issues. `make up && make smoke`: consent 403/200/withdrawn, invite codes, `/v1/model` and `model_version`, profile and `max-hr-observed` end to end, sources and `no-heart-rate-source`, feedback 422/429, admin feedback/resolve/users. `make check-swift`: the mirror and the app's models decode everything. `make alerts-check`: 20 rules, the unit tests and mimirtool pass. `make smoke-prod` and `scripts/seed_demo.py` against the compose stack (every demo screen has data). The site in its nginx image: each legal page, the fallback and the AASA (`application/json`, no redirect). `infra/vault` `terraform test` 17 runs. `make k8s-validate` (201 resources). Not verified: anything against production (not deployed), the Supabase sign-in paths of `seed_demo.sh` and `smoke-prod`, Grafana loading the rules. |
 | GitOps (2026-10-21) | A kind cluster (Kubernetes 1.37, podman) with the chart and the Terraform values, a git daemon serving this tree, VSO's and Traefik's CRDs: Argo CD under Pod Security restricted, no initial admin secret; the projects and the root; wave 0 Progressing until each VaultStaticSecret reported `SecretSynced`, then the broker, then the platform; the NATS StatefulSet perpetually OutOfSync under client-side diff and Synced with server-side diff; ryft-platform refused for an empty destination namespace (fixed); the migrate PreSync stuck on a ConfigMap the sync had not made yet (fixed: optional); a failing migrate failed the sync with not one object created; a dry-run sync of the whole platform through the project's rules. `terraform test`: infra/aws/kubernetes 11 runs (chart pins, private, single-replica, bcrypt admin, health, restricted), infra/vault 19 (the smoke namespace gets only its sign-in; the tests no longer read a local tfvars). `make alerts-check`: 25 rules, the Argo CD ones tested (an auto-sync-paused app does not alert). `make test-scripts`: pin_images (typos refused), promote (a fake gh, a local remote: backend change → PR by the bot, docs and pin commits skipped, an older PR closed). `make smoke-hook` and `go run ./cmd/migrate smoke` against compose. `make k8s-validate`: 225 resources with the Argo CD manifests and `check_argocd.sh`. actionlint. Not verified: anything on ryft-prod-euc1, the PostSync smoke on a real stack, the promote job on GitHub (needs the App), adoption of the running objects. |
+| RabbitMQ (2026-10-21) | A kind cluster (three workers, cert-manager, both operators, Argo CD): the broker from `deploy/rabbitmq` with all 63 topology objects Ready, three quorum voters per queue, listeners 5671 (TLS) and 15671 only plus 15692, no alarms, per-queue metrics; Argo CD adopted `rabbitmq-operators` and `broker-rabbitmq` Synced and Healthy with the new health checks; `amqpbus` over mutual TLS with the Vault-style user secrets: ingest publishes, a `scored` publish by ingest refused by its topic permission, scoring consumes; no client certificate or a wrong password refused; `scripts/dlq.sh` list, show, replay and purge. Locally: every Go test with `-race` against Postgres, NATS and a RabbitMQ (retry tiers, DLQ after six attempts, deferral, unroutable, a broker restart mid-consume with reconnect, the permission matrix including a loosened rule failing it, the outbox relay with two replicas and a rollback, the duplicate tests); `make smoke` on compose publishing on RabbitMQ and again on NATS (`EVENTS_BACKEND=nats`); the outbox drained; `terraform test` infra/vault 20 runs (RabbitMQ golden file), infra/aws/kubernetes 11; `make alerts-check` 33 rules; `make k8s-validate`. Not verified: anything on ryft-prod-euc1 (R1–R4), a node drain with the PDB, a certificate renewal, the Grafana Cloud scrape of 15692. |
 | Accounts and sync (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0022–0025 on plain Postgres and the Supabase shape (grants, RLS), gate modes in api, ingest and scoring (the warn header and metric, scoring's consent mode), the audit middleware (written after the call, short ids, `409` when ambiguous), the admin detail with a fake Supabase admin API (identities, relay emails, masking), the merge over every table (dry run equal to the real run, conflicts kept, children of dropped parents not copied, a second run `404`, `from` deletable afterwards), the score queue (queued, marked, pruned, the p95), the sync screen (unknown types, window, duplicates), today's state, the refresh throttle shared with the morning push, a panicking handler retried, the NATS permissions for `ryft.refresh` and its dead letters; `golangci-lint` 0 issues. `make up && make smoke` over the existing volume with 0022–0025 applied: the admin detail and short ids, two accounts on one phone merged (plan first, `404` the second time), `account_hint` (and none without the device header or for the account itself), `GET /v1/me/sync` with nothing pending once scored, `scoring_state`, the `SyncResponse` counts (a re-send and an unknown type ignored), and the refresh path (sync → scoring → `ryft.refresh` → notify, counted without a key). `scripts/smoke_prod.sh` against compose with and without the admin key; its key lookup with a fake `terraform` (found for production, never for another URL). `make test-scripts` (trace with a fake kubectl). `make check-swift`: the mirror decodes `SyncStatus` and the new fields; the app's current models still decode everything. `make alerts-check`: 21 rules with `SyncToScoreSlow`'s unit test. `infra/vault` `terraform test` 18 runs. `make k8s-validate`. `scripts/trace.sh` against production found the incident's line. A rollback past the refresh subject on a throwaway NATS 2.11. Not verified: anything else against production (not deployed), a merge on real accounts, a refresh push reaching a device. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
@@ -298,6 +325,42 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    merge the commit that turns `automated` on for it (I prepare it; it is one line).
 7. **Prove the loop:** a merge that changes nothing, a real promote PR, and a revert of
    that pin (and of the revert); note the times (merge → healthy) here.
+
+**RabbitMQ: your steps, one release at a time** (D102; OPERATIONS → RabbitMQ → The
+cutover). Before: the GitOps steps above, done.
+
+0. **Main as it is** deploys like any commit (promote PR): migration 0026 and the outbox,
+   still on NATS. Check `ryft_outbox_pending` stays 0 and `make smoke-prod`.
+1. **R1, the broker.**
+
+   ```bash
+   kubectl describe nodes | grep -A8 'Allocated resources'      # 1 GiB free on each of three nodes
+   (cd infra/vault && terraform plan -out=tfplan && terraform apply tfplan)
+   kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager
+   git add deploy/k8s/overlays/vault-namespaces/rabbitmq && git commit -m "vault: generated rabbitmq namespace" && git push
+   (cd infra/aws/kubernetes && terraform plan -out=tfplan && terraform apply tfplan)   # internal CA, Argo CD health
+   kubectl get clusterissuer ryft-internal                        # READY True
+   kubectl apply -f deploy/argocd/project.yaml                    # project ryft-operators
+   git cherry-pick <R1> && git push                               # the applications
+   kubectl -n argocd get applications -w                          # vault-rabbitmq, rabbitmq-operators, broker-rabbitmq Healthy
+   ```
+
+   Then the checks in OPERATIONS → RabbitMQ → Healthy is.
+2. **R2, dual consume:** `git cherry-pick <R2> && git push`; Argo CD syncs ryft-platform
+   (scoring and notify restart). Check `kubectl -n ryft-scoring logs deploy/scoring |
+   grep -i amqp`, `ryft_amqp_connected` 1 for both, `make smoke-prod`.
+3. **R3, publish on RabbitMQ:** `git cherry-pick <R3> && git push`. Check `make
+   smoke-prod`, the queue depths and the outbox at 0; wait a day of normal syncs
+   (`ryft_sync_to_score_seconds` p95 as before, `scripts/dlq.sh list` empty).
+4. **R4, NATS goes:** first `kubectl -n ryft-scoring exec deploy/scoring -- /app dlq`
+   (redrive or delete each letter) and `ryft_nats_consumer_pending` 0 for both. Then
+   `git cherry-pick <R4> && git push` (CI builds images without NATS; the promote PR
+   deploys them). Then `(cd infra/vault && terraform plan -out=tfplan && terraform apply
+   tfplan)` (deletes namespace `ryft-nats` with its volume), commit the removed
+   `vault-namespaces/nats`, and `scripts/rescore_all.sh 3`.
+
+Each release: note its SHA and time here. Rollback: `git revert` of that release's commit
+(R2, R3: back to NATS at any time; after R4 see D102).
 
 **Accounts and sync: your steps, in this order:**
 

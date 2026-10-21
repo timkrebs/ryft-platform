@@ -54,9 +54,9 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
-| `ryft_events_published_total` | counter | `reason`, `result` | ingest, api | Publishes, `ok`/`error`: `ryft.ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), and `ryft.session.completed` as `session_completed` (api). A publish error does not fail the sync — this is the only place it shows; a failed `…/complete` publish answers `503`. |
+| `ryft_events_published_total` | counter | `reason`, `result` | ingest, api, scoring | Sends to the broker (by the outbox relay, D101), `ok`/`error`, on RabbitMQ also `unroutable` (no queue bound for the key: a topology change missed): `ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), `session.completed` as `session_completed` (api), and scoring's `scored`, `session_scored`, `refresh`. An `error` here is retried by the relay; an event is lost only if its outbox row could not be written (also `error`, and the sync or completion answers `503`). |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (NAKed, redelivered in 30 s), `failed` (last delivery failed — dead-lettered), `bad` (unparseable — dead-lettered), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored`, `session_scored` and `refresh`. |
-| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received with a delivery count > 1 (`consumer` `scoring` or `notify`; a deferral counts). |
+| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received with a delivery count > 1 (`consumer` `scoring` or `notify`; a deferral counts). On RabbitMQ the same name (kept for the dashboards), `consumer` the queue: a message the broker redelivered (a consumer died holding it) or a retry copy (`x-ryft-attempt` > 1). |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`; `no_consent`: skipped, consent withdrawn, D78), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
 | `ryft_sleep_base_learned_total` | counter | `outcome` | scoring | Weekly sleep-baseline estimates (Sundays from 04:00 local, and `scoring learn-baselines`): `applied` (the baseline in use moved, the last 7 days were rescored), `kept` (same value, or set by hand), `insufficient` (fewer than 14 nights or 7 qualifying), `error`. A run of `error`s means the users' days or the baseline write failed; `applied` should be rare after the first weeks. |
@@ -67,12 +67,21 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync, or in scoring a day, without consent, D78). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
-| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events moved to `RYFT_DLQ` (unparseable, or failed on the last delivery), by original subject: `ok`, or `error` (the publish failed; the message stayed in RYFT). D84. |
+| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), by original subject (on RabbitMQ the routing key): `ok`, or `error` (the publish failed; NATS: the message stayed in RYFT; RabbitMQ: it was rejected and the broker's delivery limit dead-letters it). NATS: to `RYFT_DLQ` (D84); RabbitMQ: to `dlq.scoring`/`dlq.notify` (D99). |
 | `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
 | `ryft_event_handler_panics_total` | counter | `subject` | scoring, notify | Event handlers that panicked: the message is retried and, at its last delivery, dead-lettered, instead of the service crashing (D92). Any is a bug. |
 | `ryft_nats_consumer_pending` | gauge | `consumer` | scoring, notify | Messages of the consumer not yet delivered, polled every 30 s. |
 | `ryft_nats_consumer_ack_pending` | gauge | `consumer` | scoring, notify | Delivered but not yet acknowledged (being handled, or waiting for a redelivery). |
 | `ryft_nats_stream_messages` | gauge | `stream` | scoring | Messages in `RYFT` and `RYFT_DLQ` (scoring owns both). |
+| `ryft_amqp_connected` | gauge | — | services using RabbitMQ | 1 while the connection to RabbitMQ is up, 0 while it reconnects (backoff 1 s → 30 s with jitter). Registered only by a service that uses RabbitMQ (`EVENTS_BACKEND`/`EVENTS_CONSUME`), so a NATS-only service has no series. |
+| `ryft_amqp_reconnects_total` | counter | — | services using RabbitMQ | Connections that closed and were dialled again (a broker restart, a node drain, a certificate renewal). |
+| `ryft_outbox_pending` | gauge | `publisher` | ingest, api, scoring | Outbox rows not yet confirmed by the broker (every 15 s). Normally 0: the relay sends right after the commit. |
+| `ryft_outbox_oldest_seconds` | gauge | `publisher` | ingest, api, scoring | Age of the oldest waiting row (0 when none waits). Above a few seconds: the relay cannot reach the broker, or it refuses (an alarm, a full queue). |
+| `ryft_outbox_stuck` | gauge | `publisher` | ingest, api, scoring | Rows set aside after 50 failed sends (OPERATIONS → RabbitMQ → The outbox). |
+| `ryft_outbox_relayed_total` | counter | `publisher`, `result` | ingest, api, scoring | Rows the relay sent: `ok` (confirmed and marked) or `error` (retried with backoff). |
+| `rabbitmq_queue_messages_ready`, `rabbitmq_queue_messages_unacked`, `rabbitmq_queue_messages` | gauge | `vhost`, `queue` | RabbitMQ (:15692) | Per queue (`return_per_object_metrics`): waiting, delivered and not settled, all. `scoring`, `notify`, the retry and wait tiers, `dlq.*`. |
+| `rabbitmq_alarms_memory_used_watermark`, `rabbitmq_alarms_free_disk_space_watermark` | gauge | `instance` | RabbitMQ | 1 while that node's alarm blocks publishers. |
+| `rabbitmq_identity_info` | gauge | `rabbitmq_node`, `rabbitmq_cluster` | RabbitMQ | One series per node that reports; three when healthy. Also `rabbitmq_process_resident_memory_bytes`, `rabbitmq_disk_space_available_bytes`, `rabbitmq_connections`, `rabbitmq_channel_messages_published_total`. |
 | `ryft_db_up` | gauge | `service` | all | 1 when the last database ping (every 30 s, 5 s timeout) succeeded. |
 | `ryft_db_ping_failures_total` | counter | `service` | all | Failed pings: Supabase or its pooler unreachable, or the role refused. |
 | `ryft_users_by_last_sync` | gauge | `age` | scoring | Accounts by the age of their newest device sync (every 15 min): `under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`. Counts only, no user ids. |
@@ -172,6 +181,13 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Consumer backlog | time series | `max by (consumer) (ryft_nats_consumer_pending)`, `max by (consumer) (ryft_nats_consumer_ack_pending)` |
 | Stream sizes | stat | `max by (stream) (ryft_nats_stream_messages)` (`RYFT_DLQ` above 0: `scoring dlq`) |
 | Dead letters | stacked bars, 1 h buckets | `sum by (subject, result) (increase(ryft_events_dlq_total[1h]))` |
+| Queue depths (RabbitMQ) | time series | `max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft"})`, `max by (queue) (rabbitmq_queue_messages_unacked{vhost="ryft"})` |
+| Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `scripts/dlq.sh list`) |
+| Broker nodes and alarms | state timeline | `count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"})`, `max by (instance) (rabbitmq_alarms_memory_used_watermark + rabbitmq_alarms_free_disk_space_watermark)` |
+| Broker memory per node | time series | `max by (instance) (rabbitmq_process_resident_memory_bytes)` (the alarm at about 770 MB) |
+| Connected to RabbitMQ | state timeline | `min by (namespace) (ryft_amqp_connected)`, and `sum by (namespace) (increase(ryft_amqp_reconnects_total[1h]))` |
+| Outbox | time series | `max by (publisher) (ryft_outbox_pending)`, `max by (publisher) (ryft_outbox_oldest_seconds)`, `max by (publisher) (ryft_outbox_stuck)` |
+| Publishes by result | time series | `sum by (reason, result) (rate(ryft_events_published_total[5m]))` |
 | Database up | state timeline | `min by (service) (ryft_db_up)` |
 
 **Row: Beta**
@@ -184,8 +200,13 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Feedback (7 d) | stat | `sum by (category) (increase(ryft_feedback_received_total[7d]))` |
 | Deploys | table | `max by (name, sync_status, health_status) (argocd_app_info)`, and `sum by (name, phase) (increase(argocd_app_sync_total[24h]))` |
 
-NATS also exposes its own monitoring on `:8222` (`/varz`, `/jsz`), reachable only
-inside its pod; the backlog and stream sizes above come from the consumers. For the
+RabbitMQ's nodes carry the same scrape annotations (port 15692, plain HTTP; the
+broker's network policy admits it from the VPC range like the services' 9090). Its
+management UI shows the same per queue (OPERATIONS → RabbitMQ). NATS, until the
+cutover's last release, exposes its own monitoring on `:8222` (`/varz`, `/jsz`),
+reachable only inside its pod; the backlog and stream sizes above come from the
+consumers. After R4 the `ryft_nats_*` gauges, the Stream sizes and the NATS consumer
+backlog panels go. For the
 in-cluster Postgres of `local-postgres`, `postgres_exporter` with a read-only role.
 
 ## Alerts
@@ -209,11 +230,19 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | CertificateExpiring | warning | a cert-manager certificate expires in < 14 days, 1 h | `kubectl get certificate -A`, the issuer's events |
 | SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
 | RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
-| JetStreamBacklog | warning | > 100 events waiting for `scoring` or `notify`, 15 min | is the consumer running, its logs |
+| JetStreamBacklog | warning | > 100 events waiting for `scoring` or `notify`, 15 min (NATS, until R4) | is the consumer running, its logs |
 | SyncToScoreSlow | warning | p95 from sync to score over 2 min, 15 min | scoring's CPU and database time, the backlog, a large backfill |
-| DeadLetters | warning | an event moved to `RYFT_DLQ` | `scoring dlq` (OPERATIONS → Dead letters) |
-| DeadLetterPublishFailing | critical | not even the dead-letter publish worked | NATS, its permissions |
-| PublishFailing | warning | syncs stored but events not published, 10 min | NATS; the 15-minute pass catches up |
+| DeadLetters | warning | an event was dead-lettered (either broker) | NATS: `scoring dlq` (OPERATIONS → Dead letters); RabbitMQ: `scripts/dlq.sh list` |
+| DeadLetterPublishFailing | critical | not even the dead-letter publish worked | the broker, the consumer's rights |
+| PublishFailing | warning | the relay's sends fail, 10 min | the broker; the outbox keeps the events (OutboxBacklog follows) |
+| RabbitMQBacklog | warning | > 100 events ready in `scoring` or `notify`, 15 min | is the consumer connected (`ryft_amqp_connected`), its logs |
+| RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
+| RabbitMQAlarm | critical | a node's memory or disk alarm, 2 min (publishers are blocked) | queue depths (a consumer that stopped), `rabbitmq-diagnostics -q alarms` |
+| RabbitMQNodeDown | warning | fewer than three nodes report, 5 min | `kubectl -n ryft-rabbitmq get pods`, a node drain, the PDB |
+| AMQPDisconnected | warning | a service's connection to RabbitMQ is down, 5 min | its log (`amqp` lines: TLS, password, the broker), `/readyz` |
+| EventsUnroutable | critical | an event was published with no queue bound for its key | `amqpbus/topology.go` and the generated topology applied (Argo CD `broker-rabbitmq`) |
+| OutboxBacklog | warning | an outbox event waits > 5 min for the broker, 5 min | the broker, the relay's `outbox relay` log lines |
+| OutboxStuck | warning | an outbox row failed 50 sends | its `last_error` (OPERATIONS → RabbitMQ → The outbox) |
 | ScoringErrors | warning | days fail to score, 15 min | scoring's logs |
 | NoSync | warning | no sync from anyone for 6 h (or ingest restarted since) | the app's background refresh, ingest; per tester: the panel below |
 | APNsFailing | warning | > 10 % of APNs requests fail over 30 min (≥ 5; 410 does not count) | `status`: 400 = a token sent to the wrong environment, 403 = the key |

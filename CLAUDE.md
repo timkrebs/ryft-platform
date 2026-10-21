@@ -5,7 +5,9 @@ is built by a separate agent in Xcode under `../app`; you never edit files there
 
 ## What this folder is
 Go services (`backend/cmd/{ingest,scoring,api}` + later `notify`, `coach`), Postgres via
-Supabase (local: docker compose or Podman), NATS JetStream, kustomize manifests in
+Supabase (local: docker compose or Podman), RabbitMQ (`deploy/rabbitmq`: operators,
+cluster, generated topology; NATS JetStream until the cutover's last release, D102),
+kustomize manifests in
 `deploy/k8s` (`base/` + overlays: default, `vault`, `overlays/eks`, `overlays/local-postgres`),
 Terraform for the EKS cluster in `infra/aws` and for Vault (namespace per service,
 Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`. Read
@@ -14,7 +16,7 @@ changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call
 roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 
 ## Rules
-- Go only, stdlib `net/http`, `pgx`, `nats.go`; add a dependency only when it clearly
+- Go only, stdlib `net/http`, `pgx`, `amqp091-go` (`nats.go` until R4); add a dependency only when it clearly
   pays for itself. Env-only config. `slog` JSON logs. Migrations are numbered SQL files in
   `backend/internal/db/migrations/` — never edit an applied one, add a new one.
 - Every scoring/insight/behavior rule is a pure function in `internal/scoring` (or a
@@ -31,8 +33,12 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
   kustomize-only and `make k8s-validate` green (it also checks `deploy/argocd`).
 - **Argo CD manages workloads only.** Cluster add-ons (ALB controller, Traefik,
   cert-manager, ExternalDNS, VSO, Argo CD itself) stay Helm releases in
-  `infra/aws/kubernetes`; nothing has two owners. A new workload unit is a file in
-  `deploy/argocd/apps` with a sync wave.
+  `infra/aws/kubernetes`; nothing has two owners. The exception is the RabbitMQ
+  operators (vendored in `deploy/rabbitmq/operators`, project `ryft-operators`, D97).
+  A new workload unit is a file in `deploy/argocd/apps` with a sync wave.
+- The broker's topology is Go (`internal/events/amqpbus/topology.go`); after a change run
+  `go run ./cmd/rabbitmq-topology` and commit both outputs. Every event goes through the
+  outbox (D101), and every handler must stay idempotent (D100), with a test.
 - New services get a Deployment, Service, NetworkPolicy rules, probes, resources,
   `/metrics`, and an entry in `docs/OBSERVABILITY.md`.
 - Terraform in `infra/aws` and `infra/vault` is the user's; never run `apply`/`destroy`
@@ -45,6 +51,6 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 ## Local workflow
 ```bash
 cd backend && go mod tidy && go test ./...
-cd .. && make up && make smoke        # Postgres + NATS + 3 services, synthetic 10 days
+cd .. && make up && make smoke        # Postgres + RabbitMQ + NATS + the services, synthetic 10 days
 make logs                              # follow service logs
 ```

@@ -321,7 +321,8 @@ NATS 2.11 accepts, and the next release widens both again (tried on a throwaway 
 
 ## Dead letters
 
-An event that cannot be handled, unparseable or failed on its tenth delivery (notify:
+On NATS, until the RabbitMQ cutover's last release (on RabbitMQ: **RabbitMQ** → Dead
+letters, below). An event that cannot be handled, unparseable or failed on its tenth delivery (notify:
 fifteenth), is not dropped: it moves to stream `RYFT_DLQ` as `ryft.dlq.<subject>`
 (`ryft.dlq.ingested`, …) with the subject, consumer, delivery count and error in its
 headers, and stays 30 days (64 MiB at most, oldest first out; D84). The alert
@@ -336,6 +337,112 @@ kubectl -n ryft-scoring exec deploy/scoring -- /app dlq delete all        # e.g.
 Re-drive after fixing the cause (a deploy, a data fix). Scoring's events only name a user
 and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same thing if a
 letter is gone. notify's are listed and deleted, never re-sent.
+
+## RabbitMQ
+
+The broker after the cutover (D97–D102; design: `MESSAGING_DESIGN.md`). Two Argo CD
+applications: `rabbitmq-operators` (the Cluster and Messaging Topology Operators in
+`rabbitmq-system`, project `ryft-operators`) and `broker-rabbitmq` (the cluster
+`rabbitmq` in `ryft-rabbitmq`, three nodes, its topology, the services' client
+certificates). The users' passwords come from `infra/vault` (Secret
+`amqp-user-<service>` in `ryft-rabbitmq`, `AMQP_PASSWORD` in each service's
+`ryft-secrets`).
+
+**The UI and the CLI:**
+
+```bash
+kubectl -n ryft-rabbitmq port-forward svc/rabbitmq 15671:15671     # https://localhost:15671 (the internal CA: a browser warning)
+kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'
+kubectl -n ryft-rabbitmq exec rabbitmq-server-0 -c rabbitmq -- rabbitmq-diagnostics -q status
+```
+
+**Healthy is:** `kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq` with
+`ALLREPLICASREADY` and `RECONCILESUCCESS` True; every topology object Ready (`kubectl -n
+ryft-rabbitmq get vhosts,exchanges,queues,bindings,policies,users,permissions,topicpermissions`);
+`rabbitmq-queues -q quorum_status scoring --vhost ryft` lists three voters;
+`rabbitmq-diagnostics -q alarms` reports none. The alerts: `RabbitMQBacklog`,
+`RabbitMQDeadLetters`, `RabbitMQAlarm`, `RabbitMQNodeDown`, `AMQPDisconnected`,
+`EventsUnroutable`, `OutboxBacklog`, `OutboxStuck` (OBSERVABILITY → Alerts).
+
+**Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
+failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
+management API itself:
+
+```bash
+scripts/dlq.sh list                       # per queue, one line per letter: subject, attempts, error
+scripts/dlq.sh show dlq.scoring 5         # in full
+scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key
+scripts/dlq.sh purge dlq.notify           # notify's: a push hours late is wrong (replay refuses without --force)
+```
+
+As on NATS, scoring's letters only name a user and days: `POST /v1/recompute` or
+`scripts/rescore_all.sh` repair the same if a letter is gone.
+
+**The outbox** (D101): events waiting for the broker are rows of `outbox` in Postgres
+(SQL editor, as the owner):
+
+```sql
+SELECT publisher, count(*), min(created_at) FROM outbox WHERE published_at IS NULL GROUP BY 1;
+SELECT id, publisher, routing_key, attempts, last_error FROM outbox WHERE published_at IS NULL AND attempts >= 50;
+UPDATE outbox SET attempts = 0 WHERE id = 1234;   -- a stuck row, once its cause is fixed: the relay sends it again
+```
+
+Waiting rows mean the relay cannot reach the broker or the broker refuses (a full queue,
+an alarm); they go by themselves once it accepts. A stuck row (50 failed sends) is
+usually a key no queue is bound for: a topology change missed.
+
+**Changing the topology:** edit `backend/internal/events/amqpbus/topology.go`, run
+`go run ./cmd/rabbitmq-topology` in `backend/`, commit both files; Argo CD applies it. A
+queue's arguments cannot change (the Topology Operator refuses): tune with its policy.
+Queues and the vhost have `deletionPolicy: retain`, so removing one from the topology
+leaves it in the broker; delete it in the UI once it is empty.
+
+**A node drain** (a node group rotation): the PDB lets one RabbitMQ pod go at a time, and
+the pod waits up to 10 minutes to hand over its quorum queues. Two of three nodes keep
+every queue working; with one left, publishes are refused (the outbox keeps them) and
+consumers stop until a second node is back.
+
+**Alarms:** the memory watermark is 60 % of what the operator gives RabbitMQ of the
+1.5 GiB limit (80 %): 0.77 GB a node (`rabbitmq-diagnostics -q status`); the disk alarm
+at 1 GB free of 10 GiB. Either blocks every publisher until it clears
+(`RabbitMQAlarm`); first look at the queue depths (a consumer that stopped consuming).
+
+**Upgrades:** RabbitMQ: change the image digest in
+`deploy/rabbitmq/cluster/rabbitmqcluster.yaml`; the operator replaces the nodes one at a
+time. The operators: vendor the new release files byte for byte into
+`deploy/rabbitmq/operators/`, update `SHA256SUMS`, read the release notes (a Cluster
+Operator upgrade rolls every cluster).
+
+**Backups:** none beyond git. Messages are triggers, the topology and users are in git
+and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
+CD; then `scripts/rescore_all.sh 3` covers what was in flight.
+
+**Credentials:** a user's password: `terraform -chdir=infra/vault apply
+-replace='random_password.amqp["api"]'`, restart the Vault Secrets Operator; it rewrites
+`amqp-user-api` (the Topology Operator changes the broker's user) and the api's
+`ryft-secrets` (the api restarts). Until both have it, the api's logins fail and it
+retries. Certificates: cert-manager renews them 30 days before expiry; if a service
+cannot connect after a renewal of the broker's, `kubectl -n ryft-rabbitmq rollout
+restart statefulset rabbitmq-server` (untested, D98).
+
+### The cutover (D102)
+
+Four releases, each one or two merged commits of branch `rabbitmq-cutover`, each verified
+before the next:
+
+| Release | What changes | Verify before the next |
+| --- | --- | --- |
+| R1 | `infra/vault` (namespace `ryft-rabbitmq`, users), `infra/aws/kubernetes` (Argo CD's RabbitMQ health checks, the internal CA), `project.yaml` applied; then the merge adds the applications `vault-rabbitmq`, `rabbitmq-operators`, `broker-rabbitmq` | healthy as above; three voters per queue; no alarms |
+| R2 | scoring and notify consume both brokers (`EVENTS_CONSUME=nats,amqp`); publishers still on NATS | `ryft_amqp_connected` 1 in both, `make smoke-prod`, nothing waiting in the queues |
+| R3 | ingest, api and scoring publish to RabbitMQ (`EVENTS_BACKEND=amqp`) | a day: `ryft_sync_to_score_seconds` p95 as before, queue depths, dead letters 0, the outbox empty |
+| R4 | NATS goes: once stream `RYFT` has 0 pending for both consumers and `RYFT_DLQ` was looked at | `make smoke-prod`; then `infra/vault` without NATS, `scripts/rescore_all.sh 3` |
+
+Before R4, on NATS: `kubectl -n ryft-scoring exec deploy/scoring -- /app dlq` (re-drive
+or delete each letter), and the consumers' pending counts
+(`ryft_nats_consumer_pending{consumer=~"scoring|notify"}` at 0). Rolling back a release is
+reverting its merge: R2 and R3 back to NATS publishing are safe at any time (the
+consumers still read NATS); after R4 a rollback means restoring NATS (revert R4, and
+`infra/vault` with NATS again).
 
 ## Self-hosted (overlays/local-postgres)
 

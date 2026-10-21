@@ -1826,3 +1826,38 @@ sent, and whether a second account shares its phone.
 - **Metrics:** `ryft_outbox_pending`, `ryft_outbox_oldest_seconds`, `ryft_outbox_stuck`,
   `ryft_outbox_relayed_total`; alerts `OutboxBacklog` (an event waiting over 5 minutes)
   and `OutboxStuck`.
+
+## D102 — The cutover: four releases, configuration only
+
+- **Both brokers in one build:** the services carry both clients until the last
+  release; which one they publish on (`EVENTS_BACKEND`) and which they consume
+  (`EVENTS_CONSUME`, a list) is configuration (`internal/eventbus.PlanFor`). Each
+  release is a commit on branch `rabbitmq-cutover`, merged when the one before has been
+  verified; none needs a new image, so a rollback is a revert of one merge, and Argo CD
+  applies either.
+  1. **R1, the broker:** `infra/vault` (namespace `ryft-rabbitmq`, the users' passwords,
+     the services' `AMQP_PASSWORD`), `infra/aws/kubernetes` (the internal CA, Argo CD's
+     health checks for the RabbitMQ kinds), `project.yaml`; then the merge adds the
+     applications `vault-rabbitmq` (wave 0), `rabbitmq-operators` (1), `broker-rabbitmq`
+     (2), and `ryft-platform` moves to wave 3. Nothing uses the broker yet.
+  2. **R2, dual consume:** scoring and notify consume NATS and RabbitMQ; everything still
+     publishes on NATS. Proves the consumers' connections, certificates and rights with
+     nothing at stake (`ryft_amqp_connected`).
+  3. **R3, publish on RabbitMQ:** ingest, api and scoring publish to RabbitMQ through the
+     outbox. The consumers still drain what is left on NATS. A day of normal traffic
+     before R4: the sync-to-score latency, queue depths, dead letters, the outbox.
+  4. **R4, NATS goes:** once stream `RYFT` has nothing pending and `RYFT_DLQ` was looked
+     at (re-driven or deleted, `scoring dlq`): the NATS client, its configuration, the
+     `eks-nats` overlay, the applications `broker-nats` and `vault-nats`, the JetStream
+     alerts, compose's NATS, the CI step; RabbitMQ becomes the default. Then
+     `infra/vault` without the `nats` service (it deletes namespace `ryft-nats` with
+     its volume), and `scripts/rescore_all.sh 3` for whatever was in flight.
+- **Why not one release:** the order makes every step reversible. Consumers before
+  publishers, so no event is published where nobody reads; publishers before removal, so
+  NATS drains before it goes. Not a dual publish (both brokers at once): every event
+  would be handled twice on purpose, and an outage of either would fail publishes.
+- **No finalizer on the applications** (D95): removing `broker-nats` from `apps/` leaves
+  NATS running, orphaned, until `infra/vault` deletes its namespace; the StatefulSet's
+  volume follows the namespace (its claim is not deleted with the StatefulSet).
+- **Rollback after R4** is restoring NATS (revert R4, `infra/vault` with NATS); events
+  in RabbitMQ at that moment are lost to the consumers, which `rescore_all.sh` repairs.
