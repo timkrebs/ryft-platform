@@ -46,11 +46,13 @@ patches:
 # five backend images, from backend/) and web (from web/). To roll a group back, set its
 # newTag(s) to the previous value AND hold it in the same commit with a comment line right
 # above the group's first image (above ingest for the services, above web for the site):
-#   # hold: <group> <reason>
-# Without the hold the next push to main builds the rolled-back code again and pins it
-# (the pin differs from the tree). Argo CD and kustomize ignore the line; promote skips a
-# held group and prints a warning on every run. Delete the line in a PR to release it:
-# that merge deploys main's head for the group (docs/OPERATIONS.md).
+#   # hold: <group> <YYYY-MM-DD> <reason>
+# (<group> is services or web.) Without the hold the next push to main builds the rolled-back
+# code again and pins it (the pin differs from the tree). Argo CD and kustomize ignore the
+# line; promote skips a held group and warns on every run; CI fails a PR that moves the pin of
+# a group held on main, and a comment that starts like a hold but does not parse stops the
+# promote. Delete the line in a PR to release it: that merge deploys main's head for the
+# group (docs/OPERATIONS.md).
 images:
   - name: ghcr.io/timkrebs/ryft/ingest
     newTag: "0fd4256"

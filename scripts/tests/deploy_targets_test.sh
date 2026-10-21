@@ -50,7 +50,7 @@ case "$(got services_why)" in *disagree*) ;; *) fail "why: $(got services_why)" 
 # The hold: not targeted, a warning, while the rest of the group logic still runs.
 new_repo hold; commit_file web/index.txt v2 "web: a change"; hold web "broken AASA, fix in #57"
 expect false false "a held web group"
-grep -q '::warning.*web held (broken AASA, fix in #57), 1 commits under web/' "$tmp/err" || fail "no hold warning: $(cat "$tmp/err")"
+grep -q '::warning.*web held since 2026-10-23 (broken AASA, fix in #57), 1 commits under web/' "$tmp/err" || fail "no hold warning: $(cat "$tmp/err")"
 new_repo hold-unknown; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; hold web "rollback"
 expect false false "a held web group whose pin is not in this history"
 new_repo hold-services; commit_file backend/main.go v2 "scoring: a change"; hold services "bad migration"
@@ -59,11 +59,18 @@ unhold; expect true false "the hold is released"
 # A hold for one group does not stop the other, and a group name is matched whole.
 new_repo hold-other; commit_file backend/main.go v2 "scoring: a change"; hold web "x"
 expect true false "a web hold leaves services alone"
-new_repo hold-prefix; commit_file web/index.txt v2 "web: a change"; hold webby "x"
-expect false true "a hold for another group name"
+# Holds fail closed: anything that starts like a hold and does not parse stops the script (exit 2).
+for bad in "# hold: webby 2026-10-23 x" "# hold: web x" "# hold: web 2026-13-01 x" "# hold: web 2026-10-23" "#hold: web 2026-10-23 x" "# Hold: web 2026-10-23 x" "# holding web 2026-10-23 x" "# HOLD: web 2026-10-23 x"; do
+  new_repo bad-hold; commit_file web/index.txt v2 "web: a change"
+  awk -v l="  $bad" '/ryft\/web$/ { print l } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: odd hold"
+  rc=0; FORCE= ./scripts/deploy_targets.sh >"$tmp/out" 2>"$tmp/err" || rc=$?
+  [ "$rc" = 2 ] || fail "'$bad' must stop with exit 2 (got $rc)"
+  grep -q '::error' "$tmp/err" || fail "no annotation for '$bad'"
+  [ ! -s "$tmp/out" ] || fail "no outputs when a hold does not parse"
+done
 # The overlay as committed carries the convention in a comment but no hold of its own.
 new_repo real-overlay
-grep -q '# hold: <group> <reason>' "$OVERLAY" || fail "the overlay no longer documents the hold convention"
+grep -q '# hold: <group> <YYYY-MM-DD> <reason>' "$OVERLAY" || fail "the overlay no longer documents the hold convention"
 
 # The rollback of D107: revert a bad web pin. Without the hold the code on main is deployed again.
 new_repo rollback; w1=$(commit_file web/index.txt v2 "web: good" && short); pin web "$w1"; d1=$(short)
@@ -86,5 +93,29 @@ FORCE=nonsense ./scripts/deploy_targets.sh >/dev/null 2>&1 && fail "FORCE=nonsen
 # No pin at all counts as different.
 new_repo no-pin; drop_pin web
 expect false true "no web pin"
+
+# --check (CI's manifests job): the summary, annotations, and the rule that a PR may not move a held pin
+chk() { rc=0; GITHUB_STEP_SUMMARY="$tmp/summary" ./scripts/deploy_targets.sh --check "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
+new_repo check; git update-ref refs/remotes/origin/base HEAD
+chk origin/base; [ "$rc" = 0 ] || fail "check on an unchanged overlay: $(cat "$tmp/err")"
+grep -q 'none' "$tmp/summary" || fail "summary without holds"
+# a rollback PR moves the pin AND adds the hold, the base is not held yet: passes, announces the hold
+commit_file web/index.txt v2 "web: a change"; pin web "$(short)"; git update-ref refs/remotes/origin/base HEAD
+hand_pin web f437747; hold web "rolled back"
+chk origin/base; [ "$rc" = 0 ] || fail "a rollback PR that holds must pass: $(cat "$tmp/err") $(cat "$tmp/out")"
+grep -q '::notice.*holds web' "$tmp/out" || fail "no notice for the added hold: $(cat "$tmp/out")"
+grep -q 'web\*\* held since 2026-10-23: rolled back' "$tmp/summary" || fail "summary lists the hold: $(cat "$tmp/summary")"
+# now the base is held: a PR that changes the pin fails, one that only removes the hold passes
+git update-ref refs/remotes/origin/base HEAD
+unhold; chk origin/base; [ "$rc" = 0 ] || fail "a release PR that only removes the hold must pass: $(cat "$tmp/err")"
+grep -q '::notice.*releases the hold on web' "$tmp/out" || fail "no notice for the release"
+git reset -q --hard origin/base; hand_pin web 1234567
+chk origin/base; [ "$rc" = 1 ] || fail "a PR moving the pin of a held group must fail (rc=$rc)"
+grep -q '::error.*web is held' "$tmp/err" || fail "the error names the group: $(cat "$tmp/err")"
+# an older deploy PR for the services still passes: only the held group is protected
+git reset -q --hard origin/base; ./scripts/pin_images.sh abc1234 services "$OVERLAY" >/dev/null; git commit -qam "deploy: services"
+chk origin/base; [ "$rc" = 0 ] || fail "the other group may move: $(cat "$tmp/err")"
+chk; [ "$rc" = 0 ] || fail "check without a base (push)"
+chk origin/nope; [ "$rc" = 1 ] || fail "a missing base must fail, not pass"
 
 echo "✓ deploy_targets_test: web/services/both/none, docs, pin commit, unknown pin, disagreeing pins, hold (and its revert drill), FORCE"

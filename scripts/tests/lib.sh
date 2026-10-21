@@ -22,7 +22,7 @@ pin() {
 # hold <group> <reason>: the hold line, right above the group's first image.
 hold() {
   local img=web; [ "$1" != services ] || img=ingest
-  awk -v g="$1" -v r="$2" -v f="  - name: ghcr.io/timkrebs/ryft/$img" '$0 == f { print "  # hold: " g " " r } { print }' "$OVERLAY" > "$OVERLAY.new"
+  awk -v g="$1" -v r="$2" -v f="  - name: ghcr.io/timkrebs/ryft/$img" '$0 == f { print "  # hold: " g " 2026-10-23 " r } { print }' "$OVERLAY" > "$OVERLAY.new"
   mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: hold $1"
 }
 unhold() { grep -v '^ *# hold: ' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: release the hold"; }
