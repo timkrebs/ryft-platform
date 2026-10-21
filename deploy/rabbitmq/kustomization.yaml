@@ -1,0 +1,11 @@
+# Argo CD application broker-rabbitmq (project ryft, D97): the cluster and its TLS in
+# ryft-rabbitmq, its topology, and the four services' CA certificates. Sync waves
+# inside: certificates 0, the RabbitmqCluster 1, the vhost 2, exchanges, queues and
+# users 3, what refers to them 4. The operators are their own application
+# (operators/, project ryft-operators), synced before this one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cluster
+  - topology
+  - clients

@@ -74,6 +74,42 @@ groups:
         # Not even the dead-letter publish worked: the message stayed in RYFT.
         expr: sum(increase(ryft_events_dlq_total{result="error"}[1h])) > 0
         labels: { severity: critical }
+      # ---- RabbitMQ (D97; quiet until the broker exists: no series, no alert) --------
+      - alert: RabbitMQBacklog
+        # scoring or notify is not keeping up with its queue (per queue, from the broker).
+        expr: max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft", queue=~"scoring|notify"}) > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "RabbitMQ {{ $labels.queue }}: over 100 events waiting for 15 minutes" }
+      - alert: RabbitMQDeadLetters
+        # Something waits in a dead-letter queue (scripts/dlq.sh list; OPERATIONS → RabbitMQ).
+        expr: max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"}) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "RabbitMQ {{ $labels.queue }} holds dead letters (scripts/dlq.sh list)" }
+      - alert: RabbitMQAlarm
+        # A node's memory or disk alarm: the broker blocks every publisher until it clears.
+        expr: max(rabbitmq_alarms_memory_used_watermark) > 0 or max(rabbitmq_alarms_free_disk_space_watermark) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "RabbitMQ blocks publishers (memory or disk alarm)" }
+      - alert: RabbitMQNodeDown
+        # Fewer than three nodes report: quorum queues still work with two, not with one.
+        expr: count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"}) < 3
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "RabbitMQ: only {{ $value }} of 3 nodes report" }
+      - alert: AMQPDisconnected
+        # A service cannot reach RabbitMQ (it keeps running, /readyz says why; D47).
+        expr: max by (namespace) (ryft_amqp_connected) == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.namespace }} is not connected to RabbitMQ" }
+      - alert: EventsUnroutable
+        # An event no queue is bound for: the topology lacks a binding (internal/events/amqpbus/topology.go).
+        expr: sum by (reason) (increase(ryft_events_published_total{result="unroutable"}[15m])) > 0
+        labels: { severity: critical }
+        annotations: { summary: "{{ $labels.reason }} events are unroutable on RabbitMQ" }
       - alert: PublishFailing
         # Syncs are stored but scoring does not hear of them (the 15-minute pass catches up).
         expr: sum(rate(ryft_events_published_total{result="error"}[10m])) > 0

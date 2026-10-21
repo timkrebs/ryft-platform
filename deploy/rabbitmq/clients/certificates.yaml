@@ -1,0 +1,80 @@
+# Each service's TLS identity towards the broker (D98): a Certificate per namespace from
+# the internal CA. The broker verifies peers (mutual TLS), so the service presents
+# tls.crt/tls.key and trusts ca.crt; the Deployments mount Secret amqp-client (optional,
+# so a pod starts before it exists) at /etc/ryft/amqp.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amqp-client
+  namespace: ryft-ingest
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # The client certificate (AMQP_CERT_FILE, AMQP_KEY_FILE) and the CA the broker's must
+  # chain to (AMQP_CA_FILE). The password still authenticates the user (PLAIN); the
+  # certificate could later replace it (the EXTERNAL mechanism).
+  commonName: ingest
+  secretName: amqp-client
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256 }
+  usages: [client auth]
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amqp-client
+  namespace: ryft-api
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # The client certificate (AMQP_CERT_FILE, AMQP_KEY_FILE) and the CA the broker's must
+  # chain to (AMQP_CA_FILE). The password still authenticates the user (PLAIN); the
+  # certificate could later replace it (the EXTERNAL mechanism).
+  commonName: api
+  secretName: amqp-client
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256 }
+  usages: [client auth]
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amqp-client
+  namespace: ryft-scoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # The client certificate (AMQP_CERT_FILE, AMQP_KEY_FILE) and the CA the broker's must
+  # chain to (AMQP_CA_FILE). The password still authenticates the user (PLAIN); the
+  # certificate could later replace it (the EXTERNAL mechanism).
+  commonName: scoring
+  secretName: amqp-client
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256 }
+  usages: [client auth]
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amqp-client
+  namespace: ryft-notify
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # The client certificate (AMQP_CERT_FILE, AMQP_KEY_FILE) and the CA the broker's must
+  # chain to (AMQP_CA_FILE). The password still authenticates the user (PLAIN); the
+  # certificate could later replace it (the EXTERNAL mechanism).
+  commonName: notify
+  secretName: amqp-client
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256 }
+  usages: [client auth]
+  issuerRef: { name: ryft-internal, kind: ClusterIssuer, group: cert-manager.io }

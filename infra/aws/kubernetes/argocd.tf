@@ -34,6 +34,42 @@ resource "random_password" "argocd_admin" {
 locals {
   argocd_admin_password_mtime = "2026-10-21T00:00:00Z"
 
+  # RabbitMQ (D97): the cluster is healthy when all its replicas are ready and the
+  # operator reconciled it; a topology object (vhost, queue, user, ...) when the
+  # Topology Operator reports it Ready. The broker's sync waves wait on these. One key
+  # per kind: a ConfigMap key cannot hold the wildcard rabbitmq.com_*.
+  argocd_rabbitmq_health = { for kind in ["RabbitmqCluster", "Vhost", "Exchange", "Queue", "Binding", "Policy", "User", "Permission", "TopicPermission"] :
+    "resource.customizations.health.rabbitmq.com_${kind}" => <<-LUA
+      hs = { status = "Progressing", message = "waiting for the RabbitMQ operators" }
+      if obj.status == nil or obj.status.conditions == nil then
+        return hs
+      end
+      local want = { Ready = true }
+      if obj.kind == "RabbitmqCluster" then
+        want = { AllReplicasReady = true, ReconcileSuccess = true }
+      end
+      local ok = 0
+      local total = 0
+      for _ in pairs(want) do total = total + 1 end
+      for _, c in ipairs(obj.status.conditions) do
+        if want[c.type] then
+          if c.status == "True" then
+            ok = ok + 1
+          elseif c.status == "False" and c.reason ~= nil and string.find(c.reason, "Fail") then
+            hs.status = "Degraded"
+            hs.message = c.type .. ": " .. (c.message or c.reason)
+            return hs
+          end
+        end
+      end
+      if ok == total then
+        hs.status = "Healthy"
+        hs.message = ""
+      end
+      return hs
+    LUA
+  }
+
   # Scraped by the Grafana Cloud collectors through pod annotations, like the RYFT pods.
   argocd_scrape = { for component, port in { controller = 8082, server = 8083, repoServer = 8084 } : component => {
     "prometheus.io/scrape" = "true"
@@ -55,7 +91,7 @@ locals {
     notifications = { enabled = false }
 
     configs = {
-      cm = {
+      cm = merge(local.argocd_rabbitmq_health, {
         "admin.enabled" = true
         # Restores the health of Application resources (removed in Argo CD 1.8), so
         # the app-of-apps waits in each sync wave until the previous wave's
@@ -91,7 +127,7 @@ locals {
           end
           return hs
         LUA
-      }
+      })
       secret = {
         argocdServerAdminPassword      = random_password.argocd_admin.bcrypt_hash
         argocdServerAdminPasswordMtime = local.argocd_admin_password_mtime

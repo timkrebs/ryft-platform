@@ -46,8 +46,12 @@ type Options struct {
 	User     string // AMQP_USER; empty: whatever the URL carries
 	Password string
 	CAFile   string // PEM bundle the broker's certificate must chain to (amqps); empty: the system pool
-	Name     string // connection name in the management UI
-	Prefetch int    // unacknowledged deliveries per consumer (default 10)
+	// CertFile and KeyFile are the service's client certificate (the broker verifies
+	// peers, D98): read at every handshake, so a renewed certificate is used on the
+	// next connection without a restart.
+	CertFile, KeyFile string
+	Name              string // connection name in the management UI
+	Prefetch          int    // unacknowledged deliveries per consumer (default 10)
 
 	ConfirmTimeout time.Duration // how long a publish waits for the broker's confirm (default 10 s)
 }
@@ -97,6 +101,7 @@ func Open(ctx context.Context, o Options, log *slog.Logger) (*Bus, error) {
 
 // New is a Bus that has not dialled yet (Open dials).
 func New(o Options, log *slog.Logger) (*Bus, error) {
+	metrics.UseAMQP()
 	if o.Prefetch <= 0 {
 		o.Prefetch = 10
 	}
@@ -129,6 +134,16 @@ func New(o Options, log *slog.Logger) (*Bus, error) {
 				return nil, fmt.Errorf("AMQP_CA_FILE %s holds no PEM certificate", o.CAFile)
 			}
 			tc.RootCAs = pool
+		}
+		if o.CertFile != "" || o.KeyFile != "" {
+			if _, err := tls.LoadX509KeyPair(o.CertFile, o.KeyFile); err != nil {
+				return nil, fmt.Errorf("AMQP_CERT_FILE/AMQP_KEY_FILE: %w", err)
+			}
+			certFile, keyFile := o.CertFile, o.KeyFile
+			tc.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				c, err := tls.LoadX509KeyPair(certFile, keyFile)
+				return &c, err
+			}
 		}
 		cfg.TLSClientConfig = tc
 	}

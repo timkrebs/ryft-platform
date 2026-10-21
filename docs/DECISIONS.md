@@ -1701,10 +1701,19 @@ sent, and whether a second account shares its phone.
   ECDSA root in the `cert-manager` namespace; the CA issuer signs from it. Nothing
   outside the cluster trusts it.
 - **One Certificate per namespace that speaks AMQPS:** the broker's server certificate
-  (the Service's and each node's names); in each client namespace one whose `ca.crt` the
-  service trusts (and which mTLS with the EXTERNAL mechanism could use later); in
-  `rabbitmq-system` one for the Topology Operator, which talks to the management API over
-  HTTPS and trusts the system pool, so its `ca.crt` is mounted into `/etc/ssl/certs`.
+  (the Service's and each node's names); in each client namespace the service's own
+  (Secret `amqp-client`); in `rabbitmq-system` one for the Topology Operator, which talks
+  to the management API over HTTPS and trusts the system pool, so its `ca.crt` is
+  mounted into `/etc/ssl/certs`.
+- **Mutual TLS, found in the kind test:** once a CA is configured the Cluster Operator
+  turns on peer verification (`ssl_options.verify = verify_peer`), and a client without a
+  certificate is refused in the handshake. So every service presents its namespace's
+  certificate as well as its password: two factors, neither enough alone (tried: no
+  certificate → refused in the handshake, a wrong password → 403). The client reads the
+  key pair at every handshake, so cert-manager's renewal is used on the next connection
+  without a restart. The management API verifies but does not require client
+  certificates (the Topology Operator connects without one). The certificates could
+  later replace the passwords (the EXTERNAL mechanism).
 - **Not Vault, not trust-manager:** Vault would need a PKI engine or a CA made by
   Terraform, its private key in Vault and state, and a second synced Secret per
   namespace; trust-manager is one more add-on and, for Secret targets, reads every

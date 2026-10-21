@@ -42,6 +42,8 @@ spec:
             # Only this service's credentials: on EKS synced by the Vault Secrets
             # Operator from Vault namespace ryft/api (infra/vault).
             - secretRef: { name: ryft-secrets }
+          volumeMounts:
+            - { name: amqp-client, mountPath: /etc/ryft/amqp, readOnly: true }
           # The service waits up to 10 minutes for the migrate job before it listens.
           startupProbe:
             httpGet: { path: /healthz, port: http }
@@ -60,3 +62,9 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 256Mi }
+      volumes:
+        # The service's TLS identity towards RabbitMQ (deploy/rabbitmq/clients): its
+        # client certificate and the internal CA. Optional, so the pod also starts where
+        # there is no RabbitMQ (local-postgres) or before the Certificate is issued.
+        - name: amqp-client
+          secret: { secretName: amqp-client, optional: true }

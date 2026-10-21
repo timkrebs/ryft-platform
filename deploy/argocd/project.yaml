@@ -7,7 +7,8 @@
 # ryft-root may only create Application objects in argocd, from deploy/argocd/apps.
 # ryft holds the workloads: only this repository, only the ryft-* namespaces, and of
 # the cluster-scoped kinds only Namespace (ryft-web, the one namespace not made by
-# infra/vault). No application may write to argocd or kube-system.
+# infra/vault). No application may write to argocd or kube-system. ryft-operators may
+# install cluster-scoped operator objects, into rabbitmq-system only.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -39,11 +40,40 @@ spec:
   orphanedResources:
     warn: true
     ignore:
-      # Made by the Vault Secrets Operator and the Kubernetes token controller, not git.
+      # Made by the Vault Secrets Operator, cert-manager and the Kubernetes token
+      # controller, not git (seen in the kind test of the broker).
       - { kind: Secret, name: ryft-secrets }
       - { kind: Secret, name: vault-auth-token }
+      - { kind: Secret, name: rabbitmq-tls }
+      - { kind: Secret, name: amqp-client }
+      - { kind: Secret, name: amqp-user-ingest }
+      - { kind: Secret, name: amqp-user-api }
+      - { kind: Secret, name: amqp-user-scoring }
+      - { kind: Secret, name: amqp-user-notify }
       - { kind: ServiceAccount }
       - { kind: ConfigMap, name: kube-root-ca.crt }
+---
+# The RabbitMQ operators (deploy/rabbitmq/operators, D97): their CRDs, cluster roles and
+# webhooks are cluster-scoped, so they get a project of their own instead of widening
+# ryft. Only that path's application belongs here.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ryft-operators
+  namespace: argocd
+spec:
+  description: Operators the RYFT workloads need (RabbitMQ)
+  sourceRepos:
+    - https://github.com/timkrebs/ryft-platform.git
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: rabbitmq-system }
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+    - { group: apiextensions.k8s.io, kind: CustomResourceDefinition }
+    - { group: rbac.authorization.k8s.io, kind: ClusterRole }
+    - { group: rbac.authorization.k8s.io, kind: ClusterRoleBinding }
+    - { group: admissionregistration.k8s.io, kind: MutatingWebhookConfiguration }
+    - { group: admissionregistration.k8s.io, kind: ValidatingWebhookConfiguration }
 ---
 # The built-in project allows everything; nothing of RYFT uses it, so it may do
 # nothing (an Application pointed at it by mistake cannot deploy).

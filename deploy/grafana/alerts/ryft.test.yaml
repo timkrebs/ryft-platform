@@ -137,3 +137,49 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations: { summary: "No Argo CD metrics for 15 minutes" }
+  - name: rabbitmq
+    interval: 1m
+    input_series:
+      - { series: 'rabbitmq_queue_messages_ready{vhost="ryft",queue="scoring"}', values: '150x30' }
+      - { series: 'rabbitmq_queue_messages_ready{vhost="ryft",queue="scoring.retry.5m"}', values: '500x30' }
+      - { series: 'rabbitmq_queue_messages{vhost="ryft",queue="dlq.notify"}', values: '0 0 1x20' }
+      - { series: 'rabbitmq_queue_messages{vhost="ryft",queue="notify"}', values: '9x30' }
+      - { series: 'rabbitmq_alarms_memory_used_watermark{rabbitmq_node="a"}', values: '0 0 1x20' }
+      - { series: 'rabbitmq_alarms_free_disk_space_watermark{rabbitmq_node="a"}', values: '0x30' }
+      - { series: 'rabbitmq_identity_info{rabbitmq_cluster="rabbitmq",rabbitmq_node="a"}', values: '1x30' }
+      - { series: 'rabbitmq_identity_info{rabbitmq_cluster="rabbitmq",rabbitmq_node="b"}', values: '1x30' }
+      - { series: 'ryft_amqp_connected{namespace="ryft-scoring"}', values: '0x30' }
+      - { series: 'ryft_amqp_connected{namespace="ryft-api"}', values: '1x30' }
+      - { series: 'ryft_events_published_total{reason="sync",result="unroutable"}', values: '0 0 1 1' }
+    alert_rule_test:
+      # A retry queue's backlog is waiting by design, not a backlog.
+      - eval_time: 20m
+        alertname: RabbitMQBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, queue: scoring }
+            exp_annotations: { summary: "RabbitMQ scoring: over 100 events waiting for 15 minutes" }
+      - eval_time: 10m
+        alertname: RabbitMQDeadLetters
+        exp_alerts:
+          - exp_labels: { severity: warning, queue: dlq.notify }
+            exp_annotations: { summary: "RabbitMQ dlq.notify holds dead letters (scripts/dlq.sh list)" }
+      - eval_time: 5m
+        alertname: RabbitMQAlarm
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "RabbitMQ blocks publishers (memory or disk alarm)" }
+      - eval_time: 10m
+        alertname: RabbitMQNodeDown
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "RabbitMQ: only 2 of 3 nodes report" }
+      - eval_time: 10m
+        alertname: AMQPDisconnected
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: ryft-scoring }
+            exp_annotations: { summary: "ryft-scoring is not connected to RabbitMQ" }
+      - eval_time: 3m
+        alertname: EventsUnroutable
+        exp_alerts:
+          - exp_labels: { severity: critical, reason: sync }
+            exp_annotations: { summary: "sync events are unroutable on RabbitMQ" }

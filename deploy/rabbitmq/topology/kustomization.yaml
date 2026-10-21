@@ -1,0 +1,8 @@
+# The broker's topology as Topology Operator objects (generated, D99): vhost ryft,
+# exchanges, quorum queues, bindings, policies, the four service users (passwords from
+# Vault: Secret amqp-user-<service>) and their permissions.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ryft-rabbitmq
+resources:
+  - topology.yaml
