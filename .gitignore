@@ -13,3 +13,6 @@ tfplan
 # Per-session milestone specs; they stay local
 CLAUDE_FOLLOWUP_*.md
 __pycache__/
+# Stray go build outputs in backend/ (committed by accident in c8b107e)
+/backend/api
+/backend/scoring
