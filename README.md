@@ -15,7 +15,7 @@ flow, the schema and the scoring model. The HTTP contract with the app is
 backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,insights,store,db,events,httpx,metrics,model,config}
 infra/aws/    Terraform: VPC + EKS cluster (modules/network, modules/eks), dns/ (ryftapp.de zone),
               kubernetes/ (Traefik, cert-manager, ExternalDNS, LB controller, encrypted storage)
-deploy/k8s/   kustomize: overlays/eks (api.ryftapp.de), base/ (Postgres, NATS, 3 services, Ingress, policies, backups) + default and vault/ overlays
+deploy/k8s/   kustomize: overlays/eks (api.ryftapp.de), base/ (the services, Ingress, policies, backups), overlays local-postgres; deploy/rabbitmq (the broker); deploy/argocd
 ../app/          SwiftUI app (HealthKit sync, Today / Trends / Settings)
 scripts/      synth.py (fake Health data), smoke.sh (end-to-end test), print_days.py
 docker-compose.yml   local stack
@@ -25,7 +25,7 @@ docker-compose.yml   local stack
 
 ```bash
 cd backend && go mod tidy && go test ./...     # tidy once: go.sum is generated on your machine
-cd .. && make up                               # Postgres + NATS + ingest(:8081) scoring api(:8082)
+cd .. && make up                               # Postgres + RabbitMQ + ingest(:8081) scoring api(:8082) notify
 make smoke                                     # synthetic 10 days through the whole pipeline + API contract checks
 ```
 
@@ -38,15 +38,15 @@ day          recovery  strain  sleep%  need  actual    hrv   rhr  resp  calibrat
 ```
 
 Config is env-only: `DATABASE_URL` (the service's own role; for `migrate` the schema owner,
-plus `DB_PASSWORD_INGEST|SCORING|API`), `NATS_URL` with `NATS_USER` + `NATS_PASSWORD`, `PORT`, `DB_MAX_CONNS`, `LOG_LEVEL`, and for ingest/api
+plus `DB_PASSWORD_INGEST|SCORING|API`), `AMQP_URL` with `AMQP_USER` + `AMQP_PASSWORD` and the client certificate (`AMQP_CA_FILE`, `AMQP_CERT_FILE`, `AMQP_KEY_FILE`), `PORT`, `DB_MAX_CONNS`, `LOG_LEVEL`, and for ingest/api
 `AUTH_MODE` with `SUPABASE_PROJECT_REF` (production, Supabase tokens) or `API_KEY` +
 `ALLOW_INSECURE_APIKEY_AUTH=true` (compose; bearer `API_KEY` or `API_KEY:<uuid>`).
 Supabase setup: [`docs/SUPABASE.md`](docs/SUPABASE.md).
 
 ## 2. Kubernetes
 
-One namespace per workload (`ryft-ingest`, `ryft-scoring`, `ryft-api`, `ryft-nats`,
-`ryft-migrate`), each with only its own credentials:
+One namespace per workload (`ryft-ingest`, `ryft-scoring`, `ryft-api`, `ryft-notify`,
+`ryft-rabbitmq`, `ryft-migrate`, `ryft-smoke`), each with only its own credentials:
 
 ```bash
 # EKS + Supabase + Vault (infra/aws, infra/aws/kubernetes and infra/vault applied; images on ghcr)

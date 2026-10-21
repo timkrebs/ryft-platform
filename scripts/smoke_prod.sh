@@ -84,7 +84,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-[ -n "$scored" ] || fail "$today was not rescored within 60 s of the sync (scoring, NATS: docs/OPERATIONS.md → Dead letters)"
+[ -n "$scored" ] || fail "$today was not rescored within 60 s of the sync (scoring, RabbitMQ: docs/OPERATIONS.md → RabbitMQ)"
 
 # ---- the gates: on (403 with the code), warn (served, X-RYFT-Gate), off ------------
 tmp=$(mktemp -d)

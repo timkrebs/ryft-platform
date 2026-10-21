@@ -59,19 +59,14 @@ groups:
         annotations: { summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 14 days" }
 
       # ---- events -----------------------------------------------------------------
-      - alert: JetStreamBacklog
-        # scoring or notify is not keeping up (or not consuming at all).
-        expr: max by (consumer) (ryft_nats_consumer_pending) > 100
-        for: 15m
-        labels: { severity: warning }
-        annotations: { summary: "{{ $labels.consumer }}: over 100 events waiting for 15 minutes" }
       - alert: DeadLetters
-        # An event could not be handled and moved to RYFT_DLQ (docs/OPERATIONS.md → Dead letters).
+        # An event could not be handled and was dead-lettered (OPERATIONS.md → RabbitMQ).
         expr: sum by (subject) (increase(ryft_events_dlq_total{result="ok"}[1h])) > 0
         labels: { severity: warning }
-        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (scoring dlq)" }
+        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (scripts/dlq.sh list)" }
       - alert: DeadLetterPublishFailing
-        # Not even the dead-letter publish worked: the message stayed in RYFT.
+        # Not even the dead-letter publish worked: the message was rejected, and the
+        # broker's delivery limit dead-letters it once it is out of attempts.
         expr: sum(increase(ryft_events_dlq_total{result="error"}[1h])) > 0
         labels: { severity: critical }
       # ---- RabbitMQ (D97; quiet until the broker exists: no series, no alert) --------

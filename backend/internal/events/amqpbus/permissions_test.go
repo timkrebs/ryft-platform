@@ -14,7 +14,7 @@ import (
 	"github.com/timkrebs/ryft/internal/events"
 )
 
-// The least-privilege matrix (D99, replacing D43's NATS ACLs): with the generated
+// The least-privilege matrix (D99, which replaced D43's NATS ACLs): with the generated
 // users, permissions and topic permissions loaded into vhost ryft of the test broker,
 // each service may do exactly its list and nothing else. Opt-in like the other
 // integration tests; it imports into the broker's vhost ryft (use a throwaway one).

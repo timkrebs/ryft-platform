@@ -47,7 +47,7 @@ module "eks" {
     kube-proxy = {}
     coredns    = {}
 
-    # PersistentVolumes for NATS, backups (and Postgres until Supabase). The
+    # PersistentVolumes for RabbitMQ, backups (and Postgres until Supabase). The
     # add-on's own default StorageClass is left off: it would create unencrypted
     # volumes. infra/aws/kubernetes defines the encrypted default "gp3-encrypted".
     aws-ebs-csi-driver = {

@@ -1,5 +1,5 @@
 // scoring turns raw samples into daily Recovery / Strain / Sleep scores.
-// It is driven by two things: ingest events on NATS (recompute the days a
+// It is driven by two things: events from RabbitMQ (recompute the days a
 // sync touched, for the user in the event) and a timer (keep today and
 // yesterday fresh, in each user's timezone, for everyone who synced lately;
 // on Sundays also the weekly sleep-baseline estimate).
@@ -45,9 +45,6 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "learn-baselines" {
 		os.Exit(learnBaselines(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == "dlq" {
-		os.Exit(dlq(os.Args[2:]))
-	}
 	log := httpx.Logger("scoring")
 	cfg, err := config.Load("scoring")
 	if err != nil {
@@ -76,8 +73,8 @@ func main() {
 	engine.SetConsentMode(beta.Consent)
 	log.Info("beta", "consent", beta.Consent)
 
-	// The brokers it uses (EVENTS_BACKEND, EVENTS_CONSUME; D102), each retried at start-up.
-	bus, err := eventbus.Open(ctx, cfg, eventbus.Role{Name: "scoring", Publishes: true, Consumes: true, OwnStream: true}, log)
+	// RabbitMQ (D97), retried at start-up.
+	bus, err := eventbus.Open(ctx, cfg, "scoring", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)

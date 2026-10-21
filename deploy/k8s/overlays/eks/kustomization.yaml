@@ -1,7 +1,8 @@
 # RYFT on the EKS cluster from infra/aws (ryft-prod-euc1), served at
 # https://api.ryftapp.de and https://ryftapp.de. One namespace per workload:
-# ryft-ingest, ryft-scoring, ryft-api, ryft-notify, ryft-nats and ryft-migrate come with their
-# service accounts and Pod Security "restricted" from infra/vault, so this overlay
+# ryft-ingest, ryft-scoring, ryft-api, ryft-notify, ryft-rabbitmq, ryft-migrate and
+# ryft-smoke come with their service accounts and Pod Security "restricted" from
+# infra/vault, so this overlay
 # creates no Namespace objects for them; only ryft-web (the apex site), which holds
 # no secrets. Each namespace's Secret ryft-secrets is synced by the Vault Secrets
 # Operator from that service's own Vault namespace
@@ -10,13 +11,13 @@
 #
 # Needs the add-ons from infra/aws/kubernetes (Traefik with client IPs preserved,
 # cert-manager with the letsencrypt-prod ClusterIssuer, ExternalDNS, gp3-encrypted,
-# the Vault Secrets Operator). Apply with `make k8s-apply-eks` (order and waits in
-# docs/OPERATIONS.md).
+# the Vault Secrets Operator). Argo CD applies it (ryft-platform); `make k8s-apply-eks`
+# is break-glass (docs/OPERATIONS.md).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  # NATS is its own overlay (overlays/eks-nats) and Argo CD application (wave 1, the
-  # broker), synced before this one (wave 2).
+  # RabbitMQ is deploy/rabbitmq and its operators, their own Argo CD applications
+  # (waves 1 and 2), synced before this one (wave 3).
   - ../../services/migrate
   - ../../services/ingest
   - ../../services/scoring
@@ -32,10 +33,8 @@ patches:
   # Traefik + Let's Encrypt for the public host, one Ingress per namespace.
   - path: ingress-api.yaml
   - path: ingress-ingest.yaml
-  # The RabbitMQ cutover (D102), one release at a time, in each Deployment's env (it
-  # overrides ryft-config, and a change rolls the pods). R2: scoring and notify
-  # consume NATS and RabbitMQ. R3: ingest, api and scoring publish on RabbitMQ (through
-  # their outboxes); the consumers still drain NATS.
+  # The broker settings the RabbitMQ cutover left (D102), in each Deployment's env (it
+  # overrides ryft-config, and a change rolls the pods): RabbitMQ only.
   - path: events.yaml
 
 # Pin to the commit CI built (ghcr.io/timkrebs/ryft/<image>:<short-sha>): the short SHA

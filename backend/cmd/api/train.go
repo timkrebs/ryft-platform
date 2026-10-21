@@ -598,8 +598,8 @@ func (h *handler) failSettle(w http.ResponseWriter, r *http.Request, err error) 
 // settle brings a completed (or discarded) session's derived data up to date:
 // its load and attached workout (completed only), the records of every
 // exercise it or its previous version touched, and its days queued for
-// scoring. complete publishes ryft.session.completed; an edit publishes
-// ryft.ingested for the old and the new day. It returns the stored session.
+// scoring. complete publishes session.completed; an edit publishes
+// ingested for the old and the new day. It returns the stored session.
 func (h *handler) settle(ctx context.Context, r *http.Request, s model.Session, before *model.Session, complete bool) (model.Session, error) {
 	user := userOf(r).ID
 	prev, err := h.st.SessionPRs(ctx, user, s.ID)

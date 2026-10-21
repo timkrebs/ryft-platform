@@ -1,4 +1,4 @@
-# In: the metrics collector only (9090). Out: NATS, the Supavisor pooler and
+# In: the metrics collector only (9090). Out: RabbitMQ, the Supavisor pooler and
 # APNs (api.push.apple.com / api.sandbox.push.apple.com on 443). NetworkPolicy
 # cannot match host names, so APNs is any public address on 443, like the
 # others' egress (D34).
@@ -21,12 +21,7 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
   egress:
-    - to:
-        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-nats } }
-          podSelector: { matchLabels: { app: nats } }
-      ports:
-        - { protocol: TCP, port: 4222 }
-    # RabbitMQ (AMQPS), alongside NATS until the cutover's last release.
+    # RabbitMQ (AMQPS, mutual TLS).
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-rabbitmq } }
           podSelector: { matchLabels: { app.kubernetes.io/name: rabbitmq } }

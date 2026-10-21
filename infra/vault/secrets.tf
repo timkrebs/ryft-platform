@@ -1,5 +1,5 @@
-# Generated credentials: one Postgres password per service role and one NATS password
-# per client. Nobody types or sees them; each lands only in the namespaces that use
+# Generated credentials: one Postgres password per service role and one RabbitMQ
+# password per client. Nobody types or sees them; each lands only in the namespaces that use
 # it (local.generated). Rotate one with
 #   terraform apply -replace='random_password.db["api"]'
 # then re-run the migrate job (it sets the new role password) and let the operator
@@ -9,13 +9,6 @@ resource "random_password" "db" {
 
   length  = 40
   special = false # alphanumeric: safe in a URL and for SCRAM without SASLprep
-}
-
-resource "random_password" "nats" {
-  for_each = toset(local.nats_clients)
-
-  length  = 40
-  special = false
 }
 
 # RabbitMQ (D97): a password per client. The client's own namespace gets it in

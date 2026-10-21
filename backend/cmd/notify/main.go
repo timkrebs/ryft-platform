@@ -1,6 +1,6 @@
 // notify sends RYFT's push notifications (docs/ARCHITECTURE.md → notify): the
-// morning score and a silent refresh when scoring publishes ryft.scored, a
-// scored strength session (ryft.session.scored), and a reminder when a user's
+// morning score and a silent refresh when scoring publishes scored, a
+// scored strength session (session.scored), and a reminder when a user's
 // data has stopped arriving (a 15-minute check). Without an APNs key it runs
 // and counts what it would have sent.
 package main
@@ -52,8 +52,8 @@ func main() {
 	go db.Watch(ctx, pool, "notify", log)
 	st := store.New(pool)
 
-	// The brokers it uses (EVENTS_BACKEND, EVENTS_CONSUME; D102), each retried at start-up.
-	bus, err := eventbus.Open(ctx, cfg, eventbus.Role{Name: "notify", Consumes: true}, log)
+	// RabbitMQ (D97), retried at start-up.
+	bus, err := eventbus.Open(ctx, cfg, "notify", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)

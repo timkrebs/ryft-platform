@@ -677,7 +677,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		}
 	}
 	// firstRecovery: the row had no recovery before this write and has one now
-	// (the morning push, ryft.scored).
+	// (the morning push, scored).
 	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery FROM daily_scores WHERE user_id=$1 AND day=$2::date)
 		INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,

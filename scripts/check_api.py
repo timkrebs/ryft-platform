@@ -636,7 +636,7 @@ check(status == 200 and p == prefs0, f"preferences not restored: {p}")
 ok("PATCH /v1/me/notifications: categories merge, quiet hours set and cleared, 422s; restored")
 
 # The morning path end to end (apikey mode, compose): a new user with a token syncs
-# a night ending today → scoring publishes ryft.scored → notify decides. Without an
+# a night ending today → scoring publishes scored → notify decides. Without an
 # APNs key it counts "unconfigured", which its /metrics shows.
 METRICS = os.environ.get("NOTIFY_METRICS_URL", "")
 if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
@@ -669,14 +669,14 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
         if pushed("MORNING_SCORE", "unconfigured") > before:
             break
         time.sleep(1)
-    check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's ryft.scored (scoring → the broker → notify)")
+    check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's scored (scoring → the broker → notify)")
     for _ in range(30):  # and the silent refresh for the sync's scored days (D92)
         if handled("refresh", "ok") > refreshes:
             break
         time.sleep(1)
-    check(handled("refresh", "ok") > refreshes, "notify never handled C's ryft.refresh (scoring → the broker → notify)")
+    check(handled("refresh", "ok") > refreshes, "notify never handled C's refresh (scoring → the broker → notify)")
     raw("DELETE", "/v1/me", key=KEY_C)
-    ok("morning push path: sync → scoring → ryft.scored and ryft.refresh → notify (no APNs key: counted, not sent)")
+    ok("morning push path: sync → scoring → scored and refresh → notify (no APNs key: counted, not sent)")
 else:
     print("- morning push path not checked (needs NOTIFY_METRICS_URL, apikey mode)")
 

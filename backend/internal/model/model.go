@@ -921,7 +921,7 @@ func (o *OptionalQuiet) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ScoredEvent is published on ryft.scored when a local day first gets a
+// ScoredEvent is published (routing key scored) when a local day first gets a
 // recovery after a night with sleep (scoring → notify: the morning push).
 type ScoredEvent struct {
 	UserID           uuid.UUID `json:"user_id"`
@@ -934,7 +934,7 @@ type ScoredEvent struct {
 	RequestID        string    `json:"request_id,omitempty"`
 }
 
-// RefreshEvent is published on ryft.refresh when scoring has finished the
+// RefreshEvent is published (routing key refresh) when scoring has finished the
 // days a sync queued (scoring → notify: a silent push so the app refetches; D92).
 type RefreshEvent struct {
 	UserID    uuid.UUID `json:"user_id"`
@@ -942,7 +942,7 @@ type RefreshEvent struct {
 	RequestID string    `json:"request_id,omitempty"`
 }
 
-// SessionScoredEvent is published on ryft.session.scored once scoring has
+// SessionScoredEvent is published (routing key session.scored) once scoring has
 // scored a completed session's day (scoring → notify).
 type SessionScoredEvent struct {
 	UserID    uuid.UUID `json:"user_id"`
@@ -956,7 +956,7 @@ type RecomputeRequest struct {
 	To   string `json:"to"`
 }
 
-// IngestedEvent is published on NATS after a successful sync.
+// IngestedEvent is published (routing key ingested) after a successful sync.
 type IngestedEvent struct {
 	UserID uuid.UUID `json:"user_id"` // the event is always scoped to one user
 	Days   []string  `json:"days"`    // local days whose scores need (re)computing
@@ -964,12 +964,12 @@ type IngestedEvent struct {
 	// RequestID of the HTTP request that caused the event, so scoring's logs
 	// can be correlated with it.
 	RequestID string `json:"request_id,omitempty"`
-	// SessionID is set for a completed session (ryft.session.completed), so
+	// SessionID is set for a completed session (session.completed), so
 	// scoring can announce it once scored.
 	SessionID *uuid.UUID `json:"session_id,omitempty"`
 }
 
-// SessionCompletedEvent is published on NATS (ryft.session.completed) when a
+// SessionCompletedEvent is published (routing key session.completed) when a
 // strength session is completed, so scoring rescores its day.
 type SessionCompletedEvent struct {
 	UserID    uuid.UUID `json:"user_id"`

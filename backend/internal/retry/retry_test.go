@@ -55,14 +55,14 @@ func TestUntilGivesUpWithTheLastError(t *testing.T) {
 	fakeSleep(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
-	err := Until(ctx, quiet, "nats", Startup, func(context.Context) error {
+	err := Until(ctx, quiet, "amqp", Startup, func(context.Context) error {
 		calls++
 		if calls == 3 {
 			cancel()
 		}
-		return errors.New("no servers available")
+		return errors.New("connection refused")
 	})
-	if err == nil || err.Error() != "nats: no servers available" || calls != 3 {
+	if err == nil || err.Error() != "amqp: connection refused" || calls != 3 {
 		t.Fatalf("err %v after %d calls", err, calls)
 	}
 }

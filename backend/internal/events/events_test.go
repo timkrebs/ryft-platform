@@ -43,7 +43,7 @@ func (r *recorder) Send(_ context.Context, m Message) error {
 }
 
 // Every event decodes on its consumer's side to what was published, with a stable id
-// (a consumer's idempotency key on RabbitMQ, the dedup id on NATS).
+// (the message id on RabbitMQ, for a consumer that wants to recognise a repeat).
 func TestEventsRoundTrip(t *testing.T) {
 	r := &recorder{}
 	p := Publisher{Sender: r}
@@ -103,63 +103,5 @@ func TestOutcomes(t *testing.T) {
 	}
 	if !IsPermanent(Permanent(errors.New("gone"))) || IsPermanent(errors.New("transient")) {
 		t.Fatal("permanent errors are recognised")
-	}
-}
-
-type fakeBus struct {
-	Publisher
-	name     string
-	consumed chan string
-	fail     error
-	closed   int
-}
-
-func (f *fakeBus) ConsumeIngested(ctx context.Context, _ *slog.Logger, _ func(context.Context, model.IngestedEvent) error) error {
-	f.consumed <- f.name
-	if f.fail != nil {
-		return f.fail
-	}
-	<-ctx.Done()
-	return nil
-}
-func (f *fakeBus) ConsumeNotify(ctx context.Context, log *slog.Logger, _ func(context.Context, NotifyMessage) error) error {
-	return f.ConsumeIngested(ctx, log, nil)
-}
-func (f *fakeBus) Send(ctx context.Context, m Message) error { return f.Sender.Send(ctx, m) }
-func (f *fakeBus) Ready(context.Context) error               { return nil }
-func (f *fakeBus) Close()                                    { f.closed++ }
-
-// The cutover's bus: publishing on one, consuming on all; one consumer failing stops
-// the others; each bus closes once.
-func TestCombine(t *testing.T) {
-	sent := &recorder{}
-	ch := make(chan string, 4)
-	nats := &fakeBus{Publisher: Publisher{Sender: sent}, name: "nats", consumed: ch}
-	amqp := &fakeBus{Publisher: Publisher{Sender: &recorder{}}, name: "amqp", consumed: ch}
-	b := Combine(nats, nats, amqp)
-	if err := b.PublishRefresh(context.Background(), model.RefreshEvent{Day: "2026-10-21"}); err != nil || len(sent.sent) != 1 {
-		t.Fatalf("publishes go to the publishing bus: %v %d", err, len(sent.sent))
-	}
-	if err := b.Send(context.Background(), Message{Key: KeyIngested, Body: []byte("{}")}); err != nil || len(sent.sent) != 2 {
-		t.Fatalf("so do the outbox relay's raw sends: %v %d", err, len(sent.sent))
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- b.ConsumeIngested(ctx, quiet, nil) }()
-	got := map[string]bool{<-ch: true, <-ch: true}
-	if !got["nats"] || !got["amqp"] {
-		t.Fatalf("both consume: %v", got)
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	amqp.fail = errors.New("broken")
-	if err := Combine(nats, nats, amqp).ConsumeNotify(context.Background(), quiet, nil); err == nil || err.Error() != "broken" {
-		t.Fatalf("a failing consumer ends it: %v", err)
-	}
-	b.Close()
-	if nats.closed != 1 || amqp.closed != 1 {
-		t.Fatalf("each bus closes once: %d %d", nats.closed, amqp.closed)
 	}
 }

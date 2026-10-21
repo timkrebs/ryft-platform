@@ -29,25 +29,18 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1 }
             exp_annotations: { summary: "scoring-1 restarted more than 3 times in 30 minutes" }
-  - name: backlog, dead letters, database
+  - name: dead letters, database
     interval: 1m
     input_series:
-      - { series: 'ryft_nats_consumer_pending{consumer="scoring"}', values: '150x30' }
-      - { series: 'ryft_nats_consumer_pending{consumer="notify"}', values: '100x30' }
-      - { series: 'ryft_events_dlq_total{subject="ryft.ingested",result="ok"}', values: '0 0 1 1 1' }
+      - { series: 'ryft_events_dlq_total{subject="ingested",result="ok"}', values: '0 0 1 1 1' }
       - { series: 'ryft_db_up{service="api"}', values: '1 1 0 0 0 0 0 0' }
       - { series: 'ryft_db_up{service="ingest"}', values: '1 1 1 1 1 1 1 1' }
     alert_rule_test:
-      - eval_time: 20m
-        alertname: JetStreamBacklog
-        exp_alerts:
-          - exp_labels: { severity: warning, consumer: scoring }
-            exp_annotations: { summary: "scoring: over 100 events waiting for 15 minutes" }
       - eval_time: 4m
         alertname: DeadLetters
         exp_alerts:
-          - exp_labels: { severity: warning, subject: ryft.ingested }
-            exp_annotations: { summary: "ryft.ingested: an event was dead-lettered (scoring dlq)" }
+          - exp_labels: { severity: warning, subject: ingested }
+            exp_annotations: { summary: "ingested: an event was dead-lettered (scripts/dlq.sh list)" }
       - eval_time: 5m
         alertname: DatabaseDown
         exp_alerts:
@@ -106,7 +99,7 @@ tests:
       - { series: 'argocd_app_info{name="ryft-platform",health_status="Degraded",sync_status="Synced",autosync_enabled="true"}', values: '1x40' }
       - { series: 'argocd_app_info{name="vault-api",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="true"}', values: '1x40' }
       # Auto-sync paused (the adoption step): out of sync on purpose, no alert.
-      - { series: 'argocd_app_info{name="broker-nats",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="false"}', values: '1x40' }
+      - { series: 'argocd_app_info{name="broker-rabbitmq",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="false"}', values: '1x40' }
       - { series: 'argocd_app_sync_total{name="ryft-platform",phase="Failed"}', values: '0 0 0 1 1 1' }
       - { series: 'argocd_app_sync_total{name="vault-api",phase="Succeeded"}', values: '0 1 2 3 4 5' }
     alert_rule_test:

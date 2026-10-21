@@ -58,10 +58,6 @@ run "operator_manifests_use_the_full_namespace_path" {
     error_message = "api's VaultAuth/VaultStaticSecret differ from tests/golden/api.vault.yaml"
   }
   assert {
-    condition     = local_file.vso["nats"].content == file("tests/golden/nats.vault.yaml")
-    error_message = "nats must restart its StatefulSet on a new secret (tests/golden/nats.vault.yaml)"
-  }
-  assert {
     condition     = local_file.vso["migrate"].content == file("tests/golden/migrate.vault.yaml")
     error_message = "migrate is a Job: a secret but nothing to restart (tests/golden/migrate.vault.yaml)"
   }
@@ -76,13 +72,12 @@ run "each_namespace_holds_only_its_own_credentials" {
 
   assert {
     condition = jsonencode(output.secret_keys) == jsonencode({
-      ingest     = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
-      scoring    = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
-      api        = ["ADMIN_API_KEY", "AMQP_PASSWORD", "AMQP_USER", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
-      nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_NOTIFY", "NATS_PASSWORD_SCORING"]
+      ingest     = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "SUPABASE_PROJECT_REF"]
+      scoring    = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL"]
+      api        = ["ADMIN_API_KEY", "AMQP_PASSWORD", "AMQP_USER", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
       migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_NOTIFY", "DB_PASSWORD_SCORING"]
       monitoring = ["GC_TOKEN", "PROM_USERNAME"]
-      notify     = ["AMQP_PASSWORD", "AMQP_USER", "APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
+      notify     = ["AMQP_PASSWORD", "AMQP_USER", "APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL"]
       rabbitmq   = []
       smoke      = ["SMOKE_EMAIL", "SMOKE_PASSWORD", "SUPABASE_ANON_KEY", "SUPABASE_PROJECT_REF"]
     })
@@ -97,18 +92,13 @@ run "each_namespace_holds_only_its_own_credentials" {
     error_message = "only migrate holds the owner"
   }
   assert {
-    condition = alltrue([for s in ["ingest", "scoring", "api", "nats"] :
+    condition = alltrue([for s in ["ingest", "scoring", "api", "notify"] :
     !strcontains(nonsensitive(vault_kv_secret_v2.config[s].data_json), "owner-password-123")])
     error_message = "the owner password must not leave the migrate namespace"
   }
   assert {
-    condition = alltrue([for k, v in nonsensitive(jsondecode(vault_kv_secret_v2.config["nats"].data_json)) :
-    startswith(v, "$2a$")])
-    error_message = "the NATS server holds bcrypt hashes only, never a usable password"
-  }
-  assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["scoring"].data_json).NATS_USER) == "scoring"
-    error_message = "each client is its own NATS user"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["scoring"].data_json).AMQP_USER) == "scoring"
+    error_message = "each client is its own RabbitMQ user"
   }
 }
 
@@ -257,7 +247,7 @@ run "warns_without_the_apns_key" {
   expect_failures = [check.notify_has_apns_key]
 
   assert {
-    condition     = jsonencode(output.secret_keys["notify"]) == jsonencode(["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"])
+    condition     = jsonencode(output.secret_keys["notify"]) == jsonencode(["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL"])
     error_message = "without the key notify still gets its database and broker credentials"
   }
 }
@@ -266,7 +256,7 @@ run "the_data_key_reaches_only_the_api" {
   command = apply
 
   assert {
-    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate"] :
+    condition = alltrue([for s in ["ingest", "scoring", "notify", "migrate"] :
     !contains(output.secret_keys[s], "DATA_ENCRYPTION_KEY")]) && !contains(output.secret_keys["monitoring"], "DATA_ENCRYPTION_KEY")
     error_message = "only the api may hold the data encryption key"
   }
@@ -302,7 +292,7 @@ run "the_admin_key_reaches_only_the_api" {
   command = apply
 
   assert {
-    condition = alltrue([for s in ["ingest", "scoring", "nats", "migrate", "monitoring", "notify"] :
+    condition = alltrue([for s in ["ingest", "scoring", "rabbitmq", "migrate", "monitoring", "notify"] :
     !contains(output.secret_keys[s], "ADMIN_API_KEY")]) && contains(output.secret_keys["api"], "ADMIN_API_KEY")
     error_message = "only the api holds the admin key"
   }
@@ -320,7 +310,7 @@ run "the_beta_gate_reaches_api_and_ingest" {
   }
   assert {
     condition = contains(output.secret_keys["api"], "BETA_GATE") && contains(output.secret_keys["ingest"], "BETA_GATE") && alltrue([
-    for s in ["scoring", "notify", "nats", "migrate", "monitoring"] : !contains(output.secret_keys[s], "BETA_GATE")])
+    for s in ["scoring", "notify", "rabbitmq", "migrate", "monitoring"] : !contains(output.secret_keys[s], "BETA_GATE")])
     error_message = "BETA_GATE goes to the api and ingest only"
   }
   assert {
@@ -354,7 +344,7 @@ run "the_consent_mode_reaches_api_ingest_and_scoring" {
   }
   assert {
     condition = alltrue([for s in ["api", "ingest", "scoring"] : contains(output.secret_keys[s], "CONSENT_ENFORCE")]) && alltrue([
-    for s in ["notify", "nats", "migrate", "monitoring"] : !contains(output.secret_keys[s], "CONSENT_ENFORCE")])
+    for s in ["notify", "rabbitmq", "migrate", "monitoring"] : !contains(output.secret_keys[s], "CONSENT_ENFORCE")])
     error_message = "CONSENT_ENFORCE goes to api, ingest and scoring only"
   }
   assert {
@@ -397,7 +387,7 @@ run "rabbitmq_users_reach_the_broker_and_their_own_namespace_only" {
   }
   assert {
     condition     = !contains(keys(vault_kv_secret_v2.config), "rabbitmq")
-    error_message = "the broker's namespace has no ryft-secrets: nothing of the database, NATS or the other services"
+    error_message = "the broker's namespace has no ryft-secrets: nothing of the database or the other services"
   }
   assert {
     condition     = alltrue([for name, s in local.service_secret_keys : contains(["ingest", "api", "scoring", "notify"], name) == contains(s, "AMQP_PASSWORD")])

@@ -1,6 +1,6 @@
 # Parent namespace for the project, then one child per service.
 # Paths (relative to the provider's namespace, admin/ on HCP):
-# ryft/ → ryft/ingest/, ryft/scoring/, ryft/api/, ryft/nats/, ryft/migrate/
+# ryft/ → ryft/ingest/, ryft/scoring/, ryft/api/, ryft/rabbitmq/, ryft/migrate/, …
 
 resource "vault_namespace" "project" {
   path = var.project

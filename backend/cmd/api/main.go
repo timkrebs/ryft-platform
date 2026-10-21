@@ -55,8 +55,8 @@ func main() {
 	go db.Watch(ctx, pool, "api", log)
 	st := store.New(pool)
 
-	// The brokers it uses (EVENTS_BACKEND, EVENTS_CONSUME; D102), each retried at start-up.
-	bus, err := eventbus.Open(ctx, cfg, eventbus.Role{Name: "api", Publishes: true}, log)
+	// RabbitMQ (D97), retried at start-up.
+	bus, err := eventbus.Open(ctx, cfg, "api", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)
@@ -302,7 +302,7 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 // recomputeEvery is the minimum gap between two recompute requests of a user.
 const recomputeEvery = time.Minute
 
-// recompute asks scoring (via NATS) to rebuild a date range, oldest first.
+// recompute asks scoring (an ingested event) to rebuild a date range, oldest first.
 // Use it after a big HealthKit backfill or after changing max_hr / sleep base.
 func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 	var req model.RecomputeRequest

@@ -1,15 +1,12 @@
-# Non-secret settings. DATABASE_URL and the NATS credentials come from Secret
+# Non-secret settings. DATABASE_URL and the RabbitMQ credentials come from Secret
 # ryft-secrets (Vault).
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ryft-config
 data:
-  NATS_URL: nats://nats.ryft-nats.svc.cluster.local:4222
   # RabbitMQ (D97): mutual TLS on 5671, the service's certificate and the internal CA
-  # from Secret amqp-client; the password is AMQP_PASSWORD (Vault). Which broker is
-  # published to and consumed from is EVENTS_BACKEND / EVENTS_CONSUME (the cutover, D102;
-  # both default to nats until then).
+  # from Secret amqp-client; AMQP_USER and AMQP_PASSWORD come from Vault.
   AMQP_URL: amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft
   AMQP_CA_FILE: /etc/ryft/amqp/ca.crt
   AMQP_CERT_FILE: /etc/ryft/amqp/tls.crt

@@ -12,8 +12,9 @@ endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 deletion_protection = true
 
-# Three nodes, one per zone (D57): 51 pod slots, and the NATS volume always has a
-# node in its zone. The module ignores desired_size after creation; change it with
+# Three nodes, one per zone (D57): 51 pod slots, one RabbitMQ node each, and every
+# broker volume always has a node in its zone. The module ignores desired_size after
+# creation; change it with
 # aws eks update-nodegroup-config, then here.
 node_group = {
   instance_types = ["t3.large"] # 35 pods and 8 GiB per node (D64); changing the type replaces the node group

@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Consumes ryft.ingested and scores days. Its Service is only for the PostSync
+# Consumes ingested and scores days. Its Service is only for the PostSync
 # smoke's /readyz and the metrics port; nothing else calls it.
 resources:
   - configmap.yaml

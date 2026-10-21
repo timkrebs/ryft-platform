@@ -43,7 +43,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: ryft-nats
+  name: ryft-rabbitmq
   labels:
     app.kubernetes.io/part-of: ryft
     pod-security.kubernetes.io/enforce: restricted
@@ -88,11 +88,6 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata: { name: notify, namespace: ryft-notify }
-automountServiceAccountToken: false
----
-apiVersion: v1
-kind: ServiceAccount
-metadata: { name: nats, namespace: ryft-nats }
 automountServiceAccountToken: false
 ---
 apiVersion: v1

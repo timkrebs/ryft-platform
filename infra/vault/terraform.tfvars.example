@@ -6,7 +6,7 @@ vault_address_for_cluster   = "https://<cluster>.hashicorp.cloud:8200" # Terrafo
 # vault_address             = "https://…"         # only if Terraform reaches Vault at another address
 # vault_ca_bundle_b64       = "LS0tLS1CRUdJTi..."  # only for a private CA
 
-# Supabase (docs/SUPABASE.md). The database and NATS passwords of the services are
+# Supabase (docs/SUPABASE.md). The database and RabbitMQ passwords of the services are
 # generated here; you only provide the owner password, which only the migrate
 # namespace receives.
 supabase_project_ref    = "<ref>"
@@ -63,9 +63,9 @@ service_secrets = {
 # auth mount, KV, policy and VSO manifests (a database = "role" also needs a
 # migration creating ryft_<name> and an entry in backend/internal/db.ServiceRoles).
 # services = {
-#   ingest  = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
-#   scoring = { database = "role", nats = "client" }
-#   api     = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", nats = "client" }
-#   nats    = { nats = "server", workload_kind = "StatefulSet" }
-#   migrate = { database = "owner", workload_kind = "" }
+#   ingest   = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", amqp = "client" }
+#   scoring  = { database = "role", amqp = "client" }
+#   api      = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", amqp = "client" }
+#   rabbitmq = { amqp = "server", workload_kind = "" }
+#   migrate  = { database = "owner", workload_kind = "" }
 # }

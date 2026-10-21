@@ -52,7 +52,7 @@ resource "kubernetes_cluster_role_binding_v1" "vault_auth_delegator" {
   }
 }
 
-# The workload service account the pods run as (api, ingest, scoring, nats, migrate);
+# The workload service account the pods run as (api, ingest, scoring, notify, migrate, …);
 # deploy/k8s sets `serviceAccountName: <service>`, and the role below is bound to it.
 # The Vault Secrets Operator requests short-lived tokens for it (audience "vault");
 # the pods themselves never get a token, since none of them calls the Kubernetes API.

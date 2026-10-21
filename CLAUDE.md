@@ -6,7 +6,7 @@ is built by a separate agent in Xcode under `../app`; you never edit files there
 ## What this folder is
 Go services (`backend/cmd/{ingest,scoring,api}` + later `notify`, `coach`), Postgres via
 Supabase (local: docker compose or Podman), RabbitMQ (`deploy/rabbitmq`: operators,
-cluster, generated topology; NATS JetStream until the cutover's last release, D102),
+cluster, generated topology; D97, it replaced NATS JetStream, D102),
 kustomize manifests in
 `deploy/k8s` (`base/` + overlays: default, `vault`, `overlays/eks`, `overlays/local-postgres`),
 Terraform for the EKS cluster in `infra/aws` and for Vault (namespace per service,
@@ -16,7 +16,7 @@ changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call
 roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 
 ## Rules
-- Go only, stdlib `net/http`, `pgx`, `amqp091-go` (`nats.go` until R4); add a dependency only when it clearly
+- Go only, stdlib `net/http`, `pgx`, `amqp091-go`; add a dependency only when it clearly
   pays for itself. Env-only config. `slog` JSON logs. Migrations are numbered SQL files in
   `backend/internal/db/migrations/` — never edit an applied one, add a new one.
 - Every scoring/insight/behavior rule is a pure function in `internal/scoring` (or a
@@ -51,6 +51,6 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 ## Local workflow
 ```bash
 cd backend && go mod tidy && go test ./...
-cd .. && make up && make smoke        # Postgres + RabbitMQ + NATS + the services, synthetic 10 days
+cd .. && make up && make smoke        # Postgres + RabbitMQ + the services, synthetic 10 days
 make logs                              # follow service logs
 ```

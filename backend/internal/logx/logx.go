@@ -1,7 +1,7 @@
 // Package logx is the services' structured logging: JSON lines on stdout,
 // every line carrying the service name and — when logged with a request's
 // context (InfoContext etc.) — its request_id, user_id and route, so one
-// request can be followed across ingest, NATS and scoring.
+// request can be followed across ingest, the broker and scoring.
 //
 // Tokens, emails and request bodies are never logged.
 package logx
@@ -36,7 +36,7 @@ func NewContext(ctx context.Context) (context.Context, *Fields) {
 	return context.WithValue(ctx, fieldsKey{}, f), f
 }
 
-// WithFields attaches the given Fields (e.g. rebuilt from a NATS event).
+// WithFields attaches the given Fields (e.g. rebuilt from an event).
 func WithFields(ctx context.Context, f *Fields) context.Context {
 	return context.WithValue(ctx, fieldsKey{}, f)
 }

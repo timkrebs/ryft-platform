@@ -1,9 +1,11 @@
 # Fully self-hosted variant: in-cluster Postgres (ryft-postgres) instead of
 # Supabase, and the shared API key instead of Supabase Auth (local development or
 # a single user on a home cluster; nothing here is safe to expose to the
-# internet). Same namespaces, roles, NATS users and policies as EKS. Kustomize
-# creates what infra/vault creates there (namespaces, service accounts) and the
-# per-namespace Secrets, from env files written by scripts/local-secrets.sh.
+# internet). Same namespaces, roles, RabbitMQ users and policies as EKS, with one
+# RabbitMQ node instead of three. Kustomize creates what infra/vault creates there
+# (namespaces, service accounts) and the per-namespace Secrets, from env files
+# written by scripts/local-secrets.sh. Needs cert-manager; `make k8s-apply-local`
+# adds the internal CA and the RabbitMQ operators first (their CRDs), then this.
 #   make k8s-apply-local
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -11,7 +13,7 @@ resources:
   - namespaces.yaml
   - postgres
   - egress-postgres.yaml
-  - ../../services/nats
+  - ../../../rabbitmq
   - ../../services/migrate
   - ../../services/ingest
   - ../../services/scoring
@@ -24,9 +26,13 @@ secretGenerator:
   - { name: ryft-secrets, namespace: ryft-scoring, envs: [secrets/scoring.env] }
   - { name: ryft-secrets, namespace: ryft-api, envs: [secrets/api.env] }
   - { name: ryft-secrets, namespace: ryft-notify, envs: [secrets/notify.env] }
-  - { name: ryft-secrets, namespace: ryft-nats, envs: [secrets/nats.env] }
   - { name: ryft-secrets, namespace: ryft-migrate, envs: [secrets/migrate.env] }
   - { name: ryft-secrets, namespace: ryft-postgres, envs: [secrets/postgres.env] }
+  # The broker's users (deploy/rabbitmq/topology), read by the Topology Operator.
+  - { name: amqp-user-ingest, namespace: ryft-rabbitmq, envs: [secrets/amqp-user-ingest.env], options: { labels: { rabbitmq.com/topology-operator: "true" } } }
+  - { name: amqp-user-scoring, namespace: ryft-rabbitmq, envs: [secrets/amqp-user-scoring.env], options: { labels: { rabbitmq.com/topology-operator: "true" } } }
+  - { name: amqp-user-api, namespace: ryft-rabbitmq, envs: [secrets/amqp-user-api.env], options: { labels: { rabbitmq.com/topology-operator: "true" } } }
+  - { name: amqp-user-notify, namespace: ryft-rabbitmq, envs: [secrets/amqp-user-notify.env], options: { labels: { rabbitmq.com/topology-operator: "true" } } }
 generatorOptions:
   disableNameSuffixHash: true
 
@@ -41,3 +47,19 @@ patches:
         value: "true"
   - target: { kind: ConfigMap, name: ryft-config, namespace: ryft-api }
     patch: *apikey
+  # The public management UI is EKS's (rabbitmq.ryftapp.de, D103); here port-forward.
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata: { name: rabbitmq-management, namespace: ryft-rabbitmq }
+  # One RabbitMQ node on the default storage class (a home cluster has one node);
+  # memory request = limit, as the operator asks (D104).
+  - target: { group: rabbitmq.com, kind: RabbitmqCluster, name: rabbitmq }
+    patch: |-
+      - { op: replace, path: /spec/replicas, value: 1 }
+      - { op: remove, path: /spec/affinity }
+      - { op: remove, path: /spec/persistence/storageClassName }
+      - { op: replace, path: /spec/persistence/storage, value: 2Gi }
+      - { op: replace, path: /spec/resources/requests/memory, value: 512Mi }
+      - { op: replace, path: /spec/resources/limits/memory, value: 512Mi }

@@ -55,23 +55,6 @@ func TestLoadAuthAPIKeyAndOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadNatsCredentialsComeInPairs(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://x")
-	for env, ok := range map[[2]string]bool{
-		{"", ""}: true, {"ingest", "secret"}: true, {"ingest", ""}: false, {"", "secret"}: false,
-	} {
-		t.Setenv("NATS_USER", env[0])
-		t.Setenv("NATS_PASSWORD", env[1])
-		c, err := Load("ingest")
-		if (err == nil) != ok {
-			t.Errorf("NATS_USER=%q NATS_PASSWORD=%q: err %v", env[0], env[1], err)
-		}
-		if ok && (c.NatsUser != env[0] || c.NatsPass != env[1]) {
-			t.Errorf("got %q/%q", c.NatsUser, c.NatsPass)
-		}
-	}
-}
-
 func TestLoadAppleIsAllOrNothing(t *testing.T) {
 	keys := []string{"APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_CLIENT_ID", "APPLE_KEY_P8", "DATA_ENCRYPTION_KEY"}
 	for _, k := range keys {
@@ -158,39 +141,30 @@ func TestLoadBetaModes(t *testing.T) {
 	}
 }
 
-// The cutover's settings (D102): the backend defaults to nats and is what is consumed
-// unless EVENTS_CONSUME says otherwise; anything else is refused at start-up.
+// After the cutover (D102) RabbitMQ is the only broker: the old settings may still
+// say amqp, a leftover nats is refused at start-up, and the user comes in pairs.
 func TestEventsSettings(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://x")
 	for _, c := range []struct {
 		backend, consume, user, pass string
-		want                         string // backend|consume, or "error"
+		ok                           bool
 	}{
-		{"", "", "", "", "nats|nats"},
-		{"amqp", "", "", "", "amqp|amqp"},
-		{"nats", "nats, amqp,nats", "", "", "nats|nats,amqp"},
-		{"amqp", "amqp", "ingest", "pw", "amqp|amqp"},
-		{"kafka", "", "", "", "error"},
-		{"nats", "nats,sqs", "", "", "error"},
-		{"amqp", "", "ingest", "", "error"},
+		{"", "", "", "", true},
+		{"amqp", "amqp", "ingest", "pw", true},
+		{"nats", "", "", "", false},
+		{"", "nats,amqp", "", "", false},
+		{"amqp", "", "ingest", "", false},
 	} {
 		t.Setenv("EVENTS_BACKEND", c.backend)
 		t.Setenv("EVENTS_CONSUME", c.consume)
 		t.Setenv("AMQP_USER", c.user)
 		t.Setenv("AMQP_PASSWORD", c.pass)
 		cfg, err := Load("scoring")
-		got := cfg.EventsBackend + "|" + strings.Join(cfg.EventsConsume, ",")
-		if err != nil {
-			got = "error"
+		if (err == nil) != c.ok {
+			t.Errorf("EVENTS_BACKEND=%q EVENTS_CONSUME=%q AMQP_USER=%q: %v", c.backend, c.consume, c.user, err)
 		}
-		if got != c.want {
-			t.Errorf("EVENTS_BACKEND=%q EVENTS_CONSUME=%q: %s (%v), want %s", c.backend, c.consume, got, err, c.want)
+		if err == nil && cfg.AMQP.URL != "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft" {
+			t.Errorf("the cluster URL by default: %q", cfg.AMQP.URL)
 		}
-	}
-	t.Setenv("EVENTS_BACKEND", "nats")
-	t.Setenv("EVENTS_CONSUME", "nats,amqp")
-	cfg, _ := Load("notify")
-	if !cfg.Uses(BrokerAMQP) || !cfg.Uses(BrokerNATS) || cfg.AMQP.URL != "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft" {
-		t.Fatalf("consuming both uses both, the cluster URL by default: %+v", cfg)
 	}
 }

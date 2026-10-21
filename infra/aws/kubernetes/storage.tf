@@ -1,6 +1,6 @@
 # The cluster's default StorageClass. EBS encryption-by-default is off in the
 # account and must not be changed account-wide, so encryption is requested
-# here: health data (backups, NATS, Postgres until Supabase) is encrypted at
+# here: health data (backups, RabbitMQ, Postgres until Supabase) is encrypted at
 # rest. Retain keeps the volume when a PVC is deleted; clean up by hand.
 resource "kubernetes_storage_class_v1" "gp3_encrypted" {
   metadata {

@@ -57,8 +57,8 @@ func main() {
 	go db.Watch(ctx, pool, "ingest", log)
 	st := store.New(pool)
 
-	// The brokers it uses (EVENTS_BACKEND, EVENTS_CONSUME; D102), each retried at start-up.
-	bus, err := eventbus.Open(ctx, cfg, eventbus.Role{Name: "ingest", Publishes: true}, log)
+	// RabbitMQ (D97), retried at start-up.
+	bus, err := eventbus.Open(ctx, cfg, "ingest", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)

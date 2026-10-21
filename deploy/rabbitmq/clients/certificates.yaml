@@ -1,7 +1,7 @@
 # Each service's TLS identity towards the broker (D98): a Certificate per namespace from
 # the internal CA. The broker verifies peers (mutual TLS), so the service presents
-# tls.crt/tls.key and trusts ca.crt; the Deployments mount Secret amqp-client (optional,
-# so a pod starts before it exists) at /etc/ryft/amqp.
+# tls.crt/tls.key and trusts ca.crt; the Deployments mount Secret amqp-client at
+# /etc/ryft/amqp (a pod waits for it).
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

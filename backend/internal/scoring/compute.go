@@ -40,7 +40,7 @@ func (e *Engine) SetConsentMode(m config.Mode) { e.consent = m }
 func (e *Engine) Admits(u model.User) bool { return u.Consent != nil || e.consent != config.ModeOn }
 
 // OnScored sets what runs when the user's local today first gets a recovery
-// after a night with sleep: scoring publishes ryft.scored (the morning push).
+// after a night with sleep: scoring publishes scored (the morning push).
 // Rescores, the api's engine and past days never call it.
 func (e *Engine) OnScored(f func(context.Context, model.ScoredEvent)) { e.onScored = f }
 

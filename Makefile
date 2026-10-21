@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -24,7 +24,7 @@ images:
 push: images
 	for s in $(SERVICES); do $(CONTAINER) push $(REGISTRY)/$$s:$(TAG); done
 
-# Local dev: Postgres + NATS + the three services via docker compose.
+# Local dev: Postgres + RabbitMQ + the services via docker compose.
 up:
 	$(COMPOSE) up --build -d
 
@@ -75,7 +75,7 @@ check-swift:
 	./scripts/check_swift.sh
 
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
-NAMESPACES := nats migrate ingest scoring api notify smoke
+NAMESPACES := migrate ingest scoring api notify smoke
 LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 
 # BREAK-GLASS ONLY. Argo CD deploys ryft-prod-euc1 from git (docs/OPERATIONS.md →
@@ -83,20 +83,20 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 # whatever is applied here that git does not hold. Use this when Argo CD itself is
 # down, after pausing its auto-sync (OPERATIONS.md → Pause). Order as before Argo:
 # the Vault Secrets Operator objects first, so each namespace has its Secret before
-# the pods start; then NATS and the migrate Job (label ryft.dev/stage=first), and the
-# services only once migrate has set their role passwords; the PostSync smoke Job
-# (label ryft.dev/hook) is left out. The finished migrate Job is deleted first because
-# a Job's pod template cannot change.
+# the pods start; then RabbitMQ (k8s-rabbitmq) and the migrate Job (label
+# ryft.dev/stage=first), and the services only once migrate has set their role
+# passwords; the PostSync smoke Job (label ryft.dev/hook) is left out. The finished
+# migrate Job is deleted first because a Job's pod template cannot change.
 k8s-apply-eks: k8s-check-images k8s-check-registry k8s-check-auth
 	@echo "! break-glass: Argo CD reverts anything here that git does not hold; pause its auto-sync first (docs/OPERATIONS.md → Deploy)."
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
-	@$(MAKE) --no-print-directory k8s-check-nats-secret
-	kubectl apply -k deploy/k8s/overlays/eks-nats
+	kubectl apply -k deploy/k8s/overlays/vault-namespaces/rabbitmq
+	for u in ingest scoring api notify; do kubectl -n ryft-rabbitmq wait --for=create secret/amqp-user-$$u --timeout=120s || exit 1; done
+	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/rabbitmq
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
 	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
 	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
-	kubectl -n ryft-nats rollout status statefulset/nats --timeout=5m
 	kubectl apply -k deploy/k8s/overlays/eks -l 'ryft.dev/hook!=postsync'
 	for s in ingest api scoring notify; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
@@ -153,10 +153,25 @@ tf-migrate-hcp:
 	echo "✓ every state is in HCP Terraform; copies in $$rescue (they hold secrets: delete them once every root plans cleanly)"
 
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
+# Self-hosted: cert-manager must be installed. The internal CA (the same chart template
+# as on EKS), the RabbitMQ operators, then everything else with one broker node.
 k8s-apply-local:
-	[ -d $(LOCAL_SECRETS) ] || ./scripts/local-secrets.sh
+	./scripts/local-secrets.sh 2>/dev/null || [ -d $(LOCAL_SECRETS) ]
+	helm template ryft-issuers infra/aws/kubernetes/charts/cluster-issuers --namespace cert-manager \
+	  --show-only templates/internal-ca.yaml | kubectl apply -f -
+	kubectl -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
-	kubectl apply -k deploy/k8s/overlays/local-postgres
+	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres
+
+# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ) (the broker,
+# its topology; for local-postgres everything), then wait for the broker. Server-side
+# apply (the CRDs are too large for the last-applied annotation), taking over fields
+# Argo CD owns: this is break-glass or a cluster without Argo CD.
+k8s-rabbitmq:
+	kubectl apply --server-side --force-conflicts -k deploy/rabbitmq/operators
+	for d in rabbitmq-cluster-operator messaging-topology-operator; do kubectl -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
+	kubectl apply --server-side --force-conflicts -k $(RABBITMQ)
+	kubectl -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
 
 k8s-delete-local:
 	kubectl delete -k deploy/k8s/overlays/local-postgres
@@ -193,7 +208,7 @@ k8s-validate:
 	@set -e; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
 	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
-	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/eks-nats overlays/local-postgres; do \
+	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
 	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
 	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
@@ -214,18 +229,6 @@ k8s-check-auth:
 	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \
 	  exit 1; fi
 	@echo "✓ kubectl is logged in to $$(kubectl config current-context) as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
-
-# NATS refuses to start when nats.conf names a password its Secret lacks: a new
-# service whose hash the Vault Secrets Operator has not synced yet (it re-reads
-# Vault hourly). Seen 2026-10-19 when notify was added: nats-0 crash-looped on
-# NATS_PASSWORD_NOTIFY. Check before rolling NATS.
-k8s-check-nats-secret:
-	@for k in $$(sed -nE 's/.*[$$](NATS_PASSWORD_[A-Z]+).*/\1/p' deploy/k8s/base/nats/nats.conf | sort -u); do \
-	  if [ -z "$$(kubectl -n ryft-nats get secret ryft-secrets -o jsonpath="{.data.$$k}")" ]; then \
-	    echo "✗ ryft-nats/ryft-secrets lacks $$k: apply infra/vault, then let the operator sync now:"; \
-	    echo "  kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager"; \
-	    echo "  and run this again in a minute."; exit 1; fi; \
-	done; echo "✓ ryft-nats/ryft-secrets has every password nats.conf references"
 
 # Every image the EKS overlay deploys must be a well-formed reference with a pinned
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in

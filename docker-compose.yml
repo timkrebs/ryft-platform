@@ -13,25 +13,8 @@ services:
       interval: 5s
       retries: 10
 
-  # Same config as Kubernetes (users and permissions per service). On Kubernetes
-  # the passwords are bcrypt hashes from Vault; here they are dev passwords.
-  nats:
-    image: nats:2.11-alpine
-    command: ["-c", "/etc/nats/nats.conf"]
-    environment:
-      NATS_PASSWORD_INGEST: dev-ingest-nats-password
-      NATS_PASSWORD_SCORING: dev-scoring-nats-password
-      NATS_PASSWORD_API: dev-api-nats-password
-      NATS_PASSWORD_NOTIFY: dev-notify-nats-password
-    ports: ["4222:4222", "8222:8222"]
-    volumes:
-      - natsdata:/data
-      - ./deploy/k8s/base/nats/nats.conf:/etc/nats/nats.conf:ro
-
   # RabbitMQ (D97) as on the cluster: AMQPS with client certificates on 5671 (a dev CA,
-  # rabbitmq-certs), the generated topology and dev users (deploy/rabbitmq/dev). Which
-  # broker a service publishes to and consumes from is EVENTS_BACKEND / EVENTS_CONSUME
-  # (the cutover, D102): here by default publish to RabbitMQ, consume from both.
+  # rabbitmq-certs), the generated topology and dev users (deploy/rabbitmq/dev).
   rabbitmq-certs:
     image: &rabbitmq-image docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
     entrypoint: ["sh", "/dev-amqp-certs.sh"]
@@ -75,7 +58,6 @@ services:
     build: { context: ./backend, args: { SERVICE: ingest } }
     environment:
       <<: &env
-        NATS_URL: nats://nats:4222
         API_KEY: ${API_KEY:-dev-api-key-change-me}
         # Local development: a shared key instead of Supabase tokens. The bearer
         # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
@@ -86,12 +68,8 @@ services:
         BETA_GATE: ${BETA_GATE:-off}
         CONSENT_ENFORCE: ${CONSENT_ENFORCE:-on}
         PRIVACY_POLICY_VERSION: "2026-10-20"
-        EVENTS_BACKEND: ${EVENTS_BACKEND:-amqp}
-        EVENTS_CONSUME: ${EVENTS_CONSUME:-nats,amqp}
         AMQP_URL: amqps://rabbitmq:5671/ryft
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
-      NATS_USER: ingest
-      NATS_PASSWORD: dev-ingest-nats-password
       AMQP_USER: ingest
       AMQP_PASSWORD: dev-ingest-amqp-password
       AMQP_CA_FILE: /certs/ingest/ca.crt
@@ -101,7 +79,6 @@ services:
     ports: ["8081:8080"]
     depends_on: &deps
       migrate: { condition: service_completed_successfully }
-      nats: { condition: service_started }
       rabbitmq: { condition: service_healthy }
 
   scoring:
@@ -109,8 +86,6 @@ services:
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_scoring:dev-scoring-db-password@postgres:5432/ryft?sslmode=disable
-      NATS_USER: scoring
-      NATS_PASSWORD: dev-scoring-nats-password
       AMQP_USER: scoring
       AMQP_PASSWORD: dev-scoring-amqp-password
       AMQP_CA_FILE: /certs/scoring/ca.crt
@@ -124,8 +99,6 @@ services:
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
-      NATS_USER: api
-      NATS_PASSWORD: dev-api-nats-password
       AMQP_USER: api
       AMQP_PASSWORD: dev-api-amqp-password
       AMQP_CA_FILE: /certs/api/ca.crt
@@ -143,12 +116,7 @@ services:
   notify:
     build: { context: ./backend, args: { SERVICE: notify } }
     environment:
-      NATS_URL: nats://nats:4222
       DATABASE_URL: postgres://ryft_notify:dev-notify-db-password@postgres:5432/ryft?sslmode=disable
-      NATS_USER: notify
-      NATS_PASSWORD: dev-notify-nats-password
-      EVENTS_BACKEND: ${EVENTS_BACKEND:-amqp}
-      EVENTS_CONSUME: ${EVENTS_CONSUME:-nats,amqp}
       AMQP_URL: amqps://rabbitmq:5671/ryft
       AMQP_USER: notify
       AMQP_PASSWORD: dev-notify-amqp-password
@@ -161,5 +129,4 @@ services:
 
 volumes:
   pgdata:
-  natsdata:
   amqpcerts:

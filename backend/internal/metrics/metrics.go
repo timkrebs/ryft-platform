@@ -59,20 +59,21 @@ var (
 		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
-	// NATS, ingest + api publish, scoring consumes.
+	// Events (RabbitMQ): ingest, api and scoring publish, scoring and notify consume.
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
-		Help: "Events published, by reason (sync, recompute, session, session_completed) and result (ok, error).",
+		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
+			"and result (ok, error, unroutable: no queue bound for the key).",
 	}, []string{"reason", "result"})
 	EventsHandled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_handled_total",
-		Help: "Events consumed (ryft.ingested, ryft.session.completed), by reason and result: ok, retry (NAKed for redelivery), " +
-			"failed (last delivery failed, JetStream gives up), bad (unparseable, terminated), " +
-			"dropped (cannot succeed, e.g. the user was deleted; terminated).",
+		Help: "Events consumed, by reason and result: ok, retry (to the next retry tier), failed (the last attempt failed, " +
+			"dead-lettered), bad (unparseable, dead-lettered), dropped (cannot succeed, e.g. the user was deleted), deferred (notify: quiet hours).",
 	}, []string{"reason", "result"})
+	// The name is from NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
-		Help: "Messages received with a delivery count above 1, per consumer.",
+		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
 	}, []string{"consumer"})
 
 	// scoring.
@@ -141,20 +142,9 @@ var (
 	}, []string{"subject"})
 	EventsDLQ = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_dlq_total",
-		Help: "Events moved to the dead-letter stream RYFT_DLQ, by original subject: ok, or error (the publish failed; the message stayed in RYFT).",
+		Help: "Events dead-lettered (dlq.scoring, dlq.notify), by routing key: ok, or error (the publish failed; " +
+			"the message was rejected and the broker's delivery limit dead-letters it).",
 	}, []string{"subject", "result"})
-	ConsumerPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "ryft_nats_consumer_pending",
-		Help: "Messages of a JetStream consumer not yet delivered (polled every 30 s by the consumer's service).",
-	}, []string{"consumer"})
-	ConsumerAckPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "ryft_nats_consumer_ack_pending",
-		Help: "Messages of a JetStream consumer delivered but not yet acknowledged.",
-	}, []string{"consumer"})
-	StreamMessages = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "ryft_nats_stream_messages",
-		Help: "Messages stored in a JetStream stream, RYFT or RYFT_DLQ (polled every 30 s by scoring, the streams' owner).",
-	}, []string{"stream"})
 	FeedbackReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_feedback_received_total",
 		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",
@@ -227,8 +217,8 @@ var (
 	}, []string{"publisher", "result"})
 )
 
-// The RabbitMQ connection's metrics, registered by UseAMQP: a service that does not use
-// RabbitMQ (NATS before the cutover) exposes none, so a 0 is never a false alarm.
+// The RabbitMQ connection's metrics, registered by UseAMQP when a service connects: a
+// binary that never connects (migrate) exposes none, so a 0 is never a false alarm.
 var (
 	AMQPConnected = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "ryft_amqp_connected",

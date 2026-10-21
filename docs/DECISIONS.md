@@ -1866,6 +1866,25 @@ sent, and whether a second account shares its phone.
   volume follows the namespace (its claim is not deleted with the StatefulSet).
 - **Rollback after R4** is restoring NATS (revert R4, `infra/vault` with NATS); events
   in RabbitMQ at that moment are lost to the consumers, which `rescore_all.sh` repairs.
+- **R4 as built:**
+  - `overlays/eks/events.yaml` keeps `EVENTS_BACKEND=amqp` (and `EVENTS_CONSUME=amqp`)
+    for every service: Argo CD applies R4's manifests minutes before the promote PR
+    pins R4's images, and an older image with the setting unset would fall back to
+    NATS. The R4 images refuse anything but `amqp` there, so a stale `nats` fails at
+    start-up instead of being ignored.
+  - Secret `amqp-client` is no longer optional in the Deployments: without NATS a pod
+    without its certificate cannot work, so it waits for cert-manager instead of
+    starting and failing its TLS handshakes.
+  - `ryft_nats_redeliveries_total` keeps its name: the dashboards and the history read
+    it, and a rename buys nothing.
+  - `overlays/local-postgres` runs one RabbitMQ node (no anti-affinity, the default
+    storage class, 512 MiB) from the same `deploy/rabbitmq`, and needs cert-manager;
+    `make k8s-apply-local` adds the internal CA with `helm template` of the EKS chart
+    and the operators first. `scripts/local-secrets.sh` upgrades a directory from the
+    NATS days in place (Postgres keeps its owner password).
+  - `make k8s-rabbitmq` (break-glass and local) applies server-side with
+    `--force-conflicts`: the operators' CRDs are too large for client-side apply, and
+    break-glass means taking over what Argo CD owned.
 
 ## D103 — Argo CD and the RabbitMQ management UI on public hosts (supersedes D94's "No Ingress")
 

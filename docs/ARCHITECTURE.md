@@ -38,10 +38,10 @@ the same `samples` table with new `type` values — nothing else changes.
 
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
-| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox) | Postgres, RabbitMQ (NATS until the cutover) |
-| `scoring` | 8080 (health only) | Consume `ingested` and `session.completed` (queue `scoring`); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `scored` (today's first recovery), `session.scored` and `refresh` (a sync's days scored) | Postgres, RabbitMQ (NATS until the cutover) |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, RabbitMQ (NATS until the cutover) |
-| `notify`  | 8080 (health only) | Consume `scored`, `session.scored` and `refresh` (queue `notify`); send APNs pushes; every 15 min the no-data check | Postgres, RabbitMQ (NATS until the cutover), APNs |
+| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox) | Postgres, RabbitMQ |
+| `scoring` | 8080 (health only) | Consume `ingested` and `session.completed` (queue `scoring`); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `scored` (today's first recovery), `session.scored` and `refresh` (a sync's days scored) | Postgres, RabbitMQ |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, RabbitMQ |
+| `notify`  | 8080 (health only) | Consume `scored`, `session.scored` and `refresh` (queue `notify`); send APNs pushes; every 15 min the no-data check | Postgres, RabbitMQ, APNs |
 
 All four are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
 share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
@@ -105,11 +105,9 @@ size limit (64 KiB, 256 KiB for a Train session or plan, 32 MiB for sync; over �
 generic `500` with the request ID while the details go to the log. Logs are JSON with
 `request_id`, `user_id` and `route` on every line of a request (`internal/logx`).
 
-**Events.** RabbitMQ (D97), replacing NATS JetStream in four releases (D102): until the
-last, the services carry both clients, and `EVENTS_BACKEND` (where they publish) and
-`EVENTS_CONSUME` (what they consume, a list) choose; `internal/eventbus` opens them,
-`internal/events` is the transport-neutral interface (`events.Bus`), `natsbus` and
-`amqpbus` its two transports. Five events (routing keys on topic exchange `ryft.events`
+**Events.** RabbitMQ (D97), which replaced NATS JetStream in four releases (D102).
+`internal/events` is the transport-neutral interface (`events.Bus`), `amqpbus` the
+transport, `internal/eventbus` opens it from the configuration. Five events (routing keys on topic exchange `ryft.events`
 in vhost `ryft`): `ingested` (`{user_id, days[], reason, request_id}`; `request_id`: the
 request that caused it, for log correlation) and `session.completed` (`{user_id,
 session_id, day, request_id}`, handled like an ingest of that day) go to queue
@@ -132,10 +130,6 @@ and compose's definitions; `amqpbus/permissions_test.go` proves the rights again
 broker. Design: [`MESSAGING_DESIGN.md`](MESSAGING_DESIGN.md). If the broker is down,
 the services keep serving, the outbox keeps the events, and scoring's 15-minute timer
 catches up anyway.
-
-Until R4, NATS as before: stream `RYFT` (the five subjects `ryft.<key>`, work-queue
-retention, 7 days), dead letters in `RYFT_DLQ` (D84), a NATS user per service
-(`deploy/k8s/base/nats/nats.conf`, checked by `internal/events/natsbus/permissions_test.go`).
 
 ## Data model (Postgres)
 
@@ -287,9 +281,7 @@ what that workload does. No credential is shared, and none is broader than its u
 
   ryft-notify (SA notify, PG ryft_notify, AMQP user notify) ──443──▶ APNs; 5432 ▶ pooler
 
-  Until the cutover's last release (D102) the same flows also go to ryft-nats (NATS users).
-
-  Vault (HCP): admin/ryft/{ingest,scoring,api,notify,rabbitmq,nats,migrate,smoke}, each with auth/kubernetes
+  Vault (HCP): admin/ryft/{ingest,scoring,api,notify,rabbitmq,migrate,smoke}, each with auth/kubernetes
   bound to its namespace + service account, kv/config = that workload's keys only.
   The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
 ```
@@ -306,8 +298,7 @@ what that workload does. No credential is shared, and none is broader than its u
   the migrate Job holds the owner.
 - **Messaging:** each service is its own RabbitMQ user without configure rights, writing
   only its routing keys and reading only its queue, over mutual TLS with a certificate
-  of its own from the internal CA (Events above, D98, D99). Until R4 also its own NATS
-  user (the server holds only bcrypt hashes).
+  of its own from the internal CA (Events above, D98, D99).
 - **Network:** default deny for ingress and egress in every namespace, then exactly
   the flows in the drawing (`OPERATIONS.md` → Network policy). Internet egress is
   limited to public addresses on 443/5432. Traefik limits each client IP before any
@@ -338,13 +329,12 @@ four services are distroless, non-root, with a read-only FS, startup/readiness/l
 probes and Prometheus annotations. RabbitMQ 4.3 runs as three nodes (the Cluster
 Operator's `RabbitmqCluster`, 10 Gi each, `deploy/rabbitmq/cluster`), its exchanges,
 queues, policies, users and rights as the Topology Operator's objects
-(`deploy/rabbitmq/topology`, generated); until R4 NATS 2.11 runs JetStream on a 2 Gi PVC
-with `nats.conf`. migrate is a one-shot Job. api and ingest have their own Ingress
+(`deploy/rabbitmq/topology`, generated). migrate is a one-shot Job. api and ingest have their own Ingress
 (`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB; scoring and notify run one
 replica each. `deploy/k8s/services/<service>`
 puts each into its namespace. `overlays/eks` composes the services on EKS, with
 Secrets from Vault through the operator; `deploy/rabbitmq` holds the broker (with
-`deploy/rabbitmq/operators`), `overlays/eks-nats` NATS until R4.
+`deploy/rabbitmq/operators`).
 `overlays/local-postgres` composes them with an in-cluster Postgres, a nightly
 `pg_dump` CronJob and generated per-namespace Secrets.
 
@@ -362,7 +352,6 @@ Argo CD ◄──── git (main) ◄──────────────
   wave 1  rabbitmq-operators  Cluster + Topology Operator (CRDs, rabbitmq-system)
   wave 2  broker-rabbitmq  RabbitmqCluster, topology, client certificates
   wave 3  ryft-platform    PreSync migrate → services, ingresses, policies → PostSync smoke
-  (until R4: wave 1 broker-nats; until R1: ryft-platform in wave 2)
 ```
 
 Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).

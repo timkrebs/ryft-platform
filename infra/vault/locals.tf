@@ -11,7 +11,6 @@ locals {
       service_account = coalesce(s.service_account, name)
       secret_keys     = s.secret_keys
       database        = s.database
-      nats            = s.nats
       amqp            = s.amqp
       workload_kind   = s.workload_kind
       data_key        = s.data_key
@@ -23,9 +22,8 @@ locals {
   }
 
   # Postgres role per service (created by migration 0009; the migrate job sets the
-  # passwords generated here) and NATS user per client (deploy/k8s/base/nats/nats.conf).
+  # passwords generated here) and RabbitMQ user per client (deploy/rabbitmq/topology).
   db_roles     = { for name, s in local.services : name => "${var.project}_${name}" if s.database == "role" }
-  nats_clients = sort([for name, s in local.services : name if s.nats == "client"])
   amqp_clients = sort([for name, s in local.services : name if s.amqp == "client"])
   amqp_server  = one([for name, s in local.services : name if s.amqp == "server"])
 
@@ -43,8 +41,6 @@ locals {
       contains(s.secret_keys, "SUPABASE_PROJECT_REF") ? ["SUPABASE_PROJECT_REF"] : [],
       s.database == "role" ? ["DATABASE_URL"] : [],
       s.database == "owner" ? concat(["DATABASE_URL"], [for c in keys(local.db_roles) : "DB_PASSWORD_${upper(c)}"]) : [],
-      s.nats == "client" ? ["NATS_USER", "NATS_PASSWORD"] : [],
-      s.nats == "server" ? [for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}"] : [],
       s.amqp == "client" ? ["AMQP_USER", "AMQP_PASSWORD"] : [],
       s.data_key ? ["DATA_ENCRYPTION_KEY"] : [],
       s.admin_key ? ["ADMIN_API_KEY"] : [],
@@ -60,7 +56,7 @@ locals {
   }
 
   # What each service may read, and nothing more: a role's own URL, never the
-  # owner's; the NATS server only bcrypt hashes; the owner only in migrate.
+  # owner's; the owner only in migrate.
   generated = {
     for name, s in local.services : name => merge(
       contains(s.secret_keys, "SUPABASE_PROJECT_REF") ? { SUPABASE_PROJECT_REF = var.supabase_project_ref } : {},
@@ -69,8 +65,6 @@ locals {
         { DATABASE_URL = local.owner_url },
         { for c in keys(local.db_roles) : "DB_PASSWORD_${upper(c)}" => random_password.db[c].result },
       ) : {},
-      s.nats == "client" ? { NATS_USER = name, NATS_PASSWORD = random_password.nats[name].result } : {},
-      s.nats == "server" ? { for c in local.nats_clients : "NATS_PASSWORD_${upper(c)}" => random_password.nats[c].bcrypt_hash } : {},
       s.amqp == "client" ? { AMQP_USER = name, AMQP_PASSWORD = random_password.amqp[name].result } : {},
       s.data_key ? { DATA_ENCRYPTION_KEY = random_bytes.data_key[name].base64 } : {},
       s.admin_key ? { ADMIN_API_KEY = random_password.admin_key[name].result } : {},

@@ -1,4 +1,4 @@
-# scoring: ryft.ingested → daily scores (role ryft_scoring).
+# scoring: ingested → daily scores (role ryft_scoring).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,7 +59,6 @@ spec:
             limits: { memory: 256Mi }
       volumes:
         # The service's TLS identity towards RabbitMQ (deploy/rabbitmq/clients): its
-        # client certificate and the internal CA. Optional, so the pod also starts where
-        # there is no RabbitMQ (local-postgres) or before the Certificate is issued.
+        # client certificate and the internal CA. The pod waits for it.
         - name: amqp-client
-          secret: { secretName: amqp-client, optional: true }
+          secret: { secretName: amqp-client }

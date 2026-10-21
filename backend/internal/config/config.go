@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -28,34 +27,15 @@ type Config struct {
 	Port        string
 	MetricsPort string // METRICS_PORT, default 9090: /metrics only
 	DatabaseURL string
-	NatsURL     string
-	NatsUser    string // NATS_USER/NATS_PASSWORD: the service's own NATS user; both or neither
-	NatsPass    string
-	// The cutover to RabbitMQ (D102): EVENTS_BACKEND is the broker a service publishes
-	// to, EVENTS_CONSUME the brokers it consumes from (comma-separated; default the
-	// backend). Both nats until the cutover's releases change them.
-	EventsBackend string
-	EventsConsume []string
-	AMQP          AMQP
-	DBMaxConns    int // pool size; small because Supavisor session mode holds a server connection per client connection
+	AMQP        AMQP
+	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection
 }
-
-// The brokers (D97).
-const (
-	BrokerNATS = "nats"
-	BrokerAMQP = "amqp"
-)
 
 // AMQP is how a service reaches RabbitMQ: its URL, its own user, and its TLS identity
 // (the broker verifies client certificates, D98).
 type AMQP struct {
 	URL, User, Password       string
 	CAFile, CertFile, KeyFile string
-}
-
-// Uses reports whether the service publishes to or consumes from broker.
-func (c Config) Uses(broker string) bool {
-	return c.EventsBackend == broker || slices.Contains(c.EventsConsume, broker)
 }
 
 // Auth configures how ingest and api authenticate requests.
@@ -80,7 +60,6 @@ func Load(service string) (Config, error) {
 		Port:        getenv("PORT", "8080"),
 		MetricsPort: getenv("METRICS_PORT", "9090"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
-		NatsURL:     getenv("NATS_URL", "nats://nats:4222"),
 		DBMaxConns:  4,
 		AMQP: AMQP{
 			URL:  getenv("AMQP_URL", "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft"),
@@ -88,19 +67,11 @@ func Load(service string) (Config, error) {
 			CAFile: os.Getenv("AMQP_CA_FILE"), CertFile: os.Getenv("AMQP_CERT_FILE"), KeyFile: os.Getenv("AMQP_KEY_FILE"),
 		},
 	}
-	c.EventsBackend = getenv("EVENTS_BACKEND", BrokerNATS)
-	if c.EventsBackend != BrokerNATS && c.EventsBackend != BrokerAMQP {
-		return c, fmt.Errorf("EVENTS_BACKEND must be %q or %q, got %q", BrokerNATS, BrokerAMQP, c.EventsBackend)
-	}
-	for _, b := range strings.Split(getenv("EVENTS_CONSUME", c.EventsBackend), ",") {
-		switch b = strings.TrimSpace(b); b {
-		case "":
-		case BrokerNATS, BrokerAMQP:
-			if !slices.Contains(c.EventsConsume, b) {
-				c.EventsConsume = append(c.EventsConsume, b)
-			}
-		default:
-			return c, fmt.Errorf("EVENTS_CONSUME lists %q, want %q and/or %q", b, BrokerNATS, BrokerAMQP)
+	// EVENTS_BACKEND and EVENTS_CONSUME chose the broker during the cutover (D102);
+	// RabbitMQ is the only one now, and a leftover nats is refused, not ignored.
+	for _, k := range []string{"EVENTS_BACKEND", "EVENTS_CONSUME"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" && v != "amqp" {
+			return c, fmt.Errorf("%s=%q: RabbitMQ (amqp) is the only broker since NATS was removed (D102)", k, v)
 		}
 	}
 	if (c.AMQP.User == "") != (c.AMQP.Password == "") {
@@ -111,10 +82,6 @@ func Load(service string) (Config, error) {
 	}
 	if c.DatabaseURL == "" {
 		return c, fmt.Errorf("DATABASE_URL is required")
-	}
-	c.NatsUser, c.NatsPass = os.Getenv("NATS_USER"), os.Getenv("NATS_PASSWORD")
-	if (c.NatsUser == "") != (c.NatsPass == "") {
-		return c, fmt.Errorf("set both NATS_USER and NATS_PASSWORD, or neither")
 	}
 	if v := os.Getenv("DB_MAX_CONNS"); v != "" {
 		n, err := strconv.Atoi(v)

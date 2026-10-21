@@ -1,5 +1,7 @@
-# The broker each service publishes to (EVENTS_BACKEND) and consumes from
-# (EVENTS_CONSUME), per release of the RabbitMQ cutover (D102). Unset is nats.
+# The broker each service publishes to and consumes from, as the RabbitMQ cutover
+# left it (D102): RabbitMQ only. Images from before R4 read these (unset was nats);
+# the R4 images have no NATS and refuse anything but amqp here. The file can go
+# once no image from before R4 can be deployed (a revert of the R4 pin).
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: ingest, namespace: ryft-ingest }
@@ -32,7 +34,7 @@ spec:
         - name: scoring
           env:
             - { name: EVENTS_BACKEND, value: amqp }
-            - { name: EVENTS_CONSUME, value: "nats,amqp" }
+            - { name: EVENTS_CONSUME, value: amqp }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -43,4 +45,5 @@ spec:
       containers:
         - name: notify
           env:
-            - { name: EVENTS_CONSUME, value: "nats,amqp" }
+            - { name: EVENTS_BACKEND, value: amqp }
+            - { name: EVENTS_CONSUME, value: amqp }

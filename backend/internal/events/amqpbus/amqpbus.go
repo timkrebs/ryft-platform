@@ -539,7 +539,7 @@ func (b *Bus) delay(ctx context.Context, d amqp.Delivery, q string, attempt int)
 }
 
 // deadLetter publishes a copy of d into consumer queue's dead-letter queue with the
-// reason in its headers (the same names as on NATS).
+// reason in its headers (Ryft-Subject, Ryft-Consumer, Ryft-Deliveries, Ryft-Error).
 func (b *Bus) deadLetter(ctx context.Context, log *slog.Logger, queue string, d amqp.Delivery, attempts int, cause error) error {
 	reason := cause.Error()
 	if len(reason) > 512 {

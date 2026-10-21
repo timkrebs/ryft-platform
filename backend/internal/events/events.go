@@ -1,7 +1,6 @@
 // Package events is what the services exchange: five trigger events, how they are
-// encoded, and what a handler's error means. The transports live beside it:
-// natsbus (NATS JetStream, until the cutover) and amqpbus (RabbitMQ, D97); an
-// outbox sits between a service's database writes and its transport.
+// encoded, and what a handler's error means. The transport lives beside it: amqpbus
+// (RabbitMQ, D97); an outbox sits between a service's database writes and it.
 //
 // Events are triggers, not records: Postgres is the source of truth, POST
 // /v1/recompute replays, and every handler is idempotent, so a duplicate delivery
@@ -23,8 +22,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// Event keys: the routing key on RabbitMQ's ryft.events, the NATS subject without
-// its "ryft." prefix.
+// Event keys: the routing keys on RabbitMQ's ryft.events.
 const (
 	KeyIngested         = "ingested"
 	KeySessionCompleted = "session.completed"
@@ -33,7 +31,7 @@ const (
 	KeyRefresh          = "refresh"
 )
 
-// The two consumers: a NATS durable consumer each, a RabbitMQ queue each.
+// The two consumers, a RabbitMQ queue each.
 const (
 	ConsumerScoring = "scoring"
 	ConsumerNotify  = "notify"
@@ -71,8 +69,7 @@ type Sender interface {
 }
 
 // Bus is what the services use: publish the five events, consume their queue, and
-// whether the transport is connected. natsbus and amqpbus implement it; Combine
-// joins one for publishing with several for consuming (the cutover).
+// whether the transport is connected. amqpbus implements it.
 type Bus interface {
 	// Sender is the raw publish the typed ones below are made of; the outbox's relay
 	// sends its rows with it.
@@ -95,8 +92,8 @@ type Bus interface {
 type Publisher struct{ Sender Sender }
 
 // PublishIngested queues days for scoring. A non-empty dedupID marks repeats of the
-// same trigger (NATS drops them within two minutes; RabbitMQ delivers them, and
-// rescoring a day twice changes nothing).
+// same trigger (RabbitMQ delivers every copy, and rescoring a day twice changes
+// nothing, D100).
 func (p Publisher) PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error {
 	return p.send(ctx, func() (Message, error) { return Ingested(ev, dedupID) })
 }
@@ -289,81 +286,4 @@ func Deferred(err error) (time.Duration, bool) {
 		return d.after, true
 	}
 	return 0, false
-}
-
-// Combine is the cutover's bus: publishes go to pub, and consuming runs on every
-// bus in consume at once (the same handler; idempotency makes the overlap safe).
-func Combine(pub Bus, consume ...Bus) Bus {
-	return combined{pub: pub, consume: consume}
-}
-
-type combined struct {
-	pub     Bus
-	consume []Bus
-}
-
-func (c combined) Send(ctx context.Context, m Message) error { return c.pub.Send(ctx, m) }
-
-func (c combined) PublishIngested(ctx context.Context, ev model.IngestedEvent, id string) error {
-	return c.pub.PublishIngested(ctx, ev, id)
-}
-func (c combined) PublishSessionCompleted(ctx context.Context, ev model.SessionCompletedEvent, id string) error {
-	return c.pub.PublishSessionCompleted(ctx, ev, id)
-}
-func (c combined) PublishScored(ctx context.Context, ev model.ScoredEvent) error {
-	return c.pub.PublishScored(ctx, ev)
-}
-func (c combined) PublishSessionScored(ctx context.Context, ev model.SessionScoredEvent) error {
-	return c.pub.PublishSessionScored(ctx, ev)
-}
-func (c combined) PublishRefresh(ctx context.Context, ev model.RefreshEvent) error {
-	return c.pub.PublishRefresh(ctx, ev)
-}
-
-func (c combined) ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(context.Context, model.IngestedEvent) error) error {
-	return c.all(ctx, func(ctx context.Context, b Bus) error { return b.ConsumeIngested(ctx, log, fn) })
-}
-
-func (c combined) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(context.Context, NotifyMessage) error) error {
-	return c.all(ctx, func(ctx context.Context, b Bus) error { return b.ConsumeNotify(ctx, log, fn) })
-}
-
-// all consumes on every bus until ctx ends or one fails; a failure stops the others.
-func (c combined) all(ctx context.Context, run func(context.Context, Bus) error) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errs := make(chan error, len(c.consume))
-	for _, b := range c.consume {
-		go func() { errs <- run(ctx, b) }()
-	}
-	var first error
-	for range c.consume {
-		if err := <-errs; err != nil && first == nil {
-			first = err
-			cancel()
-		}
-	}
-	return first
-}
-
-func (c combined) Ready(ctx context.Context) error {
-	if err := c.pub.Ready(ctx); err != nil {
-		return err
-	}
-	for _, b := range c.consume {
-		if err := b.Ready(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c combined) Close() {
-	seen := map[Bus]bool{}
-	for _, b := range append([]Bus{c.pub}, c.consume...) {
-		if !seen[b] {
-			seen[b] = true
-			b.Close()
-		}
-	}
 }

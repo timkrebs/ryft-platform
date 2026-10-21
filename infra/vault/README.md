@@ -9,19 +9,17 @@ in `services`.
 HCP Vault Dedicated (admin/)                    EKS cluster ryft-prod-euc1
 admin/ryft/
 ├── ingest/   auth/kubernetes ◀─TokenReview─▶ ns ryft-ingest   SA ingest  (+ SA vault-auth)
-│             kv/config {DATABASE_URL (role ryft_ingest), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│             kv/config {DATABASE_URL (role ryft_ingest), AMQP_USER/PASSWORD,
 │                        SUPABASE_PROJECT_REF}
 ├── scoring/  …                               ns ryft-scoring  SA scoring
-│             kv/config {DATABASE_URL (role ryft_scoring), NATS_USER/PASSWORD, AMQP_USER/PASSWORD}
+│             kv/config {DATABASE_URL (role ryft_scoring), AMQP_USER/PASSWORD}
 ├── api/      …                               ns ryft-api      SA api
-│             kv/config {DATABASE_URL (role ryft_api), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│             kv/config {DATABASE_URL (role ryft_api), AMQP_USER/PASSWORD,
 │                        SUPABASE_PROJECT_REF, SUPABASE_SERVICE_ROLE_KEY, ADMIN_API_KEY (generated),
 │                        DATA_ENCRYPTION_KEY, APPLE_* once set}
 ├── notify/   …                               ns ryft-notify   SA notify
-│             kv/config {DATABASE_URL (role ryft_notify), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│             kv/config {DATABASE_URL (role ryft_notify), AMQP_USER/PASSWORD,
 │                        APNS_* once set}
-├── nats/     …                               ns ryft-nats     SA nats
-│             kv/config {NATS_PASSWORD_INGEST/SCORING/API/NOTIFY: bcrypt hashes only}
 ├── rabbitmq/ …                               ns ryft-rabbitmq SA rabbitmq
 │             kv/amqp-user-<svc> {username, password} per client → Secret amqp-user-<svc>
 │                        (labelled for the Topology Operator; no kv/config, no ryft-secrets)
@@ -47,10 +45,11 @@ the pods themselves have no service-account token at all.
 
 - **Postgres:** each service connects as its own least-privilege role (migration 0009,
   `docs/ARCHITECTURE.md` → Database roles). Only `migrate` holds the owner password.
-- **NATS:** each service is its own user with the narrowest subjects
-  (`deploy/k8s/base/nats/nats.conf`). The NATS namespace holds bcrypt hashes, so
-  nothing in it can log in as a service.
-- **Generated passwords:** the role and NATS passwords are `random_password`s. Nobody
+- **RabbitMQ:** each service is its own user without configure rights, writing only its
+  routing keys and reading only its queue (`deploy/rabbitmq/topology`, D99). The
+  broker's namespace holds the users' passwords for the Topology Operator; it already
+  holds the broker's administrator, so a hash there would protect nothing more.
+- **Generated passwords:** the role and RabbitMQ passwords are `random_password`s. Nobody
   types them, and they never appear in `terraform.tfvars`. You provide only the
   Supabase owner password and the Supabase secret key.
 
@@ -92,7 +91,7 @@ waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
 **Rotate:**
 
 - **A generated password:**
-  `terraform apply -replace='random_password.db["api"]'` (or `random_password.nats["api"]`).
+  `terraform apply -replace='random_password.db["api"]'` (or `random_password.amqp["api"]`).
   The operator updates the Secrets within `refreshAfter` (1 h) and restarts the
   workloads. For a database password, run the migrate job again so Postgres has the new
   one: `make k8s-apply-eks`.
