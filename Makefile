@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -243,3 +243,41 @@ k8s-check-images:
 	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)'; printf '%s\n' "$$imgs" | grep -E ':latest$$'); \
 	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
+
+# --- web/ (ryftapp.de, D107): one place for the site's checks; `make hooks` once per clone ---
+# The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it).
+
+web-install:
+	cd web && npm ci
+
+# Typecheck, ESLint + Prettier + brand + messages parity, Vitest. Add REQUIRE_SIBLINGS=1 to make
+# a missing ../app an error instead of a skip.
+web-test:
+	cd web && npm run typecheck && npm run lint && npm test
+
+# The static export in web/out (postbuild: CSP hashes, brand check of the output).
+web-build:
+	cd web && npm run build
+
+# The nginx image (docker or podman), then Playwright against it: routes, headers, axe.
+web-image:
+	cd web && npm run image
+
+web-serve:
+	cd web && npm run serve
+
+web-serve-stop:
+	cd web && npm run serve:stop
+
+web-e2e: web-image web-serve
+	@cd web && for i in $$(seq 1 30); do curl -fs -o /dev/null http://localhost:8080/ && break; sleep 1; done; \
+	npm run e2e; status=$$?; npm run serve:stop; exit $$status
+
+# Regenerate src/styles/tokens.* from the app (../app/Ryft).
+web-tokens:
+	cd web && npm run tokens
+
+# The brand guard on staged web/ files (pre-commit) and on every commit message (commit-msg).
+hooks:
+	git config core.hooksPath .githooks
+	@echo "✓ git hooks: .githooks (brand check on staged web/ files and on commit messages)"

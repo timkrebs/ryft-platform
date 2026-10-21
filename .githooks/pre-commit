@@ -1,0 +1,12 @@
+#!/bin/sh
+# The brand guard on the staged files under web/ (web/scripts/check-brand.mjs,
+# web/config/brand-denylist.json). Other staged files are not its business: the rule for
+# them is the commit message check (commit-msg) and CI.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+git diff --cached --quiet --diff-filter=ACMR -- web && exit 0
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node is not installed, so the brand check on the staged files under web/ can't run." >&2
+  echo "Install Node (web/.nvmrc) and commit again." >&2
+  exit 1
+fi
+exec node web/scripts/check-brand.mjs --staged

@@ -5,8 +5,8 @@
 //
 //   node scripts/check-brand.mjs              every tracked or new file, out/ if built, the last commit message
 //   node scripts/check-brand.mjs --out-only   only the built site (postbuild)
-//   node scripts/check-brand.mjs --staged     the staged versions of staged files (pre-commit)
-//   node scripts/check-brand.mjs --message F  a commit message file (commit-msg)
+//   node scripts/check-brand.mjs --staged     the staged versions of staged files under web/ (pre-commit)
+//   node scripts/check-brand.mjs --message F  a commit message file (commit-msg; the rule is repo-wide)
 //
 // Exit 1 on any hard finding. Matches are printed masked, so the log doesn't repeat them.
 import { execFileSync } from 'node:child_process';
@@ -26,13 +26,15 @@ if (args.includes('--message')) {
   const file = args[args.indexOf('--message') + 1];
   inputs.push({ source: 'commit message', text: readFileSync(file, 'utf8') });
 } else if (args.includes('--staged')) {
-  const staged = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'])
+  // Only web/: with cwd = web/, --relative lists the staged files below it (paths relative
+  // to web/) and leaves out the rest of the repository. `:./<path>` is relative to the cwd too.
+  const staged = git(['diff', '--cached', '--name-only', '--relative', '--diff-filter=ACMR', '-z'])
     .split('\0')
     .filter(Boolean);
   for (const path of staged) {
     inputs.push({ source: `path ${path}`, text: path });
     if (!isTextPath(path)) continue;
-    inputs.push({ source: path, text: git(['show', `:${path}`]) });
+    inputs.push({ source: path, text: git(['show', `:./${path}`]) });
   }
 } else {
   if (!args.includes('--out-only')) {

@@ -1,5 +1,5 @@
 {
-  "name": "ryft-web",
+  "name": "ryft-site",
   "version": "0.1.0",
   "private": true,
   "description": "ryftapp.de: the RYFT landing page, legal pages and app-link plumbing, as a static site.",
@@ -9,7 +9,6 @@
     "node": ">=24.11"
   },
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks || true",
     "fonts": "node scripts/fetch-fonts.mjs",
     "tokens": "node scripts/tokens.mjs",
     "tokens:check": "node scripts/tokens.mjs --check",
