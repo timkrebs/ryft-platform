@@ -1,13 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import matter from 'gray-matter';
 import { describe, expect, it } from 'vitest';
 
 // /science describes one scoring model, by hand. When the platform moves to a new model
 // version (SCORING.md → "ModelVersion = …"), this fails until the page is updated.
 // The platform is this repository's root (web/..), so SCORING.md is always there.
-const PLATFORM = resolve(process.env.RYFT_PLATFORM_DIR ?? '..');
-const SCORING = join(PLATFORM, 'docs/SCORING.md');
+const SCORING = resolve('../docs/SCORING.md');
 
 const front = (locale: string) =>
   matter(readFileSync(`content/science/${locale}.mdx`, 'utf8')).data as { model: string; checked: string };

@@ -104,7 +104,8 @@ describe('legal content', () => {
         });
 
         const source = front.portedFrom ? join(RYFT, front.portedFrom) : null;
-        it.skipIf(!source || !existsSync(source))('says exactly what the platform draft says', () => {
+        it.skipIf(!source)('says exactly what the platform draft says', () => {
+          expect(existsSync(source!), `${source} (portedFrom) does not exist`).toBe(true);
           const html = readFileSync(source!, 'utf8');
           expect(mdxText(content)).toBe(htmlText(html));
           const todos = (s: string) => (s.match(/TODO\(user\)/g) ?? []).length;

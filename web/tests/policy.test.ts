@@ -24,14 +24,17 @@ function repo(versions: Record<string, string | null>) {
   return dir;
 }
 
-/** A site root (web/) with the privacy texts of each locale. */
-function site(pages: Record<string, string[]>) {
+/** A site root (web/) with the privacy texts of each locale and privacy-versions.json. */
+function site(pages: Record<string, string[]>, list: string[] | null = ['2026-10-20'], status = 'published') {
   const dir = mkdtempSync(join(tmpdir(), 'ryft-site-'));
-  for (const [locale, versions] of Object.entries(pages)) {
+  for (const [locale, names] of Object.entries(pages)) {
     mkdirSync(join(dir, 'content/legal', locale, 'privacy'), { recursive: true });
-    for (const v of versions)
-      writeFileSync(join(dir, 'content/legal', locale, 'privacy', `${v}.mdx`), '---\n---\n');
+    for (const v of names) {
+      const file = v.includes('.') ? v : `${v}.mdx`;
+      writeFileSync(join(dir, 'content/legal', locale, 'privacy', file), `---\nstatus: ${status}\n---\n`);
+    }
   }
+  if (list) writeFileSync(join(dir, 'content/legal/privacy-versions.json'), JSON.stringify(list));
   return dir;
 }
 
@@ -104,10 +107,72 @@ describe('privacy policy version check', () => {
   });
 });
 
+describe('privacy versions that users consented to', () => {
+  it('fails when an old version loses its page (a renamed file)', () => {
+    const r = checkPolicy({
+      siteRoot: site({ en: ['2026-11-01'], de: ['2026-11-01'] }, ['2026-10-20', '2026-11-01']),
+      repoRoot: both('2026-11-01'),
+    });
+    expect(r.problems.join('\n')).toMatch(/en\/privacy\/2026-10-20\.mdx is missing/);
+    expect(r.problems.join('\n')).toMatch(/de\/privacy\/2026-10-20\.mdx is missing/);
+  });
+
+  it('is ok when the old version is kept and the list ends with the current one', () => {
+    const both2 = ['2026-10-20', '2026-11-01'];
+    const r = checkPolicy({
+      siteRoot: site({ en: both2, de: both2 }, both2),
+      repoRoot: both('2026-11-01'),
+    });
+    expect(r.problems).toEqual([]);
+  });
+
+  it('fails when the ConfigMaps are not the last entry of the list', () => {
+    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, ['2026-01-01']), repoRoot: both(V) });
+    expect(r.problems.join('\n')).toMatch(
+      /last entry of content\/legal\/privacy-versions\.json is 2026-01-01/,
+    );
+  });
+
+  it('fails without the list', () => {
+    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, null), repoRoot: both(V) });
+    expect(r.problems.join('\n')).toMatch(/privacy-versions\.json is missing/);
+  });
+
+  it('fails on a privacy page with another name', () => {
+    const r = checkPolicy({ siteRoot: site({ en: [V, 'draft.mdx'], de: [V] }), repoRoot: both(V) });
+    expect(r.problems.join('\n')).toMatch(/en\/privacy\/draft\.mdx: privacy pages must be named/);
+  });
+
+  it('warns, but does not fail, while the consented page is a draft', () => {
+    const r = checkPolicy({
+      siteRoot: site({ en: [V], de: [V] }, ['2026-10-20'], 'draft'),
+      repoRoot: both(V),
+    });
+    expect(r.problems).toEqual([]);
+    expect(r.warnings).toHaveLength(2);
+    expect(r.warnings[0]).toMatch(/still a draft/);
+  });
+
+  it("fails when docker-compose.yml's version differs", () => {
+    const repoRoot = both(V);
+    writeFileSync(join(repoRoot, 'docker-compose.yml'), '    PRIVACY_POLICY_VERSION: "2026-01-01"\n');
+    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot });
+    expect(r.problems.join('\n')).toMatch(/docker-compose\.yml .* 2026-01-01/);
+    writeFileSync(join(repoRoot, 'docker-compose.yml'), '    PRIVACY_POLICY_VERSION: "2026-10-20"\n');
+    expect(checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot }).problems).toEqual([]);
+  });
+
+  it('names the searched folder when the ConfigMaps are not there', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'ryft-empty-'));
+    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: empty });
+    expect(r.problems[0]).toContain(empty);
+  });
+});
+
 describe('check-policy-version.mjs', () => {
   it('passes --strict in this repository', () => {
     const script = resolve('scripts/check-policy-version.mjs');
     const out = execFileSync('node', [script, '--strict'], { encoding: 'utf8' });
-    expect(out).toMatch(/^privacy policy: \d{4}-\d{2}-\d{2} on the site/);
+    expect(out).toMatch(/^privacy policy: \d{4}-\d{2}-\d{2} on the site/m);
   });
 });
