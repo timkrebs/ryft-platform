@@ -1945,3 +1945,28 @@ sent, and whether a second account shares its phone.
 - Not a Progressing state for missing metrics: a broken metrics server would then hold
   every sync, although the deploy is fine; the autoscaler's own trouble belongs to the
   metrics (kube-state-metrics), not to the deploy gate.
+
+## D106 — The apex site is the ryft-web image, public
+
+- **What changes:** `ryftapp.de` is served by `ghcr.io/timkrebs/ryft/web:<short-sha>`,
+  built in `timkrebs/ryft-web`, instead of ConfigMaps in `deploy/k8s/base/web` (D86). The
+  pages, the legal texts, nginx's config and the AASA live there; here only the
+  Deployment, Service, NetworkPolicy, Ingress, the `www` redirect, the rate limit and the
+  pin. A site change is a PR there plus a one-line pin PR here.
+- **Public, by the user's choice (2026-10-21):** pulled anonymously like the service
+  images, so no pull secret, nothing in `infra/vault`, Argo CD's project, the CI or
+  `check_registry.sh`. ryft-web's D14 records the trade-off: the image holds the Satoshi
+  font files, whose licence allows self-hosting but not offering them on public servers,
+  and anyone can pull a public image; accepted for now. If it goes private, the variant
+  with a Vault-synced `dockerconfigjson` Secret is
+  `../web/docs/handoff/platform-web-image.patch`.
+- **Who pins web:** ryft-web's own promote job (its PR #11) opens `deploy: web <sha>` on
+  branches `deploy/web-<sha>` with the `ryft-deploy` App's token, after its image passed
+  Trivy; this repository's `promote.sh` runs only for `backend/` changes and would wait
+  for an unrelated one, and "the newest tag" in the registry would be a guess. So
+  `promote.sh` closes older `deploy/*` PRs as superseded except `deploy/web-*` (they move
+  a different line and never conflict); its test runs the real `--jq` filter.
+- **Before the switch:** the anonymous manifest (linux/amd64 and arm64), and the image run
+  locally as in the pod (uid 101, read-only root, `/tmp` and `/var/cache/nginx` only):
+  every URL of the brief 200, the AASA `application/json` without a redirect, a CSP with
+  the script hashes; its AASA is the ConfigMap site's plus `/invite/*`.
