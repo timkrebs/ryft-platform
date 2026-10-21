@@ -1826,6 +1826,11 @@ sent, and whether a second account shares its phone.
 - **Metrics:** `ryft_outbox_pending`, `ryft_outbox_oldest_seconds`, `ryft_outbox_stuck`,
   `ryft_outbox_relayed_total`; alerts `OutboxBacklog` (an event waiting over 5 minutes)
   and `OutboxStuck`.
+- **ingest's readiness leaves the broker out** (it failed while NATS was away): with the
+  outbox, a sync needs only the database, so Traefik keeps sending syncs during a broker
+  outage, as it does to the api, whose readiness never included the broker. scoring and
+  notify still report unready without it (they have nothing to do). At start-up every
+  service still waits for its brokers (up to five minutes, then exits).
 
 ## D102 — The cutover: four releases, configuration only
 

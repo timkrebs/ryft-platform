@@ -62,7 +62,7 @@ completion), and the publisher's relay sends it with the broker's confirm.
 | A failure is retried, spaced | the TTL tiers, then the DLQ; nothing is retried in a tight loop |
 | Duplicates are harmless | idempotent handlers (scoring rescores to the same rows; notify claims per user, day and category; refresh is throttled) |
 | Ordering | per user, oldest first, from the outbox; not across retries, and not needed |
-| A broker outage | the services keep running (`/readyz` says why), the outbox keeps the events, the relay sends them afterwards; scoring's 15-minute pass catches up yesterday and today anyway |
+| A broker outage | ingest and the api keep taking requests (their readiness leaves the broker out), the outbox keeps the events, the relay sends them afterwards; scoring and notify wait, unready (`/readyz` says why); scoring's 15-minute pass catches up yesterday and today anyway |
 
 ## Rights (D99)
 

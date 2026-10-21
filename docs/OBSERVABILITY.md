@@ -239,7 +239,7 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
 | RabbitMQAlarm | critical | a node's memory or disk alarm, 2 min (publishers are blocked) | queue depths (a consumer that stopped), `rabbitmq-diagnostics -q alarms` |
 | RabbitMQNodeDown | warning | fewer than three nodes report, 5 min | `kubectl -n ryft-rabbitmq get pods`, a node drain, the PDB |
-| AMQPDisconnected | warning | a service's connection to RabbitMQ is down, 5 min | its log (`amqp` lines: TLS, password, the broker), `/readyz` |
+| AMQPDisconnected | warning | a service's connection to RabbitMQ is down, 5 min | its log (`amqp` lines: TLS, password, the broker); scoring's and notify's `/readyz` |
 | EventsUnroutable | critical | an event was published with no queue bound for its key | `amqpbus/topology.go` and the generated topology applied (Argo CD `broker-rabbitmq`) |
 | OutboxBacklog | warning | an outbox event waits > 5 min for the broker, 5 min | the broker, the relay's `outbox relay` log lines |
 | OutboxStuck | warning | an outbox row failed 50 sends | its `last_error` (OPERATIONS → RabbitMQ → The outbox) |

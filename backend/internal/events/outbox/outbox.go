@@ -100,7 +100,7 @@ func (o *Outbox) Run(ctx context.Context) {
 		}
 		if err != nil {
 			backoff = min(max(2*backoff, time.Second), 30*time.Second)
-			o.log.Warn("outbox relay: send failed, retrying", "publisher", o.publisher, "err", err, "retry_in", backoff)
+			o.log.Warn("outbox relay: send failed, retrying", "publisher", o.publisher, "err", err, "retry_in", backoff.String())
 		} else {
 			backoff = 0
 		}

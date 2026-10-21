@@ -91,9 +91,8 @@ func main() {
 		if err := st.Ready(ctx); err != nil {
 			return err
 		}
-		if err := bus.Ready(ctx); err != nil {
-			return err
-		}
+		// Not the broker: a sync's event waits in the outbox while it is away (D101),
+		// so ingest keeps taking syncs, like the api (AMQPDisconnected, OutboxBacklog).
 		return verifier.Ready(ctx)
 	})
 	api := http.NewServeMux()

@@ -233,7 +233,7 @@ func (b *Bus) supervise() {
 			if err := b.connect(); err == nil {
 				break
 			} else {
-				b.log.Warn("amqp reconnect failed", "err", err, "retry_in", delay)
+				b.log.Warn("amqp reconnect failed", "err", err, "retry_in", delay.String())
 			}
 			select {
 			case <-b.ctx.Done():
@@ -434,7 +434,7 @@ func (b *Bus) consume(ctx context.Context, log *slog.Logger, queue string, h han
 		if time.Since(start) > time.Minute {
 			delay = time.Second // it ran a while: this is a new outage, not the same one
 		}
-		log.Warn("amqp consumer stopped, resubscribing", "queue", queue, "err", err, "retry_in", delay)
+		log.Warn("amqp consumer stopped, resubscribing", "queue", queue, "err", err, "retry_in", delay.String())
 		select {
 		case <-ctx.Done():
 			return nil
