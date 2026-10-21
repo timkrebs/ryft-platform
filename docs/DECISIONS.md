@@ -1928,3 +1928,20 @@ sent, and whether a second account shares its phone.
   requested for nothing measured.
 - Done before R2, while nothing uses the broker: the operator replaces the nodes one at a
   time (the PDB), and quorum queues keep two of three members throughout.
+
+## D105 — Argo CD: an autoscaler is healthy unless it cannot scale
+
+- The sync of R4's images (2026-10-21 13:22 UTC) failed once: right after the rollout
+  the api's HPA reported `ScalingActive=False` (`FailedGetResourceMetric`, "no metrics
+  returned from resource metrics API"), because the metrics server has no samples for
+  new pods for about a minute. Argo CD's built-in HPA check calls that Degraded, and a
+  Degraded object fails the sync; the retry two minutes later passed. Every rollout of
+  api or ingest can hit it.
+- A custom check in `argocd-cm` (`infra/aws/kubernetes/argocd.tf`): Degraded only when
+  the HPA cannot scale (`AbleToScale=False`) or its scaling is broken for another
+  reason (an invalid selector); missing metrics, failed metric computation and disabled
+  scaling are Healthy with the reason as message. Tested with luajit (Lua 5.1, as
+  Argo CD's gopher-lua) against the conditions seen on the cluster.
+- Not a Progressing state for missing metrics: a broken metrics server would then hold
+  every sync, although the deploy is fine; the autoscaler's own trouble belongs to the
+  metrics (kube-state-metrics), not to the deploy gate.

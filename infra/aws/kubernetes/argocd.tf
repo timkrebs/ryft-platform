@@ -116,6 +116,33 @@ locals {
           end
           return hs
         LUA
+        # An autoscaler is healthy unless it cannot scale. Argo CD's own check calls
+        # "no metrics yet" Degraded, which the api's and ingest's HPAs report for about a
+        # minute after every rollout (the metrics server has no samples for the new
+        # pods), and a Degraded object fails the sync (2026-10-21, D105).
+        "resource.customizations.health.autoscaling_HorizontalPodAutoscaler" = <<-LUA
+          hs = { status = "Healthy", message = "" }
+          if obj.status == nil or obj.status.conditions == nil then
+            return hs
+          end
+          for _, c in ipairs(obj.status.conditions) do
+            if c.type == "AbleToScale" and c.status == "False" then
+              hs.status = "Degraded"
+              hs.message = c.message or c.reason
+              return hs
+            end
+            if c.type == "ScalingActive" and c.status == "False" then
+              if c.reason == "FailedGetResourceMetric" or c.reason == "FailedComputeMetricsReplicas" or c.reason == "ScalingDisabled" then
+                hs.message = (c.reason or "") .. ": " .. (c.message or "")
+              else
+                hs.status = "Degraded"
+                hs.message = c.message or c.reason
+                return hs
+              end
+            end
+          end
+          return hs
+        LUA
         # A namespace's Secret from Vault is ready when the operator says it synced
         # (wave 0 must be healthy before the broker and the services start).
         "resource.customizations.health.secrets.hashicorp.com_VaultStaticSecret" = <<-LUA

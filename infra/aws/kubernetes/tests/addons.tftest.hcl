@@ -237,6 +237,10 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
     error_message = "the admin password is Terraform's bcrypt hash, so Argo CD writes no argocd-initial-admin-secret"
   }
   assert {
+    condition     = strcontains(yamldecode(helm_release.argocd.values[0]).configs.cm["resource.customizations.health.autoscaling_HorizontalPodAutoscaler"], "FailedGetResourceMetric")
+    error_message = "an HPA without metrics yet (right after a rollout) must not fail the sync (D105)"
+  }
+  assert {
     condition     = can(yamldecode(helm_release.argocd.values[0]).configs.cm["resource.customizations.health.argoproj.io_Application"])
     error_message = "Application health must be restored, or the app-of-apps sync waves do not wait for each other"
   }

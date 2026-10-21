@@ -9,11 +9,12 @@ deployed (`21eb0fa`). The follow-up **operator tooling, account mix-ups and serv
 sync state** (2026-10-20, `61db1c4`…`4dd5aa1`) is **deployed** (`4dd5aa1`, 2026-10-20,
 after a 17-minute database outage during the rollout), and so is the migrate fix that
 prevents it (`1015bc7`, 2026-10-21 05:33 UTC, "role password unchanged" ×4). **GitOps
-with Argo CD** (2026-10-21, `618c306`…) is committed, not applied: see **GitOps: your
-steps**. The move from **NATS to RabbitMQ** (2026-10-21, `c93a857`…) is committed too:
-main still publishes and consumes on NATS (now through the outbox, migration 0026); the
-four releases that move it are on branch `rabbitmq-cutover`: see **RabbitMQ: your
-steps** (D97–D102).
+with Argo CD** is live (2026-10-21): Argo CD at `https://argocd.ryftapp.de` deploys
+everything from git, CI promotes images by PR, ryft-platform syncs itself (D94–D96,
+D103). The move from **NATS to RabbitMQ** is complete (2026-10-21, R1–R4, D97–D102):
+RabbitMQ carries every event through the outbox, NATS and its namespace are gone; the
+record of each release is under **RabbitMQ: your steps**. Open: the Argo CD health check
+for autoscalers (D105, an `infra/aws/kubernetes` apply) and the rollback drill.
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -328,8 +329,13 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    `service_secrets.smoke` in `infra/vault` (added, applied); `smoke passed` at 11:44
    UTC. Auto-sync on since `d733f68` (pushed 11:53 UTC, applied by the root at 11:54).
 7. **Prove the loop:** a merge that changes nothing: done (`d733f68`: ryft-platform
-   stayed Synced, no sync, no hooks). Still to do: a real promote PR and a revert of
-   that pin (and of the revert); note the times (merge → healthy) here.
+   stayed Synced, no sync, no hooks). A real promote PR: done (PR #2: opened 13:17:53,
+   merged by itself 13:21:03 after CI, Argo CD synced 13:22, healthy with the smoke
+   13:29 including one retry; about 4 minutes without the HPA failure). Still to do:
+   the rollback drill, a revert of a pin and of the revert, after the D105 apply.
+8. **Argo CD's HPA health check** (D105): `(cd infra/aws/kubernetes && terraform plan
+   -out=tfplan && terraform apply tfplan)`; the plan changes only `helm_release.argocd`
+   (argocd-cm), no restart of the services.
 
 **RabbitMQ: your steps, one release at a time** (D102; OPERATIONS → RabbitMQ → The
 cutover). Before: the GitOps steps above, done. The releases are the four commits of
@@ -373,7 +379,12 @@ cherry-pick each onto main when the one before is verified.
    empty (`/app dlq`: 0). **Next:** a day of normal syncs, then R4. The original steps: `git cherry-pick 9fa1741 && git push`. Check `make
    smoke-prod`, the queue depths and the outbox at 0; wait a day of normal syncs
    (`ryft_sync_to_score_seconds` p95 as before, `scripts/dlq.sh list` empty).
-4. **R4, NATS goes:** first `kubectl -n ryft-scoring exec deploy/scoring -- /app dlq`
+4. **R4, NATS goes:** done 2026-10-21 (`0fd4256`; its images pinned by PR #2,
+   `3cdbedc`, merged 13:21 UTC; healthy and smoke passed 13:29). The first attempt failed
+   on the api HPA's "no metrics yet" right after the rollout (Argo CD's own HPA check
+   calls it Degraded), the retry passed: fixed by D105. `infra/vault` without NATS
+   applied (namespace `ryft-nats` gone), `scripts/rescore_all.sh 3` and `make
+   smoke-prod` passed. The original steps: first `kubectl -n ryft-scoring exec deploy/scoring -- /app dlq`
    (redrive or delete each letter) and `ryft_nats_consumer_pending` 0 for both. Then
    `git cherry-pick 1d67b9e && git push` (CI builds images without NATS; the promote PR
    deploys them). Then `(cd infra/vault && terraform plan -out=tfplan && terraform apply
