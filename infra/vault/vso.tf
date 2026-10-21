@@ -23,6 +23,7 @@ resource "local_file" "vso" {
     kv_mount        = vault_mount.kv[each.key].path
     has_secret      = contains(keys(vault_kv_secret_v2.config), each.key)
     restart_targets = each.value.restart_targets
+    amqp_users      = each.value.amqp == "server" ? local.amqp_clients : []
   })
 }
 

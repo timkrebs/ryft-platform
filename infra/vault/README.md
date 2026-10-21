@@ -9,17 +9,24 @@ in `services`.
 HCP Vault Dedicated (admin/)                    EKS cluster ryft-prod-euc1
 admin/ryft/
 ├── ingest/   auth/kubernetes ◀─TokenReview─▶ ns ryft-ingest   SA ingest  (+ SA vault-auth)
-│             kv/config {DATABASE_URL (role ryft_ingest), NATS_USER/PASSWORD, SUPABASE_PROJECT_REF}
+│             kv/config {DATABASE_URL (role ryft_ingest), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│                        SUPABASE_PROJECT_REF}
 ├── scoring/  …                               ns ryft-scoring  SA scoring
-│             kv/config {DATABASE_URL (role ryft_scoring), NATS_USER/PASSWORD}
+│             kv/config {DATABASE_URL (role ryft_scoring), NATS_USER/PASSWORD, AMQP_USER/PASSWORD}
 ├── api/      …                               ns ryft-api      SA api
-│             kv/config {DATABASE_URL (role ryft_api), NATS_USER/PASSWORD, SUPABASE_PROJECT_REF,
-│                        SUPABASE_SERVICE_ROLE_KEY, ADMIN_API_KEY (generated), DATA_ENCRYPTION_KEY,
-│                        APPLE_* once set}
+│             kv/config {DATABASE_URL (role ryft_api), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│                        SUPABASE_PROJECT_REF, SUPABASE_SERVICE_ROLE_KEY, ADMIN_API_KEY (generated),
+│                        DATA_ENCRYPTION_KEY, APPLE_* once set}
 ├── notify/   …                               ns ryft-notify   SA notify
-│             kv/config {DATABASE_URL (role ryft_notify), NATS_USER/PASSWORD, APNS_* once set}
+│             kv/config {DATABASE_URL (role ryft_notify), NATS_USER/PASSWORD, AMQP_USER/PASSWORD,
+│                        APNS_* once set}
 ├── nats/     …                               ns ryft-nats     SA nats
 │             kv/config {NATS_PASSWORD_INGEST/SCORING/API/NOTIFY: bcrypt hashes only}
+├── rabbitmq/ …                               ns ryft-rabbitmq SA rabbitmq
+│             kv/amqp-user-<svc> {username, password} per client → Secret amqp-user-<svc>
+│                        (labelled for the Topology Operator; no kv/config, no ryft-secrets)
+├── smoke/    …                               ns ryft-smoke    SA smoke
+│             kv/config {SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SMOKE_EMAIL/PASSWORD}
 └── migrate/  …                               ns ryft-migrate  SA migrate
               kv/config {DATABASE_URL (the owner), DB_PASSWORD_INGEST/SCORING/API/NOTIFY}
 ```

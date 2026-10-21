@@ -56,6 +56,8 @@ variable "services" {
     database:        "role" = its own least-privilege Postgres role ryft_<name> (migration 0009),
                      "owner" = the schema owner and every role's password (the migrate job), "none".
     nats:            "client" = its own NATS user, "server" = the NATS server (bcrypt hashes), "none".
+    amqp:            "client" = its own RabbitMQ user (AMQP_USER, AMQP_PASSWORD), "server" = the broker's
+                     namespace (each client's username and password for the Topology Operator), "none".
     workload_kind:   what the operator restarts when the secret changes ("" for a Job).
     data_key:        a generated DATA_ENCRYPTION_KEY (32 random bytes, base64) for data the
                      service stores encrypted (the api: Sign in with Apple refresh tokens).
@@ -72,6 +74,7 @@ variable "services" {
     secret_keys     = optional(list(string), [])
     database        = optional(string, "none")
     nats            = optional(string, "none")
+    amqp            = optional(string, "none")
     workload_kind   = optional(string, "Deployment")
     data_key        = optional(bool, false)
     admin_key       = optional(bool, false)
@@ -81,13 +84,17 @@ variable "services" {
     extra_restarts  = optional(list(object({ kind = string, name = string })), [])
   }))
   default = {
-    ingest  = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client" }
-    scoring = { secret_keys = ["CONSENT_ENFORCE"], database = "role", nats = "client" }
-    api     = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client", data_key = true, admin_key = true }
+    ingest  = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client", amqp = "client" }
+    scoring = { secret_keys = ["CONSENT_ENFORCE"], database = "role", nats = "client", amqp = "client" }
+    api     = { secret_keys = ["SUPABASE_PROJECT_REF", "BETA_GATE", "CONSENT_ENFORCE"], database = "role", nats = "client", amqp = "client", data_key = true, admin_key = true }
     # Push (M7): its own role and NATS user; the APNs key from service_secrets.notify.
-    notify  = { database = "role", nats = "client" }
-    nats    = { nats = "server", workload_kind = "StatefulSet" }
-    migrate = { database = "owner", workload_kind = "" }
+    notify = { database = "role", nats = "client", amqp = "client" }
+    nats   = { nats = "server", workload_kind = "StatefulSet" }
+    # RabbitMQ (D97): the broker's namespace holds each client's credentials for the
+    # Topology Operator's User objects (Secret amqp-user-<service>); NATS keys stay until
+    # the cutover's last release removes them.
+    rabbitmq = { amqp = "server", workload_kind = "" }
+    migrate  = { database = "owner", workload_kind = "" }
     # The in-cluster smoke after every deploy (Argo CD's PostSync hook, D95): the
     # dedicated smoke user's sign-in from service_secrets.smoke, nothing else.
     smoke = { secret_keys = ["SUPABASE_PROJECT_REF"], workload_kind = "" }
@@ -105,14 +112,15 @@ variable "services" {
   validation {
     condition = alltrue([for s in values(var.services) :
       contains(["none", "role", "owner"], s.database) && contains(["none", "client", "server"], s.nats) &&
+      contains(["none", "client", "server"], s.amqp) &&
       contains(["Deployment", "StatefulSet", "DaemonSet", ""], s.workload_kind) &&
       alltrue([for r in s.extra_restarts : contains(["Deployment", "StatefulSet", "DaemonSet"], r.kind)]) &&
     contains(["restricted", "baseline", "privileged"], s.pod_security)])
-    error_message = "database must be none|role|owner, nats none|client|server, workload_kind Deployment|StatefulSet|DaemonSet or \"\", pod_security restricted|baseline|privileged."
+    error_message = "database must be none|role|owner, nats and amqp none|client|server, workload_kind Deployment|StatefulSet|DaemonSet or \"\", pod_security restricted|baseline|privileged."
   }
   validation {
-    condition     = length([for s in values(var.services) : s if s.database == "owner"]) <= 1 && length([for s in values(var.services) : s if s.nats == "server"]) <= 1
-    error_message = "At most one service may hold the database owner, and at most one may be the NATS server."
+    condition     = length([for s in values(var.services) : s if s.database == "owner"]) <= 1 && length([for s in values(var.services) : s if s.nats == "server"]) <= 1 && length([for s in values(var.services) : s if s.amqp == "server"]) <= 1
+    error_message = "At most one service may hold the database owner, and at most one may be the NATS server or the RabbitMQ server."
   }
 }
 

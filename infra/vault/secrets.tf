@@ -18,6 +18,30 @@ resource "random_password" "nats" {
   special = false
 }
 
+# RabbitMQ (D97): a password per client. The client's own namespace gets it in
+# kv/config (AMQP_PASSWORD); the broker's namespace gets {username, password} at
+# kv/amqp-user-<client>, which the Topology Operator's User object imports (the broker
+# holds plaintext here: its namespace already holds the operator's administrator, so a
+# hash would protect nothing more). Rotate one with
+#   terraform apply -replace='random_password.amqp["api"]'
+# the operator updates the user, and the Vault Secrets Operator restarts the client.
+resource "random_password" "amqp" {
+  for_each = toset(local.amqp_clients)
+
+  length  = 40
+  special = false
+}
+
+resource "vault_kv_secret_v2" "amqp_user" {
+  for_each = local.amqp_server == null ? toset([]) : toset(local.amqp_clients)
+
+  namespace           = vault_namespace.service[local.amqp_server].path_fq
+  mount               = vault_mount.kv[local.amqp_server].path
+  name                = "amqp-user-${each.key}"
+  delete_all_versions = true
+  data_json           = jsonencode({ username = each.key, password = random_password.amqp[each.key].result })
+}
+
 # Encryption key for data a service stores encrypted (the api's Apple refresh
 # tokens). Never replace it: what was sealed with the old key no longer opens
 # (ciphertexts carry a version byte for a future, deliberate rotation).
@@ -70,6 +94,12 @@ resource "vault_policy" "service" {
     path "kv/data/config" {
       capabilities = ["read"]
     }
+    %{~if each.value.amqp == "server"}
+    # The RabbitMQ users' credentials, for the Topology Operator.
+    path "kv/data/amqp-user-*" {
+      capabilities = ["read"]
+    }
+    %{~endif}
   HCL
 }
 

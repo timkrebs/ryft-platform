@@ -66,3 +66,27 @@ spec:
 %{ endfor ~}
 %{ endif ~}
 %{ endif ~}
+%{ for u in amqp_users ~}
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: amqp-user-${u}
+  namespace: ${k8s_ns}
+spec:
+  vaultAuthRef: ${service}
+  mount: ${kv_mount}
+  type: kv-v2
+  path: amqp-user-${u}
+  refreshAfter: 1h
+  destination:
+    name: amqp-user-${u}
+    create: true
+    overwrite: true
+    # The Topology Operator imports a user's credentials only from a Secret with this
+    # label (it refuses the User object otherwise).
+    labels:
+      rabbitmq.com/topology-operator: "true"
+    transformation:
+      excludeRaw: true
+%{ endfor ~}

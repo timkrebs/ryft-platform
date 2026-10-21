@@ -76,13 +76,14 @@ run "each_namespace_holds_only_its_own_credentials" {
 
   assert {
     condition = jsonencode(output.secret_keys) == jsonencode({
-      ingest     = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
-      scoring    = ["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
-      api        = ["ADMIN_API_KEY", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
+      ingest     = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF"]
+      scoring    = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
+      api        = ["ADMIN_API_KEY", "AMQP_PASSWORD", "AMQP_USER", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "NATS_PASSWORD", "NATS_USER", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
       nats       = ["NATS_PASSWORD_API", "NATS_PASSWORD_INGEST", "NATS_PASSWORD_NOTIFY", "NATS_PASSWORD_SCORING"]
       migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_NOTIFY", "DB_PASSWORD_SCORING"]
       monitoring = ["GC_TOKEN", "PROM_USERNAME"]
-      notify     = ["APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
+      notify     = ["AMQP_PASSWORD", "AMQP_USER", "APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"]
+      rabbitmq   = []
       smoke      = ["SMOKE_EMAIL", "SMOKE_PASSWORD", "SUPABASE_ANON_KEY", "SUPABASE_PROJECT_REF"]
     })
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
@@ -256,8 +257,8 @@ run "warns_without_the_apns_key" {
   expect_failures = [check.notify_has_apns_key]
 
   assert {
-    condition     = jsonencode(output.secret_keys["notify"]) == jsonencode(["DATABASE_URL", "NATS_PASSWORD", "NATS_USER"])
-    error_message = "without the key notify still gets its database and NATS credentials"
+    condition     = jsonencode(output.secret_keys["notify"]) == jsonencode(["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "NATS_PASSWORD", "NATS_USER"])
+    error_message = "without the key notify still gets its database and broker credentials"
   }
 }
 
@@ -376,5 +377,38 @@ run "the_smoke_hook_gets_only_its_sign_in" {
   assert {
     condition     = alltrue([for name, keys in local.service_secret_keys : name == "smoke" || !contains(keys, "SMOKE_PASSWORD")])
     error_message = "the smoke user's password must not reach any other namespace"
+  }
+}
+
+run "rabbitmq_users_reach_the_broker_and_their_own_namespace_only" {
+  command = apply
+
+  assert {
+    condition = alltrue([for c in ["ingest", "api", "scoring", "notify"] :
+      nonsensitive(jsondecode(vault_kv_secret_v2.config[c].data_json).AMQP_USER) == c &&
+    nonsensitive(jsondecode(vault_kv_secret_v2.amqp_user[c].data_json).username) == c])
+    error_message = "each client is its own RabbitMQ user, and the broker's namespace has its credentials"
+  }
+  assert {
+    condition = alltrue([for c in ["ingest", "api", "scoring", "notify"] :
+      vault_kv_secret_v2.amqp_user[c].name == "amqp-user-${c}" &&
+    vault_kv_secret_v2.amqp_user[c].namespace == vault_namespace.service["rabbitmq"].path_fq])
+    error_message = "the users' credentials live in the broker's Vault namespace, one secret per user"
+  }
+  assert {
+    condition     = !contains(keys(vault_kv_secret_v2.config), "rabbitmq")
+    error_message = "the broker's namespace has no ryft-secrets: nothing of the database, NATS or the other services"
+  }
+  assert {
+    condition     = alltrue([for name, s in local.service_secret_keys : contains(["ingest", "api", "scoring", "notify"], name) == contains(s, "AMQP_PASSWORD")])
+    error_message = "AMQP_PASSWORD reaches the four clients only"
+  }
+  assert {
+    condition     = local_file.vso["rabbitmq"].content == file("tests/golden/rabbitmq.vault.yaml")
+    error_message = "the broker's operator manifests differ from tests/golden/rabbitmq.vault.yaml (one labelled VaultStaticSecret per user)"
+  }
+  assert {
+    condition     = strcontains(vault_policy.service["rabbitmq"].policy, "kv/data/amqp-user-*") && !strcontains(vault_policy.service["api"].policy, "amqp-user")
+    error_message = "only the broker's namespace may read the users' credentials"
   }
 }
