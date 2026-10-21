@@ -35,6 +35,13 @@ service_secrets = {
       -----END PRIVATE KEY-----
     EOT
   }
+  # Argo CD's PostSync smoke after every deploy (D95): the dedicated smoke user's sign-in,
+  # the same three values make smoke-prod takes. Without them every sync fails its smoke.
+  smoke = {
+    SUPABASE_ANON_KEY = "sb_publishable_…" # Project Settings → API Keys (the publishable/anon key)
+    SMOKE_EMAIL       = "smoke@ryftapp.de"
+    SMOKE_PASSWORD    = "…"
+  }
   # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…),
   # and the stack's Prometheus user (a number, not a secret) OpenCost reads with it.
   monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }
