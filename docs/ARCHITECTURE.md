@@ -318,6 +318,10 @@ what that workload does. No credential is shared, and none is broader than its u
     Cloud (D51). It gets metrics only; RYFT's logs go to CloudWatch (`amazon-cloudwatch`,
     Fluent Bit), KMS-encrypted and kept 14 days (D52).
   - `ryft-web` serves the apex site and `apple-app-site-association`, without secrets.
+  - Two operator UIs are public through Traefik, each behind its own login, a per-IP
+    rate limit and HSTS: Argo CD at `argocd.ryftapp.de` (`argocd`) and the RabbitMQ
+    management UI at `rabbitmq.ryftapp.de` (Traefik → the nodes' 15671, verified
+    against the internal CA). No IP allow-list or SSO yet (D103).
 - **Pods:** Pod Security `restricted` on every namespace. Everything runs as non-root
   with a read-only root filesystem (the in-cluster Postgres of `local-postgres`
   excepted), no privilege escalation, all capabilities dropped and seccomp

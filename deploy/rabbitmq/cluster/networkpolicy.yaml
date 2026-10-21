@@ -1,6 +1,7 @@
 # Who reaches the broker (on top of the default deny):
 #   5671 (AMQPS)      the four services only
-#   15671 (mgmt TLS)  the topology operator (rabbitmq-system); people use port-forward
+#   15671 (mgmt TLS)  the topology operator (rabbitmq-system), and Traefik for the UI
+#                     at rabbitmq.ryftapp.de (management.yaml)
 #   15692 (metrics)   the collectors, from node addresses (VPC)
 #   4369, 25672, 35672-35682 (Erlang distribution, CLI tools)  the nodes among themselves
 # and what the broker reaches: the other nodes, and the Kubernetes API for peer
@@ -27,6 +28,8 @@ spec:
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: rabbitmq-system } }
           podSelector: { matchLabels: { app.kubernetes.io/name: messaging-topology-operator } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
       ports:
         - { protocol: TCP, port: 15671 }
     - from:

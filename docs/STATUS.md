@@ -156,7 +156,7 @@ active; the weekly report stays in M7 (D69–D73):
 
 | Item | What | Where |
 | --- | --- | --- |
-| Argo CD | chart 10.10.5 / v3.5.6 as a Terraform add-on: non-HA, no Ingress (port-forward), admin password from Terraform (no initial secret), Pod Security restricted, Application and VaultStaticSecret health, metrics scraped | `infra/aws/kubernetes/argocd.tf`, D94 |
+| Argo CD | chart 10.10.5 / v3.5.6 as a Terraform add-on: non-HA, public at `https://argocd.ryftapp.de` behind Traefik (rate limit, HSTS; D103), admin password from Terraform (no initial secret), Pod Security restricted, Application and VaultStaticSecret health, metrics scraped | `infra/aws/kubernetes/argocd.tf`, D94 |
 | App of apps | projects `ryft-root` and `ryft` (the `default` project emptied); waves: `vault-<svc>`, `broker-nats` (NATS in `overlays/eks-nats`), `ryft-platform`; server-side apply and diff, retries | `deploy/argocd`, D95 |
 | Hooks | migrate as PreSync (a failed migration fails the sync), the in-cluster smoke as PostSync (`/app smoke`, namespace `ryft-smoke`) | `internal/smoke`, `deploy/k8s/base/smoke`, D95 |
 | Promotion | CI's promote job opens "deploy: images <sha>" (GitHub App) and auto-merges it; skips without a backend change; supersedes older deploy PRs; `manifests` checks every pinned image exists; no `:latest` | `scripts/promote.sh`, `.github/workflows/ci.yml`, D96 |
@@ -218,6 +218,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | Beta (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0017–0021 on plain Postgres and the Supabase shape (grants, RLS; existing accounts keep beta access, changed `max_hr` becomes manual, sources backfilled), consent and invites in the store, Tanaka pinned for seven ages, the max-HR and no-heart-rate cards, the four source fixtures through the pure functions **and** stored and scored by the engine (iPhone only: calibrating, no readiness on day 8), feedback limits and the admin view, push routing through the real APNs client to two fake hosts (410 drops the token), the dead-letter permissions and a bad event dead-lettered by the running scoring; `golangci-lint` 0 issues. `make up && make smoke`: consent 403/200/withdrawn, invite codes, `/v1/model` and `model_version`, profile and `max-hr-observed` end to end, sources and `no-heart-rate-source`, feedback 422/429, admin feedback/resolve/users. `make check-swift`: the mirror and the app's models decode everything. `make alerts-check`: 20 rules, the unit tests and mimirtool pass. `make smoke-prod` and `scripts/seed_demo.py` against the compose stack (every demo screen has data). The site in its nginx image: each legal page, the fallback and the AASA (`application/json`, no redirect). `infra/vault` `terraform test` 17 runs. `make k8s-validate` (201 resources). Not verified: anything against production (not deployed), the Supabase sign-in paths of `seed_demo.sh` and `smoke-prod`, Grafana loading the rules. |
 | GitOps (2026-10-21) | A kind cluster (Kubernetes 1.37, podman) with the chart and the Terraform values, a git daemon serving this tree, VSO's and Traefik's CRDs: Argo CD under Pod Security restricted, no initial admin secret; the projects and the root; wave 0 Progressing until each VaultStaticSecret reported `SecretSynced`, then the broker, then the platform; the NATS StatefulSet perpetually OutOfSync under client-side diff and Synced with server-side diff; ryft-platform refused for an empty destination namespace (fixed); the migrate PreSync stuck on a ConfigMap the sync had not made yet (fixed: optional); a failing migrate failed the sync with not one object created; a dry-run sync of the whole platform through the project's rules. `terraform test`: infra/aws/kubernetes 11 runs (chart pins, private, single-replica, bcrypt admin, health, restricted), infra/vault 19 (the smoke namespace gets only its sign-in; the tests no longer read a local tfvars). `make alerts-check`: 25 rules, the Argo CD ones tested (an auto-sync-paused app does not alert). `make test-scripts`: pin_images (typos refused), promote (a fake gh, a local remote: backend change → PR by the bot, docs and pin commits skipped, an older PR closed). `make smoke-hook` and `go run ./cmd/migrate smoke` against compose. `make k8s-validate`: 225 resources with the Argo CD manifests and `check_argocd.sh`. actionlint. Not verified: anything on ryft-prod-euc1, the PostSync smoke on a real stack, the promote job on GitHub (needs the App), adoption of the running objects. |
 | RabbitMQ (2026-10-21) | A kind cluster (three workers, cert-manager, both operators, Argo CD): the broker from `deploy/rabbitmq` with all 63 topology objects Ready, three quorum voters per queue, listeners 5671 (TLS) and 15671 only plus 15692, no alarms, per-queue metrics; Argo CD adopted `rabbitmq-operators` and `broker-rabbitmq` Synced and Healthy with the new health checks; `amqpbus` over mutual TLS with the Vault-style user secrets: ingest publishes, a `scored` publish by ingest refused by its topic permission, scoring consumes; no client certificate or a wrong password refused; `scripts/dlq.sh` list, show, replay and purge. Locally: every Go test with `-race` against Postgres, NATS and a RabbitMQ (retry tiers, DLQ after six attempts, deferral, unroutable, a broker restart mid-consume with reconnect, the permission matrix including a loosened rule failing it, the outbox relay with two replicas and a rollback, the duplicate tests); `make smoke` on compose publishing on RabbitMQ and again on NATS (`EVENTS_BACKEND=nats`); the outbox drained; `terraform test` infra/vault 20 runs (RabbitMQ golden file), infra/aws/kubernetes 11; `make alerts-check` 33 rules; `make k8s-validate`. R4 on its branch: compose without NATS (every service `broker: amqp`), `make smoke`, `make smoke-hook`, `make test-scripts`, every Go test with `-race`, golangci-lint, `make k8s-validate` (local-postgres with one broker node), `make alerts-check` (32 rules), `terraform test` infra/vault 20 runs, actionlint. ingest's `/readyz` 200 with the compose broker stopped (`295f91f`). Not verified: anything on ryft-prod-euc1 (R1–R4), `make k8s-apply-local` on a cluster, a node drain with the PDB, a certificate renewal, the Grafana Cloud scrape of 15692. |
+| Public admin UIs (2026-10-21, D103) | In the kind cluster with the Traefik chart 42.0.0 (v3.7.14) and the broker: `rabbitmq.ryftapp.de` through Traefik → the management UI 200, the API 200 with the default user and 401 with a wrong password, HSTS; Traefik verifies the node's certificate (a wrong `serverName` → 500 with an x509 error); without the Traefik rule in the broker's network policy the request times out (504). Argo CD with the chart's Ingress and `server.insecure`: the UI 200, `POST /api/v1/session` 200 with the password and 401 without, HSTS. `terraform test` infra/aws/kubernetes 11 runs; `make k8s-validate` (the ServersTransport, Middlewares and Ingress against Traefik's schemas). Not verified: the Let's Encrypt certificates and DNS records on ryft-prod-euc1, the `argocd` CLI with `--grpc-web` (not installed here). |
 | Accounts and sync (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0022–0025 on plain Postgres and the Supabase shape (grants, RLS), gate modes in api, ingest and scoring (the warn header and metric, scoring's consent mode), the audit middleware (written after the call, short ids, `409` when ambiguous), the admin detail with a fake Supabase admin API (identities, relay emails, masking), the merge over every table (dry run equal to the real run, conflicts kept, children of dropped parents not copied, a second run `404`, `from` deletable afterwards), the score queue (queued, marked, pruned, the p95), the sync screen (unknown types, window, duplicates), today's state, the refresh throttle shared with the morning push, a panicking handler retried, the NATS permissions for `ryft.refresh` and its dead letters; `golangci-lint` 0 issues. `make up && make smoke` over the existing volume with 0022–0025 applied: the admin detail and short ids, two accounts on one phone merged (plan first, `404` the second time), `account_hint` (and none without the device header or for the account itself), `GET /v1/me/sync` with nothing pending once scored, `scoring_state`, the `SyncResponse` counts (a re-send and an unknown type ignored), and the refresh path (sync → scoring → `ryft.refresh` → notify, counted without a key). `scripts/smoke_prod.sh` against compose with and without the admin key; its key lookup with a fake `terraform` (found for production, never for another URL). `make test-scripts` (trace with a fake kubectl). `make check-swift`: the mirror decodes `SyncStatus` and the new fields; the app's current models still decode everything. `make alerts-check`: 21 rules with `SyncToScoreSlow`'s unit test. `infra/vault` `terraform test` 18 runs. `make k8s-validate`. `scripts/trace.sh` against production found the incident's line. A rollback past the refresh subject on a throwaway NATS 2.11. Not verified: anything else against production (not deployed), a merge on real accounts, a refresh push reaching a device. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
@@ -307,19 +308,20 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
    Re-run CI on main (`gh run rerun <id>`, or push once more): the first "deploy: images"
    PR appears and merges itself; it pins the five images the smoke hook needs (step 6).
-3. **`infra/vault`:** add `service_secrets.smoke = { SUPABASE_ANON_KEY = …, SMOKE_EMAIL = …,
-   SMOKE_PASSWORD = … }` (the dedicated smoke user, as for `make smoke-prod`) to
-   `terraform.tfvars`, then
-   `(cd infra/vault && terraform plan -out=tfplan && terraform apply tfplan)`, restart the
-   operator (`kubectl -n vault-secrets-operator-system rollout restart deploy
-   vault-secrets-operator-controller-manager`), and commit the generated
-   `deploy/k8s/overlays/vault-namespaces/smoke`.
-4. **`infra/aws/kubernetes`:** `(cd infra/aws/kubernetes && terraform init -upgrade && terraform plan -out=tfplan && terraform apply tfplan)`
-   (new provider `random`; Argo CD in namespace `argocd`). Check:
-   `kubectl -n argocd get pods`.
-5. **Projects and root:** `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml`.
-   Waves 0 and 1 sync themselves (`kubectl -n argocd get applications`).
-6. **Adoption of ryft-platform:** port-forward, `argocd login` (OPERATIONS), `argocd app
+3. **`infra/vault`:** done (2026-10-21, with the smoke user and the RabbitMQ users); the
+   generated `vault-namespaces/smoke` and `rabbitmq` are committed (`f8ccddd`): push
+   them, the application `vault-smoke` (wave 0) needs the first in git.
+4. **`infra/aws/kubernetes`:** done (2026-10-21: Argo CD, the internal CA, the RabbitMQ
+   health checks). **Again for the public UI** (D103; the Ingress, two Traefik
+   middlewares, argocd-server behind Traefik):
+   `(cd infra/aws/kubernetes && terraform plan -out=tfplan && terraform apply tfplan)`.
+   Then `kubectl -n argocd get ingress,certificate` (READY True after a minute or two),
+   `dig +short argocd.ryftapp.de` (the NLB) and `https://argocd.ryftapp.de`, user
+   `admin`, password from `terraform -chdir=infra/aws/kubernetes output -raw
+   argocd_admin_password`.
+5. **Projects and root:** done (2026-10-21). Re-apply `project.yaml` once more for the
+   management certificate's orphan ignore: `kubectl apply -f deploy/argocd/project.yaml`.
+6. **Adoption of ryft-platform:** `https://argocd.ryftapp.de` or `argocd login argocd.ryftapp.de --grpc-web` (OPERATIONS), `argocd app
    diff ryft-platform`: only tracking annotations may differ. Then `argocd app sync
    ryft-platform` (migrate, rollout, smoke: `kubectl -n ryft-smoke logs job/smoke`). Then
    merge the commit that turns `automated` on for it (I prepare it; it is one line).
@@ -337,17 +339,15 @@ cherry-pick each onto main when the one before is verified.
 
    ```bash
    kubectl describe nodes | grep -A8 'Allocated resources'      # 1 GiB free on each of three nodes
-   (cd infra/vault && terraform plan -out=tfplan && terraform apply tfplan)
-   kubectl -n vault-secrets-operator-system rollout restart deploy vault-secrets-operator-controller-manager
-   git add deploy/k8s/overlays/vault-namespaces/rabbitmq && git commit -m "vault: generated rabbitmq namespace" && git push
-   (cd infra/aws/kubernetes && terraform plan -out=tfplan && terraform apply tfplan)   # internal CA, Argo CD health
-   kubectl get clusterissuer ryft-internal                        # READY True
-   kubectl apply -f deploy/argocd/project.yaml                    # project ryft-operators
-   git cherry-pick 03e9164 && git push                               # the applications
+   kubectl get clusterissuer ryft-internal                        # READY True (infra/aws/kubernetes, done)
+   kubectl -n ryft-rabbitmq get secret                            # amqp-user-ingest/api/scoring/notify (infra/vault, done)
+   git cherry-pick 03e9164 && git push                            # the applications
    kubectl -n argocd get applications -w                          # vault-rabbitmq, rabbitmq-operators, broker-rabbitmq Healthy
    ```
 
-   Then the checks in OPERATIONS → RabbitMQ → Healthy is.
+   Then the checks in OPERATIONS → RabbitMQ → Healthy is, and the management UI at
+   `https://rabbitmq.ryftapp.de` (comes with the broker, D103), user and password from
+   `kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'`.
 2. **R2, dual consume:** `git cherry-pick 7f51b19 && git push`; Argo CD syncs ryft-platform
    (scoring and notify restart). Check `kubectl -n ryft-scoring logs deploy/scoring |
    grep -i amqp`, `ryft_amqp_connected` 1 for both, `make smoke-prod`.

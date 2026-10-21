@@ -1,0 +1,84 @@
+# The management UI at https://rabbitmq.ryftapp.de (D103), for people; the services
+# and the Topology Operator never come this way. Traefik ends the public TLS (Let's
+# Encrypt, like api.ryftapp.de), limits requests per client address, adds HSTS, and
+# speaks TLS again to the nodes' management listener (15671, the internal CA), checked
+# against the broker's certificate. The login is RabbitMQ's own: Secret
+# rabbitmq-default-user (OPERATIONS.md → RabbitMQ).
+#
+# A Service of its own for the management port only, so the operator's Service
+# (AMQPS for the clients) carries no Traefik settings.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-management
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    traefik.ingress.kubernetes.io/service.serverstransport: ryft-rabbitmq-rabbitmq-management@kubernetescrd
+spec:
+  selector: { app.kubernetes.io/name: rabbitmq }
+  ports:
+    - { name: management-tls, port: 15671, targetPort: 15671, protocol: TCP }
+---
+# Traefik's connection to the nodes: verified with the internal CA (ca.crt of the
+# broker's own certificate Secret) under a name the certificate holds; Traefik dials
+# pod addresses, so the name is given.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: rabbitmq-management
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  serverName: rabbitmq.ryft-rabbitmq.svc
+  rootCAs:
+    - secret: rabbitmq-tls
+---
+# Per client address: the UI polls every few seconds per open tab.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  rateLimit:
+    average: 20
+    period: 1s
+    burst: 100
+    sourceCriterion:
+      ipStrategy:
+        depth: 0
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: hsts
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  headers:
+    stsSeconds: 31536000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rabbitmq-management
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: ryft-rabbitmq-ratelimit@kubernetescrd,ryft-rabbitmq-hsts@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [rabbitmq.ryftapp.de]
+      secretName: rabbitmq-ryftapp-de-tls
+  rules:
+    - host: rabbitmq.ryftapp.de
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: rabbitmq-management, port: { name: management-tls } } }

@@ -14,12 +14,17 @@ output "load_balancer_hostname_command" {
 }
 
 output "argocd_admin_password" {
-  description = "Password of Argo CD's admin account (the UI through kubectl -n argocd port-forward svc/argocd-server 8080:443)"
+  description = "Password of Argo CD's admin account (user admin, at argocd_url)"
   value       = random_password.argocd_admin.result
   sensitive   = true
 }
 
+output "argocd_url" {
+  description = "The Argo CD UI and API (D103); the CLI: argocd login <host> --username admin --grpc-web"
+  value       = "https://${local.argocd_host}"
+}
+
 output "argocd_ui_command" {
-  description = "Reaches the Argo CD UI and API on https://localhost:8080 (no Ingress, D94)"
-  value       = "kubectl -n argocd port-forward svc/argocd-server 8080:443"
+  description = "Reaches the Argo CD UI and API on http://localhost:8080 without the Ingress"
+  value       = "kubectl -n argocd port-forward svc/argocd-server 8080:80"
 }

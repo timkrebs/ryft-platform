@@ -198,13 +198,34 @@ run "logs_ship_only_ryft_to_an_encrypted_group" {
 }
 
 
-run "argocd_is_private_single_replica_and_keeps_no_initial_secret" {
+run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
   # apply (mocked): the values hold the generated password's hash
   command = apply
 
   assert {
-    condition     = !can(yamldecode(helm_release.argocd.values[0]).server.ingress) && yamldecode(helm_release.argocd.values[0]).dex.enabled == false
-    error_message = "no Ingress and no SSO: the UI is reached by port-forward only (D94)"
+    condition = (
+      yamldecode(helm_release.argocd.values[0]).global.domain == "argocd.ryftapp.de" &&
+      yamldecode(helm_release.argocd.values[0]).server.ingress.ingressClassName == "traefik" &&
+      yamldecode(helm_release.argocd.values[0]).server.ingress.tls == true &&
+      yamldecode(helm_release.argocd.values[0]).server.ingress.annotations["cert-manager.io/cluster-issuer"] == "letsencrypt-prod" &&
+      yamldecode(helm_release.argocd.values[0]).server.ingress.annotations["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure" &&
+      strcontains(yamldecode(helm_release.argocd.values[0]).server.ingress.annotations["traefik.ingress.kubernetes.io/router.middlewares"], "argocd-ratelimit@kubernetescrd")
+    )
+    error_message = "the UI is public only through Traefik's HTTPS entrypoint, with a Let's Encrypt certificate and the per-IP limit (D103)"
+  }
+  assert {
+    condition = alltrue([for name in ["ratelimit", "hsts"] :
+      contains([for o in yamldecode(helm_release.argocd.values[0]).extraObjects : o.metadata.name if o.kind == "Middleware"], name)
+    ])
+    error_message = "the Ingress's middlewares must exist in namespace argocd"
+  }
+  assert {
+    condition     = yamldecode(helm_release.argocd.values[0]).configs.params["server.insecure"] == true && yamldecode(helm_release.argocd.values[0]).dex.enabled == false
+    error_message = "TLS ends at Traefik (argocd-server plain HTTP behind it), and no SSO"
+  }
+  assert {
+    condition     = output.argocd_url == "https://argocd.ryftapp.de"
+    error_message = "argocd_url names the public host"
   }
   assert {
     condition = alltrue([for c in ["controller", "server", "repoServer", "applicationSet"] :

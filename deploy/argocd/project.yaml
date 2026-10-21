@@ -45,6 +45,7 @@ spec:
       - { kind: Secret, name: ryft-secrets }
       - { kind: Secret, name: vault-auth-token }
       - { kind: Secret, name: rabbitmq-tls }
+      - { kind: Secret, name: rabbitmq-ryftapp-de-tls }
       - { kind: Secret, name: amqp-client }
       - { kind: Secret, name: amqp-user-ingest }
       - { kind: Secret, name: amqp-user-api }

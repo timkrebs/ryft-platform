@@ -5,8 +5,11 @@
 # Non-HA: one replica per component, Redis without persistence (a cache Argo CD
 # rebuilds). On three nodes that is enough; the HA option is redis-ha plus 2+
 # replicas of server and repo-server and a sharded controller (chart docs).
-# No Ingress: the UI and API are reached with
-#   kubectl -n argocd port-forward svc/argocd-server 8080:443
+# The UI and API are public at https://argocd.<domain> (D103): Traefik ends TLS with a
+# Let's Encrypt certificate, limits requests per client address and adds HSTS; the
+# login is Argo CD's own (it slows down repeated failures). argocd-server itself speaks
+# plain HTTP behind Traefik, like the RYFT services. Without the Ingress:
+#   kubectl -n argocd port-forward svc/argocd-server 8080:80
 # The local `admin` account stays; its password is generated here and is read with
 #   terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password
 # so no argocd-initial-admin-secret is ever created. The repository is public, so
@@ -33,6 +36,7 @@ resource "random_password" "argocd_admin" {
 
 locals {
   argocd_admin_password_mtime = "2026-10-21T00:00:00Z"
+  argocd_host                 = "argocd.${var.domain}"
 
   # RabbitMQ (D97): the cluster is healthy when all its replicas are ready and the
   # operator reconciled it; a topology object (vhost, queue, user, ...) when the
@@ -79,6 +83,8 @@ locals {
 
   argocd_values = {
     global = {
+      # The public host; also argocd-cm's url (the links Argo CD builds).
+      domain  = local.argocd_host
       image   = { tag = "v3.5.6" } # chart 10.10.5 ships v3.5.5; v3.5.6 is the newest patch
       logging = { format = "json" }
       # The chart's own policies (default on): controller, repo-server and Redis
@@ -91,6 +97,8 @@ locals {
     notifications = { enabled = false }
 
     configs = {
+      # TLS ends at Traefik; argocd-server serves HTTP on its service's port 80.
+      params = { "server.insecure" = true }
       cm = merge(local.argocd_rabbitmq_health, {
         "admin.enabled" = true
         # Restores the health of Application resources (removed in Argo CD 1.8), so
@@ -149,6 +157,20 @@ locals {
         requests = { cpu = "10m", memory = "64Mi" }
         limits   = { memory = "256Mi" }
       }
+      # https://argocd.<domain>: the certificate (Secret argocd-server-tls) from
+      # cert-manager, the DNS record from ExternalDNS, as for api.<domain>. The CLI
+      # goes through it with --grpc-web (Traefik does not pass native gRPC here).
+      ingress = {
+        enabled          = true
+        ingressClassName = "traefik"
+        tls              = true
+        annotations = {
+          "cert-manager.io/cluster-issuer"                   = "letsencrypt-prod"
+          "traefik.ingress.kubernetes.io/router.entrypoints" = "websecure"
+          "traefik.ingress.kubernetes.io/router.tls"         = "true"
+          "traefik.ingress.kubernetes.io/router.middlewares" = "argocd-ratelimit@kubernetescrd,argocd-hsts@kubernetescrd"
+        }
+      }
     }
     repoServer = {
       replicas       = 1
@@ -175,6 +197,8 @@ locals {
     # The collectors run on the nodes' network, so their scrapes come from node
     # addresses, which the chart's policies (pods only) do not admit. Only the
     # metrics ports, from inside the VPC (as deploy/k8s/overlays/eks/metrics-from-nodes.yaml).
+    # Then the Ingress's Traefik middlewares: a per-IP limit (the UI polls and streams,
+    # so more than the API's 20/s) and HSTS (argocd-server sends none without TLS).
     extraObjects = [{
       apiVersion = "networking.k8s.io/v1"
       kind       = "NetworkPolicy"
@@ -193,6 +217,20 @@ locals {
           ports = [for p in [8082, 8083, 8084] : { protocol = "TCP", port = p }]
         }]
       }
+      }, {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata   = { name = "ratelimit", namespace = "argocd" }
+      spec = {
+        rateLimit = { average = 50, period = "1s", burst = 200, sourceCriterion = { ipStrategy = { depth = 0 } } }
+      }
+      }, {
+      apiVersion = "traefik.io/v1alpha1"
+      kind       = "Middleware"
+      metadata   = { name = "hsts", namespace = "argocd" }
+      spec = {
+        headers = { stsSeconds = 31536000, stsIncludeSubdomains = false }
+      }
     }]
   }
 }
@@ -205,4 +243,7 @@ resource "helm_release" "argocd" {
   version    = local.charts.argocd.version
 
   values = [yamlencode(local.argocd_values)]
+
+  # The middlewares are Traefik's CRDs; the Ingress's certificate is cert-manager's.
+  depends_on = [helm_release.traefik, helm_release.cert_manager]
 }

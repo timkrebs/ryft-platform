@@ -211,12 +211,13 @@ break-glass below.
    smoke-prod` still checks the edge and probes the gates. After a model bump,
    `scripts/rescore_all.sh`.
 
-**The UI and CLI** (no Ingress, D94):
+**The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
 
 ```bash
-kubectl -n argocd port-forward svc/argocd-server 8080:443          # then https://localhost:8080, user admin
-argocd login localhost:8080 --insecure --username admin \
+terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password; echo   # the password
+argocd login argocd.ryftapp.de --grpc-web --username admin \
   --password "$(terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password)"
+kubectl -n argocd port-forward svc/argocd-server 8080:80            # without the Ingress: http://localhost:8080
 argocd app list
 argocd app get ryft-platform                                        # objects, hooks, the last operation
 argocd app diff ryft-platform                                       # git vs. cluster
@@ -350,9 +351,11 @@ certificates). The users' passwords come from `infra/vault` (Secret
 
 **The UI and the CLI:**
 
+The UI is at `https://rabbitmq.ryftapp.de` (D103), with the operator's default user:
+
 ```bash
-kubectl -n ryft-rabbitmq port-forward svc/rabbitmq 15671:15671     # https://localhost:15671 (the internal CA: a browser warning)
 kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'
+kubectl -n ryft-rabbitmq port-forward svc/rabbitmq 15671:15671     # without the Ingress: https://localhost:15671 (the internal CA: a browser warning)
 kubectl -n ryft-rabbitmq exec rabbitmq-server-0 -c rabbitmq -- rabbitmq-diagnostics -q status
 ```
 
