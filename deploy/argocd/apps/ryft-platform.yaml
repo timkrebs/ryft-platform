@@ -25,9 +25,9 @@ spec:
     # project admits only ryft-*; an empty namespace would not match it.
     namespace: ryft-api
   syncPolicy:
-    # ADOPTION: no `automated` until the first manual sync showed no diff against what
-    # runs (docs/OPERATIONS.md → Cutover to Argo CD, step 3); then the next commit adds
-    #   automated: { prune: true, selfHeal: true }
+    # Turned on after the adoption sync showed no diff against what ran (OPERATIONS.md →
+    # Cutover to Argo CD, step 5).
+    automated: { prune: true, selfHeal: true }
     syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false, RespectIgnoreDifferences=true]
     # A failed sync of the same commit is not retried by automated sync itself:
     # twice more, for what passes (a pooler blip during migrate, a slow smoke).
