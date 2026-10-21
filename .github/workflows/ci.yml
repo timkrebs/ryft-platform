@@ -1,10 +1,14 @@
 # Every push: vet, race tests, lint, manifest validation, the end-to-end smoke test
 # and every Terraform root (offline); then build the images and push them to
-# ghcr.io/timkrebs/ryft/<service>:<short-sha> (and :latest on main).
+# ghcr.io/timkrebs/ryft/<service>:<short-sha>. On main, `promote` then pins the EKS
+# overlay to them in a PR that merges itself once its checks pass, and Argo CD
+# deploys the merge (docs/OPERATIONS.md → Deploy, D96). No :latest: nothing deploys it.
 name: ci
 
 on:
   push:
+    # The promote PRs' branches: their checks run once, as pull_request.
+    branches-ignore: ["deploy/**"]
   pull_request:
 
 permissions:
@@ -64,6 +68,9 @@ jobs:
           cache: false
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
       - run: make k8s-validate
+      # Every image the overlay pins exists on ghcr.io (a promote PR, or a hand-made
+      # pin with a typo: 101bc7 for 1015bc7 stopped the migrate job on 2026-10-21).
+      - run: ./scripts/check_registry.sh
 
   smoke:
     runs-on: ubuntu-latest
@@ -151,7 +158,6 @@ jobs:
           images: ghcr.io/timkrebs/ryft/${{ matrix.service }}
           tags: |
             type=sha,format=short,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
       - uses: docker/build-push-action@v6
         with:
           context: backend
@@ -162,3 +168,35 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # After the images of a push to main: pin deploy/k8s/overlays/eks to them on a branch
+  # deploy/<sha>, open "deploy: images <sha>" with the commits since the running pin, and
+  # let it merge itself (squash) once its required checks pass; Argo CD syncs the merge.
+  # Closing the PR blocks that deploy. Skipped when nothing under backend/ changed since
+  # the running pin, which also keeps the merged pin commit from promoting itself.
+  # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
+  # RYFT_DEPLOY_APP_KEY): PRs made with GITHUB_TOKEN would not run the checks.
+  promote:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [images]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote
+      cancel-in-progress: false
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RYFT_DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RYFT_DEPLOY_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - name: Pin the images in a PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+        run: ./scripts/promote.sh

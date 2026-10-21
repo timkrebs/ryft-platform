@@ -1620,3 +1620,34 @@ sent, and whether a second account shares its phone.
   it, so a fix to any application is not delivered until that operation is terminated
   (`argocd app terminate-op ryft-root`, OPERATIONS → Deploy). Seen in kind with a NATS that
   could not start.
+
+## D96 — Images reach the cluster by a PR CI opens; Image Updater second
+
+- **CI promotion:** after `images` on a push to main, `promote` (`scripts/promote.sh`)
+  pins the five images in `overlays/eks` to that commit on `deploy/<sha>`, opens "deploy:
+  images <sha>" with the commits since the running pin, and turns on auto-merge
+  (squash). The PR's required checks (`manifests` now also asks ghcr.io for every pinned
+  image) gate it; the merge is the deploy, Argo CD syncs it (D95). Git history is the
+  deploy log; closing the PR blocks a deploy; reverting the merge rolls back.
+- **No deploy without a backend change:** promote skips when nothing under `backend/`
+  changed since the running pin, so docs commits do not restart pods, and the merged pin
+  commit (whose own images CI builds) does not promote itself. An older open deploy PR is
+  closed as superseded: two would edit the same lines and the second would conflict.
+- **A GitHub App** (the user's choice) makes the token: PRs opened with `GITHUB_TOKEN` do
+  not trigger the workflows auto-merge waits for, and a fine-grained token is tied to a
+  person and expires. Client ID as repository variable `RYFT_DEPLOY_APP_CLIENT_ID`, key as
+  secret `RYFT_DEPLOY_APP_KEY`; permissions contents and pull requests (write), on this
+  repository only. Branch protection on main requires the checks for PRs; the user, as
+  admin, may still push directly (enforce_admins off), and such a push deploys through
+  its own promote PR.
+- **Not Argo CD Image Updater** (v1.3, CRD-based, still writes kustomizations back): our
+  tags are short SHAs, so it would need `newest-build`, which orders by the image's build
+  date from registry metadata (one manifest pull per tag, and wrong with reproducible
+  builds); a bad build would be committed by a controller with no PR to stop, and the
+  commit list a reviewer sees would be gone.
+- **No `:latest`** from CI or `make push`: nothing should deploy it, and a tag that moves
+  hides which code runs. `make images` still tags a local `:latest` for the self-hosted
+  overlay, which you build yourself.
+- **`make k8s-apply-eks` is break-glass** (Argo CD down): it warns that self-heal reverts
+  what git does not hold, applies `eks-nats` and the platform without the PostSync smoke,
+  and still checks the registry first.

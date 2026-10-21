@@ -19,8 +19,10 @@ images:
 	  $(CONTAINER) build -t $(REGISTRY)/$$s:$(TAG) -t $(REGISTRY)/$$s:latest --build-arg SERVICE=$$s backend; \
 	done
 
+# Only the commit tag: nothing deploys :latest (Argo CD pins a SHA, D96); the local
+# :latest from `make images` is for the self-hosted overlay you build yourself.
 push: images
-	for s in $(SERVICES); do $(CONTAINER) push $(REGISTRY)/$$s:$(TAG); $(CONTAINER) push $(REGISTRY)/$$s:latest; done
+	for s in $(SERVICES); do $(CONTAINER) push $(REGISTRY)/$$s:$(TAG); done
 
 # Local dev: Postgres + NATS + the three services via docker compose.
 up:
