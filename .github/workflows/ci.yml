@@ -230,6 +230,11 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # check_pr_test runs the site's brand check, which needs the Node the site pins (the
+      # runner's own Node is older: its regexes use modifier groups).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
       - run: make up CONTAINER=docker
       - run: make smoke
       # Argo CD's PostSync smoke, the Go one in the migrate image.
