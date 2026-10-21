@@ -19,7 +19,7 @@ import (
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
-	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/events/natsbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
@@ -53,7 +53,7 @@ func main() {
 	go db.Watch(ctx, pool, "api", log)
 	st := store.New(pool)
 
-	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "api", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
+	bus, err := natsbus.Open(ctx, cfg.NatsURL, natsbus.Options{Name: "api", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)
@@ -199,7 +199,7 @@ func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.Us
 	}
 }
 
-// publisher is what the handlers publish (*events.Bus; a fake in tests).
+// publisher is what the handlers publish (an events.Bus; a fake in tests).
 type publisher interface {
 	PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error
 	PublishSessionCompleted(ctx context.Context, ev model.SessionCompletedEvent, dedupID string) error

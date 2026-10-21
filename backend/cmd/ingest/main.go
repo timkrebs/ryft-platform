@@ -21,6 +21,7 @@ import (
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/events/natsbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -54,7 +55,7 @@ func main() {
 	go db.Watch(ctx, pool, "ingest", log)
 	st := store.New(pool)
 
-	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "ingest", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
+	bus, err := natsbus.Open(ctx, cfg.NatsURL, natsbus.Options{Name: "ingest", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)
@@ -127,7 +128,7 @@ func requestID(r *http.Request) string {
 
 type handler struct {
 	st   *store.Store
-	bus  *events.Bus
+	bus  events.Bus
 	log  *slog.Logger
 	beta config.Beta
 

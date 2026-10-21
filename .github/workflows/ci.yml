@@ -87,7 +87,7 @@ jobs:
         working-directory: backend
         env:
           RYFT_TEST_NATS_URL: nats://localhost:4222
-        run: go test -count=1 -run Permissions ./internal/events/
+        run: go test -count=1 -run Permissions ./internal/events/natsbus/
       # Argo CD's PostSync smoke, the Go one in the migrate image.
       - run: make smoke-hook CONTAINER=docker
       # trace.sh and friends against a fake kubectl and the running api.

@@ -120,7 +120,7 @@ compose and Kubernetes): ingest may only publish `ryft.ingested`, api `ryft.inge
 `ryft.session.scored` and `ryft.refresh`; scoring alone may create the streams and its
 consumer, pull from it and ack, and notify only its own consumer. Each consumer may
 dead-letter its own subjects only; scoring reads and deletes dead letters. Replies go to a per-service inbox (`_INBOX_<service>`),
-which is the only thing a service may subscribe to. `internal/events/permissions_test.go`
+which is the only thing a service may subscribe to. `internal/events/natsbus/permissions_test.go`
 checks this against a running NATS (CI smoke job). `reason: "recompute"`
 with two days means an inclusive range. Failures NAK with a 30 s delay, max 10
 deliveries. If NATS is down, ingest still stores the data and scoring's 15-minute

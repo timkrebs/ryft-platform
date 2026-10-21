@@ -22,6 +22,7 @@ import (
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/events/natsbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -74,7 +75,7 @@ func main() {
 	engine.SetConsentMode(beta.Consent)
 	log.Info("beta", "consent", beta.Consent)
 
-	bus, err := events.Open(ctx, cfg.NatsURL, events.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass, OwnStream: true}, log)
+	bus, err := natsbus.Open(ctx, cfg.NatsURL, natsbus.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass, OwnStream: true}, log)
 	if err != nil {
 		log.Error("nats", "err", err)
 		os.Exit(1)

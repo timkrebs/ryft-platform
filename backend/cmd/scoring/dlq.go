@@ -9,6 +9,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/events/natsbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/scoring"
 )
@@ -31,7 +32,7 @@ func dlq(args []string) int {
 		return 1
 	}
 	ctx := context.Background()
-	bus, err := events.Connect(ctx, cfg.NatsURL, events.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass})
+	bus, err := natsbus.Connect(ctx, cfg.NatsURL, natsbus.Options{Name: "scoring", User: cfg.NatsUser, Password: cfg.NatsPass})
 	if err != nil {
 		log.Error("nats", "err", err)
 		return 1
@@ -50,7 +51,7 @@ func dlq(args []string) int {
 			log.Error("drop stream", "err", err)
 			return 1
 		}
-		log.Info("dead-letter stream deleted", "stream", events.DLQStreamName)
+		log.Info("dead-letter stream deleted", "stream", natsbus.DLQStreamName)
 		return 0
 	}
 	if len(args) == 0 {
@@ -65,7 +66,7 @@ func dlq(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: scoring dlq [redrive SEQ|all | delete SEQ|all | drop]")
 		return 2
 	}
-	var pick []events.DeadLetter
+	var pick []natsbus.DeadLetter
 	for _, l := range letters {
 		if args[1] == "all" || args[1] == strconv.FormatUint(l.Seq, 10) {
 			pick = append(pick, l)
@@ -83,7 +84,7 @@ func dlq(args []string) int {
 	failed := 0
 	for _, l := range pick {
 		if args[0] == "redrive" {
-			ev, err := events.DecodeIngested(l.Subject, []byte(l.Data))
+			ev, err := events.DecodeIngested(natsbus.Key(l.Subject), []byte(l.Data))
 			if err != nil {
 				log.Warn("not re-driven", "seq", l.Seq, "subject", l.Subject, "err", err)
 				continue

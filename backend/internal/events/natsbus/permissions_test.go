@@ -1,4 +1,4 @@
-package events
+package natsbus
 
 import (
 	"context"
@@ -11,12 +11,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/timkrebs/ryft/internal/events"
 )
 
 // Integration test, opt-in: RYFT_TEST_NATS_URL points at a NATS running
 // deploy/k8s/base/nats/nats.conf with the compose dev passwords (make up):
 //
-//	RYFT_TEST_NATS_URL=nats://localhost:4222 go test ./internal/events/ -run Permissions
+//	RYFT_TEST_NATS_URL=nats://localhost:4222 go test ./internal/events/natsbus/ -run Permissions
 func natsURL(t *testing.T) string {
 	t.Helper()
 	u := os.Getenv("RYFT_TEST_NATS_URL")
@@ -114,7 +116,7 @@ func TestNatsPermissionsPublishersOnlyPublish(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s may publish only its own event subjects", svc)
 		}
-		if _, err := nc.SubscribeSync(SubjectIngested); err != nil {
+		if _, err := nc.SubscribeSync(Subject(events.KeyIngested)); err != nil {
 			t.Fatal(err)
 		}
 		if !v.saw(`Subscription to "ryft.ingested"`) {
@@ -146,17 +148,17 @@ func TestNatsPermissionsSessionSubject(t *testing.T) {
 			t.Fatal(err)
 		}
 		short, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err = js.Publish(short, SubjectSessionCompleted, []byte("{}"))
+		_, err = js.Publish(short, Subject(events.KeySessionCompleted), []byte("{}"))
 		cancel()
 		if (err == nil) != want {
-			t.Errorf("%s publishing %s: err=%v, want allowed=%v", svc, SubjectSessionCompleted, err, want)
+			t.Errorf("%s publishing %s: err=%v, want allowed=%v", svc, Subject(events.KeySessionCompleted), err, want)
 		}
 	}
 }
 
 func TestNatsPermissionsScoringOnlyConsumes(t *testing.T) {
 	nc, v := connectAs(t, "scoring")
-	if err := nc.Publish(SubjectIngested, []byte("{}")); err != nil {
+	if err := nc.Publish(Subject(events.KeyIngested), []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	if !v.saw(`Publish to "ryft.ingested"`) {
@@ -179,7 +181,7 @@ func TestNatsPermissionsNotifySubjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer scoring.Close()
-	for _, subject := range []string{SubjectScored, SubjectSessionScored, SubjectRefresh} {
+	for _, subject := range []string{Subject(events.KeyScored), Subject(events.KeySessionScored), Subject(events.KeyRefresh)} {
 		for svc, want := range map[string]bool{"scoring": true, "api": false, "ingest": false, "notify": false} {
 			nc, _ := connectAs(t, svc)
 			js, _ := jetstream.New(nc)
@@ -198,14 +200,14 @@ func TestNatsPermissionsNotifySubjects(t *testing.T) {
 	}
 	defer notify.Close()
 	short, cancel := context.WithTimeout(ctx, 3*time.Second)
-	_, err = notify.js.CreateOrUpdateConsumer(short, StreamName, jetstream.ConsumerConfig{Durable: ConsumerNotify,
+	_, err = notify.js.CreateOrUpdateConsumer(short, StreamName, jetstream.ConsumerConfig{Durable: events.ConsumerNotify,
 		FilterSubjects: notifySubjects, AckPolicy: jetstream.AckExplicitPolicy})
 	cancel()
 	if err != nil {
 		t.Fatalf("notify creates its consumer: %v", err)
 	}
 	nc, v := connectAs(t, "notify")
-	for _, subj := range []string{"$JS.API.CONSUMER.MSG.NEXT.RYFT.scoring", SubjectIngested, "$JS.API.STREAM.DELETE.RYFT"} {
+	for _, subj := range []string{"$JS.API.CONSUMER.MSG.NEXT.RYFT.scoring", Subject(events.KeyIngested), "$JS.API.STREAM.DELETE.RYFT"} {
 		if err := nc.Publish(subj, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -227,11 +229,11 @@ func TestNatsPermissionsDeadLetters(t *testing.T) {
 		svc, subject string
 		want         bool
 	}{
-		{"scoring", DLQSubject(SubjectIngested), true}, {"scoring", DLQSubject(SubjectSessionCompleted), true},
-		{"scoring", DLQSubject(SubjectScored), false}, {"notify", DLQSubject(SubjectScored), true},
-		{"notify", DLQSubject(SubjectSessionScored), true}, {"notify", DLQSubject(SubjectRefresh), true},
-		{"notify", DLQSubject(SubjectIngested), false},
-		{"api", DLQSubject(SubjectIngested), false}, {"ingest", DLQSubject(SubjectIngested), false},
+		{"scoring", DLQSubject(Subject(events.KeyIngested)), true}, {"scoring", DLQSubject(Subject(events.KeySessionCompleted)), true},
+		{"scoring", DLQSubject(Subject(events.KeyScored)), false}, {"notify", DLQSubject(Subject(events.KeyScored)), true},
+		{"notify", DLQSubject(Subject(events.KeySessionScored)), true}, {"notify", DLQSubject(Subject(events.KeyRefresh)), true},
+		{"notify", DLQSubject(Subject(events.KeyIngested)), false},
+		{"api", DLQSubject(Subject(events.KeyIngested)), false}, {"ingest", DLQSubject(Subject(events.KeyIngested)), false},
 	} {
 		nc, _ := connectAs(t, c.svc)
 		js, _ := jetstream.New(nc)
@@ -260,7 +262,7 @@ func TestNatsDeadLetterBadEvent(t *testing.T) {
 	nc, _ := connectAs(t, "api")
 	js, _ := jetstream.New(nc)
 	marker := `{"session_id":"00000000-0000-0000-0000-00000000d1a0","user_id":"00000000-0000-0000-0000-00000000d1a0"}`
-	if _, err := js.Publish(ctx, SubjectSessionCompleted, []byte(marker)); err != nil {
+	if _, err := js.Publish(ctx, Subject(events.KeySessionCompleted), []byte(marker)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(15 * time.Second)
@@ -271,7 +273,7 @@ func TestNatsDeadLetterBadEvent(t *testing.T) {
 		}
 		for _, l := range letters {
 			if l.Data == marker {
-				if l.Subject != SubjectSessionCompleted || l.Consumer != ConsumerScoring || l.Deliveries != "1" ||
+				if l.Subject != Subject(events.KeySessionCompleted) || l.Consumer != events.ConsumerScoring || l.Deliveries != "1" ||
 					!strings.Contains(l.Error, "without a day") {
 					t.Errorf("dead letter %+v", l)
 				}
