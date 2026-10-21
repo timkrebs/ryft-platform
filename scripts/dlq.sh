@@ -44,7 +44,7 @@ else
 fi
 export RABBITMQ_MGMT_URL RABBITMQ_USER RABBITMQ_PASSWORD VHOST
 api() { # METHOD PATH [JSON]
-  curl -fsS "${CURL_EXTRA[@]}" -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" -H 'content-type: application/json' \
+  curl -fsS ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" -H 'content-type: application/json' \
     -X "$1" ${3:+--data "$3"} "$RABBITMQ_MGMT_URL$2"
 }
 queue_of() {

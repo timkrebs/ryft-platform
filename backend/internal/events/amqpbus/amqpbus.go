@@ -521,7 +521,7 @@ func (b *Bus) handle(ctx context.Context, log *slog.Logger, queue string, d amqp
 		settle("dead-letter", b.deadLetter(ctx, log, queue, d, attempt+1, err))
 	default:
 		tier := tierFor(attempt + 1)
-		log.Error("handle event failed, will retry", "err", err, "queue", queue, "attempt", attempt+1, "retry_in", tier.Delay)
+		log.Error("handle event failed, will retry", "err", err, "queue", queue, "attempt", attempt+1, "retry_in", tier.Delay.String())
 		metrics.EventsHandled.WithLabelValues(reason, "retry").Inc()
 		settle("retry", b.delay(ctx, d, RetryQueue(queue, tier), attempt+1))
 	}

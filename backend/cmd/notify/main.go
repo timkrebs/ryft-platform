@@ -17,8 +17,8 @@ import (
 	"github.com/timkrebs/ryft/internal/apns"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
+	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
-	"github.com/timkrebs/ryft/internal/events/natsbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/notify"
@@ -52,9 +52,10 @@ func main() {
 	go db.Watch(ctx, pool, "notify", log)
 	st := store.New(pool)
 
-	bus, err := natsbus.Open(ctx, cfg.NatsURL, natsbus.Options{Name: "notify", User: cfg.NatsUser, Password: cfg.NatsPass}, log)
+	// The brokers it uses (EVENTS_BACKEND, EVENTS_CONSUME; D102), each retried at start-up.
+	bus, err := eventbus.Open(ctx, cfg, eventbus.Role{Name: "notify", Consumes: true}, log)
 	if err != nil {
-		log.Error("nats", "err", err)
+		log.Error("events", "err", err)
 		os.Exit(1)
 	}
 	defer bus.Close()

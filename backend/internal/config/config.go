@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -30,7 +31,31 @@ type Config struct {
 	NatsURL     string
 	NatsUser    string // NATS_USER/NATS_PASSWORD: the service's own NATS user; both or neither
 	NatsPass    string
-	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection
+	// The cutover to RabbitMQ (D102): EVENTS_BACKEND is the broker a service publishes
+	// to, EVENTS_CONSUME the brokers it consumes from (comma-separated; default the
+	// backend). Both nats until the cutover's releases change them.
+	EventsBackend string
+	EventsConsume []string
+	AMQP          AMQP
+	DBMaxConns    int // pool size; small because Supavisor session mode holds a server connection per client connection
+}
+
+// The brokers (D97).
+const (
+	BrokerNATS = "nats"
+	BrokerAMQP = "amqp"
+)
+
+// AMQP is how a service reaches RabbitMQ: its URL, its own user, and its TLS identity
+// (the broker verifies client certificates, D98).
+type AMQP struct {
+	URL, User, Password       string
+	CAFile, CertFile, KeyFile string
+}
+
+// Uses reports whether the service publishes to or consumes from broker.
+func (c Config) Uses(broker string) bool {
+	return c.EventsBackend == broker || slices.Contains(c.EventsConsume, broker)
 }
 
 // Auth configures how ingest and api authenticate requests.
@@ -57,6 +82,29 @@ func Load(service string) (Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		NatsURL:     getenv("NATS_URL", "nats://nats:4222"),
 		DBMaxConns:  4,
+		AMQP: AMQP{
+			URL:  getenv("AMQP_URL", "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft"),
+			User: os.Getenv("AMQP_USER"), Password: os.Getenv("AMQP_PASSWORD"),
+			CAFile: os.Getenv("AMQP_CA_FILE"), CertFile: os.Getenv("AMQP_CERT_FILE"), KeyFile: os.Getenv("AMQP_KEY_FILE"),
+		},
+	}
+	c.EventsBackend = getenv("EVENTS_BACKEND", BrokerNATS)
+	if c.EventsBackend != BrokerNATS && c.EventsBackend != BrokerAMQP {
+		return c, fmt.Errorf("EVENTS_BACKEND must be %q or %q, got %q", BrokerNATS, BrokerAMQP, c.EventsBackend)
+	}
+	for _, b := range strings.Split(getenv("EVENTS_CONSUME", c.EventsBackend), ",") {
+		switch b = strings.TrimSpace(b); b {
+		case "":
+		case BrokerNATS, BrokerAMQP:
+			if !slices.Contains(c.EventsConsume, b) {
+				c.EventsConsume = append(c.EventsConsume, b)
+			}
+		default:
+			return c, fmt.Errorf("EVENTS_CONSUME lists %q, want %q and/or %q", b, BrokerNATS, BrokerAMQP)
+		}
+	}
+	if (c.AMQP.User == "") != (c.AMQP.Password == "") {
+		return c, fmt.Errorf("set both AMQP_USER and AMQP_PASSWORD, or neither")
 	}
 	if service == "scoring" || service == "notify" {
 		c.DBMaxConns = 2

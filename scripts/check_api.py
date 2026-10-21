@@ -669,12 +669,12 @@ if METRICS and os.environ.get("AUTH_MODE", "apikey") == "apikey":
         if pushed("MORNING_SCORE", "unconfigured") > before:
             break
         time.sleep(1)
-    check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's ryft.scored (scoring → NATS → notify)")
+    check(pushed("MORNING_SCORE", "unconfigured") > before, "notify never handled C's ryft.scored (scoring → the broker → notify)")
     for _ in range(30):  # and the silent refresh for the sync's scored days (D92)
         if handled("refresh", "ok") > refreshes:
             break
         time.sleep(1)
-    check(handled("refresh", "ok") > refreshes, "notify never handled C's ryft.refresh (scoring → NATS → notify)")
+    check(handled("refresh", "ok") > refreshes, "notify never handled C's ryft.refresh (scoring → the broker → notify)")
     raw("DELETE", "/v1/me", key=KEY_C)
     ok("morning push path: sync → scoring → ryft.scored and ryft.refresh → notify (no APNs key: counted, not sent)")
 else:

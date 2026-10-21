@@ -74,6 +74,9 @@ type Sender interface {
 // whether the transport is connected. natsbus and amqpbus implement it; Combine
 // joins one for publishing with several for consuming (the cutover).
 type Bus interface {
+	// Sender is the raw publish the typed ones below are made of; the outbox's relay
+	// sends its rows with it.
+	Sender
 	PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error
 	PublishSessionCompleted(ctx context.Context, ev model.SessionCompletedEvent, dedupID string) error
 	PublishScored(ctx context.Context, ev model.ScoredEvent) error
@@ -298,6 +301,8 @@ type combined struct {
 	pub     Bus
 	consume []Bus
 }
+
+func (c combined) Send(ctx context.Context, m Message) error { return c.pub.Send(ctx, m) }
 
 func (c combined) PublishIngested(ctx context.Context, ev model.IngestedEvent, id string) error {
 	return c.pub.PublishIngested(ctx, ev, id)

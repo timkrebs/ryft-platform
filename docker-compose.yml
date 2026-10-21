@@ -28,6 +28,34 @@ services:
       - natsdata:/data
       - ./deploy/k8s/base/nats/nats.conf:/etc/nats/nats.conf:ro
 
+  # RabbitMQ (D97) as on the cluster: AMQPS with client certificates on 5671 (a dev CA,
+  # rabbitmq-certs), the generated topology and dev users (deploy/rabbitmq/dev). Which
+  # broker a service publishes to and consumes from is EVENTS_BACKEND / EVENTS_CONSUME
+  # (the cutover, D102): here by default publish to RabbitMQ, consume from both.
+  rabbitmq-certs:
+    image: &rabbitmq-image docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+    entrypoint: ["sh", "/dev-amqp-certs.sh"]
+    restart: "no"
+    volumes:
+      - amqpcerts:/certs
+      - ./scripts/dev-amqp-certs.sh:/dev-amqp-certs.sh:ro
+
+  rabbitmq:
+    image: *rabbitmq-image
+    ports: ["5671:5671", "15672:15672"]
+    volumes:
+      - amqpcerts:/certs:ro
+      - ./deploy/rabbitmq/dev/rabbitmq.conf:/etc/rabbitmq/conf.d/90-ryft.conf:ro
+      - ./deploy/rabbitmq/dev/definitions.json:/etc/rabbitmq/definitions.json:ro
+    # A port check, not rabbitmq-diagnostics: the CLI run as root before the server is
+    # up writes the Erlang cookie as root, and the server (user rabbitmq) cannot read it.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/5671"]
+      interval: 5s
+      retries: 30
+    depends_on:
+      rabbitmq-certs: { condition: service_completed_successfully }
+
   # Applies the migrations as the owner (ryft) and sets the services' role
   # passwords, then exits; the services start after it and connect as their own
   # least-privilege roles, as on Kubernetes (docs/ARCHITECTURE.md).
@@ -58,13 +86,23 @@ services:
         BETA_GATE: ${BETA_GATE:-off}
         CONSENT_ENFORCE: ${CONSENT_ENFORCE:-on}
         PRIVACY_POLICY_VERSION: "2026-10-20"
+        EVENTS_BACKEND: ${EVENTS_BACKEND:-amqp}
+        EVENTS_CONSUME: ${EVENTS_CONSUME:-nats,amqp}
+        AMQP_URL: amqps://rabbitmq:5671/ryft
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: ingest
       NATS_PASSWORD: dev-ingest-nats-password
+      AMQP_USER: ingest
+      AMQP_PASSWORD: dev-ingest-amqp-password
+      AMQP_CA_FILE: /certs/ingest/ca.crt
+      AMQP_CERT_FILE: /certs/ingest/tls.crt
+      AMQP_KEY_FILE: /certs/ingest/tls.key
+    volumes: ["amqpcerts:/certs:ro"]
     ports: ["8081:8080"]
     depends_on: &deps
       migrate: { condition: service_completed_successfully }
       nats: { condition: service_started }
+      rabbitmq: { condition: service_healthy }
 
   scoring:
     build: { context: ./backend, args: { SERVICE: scoring } }
@@ -73,6 +111,12 @@ services:
       DATABASE_URL: postgres://ryft_scoring:dev-scoring-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: scoring
       NATS_PASSWORD: dev-scoring-nats-password
+      AMQP_USER: scoring
+      AMQP_PASSWORD: dev-scoring-amqp-password
+      AMQP_CA_FILE: /certs/scoring/ca.crt
+      AMQP_CERT_FILE: /certs/scoring/tls.crt
+      AMQP_KEY_FILE: /certs/scoring/tls.key
+    volumes: ["amqpcerts:/certs:ro"]
     depends_on: *deps
 
   api:
@@ -82,8 +126,14 @@ services:
       DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: api
       NATS_PASSWORD: dev-api-nats-password
+      AMQP_USER: api
+      AMQP_PASSWORD: dev-api-amqp-password
+      AMQP_CA_FILE: /certs/api/ca.crt
+      AMQP_CERT_FILE: /certs/api/tls.crt
+      AMQP_KEY_FILE: /certs/api/tls.key
       # Bearer of /v1/admin (feature flags); scripts/check_api.py uses it.
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me-0123456789abcdef}
+    volumes: ["amqpcerts:/certs:ro"]
     ports: ["8082:8080"]
     depends_on: *deps
 
@@ -97,9 +147,19 @@ services:
       DATABASE_URL: postgres://ryft_notify:dev-notify-db-password@postgres:5432/ryft?sslmode=disable
       NATS_USER: notify
       NATS_PASSWORD: dev-notify-nats-password
+      EVENTS_BACKEND: ${EVENTS_BACKEND:-amqp}
+      EVENTS_CONSUME: ${EVENTS_CONSUME:-nats,amqp}
+      AMQP_URL: amqps://rabbitmq:5671/ryft
+      AMQP_USER: notify
+      AMQP_PASSWORD: dev-notify-amqp-password
+      AMQP_CA_FILE: /certs/notify/ca.crt
+      AMQP_CERT_FILE: /certs/notify/tls.crt
+      AMQP_KEY_FILE: /certs/notify/tls.key
+    volumes: ["amqpcerts:/certs:ro"]
     ports: ["9093:9090"]
     depends_on: *deps
 
 volumes:
   pgdata:
   natsdata:
+  amqpcerts:

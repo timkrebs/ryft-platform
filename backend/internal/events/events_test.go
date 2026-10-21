@@ -125,8 +125,9 @@ func (f *fakeBus) ConsumeIngested(ctx context.Context, _ *slog.Logger, _ func(co
 func (f *fakeBus) ConsumeNotify(ctx context.Context, log *slog.Logger, _ func(context.Context, NotifyMessage) error) error {
 	return f.ConsumeIngested(ctx, log, nil)
 }
-func (f *fakeBus) Ready(context.Context) error { return nil }
-func (f *fakeBus) Close()                      { f.closed++ }
+func (f *fakeBus) Send(ctx context.Context, m Message) error { return f.Sender.Send(ctx, m) }
+func (f *fakeBus) Ready(context.Context) error               { return nil }
+func (f *fakeBus) Close()                                    { f.closed++ }
 
 // The cutover's bus: publishing on one, consuming on all; one consumer failing stops
 // the others; each bus closes once.
@@ -138,6 +139,9 @@ func TestCombine(t *testing.T) {
 	b := Combine(nats, nats, amqp)
 	if err := b.PublishRefresh(context.Background(), model.RefreshEvent{Day: "2026-10-21"}); err != nil || len(sent.sent) != 1 {
 		t.Fatalf("publishes go to the publishing bus: %v %d", err, len(sent.sent))
+	}
+	if err := b.Send(context.Background(), Message{Key: KeyIngested, Body: []byte("{}")}); err != nil || len(sent.sent) != 2 {
+		t.Fatalf("so do the outbox relay's raw sends: %v %d", err, len(sent.sent))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
