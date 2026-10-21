@@ -54,7 +54,7 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready |
 | 5. Supabase | the checklist in [`SUPABASE.md`](SUPABASE.md) | project ref, pooler host, database password, secret key at hand |
 | 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows six |
-| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha>`) |
+| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha> services`) |
 | 8. App | Argo CD from step 4; `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml` | **Deploy and roll back** → Cutover to Argo CD |
 | 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
 
@@ -197,12 +197,18 @@ break-glass below.
 
 **How a change reaches production:**
 
-1. **Merge to main** (or push, as admin). CI tests it and builds
-   `ghcr.io/timkrebs/ryft/<service>:<short-sha>`.
-2. **promote** opens "deploy: images <sha>" with the commits since the running pin, when
-   something under `backend/` changed; the PR merges itself once its checks pass
-   (`manifests` also asks ghcr.io for every pinned image). Close it to stop the deploy.
-   A change to manifests only (no new image) deploys on its own merge.
+1. **Merge to main** (or push, as admin). CI runs every check, then builds an image for
+   each **group** whose directory differs from its running pin in
+   `deploy/k8s/overlays/eks` (D107): **services** (ingest, scoring, api, notify, migrate)
+   from `backend/`, **web** (the apex site) from `web/`. Tags are
+   `ghcr.io/timkrebs/ryft/<image>:<the commit's first 7 characters>`.
+2. **promote** opens one PR "deploy: images <sha>" that pins the groups it built, each
+   with its old pin and its commits since, and closes every older open `deploy/*` PR as
+   superseded. It runs only when every group it needs was built: if one image job failed,
+   nothing is pinned (fix the cause, then "Re-run failed jobs" on the **latest** run on
+   main). The PR merges itself once its checks pass (`manifests` also asks ghcr.io for
+   every pinned image). Close it to stop the deploy. A change to manifests only (no new
+   image) deploys on its own merge.
 3. **Argo CD syncs**, within about three minutes: wave 0 the Vault objects, wave 1 the
    RabbitMQ operators, wave 2 the broker, wave 3 `ryft-platform`, whose sync runs
    **migrate first** (PreSync: a failed migration fails the sync and nothing rolls),
@@ -247,10 +253,63 @@ it, so even a fix to another application is not delivered. `argocd app terminate
 ryft-root`, then `argocd app sync ryft-root` (seen in the kind test with a broker that
 could not start).
 
-**Roll back** by reverting the pin: `git revert <the "deploy: images" merge commit>` and
-push it (or merge it as a PR); Argo CD deploys the previous images like any release.
-Argo CD does not roll back by itself (D95). Migrations stay (below), so the previous
-release runs on the newer schema. A broken manifest change is reverted the same way.
+**Which groups would move?** Compare with what runs, not with the last push:
+
+```bash
+./scripts/deploy_targets.sh                     # services=… web=… and why; read-only, needs the full history
+gh pr list --search 'head:deploy/'              # open deploy PRs
+gh run list --workflow ci --branch main --limit 5
+```
+
+**Roll back** one group: the old pin **and a hold** in the same commit. Without the hold
+the next push to main builds the rolled-back code again and pins it within about 15
+minutes (D107). Argo CD does not roll back by itself (D95). Migrations stay (below), so
+the previous release runs on the newer schema.
+
+1. Find the deploy merge and the previous pin:
+   ```bash
+   git fetch origin && git switch -c deploy/rollback-web origin/main
+   git log --oneline -5 -- deploy/k8s/overlays/eks/kustomization.yaml
+   git show <deploy merge>^:deploy/k8s/overlays/eks/kustomization.yaml | grep -A1 'ryft/web$'   # the old newTag
+   ```
+2. In `deploy/k8s/overlays/eks/kustomization.yaml` set the group's `newTag` back (all
+   five for services; web may also go to `"f437747"`, see Apex site) and add a hold line
+   above its first image:
+   ```yaml
+     # hold: web 2026-10-23 broken AASA, fix in #57
+   ```
+   Exactly `# hold: <services|web> <YYYY-MM-DD> <reason>`; any other line that starts
+   like a hold fails `manifests` (a mistyped hold would otherwise be ignored). When the
+   deploy PR moved both groups and only one is bad, change only that one; do not `git
+   revert` the whole merge. GitHub's Revert button works too (its `Revert "…"` title
+   passes `pr-title`), but you still add the hold.
+3. Commit as `deploy: roll back web to <old>`, then `gh pr create --fill && gh pr merge
+   --squash --auto`, or push as admin to skip the checks (D96). Argo CD rolls that group
+   back like any release; the other group is untouched.
+
+**A hold stops promote for that group only.** While it stands, every run on main prints
+`web held (…)` in the `changes` job and its summary, and the next deploy PR shows
+`held: <reason>`; the group deploys nothing, not even a fix. `manifests` fails a deploy
+PR that moves a held group's `newTag`, and promote closes older deploy PRs when a hold
+lands, so an older one cannot undo the rollback. Your own PRs may still move a held pin
+(a second rollback). If a red `web-image` (Trivy, GHCR) blocks a
+backend hotfix, hold web (`# hold: web <date> ci red`) and merge the hotfix.
+
+**Release a hold** once the fix is on main (or the bad code reverted): a PR that deletes
+the `# hold:` line. Its merge targets the group and deploys main's head. If the group's
+directory already equals the pinned tree (the cause was not code, e.g. the
+`SUPPORT_EMAIL` variable), nothing is targeted: `gh workflow run ci --ref main -f
+force=web` (or `services`, `all`). A hold always wins over `force`.
+
+**Re-run promote:** "Re-run failed jobs" on the latest run on main. An older run's
+promote exits with "not main's tip" and does nothing; use `gh workflow run ci --ref main
+-f force=<group>` instead. promote touches only the App's own `deploy/<sha>` PRs, and does
+not reopen one you closed. A stalled deploy PR (red checks) is closed by the next push or
+by hand.
+
+**If migrate blocks the rollback** (a failed PreSync, e.g. the Supabase lockout below),
+the rollback PR rolls nothing: web shares the `ryft-platform` application with migrate.
+Follow "Lockouts" first. A broken manifest change is reverted like code.
 
 **Break-glass** (Argo CD itself is down): pause it if it is half up, then `make
 k8s-apply-eks` (prints a warning; applies the Vault objects, RabbitMQ, migrate, then the
@@ -508,9 +567,22 @@ screen, or by hand with its access token:
 curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"policy_version": "2026-10-20"}'
 ```
 
-A new policy text: change `PRIVACY_POLICY_VERSION` in both configmaps (api and ingest)
-**and** add `content/legal/{en,de}/privacy/<version>.mdx` in ryft-web (its CI warns while
-they differ), release both; every tester consents again before the next sync,
+**A new policy text** (only on the user's decision: everyone consents again) is **one
+PR**: `web/content/legal/{en,de}/privacy/<version>.mdx` (the old versions stay),
+`<version>` appended to `web/content/legal/privacy-versions.json`, and
+`PRIVACY_POLICY_VERSION` in both configmaps (api, ingest) and `docker-compose.yml`.
+`manifests` runs `node web/scripts/check-policy-version.mjs --strict` and fails on any
+mismatch or a missing page. After the merge the configmaps apply within about 3 minutes,
+but the page only with the web deploy 25–40 minutes later, and a configmap change rolls no
+pod (STATUS → open, F1): pods started in between (HPA, drain) take the new version while
+the others keep the old one. Until F1 is fixed: once `/privacy/<version>` is live, restart
+api and ingest so every pod agrees (the user runs it), then announce:
+
+```bash
+kubectl -n ryft-api rollout restart deploy/api && kubectl -n ryft-ingest rollout restart deploy/ingest
+```
+
+Every tester consents again before the next sync;
 `ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
 
 **The gates and their modes** (D87). Two checks, each `off`, `warn` or `on`, set in
@@ -828,15 +900,15 @@ when the month is forecast to exceed it.
 
 ## Apex site and apple-app-site-association
 
-`https://ryftapp.de` is the `ryft-web` image (D106): `ghcr.io/timkrebs/ryft/web:<short-sha>`,
-built and pushed by **`timkrebs/ryft-web`** on every green `main` (a public package, pulled
-anonymously like the service images). Everything the site serves lives in that
-repository: the pages, the legal texts (`content/legal/{en,de}/`), nginx's config and the
-AASA. `www.ryftapp.de` redirects to the apex. This repository only runs it: the
-Deployment (`deploy/k8s/base/web`, uid 101, read-only root filesystem, `/healthz`), its
+`https://ryftapp.de` is the **web** image group (D106, D107):
+`ghcr.io/timkrebs/ryft/web:<short-sha>`, built from **`web/`** in this repository by `ci`
+on a push to main that changes it (a public package, pulled anonymously like the service
+images). The pages, the legal texts (`web/content/legal/{en,de}/`), nginx's config and the
+AASA live there; its rules are `web/CLAUDE.md`. `www.ryftapp.de` redirects to the apex.
+The Deployment (`deploy/k8s/base/web`, uid 101, read-only root filesystem, `/healthz`), its
 Service and NetworkPolicy, and in `overlays/eks` the Ingress, the `www` redirect, the rate
-limit and **web's pin** (`newTag`, the short SHA of a green ryft-web `main` run, quoted;
-not a SHA of this repository).
+limit and **web's pin** (this repository's short SHA, like the services', quoted).
+`timkrebs/ryft-web` is archived; its `deploy/web-*` pin PRs no longer exist.
 
 - **`/.well-known/apple-app-site-association`:** `webcredentials` for password AutoFill
   with email accounts, and `applinks` for the paths the app's `AppRoute` parses
@@ -849,24 +921,32 @@ not a SHA of this repository).
   under `/de/…`, each version of the privacy policy also at `/privacy/<version>`.
   `/privacy` is `PRIVACY_POLICY_URL`, its version `PRIVACY_POLICY_VERSION` (OPERATIONS →
   Beta).
-- **A change to the site** is a PR in ryft-web, then a web release here.
+**A web release is a merge.** A PR that changes `web/` (checks `web-checks`, `web-e2e`,
+and `manifests` for the privacy texts) is merged; `web-image` builds, scans (Trivy) and
+pushes the image, `promote` opens "deploy: images <sha>" with web's commits, and its
+merge deploys it: about 25–40 minutes from merge to live. The build stops when the
+repository variable `SUPPORT_EMAIL` is unset (`gh variable set SUPPORT_EMAIL -R
+timkrebs/ryft-platform --body <address>`, then `gh workflow run ci --ref main -f
+force=web`); an unset `TESTFLIGHT_URL` only hides the TestFlight button.
 
-**A web release:** a one-line PR that moves web's `newTag` in
-`deploy/k8s/overlays/eks/kustomization.yaml` to the short SHA of a green ryft-web `main`
-run (`gh run list -R timkrebs/ryft-web --workflow ci --branch main --status success
---limit 1 --json headSha --jq '.[0].headSha[:7]'`, quoted). `manifests` checks that the
-image exists (`scripts/check_registry.sh`), the merge deploys it (Argo CD rolls `web`;
-the old pods serve until the new ones are ready), a revert rolls back. Once ryft-web's
-promote job is switched on (its PR #11, with the `ryft-deploy` App's client ID and key in
-ryft-web), it opens these PRs itself on branches `deploy/web-<sha>`; this repository's
-`promote.sh` leaves them alone.
+**Rollback point:** `f437747`, the last image built in ryft-web (not a commit of this
+history, so it needs the hold, "Deploy and roll back"). **Never delete package versions of
+`ryft/web`**, `latest` included: GHCR cannot untag, and a version may be a rollback point.
+
+**Verify a web deploy** after the Argo CD sync. The pods roll with one surge and none
+unavailable, so a broken image leaves the old site serving and `ArgoSyncFailed` fires after
+about 10 minutes; a page that is wrong but healthy is not alerted (STATUS → open), which is
+what this is for. Roll back first, then investigate.
 
 ```bash
-kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo
+kubectl -n argocd get applications ryft-platform                                   # Synced, Healthy
+kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo   # the deploy PR's pin, both pods
 for p in "" privacy terms support impressum de/privacy de/impressum privacy/2026-10-20 day/2026-10-19 auth/callback invite/TEST; do
   curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
 curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
-curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1: the script hashes
+curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
+curl -s https://ryftapp.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
+curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
 curl -sI https://www.ryftapp.de/ | grep -i location                                                         # https://ryftapp.de/
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
 ```

@@ -309,8 +309,8 @@ what that workload does. No credential is shared, and none is broader than its u
     Cloud (D51). It gets metrics only; RYFT's logs go to CloudWatch (`amazon-cloudwatch`,
     Fluent Bit), KMS-encrypted and kept 14 days (D52).
   - `ryft-web` serves the apex site and `apple-app-site-association`, without secrets:
-    the `ryft-web` image from `timkrebs/ryft-web` (pages, legal texts, nginx config,
-    AASA), pinned in `overlays/eks` (D106, OPERATIONS → Apex site).
+    the web image built from `web/` in this repository (pages, legal texts, nginx config,
+    AASA), pinned in `overlays/eks` (D106, D107, OPERATIONS → Apex site).
   - Two operator UIs are public through Traefik, each behind its own login, a per-IP
     rate limit and HSTS: Argo CD at `argocd.ryftapp.de` (`argocd`) and the RabbitMQ
     management UI at `rabbitmq.ryftapp.de` (Traefik → the nodes' 15671, verified
@@ -344,12 +344,14 @@ Secrets from Vault through the operator; `deploy/rabbitmq` holds the broker (wit
 one application per unit in waves: the Vault objects of each namespace, the broker,
 then `ryft-platform`, whose every sync runs migrate first (PreSync hook) and the
 in-cluster smoke last (PostSync, namespace `ryft-smoke`). CI promotes images by a PR
-that pins `overlays/eks`; its merge is the deploy, a revert the rollback (D94–D96).
+that pins `overlays/eks`; its merge is the deploy, a revert plus a `# hold` the rollback
+(D94–D96, D107). Two image groups move independently: the services (from `backend/`) and
+the site (from `web/`), each when its directory differs from what runs.
 
 ```
-push to main ─► CI: tests, images <sha> ─► promote PR "deploy: images <sha>" ─► merge
-                                                                               │
-Argo CD ◄──── git (main) ◄─────────────────────────────────────────────────────┘
+push to main ─► CI: checks, images <sha> (changed groups) ─► PR "deploy: images <sha>" ─► merge
+                                                                                            │
+Argo CD ◄──── git (main) ◄──────────────────────────────────────────────────────────────────┘
   wave 0  vault-<svc>      VaultConnection/Auth/StaticSecret → Secret ryft-secrets
   wave 1  rabbitmq-operators  Cluster + Topology Operator (CRDs, rabbitmq-system)
   wave 2  broker-rabbitmq  RabbitmqCluster, topology, client certificates
