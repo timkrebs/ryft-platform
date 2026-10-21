@@ -100,3 +100,40 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, namespace: ryft-web, name: ryftapp-tls }
             exp_annotations: { summary: "Certificate ryft-web/ryftapp-tls expires in under 14 days" }
+  - name: argo cd
+    interval: 1m
+    input_series:
+      - { series: 'argocd_app_info{name="ryft-platform",health_status="Degraded",sync_status="Synced",autosync_enabled="true"}', values: '1x40' }
+      - { series: 'argocd_app_info{name="vault-api",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="true"}', values: '1x40' }
+      # Auto-sync paused (the adoption step): out of sync on purpose, no alert.
+      - { series: 'argocd_app_info{name="broker-nats",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="false"}', values: '1x40' }
+      - { series: 'argocd_app_sync_total{name="ryft-platform",phase="Failed"}', values: '0 0 0 1 1 1' }
+      - { series: 'argocd_app_sync_total{name="vault-api",phase="Succeeded"}', values: '0 1 2 3 4 5' }
+    alert_rule_test:
+      - { eval_time: 5m, alertname: ArgoAppDegraded, exp_alerts: [] }
+      - eval_time: 15m
+        alertname: ArgoAppDegraded
+        exp_alerts:
+          - exp_labels: { severity: warning, name: ryft-platform }
+            exp_annotations: { summary: "Argo CD application ryft-platform is Degraded (argocd app get, OPERATIONS.md → Deploy)" }
+      - { eval_time: 20m, alertname: ArgoAppOutOfSync, exp_alerts: [] }
+      - eval_time: 35m
+        alertname: ArgoAppOutOfSync
+        exp_alerts:
+          - exp_labels: { severity: warning, name: vault-api }
+            exp_annotations: { summary: "Argo CD application vault-api has not matched git for 30 minutes" }
+      - eval_time: 5m
+        alertname: ArgoSyncFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, name: ryft-platform }
+            exp_annotations: { summary: "Argo CD sync of ryft-platform failed (its last operation names the step)" }
+  - name: argo cd not scraped
+    interval: 1m
+    input_series:
+      - { series: 'up{job="something-else"}', values: '1x30' }
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ArgoMetricsMissing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "No Argo CD metrics for 15 minutes" }

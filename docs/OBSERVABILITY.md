@@ -83,6 +83,8 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 | `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
 | `ryft_train_sets_logged_total` | counter | — | api | Completed sets `PUT /v1/sessions/{id}` stored for the first time. |
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
+| `argocd_app_info` | gauge | `name`, `sync_status`, `health_status`, `autosync_enabled`, … | Argo CD (controller, :8082) | One series per application, value 1; the alerts below read `sync_status` (`Synced`, `OutOfSync`, `Unknown` when manifests do not render) and `health_status` (`Healthy`, `Progressing`, `Degraded`, `Missing`). |
+| `argocd_app_sync_total` | counter | `name`, `phase` | Argo CD | Sync operations by outcome: `Succeeded`, `Failed`, `Error` (a PreSync migration, a refused apply, the PostSync smoke), `Running`, `Terminating`. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -180,6 +182,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Refused or flagged: invite / consent | time series | `sum by (code, mode) (increase(ryft_gate_refusals_total[1h]))` |
 | Consents | stacked bars, 1 d buckets | `sum by (action) (increase(ryft_consents_total[1d]))` |
 | Feedback (7 d) | stat | `sum by (category) (increase(ryft_feedback_received_total[7d]))` |
+| Deploys | table | `max by (name, sync_status, health_status) (argocd_app_info)`, and `sum by (name, phase) (increase(argocd_app_sync_total[24h]))` |
 
 NATS also exposes its own monitoring on `:8222` (`/varz`, `/jsz`), reachable only
 inside its pod; the backlog and stream sizes above come from the consumers. For the
@@ -218,6 +221,10 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | APNsRejectsOurKey | critical | APNs answered 403 | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8` |
 | AccountDeletionIncomplete | warning | a deleted account kept its Supabase sign-in or Apple grant | the reconciler's log, the keys |
 | NewFeedback | info | a tester sent feedback | `scripts/beta_report.sh feedback` |
+| ArgoSyncFailed | critical | a sync ended Failed or Error | `argocd app get <name>` (OPERATIONS → Deploy → A failed sync): which hook or object |
+| ArgoAppDegraded | warning | an application is Degraded for 10 min | the Degraded object; for ryft-platform also the smoke Job's log in `ryft-smoke` |
+| ArgoAppOutOfSync | warning | an auto-synced application differs from git for 30 min | a wave waiting on an unhealthy one, a render error (`Unknown`), a sync retrying |
+| ArgoMetricsMissing | warning | no `argocd_app_info` for 15 min | `kubectl -n argocd get pods`, the metrics policy |
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday

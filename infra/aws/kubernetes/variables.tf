@@ -26,6 +26,17 @@ variable "region" {
   default     = "eu-central-1"
 }
 
+variable "vpc_cidr" {
+  description = "The VPC's CIDR (infra/aws vpc_cidr): node addresses, from which the host-network metrics collectors scrape"
+  type        = string
+  default     = "10.0.0.0/16"
+
+  validation {
+    condition     = can(cidrhost(var.vpc_cidr, 0))
+    error_message = "vpc_cidr must be a CIDR block."
+  }
+}
+
 variable "tags" {
   description = "Extra tags for the IAM roles"
   type        = map(string)

@@ -55,6 +55,11 @@ mock_provider "aws" {
 }
 
 mock_provider "helm" {}
+mock_provider "random" {
+  mock_resource "random_password" {
+    defaults = { result = "generatedpassword0123456789", bcrypt_hash = "$2a$10$mockbcrypthash" }
+  }
+}
 mock_provider "kubernetes" {}
 
 run "chart_versions_are_pinned" {
@@ -67,7 +72,8 @@ run "chart_versions_are_pinned" {
       helm_release.cert_manager.version == "v1.21.2" &&
       helm_release.external_dns.version == "1.23.0" &&
       helm_release.vault_secrets_operator.version == "1.6.0" &&
-      helm_release.fluent_bit.version == "0.2.0"
+      helm_release.fluent_bit.version == "0.2.0" &&
+      helm_release.argocd.version == "10.10.5"
     )
     error_message = "every chart must be pinned to the reviewed version"
   }
@@ -191,3 +197,30 @@ run "logs_ship_only_ryft_to_an_encrypted_group" {
   }
 }
 
+
+run "argocd_is_private_single_replica_and_keeps_no_initial_secret" {
+  # apply (mocked): the values hold the generated password's hash
+  command = apply
+
+  assert {
+    condition     = !can(yamldecode(helm_release.argocd.values[0]).server.ingress) && yamldecode(helm_release.argocd.values[0]).dex.enabled == false
+    error_message = "no Ingress and no SSO: the UI is reached by port-forward only (D94)"
+  }
+  assert {
+    condition = alltrue([for c in ["controller", "server", "repoServer", "applicationSet"] :
+    yamldecode(helm_release.argocd.values[0])[c].replicas == 1 && can(yamldecode(helm_release.argocd.values[0])[c].resources.requests.cpu)])
+    error_message = "non-HA, and every component with explicit requests (the nodes are CPU-bound, D94)"
+  }
+  assert {
+    condition     = yamldecode(helm_release.argocd.values[0]).configs.secret.argocdServerAdminPassword == "$2a$10$mockbcrypthash"
+    error_message = "the admin password is Terraform's bcrypt hash, so Argo CD writes no argocd-initial-admin-secret"
+  }
+  assert {
+    condition     = can(yamldecode(helm_release.argocd.values[0]).configs.cm["resource.customizations.health.argoproj.io_Application"])
+    error_message = "Application health must be restored, or the app-of-apps sync waves do not wait for each other"
+  }
+  assert {
+    condition     = kubernetes_namespace_v1.argocd.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted"
+    error_message = "the argocd namespace enforces Pod Security restricted"
+  }
+}

@@ -1537,3 +1537,44 @@ sent, and whether a second account shares its phone.
 - **Still true:** rotating a password (`terraform apply -replace='random_password.db[…]'`)
   fails the running pods' new connections until they restart with it; rotate one role at
   a time.
+
+## D94 — Argo CD: a Terraform add-on that deploys the workloads, private, non-HA
+
+- **Why:** deploys were a human pinning `newTag` and running `make k8s-apply-eks`; two
+  incidents in two days came from that path (a mistyped SHA, repeated applies during the
+  database outage). With Argo CD, git is the only way to `ryft-prod-euc1`, a merged pin
+  deploys itself, and drift is corrected.
+- **Installed like every add-on:** the `argo-cd` chart 10.10.5 (Argo CD v3.5.6; the chart
+  ships v3.5.5) as a Helm release in `infra/aws/kubernetes`. **Argo CD manages workloads
+  only**; the add-ons, Argo CD included, stay in Terraform, so no object has two owners
+  (also in `CLAUDE.md`).
+- **Non-HA:** one replica per component and Redis without a volume (a cache). The HA
+  option (redis-ha, two server and repo-server replicas, a sharded controller) is not
+  worth it for ten applications on three nodes. Requests are set explicitly (the chart
+  sets none) and small: the nodes are CPU-bound (1930m allocatable each; one already has
+  1700m requested).
+- **No Ingress:** the UI and API through `kubectl -n argocd port-forward svc/argocd-server
+  8080:443`. An Ingress on `argocd.ryftapp.de` behind a Traefik IP allow-list with SSO
+  (Dex, GitHub) is the later option, once someone besides the operator needs the UI.
+- **The admin account stays, with a password Terraform generates** (`random_password`,
+  its bcrypt hash in the chart's `argocd-secret`, read with `terraform output -raw
+  argocd_admin_password`). The spec offered the initial password moved into Vault; with
+  the hash set, Argo CD never writes an `argocd-initial-admin-secret` at all, there is
+  nothing to move or delete, and the password lives where every other generated
+  credential does (HCP Terraform state). No local operator account: without SSO it would
+  be a second password for the same person.
+- **The repository is public** (the user keeps it so), so Argo CD reads it over HTTPS
+  without a deploy key and nothing goes into Vault for it. Making it private later means
+  a read-only deploy key from `infra/vault` and a repository Secret.
+- **Pod Security `restricted`** on namespace `argocd` (every chart container complies),
+  the chart's NetworkPolicies, and one more that admits the metrics ports from the VPC
+  (the collectors scrape from node addresses), like `metrics-from-nodes.yaml`.
+- **Health:** `argocd-cm` restores the health of Application objects (removed in Argo CD
+  1.8) and adds one for `VaultStaticSecret` (healthy once the operator reports
+  `SecretSynced`), so the app-of-apps waits wave by wave (D95). Dex and Argo CD
+  notifications are off: alerts come from Grafana Cloud (`argocd_app_info`,
+  `argocd_app_sync_total`).
+- **Tried on a kind cluster** with the chart and the Terraform values: restricted pods,
+  no initial secret, the waves, a failed PreSync blocking a sync, a dry-run sync of the
+  whole platform through the project's rules.
+

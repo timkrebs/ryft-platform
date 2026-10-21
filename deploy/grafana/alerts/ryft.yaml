@@ -130,3 +130,33 @@ groups:
         expr: sum(increase(ryft_feedback_received_total[10m])) > 0
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
+
+      # ---- deploys (Argo CD, D94) ---------------------------------------------------
+      - alert: ArgoAppDegraded
+        # An application's workloads are failing: a crash-looping pod, a failed PostSync
+        # smoke (the release is in, but something end to end does not work).
+        expr: max by (name) (argocd_app_info{health_status="Degraded"}) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Argo CD application {{ $labels.name }} is Degraded (argocd app get, OPERATIONS.md → Deploy)" }
+      - alert: ArgoAppOutOfSync
+        # git and the cluster differ for 30 minutes although auto-sync is on: a sync that
+        # keeps failing, a wave waiting on an unhealthy one, or manifests that do not
+        # render (sync status Unknown). Applications with auto-sync paused are left out.
+        expr: max by (name) (argocd_app_info{sync_status!="Synced", autosync_enabled="true"}) > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "Argo CD application {{ $labels.name }} has not matched git for 30 minutes" }
+      - alert: ArgoSyncFailed
+        # A sync ended in Failed or Error: a migration (PreSync), an apply the API
+        # server refused, or the smoke (PostSync). Nothing after the failing step ran.
+        expr: sum by (name) (increase(argocd_app_sync_total{phase=~"Error|Failed"}[15m])) > 0
+        labels: { severity: critical }
+        annotations: { summary: "Argo CD sync of {{ $labels.name }} failed (its last operation names the step)" }
+      - alert: ArgoMetricsMissing
+        # The application controller is not scraped: Argo CD is down, or its metrics
+        # policy broke; deploys and the three alerts above are blind.
+        expr: absent(argocd_app_info)
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "No Argo CD metrics for 15 minutes" }

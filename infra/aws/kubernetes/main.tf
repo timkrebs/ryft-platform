@@ -25,5 +25,6 @@ locals {
     external_dns                 = { repository = "https://kubernetes-sigs.github.io/external-dns", chart = "external-dns", version = "1.23.0" }
     vault_secrets_operator       = { repository = "https://helm.releases.hashicorp.com", chart = "vault-secrets-operator", version = "1.6.0" }
     aws_for_fluent_bit           = { repository = "https://aws.github.io/eks-charts", chart = "aws-for-fluent-bit", version = "0.2.0" }
+    argocd                       = { repository = "https://argoproj.github.io/argo-helm", chart = "argo-cd", version = "10.10.5" }
   }
 }
