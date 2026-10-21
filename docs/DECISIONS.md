@@ -1896,3 +1896,16 @@ sent, and whether a second account shares its phone.
   is as powerful as the cluster. The passwords are long and random, and the rate limits
   cap guessing, but a flaw would not care. Restrict later with a Traefik `ipAllowList`
   middleware next to the rate limit (or SSO for Argo CD); both are one change.
+
+## D104 — RabbitMQ: memory request equal to the limit
+
+- After R1 (2026-10-21) the Cluster Operator reported `NoWarnings=False`
+  (`MemoryRequestAndLimitDifferent`): the broker derives its memory alarm from the limit
+  (80 % of it is RabbitMQ's, the alarm at 60 % of that), so with a 1 GiB request and a
+  1.5 GiB limit a node could plan with memory the scheduler never reserved for it.
+- The limit drops to the request, 1 GiB: the requested memory and the cost stay as in
+  D97, the alarm moves from about 0.77 GB to 0.52 GB, four times a node's idle use
+  (130 MiB) at under one message a second. Raising both to 1.5 GiB would cost 1.5 GiB more
+  requested for nothing measured.
+- Done before R2, while nothing uses the broker: the operator replaces the nodes one at a
+  time (the PDB), and quorum queues keep two of three members throughout.

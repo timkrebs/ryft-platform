@@ -184,7 +184,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Queue depths (RabbitMQ) | time series | `max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft"})`, `max by (queue) (rabbitmq_queue_messages_unacked{vhost="ryft"})` |
 | Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `scripts/dlq.sh list`) |
 | Broker nodes and alarms | state timeline | `count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"})`, `max by (instance) (rabbitmq_alarms_memory_used_watermark + rabbitmq_alarms_free_disk_space_watermark)` |
-| Broker memory per node | time series | `max by (instance) (rabbitmq_process_resident_memory_bytes)` (the alarm at about 770 MB) |
+| Broker memory per node | time series | `max by (instance) (rabbitmq_process_resident_memory_bytes)` (the alarm at about 520 MB) |
 | Connected to RabbitMQ | state timeline | `min by (namespace) (ryft_amqp_connected)`, and `sum by (namespace) (increase(ryft_amqp_reconnects_total[1h]))` |
 | Outbox | time series | `max by (publisher) (ryft_outbox_pending)`, `max by (publisher) (ryft_outbox_oldest_seconds)`, `max by (publisher) (ryft_outbox_stuck)` |
 | Publishes by result | time series | `sum by (reason, result) (rate(ryft_events_published_total[5m]))` |

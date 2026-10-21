@@ -406,7 +406,8 @@ every queue working; with one left, publishes are refused (the outbox keeps them
 consumers stop until a second node is back.
 
 **Alarms:** the memory watermark is 60 % of what the operator gives RabbitMQ of the
-1.5 GiB limit (80 %): 0.77 GB a node (`rabbitmq-diagnostics -q status`); the disk alarm
+1 GiB limit (80 %): about 0.52 GB a node (`rabbitmq-diagnostics -q status`; a node uses
+about 130 MiB idle); the disk alarm
 at 1 GB free of 10 GiB. Either blocks every publisher until it clears
 (`RabbitMQAlarm`); first look at the queue depths (a consumer that stopped consuming).
 

@@ -20,10 +20,13 @@ spec:
     storageClassName: gp3-encrypted
     storage: 10Gi
   # The operator's default is 1 CPU / 2Gi per node; the nodes have 1930m CPU each and
-  # one already has 1700m requested. RabbitMQ idles at well under 100m here (< 1 msg/s).
+  # one already has 1700m requested. RabbitMQ idles at well under 100m here (< 1 msg/s)
+  # and about 130 MiB. Memory request = limit, as the operator asks (its NoWarnings
+  # condition): the broker sizes its memory alarm from the limit, so a node cannot be
+  # promised more than it was given (D104).
   resources:
     requests: { cpu: 200m, memory: 1Gi }
-    limits: { memory: 1536Mi }
+    limits: { memory: 1Gi }
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
