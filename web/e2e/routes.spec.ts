@@ -37,6 +37,7 @@ test.describe('routes the app depends on', () => {
     '/train/exercises/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',
     '/train/plan/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',
     '/train/history',
+    '/invite/RYFT7Q2K',
     '/auth/callback',
   ]) {
     test(`${path} shows "Open this in RYFT"`, async ({ request }) => {

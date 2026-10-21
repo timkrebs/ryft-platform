@@ -1,6 +1,22 @@
 /* Global styles. Every colour, radius, size and duration is a token from tokens.css
    (generated from the app); this file only decides where they go. */
 
+/* Satoshi's metric-matched fallback: the overrides next/font computes for Satoshi against
+   Arial, applied to every font that shares Arial's metrics, so the first paint has
+   Satoshi's line heights and widths on every platform and nothing moves when it swaps in:
+   Arial and Helvetica (Apple, Windows), Liberation Sans and Arimo (Linux; metric clones of
+   Arial), Roboto (Android; the same average width). */
+@font-face {
+  font-family: 'Satoshi Fallback';
+  src:
+    local('Arial'), local('ArialMT'), local('Helvetica'), local('Liberation Sans'), local('LiberationSans'),
+    local('Arimo'), local('Roboto'), local('Roboto-Regular');
+  ascent-override: 102.23%;
+  descent-override: 24.29%;
+  line-gap-override: 10.12%;
+  size-adjust: 98.8%;
+}
+
 *,
 *::before,
 *::after {

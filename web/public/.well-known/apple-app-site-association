@@ -39,6 +39,10 @@
             "comment": "the training history"
           },
           {
+            "/": "/invite/*",
+            "comment": "a beta invite: the code fills in the invite step"
+          },
+          {
             "/": "/auth/*",
             "comment": "email confirmation and password reset"
           }

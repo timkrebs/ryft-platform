@@ -1,7 +1,7 @@
 # Status — ryftapp.de (web/)
 
-As of 2026-10-20. Eight commits on local `main`, in the order of the brief; the GitHub
-repository doesn't exist yet (HANDOFF.md → 1).
+As of 2026-10-20. Eight commits on `main`, in the order of the brief, at
+`github.com/timkrebs/ryft-web` (private).
 
 ## Done, and how it was checked
 
@@ -28,7 +28,13 @@ repository doesn't exist yet (HANDOFF.md → 1).
 
 Locally, every step CI runs passed on 2026-10-20 (macOS, Podman 6.1, Chrome for
 Lighthouse); the Checks job was also replayed from a clean copy of the tracked files.
-**CI itself has not run yet**: it needs the repository.
+
+**First CI run** on GitHub (`timkrebs/ryft-web`, 2026-10-20, run 39426279137): Checks,
+Secrets (gitleaks), and in the E2E job Trivy, all Playwright and axe tests and the link
+check passed. **Lighthouse failed on Linux**: CLS 0.17 on `/`, 0.19 on `/privacy`, 0.06 on
+`/science` (performance 0.93 and 0.91 as a result), because the font fallback only bound to
+Arial (D13). Fixed on `fix/font-fallback-cls`; its CI run is the proof, and the image job
+runs after that merges.
 
 ## Open
 

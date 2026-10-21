@@ -142,3 +142,13 @@ Security tools run as their official container images pinned by digest
 (`aquasec/trivy:0.76.0`, `zricethezav/gitleaks:v8.30.1`) instead of third-party actions,
 so a moved tag can't change what runs. Every action is pinned by commit SHA; Dependabot
 updates actions, npm and the Dockerfile's base images weekly.
+
+## D13 — A fallback font that exists everywhere (2026-10-20)
+
+next/font's metric-matched fallback is `local(Arial)` only. Linux and Android have no Arial,
+so there the fallback face failed, text painted in whatever `system-ui` is, and reflowed
+when Satoshi arrived: CLS 0.17 on `/` and 0.19 on `/privacy` in CI's Lighthouse (Ubuntu),
+against 0.001 on macOS. `globals.css` now declares `Satoshi Fallback` itself, with the same
+overrides next/font computed (ascent 102.23 %, descent 24.29 %, line gap 10.12 %, size
+98.8 %) over Arial, Helvetica, Liberation Sans and Arimo (Arial's metric clones on Linux)
+and Roboto (Android, the same average width); `adjustFontFallback` is off.

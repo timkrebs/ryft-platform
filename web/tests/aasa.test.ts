@@ -69,14 +69,22 @@ describe('apple-app-site-association', () => {
       '/sleep/plan',
       '/insights/behaviors',
       '/train/history',
+      '/invite/RYFT7Q2K',
       '/auth/callback',
     ]) {
       expect(covered(p), p).toBe(true);
     }
   });
 
-  it.skipIf(!existsSync(PLATFORM_AASA))("is byte-identical to the platform's file it replaces", () => {
-    expect(raw).toBe(readFileSync(PLATFORM_AASA, 'utf8'));
+  // The platform serves its copy until it switches to this image; ours may only add to it
+  // (/invite/* since 2026-10-21).
+  it.skipIf(!existsSync(PLATFORM_AASA))("covers everything the platform's file it replaces covers", () => {
+    const old = JSON.parse(readFileSync(PLATFORM_AASA, 'utf8')) as typeof aasa;
+    const ids = (a: typeof aasa) => a.applinks.details.flatMap((d) => d.appIDs);
+    expect(ids(aasa)).toEqual(ids(old));
+    expect(aasa.webcredentials).toEqual(old.webcredentials);
+    const all = (a: typeof aasa) => a.applinks.details.flatMap((d) => d.components);
+    expect(all(aasa)).toEqual(expect.arrayContaining(all(old)));
   });
 
   it.skipIf(!hasApp)('matches every universal link AppRoute creates', () => {
