@@ -12,8 +12,8 @@ kustomize manifests in
 Terraform for the EKS cluster in `infra/aws` and for Vault (namespace per service,
 Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`, and
 the website `web/` (ryftapp.de: a static Next.js site with the legal texts, the AASA and
-its own nginx image; D107). Read `docs/STATUS.md`, `docs/DECISIONS.md`, `docs/ARCHITECTURE.md` and `docs/API.md` before
-changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call. The
+its own nginx image; D107). Read `docs/STATUS.md`, `docs/DECISIONS.md`,
+`docs/ARCHITECTURE.md` and `docs/API.md` before changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call. The
 roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 
 ## Rules
