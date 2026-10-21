@@ -52,6 +52,8 @@ bad() { check "$@" && fail "should fail: $1"; true; }
 # The title: any lower-case area, path segments, a scope; "what changed" of at least three characters.
 for t in "web: fix the footer" "deploy: images abc1234" "infra/aws/kubernetes: tune the alb" "infra/vault: rotate" \
          "events: retry tiers" "scoring: a threshold" "ops: runbook" "ci(deps): bump actions" "docs: web lives in plattform/web"; do ok "$t"; done
+ok 'Revert "web: fix the footer"'; bad 'Revert "Fix stuff"'; bad 'Revert "web: fix" and more'
+bad "$(printf 'web: fine\nsecond line')"; bad "$(printf 'web: fine\rmore')"
 bad "Fix stuff"; bad "web:no space"; bad "Web: capital area"; bad "web: "; bad "web: x"; bad "feat!: no"; bad ""
 grep -q '::error' "$tmp/out" || true
 
@@ -70,5 +72,20 @@ if grep -qi "$brand" "$tmp/out"; then fail "the output must not repeat the brand
 ok "web: clean title" "$(git rev-parse HEAD)" "$head"
 git checkout -q -b clean "$base"; echo d > g; git add g; git commit -qm "web: only clean commits"
 ok "web: clean title" "$base" "$(git rev-parse HEAD)"
+
+# merge commits count, too
+git checkout -q main; git checkout -q -b side "$base"; echo m > m; git add m; git commit -qm "web: side"
+git checkout -q -b mrg "$base"; echo n > n; git add n; git commit -qm "web: n"
+git merge -q --no-ff side -m "web: merge note on $brand"; mhead=$(git rev-parse HEAD)
+bad "web: clean title" "$base" "$mhead"
+# the denylist and the check come from the base branch: a PR that empties the list still fails
+git checkout -q -b weak "$base"; python3 - <<'PY'
+import json
+p = 'web/config/brand-denylist.json'; d = json.load(open(p)); d['hard'] = []; d['warn'] = []; json.dump(d, open(p, 'w'))
+PY
+git commit -qam "web: loosen the list" ; echo q > q; git add q; git commit -qm "web: tidy" -m "about $brand"; whead=$(git rev-parse HEAD)
+git update-ref refs/remotes/origin/basebranch "$base"
+GITHUB_BASE_REF=basebranch check "web: clean title" "$base" "$whead" && fail "with GITHUB_BASE_REF the base branch's denylist must decide"
+GITHUB_BASE_REF=basebranch check "web: clean title" "$base" "$base" || fail "a clean range passes against the base's check: $(cat "$tmp/out")"
 
 echo "✓ check_pr_test: generic title rule, brand in the title and in every commit message of the range"
