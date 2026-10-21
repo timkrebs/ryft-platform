@@ -46,7 +46,9 @@ body=$(mktemp)
   fi
 } > "$body"
 # An older deploy PR edits the same lines and would conflict: close it as superseded.
-for n in $(gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("deploy/")) | .number'); do
+# Not ryft-web's pin PRs (deploy/web-<sha>): they move only web's newTag, which no
+# backend promote touches.
+for n in $(gh pr list --state open --json number,headRefName --jq '.[] | select((.headRefName | startswith("deploy/")) and (.headRefName | startswith("deploy/web-") | not)) | .number'); do
   gh pr close "$n" --delete-branch --comment "Superseded by deploy: images $sha."
 done
 gh pr create --base main --head "$branch" --title "deploy: images $sha" --body-file "$body"
