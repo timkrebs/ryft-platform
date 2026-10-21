@@ -5,16 +5,15 @@ effective: null
 status: draft
 versionNote: "die App bittet um deine Einwilligung zu dieser Version"
 draftNote: "ENTWURF — vor der Veröffentlichung prüfen. Der Text beschreibt, was das RYFT-System am 20. Oktober 2026 tut. Er ist keine Rechtsberatung; der Verantwortliche muss ihn prüfen und ergänzen (jedes TODO(user))."
-portedFrom: 'plattform/deploy/k8s/base/web/site/pages/privacy.de.html'
 ---
 
 ## 1. Verantwortlicher
 
-Verantwortlicher: <Todo>TODO(user): Name, Anschrift, E-Mail-Adresse</Todo>. Datenschutzbeauftragter: <Todo>TODO(user): Name und Kontakt, falls einer benannt werden muss</Todo>.
+Verantwortlicher: <Todo>TODO(user): Name und Anschrift</Todo>, [support@ryftapp.de](mailto:support@ryftapp.de). Ein Datenschutzbeauftragter ist nicht benannt.
 
 ## 2. Was RYFT ist
 
-RYFT ist eine iPhone-App. Mit deiner Erlaubnis liest sie Daten aus Apple Health, überträgt sie an die RYFT-Server und berechnet daraus Erholung, Belastung, Schlaf und Bereitschaft. Derzeit ist sie eine geschlossene Beta über TestFlight.
+RYFT ist eine iPhone-App. Mit deiner Erlaubnis liest sie Daten aus Apple Health, überträgt sie an die RYFT-Server und berechnet daraus Erholung, Belastung, Schlaf und Bereitschaft. Wenn du das Speichern von Trainings einschaltest, schreibt sie außerdem deine abgeschlossenen Krafttrainings in Apple Health (Art, Beginn, Ende und Energie, falls bekannt; keine Herzfrequenz). Derzeit ist sie eine geschlossene Beta über TestFlight.
 
 ## 3. Welche Daten wir verarbeiten
 
@@ -26,6 +25,7 @@ RYFT ist eine iPhone-App. Mit deiner Erlaubnis liest sie Daten aus Apple Health,
 - **Deine Einwilligung:** zu welcher Version dieser Erklärung du eingewilligt hast, wann, mit welcher App-Version, und wann du sie widerrufen hast.
 - **Feedback, das du sendest:** deine Nachricht, ihre Kategorie, App-Version und Build, Gerätemodell, iOS-Version, die Anfrage-Kennungen und die Diagnosedaten, die die App beifügt.
 - **Technische Protokolle:** je Anfrage Zeit, Pfad, Ergebnis, Dauer, deine Konto-Kennung und eine Anfrage-Kennung; der Bewertungsdienst protokolliert außerdem die berechneten Tageswerte. Inhalte von Anfragen und E-Mail-Adressen werden nicht protokolliert.
+- **Besuch von ryftapp.de:** die IP-Adresse deines Browsers, um die Seite auszuliefern und Anfragen je Adresse zu begrenzen; sie wird nicht gespeichert. Das Zugriffsprotokoll der Website enthält Zeit, Seite, Ergebnis, Größe und Dauer, ohne deine IP-Adresse, deinen Browser, die verweisende Seite oder Abfrageparameter. Die Website setzt keine Cookies und enthält keine Analyse; in deinem Browser speichert sie nur deine Wahl zwischen hellem und dunklem Erscheinungsbild.
 
 ## 4. Zwecke und Rechtsgrundlagen
 
@@ -34,29 +34,31 @@ RYFT ist eine iPhone-App. Mit deiner Erlaubnis liest sie Daten aus Apple Health,
 - **Protokolle und Ratenbegrenzung:** für Sicherheit und Betrieb des Dienstes (berechtigte Interessen, Art. 6 Abs. 1 lit. f DSGVO).
 - **Feedback:** um es zu beantworten und Gemeldetes zu beheben (Art. 6 Abs. 1 lit. b und f DSGVO).
 - **Einwilligungsnachweise:** um deine Einwilligung nachweisen zu können (Art. 6 Abs. 1 lit. c i. V. m. Art. 7 Abs. 1 DSGVO).
+- **Website:** um ryftapp.de auszuliefern und vor Überlastung zu schützen. <Todo>TODO(user): die Rechtsgrundlage, aus deiner rechtlichen Prüfung</Todo>
 
 <Todo>TODO(user): rechtliche Prüfung dieser Grundlagen</Todo>
 
 ## 5. Empfänger und Speicherorte
 
-- **Supabase** (Datenbank und Anmeldung), auf Servern in Frankfurt am Main (AWS-Region eu-central-1). <Todo>TODO(user): Auftragsverarbeitungsvertrag mit Supabase und Grundlage für einen etwaigen Zugriff von außerhalb der EU</Todo>
-- **Amazon Web Services** (die Server, auf denen RYFT läuft, ihre Protokolle, DNS und Load Balancer), in Frankfurt am Main (eu-central-1). <Todo>TODO(user): Auftragsverarbeitungsvertrag mit AWS</Todo>
+- **Supabase** (Datenbank und Anmeldung), auf Servern in Frankfurt am Main (AWS-Region eu-central-1), auf Grundlage eines Auftragsverarbeitungsvertrags. <Todo>TODO(user): Grundlage für einen etwaigen Zugriff von außerhalb der EU</Todo>
+- **Amazon Web Services** (die Server, auf denen RYFT läuft, ihre Protokolle, DNS und Load Balancer), in Frankfurt am Main (eu-central-1), auf Grundlage eines Auftragsverarbeitungsvertrags.
 - **Apple:** „Mit Apple anmelden“; der Apple Push Notification Service, über den dein Push-Token und der Benachrichtigungstext laufen, und der Text kann deine Werte enthalten (zum Beispiel „Erholung 82 %“); TestFlight, nach Apples Bedingungen. Deine Gesundheitsdaten in Apple Health bleiben auf deinem iPhone; RYFT liest sie dort.
-- **Grafana Labs** (Grafana Cloud, Überwachung), in London, Vereinigtes Königreich: Betriebskennzahlen ohne personenbezogene Daten und derzeit auch die Protokolle der Dienste aus Abschnitt 3. <Todo>TODO(user): entscheiden, ob Protokolle an Grafana Cloud gehen; wenn ja, Auftragsverarbeitungsvertrag und Übermittlungsgrundlage (Angemessenheitsbeschluss für das Vereinigte Königreich)</Todo>
+- **Grafana Labs** (Grafana Cloud, Überwachung), in London, Vereinigtes Königreich: Betriebskennzahlen ohne personenbezogene Daten.
+- **E-Mail:** Was du an support@ryftapp.de schreibst, empfängt <Todo>TODO(user): der E-Mail-Dienst für ryftapp.de, wo er E-Mails verarbeitet, und sein Auftragsverarbeitungsvertrag</Todo>.
 
 Wir verkaufen keine Daten und nutzen sie nicht für Werbung. Die App enthält keine Werbe- oder Analyse-SDKs.
 
 ## 6. Speicherdauer
 
 - Alles, was zu deinem Konto gehört, bis du das Konto in der App löschst. Das Löschen entfernt die Daten sofort aus der Datenbank, löscht deine Anmeldung bei Supabase und widerruft die Autorisierung von „Mit Apple anmelden“. Eine zufällige Konto-Kennung bleibt erhalten, damit das Konto nicht wieder auftaucht.
-- Datenbank-Sicherungen bei Supabase werden 7 Tage aufbewahrt; gelöschte Daten verschwinden in dieser Zeit auch aus ihnen. <Todo>TODO(user): bestätigen, sobald das Projekt auf Supabase Pro läuft</Todo>
-- Protokolle: 14 Tage. <Todo>TODO(user): Aufbewahrung bei Grafana Cloud, falls Protokolle dorthin gehen</Todo>
-- Ereignisse, die nicht verarbeitet werden konnten: bis zu 30 Tage in einer internen Warteschlange (deine Konto-Kennung und die betroffenen Tage, bei Benachrichtigungen auch deine Morgenwerte).
+- Datenbank-Sicherungen bei Supabase werden 7 Tage aufbewahrt; gelöschte Daten verschwinden in dieser Zeit auch aus ihnen.
+- Protokolle: 14 Tage.
+- Ereignisse, die nicht verarbeitet werden konnten: bis zu 14 Tage in einer internen Warteschlange (deine Konto-Kennung und die betroffenen Tage, bei Benachrichtigungen auch deine Morgenwerte).
 - Widerrufst du deine Einwilligung, enden Übertragung und Berechnung sofort; Gespeichertes bleibt, bis du das Konto löschst.
 
 ## 7. Deine Rechte
 
-Du hast das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17; in der App: Konto löschen), Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20; in der App: Meine Daten exportieren, als JSON) und Widerspruch gegen Verarbeitungen auf Grundlage berechtigter Interessen (Art. 21). Deine Einwilligung kannst du jederzeit in der App widerrufen (Art. 7 Abs. 3); die bis dahin erfolgte Verarbeitung bleibt davon unberührt. Du kannst dich bei einer Aufsichtsbehörde beschweren (Art. 77), <Todo>TODO(user): die zuständige Behörde</Todo>. Kontakt: <Todo>TODO(user): E-Mail-Adresse für Datenschutzanfragen</Todo>.
+Du hast das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17; in der App: Konto löschen), Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20; in der App: Meine Daten exportieren, als JSON) und Widerspruch gegen Verarbeitungen auf Grundlage berechtigter Interessen (Art. 21). Deine Einwilligung kannst du jederzeit in der App widerrufen (Art. 7 Abs. 3); die bis dahin erfolgte Verarbeitung bleibt davon unberührt. Du kannst dich bei einer Aufsichtsbehörde beschweren (Art. 77), <Todo>TODO(user): die zuständige Behörde</Todo>. Kontakt: [support@ryftapp.de](mailto:support@ryftapp.de).
 
 ## 8. Sicherheit
 
@@ -64,7 +66,7 @@ Alle Verbindungen sind verschlüsselt (TLS). Jeder RYFT-Dienst hat eine eigene D
 
 ## 9. Alter
 
-<Todo>TODO(user): Mindestalter: einwilligungsbasierte Dienste brauchen in Deutschland unter 16 Jahren die Zustimmung der Eltern (Art. 8 DSGVO); die App akzeptiert derzeit Geburtsjahre bis vor 13 Jahren</Todo>
+Du musst mindestens 13 Jahre alt sein, um RYFT zu nutzen.
 
 ## 10. Keine automatisierten Entscheidungen
 

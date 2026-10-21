@@ -5,16 +5,15 @@ effective: null
 status: draft
 versionNote: "the app asks for your consent to this version"
 draftNote: "DRAFT — review before publishing. This text describes what the RYFT system does as of 20 October 2026. It is not legal advice; the controller must review and complete it (every TODO(user))."
-portedFrom: 'plattform/deploy/k8s/base/web/site/pages/privacy.en.html'
 ---
 
 ## 1. Who is responsible
 
-Controller: <Todo>TODO(user): name, postal address, email address</Todo>. Data protection officer: <Todo>TODO(user): name and contact, if one is required</Todo>.
+Controller: <Todo>TODO(user): name and postal address</Todo>, [support@ryftapp.de](mailto:support@ryftapp.de). Data protection officer: none is designated.
 
 ## 2. What RYFT is
 
-RYFT is an iPhone app. With your permission it reads data from Apple Health, sends it to the RYFT servers and computes recovery, strain, sleep and readiness from it. It is currently a closed beta distributed through TestFlight.
+RYFT is an iPhone app. With your permission it reads data from Apple Health, sends it to the RYFT servers and computes recovery, strain, sleep and readiness from it. If you turn on saving workouts, it also writes your completed strength workouts to Apple Health (the type, start, end and energy, if known; no heart rate). It is currently a closed beta distributed through TestFlight.
 
 ## 3. What we process
 
@@ -26,6 +25,7 @@ RYFT is an iPhone app. With your permission it reads data from Apple Health, sen
 - **Your consent:** which version of this policy you consented to, when, with which app version, and when you withdrew it.
 - **Feedback you send:** your message, its category, app version and build, device model, iOS version, the request identifiers and the diagnostics the app attaches.
 - **Technical logs:** for every request the time, path, result, duration, your account identifier and a request identifier; the scoring service also logs the daily scores it computed. Request contents and email addresses are not logged.
+- **Visiting ryftapp.de:** your browser's IP address, to deliver the page and to limit requests per address; it is not stored. The site's access log records the time, the page, the result, its size and duration, without your IP address, browser, referring page or query string. The site sets no cookies and has no analytics; in your browser it keeps only your choice of light or dark appearance.
 
 ## 4. Why, and on which legal basis
 
@@ -34,29 +34,31 @@ RYFT is an iPhone app. With your permission it reads data from Apple Health, sen
 - **Logs and rate limits:** to keep the service secure and running (legitimate interests, Art. 6(1)(f) GDPR).
 - **Feedback:** to answer it and fix what you report (Art. 6(1)(b) and (f) GDPR).
 - **Consent records:** to be able to show that you consented (Art. 6(1)(c) with Art. 7(1) GDPR).
+- **Website:** to deliver ryftapp.de and protect it against overload. <Todo>TODO(user): the legal basis, from your review</Todo>
 
 <Todo>TODO(user): legal review of these bases</Todo>
 
 ## 5. Who else processes data, and where
 
-- **Supabase** (database and sign-in), on servers in Frankfurt, Germany (AWS region eu-central-1). <Todo>TODO(user): data processing agreement with Supabase, and the basis for any access from outside the EU</Todo>
-- **Amazon Web Services** (the servers that run RYFT, their logs, DNS and load balancer), in Frankfurt, Germany (eu-central-1). <Todo>TODO(user): data processing agreement with AWS</Todo>
+- **Supabase** (database and sign-in), on servers in Frankfurt, Germany (AWS region eu-central-1), under a data processing agreement. <Todo>TODO(user): the basis for any access from outside the EU</Todo>
+- **Amazon Web Services** (the servers that run RYFT, their logs, DNS and load balancer), in Frankfurt, Germany (eu-central-1), under a data processing agreement.
 - **Apple:** Sign in with Apple; the Apple Push Notification service, through which your push token and the notification text pass, and the text can contain your scores (for example “Recovery 82 %”); TestFlight, under Apple's terms. Your health data in Apple Health stays on your iPhone; RYFT reads it there.
-- **Grafana Labs** (Grafana Cloud, monitoring), in London, United Kingdom: service metrics without personal data, and currently also the services' logs described in section 3. <Todo>TODO(user): decide whether logs go to Grafana Cloud; if so, data processing agreement and the transfer basis (UK adequacy decision)</Todo>
+- **Grafana Labs** (Grafana Cloud, monitoring), in London, United Kingdom: service metrics without personal data.
+- **Email:** what you send to support@ryftapp.de is received by <Todo>TODO(user): the mail service for ryftapp.de, where it processes mail, and its data processing agreement</Todo>.
 
 We do not sell data and do not use it for advertising. The app contains no advertising or analytics SDKs.
 
 ## 6. How long we keep it
 
 - Everything tied to your account until you delete the account in the app. Deleting erases it from the database at once, removes your sign-in at Supabase and revokes the Sign in with Apple authorization. A random account identifier is kept so that the account cannot reappear.
-- Database backups at Supabase are kept for 7 days; deleted data leaves them within that time. <Todo>TODO(user): confirm once the project is on Supabase Pro</Todo>
-- Logs: 14 days. <Todo>TODO(user): Grafana Cloud's retention, if logs go there</Todo>
-- Events that could not be processed: up to 30 days in an internal queue (your account identifier and the days concerned, for notifications also your morning scores).
+- Database backups at Supabase are kept for 7 days; deleted data leaves them within that time.
+- Logs: 14 days.
+- Events that could not be processed: up to 14 days in an internal queue (your account identifier and the days concerned, for notifications also your morning scores).
 - If you withdraw your consent, uploads and the computation of scores stop at once; what is stored stays until you delete the account.
 
 ## 7. Your rights
 
-You have the right of access (Art. 15 GDPR), rectification (Art. 16), erasure (Art. 17; in the app: delete account), restriction (Art. 18), data portability (Art. 20; in the app: export my data, as JSON), and to object to processing based on legitimate interests (Art. 21). You can withdraw your consent at any time in the app (Art. 7(3)); this does not affect processing before. You can complain to a supervisory authority (Art. 77), <Todo>TODO(user): the competent authority</Todo>. Contact: <Todo>TODO(user): email address for privacy requests</Todo>.
+You have the right of access (Art. 15 GDPR), rectification (Art. 16), erasure (Art. 17; in the app: delete account), restriction (Art. 18), data portability (Art. 20; in the app: export my data, as JSON), and to object to processing based on legitimate interests (Art. 21). You can withdraw your consent at any time in the app (Art. 7(3)); this does not affect processing before. You can complain to a supervisory authority (Art. 77), <Todo>TODO(user): the competent authority</Todo>. Contact: [support@ryftapp.de](mailto:support@ryftapp.de).
 
 ## 8. Security
 
@@ -64,7 +66,7 @@ All connections are encrypted (TLS). Each RYFT service has its own database role
 
 ## 9. Age
 
-<Todo>TODO(user): minimum age: consent-based services need parental consent under 16 in Germany (Art. 8 GDPR); the app currently accepts birth years up to 13 years ago</Todo>
+You must be at least 13 years old to use RYFT.
 
 ## 10. No automated decisions
 
