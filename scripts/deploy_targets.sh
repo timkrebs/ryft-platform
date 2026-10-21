@@ -15,18 +15,22 @@
 # The comparison is with the RUNNING pin, not with the previous commit: a change whose run
 # was cancelled or whose deploy PR was superseded stays "not deployed yet". The merged
 # pin commit changes neither directory, so it targets nothing.
-# Holds fail closed: a comment line that starts like a hold ("# hold…", any case) but does
-# not read `# hold: <services|web> <YYYY-MM-DD> <reason>` stops the script (exit 2), in
-# every mode, so a typo cannot silently stop being a hold.
+# Holds fail closed: a "#" followed by "hold" (any case) ANYWHERE on a line (also after a
+# newTag) that is not a standalone line reading `# hold: <services|web> <YYYY-MM-DD> <reason>`
+# stops the script (exit 2), in every mode, so a typo cannot silently stop being a hold.
 #   FORCE  none (default) | services | web | all  (CI's workflow_dispatch input)
 #
 #   scripts/deploy_targets.sh --check [<base-ref>]
 # CI's `manifests` job on every run: validates the holds, writes the active ones to
 # $GITHUB_STEP_SUMMARY, and, given the pull request's base (origin/main), annotates a hold
-# that the PR adds or removes and FAILS a PR that changes the newTag of a group that is held
-# on the base. (An older open deploy PR therefore cannot undo a rollback; a rollback PR that
-# moves newTag and adds the hold in one commit passes, because the base is not held yet; a
-# PR that only removes the hold passes.)
+# that the PR adds or removes and FAILS a PR from a deploy/<sha> branch (HEAD_REF, the App's
+# own branches) that changes the newTag of a group held on the base. (An older open deploy PR
+# therefore cannot undo a rollback; people's PRs, a second rollback among them, are not
+# blocked; a rollback PR that moves newTag and adds the hold in one commit passes, because
+# the base is not held yet; a PR that only removes the hold passes.) It also requires every
+# RYFT image entry in the overlay to be exactly `- name: ghcr.io/timkrebs/ryft/<name>` and
+# `newTag: "<7 hex>"`: a newName or digest line would silently change what runs.
+#   HEAD_REF  the pull request's head branch (github.head_ref)
 # Needs the full history (fetch-depth: 0). bash 3.2-safe (macOS).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -60,13 +64,13 @@ pins_of() {
   printf '%s' "$all" | sort -u | paste -sd, -
 }
 
-hold_like='^[[:space:]]*#[[:space:]]*hold'
+hold_like='#[[:space:]]*hold'
 hold_ok='^[[:space:]]*#[[:space:]]hold:[[:space:]](services|web)[[:space:]]([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))[[:space:]]+[^[:space:]].*$'
 
 # Every hold-looking line must parse. Exit 2 otherwise.
 validate_holds() {
   local bad
-  bad=$(grep -n -i -E "$hold_like" "$overlay" | grep -v -E "^[0-9]+:${hold_ok#^}" || true)
+  bad=$(grep -n -i -E "$hold_like" "$overlay" | grep -v -E "^[0-9]+:${hold_ok#^}" || true)  # a valid hold is a whole line
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" | while IFS= read -r l; do
       echo "::error file=$overlay,line=${l%%:*},title=hold::not a hold: '${l#*:}'. A hold reads '# hold: <services|web> <YYYY-MM-DD> <reason>'; a line that starts like one but does not parse stops the promote on purpose." >&2
@@ -102,6 +106,21 @@ if [ "$mode" = check ]; then
     fi
   } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >/dev/null
   rc=0
+  # The image entries: exactly name + a quoted 7-hex newTag, nothing else.
+  entries=$(awk '
+    /^[ \t]*#/ { next }
+    state == 1 { if ($0 ~ /^    newTag: "[0-9a-f]{7}"[ \t]*$/) { state = 2; next } print NR ": " name " is not followed by newTag: \"<7 hex>\""; state = 0 }
+    state == 2 { state = 0; if ($0 ~ /^    [^ #]/) { print NR ": " name " has a further key: " $0; next } }
+    /ghcr\.io\/timkrebs\/ryft\// {
+      if ($0 ~ /^  - name: ghcr\.io\/timkrebs\/ryft\/[a-z-]+[ \t]*$/) { name = $0; sub(/.*ryft\//, "", name); state = 1; next }
+      print NR ": not a plain image entry: " $0
+    }
+    /^[ \t]+(newName|digest):/ { print NR ": " $0 }
+  ' "$overlay")
+  if [ -n "$entries" ]; then
+    printf '%s\n' "$entries" | while IFS= read -r l; do echo "::error file=$overlay,title=image entry::$l" >&2; done
+    rc=1
+  fi
   if [ -n "$base" ]; then
     if git rev-parse -q --verify "$base^{commit}" >/dev/null; then
       head_overlay=$overlay; base_overlay=$(mktemp); trap 'rm -f "$base_overlay"' EXIT
@@ -115,7 +134,7 @@ if [ "$mode" = check ]; then
         head_pins=$(pins_of "$g")
         if [ -z "$base_hold" ] && [ -n "$head_hold" ]; then echo "::notice title=hold::this PR holds $g: promote will not deploy it until the hold line is removed."; fi
         if [ -n "$base_hold" ] && [ -z "$head_hold" ]; then echo "::notice title=hold::this PR releases the hold on $g: its merge deploys main's head for $g."; fi
-        if [ -n "$base_hold" ] && [ "$base_pins" != "$head_pins" ]; then
+        if [ -n "$base_hold" ] && [ "$base_pins" != "$head_pins" ] && printf '%s' "${HEAD_REF:-}" | grep -Eq '^deploy/[0-9a-f]{7}$'; then
           echo "::error file=$overlay,title=held group::$g is held on $base and this PR changes its pin ($base_pins -> $head_pins). Release the hold first (a PR that only removes the line), or roll back and hold in one PR before the hold exists." >&2
           rc=1
         fi

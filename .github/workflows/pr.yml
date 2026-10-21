@@ -28,4 +28,6 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # The brand check and its denylist come from the base branch.
+          BRAND_BASE: origin/${{ github.base_ref }}
         run: ./scripts/check_pr.sh "$TITLE" "$BASE" "$HEAD"

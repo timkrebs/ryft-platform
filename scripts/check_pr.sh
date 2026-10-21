@@ -8,8 +8,10 @@
 # 2. The denylisted brand (web/config/brand-denylist.json) is in neither the title nor the
 #    message of any commit in base..head, merge commits included: a squash merge may land
 #    under a commit's message (settings COMMIT_OR_PR_TITLE / COMMIT_MESSAGES). Node
-#    built-ins only. In CI (GITHUB_BASE_REF set) the check and its denylist come from the
-#    BASE branch, so a PR cannot weaken the rule it is judged by.
+#    built-ins only. With BRAND_BASE set (pr.yml: origin/<base branch>) the check and its
+#    denylist come from that ref, so a PR cannot weaken the rule it is judged by. The
+#    ambient GITHUB_BASE_REF is deliberately not used: it is set in every step of a PR run.
+#      BRAND_BASE  a git ref to take web/scripts and web/config from (default: this tree)
 # The title is never echoed raw (it is untrusted text in a workflow log).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,8 +34,8 @@ case "$title" in
 esac
 
 brand=web/scripts/check-brand.mjs
-if [ -n "${GITHUB_BASE_REF:-}" ]; then
-  git archive "origin/$GITHUB_BASE_REF" web/scripts web/config | tar -x -C "$tmp"
+if [ -n "${BRAND_BASE:-}" ]; then
+  git archive "$BRAND_BASE" web/scripts web/config | tar -x -C "$tmp"
   brand=$tmp/web/scripts/check-brand.mjs
 fi
 printf '%s\n' "$title" > "$tmp/msg"

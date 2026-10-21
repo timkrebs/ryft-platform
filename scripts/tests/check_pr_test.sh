@@ -85,7 +85,7 @@ p = 'web/config/brand-denylist.json'; d = json.load(open(p)); d['hard'] = []; d[
 PY
 git commit -qam "web: loosen the list" ; echo q > q; git add q; git commit -qm "web: tidy" -m "about $brand"; whead=$(git rev-parse HEAD)
 git update-ref refs/remotes/origin/basebranch "$base"
-GITHUB_BASE_REF=basebranch check "web: clean title" "$base" "$whead" && fail "with GITHUB_BASE_REF the base branch's denylist must decide"
-GITHUB_BASE_REF=basebranch check "web: clean title" "$base" "$base" || fail "a clean range passes against the base's check: $(cat "$tmp/out")"
+BRAND_BASE=refs/remotes/origin/basebranch check "web: clean title" "$base" "$whead" && fail "with BRAND_BASE the base branch's denylist must decide"
+BRAND_BASE=refs/remotes/origin/basebranch check "web: clean title" "$base" "$base" || fail "a clean range passes against the base's check: $(cat "$tmp/out")"
 
 echo "✓ check_pr_test: generic title rule, brand in the title and in every commit message of the range"

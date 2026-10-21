@@ -14,9 +14,10 @@
 # A deploy PR is one that the App opened from this repository, from a branch named
 # deploy/<7 hex>; a fork's PR, or a person's, with the same name is never touched.
 # Re-runs:
-#  - the App's open PR from deploy/<sha> exists: its branch is fetched; when the pins differ
-#    (a forced rebuild added a group) one fast-forward commit with this run's pins is
-#    pushed and the body updated; the auto-merge is asserted again;
+#  - the App's open PR from deploy/<sha> exists: its branch is fetched; when this run pins
+#    more than it does (a forced rebuild added a group) one fast-forward commit applies this
+#    run's pins on top of its overlay (plain push) and the body is updated; the auto-merge
+#    is asserted again;
 #  - an earlier run died after its push: the branch is reused when it is exactly one commit
 #    on this commit with this run's tree, else exit 1 with the command that deletes it;
 #  - that PR was closed unmerged (someone stopped the deploy): not reopened, exit 0.
@@ -53,7 +54,8 @@ deploy_prs() { # <open|closed>
 # linear). This run's own branch stays, and so does a PR for a commit that is not an
 # ancestor of this one.
 close_older() {
-  local n b rest s
+  local n b rest s list
+  list=$(deploy_prs open)   # assigned first: a failing gh fails the script
   while read -r n b rest; do
     [ -n "$n" ] && [ "$b" != "$branch" ] || continue
     s=${b#deploy/}
@@ -63,7 +65,7 @@ close_older() {
       echo "promote: leaving #$n ($b): not an ancestor of $sha"
     fi
   done <<EOT
-$(deploy_prs open)
+$list
 EOT
 }
 
@@ -86,9 +88,10 @@ if [ "${#groups[@]}" = 0 ]; then
 fi
 
 # Someone closed this deploy's PR without merging it: the deploy was stopped on purpose.
-stopped=$(deploy_prs closed | awk -v b="$branch" '$2 == b && NF == 2 { print $1; exit }')
+closed_list=$(deploy_prs closed)
+stopped=$(printf '%s\n' "$closed_list" | awk -v b="$branch" '$2 == b && NF == 2 { print $1; exit }')
 if [ -n "$stopped" ]; then
-  echo "promote: #$stopped ($branch) was closed without merging: the deploy of $sha was stopped on purpose and is not reopened. Delete the branch and re-run to deploy it after all."
+  echo "promote: #$stopped ($branch) was closed without merging: the deploy of $sha was stopped on purpose and is not reopened. To deploy it after all: reopen the PR and re-run the job, or push a new commit."
   exit 0
 fi
 
@@ -137,7 +140,8 @@ dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
   done
 } > "$body"
 
-open_pr=$(deploy_prs open | awk -v b="$branch" '$2 == b { print $1; exit }')
+open_list=$(deploy_prs open)
+open_pr=$(printf '%s\n' "$open_list" | awk -v b="$branch" '$2 == b { print $1; exit }')
 remote=
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   remote=1
@@ -152,14 +156,14 @@ fi
 
 if [ -n "$open_pr" ]; then
   if [ -z "$remote" ]; then echo "promote: #$open_pr is open but origin/$branch is gone" >&2; exit 1; fi
-  if [ "$(git rev-parse "$theirs^{tree}")" = "$(git rev-parse "$mine^{tree}")" ]; then
+  # This run's pins go on top of what the PR has (a union: a re-run that pins more than the
+  # first attempt did, say FORCE added a group): one fast-forward commit, a plain push.
+  git reset -q --hard "$theirs"
+  ./scripts/pin_images.sh "$sha" "${groups[@]}" "$file" >/dev/null
+  if git diff --quiet; then
     echo "promote: already open: #$open_pr"
   else
-    # A re-run that pins more than the first attempt did (FORCE added a group): one
-    # fast-forward commit on the PR's branch, a plain push.
-    git reset -q --hard "$theirs"
-    git checkout -q "$mine" -- "$file"
-    git commit -qm "deploy: images $sha (${groups[*]})"
+    git commit -qam "deploy: images $sha (${groups[*]})"
     git push -q origin "$branch"
     gh pr edit "$open_pr" --body-file "$body"
     echo "promote: #$open_pr updated with ${groups[*]}"

@@ -70,7 +70,7 @@ for bad in "# hold: webby 2026-10-23 x" "# hold: web x" "# hold: web 2026-13-01 
 done
 # The overlay as committed carries the convention in a comment but no hold of its own.
 new_repo real-overlay
-grep -q '# hold: <group> <YYYY-MM-DD> <reason>' "$OVERLAY" || fail "the overlay no longer documents the hold convention"
+grep -q "main.s head for the group" "$OVERLAY" || fail "the overlay no longer documents the hold convention"
 
 # The rollback of D107: revert a bad web pin. Without the hold the code on main is deployed again.
 new_repo rollback; w1=$(commit_file web/index.txt v2 "web: good" && short); pin web "$w1"; d1=$(short)
@@ -110,12 +110,36 @@ git update-ref refs/remotes/origin/base HEAD
 unhold; chk origin/base; [ "$rc" = 0 ] || fail "a release PR that only removes the hold must pass: $(cat "$tmp/err")"
 grep -q '::notice.*releases the hold on web' "$tmp/out" || fail "no notice for the release"
 git reset -q --hard origin/base; hand_pin web 1234567
-chk origin/base; [ "$rc" = 1 ] || fail "a PR moving the pin of a held group must fail (rc=$rc)"
+chk origin/base; [ "$rc" = 0 ] || fail "a person's PR (a second rollback) must not be blocked by the hold: $(cat "$tmp/err")"
+HEAD_REF=some/branch chk origin/base; [ "$rc" = 0 ] || fail "only the App's deploy branches are blocked"
+HEAD_REF=deploy/abc1234 chk origin/base; [ "$rc" = 1 ] || fail "a deploy PR moving the pin of a held group must fail (rc=$rc)"
 grep -q '::error.*web is held' "$tmp/err" || fail "the error names the group: $(cat "$tmp/err")"
+HEAD_REF=deploy/abc1234 chk origin/base; HEAD_REF=
 # an older deploy PR for the services still passes: only the held group is protected
 git reset -q --hard origin/base; ./scripts/pin_images.sh abc1234 services "$OVERLAY" >/dev/null; git commit -qam "deploy: services"
-chk origin/base; [ "$rc" = 0 ] || fail "the other group may move: $(cat "$tmp/err")"
+HEAD_REF=deploy/abc1234 chk origin/base; [ "$rc" = 0 ] || fail "the other group may move: $(cat "$tmp/err")"
 chk; [ "$rc" = 0 ] || fail "check without a base (push)"
 chk origin/nope; [ "$rc" = 1 ] || fail "a missing base must fail, not pass"
+
+# A hold-like "#hold" anywhere on a line that is not a standalone valid hold: exit 2
+for bad in 'newTag: "f437747" # hold: web 2026-10-23 x' 'newTag: "f437747"  #HOLD web' '- name: ghcr.io/timkrebs/ryft/web # hold: web 2026-10-23 x'; do
+  new_repo trailing-hold
+  awk -v l="$bad" '/ryft\/web$/ { print; getline; print "    " l; next } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: odd"
+  rc=0; ./scripts/deploy_targets.sh >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "'$bad' must exit 2 (got $rc)"
+done
+
+# --check: the image entries are exactly name + quoted 7-hex newTag
+new_repo entries
+chk; [ "$rc" = 0 ] || fail "the real entries pass: $(cat "$tmp/err")"
+mutate() { # <awk program on $OVERLAY> <what>
+  new_repo entries; awk "$1" "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: $2"
+  chk; [ "$rc" = 1 ] || fail "$2 must fail the check (rc=$rc)"; grep -q '::error' "$tmp/err" || fail "$2: no annotation"
+}
+mutate '{ print } /ryft\/web$/ { getline; print; print "    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000" }' "a digest line"
+mutate '{ print } /ryft\/api$/ { getline; print; print "    newName: ghcr.io/evil/api" }' "a newName line"
+mutate '/ryft\/web$/ { print; getline; print "    newTag: latest"; next } { print }' "a non-SHA tag"
+mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f437747\""; getline; print; print "  - name: ghcr.io/timkrebs/ryft/web"; print "    newName: ghcr.io/evil/web"; print "    newTag: \"f437747\""; next } { print }' "a second web entry with a newName"
+mutate '/ryft\/api$/ { print "  - name: \"ghcr.io/timkrebs/ryft/api\""; next } { print }' "a quoted name"
+mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f4377470\""; next } { print }' "an 8-digit tag"
 
 echo "✓ deploy_targets_test: web/services/both/none, docs, pin commit, unknown pin, disagreeing pins, hold (and its revert drill), FORCE"

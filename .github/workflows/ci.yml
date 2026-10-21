@@ -189,7 +189,11 @@ jobs:
         with:
           node-version-file: web/.nvmrc
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+      # actionlint needs a newer Go than go.mod's; the toolchain download is verified by the Go
+      # checksum database. Only this step may switch toolchains.
       - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        env:
+          GOTOOLCHAIN: auto
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
@@ -202,6 +206,7 @@ jobs:
       - name: Holds in the EKS overlay
         env:
           BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
         run: ./scripts/deploy_targets.sh --check ${BASE_REF:+"origin/$BASE_REF"}
       # Consent was recorded against every version in the list: it only grows.
       - name: The privacy versions list is append-only
@@ -409,11 +414,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - run: |
+      # A PR is judged by the base branch's allowlist, not by the one it may have edited, and a
+      # .gitleaksignore it adds is not honoured (an empty directory stands in for it).
+      - name: gitleaks
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/noignore"
+          cp .gitleaks.toml "$RUNNER_TEMP/gitleaks.toml"
+          if [ -n "$BASE_REF" ]; then
+            if git show "origin/$BASE_REF:.gitleaks.toml" > "$RUNNER_TEMP/base.toml" 2>/dev/null; then
+              mv "$RUNNER_TEMP/base.toml" "$RUNNER_TEMP/gitleaks.toml"
+            else
+              echo "::notice::$BASE_REF has no .gitleaks.toml yet: using the PR's"
+            fi
+          fi
           docker run --rm -v "$PWD:/repo" \
+            -v "$RUNNER_TEMP/gitleaks.toml:/config/gitleaks.toml:ro" -v "$RUNNER_TEMP/noignore:/noignore:ro" \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git /repo --log-opts=HEAD --redact --no-banner --exit-code 1
+            git /repo --config /config/gitleaks.toml --gitleaks-ignore-path /noignore \
+            --log-opts=HEAD --redact --no-banner --exit-code 1
 
   # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
   # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
@@ -484,7 +505,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      # SUPPORT_EMAIL is baked into the HTML: unset, /support would ship a TODO marker.
+      # SUPPORT_EMAIL is baked into the HTML: unset, /beta would ship a TODO marker.
       - name: SUPPORT_EMAIL is set
         run: |
           test -n "$NEXT_PUBLIC_SUPPORT_EMAIL" || { echo "::error::The repository variable SUPPORT_EMAIL is not set; the site would ship without a contact address. gh variable set SUPPORT_EMAIL, then re-run this job."; exit 1; }
@@ -590,7 +611,6 @@ jobs:
     if: >-
       !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
       && vars.RYFT_DEPLOY_APP_CLIENT_ID != '' && needs.changes.result == 'success'
-      && (needs.changes.outputs.services == 'true' || needs.changes.outputs.web == 'true')
       && (needs.changes.outputs.services != 'true' || needs.images.result == 'success')
       && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
     needs: [changes, images, web-image]

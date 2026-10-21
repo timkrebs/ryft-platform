@@ -5,6 +5,8 @@
 - [ ] Tests for the change, `make k8s-validate` for manifests, `docs/` updated; a judgement call has a `D<n>` in `docs/DECISIONS.md`
 - [ ] `docs/API.md` changed? Additive only, with a JSON example and a changelog entry
 
+- [ ] Changes to `.github/`, `scripts/`, `.gitleaks.toml`, `web/config/` or `web/scripts/check-*` read line by line (a PR runs its own CI)
+
 ### If `web/` changed
 - [ ] Copy in English **and** German (`web/messages/`, `web/content/`), German in du-form
 - [ ] Colours only from `tokens.css`; no new client JavaScript (D2)

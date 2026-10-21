@@ -14,6 +14,7 @@ case "$1 $2" in
   "api /users/"*) echo 4242 ;;
   # The open PRs as GitHub lists them, filtered by the caller's own --jq.
   "pr list")
+    [ -z "${GH_FAIL_LIST:-}" ] || exit 1
     jq_expr=""; state=open; prev=""
     for a in "$@"; do [ "$prev" = "--jq" ] && jq_expr=$a; [ "$prev" = "--state" ] && state=$a; prev=$a; done
     prs=${GH_OPEN_PRS:-}; [ "$state" = closed ] && prs=${GH_CLOSED_PRS:-}
@@ -238,5 +239,9 @@ sha=$(short); reset_logs
 run >/dev/null || fail "promote with 200 commits failed"
 [ "$(grep -c '^- .* web: change' "$GH_BODY")" = 100 ] || fail "the body lists 100 commits, got $(grep -c '^- .* web: change' "$GH_BODY")"
 grep -q "gh pr create" "$GH_LOG" || fail "the PR was not created"
+
+# 14. gh failing while the PRs are listed fails the job: no silent "no PRs to close", no branch pushed twice
+new_repo gh-fails; commit_file web/index.txt v2 "web: a change"; reset_logs
+GH_FAIL_LIST=1 run >/dev/null 2>&1 && fail "a failing gh pr list must fail the promote"
 
 echo "✓ promote_test: per-group pins in one PR, superseded PRs closed, docs/pin commits/holds skipped, registry first, 7-char tag"
