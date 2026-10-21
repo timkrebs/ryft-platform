@@ -4,6 +4,7 @@
 # same tree and agree. Prints key=value lines, ready for $GITHUB_OUTPUT:
 #   services=false  services_pin=0fd4256  services_why=…
 #   web=true        web_pin=f437747       web_why=pin not in this history
+#   held=false      (true when any group is held)
 # Groups: services (ingest, scoring, api, notify, migrate: from backend/) and web (web:
 # from web/). The pins are read from deploy/k8s/overlays/eks/kustomization.yaml at HEAD.
 # A group is targeted when, in this order:
@@ -146,11 +147,13 @@ if [ "$mode" = check ]; then
   exit "$rc"
 fi
 
+any_hold=false
 for g in services web; do
   dir=$(group_dir "$g"); pin=$(pins_of "$g"); target=false; why=
   forced=
   case "$force" in all|"$g") forced=1 ;; esac
   if hold=$(hold_of "$g"); then
+    any_hold=true
     why="held since ${hold%% *}: ${hold#* }"
     if git rev-parse -q --verify "$pin^{commit}" >/dev/null 2>&1; then
       if git diff --quiet "$pin" HEAD -- "$dir"; then pending="no change under $dir/ since $pin"
@@ -177,3 +180,5 @@ for g in services web; do
   emit "${g}_pin" "$pin"
   emit "${g}_why" "$why"
 done
+# CI's promote also runs when only a hold is active: it closes older deploy PRs that predate it.
+emit held "$any_hold"

@@ -15,6 +15,7 @@ expect() { # <services> <web> <what>
 
 new_repo nothing
 expect false false "everything pinned to this commit"
+[ "$(got held)" = false ] || fail "held=false without a hold: $(got held)"
 [ "$(got services_pin)" = "$first" ] || fail "services_pin: $(got services_pin)"
 [ ! -s "$tmp/err" ] || fail "a repository without a hold must not warn: $(cat "$tmp/err")"
 
@@ -50,6 +51,7 @@ case "$(got services_why)" in *disagree*) ;; *) fail "why: $(got services_why)" 
 # The hold: not targeted, a warning, while the rest of the group logic still runs.
 new_repo hold; commit_file web/index.txt v2 "web: a change"; hold web "broken AASA, fix in #57"
 expect false false "a held web group"
+[ "$(got held)" = true ] || fail "held=true with a hold: $(got held)"
 grep -q '::warning.*web held since 2026-10-23 (broken AASA, fix in #57), 1 commits under web/' "$tmp/err" || fail "no hold warning: $(cat "$tmp/err")"
 new_repo hold-unknown; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; hold web "rollback"
 expect false false "a held web group whose pin is not in this history"

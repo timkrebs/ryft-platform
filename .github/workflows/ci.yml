@@ -56,6 +56,8 @@ jobs:
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
+      # A hold is active: promote then runs for the sake of closing older deploy PRs.
+      held: ${{ steps.targets.outputs.held || 'false' }}
     steps:
       - if: github.event_name == 'pull_request'
         id: filter
@@ -419,8 +421,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # A PR is judged by the base branch's allowlist, not by the one it may have edited, and a
-      # .gitleaksignore it adds is not honoured (an empty directory stands in for it).
+      # A PR is judged by the base branch's allowlist, not by the one it may have edited, and by
+      # the base branch's .gitleaksignore (gitleaks always reads <source>/.gitleaksignore, so the
+      # PR's own file is replaced by the base's, or removed if the base has none).
       - name: gitleaks
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -428,6 +431,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/noignore"
           cp .gitleaks.toml "$RUNNER_TEMP/gitleaks.toml"
           if [ -n "$BASE_REF" ]; then
+            git show "origin/$BASE_REF:.gitleaksignore" > .gitleaksignore 2>/dev/null || rm -f .gitleaksignore
             if git show "origin/$BASE_REF:.gitleaks.toml" > "$RUNNER_TEMP/base.toml" 2>/dev/null; then
               mv "$RUNNER_TEMP/base.toml" "$RUNNER_TEMP/gitleaks.toml"
             else
@@ -616,6 +620,7 @@ jobs:
     if: >-
       !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
       && vars.RYFT_DEPLOY_APP_CLIENT_ID != '' && needs.changes.result == 'success'
+      && (needs.changes.outputs.services == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.held == 'true')
       && (needs.changes.outputs.services != 'true' || needs.images.result == 'success')
       && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
     needs: [changes, images, web-image]
