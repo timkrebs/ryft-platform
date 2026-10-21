@@ -1,0 +1,28 @@
+# Wave 2: RabbitMQ (deploy/rabbitmq: the cluster and its TLS, the topology, the services'
+# client certificates), after the operators and before the services (D97). Inside, its
+# own waves: certificates, the cluster, the vhost, exchanges/queues/users, the rest.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: broker-rabbitmq
+  namespace: argocd
+  annotations:
+    # Diffs computed by the API server (dry-run apply): defaulted fields such as a
+    # StatefulSet's volumeClaimTemplates status are not drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: ryft
+  source:
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+    path: deploy/rabbitmq
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ryft-rabbitmq
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false]
+    # A failed sync of the same commit is not retried by automated sync itself:
+    # twice more, for what passes (a pooler blip during migrate, a slow smoke).
+    retry: { limit: 2, backoff: { duration: 1m, factor: 2, maxDuration: 5m } }

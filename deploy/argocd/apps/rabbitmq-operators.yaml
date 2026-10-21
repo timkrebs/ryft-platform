@@ -1,0 +1,28 @@
+# Wave 1: the RabbitMQ Cluster and Messaging Topology Operators in rabbitmq-system
+# (project ryft-operators: they bring CRDs, cluster roles and webhooks), before the
+# broker that needs their CRDs (D97).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rabbitmq-operators
+  namespace: argocd
+  annotations:
+    # Diffs computed by the API server (dry-run apply): defaulted fields such as a
+    # StatefulSet's volumeClaimTemplates status are not drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: ryft-operators
+  source:
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+    path: deploy/rabbitmq/operators
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rabbitmq-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true, PruneLast=true]
+    # A failed sync of the same commit is not retried by automated sync itself:
+    # twice more, for what passes (a pooler blip during migrate, a slow smoke).
+    retry: { limit: 2, backoff: { duration: 1m, factor: 2, maxDuration: 5m } }

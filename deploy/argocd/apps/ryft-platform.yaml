@@ -1,4 +1,4 @@
-# Wave 2: the services, their Ingresses, NetworkPolicies and the web site
+# Wave 3: the services, their Ingresses, NetworkPolicies and the web site
 # (deploy/k8s/overlays/eks, image pins included). Every sync runs migrate first (a
 # PreSync hook: a failed migration fails the sync and nothing rolls) and the
 # in-cluster smoke last (PostSync, internal/smoke). Rollback is `git revert` of the
@@ -12,7 +12,7 @@ metadata:
     # Diffs computed by the API server (dry-run apply): defaulted fields such as a
     # StatefulSet's volumeClaimTemplates status are not drift.
     argocd.argoproj.io/compare-options: ServerSideDiff=true
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   project: ryft
   source:
