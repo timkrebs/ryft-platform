@@ -177,7 +177,8 @@ jobs:
   # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
   # RYFT_DEPLOY_APP_KEY): PRs made with GITHUB_TOKEN would not run the checks.
   promote:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Skipped until the App exists (docs/STATUS.md → GitOps: your steps).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RYFT_DEPLOY_APP_CLIENT_ID != ''
     needs: [images]
     runs-on: ubuntu-latest
     concurrency:

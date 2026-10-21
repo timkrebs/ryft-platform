@@ -319,10 +319,27 @@ probes and Prometheus annotations. NATS 2.11 runs JetStream on a 2 Gi PVC with
 `nats.conf`. migrate is a one-shot Job. api and ingest have their own Ingress
 (`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB; scoring and notify run one
 replica each. `deploy/k8s/services/<service>`
-puts each into its namespace. `overlays/eks` composes the six namespaces on EKS, with
-Secrets from Vault through the operator. `overlays/local-postgres` composes them with
-an in-cluster Postgres, a nightly `pg_dump` CronJob and generated per-namespace
-Secrets. Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
+puts each into its namespace. `overlays/eks` composes the services on EKS, with
+Secrets from Vault through the operator; `overlays/eks-nats` holds the broker.
+`overlays/local-postgres` composes them with an in-cluster Postgres, a nightly
+`pg_dump` CronJob and generated per-namespace Secrets.
+
+**GitOps.** Argo CD (an add-on from `infra/aws/kubernetes`) syncs `deploy/argocd/apps`,
+one application per unit in waves: the Vault objects of each namespace, the broker,
+then `ryft-platform`, whose every sync runs migrate first (PreSync hook) and the
+in-cluster smoke last (PostSync, namespace `ryft-smoke`). CI promotes images by a PR
+that pins `overlays/eks`; its merge is the deploy, a revert the rollback (D94–D96).
+
+```
+push to main ─► CI: tests, images <sha> ─► promote PR "deploy: images <sha>" ─► merge
+                                                                               │
+Argo CD ◄──── git (main) ◄─────────────────────────────────────────────────────┘
+  wave 0  vault-<svc>      VaultConnection/Auth/StaticSecret → Secret ryft-secrets
+  wave 1  broker-nats      NATS JetStream
+  wave 2  ryft-platform    PreSync migrate → services, ingresses, policies → PostSync smoke
+```
+
+Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
 
 ## What to build next (in rough order of payoff)
 

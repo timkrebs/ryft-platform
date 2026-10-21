@@ -24,9 +24,16 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
   every shape, a changelog entry per change. Never rename or remove a field in v1.
 - Verification before every commit: `cd backend && go vet ./... && go test ./...`, then
   `make smoke` (local apikey mode) and, when `SUPABASE_*` env is set, `make smoke-supabase`.
-- Manifests are applied by hand (`kubectl apply -k deploy/k8s/overlays/eks` on the
-  cluster, `deploy/k8s` locally); keep them kustomize-only and `make k8s-validate` green.
-  New services get a Deployment, Service, NetworkPolicy rules, probes, resources,
+- Git is the only way anything reaches `ryft-prod-euc1`: Argo CD syncs `deploy/argocd/apps`
+  (app of apps, D94/D95), and CI promotes images by a PR that pins `overlays/eks` (D96).
+  `make k8s-apply-eks` is break-glass only. Never `kubectl apply` against production
+  yourself; prepare the commit and the exact commands, then stop. Keep the manifests
+  kustomize-only and `make k8s-validate` green (it also checks `deploy/argocd`).
+- **Argo CD manages workloads only.** Cluster add-ons (ALB controller, Traefik,
+  cert-manager, ExternalDNS, VSO, Argo CD itself) stay Helm releases in
+  `infra/aws/kubernetes`; nothing has two owners. A new workload unit is a file in
+  `deploy/argocd/apps` with a sync wave.
+- New services get a Deployment, Service, NetworkPolicy rules, probes, resources,
   `/metrics`, and an entry in `docs/OBSERVABILITY.md`.
 - Terraform in `infra/aws` and `infra/vault` is the user's; never run `apply`/`destroy`
   yourself — print the plan command and stop. Never touch `terraform.tfstate`. Files

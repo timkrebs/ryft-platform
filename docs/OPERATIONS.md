@@ -51,14 +51,16 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready |
 | 5. Supabase | the checklist in [`SUPABASE.md`](SUPABASE.md) | project ref, pooler host, database password, secret key at hand |
 | 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows six |
-| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | set `newTag` in `deploy/k8s/overlays/eks/kustomization.yaml` to that SHA |
-| 8. App | `make k8s-apply-eks` | see below |
+| 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha>`) |
+| 8. App | Argo CD from step 4; `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml` | **Deploy and roll back** → Cutover to Argo CD |
 | 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
 
 Every Terraform root keeps its state in its HCP Terraform workspace (execution mode
 Local): `terraform init` in a fresh checkout connects to it after `terraform login`.
 
-`make k8s-apply-eks` runs these steps, waiting at each one:
+Argo CD deploys the app (step 8; **Deploy and roll back**). Its waves keep the order
+the break-glass `make k8s-apply-eks` enforces by hand, which runs these steps, waiting
+at each one:
 
 0. It checks that kubectl is logged in (`k8s-check-auth`): kubectl takes its EKS
    token from `aws eks get-token`, so expired AWS credentials fail every call with
@@ -76,7 +78,8 @@ Local): `terraform init` in a fresh checkout connects to it after `terraform log
 A new service (notify, M7) needs `infra/vault` applied first: that creates its
 namespace, service account and secrets, writes its operator manifests to
 `deploy/k8s/overlays/vault-namespaces/notify`, and gives NATS the password hash it
-references. Without it `make k8s-apply-eks` stops at the missing directory.
+references. Without it the `vault-notify` application cannot render (and
+`make k8s-apply-eks` stops at the missing directory).
 
 **After an `infra/vault` apply that adds keys, let the operator sync before the
 deploy.** It re-reads Vault only hourly, so the Kubernetes Secrets lag behind Vault.
@@ -185,32 +188,103 @@ the workload on a change.
 
 ## Deploy and roll back
 
-Every release is one image SHA for every service (`newTag` in
-`deploy/k8s/overlays/eks/kustomization.yaml`), so rolling back is pinning the previous
-one.
+Git is the only way anything reaches `ryft-prod-euc1` (D94–D96). Argo CD syncs the
+applications in `deploy/argocd/apps`; CI promotes images by a PR that pins
+`deploy/k8s/overlays/eks`. Nobody runs `kubectl apply` against production, except
+break-glass below.
 
-1. **Pin:** CI pushed `ghcr.io/timkrebs/ryft/*:<sha>`; set every `newTag` to it and
-   commit (`make k8s-check-images` checks they are pinned and well-formed; `make
-   k8s-apply-eks` also checks that ghcr.io has each of them, so a mistyped SHA stops
-   before anything is applied).
-2. **Apply:** `make k8s-apply-eks` (migrate first, then the services; it waits for the
-   rollouts).
-3. **Smoke:** `make smoke-prod` with the dedicated smoke user (`SUPABASE_URL`,
-   `SUPABASE_ANON_KEY`, `SMOKE_EMAIL`, `SMOKE_PASSWORD`; the admin key, found like the
-   other scripts do (Beta), gives the smoke user a one-use invite code so it passes with
-   `BETA_GATE` on, and lets it probe both gates): the edge
-   for api and ingest, sign-in, `/v1/me` (consent posted if missing), one tiny sync, and the day read back
-   once scoring has scored it with the model `GET /v1/model` serves. After a model bump,
+**How a change reaches production:**
+
+1. **Merge to main** (or push, as admin). CI tests it and builds
+   `ghcr.io/timkrebs/ryft/<service>:<short-sha>`.
+2. **promote** opens "deploy: images <sha>" with the commits since the running pin, when
+   something under `backend/` changed; the PR merges itself once its checks pass
+   (`manifests` also asks ghcr.io for every pinned image). Close it to stop the deploy.
+   A change to manifests only (no new image) deploys on its own merge.
+3. **Argo CD syncs**, within about three minutes: wave 0 the Vault objects, wave 1 the
+   broker, wave 2 `ryft-platform`, whose sync runs **migrate first** (PreSync: a failed
+   migration fails the sync and nothing rolls), applies, waits until everything is
+   healthy, and runs **the smoke last** (PostSync, `ryft-smoke`: every `/readyz`, the
+   smoke user's sign-in, one sync, the day rescored within 90 s).
+4. **Watch:** `kubectl -n argocd get applications`, the UI, or the alerts
+   (`ArgoSyncFailed`, `ArgoAppDegraded`, `ArgoAppOutOfSync`). From outside, `make
+   smoke-prod` still checks the edge and probes the gates. After a model bump,
    `scripts/rescore_all.sh`.
-4. **On failure:** set `newTag` back to the previous SHA (`git log -p
-   deploy/k8s/overlays/eks/kustomization.yaml`), `make k8s-apply-eks`, `make smoke-prod`.
+
+**The UI and CLI** (no Ingress, D94):
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8080:443          # then https://localhost:8080, user admin
+argocd login localhost:8080 --insecure --username admin \
+  --password "$(terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password)"
+argocd app list
+argocd app get ryft-platform                                        # objects, hooks, the last operation
+argocd app diff ryft-platform                                       # git vs. cluster
+```
+
+**Pause** (a deploy must not happen now, or break-glass): the root re-applies every
+Application from git, so pause it first, then the one application:
+
+```bash
+argocd app set ryft-root --sync-policy none
+argocd app set ryft-platform --sync-policy none
+# resume: argocd app set ryft-root --sync-policy automated --self-heal --auto-prune
+#         (the root then restores ryft-platform's policy from git)
+```
+
+**A failed sync:** `argocd app get ryft-platform` names the operation's failing step.
+PreSync: `kubectl -n ryft-migrate logs job/migrate`; a refused apply: the object's
+message; PostSync: `kubectl -n ryft-smoke logs job/smoke` (the step and the user it
+failed for). Argo CD retries a failed sync twice (1 and 2 minutes later); after that it
+waits for the next commit, or `argocd app sync ryft-platform`. The release itself is in
+when only the smoke failed: decide between a fix and a rollback.
+
+**A wave that does not get healthy holds every later change:** the root's sync waits for
+it, so even a fix to another application is not delivered. `argocd app terminate-op
+ryft-root`, then `argocd app sync ryft-root` (seen in the kind test with a NATS that could
+not start).
+
+**Roll back** by reverting the pin: `git revert <the "deploy: images" merge commit>` and
+push it (or merge it as a PR); Argo CD deploys the previous images like any release.
+Argo CD does not roll back by itself (D95). Migrations stay (below), so the previous
+release runs on the newer schema. A broken manifest change is reverted the same way.
+
+**Break-glass** (Argo CD itself is down): pause it if it is half up, then `make
+k8s-apply-eks` (prints a warning; applies the Vault objects, NATS, migrate, then the
+services, without the PostSync smoke; checks the registry first). Afterwards make git
+hold exactly what you applied, and resume.
+
+### Cutover to Argo CD (once)
+
+1. `infra/vault`: the smoke namespace (`service_secrets.smoke`), plan and apply, restart
+   the operator; commit the generated `deploy/k8s/overlays/vault-namespaces/smoke`.
+2. Pin a commit that has the `smoke` subcommand (361e34a or later) in `overlays/eks`.
+3. `infra/aws/kubernetes`: plan and apply (Argo CD).
+4. `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml`.
+5. **Adoption:** `argocd app diff ryft-platform` must show nothing but Argo CD's own
+   tracking annotations; fix a difference in git, never in the cluster. Then `argocd app
+   sync ryft-platform` (migrate, the rollout, the smoke), and merge the commit that turns
+   `automated` on for it.
+6. A merge that changes nothing (proves merge → sync) and a real promote PR (proves the
+   whole loop), then a revert of that pin and of the revert (proves rollback); times in
+   `STATUS.md`.
+
+### Adding a service
+
+An entry in `infra/vault` `services` (namespace, Vault namespace, credentials), apply,
+commit the generated `deploy/k8s/overlays/vault-namespaces/<svc>`; its manifests under
+`deploy/k8s/services/<svc>`, included in `overlays/eks`; a file
+`deploy/argocd/apps/vault-<svc>.yaml` (wave 0). `make k8s-validate` checks that every
+application renders.
+
+### Lockouts and rolling back across releases
 
 **The database refuses every connection** (`ECIRCUITBREAKER: too many authentication
 failures` in every service's log, pods unready): Supabase's pooler blocks the project for
 the cluster's NAT address (`63.188.104.25`, `3.120.13.212`) for 120 s after 10 failed
 logins in 150 s, and repeated failures get the address banned on the database host.
-**Do not re-run `make k8s-apply-eks`**: before D93 every migrate run rewrote the role
-passwords and caused the next round of failures. Wait two minutes; find the failing
+**Do not re-run deploys** (`make k8s-apply-eks`, or syncs by hand): before D93 every
+migrate run rewrote the role passwords and caused the next round of failures. Wait two minutes; find the failing
 login (`kubectl -n ryft-<svc> logs -l app=<svc> --tail=-1 --since=15m | grep -v
 ECIRCUITBREAKER | grep -i 'password\|28P01'`), and look at Supabase → Database →
 Settings → Network Bans (or `supabase network-bans get --project-ref <ref>`) and remove
@@ -663,8 +737,8 @@ when the month is forecast to exceed it.
 ## Apex site and apple-app-site-association
 
 `https://ryftapp.de` serves a minimal page from `ryft-web`; `www.ryftapp.de` redirects
-to it. Everything it serves is a ConfigMap (`deploy/k8s/base/web`), so a change is a
-`make k8s-apply-eks`:
+to it. Everything it serves is a ConfigMap (`deploy/k8s/base/web`), so a change is a merged
+commit (Argo CD rolls the site):
 
 - **`/.well-known/apple-app-site-association`:** `webcredentials` for password AutoFill
   with email accounts, and `applinks` for the paths the app's `AppRoute` parses
@@ -747,8 +821,8 @@ There is no dump job in the cluster. Before restoring a backup:
 2. Restore in the dashboard.
 3. Insert the tombstones back: SQL editor → import the CSV into a temporary table,
    then `INSERT INTO deleted_users SELECT * FROM <tmp> ON CONFLICT (id) DO NOTHING`.
-4. `make k8s-apply-eks` to run the migrate job again, which sets the role passwords in
-   case the backup predates them. The api's deletion reconciler erases the restored
+4. `argocd app sync ryft-platform` to run the migrate hook again, which sets the role
+   passwords in case the backup predates them. The api's deletion reconciler erases the restored
    accounts at start-up.
 
 **Restore drill, monthly** (Pro): restore the latest backup into a new scratch project
