@@ -15,6 +15,7 @@ import { join, relative, resolve } from 'node:path';
 import { isMarkupPath, isTextPath, loadDenylist, redact, scanText } from './lib/brand.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
+const REPO = resolve(ROOT, '..'); // web/ is a folder of the platform repository
 const MAX_BYTES = 5 * 1024 * 1024;
 const args = process.argv.slice(2);
 const denylist = loadDenylist();
@@ -24,17 +25,19 @@ const inputs = [];
 
 if (args.includes('--message')) {
   const file = args[args.indexOf('--message') + 1];
-  inputs.push({ source: 'commit message', text: readFileSync(file, 'utf8') });
+  inputs.push({ source: 'commit message', text: messageText(readFileSync(file, 'utf8'), commentChar()) });
 } else if (args.includes('--staged')) {
-  // Only web/: with cwd = web/, --relative lists the staged files below it (paths relative
-  // to web/) and leaves out the rest of the repository. `:./<path>` is relative to the cwd too.
-  const staged = git(['diff', '--cached', '--name-only', '--relative', '--diff-filter=ACMR', '-z'])
+  // Only web/. The git calls run from the repository root (a hook in a linked worktree has
+  // GIT_DIR set, which makes `--relative` from web/ list the whole repository), limited by a
+  // pathspec; paths are shown relative to web/.
+  const staged = git(['diff', '--cached', '--name-only', '-z', '--diff-filter=d', '--', 'web'], REPO)
     .split('\0')
     .filter(Boolean);
-  for (const path of staged) {
+  for (const full of staged) {
+    const path = full.replace(/^web\//, '');
     inputs.push({ source: `path ${path}`, text: path });
     if (!isTextPath(path)) continue;
-    inputs.push({ source: path, text: git(['show', `:./${path}`]) });
+    inputs.push({ source: path, text: git(['show', `:${full}`], REPO) });
   }
 } else {
   if (!args.includes('--out-only')) {
@@ -113,13 +116,36 @@ function* walk(dir) {
   }
 }
 
-function git(argv) {
+function git(argv, cwd = ROOT) {
   return execFileSync('git', argv, {
-    cwd: ROOT,
+    cwd,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
+}
+
+function commentChar() {
+  try {
+    const c = git(['config', '--get', 'core.commentChar'], REPO).trim();
+    return c.length === 1 ? c : '#';
+  } catch {
+    return '#';
+  }
+}
+
+/**
+ * What git will record from a commit message file: everything below the scissors line
+ * (`git commit -v` puts the diff there) is cut always; comment lines are blanked only
+ * when git will strip them, i.e. when the file is the editor's template (it carries the
+ * "Please enter the commit message" help). With -m a `#` line is part of the message.
+ */
+function messageText(raw, cc = '#') {
+  const lines = raw.split('\n');
+  const scissors = lines.findIndex((l) => l === `${cc} ------------------------ >8 ------------------------`);
+  const kept = scissors === -1 ? lines : lines.slice(0, scissors);
+  const editor = kept.some((l) => l.startsWith(`${cc} Please enter the commit message`));
+  return kept.map((l) => (editor && l.startsWith(cc) ? '' : l)).join('\n');
 }
 
 function fail(message) {

@@ -1,8 +1,7 @@
 #!/bin/sh
 # The brand guard on the commit message: every commit in this repository, not only web/.
+hooks=$(dirname "$0")
+. "$hooks/_node.sh"
 cd "$(git rev-parse --show-toplevel)" || exit 1
-if ! command -v node >/dev/null 2>&1; then
-  echo "commit-msg: node is not installed, brand check on the message skipped (CI checks it on the PR)." >&2
-  exit 0
-fi
+ensure_node || no_node commit-msg
 exec node web/scripts/check-brand.mjs --message "$1"
