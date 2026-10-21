@@ -1,6 +1,6 @@
 # RYFT — architecture
 
-RYFT, self-hosted: a watch or ring (a Garmin, in development) feeds Apple Health, an iOS
+RYFT, self-hosted: a watch or ring (during development, a Garmin) feeds Apple Health, an iOS
 app ships that data to Go microservices on Kubernetes, and the services turn it into
 daily **Readiness**, **Recovery**, **Strain** and **Sleep** scores the app renders. The
 HTTP contract with the app is [`API.md`](API.md).
