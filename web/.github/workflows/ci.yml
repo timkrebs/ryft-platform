@@ -1,0 +1,218 @@
+# ryftapp.de: every PR and every push to main. The app and platform repositories are
+# checked out next to web/ (both public) so the drift checks (tokens, Swift licences,
+# AASA, legal drafts, model and policy versions) compare against what they ship.
+# On main, the image goes to ghcr.io/timkrebs/ryft/web:<short-sha> after all checks pass.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Public values, baked into the HTML (repository variables, not secrets).
+  NEXT_PUBLIC_TESTFLIGHT_URL: ${{ vars.TESTFLIGHT_URL }}
+  NEXT_PUBLIC_SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: web
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: timkrebs/ryft-app
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: timkrebs/ryft-platform
+          path: plattform
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npx eslint .
+      - run: npx prettier --check .
+      - name: Brand check (repository, last commit message, PR title)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          npm run brand
+          if [ -n "$PR_TITLE" ]; then printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title" && node scripts/check-brand.mjs --message "$RUNNER_TEMP/title"; fi
+      - run: npm run tokens:check
+      - run: npm run licenses:check
+      - run: node scripts/check-messages.mjs
+      - name: Unit tests
+        run: npx vitest run --exclude tests/output.test.ts
+        env:
+          REQUIRE_SIBLINGS: '1'
+      - name: Privacy policy version (warns on mismatch)
+        run: npm run check:policy
+      - run: npm run build
+      - name: Tests on the built site
+        run: npx vitest run tests/output.test.ts
+        env:
+          REQUIRE_OUT: '1'
+
+  e2e:
+    name: E2E, accessibility, links, Lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ryft-web:ci
+          build-args: |
+            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
+            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Serve it as the cluster does (read-only, non-root, no capabilities)
+        run: |
+          docker run -d --name web -p 8080:8080 --read-only --tmpfs /tmp --tmpfs /var/cache/nginx \
+            --cap-drop ALL --security-opt no-new-privileges --user 101:101 ryft-web:ci
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8080/healthz && break; sleep 1; done
+      - name: Trivy (fail on critical)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:ci
+      - run: npx playwright install --with-deps chromium
+      - name: Playwright (every page, en + de, light + dark, axe)
+        run: npx playwright test
+        env:
+          BASE_URL: http://localhost:8080
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 14
+      - name: Links (internal and external)
+        run: npm run links
+      - name: Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS)
+        run: npx --yes @lhci/cli@0.15.1 autorun
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: lighthouse
+          path: .lighthouseci
+          retention-days: 14
+      - if: always()
+        run: docker logs web | tail -50
+
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          docker run --rm -v "$PWD:/repo" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact --no-banner --exit-code 1
+
+  image:
+    name: Image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [checks, e2e, secrets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/timkrebs/ryft/web
+          tags: |
+            type=sha,format=short,prefix=
+            type=raw,value=latest
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
+            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy on the pushed image (fail on critical)
+        env:
+          IMAGE: ghcr.io/timkrebs/ryft/web@${{ steps.build.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "$IMAGE"
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### ghcr.io/timkrebs/ryft/web"
+            echo '```'
+            echo "$TAGS"
+            echo "digest: $DIGEST"
+            echo '```'
+            echo "Pin it in plattform/deploy/k8s/overlays/eks/kustomization.yaml (docs/HANDOFF.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

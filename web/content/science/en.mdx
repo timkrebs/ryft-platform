@@ -1,0 +1,159 @@
+---
+title: 'How RYFT calculates its scores'
+description: 'Every formula, weight, baseline and band behind Readiness, Recovery, Strain and Sleep, for scoring model 2026.10.1.'
+model: '2026.10.1'
+checked: '2026-10-20'
+---
+
+This page describes scoring model **2026.10.1**, as documented in the RYFT platform's scoring reference on 20 October 2026. Every score RYFT stores carries the version of the model that computed it, so a number on this page and a number in the app can always be matched up.
+
+The constants are starting points. They are pinned by tests, and the beta will tune them; each change gets a new model version (see [Model versions](#versions)).
+
+<h2 id="sources">Before any formula: one reading per source</h2>
+
+A watch, a ring and the iPhone can all write the same kind of data to Apple Health. RYFT never adds overlapping sources together. It picks one:
+
+| Data | Decided per | The source that wins |
+| --- | --- | --- |
+| Heart rate, steps, active energy | clock hour | the one with the most samples in that hour (tie: the name that sorts first) |
+| Sleep | night | the one with the most minutes asleep, then the most minutes overall |
+
+Hours rather than days, because a watch charges for an hour and the phone's samples are all there is for that hour. Within an hour where both recorded, the denser source is the one that was worn. A phone that only logs time in bed always loses to a tracker that measured sleep.
+
+HRV, resting heart rate, respiratory rate and blood oxygen are a few readings per night that are averaged (or the latest is taken). A second source moves them slightly but never doubles them, so they are not de-duplicated.
+
+Without any heart rate (an iPhone alone, or a tracker that doesn't share it with Apple Health), Strain, Recovery and Readiness stay empty, and an info card says what is missing.
+
+<h2 id="baselines">Baselines and calibration</h2>
+
+Recovery compares each overnight signal with **your own previous 30 scored days**, as a z-score: how many standard deviations tonight's value is from your mean.
+
+<Formula tex={String.raw`z = \frac{x - \bar{x}_{30}}{\sigma_{30}}`} />
+
+In words: the distance from your 30-day average, measured in your usual spread.
+
+- HRV is compared in log space, because it is log-normally distributed: the baseline is a geometric mean.
+- For resting heart rate and respiratory rate, higher is worse, so their z-score is flipped.
+- With fewer than 7 days of history the day is marked **calibrating**, and typical population spreads stand in for yours: 0.18 for ln HRV, 3.5 bpm for resting heart rate, 1.0 breaths per minute for respiratory rate.
+- The HRV and resting-heart-rate baselines a day was scored against are stored with that day, so trends and insights compare against exactly what Recovery used.
+
+<h2 id="recovery">Recovery (1–100)</h2>
+
+Each overnight signal becomes a sub-score from 0 to 100 through a logistic curve: your average gives 50, one standard deviation better gives 77, one worse gives 23.
+
+<Formula tex={String.raw`s(z) = \frac{100}{1 + e^{-1.2\,z}}`} />
+
+Last night's sleep performance (0–100, see [Sleep](#sleep)) enters as it is. Recovery is the weighted mean of the sub-scores that exist, rounded and kept between 1 and 100:
+
+<Formula tex={String.raw`\text{Recovery} = \frac{\sum_k w_k\, s_k}{\sum_k w_k}`} />
+
+| Input | Weight | Direction |
+| --- | --- | --- |
+| Heart rate variability (ln) | 0.45 | higher is better |
+| Resting heart rate | 0.25 | lower is better |
+| Sleep performance | 0.25 | higher is better |
+| Respiratory rate | 0.05 | higher is worse, an early sign of illness |
+
+A missing signal drops out and the remaining weights are renormalised. Bands: **67–100** green, **34–66** yellow, **1–33** red.
+
+<h2 id="readiness">Readiness (1–100)</h2>
+
+The number at the top of Today. It blends Recovery with last night's sleep performance, minus an overreach penalty:
+
+<Formula tex={String.raw`\text{Readiness} = \operatorname{round}\!\left(0.6 \cdot \text{Recovery} + 0.4 \cdot \text{Sleep performance}\right) - P`} />
+
+The penalty applies only when yesterday's strain was above 14 **and** today's recovery is below 50. It ramps from 0 points at strain 14 to 10 points at strain 21:
+
+<Formula tex={String.raw`P = \operatorname{round}\!\left(10 \cdot \frac{\text{Strain}_{\text{yesterday}} - 14}{7}\right)`} />
+
+- Without a night of sleep, Readiness is Recovery alone; without Recovery there is no Readiness.
+- The word under the greeting: **balanced** from 67, **strained** from 34 to 66, **depleted** below 34, and **calibrating** while fewer than 7 nights of baseline exist.
+
+<h2 id="strain">Strain (0–21)</h2>
+
+Strain measures the load your heart carried, from heart-rate reserve (HRR): where each heart-rate sample sits between your resting and your maximum heart rate.
+
+<Formula tex={String.raw`\text{HRR} = \frac{\text{HR} - \text{HR}_{\text{rest}}}{\text{HR}_{\max} - \text{HR}_{\text{rest}}}, \qquad i = \frac{\max(0,\ \text{HRR} - 0.25)}{0.75}`} />
+
+Below 25 % of your reserve (sitting, an easy stroll) earns nothing. Each minute adds Banister's training impulse, and the day's total is compressed onto 0–21, so the last points are much harder to earn than the first:
+
+<Formula tex={String.raw`\text{TRIMP} = \sum_{\text{minutes}} i \cdot 0.64\, e^{1.92\, i}, \qquad \text{Strain} = 21 \cdot \left(1 - e^{-\text{TRIMP}/80}\right)`} />
+
+Gaps of more than 5 minutes between samples count nothing: the watch was off. Calibration points:
+
+| Day | Strain |
+| --- | --- |
+| Sitting all day | ≈ 0 |
+| An hour's brisk walk | ≈ 2 |
+| A 60-minute run at 75 % HRR | ≈ 14 |
+| A two-hour race effort | ≈ 20 |
+
+The same integration counts minutes in five zones of heart-rate reserve: 50–60, 60–70, 70–80, 80–90 and 90 % and above. Each workout gets its own strain over its own window.
+
+**Maximum heart rate** is 190 until RYFT knows more. When you enter your birth year it becomes round(208 − 0.7 × age) (Tanaka); you can also set a measured value. A stored maximum never moves by itself, and changing it doesn't rescore past days.
+
+**Strength sessions** logged in Train add a muscular load on the same TRIMP scale, before the compression, so a day with only a logged session has a strain, and a day with both gets more than either alone. Per completed set:
+
+<Formula tex={String.raw`\text{load} = \text{reps} \cdot \left(\frac{\text{weight}}{\text{e1RM}}\right)^{2} \cdot \text{muscle factor}, \qquad \text{e1RM} = \text{weight} \cdot \left(1 + \frac{\text{reps}}{30}\right)`} />
+
+The estimated one-rep max (Epley, reps capped at 12) is your best so far, so intensity never exceeds 1. The muscle factor weighs the muscles an exercise works (quads and glutes 1.0 down to forearms 0.2) and the kind of exercise (barbell 1.0, machine 0.8, bodyweight 0.32, cardio 0.3; the Olympic lifts 1.15). Warm-up sets count a quarter. A session's muscular TRIMP is the sum of its set loads × 0.6.
+
+| Reference session | Strain |
+| --- | --- |
+| 60 min, 5 × 5 back squat, bench press, barbell row at 80 % of e1RM | 11.0 |
+| 12 heavy singles: 6 snatches, 6 clean & jerks | 8.0 |
+| 20-minute bodyweight circuit | 5.1 |
+
+<h2 id="sleep">Sleep</h2>
+
+**The night.** A day's night window runs from 20:00 the evening before to 13:00, from one source. Pauses of an hour or more split it into blocks; the block with the most sleep is the night. Other blocks that end from 10:00, and sleep that ends between 13:00 and 20:00, are naps (from 20 minutes asleep, at most 90 minutes a day).
+
+**Need.** How much sleep you needed, in minutes:
+
+<Formula tex={String.raw`\text{need} = \text{base} + \min(60,\ 3 \cdot \text{Strain}_{\text{yesterday}}) + \min(60,\ 0.3 \cdot \text{debt}) - \text{naps}_{\text{yesterday}}`} />
+
+Debt is the shortfall over the last 7 nights, each night counting 0.7 times the one after it. Yesterday's naps are credited up to 90 minutes.
+
+**Performance** is what you got against what you needed, capped at 100 %. If a source records only time in bed, 90 % of it counts as asleep.
+
+<Formula tex={String.raw`\text{performance} = \min\!\left(100,\ \frac{\text{asleep}}{\text{need}} \cdot 100\right)`} />
+
+**Quality** adds how efficiently you slept and how much of it was deep and REM sleep:
+
+<Formula tex={String.raw`\text{quality} = \operatorname{round}\!\left(0.6 \cdot \text{performance} + 0.2 \cdot \text{efficiency} + 0.2 \cdot \text{restorative}\right), \qquad \text{restorative} = \min\!\left(100,\ \frac{\text{deep} + \text{REM}}{0.40 \cdot \text{asleep}} \cdot 100\right)`} />
+
+Efficiency is time asleep over time in bed. Without stage data, restorative equals performance. Labels: **good** from 80, **fair** from 60, **poor** below.
+
+**Consistency** is 100 − 0.5 × (standard deviation of bedtime + of wake time), in minutes, over the last 7 nights with at least 5 of them recorded: going to bed and getting up within ±15 minutes gives 85, within ±45 minutes 55.
+
+**The base** is learned every Sunday from your good nights: of the last 30 scored days, a night counts when that morning's recovery was 67 or more after a day with strain below 10. With at least 14 nights of sleep and 7 that count, the base becomes their median time asleep, kept between 6 h and 9 h 30 min. Until then it is 7 h 40 min. A base you set by hand always wins.
+
+<h2 id="journal">Journal: habits and the morning after</h2>
+
+A journal entry is about a day: what you did yesterday. Its effect shows on the **morning after**: that night's recovery, HRV and sleep performance. For each habit, over the last 90 days:
+
+| Metric | Effect |
+| --- | --- |
+| Recovery | mean on days with − mean on days without, in points |
+| HRV | the same difference as a percentage of days without |
+| Sleep performance | mean with − mean without, in points |
+
+A habit unlocks with at least **5 days with and 5 without** a scored recovery. The interval is a 90 % bootstrap: both groups resampled 1,000 times, the 5th and 95th percentile of the difference. The resampling is seeded, so the same data always gives the same interval, and an effect counts as clear only when its interval excludes zero. It is an association in your own data, not proof of a cause.
+
+<h2 id="versions">Model versions: no silent changes</h2>
+
+The model has a version, year.month.n, currently **2026.10.1**. Scoring writes it on every daily score and every workout it puts a load on.
+
+- **The bump rule:** any change that moves a stored number (a formula, a constant, a source rule, a new input) gets a new version in the same change, with a changelog entry in English and German that lists the metrics it moves. A refactor that keeps every number does not.
+- After a new version, history is scored again with it, so old and new days are comparable.
+- The platform serves the version with its changelog, so the app can say why a number moved.
+- Scores computed before 20 October 2026 carry no version until they are scored again.
+
+<h2 id="limitations">Limitations</h2>
+
+- RYFT is a wellness app, not a medical device. Its scores are estimates from consumer sensors, not a diagnosis, and they make no decisions about you.
+- They are only as good as what your watch or ring writes to Apple Health. Devices measure HRV and sleep stages differently, so switching devices can shift your numbers until your baseline catches up.
+- The first 7 nights use population spreads and are marked calibrating.
+- Until you enter your birth year or a measured maximum, Strain assumes a maximum heart rate of 190, which can over- or understate your load.
+- Data that reaches Apple Health late, for example from a watch that syncs later, is scored with the next sync, so a day's numbers can still change that day.
+- Habit effects are associations in your own data, with an interval, not causes.

@@ -1,0 +1,81 @@
+diff --git a/deploy/k8s/base/web/deployment.yaml b/deploy/k8s/base/web/deployment.yaml
+index 18d23d2..0a1bb9d 100644
+--- a/deploy/k8s/base/web/deployment.yaml
++++ b/deploy/k8s/base/web/deployment.yaml
+@@ -24,13 +24,11 @@ spec:
+           labelSelector: { matchLabels: { app: web } }
+       containers:
+         - name: nginx
+-          image: nginxinc/nginx-unprivileged:1.27-alpine
++          # The whole site (pages, nginx config, AASA) is one image, built and pushed by
++          # timkrebs/ryft-web on every green main. The tag is pinned in overlays/eks.
++          image: ghcr.io/timkrebs/ryft/web
+           ports: [{ containerPort: 8080, name: http }]
+           volumeMounts:
+-            - { name: nginx, mountPath: /etc/nginx/conf.d, readOnly: true }
+-            - { name: site, mountPath: /usr/share/nginx/html/index.html, subPath: index.html, readOnly: true }
+-            - { name: site, mountPath: /usr/share/nginx/html/.well-known/apple-app-site-association, subPath: apple-app-site-association, readOnly: true }
+-            - { name: pages, mountPath: /usr/share/nginx/html/pages, readOnly: true }
+             - { name: tmp, mountPath: /tmp }
+             - { name: cache, mountPath: /var/cache/nginx }
+           readinessProbe:
+@@ -47,12 +45,6 @@ spec:
+             requests: { cpu: 10m, memory: 16Mi }
+             limits: { memory: 64Mi }
+       volumes:
+-        - name: nginx
+-          configMap: { name: web-nginx }
+-        - name: site
+-          configMap: { name: web-site }
+-        - name: pages
+-          configMap: { name: web-pages }
+         - name: tmp
+           emptyDir: {}
+         - name: cache
+diff --git a/deploy/k8s/base/web/kustomization.yaml b/deploy/k8s/base/web/kustomization.yaml
+index a910fba..bce66b7 100644
+--- a/deploy/k8s/base/web/kustomization.yaml
++++ b/deploy/k8s/base/web/kustomization.yaml
+@@ -1,27 +1,9 @@
+ apiVersion: kustomize.config.k8s.io/v1beta1
+ kind: Kustomization
+-# The apex site ryftapp.de: a static page and /.well-known/apple-app-site-association.
+-# Namespace-neutral; services/web puts it into ryft-web.
++# The apex site ryftapp.de: one image from timkrebs/ryft-web (the static pages, the legal
++# texts, nginx's config and /.well-known/apple-app-site-association). Namespace-neutral;
++# services/web puts it into ryft-web.
+ resources:
+   - deployment.yaml
+   - service.yaml
+   - networkpolicy.yaml
+-configMapGenerator:
+-  # The hash suffix rolls the Deployment when the content changes.
+-  - name: web-site
+-    files:
+-      - site/index.html
+-      - apple-app-site-association=site/.well-known/apple-app-site-association
+-  - name: web-pages
+-    files:
+-      - site/pages/privacy.en.html
+-      - site/pages/privacy.de.html
+-      - site/pages/terms.en.html
+-      - site/pages/terms.de.html
+-      - site/pages/support.en.html
+-      - site/pages/support.de.html
+-      - site/pages/impressum.en.html
+-      - site/pages/impressum.de.html
+-      - site/pages/open.html
+-  - name: web-nginx
+-    files: [default.conf]
+diff --git a/deploy/k8s/overlays/eks/kustomization.yaml b/deploy/k8s/overlays/eks/kustomization.yaml
+index 991ea73..e7bd1e1 100644
+--- a/deploy/k8s/overlays/eks/kustomization.yaml
++++ b/deploy/k8s/overlays/eks/kustomization.yaml
+@@ -52,5 +52,6 @@ images:
+     newTag: "0fd4256"
+   - name: ghcr.io/timkrebs/ryft/notify
+     newTag: "0fd4256"
++  # web: the short SHA of a green main run in timkrebs/ryft-web, not of this repository.
+   - name: ghcr.io/timkrebs/ryft/web
+-    newTag: "1015bc7"
++    newTag: "f437747"

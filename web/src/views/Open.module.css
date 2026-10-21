@@ -1,0 +1,34 @@
+.main {
+  display: grid;
+  align-content: center;
+  gap: calc(var(--section-spacing) * 1.25);
+  min-height: 100vh;
+  max-width: 34rem;
+  margin-inline: auto;
+  padding: calc(var(--section-spacing) * 2) var(--screen-padding);
+}
+
+.block {
+  display: grid;
+  gap: 10px;
+}
+
+.block p {
+  color: var(--text-secondary);
+}
+
+.block + .block {
+  padding-top: var(--section-spacing);
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.block h2 {
+  font-size: var(--type-title);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
