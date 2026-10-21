@@ -152,3 +152,14 @@ against 0.001 on macOS. `globals.css` now declares `Satoshi Fallback` itself, wi
 overrides next/font computed (ascent 102.23 %, descent 24.29 %, line gap 10.12 %, size
 98.8 %) over Arial, Helvetica, Liberation Sans and Arimo (Arial's metric clones on Linux)
 and Roboto (Android, the same average width); `adjustFontFallback` is off.
+
+## D14 — The image is public (2026-10-21)
+
+The user chose to make `ghcr.io/timkrebs/ryft/web` public so that the site can go live
+without a pull secret in the cluster ("just deploy the website, we care about that stuff
+later"). The image contains the Satoshi WOFF2 files, and the ITF Free Font License allows
+self-hosting them but not making them available through publicly accessible servers; a
+public image lets anyone pull it and take the files out. That risk is accepted for now. The
+way back is ready: set the package private again and apply the platform's pull-secret
+variant (`docs/HANDOFF.md` → 2, `docs/handoff/platform-web-image.patch`: a
+`kubernetes.io/dockerconfigjson` Secret synced by the Vault Secrets Operator).

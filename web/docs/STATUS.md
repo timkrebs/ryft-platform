@@ -1,22 +1,39 @@
 # Status — ryftapp.de (web/)
 
-As of 2026-10-20. Eight commits on `main`, in the order of the brief, at
-`github.com/timkrebs/ryft-web` (private).
+As of 2026-10-21. **Live on `https://ryftapp.de` since 2026-10-21, 20:32 CEST**: the
+platform's `2cc55ef` (ryft-platform #3) runs `ghcr.io/timkrebs/ryft/web:f437747` (public,
+D14) instead of the ConfigMap site. `main` at `github.com/timkrebs/ryft-web` (public).
+
+## Live, and how it was checked (2026-10-21, against production)
+
+| Check | Result |
+| --- | --- |
+| Routes | 200 `text/html` on `/`, `/de`, `/science`, `/beta`, `/privacy`, `/terms`, `/support`, `/impressum`, `/de/privacy`, `/de/impressum`, `/privacy/2026-10-20`, `/terms/2026-10-20`, `/licenses`, `/day/…`, `/auth/callback`, `/invite/…`, `/train/history` |
+| AASA | 200 `application/json`, no redirect; `/day/*` … `/invite/*`, `/auth/*` |
+| Redirects | `www.ryftapp.de/` → 308 `https://ryftapp.de/`; `/privacy/` → 301 `/privacy` |
+| Headers | This image's CSP (two script hashes, Trusted Types), HSTS, `no-referrer`, `nosniff` |
+| Legal pages | Drafts: banner and `noindex`, as intended until you publish |
+| Lighthouse (mobile, 3 runs per page) | Every assertion of `lighthouserc.json` passed. Performance, accessibility, best practices 100 on `/`, `/de`, `/science`, `/beta`, `/privacy`; LCP 0.77–0.90 s; CLS ≤ 0.002; TBT 0; SEO 92 (`/privacy` 58: `noindex`) |
+| Links | 249 (89 on ryftapp.de, 160 external), all OK (`linkinator` from production) |
+| Image | Anonymous pulls of `f437747` and `abfbe26` answer 200 |
+
+Not checked from here: the pods and the access log in the cluster (this shell's AWS session
+had expired).
 
 ## Done, and how it was checked
 
 | Area | State | Checked by |
 | --- | --- | --- |
 | Pages | Landing, science, beta, privacy (+ `/privacy/2026-10-20`), terms (+ version), impressum, support, licences — each in English and German; `/open` (app-link fallback), 404, `/styleguide` | 24 static pages; Playwright on every page and language |
-| App URLs | `/privacy`, `/terms`, `/support`, `/impressum`, `/de/impressum`, `/auth/callback`, `/day/*`, `/sleep/*`, `/insights/*`, `/train/*` all 200 from the nginx image | `e2e/routes.spec.ts` against the image |
-| AASA | Byte-identical to the platform's, `application/json`, no redirect, covers every URL `AppRoute.url` creates | `tests/aasa.test.ts`, `e2e/routes.spec.ts` |
+| App URLs | `/privacy`, `/terms`, `/support`, `/impressum`, `/de/impressum`, `/auth/callback`, `/day/*`, `/sleep/*`, `/insights/*`, `/train/*`, `/invite/*` all 200 from the nginx image | `e2e/routes.spec.ts` against the image |
+| AASA | Everything the platform's copy covers, plus `/invite/*` (the app's, 2026-10-21); `application/json`, no redirect, covers every URL `AppRoute.url` creates | `tests/aasa.test.ts`, `e2e/routes.spec.ts` |
 | Brand rule | 0 hard findings in the repository, the built site and commit messages; pre-commit and commit-msg hooks; CI | `npm run brand`, `tests/brand.test.ts` (48 cases) |
 | Brand report | `docs/BRAND_CHECK.md`: nothing user-facing in app/ or plattform/; 48 internal hits | `npm run brand:report` |
 | Tokens | 23 colours, six metrics, three durations, the type scale, from `../app/Ryft` | `npm run tokens:check`; WCAG contrast of every text pair in both themes (`tests/contrast.test.ts`) |
 | Legal | The platform's drafts ported to MDX, every `TODO(user)` kept, draft banner, `noindex`; versioned privacy/terms | `tests/legal.test.ts`: the text of each port equals its platform draft word for word |
 | Privacy version | `2026-10-20` on the site and in the platform's api and ingest ConfigMaps | `npm run check:policy` |
 | Science | Model `2026.10.1`, formulas from `SCORING.md`, `ARCHITECTURE.md` and the scoring code | `tests/science.test.ts` fails when SCORING.md's version moves |
-| Licences | 7 Swift packages at their pinned revisions + Satoshi; 166 npm production packages + Satoshi; full texts | `npm run licenses:check`, `tests/output.test.ts` |
+| Licences | 8 Swift packages at their pinned revisions + Satoshi; 166 npm production packages + Satoshi; full texts | `npm run licenses:check`, `tests/output.test.ts` |
 | JavaScript | 1.4 KB of inline JS on every page (theme), no framework runtime (D2) | `tests/output.test.ts` (< 80 KB), Lighthouse `resource-summary:script` |
 | Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/de`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page |
 | Lighthouse scores | Performance 100, Accessibility 100, Best Practices 100, SEO 92 (indexable pages; see below) | same |
@@ -29,20 +46,37 @@ As of 2026-10-20. Eight commits on `main`, in the order of the brief, at
 Locally, every step CI runs passed on 2026-10-20 (macOS, Podman 6.1, Chrome for
 Lighthouse); the Checks job was also replayed from a clean copy of the tracked files.
 
-**First CI run** on GitHub (`timkrebs/ryft-web`, 2026-10-20, run 39426279137): Checks,
-Secrets (gitleaks), and in the E2E job Trivy, all Playwright and axe tests and the link
-check passed. **Lighthouse failed on Linux**: CLS 0.17 on `/`, 0.19 on `/privacy`, 0.06 on
-`/science` (performance 0.93 and 0.91 as a result), because the font fallback only bound to
-Arial (D13). Fixed on `fix/font-fallback-cls`; its CI run is the proof, and the image job
-runs after that merges.
+**CI on GitHub.** The first run (2026-10-20, run 39426279137) failed Lighthouse on Linux:
+CLS 0.17 on `/`, 0.19 on `/privacy`, 0.06 on `/science`, because the font fallback bound only
+to Arial (D13). PR #6 fixed it, and also caught up with the app, whose changes of 2026-10-21
+failed the drift checks (the Swift licence bump in ryft-app #7; `/invite/*` in the AASA).
+**First green `main`**: run 39624344892 on `abfbe26` (2026-10-21), all four jobs; Lighthouse
+within every assertion on all 15 runs (5 pages × 3). The image job pushed
+`ghcr.io/timkrebs/ryft/web:abfbe26` and `:latest` (amd64 and arm64, provenance, SBOM; Trivy
+on the pushed image: no critical). ghcr.io refuses an anonymous pull token for it (401), so
+the package is not public.
 
 ## Open
 
-- **Repository, protection, variables, image visibility**: your decisions (HANDOFF.md → 1).
-- **Platform switch to the image**: HANDOFF.md → 2, after the first green `main`.
-- **Legal texts**: drafts until you fill the `TODO(user)`s and publish (HANDOFF.md → 1).
-- **Support address and TestFlight link**: repository variables; until then the pages show
-  `TODO(user)` where the address goes and hide the TestFlight button.
+- **Done on 2026-10-21:** the repository is public and `main` is protected (ruleset: PRs,
+  squash only, the four checks required); `SUPPORT_EMAIL` = `support@ryftapp.de`;
+  `TESTFLIGHT_URL` stays unset (invite-only beta). HANDOFF.md → 1.
+- **Merged:** #9 (an access log that identifies no visitor), as `f437747`; live.
+- **In review:** #8 (these docs), #10 (your
+  legal answers, both languages, still drafts), #11 (the promote job; Lighthouse reports
+  uploaded). The ruleset wants each one up to date with `main` before it merges.
+- **Mail for ryftapp.de**: no MX record yet, so mail to `support@ryftapp.de` bounces; later,
+  by your choice (HANDOFF.md → 1).
+- **Grafana Cloud**: exclude `ryft-.*` from pod-log collection (HANDOFF.md → 1); the privacy
+  text says metrics only.
+- **Web releases**: a one-line pin PR in ryft-platform (web's `newTag`) until the promote job
+  (#11) has the App (HANDOFF.md → 1).
+- **Legal texts**: drafts until every `TODO(user)` is resolved and you say "publish";
+  `docs/LEGAL_CHECKLIST.md` → 0a lists what is answered and what is open. Your name and
+  address stay off the site until there is a non-personal option (→ 0).
+- **Local `main` was rewritten after the push** (`git filter-branch` removed the commits'
+  `Co-Authored-By` lines; the trees are identical). `origin/main` is the history; a local
+  `main` built on the rewrite shares no commit with it.
 - **Captures from the app** (HANDOFF.md → 3): a clean Today screen, the journal and
   Profile → Data. Until then the hero draws Today in SVG and the journal shows a sample
   card, both labelled "Sample data".
