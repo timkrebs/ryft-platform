@@ -27,7 +27,7 @@ const types = {
 
 createServer((req, res) => {
   const path = normalize(decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname));
-  const appLink = /^\/(day|sleep|insights|train|auth)(\/|$)/.test(path);
+  const appLink = /^\/(day|sleep|insights|train|auth|invite)(\/|$)/.test(path);
   const candidates = appLink
     ? ['/open.html']
     : [path, `${path}.html`, join(path, 'index.html'), path === '/' ? '/index.html' : ''];

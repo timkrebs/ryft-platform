@@ -16,32 +16,38 @@
     {
       "identity": "swift-clocks",
       "location": "https://github.com/pointfreeco/swift-clocks",
-      "version": "1.1.0",
-      "revision": "72d749bf341b78851203066ab421869b783ec42a"
+      "version": "1.1.1",
+      "revision": "82440fa0a8b1c381a6d1e8e0fc7bbba53ec63204"
     },
     {
       "identity": "swift-concurrency-extras",
       "location": "https://github.com/pointfreeco/swift-concurrency-extras",
-      "version": "1.3.2",
-      "revision": "5a3825302b1a0d744183200915a47b508c828e6f"
+      "version": "1.4.3",
+      "revision": "8a4260f7373493435bd21194585c95b72bfdd401"
     },
     {
       "identity": "swift-crypto",
       "location": "https://github.com/apple/swift-crypto.git",
-      "version": "4.2.0",
-      "revision": "6f70fa9eab24c1fd982af18c281c4525d05e3095"
+      "version": "4.5.2",
+      "revision": "da9d28d69ebe3894b18376c8f2395c2f37b8448f"
     },
     {
       "identity": "swift-http-types",
       "location": "https://github.com/apple/swift-http-types.git",
-      "version": "1.5.1",
-      "revision": "45eb0224913ea070ec4fba17291b9e7ecf4749ca"
+      "version": "1.8.0",
+      "revision": "bff4b6903cdc99dda49649dd52f46c11cfd3ed50"
+    },
+    {
+      "identity": "swift-issue-reporting",
+      "location": "https://github.com/pointfreeco/swift-issue-reporting",
+      "version": "2.1.2",
+      "revision": "b23bb4493c439d3e05152bc167014235ba3d47fc"
     },
     {
       "identity": "xctest-dynamic-overlay",
       "location": "https://github.com/pointfreeco/xctest-dynamic-overlay",
-      "version": "1.9.0",
-      "revision": "dfd70507def84cb5fb821278448a262c6ff2bbad"
+      "version": "1.13.1",
+      "revision": "d9308ad679143c26a30dec52daefe82f54af2b82"
     }
   ]
 }
