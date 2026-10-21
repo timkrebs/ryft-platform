@@ -321,10 +321,13 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
    argocd_admin_password`.
 5. **Projects and root:** done (2026-10-21). Re-apply `project.yaml` once more for the
    management certificate's orphan ignore: `kubectl apply -f deploy/argocd/project.yaml`.
-6. **Adoption of ryft-platform:** `https://argocd.ryftapp.de` or `argocd login argocd.ryftapp.de --grpc-web` (OPERATIONS), `argocd app
-   diff ryft-platform`: only tracking annotations may differ. Then `argocd app sync
-   ryft-platform` (migrate, rollout, smoke: `kubectl -n ryft-smoke logs job/smoke`). Then
-   merge the commit that turns `automated` on for it (I prepare it; it is one line).
+6. **Adoption of ryft-platform:** done 2026-10-21. The first sync (10:59 UTC) ran
+   `057e4ce` before the promote PR had pinned it, so its smoke ran the old migrate image
+   (no `smoke` subcommand: "DATABASE_URL is required"); the sync of `9332aad` (11:10 UTC,
+   images `057e4ce`) applied 0026 and rolled out all four; its smoke failed for want of
+   `service_secrets.smoke` in `infra/vault` (added, applied); `smoke passed` at 11:44
+   UTC. **Still to do:** auto-sync, `git cherry-pick 0905a93 && git push` (branch
+   `argo-automate-platform`).
 7. **Prove the loop:** a merge that changes nothing, a real promote PR, and a revert of
    that pin (and of the revert); note the times (merge → healthy) here.
 
@@ -333,8 +336,8 @@ cutover). Before: the GitOps steps above, done. The releases are the four commit
 branch `rabbitmq-cutover` (R1 `b07e7be`, R2 `da67f71`, R3 `9fa1741`, R4 `986237b`);
 cherry-pick each onto main when the one before is verified.
 
-0. **Main as it is** deploys like any commit (promote PR): migration 0026 and the outbox,
-   still on NATS. Check `ryft_outbox_pending` stays 0 and `make smoke-prod`.
+0. **Main as it is:** deployed 2026-10-21 11:10 UTC (`057e4ce`, migration 0026, the
+   outbox, still on NATS). Check `ryft_outbox_pending` stays 0 and `make smoke-prod`.
 1. **R1, the broker.**
 
    ```bash
