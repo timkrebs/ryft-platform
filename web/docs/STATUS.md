@@ -2,7 +2,7 @@
 
 As of 2026-10-21. **Live on `https://ryftapp.de` since 2026-10-21, 20:32 CEST**: the
 platform's `2cc55ef` (ryft-platform #3) runs `ghcr.io/timkrebs/ryft/web:f437747` (public,
-D14) instead of the ConfigMap site. `main` at `github.com/timkrebs/ryft-web` (public).
+D14) instead of the ConfigMap site. (Historical: until 2026-10-21 `main` lived at `github.com/timkrebs/ryft-web`; the site is now `web/` of `timkrebs/ryft-platform`, platform D107.)
 
 ## Live, and how it was checked (2026-10-21, against production)
 

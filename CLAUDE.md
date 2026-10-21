@@ -10,9 +10,9 @@ cluster, generated topology; D97, it replaced NATS JetStream, D102),
 kustomize manifests in
 `deploy/k8s` (`base/` + overlays: default, `vault`, `overlays/eks`, `overlays/local-postgres`),
 Terraform for the EKS cluster in `infra/aws` and for Vault (namespace per service,
-Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`, and the website `web/` (ryftapp.de: a static Next.js site with the
-legal texts, the AASA and its own nginx image; D107). Read
-`docs/STATUS.md`, `docs/DECISIONS.md`, `docs/ARCHITECTURE.md` and `docs/API.md` before
+Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`, and
+the website `web/` (ryftapp.de: a static Next.js site with the legal texts, the AASA and
+its own nginx image; D107). Read `docs/STATUS.md`, `docs/DECISIONS.md`, `docs/ARCHITECTURE.md` and `docs/API.md` before
 changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call. The
 roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 
@@ -52,13 +52,14 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 
 ## web/
 The site for ryftapp.de: pages, legal texts (`content/legal`), the AASA and the nginx image.
-Its rules are in `web/CLAUDE.md` (Claude Code loads it inside `web/`); read it before touching
-`web/`. The brand rule applies to `web/**`, to the built output and to every commit message in
-the repository, enforced by `make hooks` (once per clone: `.githooks`) and in CI. Tokens, the
-Swift-licence snapshot and the AASA test read the app at `../app` (`RYFT_APP_DIR`).
-Targets: `make web-install web-test web-build web-e2e web-image web-serve web-tokens`. A release is the
-merge: CI builds the image and promotes it (details in the CI docs). A privacy text and
-`PRIVACY_POLICY_VERSION` change in the same PR.
+Its rules are in `web/CLAUDE.md` (Claude Code loads it inside `web/`); read it before
+touching `web/`. The brand rule applies to `web/**`, to the built output and to every commit
+message in the repository: `make hooks` once per clone installs `.githooks`, CI checks it
+too. Tokens, the Swift-licence snapshot and the AASA test read the app at `../app`
+(`RYFT_APP_DIR`). Targets: `make web-install web-test web-build web-e2e web-image web-serve
+web-tokens`. The merge ships the site: CI builds the image and promotes it (details in the CI
+docs). A privacy text and `PRIVACY_POLICY_VERSION` change in the same PR. On an untrusted PR
+checkout, commit with `git -c core.hooksPath=/dev/null` (tracked hooks run the PR's code).
 
 ## Local workflow
 ```bash

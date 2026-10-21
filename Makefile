@@ -245,10 +245,11 @@ k8s-check-images:
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
 
 # --- web/ (ryftapp.de, D107): one place for the site's checks; `make hooks` once per clone ---
-# The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it).
+# The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it: absolute,
+# or relative to web/).
 
 web-install:
-	cd web && npm ci
+	cd web && npm ci && npx playwright install chromium
 
 # Typecheck, ESLint + Prettier + brand + messages parity, Vitest. Add REQUIRE_SIBLINGS=1 to make
 # a missing ../app an error instead of a skip.
@@ -263,13 +264,13 @@ web-build:
 web-image:
 	cd web && npm run image
 
-web-serve:
+web-serve: web-image
 	cd web && npm run serve
 
 web-serve-stop:
 	cd web && npm run serve:stop
 
-web-e2e: web-image web-serve
+web-e2e: web-serve
 	@cd web && for i in $$(seq 1 30); do curl -fs -o /dev/null http://localhost:8080/ && break; sleep 1; done; \
 	npm run e2e; status=$$?; npm run serve:stop; exit $$status
 

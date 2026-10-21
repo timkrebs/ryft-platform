@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # ryftapp.de: build the static export with Node, serve it with unprivileged nginx.
 # Fonts (Fontshare) and the app's licence texts (GitHub, pinned revisions) are fetched
 # during the build; nothing else leaves the build, and the final image has no Node.
