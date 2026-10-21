@@ -1,0 +1,135 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+}
+
+.accent {
+  color: var(--accent);
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.swatch {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border-radius: var(--tile-radius);
+  background: var(--surface);
+}
+
+.chip {
+  grid-row: span 2;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 var(--hairline) var(--separator);
+}
+
+.swatchName {
+  font-size: var(--type-callout);
+}
+
+.swatchValue {
+  font-size: var(--type-caption);
+  color: var(--text-secondary);
+}
+
+.type {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+}
+
+.typeRow {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 16px;
+  border-bottom: var(--hairline) solid var(--separator);
+}
+
+.typeRow dt {
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+.typeRow dd {
+  margin: 0;
+  line-height: 1.2;
+}
+
+.type-display {
+  font-size: var(--type-display);
+  font-weight: var(--type-display-weight);
+}
+.type-number-large {
+  font-size: var(--type-number-large);
+  font-weight: var(--type-number-large-weight);
+}
+.type-title {
+  font-size: var(--type-title);
+  font-weight: var(--type-title-weight);
+}
+.type-metric {
+  font-size: var(--type-metric);
+  font-weight: var(--type-metric-weight);
+}
+.type-headline {
+  font-size: var(--type-headline);
+  font-weight: var(--type-headline-weight);
+}
+.type-body {
+  font-size: var(--type-body);
+  font-weight: var(--type-body-weight);
+}
+.type-callout {
+  font-size: var(--type-callout);
+  font-weight: var(--type-callout-weight);
+}
+.type-caption {
+  font-size: var(--type-caption);
+  font-weight: var(--type-caption-weight);
+}
+.type-label {
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+}
+.type-axis {
+  font-size: var(--type-axis);
+  font-weight: var(--type-axis-weight);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 12px;
+}
+
+.cardTitle {
+  margin-top: 8px;
+  font-size: var(--type-headline);
+  font-weight: var(--type-headline-weight);
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.metric {
+  margin-top: 6px;
+  font-size: var(--type-metric);
+  font-weight: var(--type-metric-weight);
+}

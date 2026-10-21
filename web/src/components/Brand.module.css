@@ -1,0 +1,48 @@
+.wordmark {
+  font-weight: var(--type-wordmark-weight);
+  font-size: 1em;
+  letter-spacing: var(--tracking-wordmark);
+  /* Tracking adds space after the last letter too; take it back so the word centres. */
+  margin-right: calc(-1 * var(--tracking-wordmark));
+  line-height: 1;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6em;
+  font-size: var(--type-wordmark);
+  color: var(--text-primary);
+}
+
+.logo[data-size='large'] {
+  font-size: var(--type-title);
+}
+
+.lockup {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  color: var(--text-primary);
+}
+
+.lockupRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lockupWordmark {
+  font-size: 2rem;
+}
+
+.tagline {
+  margin: 0;
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  text-transform: uppercase;
+  /* The lock-up's tagline is tracked twice as wide as a label (BrandLockup). */
+  letter-spacing: calc(2 * var(--tracking-label));
+  color: var(--text-secondary);
+}

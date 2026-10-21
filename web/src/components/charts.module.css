@@ -1,0 +1,115 @@
+.gauge {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: fit-content;
+  margin-inline: auto;
+}
+
+.gauge > svg {
+  width: min(220px, 60vw);
+  height: auto;
+}
+
+.track {
+  stroke: var(--surface-raised);
+}
+
+.arc {
+  stroke: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .arc {
+    animation: settle var(--motion-quick) ease-out both;
+  }
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+  }
+}
+
+.gaugeCentre {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.gaugeMark {
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.gaugeValue {
+  font-size: var(--type-display);
+  font-weight: var(--type-display-weight);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.gaugeLabel {
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-secondary);
+}
+
+.trend {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--separator);
+}
+
+.threshold {
+  stroke: var(--text-tertiary);
+  opacity: 0.6;
+}
+
+.line {
+  stroke: var(--accent);
+}
+
+.today {
+  fill: var(--accent);
+}
+
+.hollow {
+  fill: var(--surface);
+  stroke: var(--accent);
+}
+
+.axis {
+  fill: var(--text-secondary);
+  font-size: var(--type-axis);
+  font-family: inherit;
+}
+
+.annotation {
+  fill: var(--text-primary);
+  font-size: var(--type-caption);
+  font-weight: var(--type-label-weight);
+}
+
+.icon-sleep {
+  color: var(--metric-sleep);
+}
+
+.icon-recovery {
+  color: var(--accent);
+}
+
+.icon-strain {
+  color: var(--accent);
+}

@@ -1,0 +1,11 @@
+{
+  "recurse": true,
+  "concurrency": 8,
+  "timeout": 20000,
+  "retry": true,
+  "retryErrors": true,
+  "retryErrorsCount": 3,
+  "retryErrorsJitter": 2000,
+  "skip": ["^mailto:", "^https://ryftapp\\.de/"],
+  "verbosity": "error"
+}

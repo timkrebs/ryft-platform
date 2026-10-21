@@ -1,0 +1,130 @@
+.label {
+  margin: 0;
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+}
+
+.tone-secondary {
+  color: var(--text-secondary);
+}
+
+.tone-accent {
+  color: var(--accent);
+}
+
+.tone-warning {
+  color: var(--warning);
+}
+
+.tone-alert {
+  color: var(--alert);
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+}
+
+.tile {
+  background: var(--surface);
+  border-radius: var(--tile-radius);
+  padding: 14px;
+}
+
+.container {
+  width: 100%;
+  max-width: 72rem;
+  margin-inline: auto;
+  padding-inline: var(--screen-padding);
+}
+
+.narrow {
+  max-width: 46rem;
+}
+
+.section {
+  display: grid;
+  gap: calc(var(--section-spacing) * 1.25);
+  padding-block: calc(var(--section-spacing) * 3);
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.sectionHeader {
+  display: grid;
+  gap: 12px;
+  max-width: 44rem;
+}
+
+.intro {
+  color: var(--text-secondary);
+  font-size: var(--type-headline);
+  line-height: 1.5;
+}
+
+.intro p + p {
+  margin-top: 0.75em;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 12px 24px;
+  border-radius: 999px;
+  font-size: var(--type-body);
+  font-weight: var(--type-headline-weight);
+  line-height: 1.2;
+  text-decoration: none;
+  transition:
+    background-color var(--motion-quick) ease-out,
+    color var(--motion-quick) ease-out;
+}
+
+.button-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.button-primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
+}
+
+.button-secondary {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.button-secondary:hover {
+  background: color-mix(in srgb, var(--surface-raised) 85%, var(--text-primary));
+}
+
+.button-quiet {
+  padding-inline: 4px;
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--text-tertiary);
+  text-underline-offset: 0.25em;
+}
+
+.todo {
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-weight: 500;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.sample {
+  margin: 0;
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
