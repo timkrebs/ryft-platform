@@ -22,6 +22,12 @@ spec:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
         - { protocol: TCP, port: 9090 }
+    # Argo CD's PostSync smoke (base/smoke): readiness, and for api and ingest the requests.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-smoke } }
+          podSelector: { matchLabels: { app: smoke } }
+      ports:
+        - { protocol: TCP, port: 8080 }
   egress:
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-nats } }

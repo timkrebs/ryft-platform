@@ -1,12 +1,17 @@
 # Applies the migrations and sets the services' role passwords, then exits. The
-# services wait for it. A Job's pod template is immutable: delete the finished Job
-# before applying a new image (`make k8s-apply-eks` does); it also removes itself
-# an hour after finishing.
+# services wait for it. Under Argo CD it is the PreSync hook of ryft-platform (D95):
+# every sync migrates first, and a failed migration fails the sync before any
+# Deployment rolls. BeforeHookCreation replaces the previous run (a Job's pod template
+# is immutable); `make k8s-apply-eks` deletes it itself. It also removes itself an
+# hour after finishing.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: migrate
   labels: { app: migrate, part-of: ryft }
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 4
   activeDeadlineSeconds: 900
@@ -27,7 +32,10 @@ spec:
         - name: migrate
           image: ghcr.io/timkrebs/ryft/migrate:latest
           envFrom:
-            - configMapRef: { name: ryft-config }
+            # Optional: as a PreSync hook the Job runs before this sync creates or
+            # changes the ConfigMap (only LOG_LEVEL; a change applies from the next
+            # sync). Not optional, a fresh namespace would wait for it forever.
+            - configMapRef: { name: ryft-config, optional: true }
             - secretRef: { name: ryft-secrets }
           securityContext:
             allowPrivilegeEscalation: false

@@ -2,7 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Consumes ryft.scored and ryft.session.scored and sends APNs pushes. Its
-# Service only names the metrics port; nothing calls it.
+# Service names the metrics port and, for the PostSync smoke's /readyz, the HTTP
+# port; nothing else calls it.
 resources:
   - configmap.yaml
   - deployment.yaml

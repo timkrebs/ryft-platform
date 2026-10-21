@@ -1,0 +1,29 @@
+# Wave 1: the broker, before the services. NATS JetStream until the RabbitMQ cutover;
+# then this file is removed (and the StatefulSet deleted on purpose).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: broker-nats
+  namespace: argocd
+  annotations:
+    # Diffs computed by the API server (dry-run apply): defaulted fields such as a
+    # StatefulSet's volumeClaimTemplates status are not drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: ryft
+  source:
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+    path: deploy/k8s/overlays/eks-nats
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ryft-nats
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false]
+  ignoreDifferences:
+    # The Vault Secrets Operator restarts NATS when its secret changes.
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions: ['.spec.template.metadata.annotations."vso.secrets.hashicorp.com/restartedAt"']

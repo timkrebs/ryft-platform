@@ -1,0 +1,55 @@
+# The in-cluster smoke after every Argo CD sync of ryft-platform (D95): a PostSync
+# hook, so it runs once every resource of the release is synced and healthy. It checks
+# each service's /readyz, signs the dedicated smoke user in, sends one tiny sync and
+# waits until scoring has rescored that day with the model the api serves
+# (internal/smoke, `/app smoke` in the migrate image). A failure fails the sync, and
+# the ArgoSyncFailed alert fires; nothing rolls back by itself (OPERATIONS.md → Deploy).
+# BeforeHookCreation keeps the last run until the next sync, for its logs.
+# `make k8s-apply-eks` (break-glass) leaves it out (label ryft.dev/hook).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke
+  labels: { app: smoke, part-of: ryft, ryft.dev/hook: postsync }
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels: { app: smoke, part-of: ryft }
+    spec:
+      serviceAccountName: smoke
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: smoke
+          # The migrate image is the one tool image (pinned with the others in overlays/eks).
+          image: ghcr.io/timkrebs/ryft/migrate:latest
+          args: ["smoke"]
+          env:
+            - { name: SMOKE_API_URL, value: "http://api.ryft-api.svc.cluster.local" }
+            - { name: SMOKE_INGEST_URL, value: "http://ingest.ryft-ingest.svc.cluster.local" }
+            - name: SMOKE_HEALTH_URLS
+              value: >-
+                http://api.ryft-api.svc.cluster.local/readyz,http://ingest.ryft-ingest.svc.cluster.local/readyz,http://scoring.ryft-scoring.svc.cluster.local/readyz,http://notify.ryft-notify.svc.cluster.local/readyz
+            - { name: SMOKE_WAIT, value: "90s" }
+            - { name: LOG_LEVEL, value: info }
+          # SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD (Vault
+          # admin/ryft/smoke, service_secrets.smoke in infra/vault).
+          envFrom:
+            - secretRef: { name: ryft-secrets }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

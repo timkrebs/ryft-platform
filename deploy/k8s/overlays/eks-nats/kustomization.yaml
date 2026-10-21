@@ -1,0 +1,15 @@
+# NATS JetStream on ryft-prod-euc1: the broker until the RabbitMQ cutover,
+# Argo CD application `broker-nats` in wave 1, before the services (wave 2).
+# Namespace, service account and Secret come from infra/vault like every other one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../services/nats
+
+patches:
+  # volumeClaimTemplates are immutable, so this must be right before the first apply.
+  - target: { kind: StatefulSet, name: nats }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: gp3-encrypted

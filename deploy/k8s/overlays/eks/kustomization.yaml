@@ -15,13 +15,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../services/nats
+  # NATS is its own overlay (overlays/eks-nats) and Argo CD application (wave 1, the
+  # broker), synced before this one (wave 2).
   - ../../services/migrate
   - ../../services/ingest
   - ../../services/scoring
   - ../../services/api
   - ../../services/notify
   - ../../services/web
+  - ../../services/smoke
   - ratelimit.yaml
   - metrics-from-nodes.yaml
   - web.yaml
@@ -30,12 +32,6 @@ patches:
   # Traefik + Let's Encrypt for the public host, one Ingress per namespace.
   - path: ingress-api.yaml
   - path: ingress-ingest.yaml
-  # volumeClaimTemplates are immutable, so this must be right before the first apply.
-  - target: { kind: StatefulSet, name: nats }
-    patch: |-
-      - op: add
-        path: /spec/volumeClaimTemplates/0/spec/storageClassName
-        value: gp3-encrypted
 
 # Pin to the commit CI built (ghcr.io/timkrebs/ryft/<image>:<short-sha>): the short SHA
 # of a green run on main, e.g. `gh run list --workflow ci --branch main --status success

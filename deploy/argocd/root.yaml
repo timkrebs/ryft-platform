@@ -1,0 +1,22 @@
+# The app of apps: every file in deploy/argocd/apps is one application (D94). Applied
+# once by hand (with project.yaml); from then on a merged commit is the deploy.
+# No finalizer here or on the applications: deleting an Application object leaves
+# what it deployed running, so removing a file from apps/ never deletes a workload by
+# itself (the objects stay, orphaned, until removed on purpose).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ryft-root
+  namespace: argocd
+spec:
+  project: ryft-root
+  source:
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+    path: deploy/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true]

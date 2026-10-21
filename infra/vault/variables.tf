@@ -88,6 +88,9 @@ variable "services" {
     notify  = { database = "role", nats = "client" }
     nats    = { nats = "server", workload_kind = "StatefulSet" }
     migrate = { database = "owner", workload_kind = "" }
+    # The in-cluster smoke after every deploy (Argo CD's PostSync hook, D95): the
+    # dedicated smoke user's sign-in from service_secrets.smoke, nothing else.
+    smoke = { secret_keys = ["SUPABASE_PROJECT_REF"], workload_kind = "" }
     # Grafana Cloud's k8s-monitoring collector (deploy/monitoring): node metrics,
     # Beyla and an SDK injector need root, host network and host files, so its
     # namespace cannot be restricted (D51). Only GC_TOKEN, from service_secrets.

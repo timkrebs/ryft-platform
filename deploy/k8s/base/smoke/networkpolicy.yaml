@@ -1,0 +1,27 @@
+# The smoke reaches the four services on their HTTP port (8080 behind each Service's
+# port 80) and Supabase's sign-in on 443; nothing reaches it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smoke
+spec:
+  podSelector: { matchLabels: { app: smoke } }
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-api } }
+          podSelector: { matchLabels: { app: api } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-ingest } }
+          podSelector: { matchLabels: { app: ingest } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-scoring } }
+          podSelector: { matchLabels: { app: scoring } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ryft-notify } }
+          podSelector: { matchLabels: { app: notify } }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }

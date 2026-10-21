@@ -1,0 +1,59 @@
+# Argo CD projects for ryft-prod-euc1 (D94). Applied once by hand, with root.yaml:
+#   kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml
+# Afterwards this file is not synced by Argo CD itself: a change here is applied the
+# same way, so the rules that bound every application cannot be loosened by a commit
+# to an application alone.
+#
+# ryft-root may only create Application objects in argocd, from deploy/argocd/apps.
+# ryft holds the workloads: only this repository, only the ryft-* namespaces, and of
+# the cluster-scoped kinds only Namespace (ryft-web, the one namespace not made by
+# infra/vault). No application may write to argocd or kube-system.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ryft-root
+  namespace: argocd
+spec:
+  description: The app of apps (deploy/argocd/apps)
+  sourceRepos:
+    - https://github.com/timkrebs/ryft-platform.git
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: argocd }
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - { group: argoproj.io, kind: Application }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ryft
+  namespace: argocd
+spec:
+  description: RYFT workloads on ryft-prod-euc1
+  sourceRepos:
+    - https://github.com/timkrebs/ryft-platform.git
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: "ryft-*" }
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+  orphanedResources:
+    warn: true
+    ignore:
+      # Made by the Vault Secrets Operator and the Kubernetes token controller, not git.
+      - { kind: Secret, name: ryft-secrets }
+      - { kind: Secret, name: vault-auth-token }
+      - { kind: ServiceAccount }
+      - { kind: ConfigMap, name: kube-root-ca.crt }
+---
+# The built-in project allows everything; nothing of RYFT uses it, so it may do
+# nothing (an Application pointed at it by mistake cannot deploy).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  sourceRepos: []
+  destinations: []
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist: []

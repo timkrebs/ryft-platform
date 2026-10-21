@@ -100,6 +100,15 @@ check "monitoring_has_its_token" {
   }
 }
 
+# Without them Argo CD's PostSync smoke fails, and every sync shows Degraded.
+check "smoke_has_its_sign_in" {
+  assert {
+    condition = !contains(keys(local.services), "smoke") || alltrue([for k in ["SUPABASE_ANON_KEY", "SMOKE_EMAIL", "SMOKE_PASSWORD"] :
+    contains(local.private_keys["smoke"], k)])
+    error_message = "service_secrets.smoke needs SUPABASE_ANON_KEY, SMOKE_EMAIL and SMOKE_PASSWORD (the dedicated smoke user, as for make smoke-prod): Argo CD's PostSync smoke cannot sign in without them."
+  }
+}
+
 check "api_has_supabase_admin_key" {
   assert {
     condition     = !contains(keys(local.services), "api") || contains(local.private_keys["api"], "SUPABASE_SERVICE_ROLE_KEY")

@@ -1,0 +1,11 @@
+# Only so the PostSync smoke can read /readyz (base/smoke): nothing else calls scoring.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoring
+  labels: { app: scoring, part-of: ryft }
+spec:
+  selector: { app: scoring }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+    - { name: metrics, port: 9090, targetPort: metrics }

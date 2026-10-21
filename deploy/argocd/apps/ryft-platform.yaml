@@ -1,0 +1,40 @@
+# Wave 2: the services, their Ingresses, NetworkPolicies and the web site
+# (deploy/k8s/overlays/eks, image pins included). Every sync runs migrate first (a
+# PreSync hook: a failed migration fails the sync and nothing rolls) and the
+# in-cluster smoke last (PostSync, internal/smoke). Rollback is `git revert` of the
+# pin commit; Argo CD does not roll back by itself (D95, OPERATIONS.md → Deploy).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ryft-platform
+  namespace: argocd
+  annotations:
+    # Diffs computed by the API server (dry-run apply): defaulted fields such as a
+    # StatefulSet's volumeClaimTemplates status are not drift.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: ryft
+  source:
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+    path: deploy/k8s/overlays/eks
+  destination:
+    server: https://kubernetes.default.svc
+    # Nominal: every object names its own namespace (one per service), and the
+    # project admits only ryft-*; an empty namespace would not match it.
+    namespace: ryft-api
+  syncPolicy:
+    # ADOPTION: no `automated` until the first manual sync showed no diff against what
+    # runs (docs/OPERATIONS.md → Cutover to Argo CD, step 3); then the next commit adds
+    #   automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false, RespectIgnoreDifferences=true]
+  ignoreDifferences:
+    # api and ingest: replicas belong to their HorizontalPodAutoscalers.
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]
+    # The Vault Secrets Operator restarts a workload when its secret changes.
+    - group: apps
+      kind: Deployment
+      jqPathExpressions: ['.spec.template.metadata.annotations."vso.secrets.hashicorp.com/restartedAt"']

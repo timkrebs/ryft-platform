@@ -1578,3 +1578,45 @@ sent, and whether a second account shares its phone.
   no initial secret, the waves, a failed PreSync blocking a sync, a dry-run sync of the
   whole platform through the project's rules.
 
+## D95 — The app of apps: waves, migrate before, the smoke after, rollback by revert
+
+- **Layout:** `deploy/argocd/root.yaml` (applied once by hand) syncs
+  `deploy/argocd/apps`, one Application per unit. Wave 0: `vault-<svc>`, the generated
+  Vault Secrets Operator objects of each namespace (Terraform writes them, Argo CD applies
+  them; healthy when `ryft-secrets` exists). Wave 1: the broker (`broker-nats`, the NATS
+  StatefulSet now in its own overlay `eks-nats`). Wave 2: `ryft-platform`
+  (`overlays/eks`: services, Ingresses, NetworkPolicies, the web site, image pins).
+- **Projects:** `ryft-root` may only create Applications in `argocd`; `ryft` only deploys
+  this repository into `ryft-*` namespaces, with `Namespace` the one cluster-scoped kind
+  (ryft-web's). The built-in `default` project is emptied, so a typo cannot deploy
+  through it. Projects are applied by hand, never synced, so a commit to an application
+  cannot widen them. Namespaces stay `infra/vault`'s (`CreateNamespace=false`).
+- **Sync:** `automated` with prune and self-heal, server-side apply, `PruneLast`, and
+  **server-side diff** on every application: in the kind test the NATS StatefulSet stayed
+  OutOfSync forever under client-side diff (the API server adds `status` and `volumeMode`
+  to `volumeClaimTemplates`). `ignoreDifferences`: the HPAs' `spec.replicas` and the
+  operator's `restartedAt` annotation. No finalizers: deleting an Application leaves its
+  objects running.
+- **migrate is a PreSync hook** of ryft-platform: every sync migrates first, and a failed
+  migration fails the sync before anything rolls (tried in kind: no object was created).
+  It runs on *every* sync, also self-heal ones; that is harmless only because migrate no
+  longer rewrites unchanged role passwords (D93). Its ConfigMap reference is optional: the
+  hook runs before the sync creates the ConfigMap, and in kind a required one left the Job
+  waiting until its deadline.
+- **The smoke is a PostSync hook** (`/app smoke` in the migrate image, namespace
+  `ryft-smoke` from infra/vault with only the smoke user's sign-in): every service's
+  `/readyz`, a sign-in, one tiny sync, the day rescored with the served model within 90 s.
+  A failure fails the sync, and `ArgoSyncFailed` fires. scoring got a Service and notify an
+  `http` port for it; the four services admit `ryft-smoke` on 8080. It reuses the migrate
+  image instead of a tools image: one image less to build, pin and promote.
+- **Rollback is `git revert` of the pin commit**, which Argo CD deploys like any other.
+  Argo CD does not roll back by itself, and Argo Rollouts (canaries, automated analysis) is
+  not worth it yet: two replicas of api, one of scoring, a few testers; a revert takes
+  minutes and the smoke tells whether it helped.
+- **Adoption:** ryft-platform starts without `automated`; the first manual sync must show
+  no diff against what runs (fixes go into git, not the cluster); the next commit turns
+  automation on.
+- **A wave that never gets healthy holds every later change**: the root's sync waits on
+  it, so a fix to any application is not delivered until that operation is terminated
+  (`argocd app terminate-op ryft-root`, OPERATIONS → Deploy). Seen in kind with a NATS that
+  could not start.

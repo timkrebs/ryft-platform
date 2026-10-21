@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -49,6 +49,15 @@ smoke-supabase:
 	if [ -n "$$SUPABASE_SECRET_KEY" ]; then ./scripts/check_accounts.py; \
 	else echo "accounts: skipped (set SUPABASE_SECRET_KEY to test sign-up, isolation and deletion with throwaway users)"; fi
 
+# Argo CD's PostSync smoke (internal/smoke, `/app smoke` in the migrate image) against the
+# compose stack, as CI runs it after `make smoke`.
+smoke-hook:
+	$(COMPOSE) run --rm --no-deps \
+	  -e SMOKE_API_URL=http://api:8080 -e SMOKE_INGEST_URL=http://ingest:8080 \
+	  -e SMOKE_HEALTH_URLS=http://api:8080/readyz,http://ingest:8080/readyz,http://scoring:8080/readyz,http://notify:8080/readyz \
+	  -e SMOKE_TOKEN=$${API_KEY:-dev-api-key-change-me}:$$(python3 -c 'import uuid; print(uuid.uuid4())') \
+	  migrate smoke
+
 # The operator scripts (scripts/tests): a fake kubectl, and the compose api when it is up.
 test-scripts:
 	@set -e; for t in scripts/tests/*_test.sh; do bash "$$t"; done
@@ -64,24 +73,29 @@ check-swift:
 	./scripts/check_swift.sh
 
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
-NAMESPACES := nats migrate ingest scoring api notify
+NAMESPACES := nats migrate ingest scoring api notify smoke
 LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 
-# EKS (api.ryftapp.de), after infra/aws/kubernetes and infra/vault are applied
-# (docs/OPERATIONS.md → EKS): the Vault Secrets Operator objects first, so each
-# namespace has its Secret before the pods start; then NATS and the migrate Job
-# (label ryft.dev/stage=first), and the services only once migrate has set their
-# role passwords. The finished migrate Job is deleted first because a Job's pod
-# template cannot change.
+# BREAK-GLASS ONLY. Argo CD deploys ryft-prod-euc1 from git (docs/OPERATIONS.md →
+# Deploy, D95): a merged pin rolls out by itself, and self-heal reverts within minutes
+# whatever is applied here that git does not hold. Use this when Argo CD itself is
+# down, after pausing its auto-sync (OPERATIONS.md → Pause). Order as before Argo:
+# the Vault Secrets Operator objects first, so each namespace has its Secret before
+# the pods start; then NATS and the migrate Job (label ryft.dev/stage=first), and the
+# services only once migrate has set their role passwords; the PostSync smoke Job
+# (label ryft.dev/hook) is left out. The finished migrate Job is deleted first because
+# a Job's pod template cannot change.
 k8s-apply-eks: k8s-check-images k8s-check-registry k8s-check-auth
+	@echo "! break-glass: Argo CD reverts anything here that git does not hold; pause its auto-sync first (docs/OPERATIONS.md → Deploy)."
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
 	@$(MAKE) --no-print-directory k8s-check-nats-secret
+	kubectl apply -k deploy/k8s/overlays/eks-nats
 	kubectl -n ryft-migrate delete job migrate --ignore-not-found
 	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
 	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 	kubectl -n ryft-nats rollout status statefulset/nats --timeout=5m
-	kubectl apply -k deploy/k8s/overlays/eks
+	kubectl apply -k deploy/k8s/overlays/eks -l 'ryft.dev/hook!=postsync'
 	for s in ingest api scoring notify; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
 # Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
@@ -175,12 +189,13 @@ k8s-validate:
 	@set -e; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
 	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
-	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
+	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/eks-nats overlays/local-postgres; do \
 	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
+	@./scripts/check_argocd.sh
 
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide

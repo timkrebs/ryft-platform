@@ -8,4 +8,5 @@ metadata:
 spec:
   selector: { app: notify }
   ports:
+    - { name: http, port: 80, targetPort: http }
     - { name: metrics, port: 9090, targetPort: metrics }

@@ -6,6 +6,10 @@
 //
 //	DATABASE_URL          the owner (postgres on Supabase)
 //	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING, _API and _NOTIFY
+//
+// `migrate smoke` is instead the in-cluster smoke after a deploy (internal/smoke),
+// which Argo CD runs as the PostSync hook in namespace ryft-smoke: this image is the
+// one tool image, so a hook needs no image of its own.
 package main
 
 import (
@@ -22,6 +26,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "smoke" {
+		os.Exit(smokeMain())
+	}
 	log := httpx.Logger("migrate")
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
