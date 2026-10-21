@@ -338,7 +338,13 @@ cherry-pick each onto main when the one before is verified.
 
 0. **Main as it is:** deployed 2026-10-21 11:10 UTC (`057e4ce`, migration 0026, the
    outbox, still on NATS). Check `ryft_outbox_pending` stays 0 and `make smoke-prod`.
-1. **R1, the broker.**
+1. **R1, the broker:** done 2026-10-21 (`9afa16f`, pushed 12:11 UTC; three nodes ready
+   12:17, `broker-rabbitmq` Healthy 12:23). All 63 topology objects Ready, 13 quorum
+   queues with three members each, no alarms, listeners 5671 and 15671 (TLS) only,
+   `https://rabbitmq.ryftapp.de` 200 with a valid certificate, 401 without a login, no
+   orphan warnings. A node idles at 12m CPU and 130 MiB. The operator's
+   `MemoryRequestAndLimitDifferent` warning: limit = request (`4e746af`, D104). The
+   original steps:
 
    ```bash
    kubectl describe nodes | grep -A8 'Allocated resources'      # 1 GiB free on each of three nodes
