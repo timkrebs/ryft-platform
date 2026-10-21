@@ -1,9 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { TERM, cleanEnv, git, makeRepo, write } from './helpers/repo';
 
 // scripts/check-brand.mjs in throwaway repositories laid out like the monorepo.
+// Every case spawns git and node: no 5 s default on a busy runner.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 let repo: string;
 const run = (cwd: string, args: string[], env: Record<string, string> = {}) =>
   spawnSync('node', ['web/scripts/check-brand.mjs', ...args], { cwd, encoding: 'utf8', env: cleanEnv(env) });

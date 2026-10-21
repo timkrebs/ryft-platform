@@ -2,11 +2,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { TERM, cleanEnv, git, makeRepo, write } from './helpers/repo';
 
 // The shell layer: .githooks/{pre-commit,commit-msg} driven by real `git commit`s in a
 // throwaway repository, in the main checkout and in a linked worktree.
+// Every case spawns git and node: no 5 s default on a busy runner.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 let repo: string;
 let worktree: string;
 
