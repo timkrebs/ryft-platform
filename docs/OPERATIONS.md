@@ -190,7 +190,9 @@ Every release is one image SHA for every service (`newTag` in
 one.
 
 1. **Pin:** CI pushed `ghcr.io/timkrebs/ryft/*:<sha>`; set every `newTag` to it and
-   commit (`make k8s-check-images` checks they are pinned and well-formed).
+   commit (`make k8s-check-images` checks they are pinned and well-formed; `make
+   k8s-apply-eks` also checks that ghcr.io has each of them, so a mistyped SHA stops
+   before anything is applied).
 2. **Apply:** `make k8s-apply-eks` (migrate first, then the services; it waits for the
    rollouts).
 3. **Smoke:** `make smoke-prod` with the dedicated smoke user (`SUPABASE_URL`,

@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
+.PHONY: test test-scripts build images push up down logs smoke smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-check-nats-secret k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -73,7 +73,7 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 # (label ryft.dev/stage=first), and the services only once migrate has set their
 # role passwords. The finished migrate Job is deleted first because a Job's pod
 # template cannot change.
-k8s-apply-eks: k8s-check-images k8s-check-auth
+k8s-apply-eks: k8s-check-images k8s-check-registry k8s-check-auth
 	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
 	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
 	@$(MAKE) --no-print-directory k8s-check-nats-secret
@@ -209,6 +209,10 @@ k8s-check-nats-secret:
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in
 # InvalidImageName until its deadline, 2026-10-19), no :latest, no missing tag.
 IMAGE_REF := ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[a-f0-9]{64})$$
+# Every pinned ghcr.io image exists (network; not part of k8s-validate, which CI runs).
+k8s-check-registry:
+	./scripts/check_registry.sh
+
 k8s-check-images:
 	@imgs=$$(kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
 	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)'; printf '%s\n' "$$imgs" | grep -E ':latest$$'); \
