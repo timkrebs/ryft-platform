@@ -21,12 +21,16 @@ export function cleanEnv(extra: Record<string, string> = {}) {
 }
 
 export function git(cwd: string, ...args: string[]) {
-  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], {
-    cwd,
-    env: cleanEnv(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  return execFileSync(
+    'git',
+    ['-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...args],
+    {
+      cwd,
+      env: cleanEnv(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
 }
 
 export function write(repo: string, rel: string, text: string) {
@@ -45,6 +49,6 @@ export function makeRepo({ hooks = false } = {}) {
   if (hooks) cpSync(resolve('../.githooks'), join(repo, '.githooks'), { recursive: true });
   write(repo, 'README.md', 'x\n');
   git(repo, 'add', '-A');
-  git(repo, 'commit', '-q', '-m', 'init');
+  git(repo, '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'init');
   return repo;
 }

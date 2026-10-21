@@ -33,6 +33,7 @@
     "serve:stop": "node scripts/container.mjs stop",
     "e2e": "playwright test",
     "links": "linkinator http://localhost:8080/ --config linkinator.config.json",
+    "lighthouse": "lhci autorun",
     "brand:report": "node scripts/brand-report.mjs"
   },
   "dependencies": {
@@ -46,6 +47,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
+    "@lhci/cli": "0.15.1",
     "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",

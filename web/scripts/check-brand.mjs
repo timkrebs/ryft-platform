@@ -6,7 +6,8 @@
 //   node scripts/check-brand.mjs              every tracked or new file, out/ if built, the last commit message
 //   node scripts/check-brand.mjs --out-only   only the built site (postbuild)
 //   node scripts/check-brand.mjs --staged     the staged versions of staged files under web/ (pre-commit)
-//   node scripts/check-brand.mjs --message F  a commit message file (commit-msg; the rule is repo-wide)
+//   node scripts/check-brand.mjs --message F  a text file, scanned whole (CI: PR titles, commit messages)
+//   node scripts/check-brand.mjs --commit-msg F  git's message file in the commit-msg hook, as git will record it
 //
 // Exit 1 on any hard finding. Matches are printed masked, so the log doesn't repeat them.
 import { execFileSync } from 'node:child_process';
@@ -24,8 +25,13 @@ const denylist = loadDenylist();
 const inputs = [];
 
 if (args.includes('--message')) {
+  // The whole text, nothing stripped: CI feeds it PR titles and commit messages as they are.
   const file = args[args.indexOf('--message') + 1];
-  inputs.push({ source: 'commit message', text: messageText(readFileSync(file, 'utf8'), commentChar()) });
+  inputs.push({ source: 'commit message', text: readFileSync(file, 'utf8') });
+} else if (args.includes('--commit-msg')) {
+  // The hook: what git will record from its message file (see hookMessageText).
+  const file = args[args.indexOf('--commit-msg') + 1];
+  inputs.push({ source: 'commit message', text: hookMessageText(readFileSync(file, 'utf8')) });
 } else if (args.includes('--staged')) {
   // Only web/. The git calls run from the repository root (a hook in a linked worktree has
   // GIT_DIR set, which makes `--relative` from web/ list the whole repository), limited by a
@@ -125,27 +131,41 @@ function git(argv, cwd = ROOT) {
   });
 }
 
-function commentChar() {
+function gitConfig(key) {
   try {
-    const c = git(['config', '--get', 'core.commentChar'], REPO).trim();
-    return c.length === 1 ? c : '#';
+    return git(['config', '--get', key], REPO).trim();
   } catch {
-    return '#';
+    return '';
   }
 }
 
+function commentChar() {
+  const c = gitConfig('core.commentChar');
+  return c.length === 1 ? c : '#';
+}
+
 /**
- * What git will record from a commit message file: everything below the scissors line
- * (`git commit -v` puts the diff there) is cut always; comment lines are blanked only
- * when git will strip them, i.e. when the file is the editor's template (it carries the
- * "Please enter the commit message" help). With -m a `#` line is part of the message.
+ * What git will record from the message file the commit-msg hook gets, following
+ * commit.cleanup (the --cleanup option of the one commit can't be seen from a hook).
+ * The editor template is recognised by its "Please enter the commit message" help.
+ *  - scissors: cut below the scissors line (`git commit -v` puts the diff there); with
+ *    `scissors`, or `default` + template.
+ *  - comments: lines starting with the comment character are blanked; with `strip`, or
+ *    `default` + template. With -m and the default, a `#` line is part of the message.
  */
-function messageText(raw, cc = '#') {
+function hookMessageText(raw) {
+  const cc = commentChar();
+  const cleanup = gitConfig('commit.cleanup') || 'default';
   const lines = raw.split('\n');
-  const scissors = lines.findIndex((l) => l === `${cc} ------------------------ >8 ------------------------`);
-  const kept = scissors === -1 ? lines : lines.slice(0, scissors);
-  const editor = kept.some((l) => l.startsWith(`${cc} Please enter the commit message`));
-  return kept.map((l) => (editor && l.startsWith(cc) ? '' : l)).join('\n');
+  const template = lines.some((l) => l.startsWith(`${cc} Please enter the commit message`));
+  const auto = cleanup === 'default' && template;
+  let kept = lines;
+  if (cleanup === 'scissors' || auto) {
+    const at = lines.findIndex((l) => l === `${cc} ------------------------ >8 ------------------------`);
+    if (at !== -1) kept = lines.slice(0, at);
+  }
+  const strip = cleanup === 'strip' || auto;
+  return kept.map((l) => (strip && l.startsWith(cc) ? '' : l)).join('\n');
 }
 
 function fail(message) {

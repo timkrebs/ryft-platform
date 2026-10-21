@@ -25,8 +25,10 @@ function files(locale: string): string[] {
   const dir = join(LEGAL, locale);
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory()
-      ? readdirSync(join(dir, e.name)).map((f) => `${e.name}/${f}`)
-      : e.name.endsWith('.mdx')
+      ? readdirSync(join(dir, e.name))
+          .filter((f) => !f.startsWith('.'))
+          .map((f) => `${e.name}/${f}`)
+      : e.name.endsWith('.mdx') && !e.name.startsWith('.')
         ? [e.name]
         : [],
   );

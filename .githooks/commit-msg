@@ -4,4 +4,4 @@ hooks=$(dirname "$0")
 . "$hooks/_node.sh"
 cd "$(git rev-parse --show-toplevel)" || exit 1
 ensure_node || no_node commit-msg
-exec node web/scripts/check-brand.mjs --message "$1"
+exec node web/scripts/check-brand.mjs --commit-msg "$1"

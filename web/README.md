@@ -37,7 +37,7 @@ npm run image      # docker or podman build → ryft-web:local
 npm run serve      # http://localhost:8080, read-only root FS, non-root, like the cluster
 npm run e2e        # Playwright against it: every page en/de, light/dark, axe, routes, headers
 npm run links      # internal and external links
-npx --yes @lhci/cli@0.15.1 autorun   # Lighthouse budgets (CHROME_PATH=… if Chrome isn't found)
+npm run lighthouse    # Lighthouse budgets, pinned @lhci/cli (CHROME_PATH=… if Chrome isn't found)
 npm run serve:stop
 ```
 

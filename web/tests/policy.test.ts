@@ -143,6 +143,12 @@ describe('privacy versions that users consented to', () => {
     expect(r.problems.join('\n')).toMatch(/en\/privacy\/draft\.mdx: privacy pages must be named/);
   });
 
+  it('ignores dotfiles such as .DS_Store, but not other non-date pages', () => {
+    const dir = site({ en: [V, '.DS_Store'], de: [V] });
+    expect(checkPolicy({ siteRoot: dir, repoRoot: both(V) }).problems).toEqual([]);
+    expect(sitePolicyVersion(dir)).toBe(V);
+  });
+
   it('warns, but does not fail, while the consented page is a draft', () => {
     const r = checkPolicy({
       siteRoot: site({ en: [V], de: [V] }, ['2026-10-20'], 'draft'),

@@ -101,7 +101,10 @@ export function checkPolicy({ siteRoot, repoRoot }) {
 
   for (const locale of LOCALES) {
     const dir = join(siteRoot, 'content/legal', locale, 'privacy');
-    const names = existsSync(dir) ? readdirSync(dir) : [];
+    // Only *.mdx pages count; dotfiles (.DS_Store) and other files are not pages.
+    const names = existsSync(dir)
+      ? readdirSync(dir).filter((f) => f.endsWith('.mdx') && !f.startsWith('.'))
+      : [];
     for (const name of names.filter((f) => !PAGE.test(f))) {
       problems.push(`content/legal/${locale}/privacy/${name}: privacy pages must be named YYYY-MM-DD.mdx.`);
     }

@@ -65,42 +65,73 @@ describe('check-brand.mjs --staged', () => {
   });
 });
 
-describe('check-brand.mjs --message', () => {
+describe('check-brand.mjs --message (CI: the whole text, nothing stripped)', () => {
   const msg = (name: string, text: string) => {
     write(repo, name, text);
     return join(repo, name);
   };
   const SCISSORS = '# ------------------------ >8 ------------------------';
-  const HELP = '# Please enter the commit message for your changes.';
 
-  it('blocks a commit message with the name and passes a clean one', () => {
+  it('blocks a text with the name and passes a clean one', () => {
     expect(run(repo, ['--message', msg('m1', `fix: ${TERM}\n`)]).status).toBe(1);
     expect(run(repo, ['--message', msg('m2', 'fix: something\n')]).status).toBe(0);
   });
 
-  it('ignores the diff below the scissors line (git commit -v)', () => {
-    const text = `fix: something\n\n${SCISSORS}\n# Do not modify or remove the line above.\ndiff --git a/x b/x\n+// ${TERM}\n`;
-    expect(run(repo, ['--message', msg('m3', text)]).status).toBe(0);
+  it('scans below a literal scissors line and in comment lines', () => {
+    expect(run(repo, ['--message', msg('m3', `fix: ok\n\n${SCISSORS}\n${TERM}\n`)]).status).toBe(1);
+    expect(
+      run(repo, ['--message', msg('m4', `fix: ok\n\n# Please enter the commit message\n# ${TERM}\n`)]).status,
+    ).toBe(1);
+  });
+});
+
+describe('check-brand.mjs --commit-msg (the hook: what git will record)', () => {
+  const msg = (name: string, text: string) => {
+    write(repo, name, text);
+    return join(repo, name);
+  };
+  const hook = (file: string) => run(repo, ['--commit-msg', file]).status;
+  const SCISSORS = '# ------------------------ >8 ------------------------';
+  const HELP = '# Please enter the commit message for your changes.';
+
+  it('blocks a commit message with the name and passes a clean one', () => {
+    expect(hook(msg('h1', `fix: ${TERM}\n`))).toBe(1);
+    expect(hook(msg('h2', 'fix: something\n'))).toBe(0);
+  });
+
+  it('ignores the diff below the scissors line of the editor template (git commit -v)', () => {
+    const text = `fix: something\n\n${HELP}\n${SCISSORS}\ndiff --git a/x b/x\n+// ${TERM}\n`;
+    expect(hook(msg('h3', text))).toBe(0);
   });
 
   it('ignores comment lines in the editor template, which git strips', () => {
-    const text = `fix: something\n\n${HELP}\n#\tmodified:   ${TERM}.go\n`;
-    expect(run(repo, ['--message', msg('m4', text)]).status).toBe(0);
+    expect(hook(msg('h4', `fix: something\n\n${HELP}\n#\tmodified:   ${TERM}.go\n`))).toBe(0);
   });
 
-  it('checks a # line with -m, where git keeps it', () => {
-    expect(run(repo, ['--message', msg('m5', `fix: something\n\n# ${TERM}\n`)]).status).toBe(1);
+  it('scans a # line and a scissors line given with -m, where git keeps them', () => {
+    expect(hook(msg('h5', `fix: something\n\n# ${TERM}\n`))).toBe(1);
+    expect(hook(msg('h6', `fix: something\n\n${SCISSORS}\n${TERM}\n`))).toBe(1);
   });
 
   it('checks the lines above the scissors line', () => {
-    const text = `fix: ${TERM}\n\n${HELP}\n${SCISSORS}\ndiff\n`;
-    expect(run(repo, ['--message', msg('m6', text)]).status).toBe(1);
+    expect(hook(msg('h7', `fix: ${TERM}\n\n${HELP}\n${SCISSORS}\ndiff\n`))).toBe(1);
+  });
+
+  it('follows commit.cleanup', () => {
+    git(repo, 'config', 'commit.cleanup', 'strip');
+    expect(hook(msg('h8', `fix: something\n\n# ${TERM}\n`))).toBe(0);
+    git(repo, 'config', 'commit.cleanup', 'scissors');
+    expect(hook(msg('h9', `fix: something\n\n# ${TERM}\n${SCISSORS}\n${TERM}\n`))).toBe(1);
+    expect(hook(msg('h10', `fix: something\n\n${SCISSORS}\n${TERM}\n`))).toBe(0);
+    git(repo, 'config', 'commit.cleanup', 'verbatim');
+    expect(hook(msg('h11', `fix: something\n\n${HELP}\n# ${TERM}\n`))).toBe(1);
+    git(repo, 'config', '--unset', 'commit.cleanup');
   });
 
   it('respects core.commentChar', () => {
     git(repo, 'config', 'core.commentChar', ';');
     const text = `fix: something\n\n; Please enter the commit message\n; ${TERM}\n`;
-    expect(run(repo, ['--message', msg('m7', text)]).status).toBe(0);
+    expect(hook(msg('h12', text))).toBe(0);
     git(repo, 'config', '--unset', 'core.commentChar');
   });
 });
