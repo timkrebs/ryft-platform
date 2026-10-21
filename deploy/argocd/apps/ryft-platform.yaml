@@ -29,6 +29,9 @@ spec:
     # runs (docs/OPERATIONS.md → Cutover to Argo CD, step 3); then the next commit adds
     #   automated: { prune: true, selfHeal: true }
     syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false, RespectIgnoreDifferences=true]
+    # A failed sync of the same commit is not retried by automated sync itself:
+    # twice more, for what passes (a pooler blip during migrate, a slow smoke).
+    retry: { limit: 2, backoff: { duration: 1m, factor: 2, maxDuration: 5m } }
   ignoreDifferences:
     # api and ingest: replicas belong to their HorizontalPodAutoscalers.
     - group: apps

@@ -23,3 +23,6 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [ServerSideApply=true, PruneLast=true, CreateNamespace=false]
+    # A failed sync of the same commit is not retried by automated sync itself:
+    # twice more, for what passes (a pooler blip during migrate, a slow smoke).
+    retry: { limit: 2, backoff: { duration: 1m, factor: 2, maxDuration: 5m } }
