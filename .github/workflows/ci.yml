@@ -31,8 +31,20 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
           --health-timeout 5s --health-retries 15
+      # The broker production runs (deploy/rabbitmq/cluster), for internal/events/amqpbus:
+      # publish/consume, confirms, the retry tiers, dead letters, reconnects and the
+      # permission matrix, each test in a vhost of its own.
+      rabbitmq:
+        image: rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+        env: { RABBITMQ_DEFAULT_USER: admin, RABBITMQ_DEFAULT_PASS: admin }
+        ports: ["5672:5672", "15672:15672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s
+          --health-timeout 10s --health-retries 30
     env:
       RYFT_TEST_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres
+      RYFT_TEST_AMQP_URL: amqp://admin:admin@localhost:5672/
+      RYFT_TEST_AMQP_MGMT: http://admin:admin@localhost:15672
     defaults:
       run:
         working-directory: backend

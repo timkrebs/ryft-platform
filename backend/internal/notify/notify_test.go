@@ -451,3 +451,22 @@ func TestRefreshAfterSync(t *testing.T) {
 		t.Fatal("right after the morning refresh: throttled")
 	}
 }
+
+// D100: without publish dedup a session.scored can arrive twice; the claim per user,
+// day and category keeps it to one push (scored: TestMorningSendsOncePerDay; refresh:
+// the 5-minute throttle in TestRefreshAfterSync).
+func TestDuplicateSessionScoredSendsOnce(t *testing.T) {
+	now := time.Date(2026, 10, 19, 19, 0, 0, 0, berlin)
+	ended, strain := now.Add(-20*time.Minute), 11.2
+	s, st, ap := service(now, model.NotificationPrefs{})
+	st.session = store.SessionNotice{Title: "Upper A", Status: model.SessionCompleted, EndedAt: &ended, Strain: &strain}
+	ev := events.NotifyMessage{SessionScored: &model.SessionScoredEvent{UserID: uuid.New(), SessionID: uuid.New(), Day: "2026-10-19"}}
+	for range 3 {
+		if err := s.Handle(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(ap.sent) != len(tokens) {
+		t.Fatalf("three deliveries, one push per device: %d sent", len(ap.sent))
+	}
+}

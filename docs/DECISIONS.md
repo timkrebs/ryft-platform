@@ -1720,3 +1720,66 @@ sent, and whether a second account shares its phone.
   early. Whether RabbitMQ serves the new one without a restart (Erlang caches PEM
   files) is untested; `CertificateExpiring` fires 14 days before expiry, and a rolling
   restart of the cluster is the fallback (OPERATIONS → RabbitMQ).
+
+## D99 — The broker's topology, retries and rights, defined once in Go
+
+- **One source:** `internal/events/amqpbus/topology.go`. `go run ./cmd/rabbitmq-topology`
+  writes the Topology Operator's objects (`deploy/rabbitmq/topology/topology.yaml`, 63
+  objects in sync waves after the cluster) and the definitions compose and the tests
+  load (`deploy/rabbitmq/dev/definitions.json`, dev passwords); `make k8s-validate`
+  fails when either differs. The client takes its names and tiers from the same code,
+  and the tests import the same topology at a hundredth of its TTLs.
+- **Exchanges:** `ryft.events` (topic) for the five events, routing keys = today's
+  subjects without `ryft.`; `ryft.retry` (topic) into the delay queues; `ryft.requeue`
+  (direct), written only by the broker, back from them; `ryft.dlx` (topic) to the dead
+  letters. **Queues:** `scoring`, `notify`, their delay queues and `dlq.scoring`,
+  `dlq.notify`, all quorum (three replicas), without arguments: delivery limits, TTLs,
+  dead-lettering and length limits are **policies**, since the Topology Operator cannot
+  change a queue's arguments once it exists. Every queue matches exactly one policy
+  (checked).
+- **Retries without the delayed-message plugin:** a failed message is acknowledged and
+  a copy with `x-ryft-attempt` goes to `<queue>.retry.5s`, `.30s`, then `.5m`; each holds
+  it for its TTL and dead-letters it through `ryft.requeue` back to its own queue (not
+  through `ryft.events`, so a retry never reaches another consumer). After six attempts
+  (about 16 minutes; NATS gave up after ten in 5) it is dead-lettered with the same
+  `Ryft-*` headers as on NATS. notify's deferrals (quiet hours) use
+  `notify.wait.{1m,15m,1h}`, the longest tier that fits, again until it stops deferring;
+  they are not attempts. Not the delayed-message plugin: it is a community plugin, not
+  in the official image, and keeps delayed messages outside the replicated queues. Not
+  (yet) RabbitMQ 4.3's new delayed retry for quorum queues, which delays rejected
+  messages by broker settings: a few months old, and our attempt count and tiers would
+  become broker configuration we cannot see per message. The TTL queues are plain,
+  visible in the management UI, and tested.
+- **The broker's own limit stays as the safety net:** `delivery-limit` 10 on the work
+  queues counts what the client does not settle (a consumer that dies holding the
+  message, a reject when even the retry publish fails); then the broker dead-letters it
+  itself (at-least-once, `overflow: reject-publish`).
+- **Publishing:** confirms on, `mandatory` (an event without a bound queue is an error
+  and `ryft_events_published_total{result="unroutable"}`, not a silent drop), persistent,
+  `message_id` = the old dedup id, `type` = the event key (decoding goes by type, since
+  a retry or requeue arrives with another routing key).
+- **Least privilege, D43's granularity restored:** no service may configure anything.
+  Writes are limited by exchange and, with **topic permissions**, by routing key: ingest
+  may publish only `ingested`; api `ingested` and `session.completed`; scoring `scored`,
+  `session.scored`, `refresh`, plus its own retry keys (`scoring.*`) and dead-letter key;
+  notify only its retry and dead-letter keys. Each reads only its own queue; nobody may
+  write `ryft.requeue`. `permissions_test.go` proves the matrix against a broker (and
+  fails when one rule is loosened). Users come from the operator's `User` objects, their
+  passwords from Vault.
+- **The DLQ** keeps letters 14 days (a policy); `scripts/dlq.sh` lists, shows, replays and
+  purges them through the management API (OPERATIONS → RabbitMQ).
+
+## D100 — Idempotent handlers instead of publish dedup
+
+- JetStream dropped a repeat of the same message id within two minutes; RabbitMQ
+  delivers every copy (a publisher retry after a lost confirm, a redelivery after a
+  consumer died). The handlers are idempotent, and now tests say so:
+  - **scoring:** the same event handled three times leaves every day's row as it was
+    (apart from `computed_at`) and announces the morning once
+    (`TestTheSameEventTwiceChangesNothing`); `scored` is only published for today's first
+    recovery, so duplicates do not cascade into notify;
+  - **notify:** a repeated `scored` or `session.scored` sends one push (the claim per
+    user, day and category), a repeated `refresh` is throttled (five minutes).
+- So no `processed_events` table: it would cost a write per event to protect handlers
+  that need no protection. `message_id` stays stable for the same trigger, so one can be
+  added if a handler ever stops being idempotent.

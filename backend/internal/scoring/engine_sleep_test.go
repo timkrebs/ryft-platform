@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -159,5 +160,61 @@ func TestEngineAnnouncesTodaysFirstRecovery(t *testing.T) {
 	}
 	if err := engine.ComputeRange(ctx, user, from, to); err != nil || len(got) != 1 {
 		t.Fatalf("a rescore announces nothing: %d events", len(got))
+	}
+}
+
+// D100: RabbitMQ has no publish dedup, so the same ingested event may be handled
+// twice (or ten times). Rescoring its days must leave the rows as they were, apart
+// from when they were computed, and announce nothing more.
+func TestTheSameEventTwiceChangesNothing(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	announced := 0
+	engine.OnScored(func(context.Context, model.ScoredEvent) { announced++ })
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	var segs []model.SleepSegment
+	var samples []model.Sample
+	for k := 5; k >= 0; k-- {
+		d := today.AddDate(0, 0, -k)
+		segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(6 * time.Hour), Stage: model.SleepCore, Source: "watch"})
+		for m := 0; m < 30; m++ {
+			at := d.Add(3*time.Hour + time.Duration(m)*time.Minute)
+			samples = append(samples, model.Sample{Type: model.SampleHeartRate, Start: at, End: at, Value: 52 + float64(m%5), Unit: "count/min", Source: "watch"},
+				model.Sample{Type: model.SampleHRVSDNN, Start: at, End: at, Value: 60 + float64(k), Unit: "ms", Source: "watch"})
+		}
+	}
+	if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertSamples(ctx, user, samples); err != nil {
+		t.Fatal(err)
+	}
+	from, to := today.AddDate(0, 0, -5).Format("2006-01-02"), today.Format("2006-01-02")
+	ev := model.IngestedEvent{UserID: user, Days: []string{from, to}, Reason: "sync"}
+	handle := func() {
+		t.Helper()
+		if err := engine.ComputeRange(ctx, ev.UserID, ev.Days[0], ev.Days[len(ev.Days)-1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle()
+	first := scoresByDay(t, st, user, from, to)
+	handle()
+	handle()
+	again := scoresByDay(t, st, user, from, to)
+	if len(first) != 6 || len(again) != 6 {
+		t.Fatalf("six days scored: %d, %d", len(first), len(again))
+	}
+	for day, a := range first {
+		b := again[day]
+		a.ComputedAt, b.ComputedAt = time.Time{}, time.Time{}
+		ja, _ := json.Marshal(a)
+		jb, _ := json.Marshal(b)
+		if string(ja) != string(jb) {
+			t.Errorf("%s changed on a duplicate:\n%s\n%s", day, ja, jb)
+		}
+	}
+	if announced != 1 {
+		t.Fatalf("the morning is announced once, not per delivery: %d", announced)
 	}
 }

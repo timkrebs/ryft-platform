@@ -1,0 +1,606 @@
+{
+  "bindings": [
+    {
+      "arguments": {},
+      "destination": "scoring",
+      "destination_type": "queue",
+      "routing_key": "ingested",
+      "source": "ryft.events",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "scoring",
+      "destination_type": "queue",
+      "routing_key": "session.completed",
+      "source": "ryft.events",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "scoring",
+      "destination_type": "queue",
+      "routing_key": "scoring",
+      "source": "ryft.requeue",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "scoring.retry.5s",
+      "destination_type": "queue",
+      "routing_key": "scoring.retry.5s",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "scoring.retry.30s",
+      "destination_type": "queue",
+      "routing_key": "scoring.retry.30s",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "scoring.retry.5m",
+      "destination_type": "queue",
+      "routing_key": "scoring.retry.5m",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "dlq.scoring",
+      "destination_type": "queue",
+      "routing_key": "scoring",
+      "source": "ryft.dlx",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify",
+      "destination_type": "queue",
+      "routing_key": "scored",
+      "source": "ryft.events",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify",
+      "destination_type": "queue",
+      "routing_key": "session.scored",
+      "source": "ryft.events",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify",
+      "destination_type": "queue",
+      "routing_key": "refresh",
+      "source": "ryft.events",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify",
+      "destination_type": "queue",
+      "routing_key": "notify",
+      "source": "ryft.requeue",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.retry.5s",
+      "destination_type": "queue",
+      "routing_key": "notify.retry.5s",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.retry.30s",
+      "destination_type": "queue",
+      "routing_key": "notify.retry.30s",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.retry.5m",
+      "destination_type": "queue",
+      "routing_key": "notify.retry.5m",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.wait.1m",
+      "destination_type": "queue",
+      "routing_key": "notify.wait.1m",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.wait.15m",
+      "destination_type": "queue",
+      "routing_key": "notify.wait.15m",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "notify.wait.1h",
+      "destination_type": "queue",
+      "routing_key": "notify.wait.1h",
+      "source": "ryft.retry",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "destination": "dlq.notify",
+      "destination_type": "queue",
+      "routing_key": "notify",
+      "source": "ryft.dlx",
+      "vhost": "ryft"
+    }
+  ],
+  "exchanges": [
+    {
+      "arguments": {},
+      "auto_delete": false,
+      "durable": true,
+      "internal": false,
+      "name": "ryft.events",
+      "type": "topic",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "auto_delete": false,
+      "durable": true,
+      "internal": false,
+      "name": "ryft.retry",
+      "type": "topic",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "auto_delete": false,
+      "durable": true,
+      "internal": false,
+      "name": "ryft.requeue",
+      "type": "direct",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {},
+      "auto_delete": false,
+      "durable": true,
+      "internal": false,
+      "name": "ryft.dlx",
+      "type": "topic",
+      "vhost": "ryft"
+    }
+  ],
+  "permissions": [
+    {
+      "configure": ".*",
+      "read": ".*",
+      "user": "admin",
+      "vhost": "ryft",
+      "write": ".*"
+    },
+    {
+      "configure": "^$",
+      "read": "^$",
+      "user": "ingest",
+      "vhost": "ryft",
+      "write": "^ryft\\.events$"
+    },
+    {
+      "configure": "^$",
+      "read": "^$",
+      "user": "api",
+      "vhost": "ryft",
+      "write": "^ryft\\.events$"
+    },
+    {
+      "configure": "^$",
+      "read": "^scoring$",
+      "user": "scoring",
+      "vhost": "ryft",
+      "write": "^(ryft\\.events|ryft\\.retry|ryft\\.dlx)$"
+    },
+    {
+      "configure": "^$",
+      "read": "^notify$",
+      "user": "notify",
+      "vhost": "ryft",
+      "write": "^(ryft\\.retry|ryft\\.dlx)$"
+    }
+  ],
+  "policies": [
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.dlx",
+        "dead-letter-routing-key": "scoring",
+        "dead-letter-strategy": "at-least-once",
+        "delivery-limit": 10,
+        "max-length": 100000,
+        "overflow": "reject-publish"
+      },
+      "name": "work-scoring",
+      "pattern": "^scoring$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "scoring",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 5000,
+        "overflow": "reject-publish"
+      },
+      "name": "scoring.retry.5s",
+      "pattern": "^scoring\\.retry\\.5s$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "scoring",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 30000,
+        "overflow": "reject-publish"
+      },
+      "name": "scoring.retry.30s",
+      "pattern": "^scoring\\.retry\\.30s$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "scoring",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 300000,
+        "overflow": "reject-publish"
+      },
+      "name": "scoring.retry.5m",
+      "pattern": "^scoring\\.retry\\.5m$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.dlx",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "delivery-limit": 10,
+        "max-length": 100000,
+        "overflow": "reject-publish"
+      },
+      "name": "work-notify",
+      "pattern": "^notify$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 5000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.retry.5s",
+      "pattern": "^notify\\.retry\\.5s$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 30000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.retry.30s",
+      "pattern": "^notify\\.retry\\.30s$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 300000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.retry.5m",
+      "pattern": "^notify\\.retry\\.5m$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 60000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.wait.1m",
+      "pattern": "^notify\\.wait\\.1m$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 900000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.wait.15m",
+      "pattern": "^notify\\.wait\\.15m$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "dead-letter-exchange": "ryft.requeue",
+        "dead-letter-routing-key": "notify",
+        "dead-letter-strategy": "at-least-once",
+        "max-length": 100000,
+        "message-ttl": 3600000,
+        "overflow": "reject-publish"
+      },
+      "name": "notify.wait.1h",
+      "pattern": "^notify\\.wait\\.1h$",
+      "priority": 10,
+      "vhost": "ryft"
+    },
+    {
+      "apply-to": "quorum_queues",
+      "definition": {
+        "max-length": 100000,
+        "message-ttl": 1209600000
+      },
+      "name": "dlq",
+      "pattern": "^dlq\\.",
+      "priority": 10,
+      "vhost": "ryft"
+    }
+  ],
+  "queues": [
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "scoring",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "scoring.retry.5s",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "scoring.retry.30s",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "scoring.retry.5m",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "dlq.scoring",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.retry.5s",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.retry.30s",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.retry.5m",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.wait.1m",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.wait.15m",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "notify.wait.1h",
+      "vhost": "ryft"
+    },
+    {
+      "arguments": {
+        "x-queue-type": "quorum"
+      },
+      "auto_delete": false,
+      "durable": true,
+      "name": "dlq.notify",
+      "vhost": "ryft"
+    }
+  ],
+  "topic_permissions": [
+    {
+      "exchange": "ryft.events",
+      "read": "^$",
+      "user": "ingest",
+      "vhost": "ryft",
+      "write": "^ingested$"
+    },
+    {
+      "exchange": "ryft.events",
+      "read": "^$",
+      "user": "api",
+      "vhost": "ryft",
+      "write": "^(ingested|session\\.completed)$"
+    },
+    {
+      "exchange": "ryft.dlx",
+      "read": "^$",
+      "user": "scoring",
+      "vhost": "ryft",
+      "write": "^scoring$"
+    },
+    {
+      "exchange": "ryft.events",
+      "read": "^$",
+      "user": "scoring",
+      "vhost": "ryft",
+      "write": "^(scored|session\\.scored|refresh)$"
+    },
+    {
+      "exchange": "ryft.retry",
+      "read": "^$",
+      "user": "scoring",
+      "vhost": "ryft",
+      "write": "^scoring\\."
+    },
+    {
+      "exchange": "ryft.dlx",
+      "read": "^$",
+      "user": "notify",
+      "vhost": "ryft",
+      "write": "^notify$"
+    },
+    {
+      "exchange": "ryft.retry",
+      "read": "^$",
+      "user": "notify",
+      "vhost": "ryft",
+      "write": "^notify\\."
+    }
+  ],
+  "users": [
+    {
+      "name": "admin",
+      "password": "dev-admin-amqp-password",
+      "tags": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "api",
+      "password": "dev-api-amqp-password",
+      "tags": []
+    },
+    {
+      "name": "ingest",
+      "password": "dev-ingest-amqp-password",
+      "tags": []
+    },
+    {
+      "name": "notify",
+      "password": "dev-notify-amqp-password",
+      "tags": []
+    },
+    {
+      "name": "scoring",
+      "password": "dev-scoring-amqp-password",
+      "tags": []
+    }
+  ],
+  "vhosts": [
+    {
+      "default_queue_type": "quorum",
+      "name": "ryft"
+    }
+  ]
+}

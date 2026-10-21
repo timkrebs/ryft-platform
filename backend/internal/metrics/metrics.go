@@ -138,6 +138,14 @@ var (
 		Name: "ryft_event_handler_panics_total",
 		Help: "Event handlers that panicked (the message is retried and, at the last delivery, dead-lettered), by subject.",
 	}, []string{"subject"})
+	AMQPConnected = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ryft_amqp_connected",
+		Help: "1 while the service's connection to RabbitMQ is up, 0 while it reconnects.",
+	})
+	AMQPReconnects = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_amqp_reconnects_total",
+		Help: "Connections to RabbitMQ that closed and were dialled again.",
+	})
 	EventsDLQ = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_dlq_total",
 		Help: "Events moved to the dead-letter stream RYFT_DLQ, by original subject: ok, or error (the publish failed; the message stayed in RYFT).",
