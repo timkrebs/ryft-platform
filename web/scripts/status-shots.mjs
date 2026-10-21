@@ -10,7 +10,7 @@ import sharp from 'sharp';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const OUT = join(ROOT, 'docs/screenshots');
-const APP = resolve(ROOT, process.env.RYFT_APP_DIR ?? '../app');
+const APP = resolve(ROOT, process.env.RYFT_APP_DIR ?? '../../app');
 const BASE = process.env.BASE_URL ?? 'http://localhost:8080';
 const PAGES = [
   '/',

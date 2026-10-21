@@ -10,7 +10,8 @@ cluster, generated topology; D97, it replaced NATS JetStream, D102),
 kustomize manifests in
 `deploy/k8s` (`base/` + overlays: default, `vault`, `overlays/eks`, `overlays/local-postgres`),
 Terraform for the EKS cluster in `infra/aws` and for Vault (namespace per service,
-Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`. Read
+Kubernetes auth, KV, generated VSO manifests) in `infra/vault`, scripts in `scripts/`, and the website `web/` (ryftapp.de: a static Next.js site with the
+legal texts, the AASA and its own nginx image; D107). Read
 `docs/STATUS.md`, `docs/DECISIONS.md`, `docs/ARCHITECTURE.md` and `docs/API.md` before
 changing anything; add a `D<n>` entry to `DECISIONS.md` for every judgement call. The
 roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
@@ -26,6 +27,7 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
   every shape, a changelog entry per change. Never rename or remove a field in v1.
 - Verification before every commit: `cd backend && go vet ./... && go test ./...`, then
   `make smoke` (local apikey mode) and, when `SUPABASE_*` env is set, `make smoke-supabase`.
+  When `web/` changed: `make web-test web-build` and `make web-e2e`.
 - Git is the only way anything reaches `ryft-prod-euc1`: Argo CD syncs `deploy/argocd/apps`
   (app of apps, D94/D95), and CI promotes images by a PR that pins `overlays/eks` (D96).
   `make k8s-apply-eks` is break-glass only. Never `kubectl apply` against production
@@ -47,6 +49,16 @@ roadmap is `../ROADMAP.md`; the user pastes one milestone per session.
 - Never commit secrets. `deploy/k8s/secrets.yaml` and `.env` are git-ignored.
 - End each session with `docs/STATUS.md` (done / open / exact deploy commands) and a
   commit per milestone.
+
+## web/
+The site for ryftapp.de: pages, legal texts (`content/legal`), the AASA and the nginx image.
+Its rules are in `web/CLAUDE.md` (Claude Code loads it inside `web/`); read it before touching
+`web/`. The brand rule applies to `web/**`, to the built output and to every commit message in
+the repository, enforced by `make hooks` (once per clone: `.githooks`) and in CI. Tokens, the
+Swift-licence snapshot and the AASA test read the app at `../app` (`RYFT_APP_DIR`).
+Targets: `make web-install web-test web-build web-e2e web-image web-serve web-tokens`. A release is the
+merge: CI builds the image and promotes it (details in the CI docs). A privacy text and
+`PRIVACY_POLICY_VERSION` change in the same PR.
 
 ## Local workflow
 ```bash

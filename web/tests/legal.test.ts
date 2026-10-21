@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 // still names its source (`portedFrom`), its text must equal the draft's, word for word;
 // the user removes `portedFrom` when editing a text for publication.
 const LEGAL = 'content/legal';
+// portedFrom paths are relative to the repository root (web/..); RYFT_ROOT overrides it.
 const RYFT = resolve(process.env.RYFT_ROOT ?? '..');
 const locales = ['en', 'de'] as const;
 

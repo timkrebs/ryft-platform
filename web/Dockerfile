@@ -2,8 +2,10 @@
 # ryftapp.de: build the static export with Node, serve it with unprivileged nginx.
 # Fonts (Fontshare) and the app's licence texts (GitHub, pinned revisions) are fetched
 # during the build; nothing else leaves the build, and the final image has no Node.
+# The build stage runs on the builder's own architecture (the export is the same everywhere);
+# only the nginx stage is per target platform.
 
-FROM node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM --platform=$BUILDPLATFORM node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
 WORKDIR /web
 ENV NEXT_TELEMETRY_DISABLED=1 CI=1
 COPY package.json package-lock.json ./
@@ -26,6 +28,6 @@ COPY --from=build /web/out /usr/share/nginx/html
 # Runs as nginx (101). Read-only root filesystem: mount writable /tmp and /var/cache/nginx.
 USER 101
 EXPOSE 8080
-LABEL org.opencontainers.image.source="https://github.com/timkrebs/ryft-web" \
+LABEL org.opencontainers.image.source="https://github.com/timkrebs/ryft-platform" \
       org.opencontainers.image.description="ryftapp.de, static, served by nginx" \
       org.opencontainers.image.licenses="NOASSERTION"
