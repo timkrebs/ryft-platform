@@ -71,7 +71,7 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1) +
 		(SELECT count(*) FROM push_tokens WHERE user_id=$1) + (SELECT count(*) FROM notifications_sent WHERE user_id=$1) +
 		(SELECT count(*) FROM user_sources WHERE user_id=$1) + (SELECT count(*) FROM feedback WHERE user_id=$1) +
-		(SELECT count(*) FROM score_queue WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM score_queue WHERE user_id=$1) + (SELECT count(*) FROM outbox WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +83,10 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	if _, err := st.EnsureUser(ctx, Identity{ID: id, Email: "a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	// An event for the account waiting in (or published from) the outbox (D101).
+	if _, err := pool.Exec(ctx, `INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}')`, id); err != nil {
 		t.Fatal(err)
 	}
 	device := uuid.New()

@@ -23,6 +23,7 @@ import (
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/natsbus"
+	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -98,14 +99,21 @@ func main() {
 		}
 	}()
 
-	// The morning push: notify sends it when today first gets a recovery. A
-	// failed publish loses that one push (the day is not "first" again); the
-	// score itself is stored either way.
+	// What scoring tells notify goes through its outbox (D101): written to the
+	// database, sent once the broker confirms it, so a broker outage loses no morning
+	// push.
+	ob := outbox.New(pool, "scoring", bus, log)
+	go ob.Run(ctx)
+	pub := events.Publisher{Sender: ob}
+
+	// The morning push: notify sends it when today first gets a recovery. A failed
+	// write loses that one push (the day is not "first" again); the score itself is
+	// stored either way.
 	engine.OnScored(func(ctx context.Context, ev model.ScoredEvent) {
 		if f := logx.FieldsFrom(ctx); f != nil {
 			ev.RequestID = f.RequestID
 		}
-		if err := bus.PublishScored(ctx, ev); err != nil {
+		if err := pub.PublishScored(ctx, ev); err != nil {
 			log.ErrorContext(ctx, "publish scored", "day", ev.Day, "err", err)
 		}
 	})
@@ -115,7 +123,7 @@ func main() {
 		err := handleEvent(ctx, engine, ev)
 		if err == nil && ev.SessionID != nil && len(ev.Days) == 1 {
 			// The session's load is final now: notify may announce it.
-			if perr := bus.PublishSessionScored(ctx, model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID,
+			if perr := pub.PublishSessionScored(ctx, model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID,
 				Day: ev.Days[0], RequestID: ev.RequestID}); perr != nil {
 				log.ErrorContext(ctx, "publish session scored", "session_id", *ev.SessionID, "err", perr)
 			}
@@ -123,7 +131,7 @@ func main() {
 		if err == nil && ev.Reason == "sync" && len(ev.Days) > 0 {
 			// The sync's days are scored: a silent push lets the app refetch (D92).
 			newest := slices.Max(ev.Days)
-			if perr := bus.PublishRefresh(ctx, model.RefreshEvent{UserID: ev.UserID, Day: newest, RequestID: ev.RequestID}); perr != nil {
+			if perr := pub.PublishRefresh(ctx, model.RefreshEvent{UserID: ev.UserID, Day: newest, RequestID: ev.RequestID}); perr != nil {
 				log.ErrorContext(ctx, "publish refresh", "day", newest, "err", perr)
 			}
 		}

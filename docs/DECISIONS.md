@@ -1671,7 +1671,7 @@ sent, and whether a second account shares its phone.
     RabbitMQ delivers it. Every handler must be idempotent, and the tests must show it
     (D100).
   - **Least privilege rebuilt** from vhost and topic permissions (D99), with a new test.
-  - **A cutover** in four releases with both brokers side by side (D101).
+  - **A cutover** in four releases with both brokers side by side (D102).
 - **Kept:** events are triggers, not records; Postgres is the truth; `POST
   /v1/recompute` replays; at-least-once delivery with idempotent handlers.
 - **The pieces:** the official RabbitMQ Cluster Operator 2.23.1 and Messaging Topology
@@ -1792,3 +1792,37 @@ sent, and whether a second account shares its phone.
 - So no `processed_events` table: it would cost a write per event to protect handlers
   that need no protection. `message_id` stays stable for the same trigger, so one can be
   added if a handler ever stops being idempotent.
+
+## D101 — A transactional outbox in front of the broker
+
+- **The gap it closes, there with NATS too:** a sync was stored, then its event
+  published; a failed publish (the broker down, a pod killed in between) left days
+  stored but never announced, until scoring's 15-minute pass (only yesterday and today)
+  or a recompute. Now every event is a row in `outbox` (migration 0026), and each
+  publishing service runs a relay that sends its rows with the broker's confirm and
+  marks them published.
+- **Same transaction where it matters:** ingest writes the sync's queued days and their
+  event together (`QueueDaysWith`); the api writes a session's completion and its
+  `session.completed` together (`CompleteSessionWith`). The other events (recompute,
+  merge, session edits, scoring's `scored`/`session.scored`/`refresh`) are a row of their
+  own right after the write: no atomicity with it, but durable across a broker outage,
+  which is what loses them today. Moving scoring's writes into one transaction with its
+  events would reach deep into the engine for little: a lost morning push is the worst
+  case, and the outbox already removes the common cause.
+- **The relay:** per publisher, oldest first, 50 rows a pass in one transaction holding
+  their locks (`FOR UPDATE SKIP LOCKED`, so replicas never send a row twice), stopping
+  at the first failure to keep the order, backing off 1 s → 30 s; a commit kicks it, so
+  no poll stands between a sync and scoring (the poll, every 2 s, is for a crashed
+  replica's rows and retries). A crash between a send and its mark sends it again;
+  the handlers are idempotent (D100). A row that failed 50 times is set aside (an
+  event no queue takes) and alerted (`OutboxStuck`) instead of holding up the rest.
+  Published rows stay a week, then the relay deletes them; an account's rows go with
+  the account (`DELETE /v1/me`, merge).
+- **Rows, not a log table elsewhere:** the outbox is the services' own database, written
+  with their own least-privilege roles (each may insert and mark, `UPDATE` only of
+  `published_at`, `attempts`, `last_error`), so it needs no new credential. It works for
+  either broker, which is why it ships before the cutover (D102): the same relay drains
+  into NATS today and RabbitMQ tomorrow.
+- **Metrics:** `ryft_outbox_pending`, `ryft_outbox_oldest_seconds`, `ryft_outbox_stuck`,
+  `ryft_outbox_relayed_total`; alerts `OutboxBacklog` (an event waiting over 5 minutes)
+  and `OutboxStuck`.

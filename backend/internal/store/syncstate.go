@@ -17,13 +17,27 @@ const DefaultExpectedSec = 30
 // QueueDays records that a sync queued days for scoring (D91): pending until
 // scoring finishes each.
 func (s *Store) QueueDays(ctx context.Context, userID uuid.UUID, days []string) error {
+	return s.QueueDaysWith(ctx, userID, days, nil)
+}
+
+// QueueDaysWith is QueueDays with also run in the same transaction: the event that
+// announces the days to scoring, written into the outbox (D101), so the days are
+// queued and announced together or not at all.
+func (s *Store) QueueDaysWith(ctx context.Context, userID uuid.UUID, days []string, also func(pgx.Tx) error) error {
 	if len(days) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
-		SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) d
-		ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, days)
-	return err
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+			SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) d
+			ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, days); err != nil {
+			return err
+		}
+		if also != nil {
+			return also(tx)
+		}
+		return nil
+	})
 }
 
 // MarkScored records that scoring finished day for a computation that started

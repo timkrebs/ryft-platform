@@ -637,11 +637,25 @@ type Completion struct {
 // CompleteSession marks a session completed with its load. ErrNotFound when
 // there is no such session, ErrTaken when it is discarded.
 func (s *Store) CompleteSession(ctx context.Context, userID, id uuid.UUID, c Completion) error {
-	var status string
-	err := s.pool.QueryRow(ctx, `UPDATE sessions SET status='completed', ended_at=$3, bodyweight_kg=COALESCE($4, bodyweight_kg),
-		muscular_trimp=$5, strain=$6, volume_kg=$7, workout_id=$8, updated_at=now()
-		WHERE user_id=$1 AND id=$2 AND status <> 'discarded' RETURNING status`,
-		userID, id, c.EndedAt, c.BodyweightKG, c.MuscularTRIMP, c.Strain, c.VolumeKG, c.WorkoutID).Scan(&status)
+	return s.CompleteSessionWith(ctx, userID, id, c, nil)
+}
+
+// CompleteSessionWith is CompleteSession with also run in the same transaction: the
+// session.completed event written into the outbox (D101).
+func (s *Store) CompleteSessionWith(ctx context.Context, userID, id uuid.UUID, c Completion, also func(pgx.Tx) error) error {
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `UPDATE sessions SET status='completed', ended_at=$3, bodyweight_kg=COALESCE($4, bodyweight_kg),
+			muscular_trimp=$5, strain=$6, volume_kg=$7, workout_id=$8, updated_at=now()
+			WHERE user_id=$1 AND id=$2 AND status <> 'discarded' RETURNING status`,
+			userID, id, c.EndedAt, c.BodyweightKG, c.MuscularTRIMP, c.Strain, c.VolumeKG, c.WorkoutID).Scan(&status); err != nil {
+			return err
+		}
+		if also != nil {
+			return also(tx)
+		}
+		return nil
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE user_id=$1 AND id=$2)`, userID, id).Scan(&exists); err != nil {

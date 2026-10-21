@@ -19,7 +19,9 @@ import (
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
+	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/natsbus"
+	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
@@ -85,7 +87,13 @@ func main() {
 	}
 	go acct.reconcileEvery(ctx, reconcileEvery)
 
-	h := &handler{st: st, bus: bus, log: log, cache: newInsightCache(), accounts: acct, engine: scoring.NewEngine(st, log), beta: beta}
+	// Every event the api publishes goes through the outbox (D101): durable while the
+	// broker is down, and a session's completion commits with its event.
+	ob := outbox.New(pool, "api", bus, log)
+	go ob.Run(ctx)
+
+	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
+		engine: scoring.NewEngine(st, log), beta: beta}
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -208,6 +216,7 @@ type publisher interface {
 type handler struct {
 	st       *store.Store
 	bus      publisher
+	outbox   *outbox.Outbox // nil in tests: a session's event then goes through bus
 	log      *slog.Logger
 	cache    *insightCache
 	accounts *accounts

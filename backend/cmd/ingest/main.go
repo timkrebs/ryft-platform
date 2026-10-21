@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/natsbus"
+	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -75,7 +77,12 @@ func main() {
 	}
 	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
-	h := &handler{st: st, bus: bus, log: log, beta: beta}
+	// The outbox (D101): a sync's days and the event announcing them commit together;
+	// the relay sends it to the broker.
+	ob := outbox.New(pool, "ingest", bus, log)
+	go ob.Run(ctx)
+
+	h := &handler{st: st, bus: bus, outbox: ob, log: log, beta: beta}
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -127,10 +134,11 @@ func requestID(r *http.Request) string {
 }
 
 type handler struct {
-	st   *store.Store
-	bus  events.Bus
-	log  *slog.Logger
-	beta config.Beta
+	st     *store.Store
+	bus    events.Bus
+	outbox *outbox.Outbox
+	log    *slog.Logger
+	beta   config.Beta
 
 	expMu  sync.Mutex // the cached sync-to-score estimate
 	expSec int
@@ -217,14 +225,19 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	if err := h.st.RecordSync(ctx, userID, req.DeviceID, summary); err != nil {
 		h.log.ErrorContext(ctx, "record sync", "err", err)
 	}
-	// GET /v1/me/sync's pending days: also only informative, the data is stored.
-	if err := h.st.QueueDays(ctx, userID, days); err != nil {
-		h.log.ErrorContext(ctx, "queue days", "err", err)
-	}
+	// The days for GET /v1/me/sync and the event for scoring, in one transaction
+	// (D101). A failure does not fail the sync: the data is stored, and scoring's
+	// periodic pass catches up.
 	if len(days) > 0 {
-		if err := h.bus.PublishIngested(ctx, model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, ""); err != nil {
-			// Data is stored; scoring's periodic pass will catch up. Report, don't fail the sync.
-			h.log.ErrorContext(ctx, "publish ingested event", "err", err)
+		m, err := events.Ingested(model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, "")
+		if err == nil {
+			err = h.st.QueueDaysWith(ctx, userID, days, func(tx pgx.Tx) error { return outbox.Insert(ctx, tx, "ingest", m) })
+		}
+		if err != nil {
+			h.log.ErrorContext(ctx, "queue days and their event", "err", err)
+			metrics.EventsPublished.WithLabelValues("sync", "error").Inc()
+		} else {
+			h.outbox.Kick()
 		}
 	}
 	countIngested(&req)

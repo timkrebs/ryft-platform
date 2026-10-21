@@ -183,3 +183,20 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical, reason: sync }
             exp_annotations: { summary: "sync events are unroutable on RabbitMQ" }
+  - name: outbox
+    interval: 1m
+    input_series:
+      - { series: 'ryft_outbox_oldest_seconds{publisher="ingest"}', values: '0 60 400x20' }
+      - { series: 'ryft_outbox_oldest_seconds{publisher="api"}', values: '30x20' }
+      - { series: 'ryft_outbox_stuck{publisher="scoring"}', values: '0 0 1x10' }
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OutboxBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, publisher: ingest }
+            exp_annotations: { summary: "ingest: outbox events waiting over 5 minutes for the broker" }
+      - eval_time: 3m
+        alertname: OutboxStuck
+        exp_alerts:
+          - exp_labels: { severity: warning, publisher: scoring }
+            exp_annotations: { summary: "scoring: outbox events set aside after 50 failed sends" }

@@ -207,6 +207,26 @@ func Result(err error) string {
 	return "ok"
 }
 
+// The transactional outbox (D101), per publishing service.
+var (
+	OutboxPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_outbox_pending",
+		Help: "Events written to the outbox and not yet confirmed by the broker (updated every 15 s by the relay).",
+	}, []string{"publisher"})
+	OutboxOldest = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_outbox_oldest_seconds",
+		Help: "Age of the oldest event waiting in the outbox (0 when none waits).",
+	}, []string{"publisher"})
+	OutboxStuck = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_outbox_stuck",
+		Help: "Outbox events set aside after 50 failed sends (an event no queue takes); they need a person.",
+	}, []string{"publisher"})
+	OutboxRelayed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_outbox_relayed_total",
+		Help: "Outbox events the relay sent, by result: ok (confirmed), error (retried).",
+	}, []string{"publisher", "result"})
+)
+
 // The RabbitMQ connection's metrics, registered by UseAMQP: a service that does not use
 // RabbitMQ (NATS before the cutover) exposes none, so a 0 is never a false alarm.
 var (

@@ -46,7 +46,7 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 // journalTables are migration 0016's, betaTables 0017's onwards.
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
-	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue"}
+	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox"}
 )
 
 // trainTables are migration 0011's.
@@ -59,13 +59,14 @@ var grants = map[string]map[string][]string{
 		"samples": {"SELECT", "INSERT", "UPDATE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE"},
 		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
 		"user_sources": {"SELECT", "INSERT", "UPDATE"}, "score_queue": {"SELECT", "INSERT", "UPDATE"},
+		"outbox": {"SELECT", "INSERT", "DELETE"}, // and UPDATE of the relay's columns only (below)
 		// deleted_users: only the id column (below), never the stored Apple token
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
 		"workouts": {"SELECT", "DELETE"}, "daily_scores": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"},
 		"exercises": {"SELECT"}, "sessions": {"SELECT"}, "session_exercises": {"SELECT"}, "session_sets": {"SELECT"},
-		"consents": {"SELECT"}, "score_queue": {"SELECT", "DELETE"},
+		"consents": {"SELECT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 	},
 	"ryft_notify": {
 		"push_tokens": {"SELECT", "DELETE"}, "notifications_sent": crud, "personal_records": {"SELECT"},
@@ -79,7 +80,7 @@ var grants = map[string]map[string][]string{
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"consents": crud, "beta_invite_codes": crud, "user_sources": crud, "feedback": crud,
-		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"},
+		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -153,6 +154,21 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 	}
 	// scoring may only mark a queued day done (0025).
+	// D101: each publisher's relay may mark its rows, and change nothing else of them.
+	for _, role := range []string{"ryft_ingest", "ryft_api", "ryft_scoring", "ryft_notify"} {
+		for col, want := range map[string]bool{"published_at": true, "attempts": true, "last_error": true, "payload": false, "routing_key": false} {
+			if role == "ryft_notify" {
+				want = false
+			}
+			var has bool
+			if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, 'public.outbox', $2, 'UPDATE')`, role, col).Scan(&has); err != nil {
+				t.Fatal(err)
+			}
+			if has != want {
+				t.Errorf("%s UPDATE outbox.%s: %v, want %v", role, col, has, want)
+			}
+		}
+	}
 	for col, want := range map[string]bool{"scored_at": true, "queued_at": false, "day": false, "user_id": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.score_queue', $1, 'UPDATE')`, col).Scan(&has); err != nil {

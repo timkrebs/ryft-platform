@@ -17,7 +17,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -612,9 +615,25 @@ func (h *handler) settle(ctx context.Context, r *http.Request, s model.Session, 
 		if err != nil {
 			return s, err
 		}
-		if err := h.st.CompleteSession(ctx, user, s.ID, store.Completion{EndedAt: *s.EndedAt, BodyweightKG: s.BodyweightKG,
-			MuscularTRIMP: load.TRIMP, Strain: load.Strain, VolumeKG: load.VolumeKG, WorkoutID: workoutID}); err != nil {
+		// Completing: the session.completed event commits with the completion (D101).
+		var also func(pgx.Tx) error
+		if complete && h.outbox != nil {
+			m, err := h.completedEvent(r, user, s)
+			if err != nil {
+				return s, err
+			}
+			also = func(tx pgx.Tx) error { return outbox.Insert(ctx, tx, "api", m) }
+		}
+		if err := h.st.CompleteSessionWith(ctx, user, s.ID, store.Completion{EndedAt: *s.EndedAt, BodyweightKG: s.BodyweightKG,
+			MuscularTRIMP: load.TRIMP, Strain: load.Strain, VolumeKG: load.VolumeKG, WorkoutID: workoutID}, also); err != nil {
+			if also != nil && !errors.Is(err, store.ErrTaken) && !errors.Is(err, store.ErrNotFound) {
+				h.log.ErrorContext(ctx, "complete session with its event", "err", err)
+				return s, errQueue
+			}
 			return s, err
+		}
+		if also != nil {
+			h.outbox.Kick()
 		}
 	}
 	ids := exerciseIDs(s)
@@ -631,19 +650,39 @@ func (h *handler) settle(ctx context.Context, r *http.Request, s model.Session, 
 	countNewPRs(prev, out.PRs)
 	h.cache.forget(user)
 	if complete {
-		loc, err := h.location(r)
+		if h.outbox != nil {
+			return out, nil // its event committed with the completion
+		}
+		ev, id, err := h.completed(r, user, out)
 		if err != nil {
 			return out, err
 		}
-		day := out.StartedAt.In(loc).Format(dayLayout)
-		ev := model.SessionCompletedEvent{UserID: user, SessionID: out.ID, Day: day, RequestID: requestID(r)}
-		if err := h.bus.PublishSessionCompleted(ctx, ev, fmt.Sprintf("session:%s:%s:%d", user, out.ID, out.EndedAt.UnixMilli())); err != nil {
+		if err := h.bus.PublishSessionCompleted(ctx, ev, id); err != nil {
 			h.log.ErrorContext(ctx, "publish session completed", "err", err)
 			return out, errQueue
 		}
 		return out, nil
 	}
 	return out, h.rescoreDays(ctx, r, user, out, before)
+}
+
+// completed is the session.completed event of s and its id (stable per completion:
+// completing the same session at the same time again is the same trigger).
+func (h *handler) completed(r *http.Request, user uuid.UUID, s model.Session) (model.SessionCompletedEvent, string, error) {
+	loc, err := h.location(r)
+	if err != nil {
+		return model.SessionCompletedEvent{}, "", err
+	}
+	ev := model.SessionCompletedEvent{UserID: user, SessionID: s.ID, Day: s.StartedAt.In(loc).Format(dayLayout), RequestID: requestID(r)}
+	return ev, fmt.Sprintf("session:%s:%s:%d", user, s.ID, s.EndedAt.UnixMilli()), nil
+}
+
+func (h *handler) completedEvent(r *http.Request, user uuid.UUID, s model.Session) (events.Message, error) {
+	ev, id, err := h.completed(r, user, s)
+	if err != nil {
+		return events.Message{}, err
+	}
+	return events.SessionCompleted(ev, id)
 }
 
 // rescoreDays queues the local days of a session and its previous version.

@@ -110,6 +110,19 @@ groups:
         expr: sum by (reason) (increase(ryft_events_published_total{result="unroutable"}[15m])) > 0
         labels: { severity: critical }
         annotations: { summary: "{{ $labels.reason }} events are unroutable on RabbitMQ" }
+      - alert: OutboxBacklog
+        # Events written but not confirmed by the broker for over 5 minutes: the relay
+        # cannot reach it, or the broker refuses (D101). Nothing is lost; scores wait.
+        expr: max by (publisher) (ryft_outbox_oldest_seconds) > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.publisher }}: outbox events waiting over 5 minutes for the broker" }
+      - alert: OutboxStuck
+        # An event failed 50 sends and was set aside: no queue takes its key, or it is
+        # malformed. It needs a person (OPERATIONS → RabbitMQ → The outbox).
+        expr: max by (publisher) (ryft_outbox_stuck) > 0
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.publisher }}: outbox events set aside after 50 failed sends" }
       - alert: PublishFailing
         # Syncs are stored but scoring does not hear of them (the 15-minute pass catches up).
         expr: sum(rate(ryft_events_published_total{result="error"}[10m])) > 0
