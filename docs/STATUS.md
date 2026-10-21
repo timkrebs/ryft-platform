@@ -357,7 +357,12 @@ cherry-pick each onto main when the one before is verified.
    Then the checks in OPERATIONS → RabbitMQ → Healthy is, and the management UI at
    `https://rabbitmq.ryftapp.de` (comes with the broker, D103), user and password from
    `kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'`.
-2. **R2, dual consume:** `git cherry-pick da67f71 && git push`; Argo CD syncs ryft-platform
+2. **R2, dual consume:** done 2026-10-21 (`a2298ff`; synced 12:39 UTC, smoke passed
+   12:40). The broker shows `scoring` and `notify` connected over TLS 1.3 with their own
+   client certificates (CN=scoring, CN=notify), one consumer on each queue, all 13
+   queues empty; the services log `publish: nats, consume: [nats, amqp]`. The memory
+   change (`4e746af`) rolled the nodes one at a time before it, `NoWarnings=True`. The
+   original steps: `git cherry-pick da67f71 && git push`; Argo CD syncs ryft-platform
    (scoring and notify restart). Check `kubectl -n ryft-scoring logs deploy/scoring |
    grep -i amqp`, `ryft_amqp_connected` 1 for both, `make smoke-prod`.
 3. **R3, publish on RabbitMQ:** `git cherry-pick 9fa1741 && git push`. Check `make
