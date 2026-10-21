@@ -1,0 +1,36 @@
+.wrap {
+  display: grid;
+  gap: 16px;
+  padding-block: calc(var(--section-spacing) * 3);
+}
+
+.code {
+  font-size: var(--type-display);
+  font-weight: var(--type-display-weight);
+  line-height: 1;
+  color: var(--text-tertiary);
+}
+
+.body {
+  color: var(--text-secondary);
+  font-size: var(--type-headline);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.other {
+  display: grid;
+  gap: 8px;
+  margin-top: var(--section-spacing);
+  padding-top: var(--section-spacing);
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.other h2 {
+  font-size: var(--type-headline);
+}

@@ -1,0 +1,25 @@
+# The PR title becomes the squash commit: "area: what changed".
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if printf '%s' "$TITLE" | grep -Eq '^(chore|design|pages|legal|web|deploy|ci|docs|fix|test|deps)(\([a-z0-9-]+\))?: [^ ].{2,}$'; then
+            echo "ok: $TITLE"
+          else
+            echo "::error::The PR title must read 'area: what changed' (areas: chore, design, pages, legal, web, deploy, ci, docs, fix, test, deps)."
+            exit 1
+          fi

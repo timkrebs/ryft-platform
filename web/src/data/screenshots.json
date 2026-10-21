@@ -1,0 +1,32 @@
+{
+  "sleep": {
+    "kind": "screen",
+    "width": 1206,
+    "height": 2622,
+    "widths": [360, 540, 720]
+  },
+  "strain": {
+    "kind": "screen",
+    "width": 1206,
+    "height": 2622,
+    "widths": [360, 540, 720]
+  },
+  "insights-cards": {
+    "kind": "crop",
+    "width": 1206,
+    "height": 1412,
+    "widths": [400, 640, 960]
+  },
+  "train-session": {
+    "kind": "crop",
+    "width": 1030,
+    "height": 1136,
+    "widths": [400, 640, 960]
+  },
+  "profile-account": {
+    "kind": "crop",
+    "width": 1030,
+    "height": 422,
+    "widths": [400, 640, 960]
+  }
+}

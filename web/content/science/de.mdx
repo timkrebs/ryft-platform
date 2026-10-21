@@ -1,0 +1,159 @@
+---
+title: 'So berechnet RYFT seine Werte'
+description: 'Jede Formel, jedes Gewicht, jeder Ausgangswert und jeder Bereich hinter Bereitschaft, Erholung, Belastung und Schlaf – für das Bewertungsmodell 2026.10.1.'
+model: '2026.10.1'
+checked: '2026-10-20'
+---
+
+Diese Seite beschreibt das Bewertungsmodell **2026.10.1**, so wie es die Bewertungsreferenz der RYFT-Plattform am 20. Oktober 2026 dokumentiert. Jeder Wert, den RYFT speichert, trägt die Version des Modells, das ihn berechnet hat – eine Zahl auf dieser Seite und eine Zahl in der App lassen sich also immer einander zuordnen.
+
+Die Konstanten sind Startwerte. Tests halten sie fest, und in der Beta werden sie nachgeschärft; jede Änderung bekommt eine neue Modellversion (siehe [Modellversionen](#versions)).
+
+<h2 id="sources">Vor jeder Formel: eine Quelle pro Messung</h2>
+
+Uhr, Ring und iPhone können dieselbe Art von Daten in Apple Health schreiben. RYFT addiert überlappende Quellen nie, sondern wählt eine:
+
+| Daten | Entschieden je | Es gewinnt die Quelle … |
+| --- | --- | --- |
+| Herzfrequenz, Schritte, aktive Energie | Stunde | mit den meisten Messungen in dieser Stunde (bei Gleichstand der Name, der zuerst sortiert) |
+| Schlaf | Nacht | mit den meisten Minuten Schlaf, dann den meisten Minuten insgesamt |
+
+Stunden statt Tage, weil eine Uhr auch mal eine Stunde lädt und dann nur das iPhone Daten für diese Stunde hat. Wo beide gemessen haben, ist die dichtere Quelle die, die getragen wurde. Ein iPhone, das nur die Zeit im Bett erfasst, verliert immer gegen einen Tracker, der Schlaf gemessen hat.
+
+HRV, Ruhepuls, Atemfrequenz und Blutsauerstoff sind wenige Messungen pro Nacht, die gemittelt werden (oder es zählt die letzte). Eine zweite Quelle verschiebt sie leicht, verdoppelt sie aber nie – sie werden deshalb nicht bereinigt.
+
+Ganz ohne Herzfrequenz (ein iPhone allein oder ein Tracker, der sie nicht an Apple Health weitergibt) bleiben Belastung, Erholung und Bereitschaft leer, und eine Hinweiskarte sagt, was fehlt.
+
+<h2 id="baselines">Ausgangswerte und Kalibrierung</h2>
+
+Die Erholung vergleicht jedes nächtliche Signal mit **deinen eigenen letzten 30 bewerteten Tagen**, als z-Wert: wie viele Standardabweichungen der heutige Wert von deinem Mittel entfernt liegt.
+
+<Formula tex={String.raw`z = \frac{x - \bar{x}_{30}}{\sigma_{30}}`} />
+
+In Worten: der Abstand zu deinem 30-Tage-Mittel, gemessen in deiner üblichen Streuung.
+
+- Die HRV wird logarithmisch verglichen, weil sie log-normalverteilt ist: Der Ausgangswert ist ein geometrisches Mittel.
+- Bei Ruhepuls und Atemfrequenz ist höher schlechter, ihr z-Wert wird deshalb umgedreht.
+- Mit weniger als 7 Tagen Verlauf ist der Tag als **Kalibrierung** markiert, und typische Streuungen der Bevölkerung ersetzen deine: 0,18 für ln HRV, 3,5 Schläge pro Minute für den Ruhepuls, 1,0 Atemzüge pro Minute für die Atemfrequenz.
+- Die Ausgangswerte für HRV und Ruhepuls, gegen die ein Tag bewertet wurde, werden mit diesem Tag gespeichert. Trends und Hinweise vergleichen also mit genau dem, was die Erholung genutzt hat.
+
+<h2 id="recovery">Erholung (1–100)</h2>
+
+Jedes nächtliche Signal wird über eine logistische Kurve zu einem Teilwert von 0 bis 100: Dein Mittel ergibt 50, eine Standardabweichung besser 77, eine schlechter 23.
+
+<Formula tex={String.raw`s(z) = \frac{100}{1 + e^{-1{,}2\,z}}`} />
+
+Die Schlafleistung der letzten Nacht (0–100, siehe [Schlaf](#sleep)) geht direkt ein. Die Erholung ist das gewichtete Mittel der vorhandenen Teilwerte, gerundet und zwischen 1 und 100 gehalten:
+
+<Formula tex={String.raw`\text{Erholung} = \frac{\sum_k w_k\, s_k}{\sum_k w_k}`} />
+
+| Eingabe | Gewicht | Richtung |
+| --- | --- | --- |
+| Herzfrequenzvariabilität (ln) | 0,45 | höher ist besser |
+| Ruhepuls | 0,25 | niedriger ist besser |
+| Schlafleistung | 0,25 | höher ist besser |
+| Atemfrequenz | 0,05 | höher ist schlechter, ein frühes Zeichen für Krankheit |
+
+Fehlt ein Signal, fällt es weg, und die übrigen Gewichte werden neu normiert. Bereiche: **67–100** grün, **34–66** gelb, **1–33** rot.
+
+<h2 id="readiness">Bereitschaft (1–100)</h2>
+
+Die Zahl ganz oben auf Heute. Sie verbindet die Erholung mit der Schlafleistung der letzten Nacht, abzüglich eines Abschlags für Überlastung:
+
+<Formula tex={String.raw`\text{Bereitschaft} = \operatorname{round}\!\left(0{,}6 \cdot \text{Erholung} + 0{,}4 \cdot \text{Schlafleistung}\right) - P`} />
+
+Der Abschlag gilt nur, wenn die Belastung gestern über 14 lag **und** die Erholung heute unter 50 liegt. Er steigt von 0 Punkten bei Belastung 14 auf 10 Punkte bei Belastung 21:
+
+<Formula tex={String.raw`P = \operatorname{round}\!\left(10 \cdot \frac{\text{Belastung}_{\text{gestern}} - 14}{7}\right)`} />
+
+- Ohne eine Nacht Schlaf ist die Bereitschaft die Erholung allein; ohne Erholung gibt es keine Bereitschaft.
+- Das Wort unter der Begrüßung: **ausgeglichen** ab 67, **angespannt** von 34 bis 66, **erschöpft** unter 34, und **Kalibrierung**, solange weniger als 7 Nächte Ausgangswerte vorliegen.
+
+<h2 id="strain">Belastung (0–21)</h2>
+
+Die Belastung misst die Last, die dein Herz getragen hat, über die Herzfrequenzreserve (HRR): wo jede Herzfrequenzmessung zwischen deinem Ruhepuls und deiner maximalen Herzfrequenz liegt.
+
+<Formula tex={String.raw`\text{HRR} = \frac{\text{HF} - \text{HF}_{\text{Ruhe}}}{\text{HF}_{\max} - \text{HF}_{\text{Ruhe}}}, \qquad i = \frac{\max(0;\ \text{HRR} - 0{,}25)}{0{,}75}`} />
+
+Unter 25 % deiner Reserve (Sitzen, gemütliches Gehen) zählt nichts. Jede Minute fügt Banisters Trainingsimpuls hinzu, und die Tagessumme wird auf 0–21 gestaucht – die letzten Punkte sind also viel schwerer zu verdienen als die ersten:
+
+<Formula tex={String.raw`\text{TRIMP} = \sum_{\text{Minuten}} i \cdot 0{,}64\, e^{1{,}92\, i}, \qquad \text{Belastung} = 21 \cdot \left(1 - e^{-\text{TRIMP}/80}\right)`} />
+
+Lücken von mehr als 5 Minuten zwischen Messungen zählen nichts: Da war die Uhr nicht am Arm. Eichpunkte:
+
+| Tag | Belastung |
+| --- | --- |
+| Den ganzen Tag sitzen | ≈ 0 |
+| Eine Stunde zügig gehen | ≈ 2 |
+| 60 Minuten laufen bei 75 % HRR | ≈ 14 |
+| Ein Wettkampf über zwei Stunden | ≈ 20 |
+
+Dieselbe Rechnung zählt Minuten in fünf Zonen der Herzfrequenzreserve: 50–60, 60–70, 70–80, 80–90 und ab 90 %. Jedes Training bekommt seine eigene Belastung über sein eigenes Zeitfenster.
+
+Die **maximale Herzfrequenz** ist 190, bis RYFT mehr weiß. Trägst du dein Geburtsjahr ein, wird sie zu round(208 − 0,7 × Alter) (Tanaka); du kannst auch einen gemessenen Wert setzen. Ein gespeichertes Maximum ändert sich nie von selbst, und eine Änderung bewertet vergangene Tage nicht neu.
+
+**Krafttraining**, das du in Training erfasst, bringt eine muskuläre Last auf derselben TRIMP-Skala ein, vor der Stauchung: Ein Tag nur mit einer erfassten Einheit hat eine Belastung, und ein Tag mit beidem mehr als jedes für sich. Je abgeschlossenem Satz:
+
+<Formula tex={String.raw`\text{Last} = \text{Wdh.} \cdot \left(\frac{\text{Gewicht}}{\text{e1RM}}\right)^{2} \cdot \text{Muskelfaktor}, \qquad \text{e1RM} = \text{Gewicht} \cdot \left(1 + \frac{\text{Wdh.}}{30}\right)`} />
+
+Das geschätzte Einerwiederholungsmaximum (Epley, Wiederholungen bis höchstens 12) ist dein bisher bestes, die Intensität übersteigt also nie 1. Der Muskelfaktor gewichtet die Muskeln, die eine Übung beansprucht (Quadrizeps und Gesäß 1,0 bis Unterarme 0,2), und die Art der Übung (Langhantel 1,0, Maschine 0,8, Körpergewicht 0,32, Cardio 0,3; olympische Hebungen 1,15). Aufwärmsätze zählen ein Viertel. Der muskuläre TRIMP einer Einheit ist die Summe ihrer Satzlasten × 0,6.
+
+| Referenzeinheit | Belastung |
+| --- | --- |
+| 60 Min., 5 × 5 Kniebeuge, Bankdrücken, Langhantelrudern bei 80 % des e1RM | 11,0 |
+| 12 schwere Einzelwiederholungen: 6 Reißen, 6 Stoßen | 8,0 |
+| 20-minütiger Zirkel mit Körpergewicht | 5,1 |
+
+<h2 id="sleep">Schlaf</h2>
+
+**Die Nacht.** Das Nachtfenster eines Tages reicht von 20:00 Uhr am Vorabend bis 13:00 Uhr, aus einer Quelle. Pausen ab einer Stunde teilen es in Blöcke; der Block mit dem meisten Schlaf ist die Nacht. Andere Blöcke, die ab 10:00 Uhr enden, und Schlaf, der zwischen 13:00 und 20:00 Uhr endet, sind Nickerchen (ab 20 Minuten Schlaf, höchstens 90 Minuten am Tag).
+
+**Bedarf.** Wie viel Schlaf du gebraucht hast, in Minuten:
+
+<Formula tex={String.raw`\text{Bedarf} = \text{Grundbedarf} + \min(60;\ 3 \cdot \text{Belastung}_{\text{gestern}}) + \min(60;\ 0{,}3 \cdot \text{Defizit}) - \text{Nickerchen}_{\text{gestern}}`} />
+
+Das Defizit ist der Fehlbetrag der letzten 7 Nächte, wobei jede Nacht 0,7-mal so stark zählt wie die folgende. Die Nickerchen von gestern werden bis zu 90 Minuten angerechnet.
+
+Die **Leistung** ist, was du bekommen hast, gemessen an dem, was du gebraucht hast, höchstens 100 %. Erfasst eine Quelle nur die Zeit im Bett, zählen 90 % davon als Schlaf.
+
+<Formula tex={String.raw`\text{Leistung} = \min\!\left(100;\ \frac{\text{Schlaf}}{\text{Bedarf}} \cdot 100\right)`} />
+
+Die **Qualität** nimmt dazu, wie effizient du geschlafen hast und wie viel davon Tief- und REM-Schlaf war:
+
+<Formula tex={String.raw`\text{Qualität} = \operatorname{round}\!\left(0{,}6 \cdot \text{Leistung} + 0{,}2 \cdot \text{Effizienz} + 0{,}2 \cdot \text{erholsam}\right), \qquad \text{erholsam} = \min\!\left(100;\ \frac{\text{Tief} + \text{REM}}{0{,}40 \cdot \text{Schlaf}} \cdot 100\right)`} />
+
+Die Effizienz ist die Schlafzeit geteilt durch die Zeit im Bett. Ohne Schlafphasen ist „erholsam“ gleich der Leistung. Bezeichnungen: **gut** ab 80, **mittel** ab 60, **schlecht** darunter.
+
+Die **Regelmäßigkeit** ist 100 − 0,5 × (Standardabweichung der Zubettgeh- plus der Aufwachzeit), in Minuten, über die letzten 7 Nächte, von denen mindestens 5 erfasst sein müssen: Schlafen gehen und aufstehen innerhalb von ±15 Minuten ergibt 85, innerhalb von ±45 Minuten 55.
+
+Der **Grundbedarf** wird jeden Sonntag aus deinen guten Nächten gelernt: Von den letzten 30 bewerteten Tagen zählt eine Nacht, wenn die Erholung an jenem Morgen 67 oder mehr betrug, nach einem Tag mit einer Belastung unter 10. Mit mindestens 14 Nächten Schlaf und 7 zählenden Nächten wird der Grundbedarf zu deren mittlerer Schlafdauer (Median), gehalten zwischen 6 Std. und 9 Std. 30 Min. Bis dahin beträgt er 7 Std. 40 Min. Ein Grundbedarf, den du selbst einstellst, hat immer Vorrang.
+
+<h2 id="journal">Journal: Gewohnheiten und der Morgen danach</h2>
+
+Ein Journaleintrag gilt einem Tag: dem, was du gestern getan hast. Seine Wirkung zeigt sich am **Morgen danach**: an Erholung, HRV und Schlafleistung jener Nacht. Für jede Gewohnheit, über die letzten 90 Tage:
+
+| Kennzahl | Effekt |
+| --- | --- |
+| Erholung | Mittel an Tagen mit − Mittel an Tagen ohne, in Punkten |
+| HRV | derselbe Unterschied als Prozentsatz der Tage ohne |
+| Schlafleistung | Mittel mit − Mittel ohne, in Punkten |
+
+Eine Gewohnheit wird freigeschaltet ab **5 Tagen damit und 5 ohne** mit bewerteter Erholung. Das Intervall ist ein 90-%-Bootstrap: Beide Gruppen werden 1.000-mal neu gezogen, das 5. und 95. Perzentil des Unterschieds bilden das Intervall. Die Ziehung ist fest initialisiert, dieselben Daten ergeben also immer dasselbe Intervall, und ein Effekt gilt erst dann als deutlich, wenn sein Intervall die Null ausschließt. Es ist ein Zusammenhang in deinen eigenen Daten, kein Beweis für eine Ursache.
+
+<h2 id="versions">Modellversionen: keine stillen Änderungen</h2>
+
+Das Modell hat eine Version, Jahr.Monat.n, derzeit **2026.10.1**. Die Bewertung schreibt sie an jeden Tageswert und an jedes Training, dem sie eine Last zuordnet.
+
+- **Die Regel:** Jede Änderung, die eine gespeicherte Zahl bewegt (eine Formel, eine Konstante, eine Quellenregel, eine neue Eingabe), bekommt in derselben Änderung eine neue Version, mit einem Eintrag im Änderungsprotokoll auf Deutsch und Englisch, der die betroffenen Kennzahlen nennt. Ein Umbau, der jede Zahl gleich lässt, nicht.
+- Nach einer neuen Version wird der Verlauf damit neu bewertet, damit alte und neue Tage vergleichbar bleiben.
+- Die Plattform liefert die Version mit ihrem Änderungsprotokoll aus, damit die App sagen kann, warum sich eine Zahl bewegt hat.
+- Werte, die vor dem 20. Oktober 2026 berechnet wurden, tragen keine Version, bis sie neu bewertet sind.
+
+<h2 id="limitations">Grenzen</h2>
+
+- RYFT ist eine Wellness-App, kein Medizinprodukt. Die Werte sind Schätzungen aus Sensoren für Verbraucher, keine Diagnose, und sie treffen keine Entscheidungen über dich.
+- Sie sind nur so gut wie das, was deine Uhr oder dein Ring in Apple Health schreibt. Geräte messen HRV und Schlafphasen unterschiedlich – ein Gerätewechsel kann deine Zahlen verschieben, bis dein Ausgangswert nachgezogen hat.
+- Die ersten 7 Nächte nutzen Streuungen der Bevölkerung und sind als Kalibrierung markiert.
+- Bis du dein Geburtsjahr oder ein gemessenes Maximum einträgst, geht die Belastung von einer maximalen Herzfrequenz von 190 aus, was deine Last über- oder unterschätzen kann.
+- Daten, die spät in Apple Health ankommen, etwa von einer Uhr, die später synchronisiert, werden mit der nächsten Synchronisierung bewertet – die Zahlen eines Tages können sich am selben Tag also noch ändern.
+- Effekte von Gewohnheiten sind Zusammenhänge in deinen eigenen Daten, mit Intervall, keine Ursachen.
