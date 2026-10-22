@@ -1,0 +1,42 @@
+# The daily deploy watch (docs/OPERATIONS.md -> Deploy and roll back -> The deploy watch).
+# Fails, with the findings in the run summary, when a `# hold:` is older than 7 days, a deploy
+# PR of the App has been open longer than 2 hours, or a group differs from its running pin
+# on an old main with no deploy PR open (promote failed). scripts/deploy_watch.sh holds the
+# logic and reuses scripts/deploy_targets.sh. Read-only: the job's GITHUB_TOKEN reads
+# contents and pull requests; no App key, no environment.
+# A failed scheduled run is mailed to whoever last changed the `cron` line below (GitHub's
+# rule), not to the repository owner: keep that in mind when editing the schedule.
+name: deploy-watch
+
+on:
+  schedule:
+    # 05:17 UTC, an off-hour minute (the top of the hour is crowded and runs late).
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: deploy-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: github.repository == 'timkrebs/ryft-platform'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # The whole history: deploy_targets.sh compares each group's directory with its pin.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/deploy_watch.sh

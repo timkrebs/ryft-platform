@@ -6,6 +6,8 @@
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OVERLAY=deploy/k8s/overlays/eks/kustomization.yaml
 tmp=$(mktemp -d)
+# Never write into the real job summary of the run that executes the tests.
+export GITHUB_STEP_SUMMARY="$tmp/step_summary"
 trap 'rm -rf "$tmp"' EXIT
 n=0
 
