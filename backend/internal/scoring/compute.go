@@ -486,14 +486,22 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 
 	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
 	version := ModelVersion
+	// The counts behind baseline_days, and why the day calibrates. The window is
+	// hist, the stored rows the baselines were drawn from, not the nights with a
+	// value: a phone-only month is 30 rows with no HRV, a new account none.
+	hrvDays, rhrDays := lnHRVBase.N, rhrBase.N
+	var reason *string
+	if r := CalibratingReason(len(hist), hrvDays, rhrDays); r != "" {
+		reason = &r
+	}
 
 	row := model.DailyScore{
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, Steps: steps, ActiveKcal: kcal,
 		SleepPerformance: sleepPerf,
 		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
-		BaselineDays: min(lnHRVBase.N, rhrBase.N),
-		Calibrating:  rec.Calibrating, Details: details,
+		BaselineDays: min(hrvDays, rhrDays), BaselineHRVDays: &hrvDays, BaselineRHRDays: &rhrDays,
+		Calibrating: rec.Calibrating, CalibratingReason: reason, Details: details,
 		SleepNeedBaseMin: &parts.Base, SleepNeedStrainMin: &parts.Strain, SleepNeedDebtMin: &parts.Debt,
 		SleepNeedNapMin: &parts.Nap, NapMin: &napMin, SleepQuality: quality, SleepConsistency: consistency,
 		ModelVersion: &version,

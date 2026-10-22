@@ -1,8 +1,9 @@
 # RYFT — scoring inputs
 
 How scoring treats the raw HealthKit data before any formula runs, how logged
-strength sessions become load (**Strength**, below), and how a night becomes need,
-quality, consistency and naps (**Sleep**, below). The other formulas
+strength sessions become load (**Strength**, below), how a night becomes need,
+quality, consistency and naps (**Sleep**, below), and why a day is calibrating
+(**Calibrating and its reason**, below). The other formulas
 (recovery, readiness, strain, sleep need) are described in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#scoring-internalscoringalgorithmsgo-unit-tested); the
 code is in `internal/scoring`.
@@ -300,6 +301,82 @@ per local day, over the last 90 days (`store.WorkoutPeakHR`: the samples, not th
 or more, the card suggests the lower of the two highest days, rounded. One day above can
 be a strap glitch; two are a pattern. Nothing changes until the user sets it; the cards
 are recomputed after every `PATCH /v1/me`.
+
+## Calibrating and its reason
+
+Recovery compares each overnight signal with the day's **window**: the scored days
+stored before it, at most 30 (`store.ScoreHistory`; stored rows, not calendar days, so
+a week without data does not shorten it). Three counts come out of that window:
+
+| Count | What it is | Stored as |
+| --- | --- | --- |
+| `W` | days in the window, 0–30 | not stored |
+| `H` | of them, days with an overnight HRV (`hrv_ms > 0`): the N of the ln-HRV baseline | `baseline_hrv_days` (migration 0027) |
+| `R` | of them, days with a resting HR (`rhr > 0`): the N of the resting-HR baseline | `baseline_rhr_days` (0027) |
+
+`baseline_days = min(H, R)` (0006) and `calibrating = baseline_days < 7`
+(`MinBaselineDays`). While a baseline has fewer than 7 values its SD is not the user's
+but a population spread (0.18 in ln HRV, 3.5 bpm, 1.0 breath/min), and the state is
+`calibrating`, though recovery and readiness may already be there (mostly sleep).
+
+**Why it calibrates** (`calibrating_reason`, `scoring.CalibratingReason`, a pure
+function of `W`, `H`, `R`), in this order:
+
+1. `min(H, R) >= 7`: `null`, not calibrating;
+2. `W >= 7` and `H == 0`: `no_hrv`;
+3. `W >= 7` and `R == 0`: `no_rhr`;
+4. otherwise `short_history`.
+
+The question it answers for the app is "does waiting end this?". `short_history`: yes,
+after `7 − baseline_days` more nights with both signals. `no_hrv` / `no_rhr`: no, not
+until a source writes that signal to Apple Health (an iPhone alone, a watch that does not
+share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`):
+
+- **`W` decides when a missing signal counts as missing**, with the baselines' own bar
+  of 7. A new account has `H = R = 0` because nothing is there yet, so it is
+  `short_history` until its 8th scored day, the same day a complete account stops
+  calibrating. Counting calendar days instead would call a user who synced once a
+  month ago `no_hrv` on a single night.
+- **Only `H == 0` is `no_hrv`.** One to six HRV nights in the window are sporadic data
+  (a watch worn some nights), and more nights do end them; calling that "no HRV
+  source" would be wrong and would flip with every night.
+- **`no_hrv` before `no_rhr`** when both are 0: HRV carries 0.45 of recovery against
+  resting HR's 0.25, and `baseline_rhr_days == 0` shows the second gap.
+- It is a classification of a state the engine already had, from counts it already
+  had, not a new estimate: no published method applies, nothing is fitted, and the
+  threshold is `MinBaselineDays`, unchanged.
+
+**Stored, not derived on read**: `W` exists only while the day is scored, so the reason
+and both counts are written with the row (they are results, not history inputs: a
+change to them does not re-score the days after, `store.ScoreWrite`). Rows scored before
+0027 have `NULL` in all three, served as `null` ("unknown", not a fourth reason) until a
+rescore fills them. A row an older scoring image wrote again after this one (a rollback
+re-pins images; that image leaves the columns as they were) no longer agrees with its
+`baseline_days` and `calibrating`, so the store serves it as unknown too
+(`store.knownCalibration`). A day that was never scored has all three `null`.
+
+**Calibration**, pinned without a database by `calibrating_test.go`: every branch
+(day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
+`no_rhr`; both 0 → `no_hrv`; `H = 3` of 30 → `short_history`; `H, R >= 7` → `null`; the
+7th window day as the edge) and, over every reachable state `0 <= H, R <= W <= 30`, that
+the reason is `null` exactly when `Recovery` says not calibrating. With
+`RYFT_TEST_POSTGRES_URL`, `TestEngineCalibratingReason` scores 40 nights for four
+set-ups (both signals; no HRV, the report that started this; no resting HR; neither):
+`short_history` through the 7th day (`W = 6`), the reason from the 8th (`W = 7`) on, and
+`baseline_days = min(H, R)` on every day. The iPhone-only source fixture says the same:
+days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonFollowsTheRescore`:
+a day scored before its history goes from `short_history` (0/0) to `null` (30/30) when
+the history arrives.
+
+**Model version: unchanged** (2026.10.1). Nothing that was stored moves: recovery,
+readiness, state, `calibrating` and `baseline_days` are computed as before, and the
+tests that pin them pass unchanged (a before/after over the synthetic generator is in
+the PR). The three fields are new and say what was already true. A bump would announce
+moved numbers in `GET /v1/model` where none moved, and rows without the fields are found
+by `baseline_hrv_days IS NULL`, not by their version. **Rescore**: the 15-minute pass
+re-scores today and yesterday of every active user, so the Today screen has the reason
+within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
+(optional; it moves no stored number, it fills the three fields).
 
 ## Model version
 

@@ -221,6 +221,39 @@ func TestMigrateBackfillsSources(t *testing.T) {
 	}
 }
 
+// 0027: rows scored before keep NULL counts and reason (unknown, not 0), and
+// the reason is a closed enum.
+func TestMigrateCalibratingReason(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 26); err != nil {
+		t.Fatal(err)
+	}
+	id := "cccccccc-0000-0000-0000-000000000027"
+	for _, q := range []string{
+		`INSERT INTO users (id) VALUES ($1)`,
+		`INSERT INTO daily_scores (user_id, day, calibrating, baseline_days) VALUES ($1, '2026-10-21', true, 0)`,
+	} {
+		if _, err := pool.Exec(ctx, q, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatal(err)
+	}
+	if !scalar[bool](t, pool, `SELECT baseline_hrv_days IS NULL AND baseline_rhr_days IS NULL AND calibrating_reason IS NULL
+		FROM daily_scores WHERE user_id=$1`, id) {
+		t.Fatal("a row scored before 0027 must read as unknown (NULL), not as 0 nights")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE daily_scores SET baseline_hrv_days=0, baseline_rhr_days=24, calibrating_reason='no_hrv'
+		WHERE user_id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE daily_scores SET calibrating_reason='no_sleep' WHERE user_id=$1`, id); err == nil {
+		t.Fatal("calibrating_reason must refuse a value outside short_history, no_hrv, no_rhr")
+	}
+}
+
 func TestMigrateSupabaseShape(t *testing.T) {
 	pool := freshDB(t, true)
 	if err := Migrate(context.Background(), pool, quiet); err != nil {

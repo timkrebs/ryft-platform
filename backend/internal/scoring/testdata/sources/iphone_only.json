@@ -2,13 +2,14 @@
   "name": "iPhone only",
   "notes": [
     "No watch, no ring, no sleep tracking: steps (64 x 75) and energy (64 x 5) from the phone, eight days in a row.",
-    "No heart rate: no strain (null, not 0), no recovery, no readiness, and the state stays calibrating on day 8 as on day 1, since nothing will ever fill the baselines. The no-heart-rate-source card says why."
+    "No heart rate: no strain (null, not 0), no recovery, no readiness, and the state stays calibrating on day 8 as on day 1, since nothing will ever fill the baselines. The no-heart-rate-source card says why.",
+    "Why it calibrates (calibrating_reason): days 1-7 have fewer than 7 scored days before them (0..6), so short_history, as for any new account; day 8 has 7, none with an overnight HRV (nor a resting heart rate), so no_hrv, by precedence over no_rhr. Waiting will not end it."
   ],
   "tz": "Europe/Berlin",
   "days": [
     {
-      "day": "2026-10-19",
-      "repeat": 8,
+      "day": "2026-10-18",
+      "repeat": 7,
       "series": [
         {
           "type": "steps",
@@ -50,7 +51,56 @@
         "has_stages": false,
         "workout_source": "",
         "readiness_null": true,
-        "state": "calibrating"
+        "state": "calibrating",
+        "calibrating_reason": "short_history"
+      }
+    },
+    {
+      "day": "2026-10-19",
+      "repeat": 1,
+      "series": [
+        {
+          "type": "steps",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 900,
+          "value": 75
+        },
+        {
+          "type": "active_energy",
+          "source": "Tim's iPhone",
+          "bundle_id": "com.apple.health.3F0A9C12",
+          "from": "07:00",
+          "to": "23:00",
+          "every_s": 900,
+          "value": 5
+        }
+      ],
+      "sleep": [],
+      "workouts": [],
+      "expect": {
+        "hr_hours": {},
+        "rhr": 60,
+        "hr_min": 0,
+        "zone_min": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "strain": null,
+        "steps": 4800,
+        "active_kcal": 320,
+        "sleep_source": "",
+        "asleep_min": 0,
+        "has_stages": false,
+        "workout_source": "",
+        "readiness_null": true,
+        "state": "calibrating",
+        "calibrating_reason": "no_hrv"
       }
     }
   ],

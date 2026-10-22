@@ -145,7 +145,7 @@ catches up anyway.
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
-- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days`, sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days` with its two counts `baseline_hrv_days` / `baseline_rhr_days` and `calibrating_reason` (0027), sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
 - **Journal** (0016, D74–D77): `behaviors` (built-ins with `user_id NULL` and fixed ids from the seeds, custom rows per user), `user_behaviors(user_id, behavior_id)` (the user's choice over `default_on`), `journal_days(user_id, day)` (a saved day) and `journal_entries(user_id, day, behavior_id)` with `value_bool` and `value_num`. The impact on the morning after is computed on request (`internal/behavior`), not stored.
 - `feature_flags(key)` — remote config (0014): `enabled`, `rollout_pct`, `allow_user_ids`.
 - `push_tokens(user_id, device_id)` — the app's APNs token per install (unique), `env`, `locale` (0015); `notifications_sent(user_id, day, category)` — what notify sent, claimed before sending. `users.notify_categories` (off switches), `quiet_from` / `quiet_to`.
@@ -175,7 +175,9 @@ one: per hour for heart rate, steps and active energy, and per night for sleep. 
 
 **Baselines.** Each overnight signal is compared to your own previous 30 scored days.
 HRV is compared in log space (it is log-normally distributed). With fewer than 7
-days the row is flagged `calibrating` and a population SD is used instead of yours.
+days the row is flagged `calibrating` and a population SD is used instead of yours;
+`calibrating_reason` says whether more nights end it (`short_history`) or a signal is
+missing (`no_hrv`, `no_rhr`; [`SCORING.md`](SCORING.md#calibrating-and-its-reason)).
 The HRV (geometric mean) and resting-HR baselines each day was scored against are
 stored on its row (`hrv_baseline_ms`, `rhr_baseline`; migration 0005), so trends and
 insights compare against exactly what recovery used. Since the baselines (and sleep
