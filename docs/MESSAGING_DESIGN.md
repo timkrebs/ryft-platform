@@ -61,7 +61,7 @@ completion), and the publisher's relay sends it with the broker's confirm.
 | Nothing published is lost | publisher confirms, `mandatory` (unroutable is an error), persistent messages, quorum queues on three nodes |
 | A failure is retried, spaced | the TTL tiers, then the DLQ; nothing is retried in a tight loop |
 | Duplicates are harmless | idempotent handlers (scoring rescores to the same rows; notify claims per user, day and category; refresh is throttled) |
-| Ordering | per user, oldest first, from the outbox; not across retries, and not needed |
+| Ordering | per user, oldest first, from the outbox; not across retries, and not needed: a day scored before its history is scored again, with the days after it, when the history arrives, and a retry finishes what its attempt began (`events.Redelivered`; `ARCHITECTURE.md` → Baselines) |
 | A broker outage | ingest and the api keep taking requests (their readiness leaves the broker out), the outbox keeps the events, the relay sends them afterwards; scoring and notify wait, unready (`/readyz` says why); scoring's 15-minute pass catches up yesterday and today anyway |
 
 ## Rights (D99)
