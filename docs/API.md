@@ -15,7 +15,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 
 | Screen | Numbers | Endpoint |
 | --- | --- | --- |
-| Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt | `GET /v1/days/{today}` → `score` |
+| Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt, why a day is calibrating (`calibrating_reason`, `baseline_hrv_days`, `baseline_rhr_days`) | `GET /v1/days/{today}` → `score` |
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
 | Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
 | Sleep — Week / Month | nightly totals and stages, consistency, bedtime / wake strip, averages | `GET /v1/sleep?range=week` / `month` |
@@ -566,7 +566,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
   "sleep_need_base_min": 460, "sleep_need_strain_min": 37, "sleep_need_debt_min": 41, "sleep_need_nap_min": 0, "nap_min": 25,
   "sleep_quality": 91, "sleep_consistency": 81,
   "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
-  "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "calibrating": false,
+  "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "baseline_hrv_days": 30, "baseline_rhr_days": 30,
+  "calibrating": false, "calibrating_reason": null,
   "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
 ```
 
@@ -602,10 +603,55 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `rhr_baseline` | number? | The 30-day resting-HR baseline `rhr` was scored against. |
 | `baseline_days` | int | Nights of history behind the baselines (the smaller of HRV and resting-HR days among the 30 scored days before `day`), 0–30. "Calibrating — N nights to go" is `7 − baseline_days`. |
 | `calibrating` | bool | `baseline_days < 7`. |
+| `baseline_hrv_days` | int? | N of the HRV baseline: scored days among the 30 before `day` that have an overnight HRV, 0-30. `baseline_days = min(baseline_hrv_days, baseline_rhr_days)`. `null` only on rows scored before this field existed (until rescored) and on a day that was never scored. |
+| `baseline_rhr_days` | int? | The same for resting HR (scored days among the 30 before `day` with a resting HR), 0-30. Same `null` rule. |
+| `calibrating_reason` | string? | Why `calibrating` is `true`: `short_history`, `no_hrv` or `no_rhr` (closed enum, rule below). `null` when `calibrating` is `false` and on a day that was never scored. Also `null` on a calibrating row scored before this field existed, until it is rescored: treat that as "unknown", not as a fourth reason. |
 | `scoring_state` | string | `scored`, `pending` (data newer than the score: scoring is queued or running), `waiting_for_sleep` (today: no night uploaded yet), `stale` (today: no new data for over 20 h). Past days are `scored` or `pending`. Closed enum, as `SyncStatus.today.state`. |
 | `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
 | `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
+
+#### `calibrating_reason`
+
+With `H = baseline_hrv_days`, `R = baseline_rhr_days` and `W` = the number of scored days among the 30 before
+`day` (the engine's window), the engine decides in this order:
+
+1. `min(H, R) >= 7` (`calibrating == false`) gives `null`.
+2. `W >= 7 && H == 0` gives `no_hrv`: the history is long enough, yet not one night has an HRV.
+3. `W >= 7 && R == 0` gives `no_rhr`: likewise for resting HR.
+4. Otherwise `short_history`.
+
+So `calibrating_reason` is `null` exactly when `calibrating` is `false` (apart from the legacy and never-scored
+`null`s in the table). Decisions: a day-one account has `H = R = 0` too but `W < 7`, so it is `short_history` and
+waiting is correct; when both are 0, `no_hrv` wins because HRV is the heavier recovery signal and the app reads
+`baseline_rhr_days == 0` for the second gap (no combined value). One to six HRV nights in the window is
+`short_history` (sporadic data: more nights do end it), not `no_hrv`.
+
+What each reason means for the app (no copy here):
+
+| Reason | Meaning | Does waiting end it? | Counts |
+| --- | --- | --- | --- |
+| `short_history` | HRV and resting HR both exist, but on fewer than 7 of the last 30 scored days. | Yes: `7 - baseline_days` more nights with both. | "N of 7 nights" (`baseline_days`) is meaningful. |
+| `no_hrv` | At least 7 days of history, but no overnight HRV in the 30-day window (phone only, or a watch that does not write HRV to Apple Health). | No, not until an HRV source appears. | Do not show "N of 7 nights"; `baseline_hrv_days` is 0. |
+| `no_rhr` | At least 7 days of history, but no resting HR in the window. | No, until a resting-HR source appears. | Do not show "N of 7 nights"; `baseline_rhr_days` is 0. |
+
+`recovery` and `readiness` may still be present while calibrating (recovery averages the inputs that exist, here
+mostly sleep); `state` stays `calibrating`. Old clients ignore the new fields and keep showing `baseline_days`.
+`calibrating_reason` is a closed enum: a client that meets a value it does not know treats it like `short_history`
+without a count (any new value is announced in the changelog first).
+
+Examples (the changed fields only):
+
+```json
+{ "baseline_days": 3,  "baseline_hrv_days": 3,  "baseline_rhr_days": 5,  "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 24, "calibrating": true,  "calibrating_reason": "no_hrv" }
+{ "baseline_days": 0,  "baseline_hrv_days": 28, "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_rhr" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_hrv" }
+{ "baseline_days": 12, "baseline_hrv_days": 12, "baseline_rhr_days": 19, "calibrating": false, "calibrating_reason": null }
+```
+
+The second is day one (`W = 0`); the fifth has 30 scored days and neither signal (`no_hrv` by precedence).
 
 ### `GET /v1/days/{day}` — one day
 
@@ -1300,6 +1346,8 @@ endpoint of a running stack with it.
 import Foundation
 
 enum ReadinessState: String, Codable { case balanced, strained, depleted, calibrating }
+/// Closed; the app decodes an unknown value as `.shortHistory` (lenient decoder).
+enum CalibratingReason: String, Codable { case shortHistory = "short_history", noHrv = "no_hrv", noRhr = "no_rhr" }
 enum SleepQualityLabel: String, Codable { case good, fair, poor }
 enum SleepStageName: String, Codable { case deep, light, rem, awake, asleep }
 enum InsightSeverity: String, Codable { case warn, notice, info }
@@ -1332,7 +1380,10 @@ struct DailyScore: Codable, Identifiable {
     let hrvBaselineMs: Double?
     let rhrBaseline: Double?
     let baselineDays: Int
+    let baselineHrvDays: Int?
+    let baselineRhrDays: Int?
     let calibrating: Bool
+    let calibratingReason: CalibratingReason?
     let computedAt: Date
     let modelVersion: String?
     let scoringState: ScoringState
@@ -2032,6 +2083,7 @@ struct APIErrorBody: Codable {
 | 2026-10-20 | **Beta** (external TestFlight): error `code` (`invite_required`, `consent_required`; `APIErrorBody.code`); consent to health-data processing (`POST`/`DELETE /v1/me/consent`, `User.consent`, `GET /v1/config` → `privacy_policy_version` / `privacy_policy_url`; `POST /v1/sync` needs it); invite codes (`POST /v1/me/invite`, `User.beta_access`); `User.birth_year` / `max_hr_source` and `PATCH /v1/me` `birth_year` / `max_hr_manual` (Tanaka estimate); `User.sources`; `SyncRequest.app_version` / `os_version` and `source_bundle_id` on samples, sleep segments and workouts; `model_version` on `DailyScore` and `Workout`, `GET /v1/model`; `POST /v1/feedback`; insights `no-heart-rate-source`, `max-hr-observed`. **Behaviour:** sync answers `403 consent_required` until the user consents, and nothing is scored without consent; with the beta gate on, accounts without a redeemed code get `403 invite_required`. Swift: `APIErrorCode`, `Consent`, `UserSource`, `SourceKind`, `MaxHRSource`, `ConsentPost`, `InvitePost`, `ModelInfo`, `ModelChange`, `FeedbackCategory`, `FeedbackPost`, the new fields. |
 | 2026-10-19 | **Journal and behavior impact** (M5): `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` (25 built-ins, custom behaviors with app ids), `GET`/`PUT /v1/journal/{day}` (a saved day; unsent behaviors are unknown, not "no"), `GET /v1/behaviors/impact` (recovery, HRV % and sleep performance the morning after, yes − no with a 90 % bootstrap interval, unlocked at 5 + 5 days), insight `behavior-impact`. Swift: `BehaviorKind`, `BehaviorCategory`, `ImpactStatus`, `Behavior`, `BehaviorsPatch`, `BehaviorInput`, `JournalEntry`, `JournalDay`, `JournalPut`, `BehaviorEffect`, `ImpactNeeded`, `BehaviorImpact`, `BehaviorImpacts`. |
 | 2026-10-19 | **Remote config and push** (M7 core): `GET /v1/config` (feature flags evaluated per user, `ttl_sec` 21600); `PATCH /v1/me/notifications` and `User.notifications`; `POST` / `DELETE /v1/devices/{id}/push`; the push notifications `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` and the silent refresh, with their localisation keys. Nothing is sent until the APNs key is configured. Swift: `RemoteConfig`, `NotificationCategory`, `QuietHours`, `NotificationPrefs`, `NotificationPatch`, `PushEnvironment`, `PushRegistration`, `RyftPushInfo`, `User.notifications`. |
+| 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-19 | **Sleep upgrades** (M4): `DailyScore.nap_min`, `sleep_quality`, `sleep_consistency` and the need breakdown (`sleep_need_base_min`, `_strain_min`, `_debt_min`, `_nap_min`); `DayDetail.sleep.need` and `restorative`; `SleepRange.avg_consistency`, `bedtimes`, `days[].consistency` / `nap_min`; `User.sleep_base_source` / `sleep_base_learned_min` / `sleep_base_learned_at` and `UserPatch.sleep_base_manual`; `GET /v1/sleep/plan`; trend metrics `sleep_quality`, `sleep_consistency`, `nap_min`; insights `sleep-consistency-low`, `nap-credit`, `baseline-learned`. **Behaviour, no shape change:** `quality` is now its own score instead of a copy of sleep performance, so quality values and labels change; a nap lowers the following night's need; the baseline is learned weekly unless set by hand. Rescore history to fill past days. Swift: the new fields and types, `UserPatch` joins the mirror. |
 | 2026-10-19 | **Train** (M3b): exercise library (`/v1/exercises`, history and records), plans with an enrolment (`/v1/plans`, `/v1/plans/today`), and logged sessions (`PUT /v1/sessions/{id}` with merge and a `409` that carries the server's copy, `…/complete`, list, detail, delete). `DailyScore.strength_min` / `volume_kg`, `Workout.muscular_load` / `session_id`, `DayStrain.muscular_trimp` / `sessions`, trend metrics `strength_min` and `volume_kg`, insight `pr`, status `403`. **Behaviour:** `strain` now includes the muscular load of completed sessions, so a day (or workout) with a logged session but no heart rate has a strain. Swift: the Train types, `Workout` joins the mirror. |
 | 2026-10-18 | A per-IP limit at the edge (20 requests/s, bursts of 50) answers `429` with a plain-text body before the per-user limit applies. No shape change. |
