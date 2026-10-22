@@ -43,6 +43,17 @@ func main() {
 		log.Error("auth config", "err", err)
 		os.Exit(1)
 	}
+	// Before any connection: without the policy version ingest cannot check consent
+	// (D78), so it exits at once instead of behind the DB retries.
+	beta, err := config.LoadBeta()
+	if err == nil {
+		err = beta.RequirePolicy()
+	}
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -71,12 +82,6 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("auth", "mode", authCfg.Mode)
-	beta, err := config.LoadBeta()
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
-	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
 	// The outbox (D101): a sync's days and the event announcing them commit together;
 	// the relay sends it to the broker.

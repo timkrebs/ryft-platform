@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -138,6 +139,80 @@ func TestLoadBetaModes(t *testing.T) {
 		if _, err := LoadBeta(); err == nil {
 			t.Errorf("CONSENT_ENFORCE=%s must be refused", bad)
 		}
+	}
+}
+
+// F1: no default version. Unset, empty or blank is "" without an error (scoring's
+// path); otherwise the trimmed value must be a YYYY-MM-DD date. Kustomize env files
+// keep quotes and inline comments in the value, so those are refused, not stripped.
+func TestLoadBetaPolicyVersion(t *testing.T) {
+	const unset = "<unset>" // a marker, never set in the environment
+	for _, c := range []struct {
+		name, env, want, err string
+	}{
+		{"unset", unset, "", ""},
+		{"empty", "", "", ""},
+		{"whitespace", " \t ", "", ""},
+		{"valid", "2026-11-02", "2026-11-02", ""},
+		{"trimmed", " 2026-11-02 ", "2026-11-02", ""},
+		{"double quotes", `"2026-11-02"`, "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "\"2026-11-02\""`},
+		{"single quotes", `'2026-11-02'`, "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "'2026-11-02'"`},
+		{"inline comment", "2026-11-02 # x", "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "2026-11-02 # x"`},
+		{"no such day", "2026-02-30", "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "2026-02-30"`},
+		{"no such month", "2026-13-01", "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "2026-13-01"`},
+		{"unpadded", "2026-1-2", "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "2026-1-2"`},
+		{"not a date", "latest", "", `PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "latest"`},
+		{"40 characters", "2026-11-02" + strings.Repeat("0", 30), "",
+			`PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got "2026-11-02` + strings.Repeat("0", 30) + `"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("BETA_GATE", "")
+			t.Setenv("CONSENT_ENFORCE", "")
+			if c.env == unset {
+				t.Setenv("PRIVACY_POLICY_VERSION", "") // restored after the test
+				os.Unsetenv("PRIVACY_POLICY_VERSION")
+			} else {
+				t.Setenv("PRIVACY_POLICY_VERSION", c.env)
+			}
+			b, err := LoadBeta()
+			if c.err != "" {
+				if err == nil || err.Error() != c.err {
+					t.Fatalf("got %v, want %s", err, c.err)
+				}
+				return
+			}
+			if err != nil || b.PrivacyPolicyVersion != c.want || b.Gate != ModeOff || b.Consent != ModeOn {
+				t.Fatalf("got %+v %v, want version %q", b, err, c.want)
+			}
+		})
+	}
+}
+
+// api and ingest refuse to start without a version, in every auth mode (F1).
+func TestRequirePolicy(t *testing.T) {
+	const want = "PRIVACY_POLICY_VERSION is required: api and ingest record and enforce consent against it (D78); " +
+		"set the published version (deploy/k8s/base/<service>/config.env, docker-compose.yml)"
+	if err := (Beta{}).RequirePolicy(); err == nil || err.Error() != want {
+		t.Fatalf("empty: got %v, want %s", err, want)
+	}
+	if err := (Beta{PrivacyPolicyVersion: "2026-11-02"}).RequirePolicy(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+}
+
+// scoring, scoring rescore and learn-baselines read only the consent mode: LoadBeta
+// alone, without RequirePolicy, must start them when no version is configured.
+func TestLoadBetaScoringPathNeedsNoPolicy(t *testing.T) {
+	t.Setenv("BETA_GATE", "")
+	t.Setenv("CONSENT_ENFORCE", "warn")
+	t.Setenv("PRIVACY_POLICY_VERSION", "")
+	os.Unsetenv("PRIVACY_POLICY_VERSION")
+	b, err := LoadBeta()
+	if err != nil || b.Consent != ModeWarn {
+		t.Fatalf("got %+v %v", b, err)
+	}
+	if b.RequirePolicy() == nil {
+		t.Fatal("the same Beta must not satisfy api and ingest")
 	}
 }
 

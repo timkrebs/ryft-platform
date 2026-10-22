@@ -41,6 +41,17 @@ func main() {
 		log.Error("auth config", "err", err)
 		os.Exit(1)
 	}
+	// Before any connection: without the policy version the api cannot record or
+	// check consent (D78), so it exits at once instead of behind the DB retries.
+	beta, err := config.LoadBeta()
+	if err == nil {
+		err = beta.RequirePolicy()
+	}
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -74,12 +85,6 @@ func main() {
 		log.Error("admin config", "err", err)
 		os.Exit(1)
 	}
-	beta, err := config.LoadBeta()
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
-	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
