@@ -11,10 +11,26 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    # Version policy (docs/DECISIONS.md): Node moves as one unit (Docker build stage, .nvmrc,
+    # engines, @types/node) and only onto an LTS line. Node 26 becomes LTS on 2026-10-28:
+    # then delete the 26.x entries (here and in the docker block) and move all four together.
+    # TypeScript 7 waits for typescript-eslint, whose peer range stops below 6.1.
+    ignore:
+      - dependency-name: '@types/node'
+        versions: ['25.x', '26.x', '27.x']
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
   - package-ecosystem: docker
     directory: /web
     schedule: { interval: weekly, day: monday }
     commit-message: { prefix: deps }
+    # nginx stays on its stable (even) branch: patches arrive, a new branch (1.32 and so on)
+    # is a deliberate PR. Node: see the npm block.
+    ignore:
+      - dependency-name: nginxinc/nginx-unprivileged
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
+      - dependency-name: node
+        versions: ['25.x', '26.x', '27.x']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
