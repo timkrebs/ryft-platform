@@ -187,6 +187,7 @@ multi-node clusters; on a single node the PDB blocks the second pod (see
   cross-compiles on `$BUILDPLATFORM` (`GOOS/GOARCH` from `TARGETOS/TARGETARCH`), so this
   costs no emulation. Plain `docker build` / `podman build` behave as before.
 - Every push gets a short-SHA tag; `latest` only on the default branch, as specified.
+  *(Since D107: only pushes to main build images, and none is tagged `latest`.)*
 - `.golangci.yml` (v2 format) sits at the repo root; golangci-lint finds it from
   `backend/`. Default `standard` set plus bodyclose, copyloopvar, errorlint, gosec,
   misspell, nilerr, noctx, nolintlint, sqlclosecheck, unconvert, usestdlibvars, and
@@ -1610,6 +1611,8 @@ sent, and whether a second account shares its phone.
   `http` port for it; the four services admit `ryft-smoke` on 8080. It reuses the migrate
   image instead of a tools image: one image less to build, pin and promote.
 - **Rollback is `git revert` of the pin commit**, which Argo CD deploys like any other.
+  *(Since D107 the revert needs a `# hold: <group>` line, or the next push re-pins the
+  reverted code.)*
   Argo CD does not roll back by itself, and Argo Rollouts (canaries, automated analysis) is
   not worth it yet: two replicas of api, one of scoring, a few testers; a revert takes
   minutes and the smoke tells whether it helped.
@@ -1629,7 +1632,8 @@ sent, and whether a second account shares its phone.
   (squash). The PR's required checks (`manifests` now also asks ghcr.io for every pinned
   image) gate it; the merge is the deploy, Argo CD syncs it (D95). Git history is the
   deploy log; closing the PR blocks a deploy; reverting the merge rolls back.
-- **No deploy without a backend change:** promote skips when nothing under `backend/`
+- **No deploy without a backend change** *(per image group since D107: services for
+  `backend/`, web for `web/`)*: promote skips when nothing under `backend/`
   changed since the running pin, so docs commits do not restart pods, and the merged pin
   commit (whose own images CI builds) does not promote itself. An older open deploy PR is
   closed as superseded: two would edit the same lines and the second would conflict.
@@ -1960,6 +1964,7 @@ sent, and whether a second account shares its phone.
   and anyone can pull a public image; accepted for now. If it goes private, the variant
   with a Vault-synced `dockerconfigjson` Secret is
   `../web/docs/handoff/platform-web-image.patch`.
+- *(Superseded by D107: the site lives here as `web/`, and this repository's promote pins it.)*
 - **Who pins web:** ryft-web's own promote job (its PR #11) opens `deploy: web <sha>` on
   branches `deploy/web-<sha>` with the `ryft-deploy` App's token, after its image passed
   Trivy; this repository's `promote.sh` runs only for `backend/` changes and would wait
@@ -1970,3 +1975,79 @@ sent, and whether a second account shares its phone.
   locally as in the pod (uid 101, read-only root, `/tmp` and `/var/cache/nginx` only):
   every URL of the brief 200, the AASA `application/json` without a redirect, a CSP with
   the script hashes; its AASA is the ConfigMap site's plus `/invite/*`.
+
+## D107 — The site lives here as `web/`; one CI, one promote per image group (supersedes D106's "Who pins web")
+
+- **Why (the user's call, 2026-10-21):** the site's legal texts and AASA belong to the
+  platform's releases: a privacy policy version is a ConfigMap here and a page there, the
+  AASA follows the app's routes. Two repositories meant two CIs, a cross-repository promote
+  and a version check that could only warn. Here a change to both sides is one PR, checked
+  by one CI and deployed by one promote. ryft-web is archived.
+- **History kept:** a fresh clone of ryft-web's `main` (`d0503ea`) rewritten with `git
+  filter-repo --to-subdirectory-filter web --replace-message` (`(#n)` → `timkrebs/ryft-web#n`,
+  so GitHub does not link old PR numbers to this repository's), merged with
+  `--allow-unrelated-histories --no-ff` and landed as a merge commit (#7; a squash would have
+  dropped it). `git log --follow -- web/<file>` reaches into ryft-web. The rewrite gives
+  every imported commit a new SHA: ryft-web's SHAs and image tags (`abfbe26`, `f437747`)
+  are not in this history.
+- **One CI, path filters on pull requests only:** a `changes` job picks the checks a PR
+  needs (Go, smoke, manifests, Terraform, web); the others are skipped. The required check
+  of `ci.yml` is `ci-ok`, which needs every check, `changes` included, and fails on any
+  failure or cancellation, so a skip never stands in for a failure and the Terraform matrix
+  needs no name of its own. A push to main runs every check; only main gets pushes and
+  images; only pull requests cancel an older run. The title rule (`area: what changed`, any
+  lower-case area or path; the denylisted brand neither in the title nor in the PR's commit
+  messages, `scripts/check_pr.sh`) is its own workflow, `pr-title`, because it must re-run
+  when a title is edited. gitleaks checks the history of every PR and push, with a
+  reviewed allowlist (`.gitleaks.toml`: one rule, one file, the exact value per entry); on a
+  PR the base branch's config and ignore file count, not the PR's.
+- **Two image groups, pinned against what runs:** services (ingest, scoring, api, notify,
+  migrate, from `backend/`) and web (from `web/`). On a push to main a group is built when
+  its directory differs from its pin in `overlays/eks`; a pin that is no commit of this
+  history, or service pins that disagree, count as different (`scripts/deploy_targets.sh`,
+  for the build jobs and for `promote.sh`). `promote` pins every built group to that commit
+  in one "deploy: images <sha>" PR, closes every older `deploy/*` PR, and runs only when
+  every group it needs was built. Comparing with the running pin, not the previous commit,
+  keeps a change whose run was cancelled or whose deploy PR was superseded. A
+  `workflow_dispatch` on main with `force` rebuilds and pins a group whose files did not
+  change (a new `SUPPORT_EMAIL`). promote acts only for main's tip (an older run's re-run
+  exits with a notice, so it cannot close a newer deploy PR or miss a newer hold), finds its
+  PRs by author (the App), same repository and `deploy/<7 hex>`, reuses its own branch or
+  open PR, and never force-pushes.
+- **Rollback per group, with a hold:** revert the pin, or set one group's `newTag` back, and
+  add `# hold: <services|web> <YYYY-MM-DD> <reason>` to `overlays/eks` in the same commit.
+  Without it the next push builds and pins the rolled-back code again (true for the
+  services since D96, unnoticed until this design). A line that looks like a hold but does
+  not parse fails `manifests`, and so does a deploy PR (the App's `deploy/<sha>`) that moves a
+  held group's `newTag`, so an older one cannot undo a rollback; a second rollback by hand
+  still can. Every image entry in `overlays/eks` must be exactly the RYFT name and a quoted
+  short SHA (no `newName`, no `digest`), so no line can change what runs unseen. A PR that removes the hold deploys main's head for
+  that group; while a held group differs, every promote run says so.
+- **The web image:** `ghcr.io/timkrebs/ryft/web:<the first seven characters of this
+  repository's SHA>`, the same public package, linux/amd64 and arm64, provenance and an
+  SBOM, never `latest`. One job builds amd64 into the runner, scans it with Trivy (critical,
+  fixed) and only then pushes both architectures from the same builder; Trivy scans the
+  pushed digest again before promote may pin it. The build stage runs on `$BUILDPLATFORM`
+  (the export is architecture-independent). The build stops when `SUPPORT_EMAIL` is unset:
+  it is baked into the HTML, and empty would publish a TODO marker on `/support`. The
+  package grants this repository Write ("Manage Actions access"), ryft-web none.
+- **The privacy policy check fails instead of warning:** `web/scripts/check-policy-version.mjs
+  --strict` runs in `manifests` whenever a privacy page, the check or the api/ingest
+  ConfigMaps change: the ConfigMaps' version must be the newest entry of
+  `web/content/legal/privacy-versions.json`, and every listed version must exist in English
+  and German, so a consented text never disappears. The version and its page go into the
+  same PR. Known gaps (STATUS): F1, a ConfigMap-only change rolls no pod; and the page goes
+  live with the web deploy about 15 minutes after the ConfigMap.
+- **The brand rule's scope:** `web/**`, the built site, and every commit message and PR
+  title in this repository. Root `.githooks/` (installed by `make hooks`, no npm `prepare`)
+  check staged `web/` files and every message and fail closed without Node, because a
+  message cannot be taken back without a force-push; CI checks the tree, the build, the
+  PR's title and every commit message, with the base branch's denylist. The internal
+  mentions outside `web/` were removed by the user's choice (#6).
+- **ryft-web is archived,** frozen at the import (its workflow disabled, so its last README
+  commit pushes no image). Its images stay: `f437747` is the rollback point for the first
+  site built here; never delete package versions.
+- **Superseded or amended:** D106's "Who pins web" (no `deploy/web-*` branches, no exception
+  in `promote.sh`); D96's "No deploy without a backend change" holds per group; D95's
+  rollback by revert needs the hold; D18's "Every push gets a short-SHA tag" now means every
+  push to main.
