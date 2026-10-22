@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +106,28 @@ func TestScreen(t *testing.T) {
 	// An unknown type no longer fails the sync (it is ignored instead).
 	if err := validate(&model.SyncRequest{DeviceID: uuid.New(), Samples: []model.Sample{{Type: "x", Start: now, End: now}}}); err != nil {
 		t.Fatalf("validate: %v", err)
+	}
+}
+
+// F1: without PRIVACY_POLICY_VERSION ingest exits 1 before it connects to
+// anything. The database is a closed port: were the check behind db.Open, the
+// start-up retries would outlast the timeout.
+func TestMainRefusesMissingPolicyBeforeConnecting(t *testing.T) {
+	if os.Getenv("RYFT_TEST_MAIN") == "1" {
+		main()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainRefusesMissingPolicyBeforeConnecting$")
+	cmd.Env = append(os.Environ(), "RYFT_TEST_MAIN=1", "PRIVACY_POLICY_VERSION=",
+		"DATABASE_URL=postgres://ingest@127.0.0.1:1/ryft", "AUTH_MODE=apikey", "API_KEY=0123456789abcdef",
+		"ALLOW_INSECURE_APIKEY_AUTH=true", "EVENTS_BACKEND=", "EVENTS_CONSUME=", "AMQP_USER=", "AMQP_PASSWORD=",
+		"BETA_GATE=", "CONSENT_ENFORCE=")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), `"msg":"beta config"`) ||
+		!strings.Contains(string(out), "PRIVACY_POLICY_VERSION is required: ") {
+		t.Fatalf("want exit 1 with the beta config error, got %v:\n%s", err, out)
 	}
 }

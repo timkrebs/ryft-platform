@@ -51,6 +51,14 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+	// Only the consent mode; scoring needs no policy version (any recorded one
+	// counts, D78), so no RequirePolicy here.
+	beta, err := config.LoadBeta()
+	if err != nil {
+		log.Error("beta config", "err", err)
+		os.Exit(1)
+	}
+	log.Info("beta", "consent", beta.Consent)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -65,13 +73,7 @@ func main() {
 	go db.Watch(ctx, pool, "scoring", log)
 	st := store.New(pool)
 	engine := scoring.NewEngine(st, log)
-	beta, err := config.LoadBeta()
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
 	engine.SetConsentMode(beta.Consent)
-	log.Info("beta", "consent", beta.Consent)
 
 	// RabbitMQ (D97), retried at start-up.
 	bus, err := eventbus.Open(ctx, cfg, "scoring", log)
