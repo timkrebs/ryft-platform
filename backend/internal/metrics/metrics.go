@@ -87,6 +87,13 @@ var (
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
 	}, []string{"result"})
 
+	DaysRescored = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_days_rescored_total",
+		Help: "Stored days scored again beyond the days asked for, because their history changed, by reason " +
+			"(history: an earlier day's baseline inputs changed in the same pass; behind: the 15-minute pass found a day " +
+			"whose baseline_days is below what its stored history now holds).",
+	}, []string{"reason"})
+
 	SleepBaseLearned = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_sleep_base_learned_total",
 		Help: "Weekly sleep-baseline estimates, by outcome (applied: the baseline in use moved and the last 7 days were rescored; kept: the same value, or set by hand; insufficient: too few qualifying nights; error).",

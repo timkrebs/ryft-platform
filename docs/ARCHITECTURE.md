@@ -178,7 +178,15 @@ HRV is compared in log space (it is log-normally distributed). With fewer than 7
 days the row is flagged `calibrating` and a population SD is used instead of yours.
 The HRV (geometric mean) and resting-HR baselines each day was scored against are
 stored on its row (`hrv_baseline_ms`, `rhr_baseline`; migration 0005), so trends and
-insights compare against exactly what recovery used.
+insights compare against exactly what recovery used. Since the baselines (and sleep
+debt, consistency, yesterday's strain) are read from the stored rows before a day, a
+day can be scored before its history (a backfill that arrives newest first, a late
+HRV sample, a range replayed out of order). So when scoring a day writes a new row or
+changes what later days read from it, scoring re-scores the next 30 stored days after
+it in the same pass, oldest first, never past today, each day once
+(`Engine.ComputeDays`); a re-score that changes nothing stops there. The 15-minute
+pass re-scores, at most 50 a pass, days whose `baseline_days` is below what their
+stored history now holds (`Engine.RescoreBehind`), for what that cannot see.
 
 **Trends.** `GET /v1/trends` reads one `daily_scores` column over a 7/30/90-day window
 (metric → column is a whitelist in `store.Trend`) plus, for HRV and resting HR, the

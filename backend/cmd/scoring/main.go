@@ -36,6 +36,10 @@ const (
 	refreshEvery = 15 * time.Minute
 	// activeWindow: users whose devices synced this recently get the timer pass.
 	activeWindow = 48 * time.Hour
+	// behindPerRun: days the timer pass re-scores behind their history
+	// (Engine.RescoreBehind), all users together, so a backlog is worked off
+	// over a few passes instead of stretching one.
+	behindPerRun = 50
 )
 
 func main() {
@@ -186,16 +190,14 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 	if (ev.Reason == "recompute" || ev.Reason == "merge") && len(days) == 2 {
 		return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
 	}
-	for _, d := range days {
-		if err := engine.ComputeDay(ctx, ev.UserID, d); err != nil {
-			return err
-		}
-	}
-	return nil
+	// The sync's days, then the stored days after them whose history changed:
+	// in this handler, so a duplicate finds nothing changed and stops there (D100).
+	return engine.ComputeDays(ctx, ev.UserID, days)
 }
 
 // refreshActive rescores yesterday and today for every user who synced within
-// activeWindow, each in their own timezone, then runs the weekly baseline
+// activeWindow, each in their own timezone, re-scores days left behind their
+// history (at most behindPerRun in all), then runs the weekly baseline
 // estimate where it is due.
 func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
@@ -203,6 +205,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		log.Error("periodic: active users", "err", err)
 		return
 	}
+	behind := behindPerRun
 	for _, id := range users {
 		ctx := logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
 		user, loc, err := st.GetUser(ctx, id)
@@ -218,6 +221,13 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 			if err := engine.ComputeDay(ctx, id, d.Format("2006-01-02")); err != nil {
 				log.ErrorContext(ctx, "periodic recompute", "day", d.Format("2006-01-02"), "err", err)
 			}
+		}
+		if behind > 0 {
+			n, err := engine.RescoreBehind(ctx, id, today.Format("2006-01-02"), behind)
+			if err != nil {
+				log.ErrorContext(ctx, "periodic: days behind their history", "err", err)
+			}
+			behind -= n
 		}
 		learn.maybe(ctx, log, engine, user, today)
 	}

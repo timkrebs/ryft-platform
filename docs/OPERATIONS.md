@@ -147,6 +147,14 @@ pod. Each user's last *days* days are rescored, oldest first, with scoring's own
 the log shows `user rescored … n of N`, then `rescore done`. Locally:
 `RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
 
+Days scored before their history (a backfill newest first, a late sample) need no
+rescore by hand: scoring re-scores the days after a changed day itself (log
+`rescored days after a history change`), and its 15-minute pass picks up, 50 a pass,
+days whose `baseline_days` is behind their stored history (log `rescoring days behind
+their history`; `ryft_days_rescored_total`, `OBSERVABILITY.md`). Only users who
+synced in the last 48 hours get the pass; the others get it with their next sync, or
+now with `POST /v1/recompute` or `scripts/rescore_all.sh`.
+
 **Learned sleep baseline** (`SCORING.md` → Sleep): scoring estimates it every Sunday from
 04:00 local on its own. To run it for every user now (after a deploy, or after changing
 its rules): `kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines`

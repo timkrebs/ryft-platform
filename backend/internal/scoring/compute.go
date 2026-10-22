@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +18,9 @@ import (
 )
 
 // Engine loads a day's raw data from the store, runs the algorithms and writes
-// the daily_scores row. Days must be computed in chronological order because
-// each day's baselines and sleep debt come from the rows before it.
+// the daily_scores row. Each day's baselines and sleep debt come from the rows
+// before it, so days are computed oldest first, and a change to a stored day
+// re-scores the days after it (ComputeDays).
 type Engine struct {
 	st       *store.Store
 	log      *slog.Logger
@@ -75,7 +77,12 @@ const (
 // their health data, so nothing is scored (D78). Callers count it, not fail on it.
 var ErrNoConsent = errors.New("no consent to health-data processing")
 
-// ComputeRange recomputes every day in [from, to], inclusive, oldest first.
+// maxCascadeDays bounds the days one call scores beyond the ones it was asked
+// for (ComputeDays); RescoreBehind picks up what it leaves.
+const maxCascadeDays = MaxRangeDays
+
+// ComputeRange recomputes every day in [from, to], inclusive, oldest first,
+// then the stored days after it whose history changed (ComputeDays).
 func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to string) error {
 	n, err := RangeDays(from, to)
 	if err != nil {
@@ -92,20 +99,151 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 		metrics.DaysScored.WithLabelValues("no_consent").Add(float64(n))
 		return ErrNoConsent
 	}
-	a, _ := time.ParseInLocation("2006-01-02", from, loc)
-	b, _ := time.ParseInLocation("2006-01-02", to, loc)
+	a, _ := time.ParseInLocation(dayLayout, from, loc)
+	b, _ := time.ParseInLocation(dayLayout, to, loc)
+	var days []string
 	for d := a; !d.After(b); d = d.AddDate(0, 0, 1) {
-		if err := e.ComputeDay(ctx, userID, d.Format("2006-01-02")); err != nil {
-			return fmt.Errorf("day %s: %w", d.Format("2006-01-02"), err)
-		}
+		days = append(days, d.Format(dayLayout))
 	}
-	return nil
+	return e.walk(ctx, userID, loc, days)
 }
 
-// ComputeDay scores one local calendar day; ErrNoConsent without consent.
+// ComputeDay scores one local calendar day, then the stored days after it
+// whose history it changed (ComputeDays); ErrNoConsent without consent.
 func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) error {
+	return e.ComputeDays(ctx, userID, []string{day})
+}
+
+// ComputeDays scores the given local days, oldest first. A day's baselines,
+// sleep debt, consistency and yesterday's strain come from the stored rows
+// before it (ScoreHistory), so a day scored before its history (a backfill
+// that arrives newest first, a late sample, two consumers at once) would keep
+// the history it saw. So when scoring a day writes a new row or changes one
+// of its history inputs (store.ScoreWrite), the stored days whose window holds
+// it are scored again in the same pass, in order: the next baselineDays stored
+// days after the last such change, never past the user's today. Each day is
+// scored at most once per call, so a 400-day backfill costs its 400 days and
+// at most 30 more, not 400×30, and a re-score that changes nothing goes no
+// further than the days asked for. At most maxCascadeDays beyond those.
+func (e *Engine) ComputeDays(ctx context.Context, userID uuid.UUID, days []string) error {
+	if len(days) == 0 {
+		return nil
+	}
+	user, loc, err := e.st.GetUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !e.Admits(user) {
+		metrics.DaysScored.WithLabelValues("no_consent").Add(float64(len(days)))
+		return ErrNoConsent
+	}
+	return e.walk(ctx, userID, loc, days)
+}
+
+// walk scores the asked-for days and the stored days their changes reach,
+// oldest first, each once. reach is how many stored rows after the last
+// change are still to be scored; every day scored after it is one of them.
+// Stored days are fetched only where the asked-for days leave a gap, and as
+// late as possible, so a row another consumer wrote meanwhile is included.
+func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location, asked []string) error {
+	for _, d := range asked {
+		if _, err := time.Parse(dayLayout, d); err != nil {
+			return fmt.Errorf("bad day %q: %w", d, err)
+		}
+	}
+	asked = slices.Compact(slices.Sorted(slices.Values(asked)))
+	today := time.Now().In(loc).Format(dayLayout)
+	var (
+		last     string   // the day scored last
+		reach    int      // stored rows after the last change still to score
+		stored   []string // fetched for that, all before the next asked-for day
+		cascaded int
+		capped   bool
+	)
+	for {
+		if len(stored) == 0 && reach > 0 && last < today && (len(asked) == 0 || asked[0] > addDays(last, 1)) {
+			through := today
+			if len(asked) > 0 && asked[0] <= today {
+				through = addDays(asked[0], -1)
+			}
+			if room := maxCascadeDays - cascaded; room > 0 {
+				var err error
+				if stored, err = e.st.ScoredDaysAfter(ctx, userID, last, through, min(reach, room)); err != nil {
+					return fmt.Errorf("days after %s: %w", last, err)
+				}
+			} else if !capped {
+				capped = true
+				e.log.WarnContext(ctx, "rescore after history change capped", "after", last, "days", cascaded)
+			}
+		}
+		var day string
+		again := len(stored) > 0
+		switch {
+		case again:
+			day, stored = stored[0], stored[1:]
+		case len(asked) > 0:
+			day, asked = asked[0], asked[1:]
+		default:
+			if cascaded > 0 {
+				e.log.InfoContext(ctx, "rescored days after a history change", "days", cascaded, "through", last)
+			}
+			return nil
+		}
+		changed, err := e.scoreDay(ctx, userID, day)
+		if err != nil {
+			return fmt.Errorf("day %s: %w", day, err)
+		}
+		if again {
+			cascaded++
+			metrics.DaysRescored.WithLabelValues("history").Inc()
+		}
+		switch {
+		case changed:
+			reach = baselineDays
+		case reach > 0:
+			reach--
+		}
+		last = day
+	}
+}
+
+// RescoreBehind is the 15-minute pass's safety net for what ComputeDays
+// cannot see: a day scored before its history whose re-score was lost (an
+// attempt that failed half-way, whose retry finds nothing changed; two
+// consumers scoring neighbouring days at once; the cap). It scores again, oldest
+// first, up to n of the user's days within the last MaxRangeDays whose
+// baseline_days is below what their stored history now holds
+// (store.BehindHistoryDays), and returns how many it found.
+func (e *Engine) RescoreBehind(ctx context.Context, userID uuid.UUID, today string, n int) (int, error) {
+	from := addDays(today, -(MaxRangeDays - 1))
+	if from == "" {
+		return 0, fmt.Errorf("bad day %q", today)
+	}
+	days, err := e.st.BehindHistoryDays(ctx, userID, from, baselineDays, n)
+	if err != nil || len(days) == 0 {
+		return 0, err
+	}
+	metrics.DaysRescored.WithLabelValues("behind").Add(float64(len(days)))
+	e.log.InfoContext(ctx, "rescoring days behind their history", "days", len(days), "from", days[0])
+	return len(days), e.ComputeDays(ctx, userID, days)
+}
+
+const dayLayout = "2006-01-02"
+
+// addDays moves a YYYY-MM-DD day by n calendar days ("" if it is not one).
+func addDays(day string, n int) string {
+	d, err := time.Parse(dayLayout, day)
+	if err != nil {
+		return ""
+	}
+	return d.AddDate(0, 0, n).Format(dayLayout)
+}
+
+// scoreDay scores one day with its metrics and reports whether its history
+// inputs changed.
+func (e *Engine) scoreDay(ctx context.Context, userID uuid.UUID, day string) (bool, error) {
 	start := time.Now()
-	err := e.computeDay(ctx, userID, day)
+	changed, err := e.computeDay(ctx, userID, day)
 	if err == nil { // GET /v1/me/sync: this day is no longer pending (D91)
 		queued, ok, merr := e.st.MarkScored(ctx, userID, day, start)
 		switch {
@@ -121,23 +259,25 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 	}
 	metrics.DaysScored.WithLabelValues(result).Inc()
 	metrics.ScoringDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
-	return err
+	return changed, err
 }
 
-func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) error {
+// computeDay scores one day and reports whether its history inputs changed
+// (store.ScoreWrite.InputsChanged).
+func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (bool, error) {
 	user, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !e.Admits(user) {
-		return ErrNoConsent
+		return false, ErrNoConsent
 	}
 	if user.Consent == nil && e.consent == config.ModeWarn {
 		metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(config.ModeWarn), "scoring").Inc()
 	}
 	d, err := time.ParseInLocation("2006-01-02", day, loc)
 	if err != nil {
-		return fmt.Errorf("bad day %q: %w", day, err)
+		return false, fmt.Errorf("bad day %q: %w", day, err)
 	}
 	dayStart, dayEnd := d, d.AddDate(0, 0, 1)
 	nightFrom, nightTo := NightWindow(d)
@@ -148,7 +288,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	_, to := DaySleepWindow(d)
 	segs, err := e.st.SleepEndingBetween(ctx, userID, from, to)
 	if err != nil {
-		return err
+		return false, err
 	}
 	nightSegs, napMin := SplitDay(segs, d)
 	_, napYesterday := SplitDay(segs, d.AddDate(0, 0, -1))
@@ -171,7 +311,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 	// ---- baselines from history --------------------------------------------
 	hist, err := e.st.ScoreHistory(ctx, userID, day, baselineDays)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var lnHRV, rhrs, resps []float64
 	var yesterdayStrain float64
@@ -234,19 +374,19 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 
 	hrSamples, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, dayStart, dayEnd)
 	if err != nil {
-		return err
+		return false, err
 	}
 	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
 
 	// Strength sessions first: they may create the workouts the loop below scores.
 	strength, err := e.strength(ctx, userID, dayStart, dayEnd)
 	if err != nil {
-		return fmt.Errorf("strength: %w", err)
+		return false, fmt.Errorf("strength: %w", err)
 	}
 
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, w := range workouts {
 		// Each workout loads its own window rather than filtering the day's
@@ -256,7 +396,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))
 		around, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, from, to)
 		if err != nil {
-			return err
+			return false, err
 		}
 		var load StrainResult
 		inWindow := hrPoints(WorkoutSamples(w, around))
@@ -266,18 +406,18 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
 		}
 		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, strainOf(load, w), load.TRIMP, load.ZoneMinutes, ModelVersion); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	// ---- activity ----------------------------------------------------------------
 	steps, err := e.dayTotal(ctx, userID, model.SampleSteps, dayStart, dayEnd)
 	if err != nil {
-		return err
+		return false, err
 	}
 	kcal, err := e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// ---- persist -----------------------------------------------------------------
@@ -362,17 +502,17 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) e
 		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10
 		row.StrengthMin, row.VolumeKG = &minutes, &volume
 	}
-	first, err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load})
+	written, err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load})
 	if err != nil {
-		return err
+		return false, err
 	}
-	if first && sleep.AsleepMin > 0 && e.onScored != nil && day == time.Now().In(loc).Format("2006-01-02") {
+	if written.FirstRecovery && sleep.AsleepMin > 0 && e.onScored != nil && day == time.Now().In(loc).Format("2006-01-02") {
 		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: day, Recovery: *recovery, Readiness: readiness,
 			State: state, SleepPerformance: sleepPerf, SleepMin: sleep.AsleepMin})
 	}
 	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", deref(strainScore), "muscular_trimp", strength.TRIMP,
 		"sleep_min", sleep.AsleepMin, "nap_min", napMin, "sleep_need", need, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
-	return nil
+	return written.InputsChanged, nil
 }
 
 func hrPoints(samples []model.Sample) []HRPoint {
