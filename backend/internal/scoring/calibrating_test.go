@@ -50,9 +50,17 @@ func TestCalibratingReason(t *testing.T) {
 		// The no-HRV account gets an HRV source: its first night with one.
 		{"HRV appears", 30, 0, 30, true, true, short},
 		{"resting HR appears", 30, 30, 0, true, true, short},
-		// A new source with HRV but no resting HR yet: the resting HR is still
-		// missing from the window and the day.
-		{"HRV appears, no resting HR anywhere", 30, 0, 0, true, false, noRHR},
+		// A watch's first night after phone-only days, scored at 07:00: the HRV
+		// came in the night, its resting HR comes later in the day. The day brings
+		// a signal its window never had, so neither is named missing yet.
+		{"first morning, HRV but resting HR not yet", 30, 0, 0, true, false, short},
+		{"first morning, resting HR but HRV not yet", 30, 0, 0, false, true, short},
+		// The same on a no-HRV account whose resting HR is complete.
+		{"HRV appears, resting HR not yet today", 30, 0, 30, true, false, short},
+		// The next morning: the HRV is in the window now, and still no resting HR
+		// anywhere, so the resting HR is named missing.
+		{"next morning, still no resting HR", 30, 1, 0, true, false, noRHR},
+		{"next morning, still no HRV", 30, 0, 1, false, true, noHRV},
 		// Sporadic HRV (3 nights of 30): more nights do end it, so short_history,
 		// although the resting HR is complete and this night has no HRV.
 		{"sporadic HRV", 30, 3, 30, false, true, short},
@@ -77,8 +85,9 @@ func TestCalibratingReason(t *testing.T) {
 // Over every state the engine can reach (0 ≤ H, R ≤ W ≤ 30, the day with or
 // without each signal) the reason is empty exactly when Recovery says the day
 // is not calibrating, and each reason means what the rule says it means: a
-// signal is missing only when the window is long enough and neither the window
-// nor the day has it.
+// signal is missing only when the window is long enough, neither the window nor
+// the day has it, and the day brings no signal its window never had (a new
+// source's first morning names nothing missing).
 func TestCalibratingReasonInvariants(t *testing.T) {
 	for w := 0; w <= baselineDays; w++ {
 		for h := 0; h <= w; h++ {
@@ -91,8 +100,9 @@ func TestCalibratingReasonInvariants(t *testing.T) {
 					if (got == "") == calibrating {
 						t.Fatalf("%s: reason %q with calibrating %v", at, got, calibrating)
 					}
-					hrvMissing := w >= MinBaselineDays && h == 0 && !in.DayHRV
-					rhrMissing := w >= MinBaselineDays && r == 0 && !in.DayRHR
+					arrives := (h == 0 && in.DayHRV) || (r == 0 && in.DayRHR)
+					hrvMissing := w >= MinBaselineDays && h == 0 && !in.DayHRV && !arrives
+					rhrMissing := w >= MinBaselineDays && r == 0 && !in.DayRHR && !arrives
 					switch got {
 					case model.CalibratingNoHRV:
 						if !hrvMissing {

@@ -79,8 +79,14 @@ def check_calibration(d, where):
     check(r is not None and d["baseline_days"] == min(h, r), f"{where}: baseline_days {d['baseline_days']} != min({h}, {r})")
     check((why is not None) == d["calibrating"], f"{where}: calibrating {d['calibrating']} with reason {why}")
     check(why is None or why in REASONS, f"{where}: calibrating_reason {why!r}")
-    check(why != "no_hrv" or h == 0, f"{where}: no_hrv with {h} HRV nights")
-    check(why != "no_rhr" or (r == 0 and h > 0), f"{where}: no_rhr with {h}/{r} nights")
+    # What the rule guarantees: a signal is named missing only when neither the window
+    # nor the day has it, and never on a day that brings a signal its window lacked.
+    day_hrv, day_rhr = (d.get("hrv_ms") or 0) > 0, (d.get("rhr") or 0) > 0
+    arrives = (h == 0 and day_hrv) or (r == 0 and day_rhr)
+    check(why != "no_hrv" or (h == 0 and not day_hrv and not arrives),
+          f"{where}: no_hrv with {h} HRV nights, hrv_ms {d.get('hrv_ms')}, rhr {d.get('rhr')}")
+    check(why != "no_rhr" or (r == 0 and not day_rhr and not arrives),
+          f"{where}: no_rhr with {r} resting-HR nights, rhr {d.get('rhr')}, hrv_ms {d.get('hrv_ms')}")
 
 
 # ---- 2.1 readiness ------------------------------------------------------------

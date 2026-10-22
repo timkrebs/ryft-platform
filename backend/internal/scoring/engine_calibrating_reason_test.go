@@ -259,6 +259,87 @@ func TestEngineCalibratingReasonNewSourceMorning(t *testing.T) {
 	}
 }
 
+// The resting HR comes later than the HRV: a watch's first night after 10
+// phone-only days, scored at 07:00, has its HRV (03:00) but not yet its resting
+// HR (09:00). That morning names nothing missing (short_history), neither
+// before nor after the resting HR syncs. A watch that never writes a resting HR
+// is named no_rhr the next morning, when its HRV is in the window.
+func TestEngineCalibratingReasonBeforeTheRestingHR(t *testing.T) {
+	ctx := context.Background()
+	at := func(day string, h int) time.Time {
+		d, _ := time.Parse(dayLayout, day)
+		return d.Add(time.Duration(h) * time.Hour)
+	}
+	phone := func(t *testing.T, st *store.Store, user uuid.UUID) {
+		t.Helper()
+		var xs []model.Sample
+		for d := at("2026-09-01", 0); d.Day() <= 10; d = d.AddDate(0, 0, 1) {
+			xs = append(xs, model.Sample{Type: model.SampleSteps, Start: d.Add(10 * time.Hour), End: d.Add(11 * time.Hour),
+				Value: 900, Unit: "count", Source: "phone"})
+		}
+		if _, err := st.UpsertSamples(ctx, user, xs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	night := func(t *testing.T, st *store.Store, user uuid.UUID, day string) { // sleep and HRV, synced at 07:00
+		t.Helper()
+		if _, err := st.UpsertSleep(ctx, user, []model.SleepSegment{{Start: at(day, -1), End: at(day, 7),
+			Stage: model.SleepCore, Source: "watch"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpsertSamples(ctx, user, []model.Sample{{Type: model.SampleHRVSDNN, Start: at(day, 3),
+			End: at(day, 3), Value: 60, Unit: "ms", Source: "watch"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reason := func(t *testing.T, st *store.Store, e *Engine, user uuid.UUID, day string) calib {
+		t.Helper()
+		if err := e.ComputeDay(ctx, user, day); err != nil {
+			t.Fatal(err)
+		}
+		return calibOf(t, scoresByDay(t, st, user, day, day)[day])
+	}
+	short := model.CalibratingShortHistory
+
+	t.Run("resting HR later the same day", func(t *testing.T) {
+		st, engine, user := engineStore(t)
+		phone(t, st, user)
+		if err := engine.ComputeRange(ctx, user, "2026-09-01", "2026-09-10"); err != nil {
+			t.Fatal(err)
+		}
+		night(t, st, user, "2026-09-11")
+		if got := reason(t, st, engine, user, "2026-09-11"); got != (calib{0, 0, 0, true, short}) {
+			t.Fatalf("09-11 at 07:00: %+v, want short_history", got)
+		}
+		if _, err := st.UpsertSamples(ctx, user, []model.Sample{{Type: model.SampleRestingHR, Start: at("2026-09-11", 9),
+			End: at("2026-09-11", 9), Value: 55, Unit: "count/min", Source: "watch"}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := reason(t, st, engine, user, "2026-09-11"); got != (calib{0, 0, 0, true, short}) {
+			t.Fatalf("09-11 after its resting HR: %+v", got)
+		}
+		night(t, st, user, "2026-09-12")
+		if got := reason(t, st, engine, user, "2026-09-12"); got != (calib{1, 1, 1, true, short}) {
+			t.Fatalf("09-12 at 07:00: %+v", got)
+		}
+	})
+	t.Run("a watch without resting HR", func(t *testing.T) {
+		st, engine, user := engineStore(t)
+		phone(t, st, user)
+		if err := engine.ComputeRange(ctx, user, "2026-09-01", "2026-09-10"); err != nil {
+			t.Fatal(err)
+		}
+		night(t, st, user, "2026-09-11")
+		if got := reason(t, st, engine, user, "2026-09-11"); got != (calib{0, 0, 0, true, short}) {
+			t.Fatalf("09-11: %+v, want short_history", got)
+		}
+		night(t, st, user, "2026-09-12")
+		if got := reason(t, st, engine, user, "2026-09-12"); got != (calib{0, 1, 0, true, model.CalibratingNoRHR}) {
+			t.Fatalf("09-12: %+v, want no_rhr", got)
+		}
+	})
+}
+
 // A day scored before its history, then the history (the case PR #29 fixes):
 // the re-score in the same pass also brings the counts and the reason along,
 // from short_history with an empty window to null with a full one.

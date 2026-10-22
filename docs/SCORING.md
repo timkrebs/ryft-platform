@@ -324,9 +324,11 @@ function of `W`, `H`, `R` and whether the day itself has an overnight HRV and a 
 HR), in this order:
 
 1. `min(H, R) >= 7`: `null`, not calibrating;
-2. `W >= 7`, `H == 0` and the day has no HRV either: `no_hrv`;
-3. `W >= 7`, `R == 0` and the day has no resting HR either: `no_rhr`;
-4. otherwise `short_history`.
+2. the day brings a signal its window never had (`H == 0` and the day has an HRV, or
+   `R == 0` and it has a resting HR): `short_history`, for both signals;
+3. `W >= 7`, `H == 0` and the day has no HRV either: `no_hrv`;
+4. `W >= 7`, `R == 0` and the day has no resting HR either: `no_rhr`;
+5. otherwise `short_history`.
 
 The question it answers for the app is "does waiting end this?". `short_history`: yes,
 after `7 − baseline_days` more nights with both signals. `no_hrv` / `no_rhr`: no, not
@@ -344,10 +346,15 @@ share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`)
   would make a watch user's first night `no_hrv` (30 rows, none with an HRV), and in
   the synthetic run below the two empty leading days would start `no_hrv` on the 6th
   day with data instead of the 8th. An iPhone alone still counts: its days have steps.
-- **The day's own signal counts.** The window holds only the days before, so on the
-  first morning of a new source (a watch after ten phone-only days, or back after 30
-  days off) it has no HRV yet, though the night has one. That morning is
-  `short_history`: a source has appeared and waiting ends it. The next morning `H = 1`.
+- **The day's own signal counts, and a new one names nothing missing.** The window
+  holds only the days before, so on the first morning of a new source (a watch after
+  ten phone-only days, or back after 30 days off) it has no HRV yet, though the night
+  has one. That morning is `short_history` for both signals: a source has appeared and
+  its other signal may simply not be synced yet. A watch writes the HRV in the night
+  and its resting HR later in the day, so a score at 07:00 has the one and not the
+  other; calling that `no_rhr` would say "no resting-HR source" until the next sync.
+  The next morning the new signal is in the window (`H = 1`), and a signal still
+  missing then, in the window and on the day, is named (`no_rhr`).
 - **Only `H == 0` is `no_hrv`.** One to six HRV nights in the window are sporadic data
   (a watch worn some nights), and more nights do end them; calling that "no HRV
   source" would be wrong and would flip with every night.
@@ -390,10 +397,12 @@ data appearing as a change); the pass re-scores today and yesterday anyway.
 (day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
 `no_rhr`; both 0 → `no_hrv`; `H = 3` of 30 → `short_history`; `H, R >= 7` → `null`; the
 7th window day as the edge; a new source's first morning, `H = R = 0` with the night's
-HRV → `short_history`) and, over every reachable state `0 <= H, R <= W <= 30` with and
-without the day's own signals, that the reason is `null` exactly when `Recovery` says not
-calibrating and that a signal is called missing only when neither the window nor the day
-has it. With
+HRV and with or without its resting HR yet → `short_history`; the next morning, `H = 1`
+and still no resting HR → `no_rhr`) and, over every reachable state
+`0 <= H, R <= W <= 30` with and without the day's own signals, that the reason is `null`
+exactly when `Recovery` says not calibrating and that a signal is called missing only
+when neither the window nor the day has it and the day brings no signal its window
+lacked. With
 `RYFT_TEST_POSTGRES_URL`, `TestEngineCalibratingReason` scores 40 nights for four
 set-ups (both signals; no HRV, the report that started this; no resting HR; neither):
 `short_history` through the 7th day (`W = 6`), the reason from the 8th (`W = 7`) on, and
@@ -404,7 +413,10 @@ days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonIgnoresE
 week of steps synced late for days stored empty turns the 8th day from `short_history`
 to `no_hrv` in the same pass. `TestEngineCalibratingReasonNewSourceMorning`: 10 phone-only days, a watch, 35
 phone-only days, the watch again: `no_hrv` on the phone days from the 8th on,
-`short_history` on each first watch morning. `TestEngineCalibratingReasonFollowsTheRescore`:
+`short_history` on each first watch morning. `TestEngineCalibratingReasonBeforeTheRestingHR`:
+the first watch night scored at 07:00 with its HRV and without its resting HR is
+`short_history`, and stays so once the resting HR syncs; a watch that never writes one
+is `no_rhr` the next morning. `TestEngineCalibratingReasonFollowsTheRescore`:
 a day scored before its history goes from `short_history` (0/0) to `null` (30/30) when
 the history arrives. `TestEngineSafetyNetConvergesOnFreshScores`: on freshly scored
 accounts (in order, no HRV, days missing, empty leading days, a backfill newest first)
