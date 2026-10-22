@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -186,12 +186,14 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 # Alert rules as code (deploy/grafana/alerts, D85): promtool checks the rules and runs
 # their unit tests; mimirtool loads them into Grafana Cloud's ruler. Containers, so
 # neither tool has to be installed.
-PROMTOOL_IMAGE := docker.io/prom/prometheus:v3.5.0
-MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool:2.16.0
+# Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
+# grafana/mimirtool:2.16.0. alerts-apply hands the rules token to mimirtool.
+PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
-	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
-	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; \
+	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
@@ -200,9 +202,18 @@ alerts-apply: alerts-check
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
-	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" \
+	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
+	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
 	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+
+# External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
+# synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
+# through the SM API (SM_API_URL, SM_ACCESS_TOKEN; docs/OPERATIONS.md -> Monitoring).
+synthetics-check:
+	@./scripts/synthetics.sh check
+
+synthetics-apply:
+	@./scripts/synthetics.sh apply
 
 k8s-validate:
 	@set -e; out=$$(mktemp); gen=; \
