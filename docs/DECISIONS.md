@@ -1998,8 +1998,9 @@ sent, and whether a second account shares its phone.
   images; only pull requests cancel an older run. The title rule (`area: what changed`, any
   lower-case area or path; the denylisted brand neither in the title nor in the PR's commit
   messages, `scripts/check_pr.sh`) is its own workflow, `pr-title`, because it must re-run
-  when a title is edited. gitleaks checks the full history on every PR and push, with a
-  reviewed allowlist (`.gitleaks.toml`: one rule, one file, the exact value per entry).
+  when a title is edited. gitleaks checks the history of every PR and push, with a
+  reviewed allowlist (`.gitleaks.toml`: one rule, one file, the exact value per entry); on a
+  PR the base branch's config and ignore file count, not the PR's.
 - **Two image groups, pinned against what runs:** services (ingest, scoring, api, notify,
   migrate, from `backend/`) and web (from `web/`). On a push to main a group is built when
   its directory differs from its pin in `overlays/eks`; a pin that is no commit of this

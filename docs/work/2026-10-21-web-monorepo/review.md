@@ -51,3 +51,17 @@ Findings by reviewer and what happened to them. Blockers go back to the owner an
 | security | nits: title newlines/echo, merge-commit messages, base-branch denylist, CODEOWNERS, orphan-branch tree check, `permissions: {}`, `persist-credentials`, no token for Trivy | taken |
 | code | nits: rev-list fail-open, revert titles, closed deploy PRs reopened, docs (pin usage, hotfix escape) | taken (docs in D) |
 | security | nits: App key in a `deploy` environment; Dependabot for `docker run`/service images | STATUS follow-ups (needs a settings change) |
+
+### C, second round and the first real runs
+
+| Source | Finding | Disposition |
+| --- | --- | --- |
+| PR #9's first run | **blocker:** `manifests` couldn't install actionlint (needs Go ≥ 1.25, the job had 1.24 with `GOTOOLCHAIN=local`) | `GOTOOLCHAIN=auto` for that step |
+| PR #9's first run | **blocker:** `check_pr_test` inherited the runner's `GITHUB_BASE_REF` | `check_pr.sh` keys off an explicit `BRAND_BASE` from `pr.yml` |
+| PR #9's second run | `smoke`: the runner's Node 22 can't compile the denylist's regex modifier groups | `setup-node` with `web/.nvmrc` in `smoke` |
+| code | should-fix: the close-on-hold path never ran (promote required a target) | promote runs on `services`, `web` or `held` |
+| code | should-fix: the held-pin rule blocked a second rollback by hand | only on the App's `deploy/<sha>` branches |
+| security | low: `digest:`/`newName:` could change what runs unseen; a trailing `# hold` was ignored; a PR's `.gitleaksignore`/`.gitleaks.toml` counted | image entries must be name + quoted 7-hex tag; any stray hold fails; base branch's gitleaks config and ignore file on PRs (proven: a PR's own fingerprint no longer silences its secret) |
+| code | nits: remedy text, fast-forward union, `gh` failures inside listings | taken |
+| code / security re-verify | all fixed, no regressions; promote harmless when nothing is targeted; `--check` passes on main's overlay | — |
+| main run `bfc51b8` | `web-image` 403 `write_package` at the push (the package's Actions access was Read) — the predicted failure mode: nothing pushed, promote skipped, site unchanged | role set to Write by the user, failed jobs re-run: green, #18 |
