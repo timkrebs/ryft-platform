@@ -17,6 +17,20 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+func TestRedelivered(t *testing.T) {
+	ctx := context.Background()
+	if Redelivered(ctx) {
+		t.Fatal("a first delivery is not redelivered")
+	}
+	if !Redelivered(WithRedelivery(ctx)) {
+		t.Fatal("marked, not seen")
+	}
+	type other struct{}
+	if !Redelivered(context.WithValue(WithRedelivery(ctx), other{}, 1)) {
+		t.Fatal("the mark is lost in a derived context")
+	}
+}
+
 func TestGuardedTurnsAPanicIntoAnError(t *testing.T) {
 	var nilMap map[string]*int
 	err := Guarded(quiet, KeyRefresh, func() error { return errors.New(strings.Repeat("x", 1) + fmtNil(*nilMap["x"])) })

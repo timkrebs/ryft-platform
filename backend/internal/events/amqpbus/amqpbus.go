@@ -487,6 +487,7 @@ func (b *Bus) handle(ctx context.Context, log *slog.Logger, queue string, d amqp
 	attempt := attemptOf(d)
 	if attempt > 0 || d.Redelivered {
 		metrics.Redeliveries.WithLabelValues(queue).Inc()
+		ctx = events.WithRedelivery(ctx)
 	}
 	reason := "unknown"
 	err := events.Guarded(log, keyOf(d), func() error { return h(ctx, d, &reason) })

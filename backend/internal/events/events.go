@@ -287,3 +287,21 @@ func Deferred(err error) (time.Duration, bool) {
 	}
 	return 0, false
 }
+
+type redeliveryKey struct{}
+
+// WithRedelivery marks ctx as handling a message that came before: a retry
+// tier's copy, or one the broker delivered again after a consumer died. The
+// transport sets it.
+func WithRedelivery(ctx context.Context) context.Context {
+	return context.WithValue(ctx, redeliveryKey{}, true)
+}
+
+// Redelivered reports whether ctx handles such a message. A handler that
+// decides what else to redo from what its own write changed cannot trust
+// "nothing changed" then: the earlier attempt may have written the change and
+// failed before the rest (scoring's re-score of the days after, D100).
+func Redelivered(ctx context.Context) bool {
+	v, _ := ctx.Value(redeliveryKey{}).(bool)
+	return v
+}
