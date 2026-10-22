@@ -66,6 +66,9 @@ validate_structure() {
         ( if (http.noFollowRedirects // false) | not then err("noFollowRedirects must be true (a redirect is a result, not something to follow)") else empty end ),
         ( . as $c | (http.failIfHeaderNotMatchesRegexp // [])[]
             | if ((.header // "") == "" or (.regexp // "") == "") then $c | err("failIfHeaderNotMatchesRegexp needs header and regexp") else empty end ),
+        ( . as $c | (http.failIfHeaderNotMatchesRegexp // [])[] | (keys - ["header", "regexp", "allowMissing"])[]
+            | . as $k | $c | err("unknown key " + $k + " in failIfHeaderNotMatchesRegexp") ),
+        ( . as $c | (.labels // [])[] | (keys - ["name", "value"])[] | . as $k | $c | err("unknown key " + $k + " in labels") ),
         ( . as $c | [(http.failIfBodyNotMatchesRegexp // [])[], ((http.failIfHeaderNotMatchesRegexp // [])[] | .regexp)][]
             | if (type != "string") or (length == 0) or contains("\n") then $c | err("a regexp must be a non-empty one-line string") else empty end )
     )
@@ -107,6 +110,15 @@ validate_markers() {
   done < <(jq -r '.checks[] | select((.settings.http.failIfBodyNotMatchesRegexp // []) | length > 0) | .job' "$file")
 }
 
+# SyntheticsMissing names its jobs one by one: a disabled or an added check must change the rule too.
+validate_rule_jobs() {
+  local rules=deploy/grafana/alerts/ryft.yaml want have
+  want=$(jq -r '.checks[] | select(.enabled) | .job' "$file" | sort)
+  have=$(grep -o 'absent_over_time(probe_success{job="[^"]*"' "$rules" | sed 's/.*job="//; s/"$//' | sort)
+  [ "$want" = "$have" ] ||
+    die "the enabled jobs differ from the jobs SyntheticsMissing names in $rules (add or remove its absent_over_time lines): file [$(tr "\n" " " <<<"$want")], rule [$(tr "\n" " " <<<"$have")]"
+}
+
 validate() {
   [ -f "$file" ] || die "$file not found"
   jq -e . "$file" >/dev/null 2>&1 || die "$file is not valid JSON"
@@ -117,6 +129,7 @@ validate() {
   local runs enabled
   enabled=$(jq '[.checks[] | select(.enabled)] | length' "$file")
   [ "$enabled" -gt 0 ] || die "every check is disabled: nothing would watch the site"
+  validate_rule_jobs
   runs=$(jq '(.probes | length) as $p | [.checks[] | select(.enabled) | ((2592000000 / .frequency | floor) * $p)] | add' "$file")
   echo "ok: $(jq '.checks | length' "$file") checks ($enabled enabled), $(jq '.probes | length' "$file") probes, about $runs executions in 30 days (free tier: $free_executions)"
   [ "$runs" -le "$free_executions" ] || die "over the free tier ($free_executions executions a month): fewer probes, checks or a longer frequency"
@@ -135,7 +148,7 @@ api_env() {
   local re_prod='^https://synthetic-monitoring-api(-[a-z0-9-]+)?\.grafana\.net/?$' re_test='^http://127\.0\.0\.1:[0-9]+$'
   # -q first: ~/.curlrc (a `verbose`, a proxy) is ignored. The token never reaches argv.
   curl_args=(-q -sS --connect-timeout 10 --max-time 30)
-  if [ -n "${SYNTHETICS_TEST_LOCAL:-}" ]; then
+  if [ "${SYNTHETICS_TEST_LOCAL:-}" = 1 ]; then
     [[ $SM_API_URL =~ $re_test ]] || die "SM_API_URL (test mode) must be http://127.0.0.1:<port>"
   else
     [[ $SM_API_URL =~ $re_prod ]] || die "SM_API_URL must be https://synthetic-monitoring-api-<region>.grafana.net (the Backend address)"
@@ -162,13 +175,25 @@ api() {
   esac
 }
 
-# fields of the wanted check that differ from the stack's (the stack adds its own fields; those are ignored)
+# Fields of the check that differ between the wanted and the stack's version. Both sides are
+# projected onto the managed keys (the stack adds its own: id, created, modified, ...) and
+# normalised (absent = null = false = "" = [] = {}; probes, status codes and regexps are sets),
+# so a field removed from the file shows as a change too. A list is compared as a whole value.
 diff_fields() {  # wanted-json existing-json
   jq -n --argjson d "$1" --argjson e "$2" '
-    ($d | .probes |= ((. // []) | sort)) as $d | ($e | .probes |= ((. // []) | sort)) as $e
-    | [ $d | paths(type != "array" and type != "object") as $p
-        | { path: ($p | map(tostring) | join(".")), old: (try ($e | getpath($p)) catch null), new: ($d | getpath($p)) }
-        | select(.old != .new and ((.old == null and .new == false) | not)) ]'
+    def proj: {job, target, frequency, timeout, enabled, basicMetricsOnly, alertSensitivity,
+               labels: ((.labels // []) | map({name, value})), probes,
+               settings: {http: ((.settings.http // {}) | {method, ipVersion, noFollowRedirects, failIfNotSSL,
+                 validStatusCodes: ((.validStatusCodes // []) | sort),
+                 failIfBodyNotMatchesRegexp: ((.failIfBodyNotMatchesRegexp // []) | sort),
+                 failIfHeaderNotMatchesRegexp: ((.failIfHeaderNotMatchesRegexp // []) | map({header, regexp, allowMissing}) | sort_by(.header, .regexp))})}};
+    def prune: if type == "object" then with_entries(.value |= prune) | with_entries(select(.value != null and .value != false and .value != [] and .value != "" and .value != {}))
+               elif type == "array" then map(prune) else . end;
+    def norm: proj | .probes = ((.probes // []) | sort) | prune;
+    def lp: if type == "object" then (to_entries[] | .key as $k | (.value | lp) | [$k] + .) else [] end;
+    ($d | norm) as $d | ($e | norm) as $e
+    | [($d | lp), ($e | lp)] | unique
+    | [ .[] as $p | { path: ($p | map(tostring) | join(".")), old: (try ($e | getpath($p)) catch null), new: (try ($d | getpath($p)) catch null) } | select(.old != .new) ]'
 }
 
 apply() {

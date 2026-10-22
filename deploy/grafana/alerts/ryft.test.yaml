@@ -286,7 +286,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, job: ryft-site-privacy }
             exp_annotations:
-              summary: "No Synthetic Monitoring results for ryft-site-privacy for 15 minutes"
+              summary: "No Synthetic Monitoring results for ryft-site-privacy for 25 minutes"
               runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
   # The agent republishes a run's last result about every 2 minutes, so the real series has
   # roughly three samples per 5-minute run; the recovery cases use one sample a minute.
@@ -320,3 +320,24 @@ tests:
       - { eval_time: 50m, alertname: SiteProbeFlapping, exp_alerts: [] }
       - { eval_time: 60m, alertname: SiteProbeFlapping, exp_alerts: [] }
       - { eval_time: 90m, alertname: SiteProbeFlapping, exp_alerts: [] }
+  - name: intermittent failures that overlap between probes still alert
+    interval: 5m
+    input_series:
+      # each probe fails about one run in three, and now and then (minutes 40 and 130) both
+      # fail in the same run: a bad pod of two, never a full outage
+      - { series: 'probe_success{job="ryft-site-home",instance="https://ryftapp.de/",probe="Frankfurt"}', values: '1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1' }
+      - { series: 'probe_success{job="ryft-site-home",instance="https://ryftapp.de/",probe="Amsterdam"}', values: '1 0 1 1 0 1 1 0 0 1 0 1 1 0 1 1 0 1 1 0 1 1 0 1 1 0 0 1 0 1 1 0 1 1 0 1 1 0 1 1' }
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: SiteProbeFlapping
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-home, instance: "https://ryftapp.de/", probe: Frankfurt }
+            exp_annotations:
+              summary: "https://ryftapp.de/ fails now and then from probe Frankfurt"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+          - exp_labels: { severity: warning, job: ryft-site-home, instance: "https://ryftapp.de/", probe: Amsterdam }
+            exp_annotations:
+              summary: "https://ryftapp.de/ fails now and then from probe Amsterdam"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      # SiteDown's condition (no probe passes for 10 minutes) never holds
+      - { eval_time: 100m, alertname: SiteDown, exp_alerts: [] }

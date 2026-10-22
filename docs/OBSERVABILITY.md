@@ -282,10 +282,10 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | ArgoAppOutOfSync | warning | an auto-synced application differs from git for 30 min | a wave waiting on an unhealthy one, a render error (`Unknown`), a sync retrying |
 | ArgoMetricsMissing | warning | no `argocd_app_info` for 15 min | `kubectl -n argocd get pods`, the metrics policy |
 | SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
-| SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after every probe failed at once) | the same: which probe, which URL, the edge's rate limit |
+| SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
-| SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for 15 min (label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
+| SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday

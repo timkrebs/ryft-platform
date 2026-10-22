@@ -41,6 +41,12 @@ reject '.checks[1].job = .checks[0].job' 'duplicate job'
 reject '.probes = []' 'probes'
 reject '.probes = ["a","b","c"] | .checks[0].frequency = 60000' 'free tier'
 reject '.checks |= map(.enabled = false)' 'disabled'
+# SyntheticsMissing names the jobs: the enabled checks must be the same set
+reject '.checks[1].enabled = false' 'SyntheticsMissing'
+reject 'del(.checks[3])' 'SyntheticsMissing'
+reject '.checks += [(.checks[0] | .job = "ryft-site-extra")]' 'SyntheticsMissing'
+reject '.checks[0].settings.http.failIfHeaderNotMatchesRegexp[0].extra = 1' 'unknown key extra'
+reject '.checks[0].labels = [{"name": "a", "value": "b", "x": 1}]' 'unknown key x'
 # the markers must exist in the site's own sources
 reject '.checks[1].settings.http.failIfBodyNotMatchesRegexp = ["(?s).*a sentence the policy does not hold.*"]' 'does not match'
 reject '.checks[2].settings.http.failIfBodyNotMatchesRegexp = ["(?s).*XXXXXXXXXX.dev.timkrebs.ryft.*"]' 'does not match'
@@ -112,6 +118,7 @@ for u in http://127.0.0.1@evil.example/ https://synthetic-monitoring-api-eu-west
   SM_API_URL=$u "$S" probes >/dev/null 2>&1 && fail "accepted in test mode: SM_API_URL=$u"
 done
 SYNTHETICS_TEST_LOCAL='' SM_API_URL=http://127.0.0.1:9 "$S" probes >/dev/null 2>&1 && fail "loopback accepted outside test mode"
+SYNTHETICS_TEST_LOCAL=yes SM_API_URL=http://127.0.0.1:9 "$S" probes >/dev/null 2>&1 && fail "test mode on for a value other than 1"
 # a token with a quote, a backslash or whitespace is not a token (and cannot break the curl config)
 for t in 'a"b' 'a\b' 'a b' $'a\nb' ''; do
   SM_API_URL=http://127.0.0.1:9 SM_ACCESS_TOKEN=$t "$S" probes >/dev/null 2>&1 && fail "accepted a bad token"
@@ -153,6 +160,21 @@ out=$("$S" apply)
 jq '.checks[0].timeout = 8000' "$F" > "$tmp/t8.json"
 SYNTHETICS_FILE=$tmp/t8.json "$S" apply >/dev/null
 [ "$(grep -c '^POST' "$tmp/api.log")" = 1 ] || fail "a changed timeout should be exactly one update: $(cat "$tmp/api.log")"
+# a field REMOVED from the file is a change too (and so is putting it back)
+"$S" apply >/dev/null
+expect_updates() {  # <jq edit of the committed file> <number of updates it must cause>
+  jq "$1" "$F" > "$tmp/v.json"
+  : > "$tmp/api.log"
+  SYNTHETICS_FILE=$tmp/v.json "$S" apply >/dev/null
+  [ "$(grep -c '^POST /api/v1/check/update' "$tmp/api.log")" = "$2" ] || fail "'$1': expected $2 update(s): $(cat "$tmp/api.log")"
+  : > "$tmp/api.log"
+  "$S" apply >/dev/null
+  [ "$(grep -c '^POST /api/v1/check/update' "$tmp/api.log")" = "$2" ] || fail "'$1': putting it back should be $2 update(s): $(cat "$tmp/api.log")"
+}
+expect_updates 'del(.checks[1].settings.http.failIfBodyNotMatchesRegexp)' 1
+expect_updates '.checks[3].settings.http.validStatusCodes = [301]' 1
+expect_updates 'del(.checks[0].settings.http.failIfHeaderNotMatchesRegexp)' 1
+expect_updates '.probes = ["Frankfurt"]' 4   # every check lists the probes
 
 # an unknown or duplicate probe name stops before any write
 start_mock plain

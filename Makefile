@@ -186,12 +186,14 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 # Alert rules as code (deploy/grafana/alerts, D85): promtool checks the rules and runs
 # their unit tests; mimirtool loads them into Grafana Cloud's ruler. Containers, so
 # neither tool has to be installed.
-PROMTOOL_IMAGE := docker.io/prom/prometheus:v3.5.0
-MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool:2.16.0
+# Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
+# grafana/mimirtool:2.16.0. alerts-apply hands the rules token to mimirtool.
+PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
-	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
-	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; \
+	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml

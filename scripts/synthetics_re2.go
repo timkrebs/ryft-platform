@@ -15,7 +15,8 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] == "match") != (len(os.Args) == 3) {
+	ok := len(os.Args) == 2 && os.Args[1] == "compile" || len(os.Args) == 3 && os.Args[1] == "match"
+	if !ok {
 		fmt.Fprintln(os.Stderr, "usage: synthetics_re2.go compile | match <file>")
 		os.Exit(2)
 	}
@@ -42,6 +43,10 @@ func main() {
 			fmt.Printf("does not match %s: %s\n", os.Args[2], sc.Text())
 			bad++
 		}
+	}
+	if err := sc.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 	if bad > 0 {
 		os.Exit(1)
