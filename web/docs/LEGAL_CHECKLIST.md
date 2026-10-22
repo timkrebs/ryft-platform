@@ -256,13 +256,13 @@ Not recipients of users' personal data:
 ## 4. The version
 
 The privacy `version` is `2026-10-20`, equal to the platform's `PRIVACY_POLICY_VERSION`
-(`npm run check:policy`: both ConfigMaps say `2026-10-20`). Users of the beta consented to that
+(`npm run check:policy`: both `config.env` files say `2026-10-20`). Users of the beta consented to that
 version while it was a draft. Filling in the controller and the open points, and the
 corrections above (14 days; the website; Apple Health; the age), change what they agreed
 to. **Whether that needs a new version is your decision.** If yes, the text is published as
 `content/legal/{en,de}/privacy/<new date>.mdx` (the old one stays at `/privacy/2026-10-20`),
 and the platform sets `PRIVACY_POLICY_VERSION` to the same date in its api and ingest
-ConfigMaps, so everyone is asked to consent again before the next upload.
+`config.env` (it goes into force with the web pin), so everyone is asked to consent again before the next upload.
 
 ## 5. Publishing (when every point above is answered)
 
