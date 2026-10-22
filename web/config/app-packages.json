@@ -1,5 +1,5 @@
 {
-  "$comment": "Snapshot of ../app Package.resolved pins. Refresh: npm run licenses -- --sync",
+  "$comment": "Snapshot of ../../app Package.resolved pins. Refresh: npm run licenses -- --sync",
   "pins": [
     {
       "identity": "supabase-swift",

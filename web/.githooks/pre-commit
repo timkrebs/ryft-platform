@@ -1,3 +1,0 @@
-#!/bin/sh
-# The brand guard on the staged files (scripts/check-brand.mjs, config/brand-denylist.json).
-exec node scripts/check-brand.mjs --staged

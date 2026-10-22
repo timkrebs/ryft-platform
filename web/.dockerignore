@@ -1,6 +1,6 @@
 .git
-.githooks
 .github
+.env*
 node_modules
 .next
 out

@@ -1,4 +1,4 @@
-// The RYFT orbit mark, ported from ../app/Ryft/Design/RyftMark.swift with the same
+// The RYFT orbit mark, ported from ../../app/Ryft/Design/RyftMark.swift with the same
 // geometry: a thin ring broken where two small dots sit on it (upper right, lower
 // left), a small inner orbit and a solid centre dot. Angles in degrees, 0 = 3 o'clock,
 // clockwise (y points down), in a 100 × 100 box. Used by Mark.tsx and by the icon and

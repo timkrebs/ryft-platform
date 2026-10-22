@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// Real product screenshots from the app's captures (../app/docs/screenshots), in every
+// Real product screenshots from the app's captures (../../app/docs/screenshots), in every
 // size and format the pages use:
 //   public/screenshots/<id>-<scheme>-<width>.{avif,webp}   three widths
 //   public/screenshots/<id>-<scheme>.png                   one fallback
 //   src/data/screenshots.json                              sizes for <Screenshot>
 // Dark captures are shown in dark mode, light ones in light mode. The 1030 × 1500 Preview
 // captures carry a canvas artefact top right, so they are cropped to the part a page shows.
-// Output is committed: the build doesn't need ../app. RYFT_APP_DIR overrides ../app.
+// Output is committed: the build doesn't need ../../app. RYFT_APP_DIR overrides ../../app.
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const SOURCE = join(resolve(ROOT, process.env.RYFT_APP_DIR ?? '../app'), 'docs/screenshots');
+const SOURCE = join(resolve(ROOT, process.env.RYFT_APP_DIR ?? '../../app'), 'docs/screenshots');
 const OUT = join(ROOT, 'public/screenshots');
 const DATA = join(ROOT, 'src/data/screenshots.json');
 

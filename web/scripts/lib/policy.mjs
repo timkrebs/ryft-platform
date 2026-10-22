@@ -1,13 +1,22 @@
-// The privacy policy version: ours (content/legal/en/privacy/<version>.mdx) against the
-// platform's PRIVACY_POLICY_VERSION, which consent is recorded against.
+// The privacy policy version: ours (content/legal/<locale>/privacy/<version>.mdx, both
+// languages) against PRIVACY_POLICY_VERSION in this repository's api and ingest ConfigMaps
+// (and the local stack's docker-compose.yml), which consent is recorded against.
+// content/legal/privacy-versions.json lists every version anyone may have consented to, oldest
+// first, the current one last: those pages must never disappear.
+// Node built-ins only: CI runs the check without `npm ci`.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Newest version in content/legal/<locale>/privacy. */
+export const LOCALES = ['en', 'de'];
+export const SERVICES = ['api', 'ingest'];
+const PAGE = /^\d{4}-\d{2}-\d{2}\.mdx$/;
+
+/** Newest version in content/legal/<locale>/privacy, or null when there is none. */
 export function sitePolicyVersion(root, locale = 'en') {
   const dir = join(root, 'content/legal', locale, 'privacy');
+  if (!existsSync(dir)) return null;
   const versions = readdirSync(dir)
-    .filter((f) => /^\d{4}-\d{2}-\d{2}\.mdx$/.test(f))
+    .filter((f) => PAGE.test(f))
     .map((f) => f.slice(0, -4))
     .sort();
   return versions.at(-1) ?? null;
@@ -19,40 +28,117 @@ export function versionFromConfigMap(yaml) {
 }
 
 /**
- * The platform's version and where it came from, trying in order: the environment
- * (PLATFORM_PRIVACY_POLICY_VERSION), the platform's ConfigMaps next to this repo, and a
- * public JSON document (PLATFORM_LEGAL_URL, proposed in docs/HANDOFF.md).
- * @param {{env?: Record<string, string | undefined>, platformDir?: string, fetchImpl?: typeof fetch}} [options]
- * @returns {Promise<{version: string | null, source: string | null, problem?: string}>}
+ * The platform's version from the ConfigMaps of the repository at `repoRoot`
+ * (deploy/k8s/base/{api,ingest}/configmap.yaml). Both must carry it, and the same one.
+ * @param {string} repoRoot
+ * @returns {{version: string | null, source: string, problem?: string}}
  */
-export async function platformPolicyVersion({ env = process.env, platformDir, fetchImpl = fetch } = {}) {
-  if (env.PLATFORM_PRIVACY_POLICY_VERSION) {
-    return { version: env.PLATFORM_PRIVACY_POLICY_VERSION, source: 'PLATFORM_PRIVACY_POLICY_VERSION' };
+export function platformPolicyVersion(repoRoot) {
+  const source = `${join(repoRoot, 'deploy/k8s/base')}/{${SERVICES.join(',')}}/configmap.yaml`;
+  const found = SERVICES.map((s) => {
+    const path = join(repoRoot, `deploy/k8s/base/${s}/configmap.yaml`);
+    return [s, existsSync(path) ? versionFromConfigMap(readFileSync(path, 'utf8')) : null];
+  });
+  const missing = found.filter(([, v]) => !v).map(([s]) => s);
+  if (missing.length) {
+    return {
+      version: null,
+      source,
+      problem: `PRIVACY_POLICY_VERSION not found in the ${missing.join(' and ')} ConfigMap`,
+    };
   }
-  if (platformDir) {
-    const maps = ['api', 'ingest'].map((s) => join(platformDir, `deploy/k8s/base/${s}/configmap.yaml`));
-    const found = maps.filter(existsSync).map((p) => [p, versionFromConfigMap(readFileSync(p, 'utf8'))]);
-    if (found.length) {
-      const versions = [...new Set(found.map(([, v]) => v))];
-      if (versions.length > 1) {
-        return {
-          version: null,
-          source: 'platform ConfigMaps',
-          problem: `api and ingest disagree: ${versions.join(' vs ')}`,
-        };
+  const versions = [...new Set(found.map(([, v]) => v))];
+  if (versions.length > 1) {
+    const detail = found.map(([s, v]) => `${s}: ${v}`).join(', ');
+    return { version: null, source, problem: `api and ingest disagree (${detail})` };
+  }
+  return { version: versions[0], source };
+}
+
+/** The versions listed in content/legal/privacy-versions.json, or null when it is unusable. */
+export function consentedVersions(siteRoot) {
+  const path = join(siteRoot, 'content/legal/privacy-versions.json');
+  try {
+    const list = JSON.parse(readFileSync(path, 'utf8'));
+    const ok = Array.isArray(list) && list.length > 0 && list.every((v) => /^\d{4}-\d{2}-\d{2}$/.test(v));
+    return ok ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `status:` of a legal page's front matter. */
+function pageStatus(file) {
+  const front = readFileSync(file, 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? '';
+  return front.match(/^status:\s*['"]?(\w+)/m)?.[1] ?? null;
+}
+
+/**
+ * Everything that has to hold for consent to point at a page that exists.
+ * @param {{siteRoot: string, repoRoot: string}} dirs web/ and the repository root
+ * @returns {{version: string | null, source: string, problems: string[], warnings: string[]}}
+ */
+export function checkPolicy({ siteRoot, repoRoot }) {
+  const platform = platformPolicyVersion(repoRoot);
+  const problems = [];
+  const warnings = [];
+  if (!platform.version) {
+    problems.push(`can't read the platform's version: ${platform.problem} (searched ${platform.source}).`);
+    return { version: null, source: platform.source, problems, warnings };
+  }
+  const version = platform.version;
+
+  const listed = consentedVersions(siteRoot);
+  if (!listed) {
+    problems.push(
+      `content/legal/privacy-versions.json is missing or not a non-empty list of YYYY-MM-DD versions (searched ${siteRoot}).`,
+    );
+  } else if (listed.at(-1) !== version) {
+    problems.push(
+      `PRIVACY_POLICY_VERSION is ${version}, the last entry of content/legal/privacy-versions.json is ${listed.at(-1)}: add the new version to the list in the same PR.`,
+    );
+  }
+
+  for (const locale of LOCALES) {
+    const dir = join(siteRoot, 'content/legal', locale, 'privacy');
+    // Only *.mdx pages count; dotfiles (.DS_Store) and other files are not pages.
+    const names = existsSync(dir)
+      ? readdirSync(dir).filter((f) => f.endsWith('.mdx') && !f.startsWith('.'))
+      : [];
+    for (const name of names.filter((f) => !PAGE.test(f))) {
+      problems.push(`content/legal/${locale}/privacy/${name}: privacy pages must be named YYYY-MM-DD.mdx.`);
+    }
+    for (const v of new Set([...(listed ?? []), version])) {
+      if (!names.includes(`${v}.mdx`)) {
+        const why = v === version ? 'PRIVACY_POLICY_VERSION' : 'a version people may have consented to';
+        problems.push(`content/legal/${locale}/privacy/${v}.mdx is missing: ${v} is ${why}.`);
       }
-      return { version: versions[0], source: 'platform ConfigMaps (api, ingest)' };
+    }
+    const newest = sitePolicyVersion(siteRoot, locale);
+    if (newest && newest !== version) {
+      problems.push(
+        `the newest ${locale} privacy policy is ${newest}, PRIVACY_POLICY_VERSION is ${version}: change both in the same PR.`,
+      );
+    }
+    const page = join(dir, `${version}.mdx`);
+    if (existsSync(page) && pageStatus(page) === 'draft') {
+      warnings.push(
+        `the ${locale} privacy policy ${version} is still a draft: users are asked to consent to it.`,
+      );
     }
   }
-  if (env.PLATFORM_LEGAL_URL) {
-    const res = await fetchImpl(env.PLATFORM_LEGAL_URL);
-    if (!res.ok) return { version: null, source: env.PLATFORM_LEGAL_URL, problem: `HTTP ${res.status}` };
-    const body = await res.json();
-    return { version: body.privacy_policy_version ?? null, source: env.PLATFORM_LEGAL_URL };
+
+  const compose = join(repoRoot, 'docker-compose.yml');
+  if (existsSync(compose)) {
+    const text = readFileSync(compose, 'utf8');
+    const others = [...text.matchAll(/^\s*PRIVACY_POLICY_VERSION:\s*["']?([^"'\s#]+)["']?/gm)]
+      .map((m) => m[1])
+      .filter((v) => v !== version);
+    if (others.length) {
+      problems.push(
+        `docker-compose.yml (local stack) has PRIVACY_POLICY_VERSION ${others[0]}, the ConfigMaps ${version}: update it with the version.`,
+      );
+    }
   }
-  return {
-    version: null,
-    source: null,
-    problem: 'no source: set PLATFORM_PRIVACY_POLICY_VERSION or check out ../plattform',
-  };
+  return { version, source: platform.source, problems, warnings };
 }

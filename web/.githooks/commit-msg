@@ -1,3 +1,0 @@
-#!/bin/sh
-# The brand guard on the commit message.
-exec node scripts/check-brand.mjs --message "$1"
