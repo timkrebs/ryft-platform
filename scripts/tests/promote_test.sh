@@ -244,4 +244,21 @@ grep -q "gh pr create" "$GH_LOG" || fail "the PR was not created"
 new_repo gh-fails; commit_file web/index.txt v2 "web: a change"; reset_logs
 GH_FAIL_LIST=1 run >/dev/null 2>&1 && fail "a failing gh pr list must fail the promote"
 
+# 15. the privacy policy in force moves with the web pin (D78, F1): one file, the body says so
+new_repo policy; base_policy 2026-11-02; commit_file web/index.txt v2 "web: the new text"; sha=$(short); reset_logs
+run >/dev/null || fail "promote with a new policy failed"
+[ "$(git show "origin/deploy/$sha:$OVERLAY" | sed -nE 's/^.*namespace: ryft-(api|ingest),.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\2/p' | paste -sd' ' -)" = "2026-11-02 2026-11-02" ] \
+  || fail "web pinned: the in-force version must move to base's: $(pr_file "$sha" | grep PRIVACY)"
+[ "$(git diff --name-only main "origin/deploy/$sha")" = "$OVERLAY" ] || fail "the deploy branch must change only the kustomization: $(git diff --name-only main "origin/deploy/$sha")"
+grep -qx 'privacy policy in force: 2026-10-20 → 2026-11-02 (.*' "$GH_BODY" || fail "the body names the move: $(cat "$GH_BODY")"
+# services alone: the base moved on, but the in-force pin and the body do not
+new_repo policy-services; base_policy 2026-11-02; commit_file backend/main.go v2 "scoring: a change"; sha=$(short); reset_logs
+run >/dev/null || fail "promote of services failed"
+[ "$(git show "origin/deploy/$sha:$OVERLAY" | grep -c 'PRIVACY_POLICY_VERSION=2026-10-20')" = 2 ] || fail "services pinned: the version in force must not move"
+! grep -q 'privacy policy in force' "$GH_BODY" || fail "no policy line without web: $(cat "$GH_BODY")"
+# base api and ingest disagree while web is pinned: the promote fails, nothing is created
+new_repo policy-disagree; base_policy 2026-11-02 2026-11-03; commit_file web/index.txt v2 "web: a change"; reset_logs
+run >/dev/null 2>&1 && fail "disagreeing base versions must stop the promote"
+! grep -q 'gh pr create' "$GH_LOG" || fail "no PR on disagreeing versions"
+
 echo "✓ promote_test: per-group pins in one PR, superseded PRs closed, docs/pin commits/holds skipped, registry first, 7-char tag"

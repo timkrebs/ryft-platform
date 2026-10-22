@@ -46,5 +46,26 @@ case "$got" in services=*,*) ;; *) fail "both old pins in the output: $got" ;; e
 "$HERE/pin_images.sh" abc1234 "$tmp/k.yaml" 2>/dev/null && fail "no group named: nothing to pin"
 printf 'images:\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "x"\n' > "$tmp/small.yaml"
 "$HERE/pin_images.sh" abc1234 web "$tmp/small.yaml" 2>/dev/null && fail "a group missing from the file must fail"
+# the privacy policy in force (D78, F1): web moves it to base's version, services leave it alone
+root=$tmp/root; mkdir -p "$root/scripts" "$root/deploy/k8s/base/api" "$root/deploy/k8s/base/ingest"
+cp "$HERE/pin_images.sh" "$root/scripts/"
+for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-02\n' > "$root/deploy/k8s/base/$s/config.env"; done
+force() { sed -nE 's/^.*namespace: ryft-(api|ingest),.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\2/p' "$1" | paste -sd' ' -; }
+[ "$(force "$real")" = "2026-10-20 2026-10-20" ] || fail "the overlay needs both in-force literals: $(force "$real")"
+cp "$real" "$tmp/k.yaml"
+"$root/scripts/pin_images.sh" abc1234 services "$tmp/k.yaml" >/dev/null || fail "services pin failed"
+[ "$(force "$tmp/k.yaml")" = "2026-10-20 2026-10-20" ] || fail "pinning services must leave the version in force alone"
+"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" >/dev/null || fail "web pin failed"
+[ "$(force "$tmp/k.yaml")" = "2026-11-02 2026-11-02" ] || fail "pinning web must move the version in force to base's: $(force "$tmp/k.yaml")"
+cp "$real" "$tmp/k.yaml"
+printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-03\n' > "$root/deploy/k8s/base/ingest/config.env"
+"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" 2>/dev/null && fail "base api and ingest that disagree must fail"
+cmp -s "$real" "$tmp/k.yaml" || fail "a failed pin must leave the file untouched"
+printf 'PORT=8080\nPRIVACY_POLICY_VERSION="2026-11-02"\n' > "$root/deploy/k8s/base/ingest/config.env"
+"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" 2>/dev/null && fail "a quoted version in config.env must fail"
+printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-02\n' > "$root/deploy/k8s/base/ingest/config.env"
+grep -v 'namespace: ryft-ingest' "$real" > "$tmp/nolit.yaml"
+"$root/scripts/pin_images.sh" abc1234 web "$tmp/nolit.yaml" 2>/dev/null && fail "an overlay without both literals must fail when web is pinned"
+
 kubectl kustomize "$(dirname "$real")" >/dev/null || fail "the real overlay no longer renders"
 echo "✓ pin_images_test: per group, web alone leaves the services byte-identical, previous pins printed, typos refused"

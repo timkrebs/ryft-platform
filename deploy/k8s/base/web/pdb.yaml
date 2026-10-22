@@ -1,0 +1,11 @@
+# One of the two site pods at a time through node drains and node group updates. Pods that are not ready
+# protect nothing and may always be evicted, so a broken site never blocks a drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels: { app: web }

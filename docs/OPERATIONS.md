@@ -568,19 +568,39 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"polic
 ```
 
 **A new policy text** (only on the user's decision: everyone consents again) is **one
-PR**: `web/content/legal/{en,de}/privacy/<version>.mdx` (the old versions stay),
-`<version>` appended to `web/content/legal/privacy-versions.json`, and
-`PRIVACY_POLICY_VERSION` in both configmaps (api, ingest) and `docker-compose.yml`.
-`manifests` runs `node web/scripts/check-policy-version.mjs --strict` and fails on any
-mismatch or a missing page. After the merge the configmaps apply within about 3 minutes,
-but the page only with the web deploy 25–40 minutes later, and a configmap change rolls no
-pod (STATUS → open, F1): pods started in between (HPA, drain) take the new version while
-the others keep the old one. Until F1 is fixed: once `/privacy/<version>` is live, restart
-api and ingest so every pod agrees (the user runs it), then announce:
+PR and no restart**: `web/content/legal/{en,de}/privacy/<version>.mdx` (the old versions
+stay), `<version>` appended to `web/content/legal/privacy-versions.json`, and
+`PRIVACY_POLICY_VERSION` in `deploy/k8s/base/api/config.env`,
+`deploy/k8s/base/ingest/config.env` and `docker-compose.yml`. The base value is the version
+that is *published*. The version in force on EKS is a pin in
+`overlays/eks/kustomization.yaml` (two `ryft-config` literals, api and ingest) that CI's
+promote moves to the base's value in the same deploy PR that pins the web image carrying the
+page. So the page, web, api and ingest go live in one Argo CD sync: the merge itself changes
+nothing on EKS, and there is no interim restart. A service's ConfigMap is generated as
+`ryft-config-<hash>`, so a changed value renames it and rolls exactly the pods that read it.
+`manifests` runs `node web/scripts/check-policy-version.mjs --strict` (published version,
+pages, compose) and `scripts/check_policy_in_force.sh` (api and ingest agree, the pinned web
+commit has both pages). If web is held or its build fails, the old version stays in force
+with the old site. The deploy PR body shows `privacy policy in force: A → B`.
+
+What to watch after the deploy PR merges (read-only):
 
 ```bash
-kubectl -n ryft-api rollout restart deploy/api && kubectl -n ryft-ingest rollout restart deploy/ingest
+for n in api ingest scoring notify; do kubectl -n ryft-$n get cm -o name; done   # only ryft-config-<hash>
+kubectl -n ryft-api get deploy api -o jsonpath='{.spec.template.spec.containers[0].envFrom}'; echo
+for s in api ingest; do kubectl -n ryft-$s logs -l app=$s --tail=-1 --since=30m | grep '"msg":"beta"'; done
+make smoke-prod
 ```
+
+The roll is a rolling update of a minute or two in which old pods still serve the old
+version: `ryft_consents_total{action="stale"}` and `consent_required` refusals bump briefly
+and recover. The PostSync smoke consents through api and syncs through ingest, so it proves
+the two agree. Argo CD deletes the old `ryft-config-<old>` only after the sync is healthy
+(`PruneLast`). Rolling a ReplicaSet back by hand is not a rollback path (its ConfigMap may be
+pruned, and self-heal reverts it): revert in git. A policy PR itself cannot be reverted as a
+whole (the versions list is append-only): set the in-force pin back, or ship a new version.
+Rolling web back past a policy version fails `check_policy_in_force.sh` until the pin goes
+back too.
 
 Every tester consents again before the next sync;
 `ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
@@ -791,7 +811,9 @@ metrics-server), with a `PodDisruptionBudget` of `minAvailable: 1`, spread acros
 when there are several. On a **single-node** cluster a drain blocks on the second pod,
 because the first has nowhere to reschedule. Use `kubectl drain --disable-eviction`, or
 `kubectl -n ryft-api delete pdb api; kubectl -n ryft-ingest delete pdb ingest` before
-maintenance and re-apply afterwards. Pods that are not ready never count
+maintenance and re-apply afterwards. web (the apex site, two replicas) has a
+`PodDisruptionBudget` of `maxUnavailable: 1`: a drain or node group update takes one site pod
+at a time (it is not in local-postgres). Pods that are not ready never count
 (`unhealthyPodEvictionPolicy: AlwaysAllow`): during an outage, when no pod is ready, a
 drain or a node group update still goes through. Their Deployments carry no `replicas`, so
 re-applying never fights the HPA. scoring stays at one replica: it owns the 15-minute

@@ -186,7 +186,7 @@ jobs:
           go-version-file: backend/go.mod
           cache: false
       # Node built-ins only (no npm ci): the policy check reads the site's legal pages and
-      # this repository's ConfigMaps.
+      # this repository's config.env files.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: web/.nvmrc
@@ -199,10 +199,14 @@ jobs:
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
-      # The privacy policy version the api and ingest ConfigMaps name has its page in
+      # The privacy policy version that api and ingest name in config.env has its page in
       # English and German on the site, and the site has no page the platform does not
       # name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
+      # The version in force on EKS (the overlay's pin, moved by promote with the web pin):
+      # api and ingest agree and the pinned web commit has its page in English and German.
+      - name: The privacy policy in force has its page
+        run: ./scripts/check_policy_in_force.sh
       # The overlay's holds parse (a typo fails closed), the active ones go to the run summary,
       # and a PR may not move the pin of a group that is held on its base branch.
       - name: Holds in the EKS overlay
