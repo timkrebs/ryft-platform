@@ -90,8 +90,8 @@ var (
 	DaysRescored = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_days_rescored_total",
 		Help: "Stored days scored again beyond the days asked for, because their history changed, by reason " +
-			"(history: an earlier day's baseline inputs changed in the same pass; behind: the 15-minute pass found a day " +
-			"whose baseline_days is below what its stored history now holds).",
+			"(history: an earlier day's baseline inputs changed in the same pass, or a retried event; behind: the 15-minute " +
+			"pass found a day whose baseline_days or baselines fall short of what its stored history now holds).",
 	}, []string{"reason"})
 
 	SleepBaseLearned = promauto.NewCounterVec(prometheus.CounterOpts{

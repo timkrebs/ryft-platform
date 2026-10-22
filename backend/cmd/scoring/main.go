@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -37,8 +38,10 @@ const (
 	// activeWindow: users whose devices synced this recently get the timer pass.
 	activeWindow = 48 * time.Hour
 	// behindPerRun: days the timer pass re-scores behind their history
-	// (Engine.RescoreBehind), all users together, so a backlog is worked off
-	// over a few passes instead of stretching one.
+	// (Engine.RescoreBehind, the days their re-score reaches included), all
+	// users together, so a backlog is worked off over a few passes instead of
+	// stretching one. The last user's share can overshoot it by the days its
+	// re-score reaches.
 	behindPerRun = 50
 )
 
@@ -150,12 +153,13 @@ func main() {
 		t := time.NewTicker(refreshEvery)
 		defer t.Stop()
 		learn := learner{tried: map[uuid.UUID]string{}}
+		behind := catchUp{failed: map[uuid.UUID]string{}}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				refreshActive(ctx, log, st, engine, &learn)
+				refreshActive(ctx, log, st, engine, &learn, &behind)
 				if err := st.PruneScoreQueue(ctx); err != nil {
 					log.Warn("prune score queue", "err", err)
 				}
@@ -190,23 +194,25 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 	if (ev.Reason == "recompute" || ev.Reason == "merge") && len(days) == 2 {
 		return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
 	}
-	// The sync's days, then the stored days after them whose history changed:
-	// in this handler, so a duplicate finds nothing changed and stops there (D100).
+	// The sync's days, then the stored days after them whose history changed,
+	// in this handler: a duplicate finds nothing changed and stops there, a
+	// retry (events.Redelivered in ctx) re-scores the days after its days
+	// anyway, finishing what the failed attempt began (D100).
 	return engine.ComputeDays(ctx, ev.UserID, days)
 }
 
 // refreshActive rescores yesterday and today for every user who synced within
 // activeWindow, each in their own timezone, re-scores days left behind their
-// history (at most behindPerRun in all), then runs the weekly baseline
-// estimate where it is due.
-func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner) {
+// history (catchUp), then runs the weekly baseline estimate where it is due.
+func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner, behind *catchUp) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
 	if err != nil {
 		log.Error("periodic: active users", "err", err)
 		return
 	}
-	behind := behindPerRun
-	for _, id := range users {
+	users = behind.order(users)
+	budget := behindPerRun
+	for i, id := range users {
 		ctx := logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
 		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
@@ -216,21 +222,51 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		if !engine.Admits(user) {
 			continue // withdrawn: no scores, no baseline estimate (D78)
 		}
-		today := time.Now().In(loc)
-		for _, d := range []time.Time{today.AddDate(0, 0, -1), today} {
-			if err := engine.ComputeDay(ctx, id, d.Format("2006-01-02")); err != nil {
-				log.ErrorContext(ctx, "periodic recompute", "day", d.Format("2006-01-02"), "err", err)
-			}
+		now := time.Now().In(loc)
+		today := now.Format("2006-01-02")
+		yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+		if err := engine.ComputeDays(ctx, id, []string{yesterday, today}); err != nil {
+			log.ErrorContext(ctx, "periodic recompute", "err", err)
 		}
-		if behind > 0 {
-			n, err := engine.RescoreBehind(ctx, id, today.Format("2006-01-02"), behind)
+		if budget > 0 && behind.failed[id] != today {
+			n, err := engine.RescoreBehind(ctx, id, today, budget)
 			if err != nil {
 				log.ErrorContext(ctx, "periodic: days behind their history", "err", err)
+				behind.failed[id] = today
 			}
-			behind -= n
+			if budget -= n; budget <= 0 {
+				behind.next = users[(i+1)%len(users)]
+			}
 		}
-		learn.maybe(ctx, log, engine, user, today)
+		learn.maybe(ctx, log, engine, user, now)
 	}
+}
+
+// catchUp hands out the timer pass's behindPerRun days of RescoreBehind:
+// round robin, each pass starting with the user after the one that used up
+// the last pass's budget, so one long backlog does not keep the others
+// waiting; and a user whose re-score failed is left until their next local
+// day, so a day that cannot be scored does not take every pass's budget. One
+// entry per active user whose re-score failed, overwritten daily.
+type catchUp struct {
+	next   uuid.UUID            // the first user of the next pass (uuid.Nil: from the start)
+	failed map[uuid.UUID]string // user → the local day their re-score failed
+}
+
+// order sorts the users and starts them at next, wrapping around; the next
+// pass starts from the beginning unless this one runs out of budget.
+func (c *catchUp) order(users []uuid.UUID) []uuid.UUID {
+	out := startAt(users, c.next)
+	c.next = uuid.Nil
+	return out
+}
+
+// startAt sorts ids and rotates them to begin at the first id not below from.
+func startAt(ids []uuid.UUID, from uuid.UUID) []uuid.UUID {
+	cmp := func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) }
+	ids = slices.SortedFunc(slices.Values(ids), cmp)
+	i, _ := slices.BinarySearchFunc(ids, from, cmp)
+	return append(ids[i:len(ids):len(ids)], ids[:i]...)
 }
 
 // learner runs the weekly sleep-baseline estimate from the timer pass. It

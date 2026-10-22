@@ -58,6 +58,44 @@ func inOrder(t *testing.T, st *store.Store, engine *Engine, user uuid.UUID, from
 	return rowsJSON(t, st, user, from, to)
 }
 
+// seedSpan writes n nights from first (UTC midnight) on: sleep 23:00–07:00,
+// a resting heart rate and an overnight HRV sample, as seedNights does.
+func seedSpan(t *testing.T, st *store.Store, user uuid.UUID, first time.Time, n int) {
+	t.Helper()
+	var segs []model.SleepSegment
+	var samples []model.Sample
+	for k := 0; k < n; k++ {
+		d := first.AddDate(0, 0, k)
+		segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(7 * time.Hour),
+			Stage: model.SleepCore, Source: "watch"})
+		samples = append(samples,
+			model.Sample{Type: model.SampleRestingHR, Start: d.Add(9 * time.Hour), End: d.Add(9 * time.Hour),
+				Value: 55 + float64(k%3), Unit: "count/min", Source: "watch"},
+			model.Sample{Type: model.SampleHRVSDNN, Start: d.Add(3 * time.Hour), End: d.Add(3 * time.Hour),
+				Value: 60 + float64(k%5), Unit: "ms", Source: "watch"})
+	}
+	if _, err := st.UpsertSleep(context.Background(), user, segs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertSamples(context.Background(), user, samples); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addSamples stores samples of one type for day (UTC), at the given hours.
+func addSamples(t *testing.T, st *store.Store, user uuid.UUID, day, typ, unit string, value float64, hours ...time.Duration) {
+	t.Helper()
+	d, _ := time.Parse(dayLayout, day)
+	var xs []model.Sample
+	for _, h := range hours {
+		at := d.Add(h)
+		xs = append(xs, model.Sample{Type: typ, Start: at, End: at, Value: value, Unit: unit, Source: "watch"})
+	}
+	if _, err := st.UpsertSamples(context.Background(), user, xs); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // lateHRV is a second overnight HRV sample for day (YYYY-MM-DD, UTC), as from
 // a delayed sync: the night's mean moves.
 func lateHRV(t *testing.T, st *store.Store, user uuid.UUID, day string) {
@@ -177,24 +215,7 @@ func TestEngineNewestFirstBackfillIsBounded(t *testing.T) {
 	st, engine, user := engineStore(t)
 	ctx := context.Background()
 	first := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	var segs []model.SleepSegment
-	var samples []model.Sample
-	for k := 0; k < 120; k++ {
-		d := first.AddDate(0, 0, k)
-		segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(7 * time.Hour),
-			Stage: model.SleepCore, Source: "watch"})
-		samples = append(samples,
-			model.Sample{Type: model.SampleRestingHR, Start: d.Add(9 * time.Hour), End: d.Add(9 * time.Hour),
-				Value: 55 + float64(k%3), Unit: "count/min", Source: "watch"},
-			model.Sample{Type: model.SampleHRVSDNN, Start: d.Add(3 * time.Hour), End: d.Add(3 * time.Hour),
-				Value: 60 + float64(k%5), Unit: "ms", Source: "watch"})
-	}
-	if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.UpsertSamples(ctx, user, samples); err != nil {
-		t.Fatal(err)
-	}
+	seedSpan(t, st, user, first, 120)
 	day := func(k int) string { return first.AddDate(0, 0, k).Format(dayLayout) }
 	if err := engine.ComputeRange(ctx, user, day(100), day(119)); err != nil {
 		t.Fatal(err)
@@ -243,10 +264,11 @@ func TestEngineRescoreTwiceChangesNothing(t *testing.T) {
 	sameRows(t, "twice", rowsJSON(t, st, user, "2026-09-01", "2026-10-10"), once)
 }
 
-// The safety net: days scored before their history whose re-score was lost
-// (scored here without ComputeDays, as an attempt that failed half-way leaves
-// them) are found, and only they; a source without HRV is not "behind"; a
-// pass re-scores them, oldest first, and the next pass finds nothing.
+// The safety net: days scored before their history and never again (scored
+// here without ComputeDays, as two consumers at once or rows from before the
+// re-score leave them) are found, and only they; a source without HRV is not
+// "behind" by its counts; a pass re-scores them, oldest first, and the next
+// pass finds nothing.
 func TestEngineRescoreBehind(t *testing.T) {
 	st, engine, user := engineStore(t)
 	ctx := context.Background()
