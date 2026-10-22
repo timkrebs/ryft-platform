@@ -204,3 +204,56 @@ groups:
         for: 15m
         labels: { severity: warning }
         annotations: { summary: "No Argo CD metrics for 15 minutes" }
+
+      # ---- the site from outside (Synthetic Monitoring, deploy/grafana/synthetics) ----
+      # probe_success per probe (labels job, instance, probe) every 5 minutes. Runbook for all:
+      # OPERATIONS.md → Apex site and apple-app-site-association → When a synthetic alert fires.
+      - alert: SiteDown
+        # The home page, /privacy or the AASA fails from every probe for 10 minutes: the
+        # site is down, or healthy but wrong (the checks pin status, content type and a
+        # marker in the body); a changed AASA breaks universal links and password AutoFill.
+        expr: max by (job, instance) (max_over_time(probe_success{job=~"ryft-site-(home|privacy|aasa)"}[10m])) == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} fails from every probe (job {{ $labels.job }})"
+          runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      - alert: SiteProbeFlapping
+        # One probe sees failures (two or more in 30 minutes) while another still gets through:
+        # a probe or route problem, a pod that fails now and then, or the edge's rate limit.
+        # Quiet while SiteDown fires for the same URL.
+        expr: |
+          (max by (job, instance, probe) (avg_over_time(probe_success{job=~"ryft-site-.*"}[30m])) < 0.8)
+            and on (job, instance)
+          (max by (job, instance) (max_over_time(probe_success{job=~"ryft-site-.*"}[10m])) > 0)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} fails now and then from probe {{ $labels.probe }}"
+          runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      - alert: SiteWwwRedirectBroken
+        # www.ryftapp.de no longer answers 301 to https://ryftapp.de/ from any probe, 10 minutes.
+        expr: max by (job, instance) (max_over_time(probe_success{job="ryft-site-www-redirect"}[10m])) == 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} does not redirect to the apex"
+          runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      - alert: SiteCertificateExpiring
+        # The certificate the probes are served (apex and www) expires in under 14 days:
+        # cert-manager renews at 30 days, so renewal has failed for two weeks. The > 0 leaves
+        # out a probe without a TLS handshake (the metric is 0 then).
+        expr: |
+          (min by (job, instance) (probe_ssl_earliest_cert_expiry{job=~"ryft-site-.*"} > 0) - time()) < 14 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in under 14 days"
+          runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      - alert: SyntheticsMissing
+        # The checks report nothing for 15 minutes: Synthetic Monitoring is switched off, its
+        # token expired, or the checks were deleted. The site is unwatched until fixed.
+        expr: absent(probe_success{job="ryft-site-home"})
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "No Synthetic Monitoring results for ryftapp.de for 15 minutes"
+          runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"

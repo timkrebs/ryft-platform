@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -203,6 +203,15 @@ alerts-apply: alerts-check
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" \
 	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+
+# External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
+# synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
+# through the SM API (SM_API_URL, SM_ACCESS_TOKEN; docs/OPERATIONS.md -> Monitoring).
+synthetics-check:
+	@./scripts/synthetics.sh check
+
+synthetics-apply:
+	@./scripts/synthetics.sh apply
 
 k8s-validate:
 	@set -e; out=$$(mktemp); gen=; \

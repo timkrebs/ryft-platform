@@ -193,3 +193,96 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, publisher: scoring }
             exp_annotations: { summary: "scoring: outbox events set aside after 50 failed sends" }
+  # ---- the site from outside: Synthetic Monitoring, one sample per probe every 5 minutes ----
+  - name: site down needs every probe
+    interval: 5m
+    input_series:
+      # home: both probes fail from minute 15; aasa: only Amsterdam fails; privacy is fine.
+      - { series: 'probe_success{job="ryft-site-home",instance="https://ryftapp.de/",probe="Frankfurt"}', values: '1 1 1 0 0 0 0 0 0 0' }
+      - { series: 'probe_success{job="ryft-site-home",instance="https://ryftapp.de/",probe="Amsterdam"}', values: '1 1 1 0 0 0 0 0 0 0' }
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftapp.de/.well-known/apple-app-site-association",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftapp.de/.well-known/apple-app-site-association",probe="Amsterdam"}', values: '1 1 1 0 0 0 0 0 0 0' }
+      - { series: 'probe_success{job="ryft-site-privacy",instance="https://ryftapp.de/privacy",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-site-privacy",instance="https://ryftapp.de/privacy",probe="Amsterdam"}', values: '1x10' }
+    alert_rule_test:
+      # minute 15: only one failed sample in the 10-minute window
+      - { eval_time: 15m, alertname: SiteDown, exp_alerts: [] }
+      # minute 25: home failed from both probes for 10 minutes; the AASA failed from one, privacy from none
+      - eval_time: 25m
+        alertname: SiteDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: ryft-site-home, instance: "https://ryftapp.de/" }
+            exp_annotations:
+              summary: "https://ryftapp.de/ fails from every probe (job ryft-site-home)"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      # home is down everywhere, so the flapping warning stays quiet for it
+      - eval_time: 40m
+        alertname: SiteProbeFlapping
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-aasa, instance: "https://ryftapp.de/.well-known/apple-app-site-association", probe: Amsterdam }
+            exp_annotations:
+              summary: "https://ryftapp.de/.well-known/apple-app-site-association fails now and then from probe Amsterdam"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+  - name: one probe flaps while the other gets through
+    interval: 5m
+    input_series:
+      # aasa from Frankfurt fails at minutes 30 and 40; Amsterdam is fine.
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftapp.de/.well-known/apple-app-site-association",probe="Frankfurt"}', values: '1 1 1 1 1 1 0 1 0 1 1 1 1' }
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftapp.de/.well-known/apple-app-site-association",probe="Amsterdam"}', values: '1x13' }
+    alert_rule_test:
+      - { eval_time: 38m, alertname: SiteProbeFlapping, exp_alerts: [] }
+      - eval_time: 50m
+        alertname: SiteProbeFlapping
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-aasa, instance: "https://ryftapp.de/.well-known/apple-app-site-association", probe: Frankfurt }
+            exp_annotations:
+              summary: "https://ryftapp.de/.well-known/apple-app-site-association fails now and then from probe Frankfurt"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      - { eval_time: 50m, alertname: SiteDown, exp_alerts: [] }
+  - name: www redirect broken from both probes
+    interval: 5m
+    input_series:
+      - { series: 'probe_success{job="ryft-site-www-redirect",instance="https://www.ryftapp.de/",probe="Frankfurt"}', values: '1 1 1 0 0 0 0 0' }
+      - { series: 'probe_success{job="ryft-site-www-redirect",instance="https://www.ryftapp.de/",probe="Amsterdam"}', values: '1 1 1 0 0 0 0 0' }
+    alert_rule_test:
+      - { eval_time: 15m, alertname: SiteWwwRedirectBroken, exp_alerts: [] }
+      - eval_time: 25m
+        alertname: SiteWwwRedirectBroken
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-www-redirect, instance: "https://www.ryftapp.de/" }
+            exp_annotations:
+              summary: "https://www.ryftapp.de/ does not redirect to the apex"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+      # the www check is not one of the three that page
+      - { eval_time: 25m, alertname: SiteDown, exp_alerts: [] }
+  - name: certificate under 14 days, a probe without a handshake is ignored
+    interval: 5m
+    input_series:
+      # the expiry is a Unix timestamp and the test clock starts at 0: 13 days = 1123200, 20 days = 1728000
+      - { series: 'probe_ssl_earliest_cert_expiry{job="ryft-site-www-redirect",instance="https://www.ryftapp.de/",probe="Frankfurt"}', values: '1123200x30' }
+      - { series: 'probe_ssl_earliest_cert_expiry{job="ryft-site-www-redirect",instance="https://www.ryftapp.de/",probe="Amsterdam"}', values: '0x30' }
+      - { series: 'probe_ssl_earliest_cert_expiry{job="ryft-site-home",instance="https://ryftapp.de/",probe="Frankfurt"}', values: '1728000x30' }
+      - { series: 'probe_ssl_earliest_cert_expiry{job="ryft-site-privacy",instance="https://ryftapp.de/privacy",probe="Frankfurt"}', values: '0x30' }
+    alert_rule_test:
+      - { eval_time: 30m, alertname: SiteCertificateExpiring, exp_alerts: [] }
+      - eval_time: 90m
+        alertname: SiteCertificateExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-www-redirect, instance: "https://www.ryftapp.de/" }
+            exp_annotations:
+              summary: "The certificate of https://www.ryftapp.de/ expires in under 14 days"
+              runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
+  - name: no results from the checks
+    interval: 5m
+    input_series:
+      # the aasa check reports, the home check does not
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftapp.de/.well-known/apple-app-site-association",probe="Frankfurt"}', values: '1x10' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: SyntheticsMissing, exp_alerts: [] }
+      - eval_time: 25m
+        alertname: SyntheticsMissing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-site-home }
+            exp_annotations:
+              summary: "No Synthetic Monitoring results for ryftapp.de for 15 minutes"
+              runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
