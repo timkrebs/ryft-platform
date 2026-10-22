@@ -614,7 +614,8 @@ jobs:
   # `!cancelled()`, not `always()`: a skipped job reports "skipped" whether it had nothing to
   # do or its needs failed, so each targeted group must say "success".
   # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
-  # RYFT_DEPLOY_APP_KEY): PRs made with GITHUB_TOKEN would not run the checks.
+  # RYFT_DEPLOY_APP_KEY, kept in the environment `deploy`, which only main may use): PRs made
+  # with GITHUB_TOKEN would not run the checks.
   promote:
     # Skipped until the App exists (docs/STATUS.md -> GitOps: your steps).
     if: >-
@@ -625,6 +626,7 @@ jobs:
       && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
     needs: [changes, images, web-image]
     runs-on: ubuntu-latest
+    environment: deploy
     # The App's token does the work; GITHUB_TOKEN gets nothing.
     permissions: {}
     concurrency:
