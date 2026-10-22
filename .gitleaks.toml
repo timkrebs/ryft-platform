@@ -41,6 +41,16 @@ paths = [
 ]
 regexes = ['''^(?:0123456789abcdef|pw-ryft_[a-z]+-(?:rotated-)?0123(?:456789)?|wrong-key-0123456789)$''']
 
+# The start-up tests of api and ingest run the binary with an explicit environment that
+# includes the same 16-char sentinel key, written as one "API_KEY=…" string (os/exec
+# env), so the finding carries the prefix. The process exits before it serves anything.
+[[allowlists]]
+description = "Sentinel API key in the api/ingest start-up tests' child environment"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)backend/cmd/(?:api|ingest)/main_test\.go$''']
+regexes = ['''^API_KEY=0123456789abcdef$''']
+
 # The infra/vault tests run against mock providers only: nothing is created or written.
 # These two passwords are self-describing literals; any other password still fails.
 [[allowlists]]
