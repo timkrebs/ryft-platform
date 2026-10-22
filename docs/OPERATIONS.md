@@ -851,23 +851,36 @@ yours and is never committed or put in a chat:
 
 1. Grafana Cloud → your stack → Testing & synthetics → Synthetics. The first visit asks
    to initialise it; do. This enables the service and creates the stack's SM tenant.
-2. **The API URL.** Synthetics → Config (the gear in the app's menu) shows the *Backend
-   address*; the same list per region is in Grafana's docs (Synthetic Monitoring → Set up
-   → Private probes → *Probe API server URL*), e.g.
-   `synthetic-monitoring-api-eu-west-3.grafana.net`. It must be your stack's region.
-   `export SM_API_URL=https://<that address>` (with `https://`, without a path).
-3. **The token.** In the same Config page, Access tokens → *Generate access token*. It is
-   a Synthetic Monitoring token, not a Cloud access policy token and not the alert rules
-   token. `read -rs SM_ACCESS_TOKEN && export SM_ACCESS_TOKEN` (so it is not in your shell
-   history). Store it in your password manager: the app does not show it again.
-4. Check the probe names: `scripts/synthetics.sh probes` lists what the stack offers. The
-   file asks for `Frankfurt` and `Amsterdam`; if one is missing or offline, edit
-   `probes` in the JSON (two EU locations; a third would exceed the free tier, see the
-   budget in OBSERVABILITY).
-5. `make synthetics-check` (offline), then a look at what would change:
-   `SYNTHETICS_DRY_RUN=1 scripts/synthetics.sh apply`, then `make synthetics-apply`. It
-   adds or updates the four checks by job name and leaves other checks alone; running it
-   again changes nothing but the `modified` time.
+2. **The API URL** is the *Backend address* of the stack's region (the HTTP API; not the
+   "API server URL" column, which is gRPC). Our stack is `prod-eu-west-2`, so it is
+   `https://synthetic-monitoring-api-eu-west-2.grafana.net` (not a secret; the Config page of
+   the Synthetics app and Grafana's docs, Synthetic Monitoring → Set up → Private probes,
+   list it per region). The script accepts only
+   `https://synthetic-monitoring-api-<region>.grafana.net`.
+3. **The token** is tenant-wide: it can create, change and delete every check of the
+   stack. Prefer one per session. In the same Config page, Access tokens → *Generate access
+   token* (an SM token, not a Cloud access policy token and not the alert rules token).
+   Enter it in a subshell so it dies with it and stays out of your shell history:
+
+   ```bash
+   export SM_API_URL=https://synthetic-monitoring-api-eu-west-2.grafana.net
+   scripts/synthetics.sh check                          # offline
+   ( read -rs SM_ACCESS_TOKEN; export SM_ACCESS_TOKEN
+     scripts/synthetics.sh probes                       # the probe names on offer
+     SYNTHETICS_DRY_RUN=1 scripts/synthetics.sh apply   # the field diff, no writes
+     make synthetics-apply )
+   ```
+
+   Afterwards delete the token in Config → Access tokens; the checks run without it (only
+   the apply needs one). If you keep one, rotate it every few months.
+4. The file asks for the probes `Frankfurt` and `Amsterdam`; `probes` shows the names the
+   stack has. If one is missing or offline (apply refuses an offline probe), edit `probes`
+   in the JSON (two EU locations; a third would exceed the free tier, see the budget in
+   OBSERVABILITY). `check` also asserts each body marker against the site's own sources
+   (the AASA file, the newest English privacy text), so a policy rewording or an app ID
+   change fails in its PR; fix the regexp in that PR.
+5. The apply adds or updates the four checks by job name, leaves other checks alone and
+   skips a check that already matches, so running it again changes nothing.
 6. In Synthetics → Checks, each of the four should turn green within two runs (10
    minutes). In Explore (the Prometheus data source) `probe_success{job=~"ryft-site-.*"}`
    returns eight series (four jobs, two probes), and `probe_ssl_earliest_cert_expiry` the
@@ -875,20 +888,16 @@ yours and is never committed or put in a chat:
 7. `make alerts-apply` loads the five `Site*`/`Synthetics*` rules (OBSERVABILITY →
    Alerts); the contact point and notification policy from above already route them by
    `severity`.
-8. Prove the path once: change the AASA check's body marker in the JSON to something
-   absent (`M77SKHKG63\\.dev\\.timkrebs\\.nope`), `make synthetics-apply`, and within
-   about 15 minutes `SiteDown` for the AASA should reach your phone (the rule needs two
-   failed runs from each probe). Put the marker back and apply again, and do not commit
+8. Prove the path once: set the AASA check's `validStatusCodes` to `[404]` in the JSON,
+   apply (as in 3), and within about 15 minutes `SiteDown` for the AASA should reach your
+   phone (two failed runs from each probe). Put `[200]` back and apply again; do not commit
    the experiment.
-9. Rotating the token: Config → Access tokens → generate a new one, delete the old one,
-   use the new one next time. The checks keep running without it; only
-   `make synthetics-apply` needs it.
 
 The free tier is "limited to" 100k API test executions a month (grafana.com/pricing); at
-69k there is room for a few ad-hoc checks, not for a third probe. If checks ever stop
-running, `SyntheticsMissing` is the alert. Menu names in Grafana's app move now and then:
-what you need is the Config page of the Synthetics app, which shows the backend address
-and the access tokens.
+69k there is room for a few ad-hoc checks, not for a third probe. If a check ever stops
+reporting, `SyntheticsMissing` (one alert per job) is the alert. Menu names in Grafana's
+app move now and then: what you need is the Config page of the Synthetics app, which
+shows the backend address and the access tokens.
 
 ## Terraform state
 
@@ -995,7 +1004,7 @@ curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
 curl -s https://ryftapp.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
 curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
-curl -sI https://www.ryftapp.de/ | grep -i location                                                         # https://ryftapp.de/
+curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -i location                                                      # https://ryftapp.de/
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
 ```
 
@@ -1010,7 +1019,7 @@ curl -sI https://ryftapp.de/ | grep -iE "^HTTP|content-type"                    
 curl -s https://ryftapp.de/privacy | grep -c 'Art. 9(2)(a) GDPR'                               # ryft-site-privacy: 1 or more
 curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # ryft-site-aasa: 200, application/json, no location
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | grep -c 'M77SKHKG63.dev.timkrebs.ryft'    # 1 or more
-curl -sI https://www.ryftapp.de/ | grep -iE "^HTTP|location"                                    # ryft-site-www-redirect: 301, https://ryftapp.de/
+curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -iE "^HTTP|location"                                    # ryft-site-www-redirect: 301, https://ryftapp.de/
 echo | openssl s_client -connect ryftapp.de:443 -servername ryftapp.de 2>/dev/null | openssl x509 -noout -enddate   # the served certificate
 # inside
 kubectl -n argocd get applications ryft-platform
@@ -1042,11 +1051,14 @@ kubectl -n ryft-web logs -l app=web --tail=50
   and `get challenges,orders -n ryft-web` (DNS-01), cert-manager's log (the flow:
   "EKS", Certificates). A renewed certificate shows in the next run; Traefik may need a
   moment to pick up the secret.
-- **SyntheticsMissing:** the checks stopped reporting. In the Synthetics app: are the four
-  checks enabled, is the stack inside its execution limit; `scripts/synthetics.sh probes`
-  (with `SM_API_URL`, `SM_ACCESS_TOKEN`) tells whether the API still takes your token;
-  `make synthetics-apply` recreates deleted checks. Until it is fixed nothing watches the
-  site from outside: run the block above after every web deploy.
+- **SyntheticsMissing:** the `job` label names the check that stopped reporting (one alert
+  per job; all four at once means Synthetic Monitoring itself). In the Synthetics app: is
+  that check there and enabled, is the stack inside its execution limit. The apply (the
+  subshell in "Monitoring (Grafana Cloud)", with a fresh token) recreates deleted checks.
+  Until it is fixed that URL is unwatched: run the block above after every web deploy.
+
+The block above uses GET where it matters: `curl -I` sends HEAD, and Traefik answers a HEAD
+for `www` with 308 where a GET gets 301 (the check accepts both).
 
 ## Mail for ryftapp.de
 

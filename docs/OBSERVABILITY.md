@@ -64,6 +64,9 @@ Every check also fails when TLS fails. Metrics (labels `job`, `instance`, `probe
 served certificate, so `www` is covered as well), `probe_duration_seconds`,
 `probe_http_status_code`. The alerts are `SiteDown`, `SiteProbeFlapping`,
 `SiteWwwRedirectBroken`, `SiteCertificateExpiring` and `SyntheticsMissing` (Alerts below).
+The SM agent republishes a run's last result about every 2 minutes, so a 5-minute check
+yields roughly three samples per run; the windows (10 minutes for "every probe", 30
+minutes and 0.8 for "flapping") count whole runs either way.
 
 **Budget.** The free tier includes 100k API test executions a month (grafana.com/pricing →
 Synthetics API Testing); an execution is one test run in one probe location per minute
@@ -279,10 +282,10 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | ArgoAppOutOfSync | warning | an auto-synced application differs from git for 30 min | a wave waiting on an unhealthy one, a render error (`Unknown`), a sync retrying |
 | ArgoMetricsMissing | warning | no `argocd_app_info` for 15 min | `kubectl -n argocd get pods`, the metrics policy |
 | SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
-| SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (quiet while SiteDown fires) | the same: which probe, which URL, the edge's rate limit |
+| SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after every probe failed at once) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
-| SyntheticsMissing | warning | no `probe_success` for `ryft-site-home` for 15 min | the SM app: checks enabled, the stack's probes, `make synthetics-apply` |
+| SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for 15 min (label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
