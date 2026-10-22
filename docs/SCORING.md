@@ -310,7 +310,7 @@ a week without data does not shorten it). Three counts come out of that window:
 
 | Count | What it is | Stored as |
 | --- | --- | --- |
-| `W` | days in the window, 0–30 | not stored |
+| `W` | days in the window with any data (an overnight signal, heart rate or a logged session, sleep, steps or active energy: `store.History.HasData`), 0–30 | not stored |
 | `H` | of them, days with an overnight HRV (`hrv_ms > 0`): the N of the ln-HRV baseline | `baseline_hrv_days` (migration 0027) |
 | `R` | of them, days with a resting HR (`rhr > 0`): the N of the resting-HR baseline | `baseline_rhr_days` (0027) |
 
@@ -334,9 +334,15 @@ share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`)
 
 - **`W` decides when a missing signal counts as missing**, with the baselines' own bar
   of 7. A new account has `H = R = 0` because nothing is there yet, so it is
-  `short_history` until its 8th scored day, the same day a complete account stops
+  `short_history` until its 8th day with data, the same day a complete account stops
   calibrating. Counting calendar days instead would call a user who synced once a
   month ago `no_hrv` on a single night.
+- **`W` counts days with data, not every stored row.** A range or a rescore stores
+  every day it covers, also the days before an account's first data
+  (`scripts/rescore_all.sh` goes 400 days back), with nothing in them. Counted, they
+  would make a watch user's first night `no_hrv` (30 rows, none with an HRV), and in
+  the synthetic run below the two empty leading days would start `no_hrv` on the 6th
+  day with data instead of the 8th. An iPhone alone still counts: its days have steps.
 - **Only `H == 0` is `no_hrv`.** One to six HRV nights in the window are sporadic data
   (a watch worn some nights), and more nights do end them; calling that "no HRV
   source" would be wrong and would flip with every night.
@@ -347,13 +353,16 @@ share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`)
   threshold is `MinBaselineDays`, unchanged.
 
 **Stored, not derived on read**: `W` exists only while the day is scored, so the reason
-and both counts are written with the row (they are results, not history inputs: a
-change to them does not re-score the days after, `store.ScoreWrite`). Rows scored before
-0027 have `NULL` in all three, served as `null` ("unknown", not a fourth reason) until a
-rescore fills them. A row an older scoring image wrote again after this one (a rollback
-re-pins images; that image leaves the columns as they were) no longer agrees with its
-`baseline_days` and `calibrating`, so the store serves it as unknown too
-(`store.knownCalibration`). A day that was never scored has all three `null`.
+and both counts are written with the row. They are results, not history inputs: a
+change to them does not re-score the days after (`store.ScoreWrite`). Whether a day
+has data is an input, though: steps or active energy appearing on a day that had none
+re-score the days after it, as a changed HRV does (only their presence counts, so the
+steps a day gains with every sync do not). Rows scored before 0027 have `NULL` in all
+three, served as `null` ("unknown", not a fourth reason) until a rescore fills them. A
+row an older scoring image wrote again after this one (a rollback re-pins images; that
+image leaves the columns as they were) no longer agrees with its `baseline_days` and
+`calibrating`, so the store serves it as unknown too (`store.knownCalibration`). A day
+that was never scored has all three `null`.
 
 **Calibration**, pinned without a database by `calibrating_test.go`: every branch
 (day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
@@ -364,16 +373,26 @@ the reason is `null` exactly when `Recovery` says not calibrating. With
 set-ups (both signals; no HRV, the report that started this; no resting HR; neither):
 `short_history` through the 7th day (`W = 6`), the reason from the 8th (`W = 7`) on, and
 `baseline_days = min(H, R)` on every day. The iPhone-only source fixture says the same:
-days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonFollowsTheRescore`:
-a day scored before its history goes from `short_history` (0/0) to `null` (30/30) when
-the history arrives.
+days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonIgnoresEmptyDays`:
+31 empty stored days before the first night change nothing (the first night is
+`short_history` with `W = 0`, not `no_hrv`). `TestEngineLateStepsRescoreTheReason`: a
+week of steps synced late for days stored empty turns the 8th day from `short_history`
+to `no_hrv` in the same pass. `TestEngineCalibratingReasonFollowsTheRescore`: a day
+scored before its history goes from `short_history` (0/0) to `null` (30/30) when the
+history arrives.
 
 **Model version: unchanged** (2026.10.1). Nothing that was stored moves: recovery,
 readiness, state, `calibrating` and `baseline_days` are computed as before, and the
-tests that pin them pass unchanged (a before/after over the synthetic generator is in
-the PR). The three fields are new and say what was already true. A bump would announce
-moved numbers in `GET /v1/model` where none moved, and rows without the fields are found
-by `baseline_hrv_days IS NULL`, not by their version. **Rescore**: the 15-minute pass
+tests that pin them pass unchanged. Before/after over the synthetic generator
+(`scripts/synth.py 60`, scored as a 62-day range, in four set-ups: as generated, HRV on
+every 4th night, no HRV, neither HRV nor resting HR): none of the 31 `DailyScore`
+fields the api served before (`details` included) differs on any of the 248 days. The
+new fields there: as generated, `short_history` on the 9 calibrating days (2 empty, 7
+with data), `null` from the 8th day with data; no HRV and neither, `short_history` for
+those 9, then `no_hrv` on the other 53; HRV every 4th night, `short_history` until the
+7th HRV night, then `null`. The three fields are new and say what was already true. A
+bump would announce moved numbers in `GET /v1/model` where none moved, and rows without
+the fields are found by `baseline_hrv_days IS NULL`, not by their version. **Rescore**: the 15-minute pass
 re-scores today and yesterday of every active user, so the Today screen has the reason
 within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
 (optional; it moves no stored number, it fills the three fields).

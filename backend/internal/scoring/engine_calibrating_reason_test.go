@@ -128,6 +128,85 @@ func TestEngineCalibratingReason(t *testing.T) {
 	}
 }
 
+// A range or a rescore that starts before the account's first data stores
+// empty days (scripts/rescore_all.sh goes 400 days back for everyone). They
+// are not history: the first night with data is short_history, not no_hrv as
+// 30 stored rows without an HRV would say, and the reason comes on the 8th day
+// with data, as without them. The baselines (and baseline_days) are as before.
+func TestEngineCalibratingReasonIgnoresEmptyDays(t *testing.T) {
+	short, noHRV := model.CalibratingShortHistory, model.CalibratingNoHRV
+	for _, c := range []struct {
+		name string
+		hrv  bool
+		want map[string]calib
+	}{
+		{"both signals", true, map[string]calib{
+			"2026-08-31": {0, 0, 0, true, short}, // empty itself, 30 empty days before it
+			"2026-09-01": {0, 0, 0, true, short}, // the first night: W = 0, not 30
+			"2026-09-07": {6, 6, 6, true, short},
+			"2026-09-08": {7, 7, 7, false, ""},
+		}},
+		{"no HRV source", false, map[string]calib{
+			"2026-09-01": {0, 0, 0, true, short},
+			"2026-09-07": {0, 0, 6, true, short},
+			"2026-09-08": {0, 0, 7, true, noHRV},
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st, engine, user := engineStore(t)
+			seedSignals(t, st, user, c.hrv, true) // data from 2026-09-01 on
+			if err := engine.ComputeRange(context.Background(), user, "2026-07-31", "2026-09-10"); err != nil {
+				t.Fatal(err)
+			}
+			days := scoresByDay(t, st, user, "2026-07-31", "2026-09-10")
+			if len(days) != 42 {
+				t.Fatalf("%d days stored, want 42 (32 of them empty)", len(days))
+			}
+			for day, want := range c.want {
+				if got := calibOf(t, days[day]); got != want {
+					t.Errorf("%s: %+v, want %+v", day, got, want)
+				}
+			}
+		})
+	}
+}
+
+// Whether a day has data is a history input: a phone's steps for days that
+// were stored empty, synced late, re-score the days after them (store.ScoreWrite),
+// and the 8th day of steps without an HRV turns from short_history to no_hrv.
+func TestEngineLateStepsRescoreTheReason(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	steps := func(days ...string) {
+		t.Helper()
+		var xs []model.Sample
+		for _, day := range days {
+			d, _ := time.Parse(dayLayout, day)
+			xs = append(xs, model.Sample{Type: model.SampleSteps, Start: d.Add(10 * time.Hour),
+				End: d.Add(11 * time.Hour), Value: 800, Unit: "count", Source: "phone"})
+		}
+		if _, err := st.UpsertSamples(ctx, user, xs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	week := []string{"2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07"}
+	steps("2026-09-08")
+	if err := engine.ComputeRange(ctx, user, "2026-09-01", "2026-09-08"); err != nil { // the week stored empty
+		t.Fatal(err)
+	}
+	if got := calibOf(t, scoresByDay(t, st, user, "2026-09-08", "2026-09-08")["2026-09-08"]); got.reason != model.CalibratingShortHistory {
+		t.Fatalf("one day of steps after an empty week: %+v", got)
+	}
+	steps(week...)
+	if err := engine.ComputeDays(ctx, user, week); err != nil { // the sync's touched days only
+		t.Fatal(err)
+	}
+	if got := calibOf(t, scoresByDay(t, st, user, "2026-09-08", "2026-09-08")["2026-09-08"]); got !=
+		(calib{0, 0, 0, true, model.CalibratingNoHRV}) {
+		t.Fatalf("after the week's steps: %+v, want no_hrv", got)
+	}
+}
+
 // A day scored before its history, then the history (the case PR #29 fixes):
 // the re-score in the same pass also brings the counts and the reason along,
 // from short_history with an empty window to null with a full one.

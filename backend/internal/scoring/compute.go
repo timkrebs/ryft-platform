@@ -315,6 +315,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	var lnHRV, rhrs, resps []float64
 	var yesterdayStrain float64
+	var window int // the days in hist with any data: calibrating_reason's W
 	yesterday := dayStart.AddDate(0, 0, -1).Format("2006-01-02")
 	// Consistency: the last 7 nights, this one included.
 	firstNight := dayStart.AddDate(0, 0, -(consistencyDays - 1)).Format("2006-01-02")
@@ -337,6 +338,9 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 		}
 		if h.Day == yesterday && h.Strain != nil {
 			yesterdayStrain = *h.Strain
+		}
+		if h.HasData {
+			window++
 		}
 	}
 	debt := SleepDebtFrom(hist)
@@ -487,11 +491,12 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
 	version := ModelVersion
 	// The counts behind baseline_days, and why the day calibrates. The window is
-	// hist, the stored rows the baselines were drawn from, not the nights with a
-	// value: a phone-only month is 30 rows with no HRV, a new account none.
+	// the stored rows the baselines were drawn from that hold any data, not the
+	// nights with a value: a phone-only month is 30 days of steps without an
+	// HRV; a new account has none, even after a range stored empty days for it.
 	hrvDays, rhrDays := lnHRVBase.N, rhrBase.N
 	var reason *string
-	if r := CalibratingReason(len(hist), hrvDays, rhrDays); r != "" {
+	if r := CalibratingReason(window, hrvDays, rhrDays); r != "" {
 		reason = &r
 	}
 

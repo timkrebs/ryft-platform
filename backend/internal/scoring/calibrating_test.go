@@ -7,8 +7,8 @@ import (
 )
 
 // Every branch of the rule in docs/API.md → calibrating_reason, with the
-// account each row stands for. W is the stored days in the 30-day window, H and
-// R how many of them carry an overnight HRV and a resting HR.
+// account each row stands for. W is the days with data in the 30-day window, H
+// and R how many of them carry an overnight HRV and a resting HR.
 func TestCalibratingReason(t *testing.T) {
 	const (
 		none  = ""
@@ -17,12 +17,11 @@ func TestCalibratingReason(t *testing.T) {
 		noRHR = model.CalibratingNoRHR
 	)
 	for _, c := range []struct {
-		name      string
-		window, h int
-		r         int
-		want      string
+		name         string
+		window, h, r int
+		want         string
 	}{
-		// Day one: nothing stored before it. H = R = 0 like a phone-only account,
+		// Day one: no data before it. H = R = 0 like a phone-only account,
 		// but waiting is the answer, so not no_hrv.
 		{"day one", 0, 0, 0, short},
 		// The sixth day of a phone-only account: still too little history to say a

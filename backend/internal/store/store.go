@@ -593,9 +593,10 @@ func roundZones(z []float64) []float64 {
 
 // History is the per-day input the scoring baselines need. What
 // scoring.computeDay reads from it into the later days' rows (HRV, RHR,
-// RespRate, Strain, SleepNeedMin, SleepActualMin, SleepStart, SleepEnd) are a
-// row's history inputs: UpsertDailyScore compares exactly those columns, so a
-// field computeDay starts to read belongs there too.
+// RespRate, Strain, SleepNeedMin, SleepActualMin, SleepStart, SleepEnd, and
+// HasData: those and whether steps and active energy are there) are a row's
+// history inputs: UpsertDailyScore compares exactly those columns, so a field
+// computeDay starts to read belongs there too.
 type History struct {
 	Day            string
 	HRV            *float64
@@ -609,13 +610,19 @@ type History struct {
 	SleepStart     *time.Time // consistency
 	SleepEnd       *time.Time
 	Efficiency     *int // the planner (asleep / in bed)
+	// HasData: the day holds anything a source sent (an overnight signal, heart
+	// rate or a session, sleep, steps or active energy). A range or a rescore
+	// also stores days before an account's first data, with none of it; they
+	// do not count as history for calibrating_reason.
+	HasData bool
 }
 
 // ScoreHistory returns up to n scored days strictly before `day`, newest first.
 func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, n int) ([]History, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min,
 		recovery, nap_min, sleep_start, sleep_end,
-		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END
+		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END,
+		num_nonnulls(hrv_ms, rhr, resp_rate, strain, sleep_actual_min, steps, active_kcal) > 0
 		FROM daily_scores WHERE user_id=$1 AND day < $2::date ORDER BY day DESC LIMIT $3`, userID, day, n)
 	if err != nil {
 		return nil, err
@@ -623,7 +630,7 @@ func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, 
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (History, error) {
 		var h History
 		err := r.Scan(&h.Day, &h.HRV, &h.RHR, &h.RespRate, &h.Strain, &h.SleepNeedMin, &h.SleepActualMin,
-			&h.Recovery, &h.NapMin, &h.SleepStart, &h.SleepEnd, &h.Efficiency)
+			&h.Recovery, &h.NapMin, &h.SleepStart, &h.SleepEnd, &h.Efficiency, &h.HasData)
 		return h, err
 	})
 }
@@ -696,7 +703,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		}
 	}
 	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery, hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min,
-		  sleep_start, sleep_end FROM daily_scores WHERE user_id=$1 AND day=$2::date)
+		  sleep_start, sleep_end, steps, active_kcal FROM daily_scores WHERE user_id=$1 AND day=$2::date)
 		INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
 		 hrv_ms, rhr, resp_rate, spo2, calibrating, details, readiness, state,
@@ -727,9 +734,10 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason, computed_at=now()
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL,
 		 NOT EXISTS (SELECT 1 FROM old o WHERE (o.hrv_ms, o.rhr, o.resp_rate, o.strain, o.sleep_need_min,
-		   o.sleep_actual_min, o.sleep_start, o.sleep_end) IS NOT DISTINCT FROM (daily_scores.hrv_ms, daily_scores.rhr,
+		   o.sleep_actual_min, o.sleep_start, o.sleep_end, o.steps IS NULL, o.active_kcal IS NULL)
+		   IS NOT DISTINCT FROM (daily_scores.hrv_ms, daily_scores.rhr,
 		   daily_scores.resp_rate, daily_scores.strain, daily_scores.sleep_need_min, daily_scores.sleep_actual_min,
-		   daily_scores.sleep_start, daily_scores.sleep_end))`,
+		   daily_scores.sleep_start, daily_scores.sleep_end, daily_scores.steps IS NULL, daily_scores.active_kcal IS NULL))`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
 		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
