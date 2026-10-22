@@ -868,6 +868,7 @@ restarts both collectors when it changes. It is never passed on a command line:
    - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
      point (email and the Grafana mobile app) and a notification policy for
      `severity` `critical`, `warning` and `info`.
+   - Create the external site checks (**Synthetic Monitoring, once**, below).
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      single `alloy` collector before 2026-10-19).
    - Check that the cluster appears in Kubernetes Monitoring, that
@@ -880,6 +881,60 @@ including RYFT's routes and durations, and the SDK injector's webhook may modify
 that opt in by annotation (no RYFT pod does). Its configuration comes from Grafana
 Cloud. Access to the Grafana stack is therefore access to the cluster's telemetry: keep
 the stack's members to yourself.
+
+**Synthetic Monitoring, once** (the site from outside; OBSERVABILITY → Synthetic
+Monitoring). The checks are code (`deploy/grafana/synthetics/ryftapp.json`); the token is
+yours and is never committed or put in a chat:
+
+1. Grafana Cloud → your stack → Testing & synthetics → Synthetics. The first visit asks
+   to initialise it; do. This enables the service and creates the stack's SM tenant.
+2. **The API URL** is the *Backend address* of the stack's region (the HTTP API; not the
+   "API server URL" column, which is gRPC). Our stack is `prod-eu-west-2`, so it is
+   `https://synthetic-monitoring-api-eu-west-2.grafana.net` (not a secret; the Config page of
+   the Synthetics app and Grafana's docs, Synthetic Monitoring → Set up → Private probes,
+   list it per region). The script accepts only
+   `https://synthetic-monitoring-api-<region>.grafana.net`.
+3. **The token** is tenant-wide: it can create, change and delete every check of the
+   stack. Prefer one per session. In the same Config page, Access tokens → *Generate access
+   token* (an SM token, not a Cloud access policy token and not the alert rules token).
+   Enter it in a subshell so it dies with it and stays out of your shell history:
+
+   ```bash
+   export SM_API_URL=https://synthetic-monitoring-api-eu-west-2.grafana.net
+   scripts/synthetics.sh check                          # offline
+   ( read -rs SM_ACCESS_TOKEN; export SM_ACCESS_TOKEN
+     scripts/synthetics.sh probes                       # the probe names on offer
+     SYNTHETICS_DRY_RUN=1 scripts/synthetics.sh apply   # the field diff, no writes
+     make synthetics-apply )
+   ```
+
+   Afterwards delete the token in Config → Access tokens; the checks run without it (only
+   the apply needs one). If you keep one, rotate it every few months.
+4. The file asks for the probes `Frankfurt` and `Amsterdam`; `probes` shows the names the
+   stack has. If one is missing or offline (apply refuses an offline probe), edit `probes`
+   in the JSON (two EU locations; a third would exceed the free tier, see the budget in
+   OBSERVABILITY). `check` also asserts each body marker against the site's own sources
+   (the AASA file, the newest English privacy text), so a policy rewording or an app ID
+   change fails in its PR; fix the regexp in that PR.
+5. The apply adds or updates the four checks by job name, leaves other checks alone and
+   skips a check that already matches, so running it again changes nothing.
+6. In Synthetics → Checks, each of the four should turn green within two runs (10
+   minutes). In Explore (the Prometheus data source) `probe_success{job=~"ryft-site-.*"}`
+   returns eight series (four jobs, two probes), and `probe_ssl_earliest_cert_expiry` the
+   certificate's expiry.
+7. `make alerts-apply` loads the five `Site*`/`Synthetics*` rules (OBSERVABILITY →
+   Alerts); the contact point and notification policy from above already route them by
+   `severity`.
+8. Prove the path once: set the AASA check's `validStatusCodes` to `[404]` in the JSON,
+   apply (as in 3), and within about 15 minutes `SiteDown` for the AASA should reach your
+   phone (two failed runs from each probe). Put `[200]` back and apply again; do not commit
+   the experiment.
+
+The free tier is "limited to" 100k API test executions a month (grafana.com/pricing); at
+69k there is room for a few ad-hoc checks, not for a third probe. If a check ever stops
+reporting, `SyntheticsMissing` (one alert per job) is the alert. Menu names in Grafana's
+app move now and then: what you need is the Config page of the Synthetics app, which
+shows the backend address and the access tokens.
 
 ## Terraform state
 
@@ -972,8 +1027,10 @@ history, so it needs the hold, "Deploy and roll back"). **Never delete package v
 
 **Verify a web deploy** after the Argo CD sync. The pods roll with one surge and none
 unavailable, so a broken image leaves the old site serving and `ArgoSyncFailed` fires after
-about 10 minutes; a page that is wrong but healthy is not alerted (STATUS → open), which is
-what this is for. Roll back first, then investigate.
+about 10 minutes; a page that is wrong but healthy passes the pod probes, which is what this
+is for (since the external checks, `SiteDown` catches the three that matter within about 15
+minutes; the block below is the same look by hand, and it covers the other pages). Roll
+back first, then investigate.
 
 ```bash
 kubectl -n argocd get applications ryft-platform                                   # Synced, Healthy
@@ -985,9 +1042,61 @@ curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
 curl -s https://ryftapp.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
 curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
-curl -sI https://www.ryftapp.de/ | grep -i location                                                         # https://ryftapp.de/
+curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -i location                                                      # https://ryftapp.de/
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
 ```
+
+### When a synthetic alert fires
+
+The checks run from outside every 5 minutes from two probes (OBSERVABILITY → Synthetic
+Monitoring). First look, read-only; the `job` label names the check:
+
+```bash
+# what the probes see, the way they see it (no redirects followed)
+curl -sI https://ryftapp.de/ | grep -iE "^HTTP|content-type"                                     # ryft-site-home: 200, text/html
+curl -s https://ryftapp.de/privacy | grep -c 'Art. 9(2)(a) GDPR'                               # ryft-site-privacy: 1 or more
+curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # ryft-site-aasa: 200, application/json, no location
+curl -s https://ryftapp.de/.well-known/apple-app-site-association | grep -c 'M77SKHKG63.dev.timkrebs.ryft'    # 1 or more
+curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -iE "^HTTP|location"                                    # ryft-site-www-redirect: 301, https://ryftapp.de/
+echo | openssl s_client -connect ryftapp.de:443 -servername ryftapp.de 2>/dev/null | openssl x509 -noout -enddate   # the served certificate
+# inside
+kubectl -n argocd get applications ryft-platform
+kubectl -n ryft-web get pods -l app=web -o wide
+kubectl -n ryft-web get ingress,certificate
+kubectl -n ryft-web logs -l app=web --tail=50
+```
+
+- **SiteDown, all `curl`s fine:** the probes' view differs from yours, so look at the check
+  in Grafana (Synthetics → the check → the failed run's logs name the assertion that
+  failed: status code, header or body regexp). A regexp that no longer matches after a web
+  deploy is the usual cause: the privacy marker (`Art. 9(2)(a) GDPR`) after a policy
+  revision, the AASA after an app ID change. If the page is right and the regexp is stale,
+  fix `deploy/grafana/synthetics/ryftapp.json` and `make synthetics-apply`; if the page is
+  wrong, roll back the web pin ("Deploy and roll back") and fix forward.
+- **SiteDown, `curl` fails:** pods not ready or none (`get pods`), the Ingress or the
+  Traefik service (`kubectl -n kube-system get pods -l app.kubernetes.io/name=traefik`), DNS (`dig +short ryftapp.de`, ExternalDNS
+  in `infra/aws/kubernetes`), the certificate. The AASA wrong or missing means universal
+  links and password AutoFill stop working for testers: treat it like a down site.
+- **SiteProbeFlapping:** a single failed run is noise, which is why the rule needs two in
+  30 minutes. Open the check, compare the probes, and look at the failed runs' reason: a
+  timeout from one probe (its network), a 429 (the edge's rate limit in `overlays/eks/web.yaml`,
+  20 requests/s per address; the probes send about 1 per minute each, so a 429 means
+  something else is hitting the limit), a 5xx (one pod: `kubectl -n ryft-web logs <pod>`). If it recurs for days,
+  replace the probe in the JSON.
+- **SiteWwwRedirectBroken:** the `www-to-apex` Middleware (`overlays/eks/web.yaml`) and the
+  Ingress' second host; the check wants 301 or 308 with `Location: https://ryftapp.de/`.
+- **SiteCertificateExpiring:** `kubectl -n ryft-web describe certificate ryftapp-de-tls`
+  and `get challenges,orders -n ryft-web` (DNS-01), cert-manager's log (the flow:
+  "EKS", Certificates). A renewed certificate shows in the next run; Traefik may need a
+  moment to pick up the secret.
+- **SyntheticsMissing:** the `job` label names the check that stopped reporting (one alert
+  per job; all four at once means Synthetic Monitoring itself). In the Synthetics app: is
+  that check there and enabled, is the stack inside its execution limit. The apply (the
+  subshell in "Monitoring (Grafana Cloud)", with a fresh token) recreates deleted checks.
+  Until it is fixed that URL is unwatched: run the block above after every web deploy.
+
+The block above uses GET where it matters: `curl -I` sends HEAD, and Traefik answers a HEAD
+for `www` with 308 where a GET gets 301 (the check accepts both).
 
 ## Mail for ryftapp.de
 

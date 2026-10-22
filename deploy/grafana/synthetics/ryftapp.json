@@ -1,0 +1,96 @@
+{
+  "$comment": "External checks of ryftapp.de for Grafana Cloud Synthetic Monitoring. Validate: make synthetics-check. Upsert by job name: make synthetics-apply (SM_API_URL, SM_ACCESS_TOKEN). The shape is the SM API's Check (synthetic-monitoring-agent, pkg/pb/synthetic_monitoring/checks.proto), with probes given by name. The alert rules on these metrics are in deploy/grafana/alerts/ryft.yaml (job=~\"ryft-site-.*\"); what to do when one fires: docs/OPERATIONS.md -> Apex site. Free tier: 100k API test executions a month; 4 checks x 2 probes x every 5 min = about 69k.",
+  "probes": ["Frankfurt", "Amsterdam"],
+  "checks": [
+    {
+      "job": "ryft-site-home",
+      "target": "https://ryftapp.de/",
+      "frequency": 300000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [200],
+          "failIfHeaderNotMatchesRegexp": [
+            { "header": "Content-Type", "regexp": "^text/html.*", "allowMissing": false }
+          ]
+        }
+      }
+    },
+    {
+      "job": "ryft-site-privacy",
+      "target": "https://ryftapp.de/privacy",
+      "frequency": 300000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [200],
+          "failIfBodyNotMatchesRegexp": ["(?s).*Art\\. 9\\(2\\)\\(a\\) GDPR.*"],
+          "failIfHeaderNotMatchesRegexp": [
+            { "header": "Content-Type", "regexp": "^text/html.*", "allowMissing": false }
+          ]
+        }
+      }
+    },
+    {
+      "job": "ryft-site-aasa",
+      "target": "https://ryftapp.de/.well-known/apple-app-site-association",
+      "frequency": 300000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [200],
+          "failIfBodyNotMatchesRegexp": ["(?s).*M77SKHKG63\\.dev\\.timkrebs\\.ryft.*"],
+          "failIfHeaderNotMatchesRegexp": [
+            { "header": "Content-Type", "regexp": "^application/json.*", "allowMissing": false }
+          ]
+        }
+      }
+    },
+    {
+      "job": "ryft-site-www-redirect",
+      "target": "https://www.ryftapp.de/",
+      "frequency": 300000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [301, 308],
+          "failIfHeaderNotMatchesRegexp": [
+            { "header": "Location", "regexp": "^https://ryftapp\\.de/$", "allowMissing": false }
+          ]
+        }
+      }
+    }
+  ]
+}
