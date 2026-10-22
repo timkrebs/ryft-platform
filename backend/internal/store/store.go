@@ -786,24 +786,28 @@ func (s *Store) ScoredDaysAfter(ctx context.Context, userID uuid.UUID, after, th
 // BehindHistoryDays returns up to n stored days from `from` on, oldest first,
 // that were scored before their history arrived, judged against the `window`
 // stored rows before them as computeDay counts them from ScoreHistory: a
-// baseline_days below the smaller of their HRV and resting-HR nights now, or
-// an HRV or resting-HR baseline missing although the window has such a night
-// (an account without HRV has baseline_days 0 either way). It sees counts and
-// missing baselines, not a stale value behind a right count. The scan starts
+// baseline_days below the smaller of their HRV and resting-HR nights now, an
+// HRV or resting-HR baseline missing although the window has such a night (an
+// account without HRV has baseline_days 0 either way), or one of the two
+// counts behind baseline_days (0027) below its nights now: the larger count
+// moves without baseline_days, and its baseline with it. Rows scored before
+// 0027 have no counts and are not picked for that. It sees counts and missing
+// baselines, not a stale value behind a right count. The scan starts
 // 2×window days before `from`, so the windows of daily rows are whole; a
 // window cut short by a gap only undercounts, so it can hide a row but never
 // picks one a re-score would leave as it is. One pass over the user's rows by
 // the primary key, no index of its own.
 func (s *Store) BehindHistoryDays(ctx context.Context, userID uuid.UUID, from string, window, n int) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD') FROM (
-		  SELECT day, baseline_days, hrv_baseline_ms, rhr_baseline,
+		  SELECT day, baseline_days, hrv_baseline_ms, rhr_baseline, baseline_hrv_days, baseline_rhr_days,
 		    count(*) FILTER (WHERE hrv_ms > 0) OVER w AS n_hrv,
 		    count(*) FILTER (WHERE rhr > 0) OVER w AS n_rhr
 		  FROM daily_scores WHERE user_id=$1 AND day >= $2::date - 2 * $3::int
 		  WINDOW w AS (ORDER BY day ROWS BETWEEN $3::int PRECEDING AND 1 PRECEDING)
 		) h
 		WHERE day >= $2::date AND (baseline_days < least(n_hrv, n_rhr)
-		  OR (hrv_baseline_ms IS NULL AND n_hrv > 0) OR (rhr_baseline IS NULL AND n_rhr > 0))
+		  OR (hrv_baseline_ms IS NULL AND n_hrv > 0) OR (rhr_baseline IS NULL AND n_rhr > 0)
+		  OR baseline_hrv_days < n_hrv OR baseline_rhr_days < n_rhr)
 		ORDER BY day LIMIT $4`, userID, from, window, n)
 	if err != nil {
 		return nil, err

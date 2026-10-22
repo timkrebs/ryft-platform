@@ -364,6 +364,19 @@ image leaves the columns as they were) no longer agrees with its `baseline_days`
 `calibrating`, so the store serves it as unknown too (`store.knownCalibration`). A day
 that was never scored has all three `null`.
 
+**The safety net** (`store.BehindHistoryDays`, the 15-minute pass) also compares the two
+counts with the nights their window holds now: `baseline_hrv_days < n_hrv` or
+`baseline_rhr_days < n_rhr` picks the day. `baseline_days` is the smaller count, so the
+larger one (and its baseline) could move without it, as after a lost re-score; that row
+is picked once and, re-scored, has the window's counts and is not picked again
+(`TestEngineRescoreBehindSeesAStaleCount`). Rows scored before 0027 (`NULL` counts) are
+not picked for that: filling them through the pass would spend its 50 days a pass on
+the whole history of every active user for hours after the deploy, ahead of the days
+that are really behind, for a field the app reads as "unknown" anyway. They are filled
+by the next score of their day or by `scripts/rescore_all.sh`. `W` is not stored, so a
+reason stale only in `W` is left to the re-score after a change (which treats a day's
+data appearing as a change); the pass re-scores today and yesterday anyway.
+
 **Calibration**, pinned without a database by `calibrating_test.go`: every branch
 (day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
 `no_rhr`; both 0 → `no_hrv`; `H = 3` of 30 → `short_history`; `H, R >= 7` → `null`; the
@@ -423,8 +436,8 @@ last 30 scored days), sleep debt and need, consistency and yesterday's strain co
 the stored days before it. When late data changes one of those on a stored day,
 scoring re-scores the next 30 scored days with the same model, oldest first, never past
 today (a retried event does so even when its own day is already up to date); the
-15-minute pass re-scores days whose `baseline_days` is behind their history or whose
-baseline is missing although the history has the nights. `model_version` stays; a
+15-minute pass re-scores days whose `baseline_days` (or one of its two counts) is
+behind their history or whose baseline is missing although the history has the nights. `model_version` stays; a
 re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;
 a day first scored without its history moves by a median of 9 (p90 21) and leaves
 `calibrating`.

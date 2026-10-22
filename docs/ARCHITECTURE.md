@@ -190,9 +190,10 @@ each day once (`Engine.ComputeDays`); a re-score that changes nothing stops ther
 except on a retried event, whose earlier attempt may have written the change and
 failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
 about 50 days a pass (the days their re-score reaches included) whose `baseline_days`
-is below what their stored history now holds, or whose baseline is missing although
-the history has the nights (`Engine.RescoreBehind`): two consumers at once, rows from
-before this existed. It compares counts, not values.
+(or one of its two counts, `baseline_hrv_days` / `baseline_rhr_days`) is below what
+their stored history now holds, or whose baseline is missing although the history has
+the nights (`Engine.RescoreBehind`): two consumers at once, rows from before this
+existed. It compares counts, not values.
 
 **Trends.** `GET /v1/trends` reads one `daily_scores` column over a 7/30/90-day window
 (metric → column is a whitelist in `store.Trend`) plus, for HRV and resting HR, the

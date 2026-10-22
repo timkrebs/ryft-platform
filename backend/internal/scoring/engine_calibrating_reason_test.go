@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -227,5 +228,56 @@ func TestEngineCalibratingReasonFollowsTheRescore(t *testing.T) {
 	if got := calibOf(t, scoresByDay(t, st, user, "2026-10-10", "2026-10-10")["2026-10-10"]); got !=
 		(calib{30, 30, 30, false, ""}) {
 		t.Fatalf("after its history: %+v", got)
+	}
+}
+
+// The safety net sees a stale count behind baseline_days: HRV every night, a
+// resting HR on 4 mornings only (09-15 .. 09-18; 09-19 takes 09-18's), so
+// baseline_days is the resting-HR count and does not move when the HRV count
+// does. 10-10 is scored when 20 days lie before it (H 20, R 5), then the days
+// between are scored without the re-score after them (a lost cascade): 10-10's
+// window now has H 30, R 5. Neither baseline_days nor a missing baseline shows
+// it; baseline_hrv_days 20 < 30 does, and once re-scored it is not picked again.
+func TestEngineRescoreBehindSeesAStaleCount(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	seedSignals(t, st, user, true, false)
+	var rhr []model.Sample
+	for d := time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC); d.Day() <= 18; d = d.AddDate(0, 0, 1) {
+		rhr = append(rhr, model.Sample{Type: model.SampleRestingHR, Start: d, End: d, Value: 55, Unit: "count/min", Source: "watch"})
+	}
+	if _, err := st.UpsertSamples(ctx, user, rhr); err != nil {
+		t.Fatal(err)
+	}
+	order := []string{}
+	for d := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC); d.Day() <= 20; d = d.AddDate(0, 0, 1) {
+		order = append(order, d.Format(dayLayout))
+	}
+	order = append(order, "2026-10-10")
+	for d := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC); d.Before(time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)); d = d.AddDate(0, 0, 1) {
+		order = append(order, d.Format(dayLayout))
+	}
+	for _, d := range order {
+		if _, err := engine.computeDay(ctx, user, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calibOf(t, scoresByDay(t, st, user, "2026-10-10", "2026-10-10")["2026-10-10"]); got !=
+		(calib{5, 20, 5, true, model.CalibratingShortHistory}) {
+		t.Fatalf("10-10 before the safety net: %+v", got)
+	}
+	behind, err := st.BehindHistoryDays(ctx, user, "2026-09-01", baselineDays, 50)
+	if err != nil || !slices.Equal(behind, []string{"2026-10-10"}) {
+		t.Fatalf("behind: %v %v, want only 2026-10-10", behind, err)
+	}
+	if _, err := engine.RescoreBehind(ctx, user, "2026-10-10", 50); err != nil {
+		t.Fatal(err)
+	}
+	if got := calibOf(t, scoresByDay(t, st, user, "2026-10-10", "2026-10-10")["2026-10-10"]); got !=
+		(calib{5, 30, 5, true, model.CalibratingShortHistory}) {
+		t.Fatalf("10-10 after the safety net: %+v", got)
+	}
+	if again, _ := st.BehindHistoryDays(ctx, user, "2026-09-01", baselineDays, 50); len(again) != 0 {
+		t.Fatalf("picked again after its re-score: %v", again)
 	}
 }
