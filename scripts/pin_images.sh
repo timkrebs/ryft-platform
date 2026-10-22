@@ -33,7 +33,7 @@ done
 [ "${#groups[@]}" -gt 0 ] || { echo "✗ pin_images: name at least one group. $usage" >&2; exit 2; }
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$file" "$root" "$sha" "${groups[@]}" <<'PY'
-import re, sys
+import os, re, sys
 path, root, sha, groups = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 members = {
     "services": ["ingest", "scoring", "api", "notify", "migrate"],
@@ -61,31 +61,53 @@ for g in groups:
     print(f"{g}={','.join(sorted(old))}")
 if "web" in groups:
     import datetime, json, subprocess
-    # The version the pinned web image serves: base's version AT the pinned commit (not the
-    # working tree), or the first listed version when the pin is no commit of this history
-    # (an image from the archived ryft-web repository carries nothing newer).
+    # The version the pinned web image serves, as of the pinned commit (not the working tree):
+    # base's config.env there; for a commit from before config.env existed, the newest privacy
+    # page there (both languages must agree: that is what /privacy serves). The one known
+    # foreign pin (f437747, built in the archived ryft-web repository) carries the first listed
+    # version. Any other sha must resolve to exactly one commit of this history.
+    FOREIGN = "f437747"
     def run(*a):
         return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)
-    in_history = run("rev-parse", "-q", "--verify", sha + "^{commit}").returncode == 0
-    if in_history:
+    cands = run("rev-parse", "--disambiguate=" + sha).stdout.split()
+    commits = [c for c in cands if run("cat-file", "-t", c).stdout.strip() == "commit"]
+    if len(commits) == 1:
+        full = commits[0]
         versions = {}
         for s in ("api", "ingest"):
             f = f"deploy/k8s/base/{s}/config.env"
-            r = run("show", f"{sha}:{f}")
+            r = run("show", f"{full}:{f}")
             if r.returncode != 0:
-                sys.exit(f"✗ pin_images: {f} does not exist at {sha}")
+                versions = None
+                break
             found = re.findall(r"^PRIVACY_POLICY_VERSION=([0-9]{4}-[0-9]{2}-[0-9]{2})$", r.stdout, re.M)
             if len(found) != 1:
                 sys.exit(f"✗ pin_images: {f} at {sha} needs exactly one line PRIVACY_POLICY_VERSION=YYYY-MM-DD (bare, no quotes)")
             versions[s] = found[0]
-        if versions["api"] != versions["ingest"]:
-            sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
-        version = versions["api"]
-    else:
+        if versions is not None:
+            if versions["api"] != versions["ingest"]:
+                sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
+            version = versions["api"]
+        else:
+            newest = {}
+            for lang in ("en", "de"):
+                r = run("ls-tree", "--name-only", f"{full}:web/content/legal/{lang}/privacy/")
+                names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
+                if r.returncode != 0 or not names:
+                    sys.exit(f"✗ pin_images: {sha} has no config.env and no {lang} privacy page: cannot tell which version it serves")
+                newest[lang] = names[-1]
+            if newest["en"] != newest["de"]:
+                sys.exit(f"✗ pin_images: at {sha} the newest privacy page is {newest['en']} in English and {newest['de']} in German")
+            version = newest["en"]
+    elif not cands and sha == FOREIGN:
         try:
-            version = json.load(open(f"{root}/web/content/legal/privacy-versions.json"))[0]
-        except (OSError, ValueError, IndexError) as e:
-            sys.exit(f"✗ pin_images: {sha} is no commit of this history and the first listed privacy version cannot be read: {e}")
+            listed = json.load(open(f"{root}/web/content/legal/privacy-versions.json"))
+            version = listed[0]
+            assert isinstance(version, str)
+        except (OSError, ValueError, IndexError, KeyError, TypeError, AssertionError) as e:
+            sys.exit(f"✗ pin_images: the first listed privacy version cannot be read from web/content/legal/privacy-versions.json (a list of strings): {e!r}")
+    else:
+        sys.exit(f"✗ pin_images: {sha} is not exactly one commit of this history ({len(commits)} found) and not the known foreign pin {FOREIGN}")
     try:
         datetime.date.fromisoformat(version)
         assert re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", version)
@@ -99,6 +121,7 @@ if "web" in groups:
             lines[i] = m.group(1) + version + m.group(3); moved += 1
     if moved != 2:
         sys.exit(f"✗ pin_images: expected the two PRIVACY_POLICY_VERSION literals (api, ingest) in {path}, found {moved}")
-    print(f"in force: {was} -> {version}", file=sys.stderr)
+    if not os.environ.get("PIN_QUIET"):  # the tests set it
+        print(f"in force: {was} -> {version}", file=sys.stderr)
 open(path, "w").write("\n".join(lines))
 PY

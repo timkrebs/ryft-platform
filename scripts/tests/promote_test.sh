@@ -47,7 +47,8 @@ prs() { local o="["; local sep=; for x in "$@"; do o="$o$sep$x"; sep=,; done; pr
 MERGE=https://github.com/o/r/pull/99
 pr_file() { git show "origin/deploy/$1:$OVERLAY"; }
 changed_pins() { # <branch-sha>: how many newTag lines the PR changes, against main
-  git diff --numstat main "origin/deploy/$1" -- "$OVERLAY" | cut -f1
+  # the in-force literals move with web; they are no pins
+  git diff -U0 main "origin/deploy/$1" -- "$OVERLAY" | grep -c '^+ *newTag:' || true
 }
 no_branch() { [ -z "$(git ls-remote --heads origin 'deploy/*')" ] && ! git rev-parse -q --verify "refs/heads/deploy/$1" >/dev/null; }
 
@@ -109,10 +110,14 @@ out=$(run) && echo "$out" | grep -q 'no group differs' || fail "the pin commit m
 [ ! -s "$GH_LOG" ] || fail "gh called for the pin commit"
 
 # 6. the running web pin is a ryft-web SHA (not in this history): web is pinned, services are not
-new_repo unknown-web; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; reset_logs
+# The base's version is NOT the first listed one (a later policy), so the in-force literals move too:
+# they are no pins and must not be counted as such.
+new_repo unknown-web; base_policy 2099-12-31; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; reset_logs
+[ "$(in_force | cut -d' ' -f1)" != 2099-12-31 ] || fail "setup: the foreign pin carries the first listed version"
 commit_file README.md notes "docs: notes"; sha=$(short)
 run >/dev/null || fail "promote failed"
 [ "$(changed_pins "$sha")" = 1 ] || fail "only web moves"
+[ "$(in_force <(git show "origin/deploy/$sha:$OVERLAY"))" = "2099-12-31 2099-12-31" ] || fail "web pinned: the version in force moves to base's: $(pr_file "$sha" | grep PRIVACY)"
 pr_file "$sha" | grep -A1 'ryft/web$' | grep -q "newTag: \"$sha\"" || fail "web is not pinned"
 grep -q "^### web: \`f437747\` → \`$sha\` (pin not in this history)" "$GH_BODY" || fail "body: $(cat "$GH_BODY")"
 grep -q 'not one commit of this history' "$GH_BODY" || fail "the body must say the old pin is unknown"
@@ -192,7 +197,7 @@ for variant in pins extra-commit other-file; do
   new_repo rerun-differs; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main
   git switch -q -c scratch "origin/deploy/$sha"
   case "$variant" in
-    pins) ./scripts/pin_images.sh 1234567 web "$OVERLAY" >/dev/null; git commit -qam "other pins" ;;
+    pins) ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "other pins" ;;
     extra-commit) git commit -q --allow-empty -m "an extra commit" ;;
     other-file) echo x > backend/extra.go; git add -A; git commit -qm "other file" ;;
   esac

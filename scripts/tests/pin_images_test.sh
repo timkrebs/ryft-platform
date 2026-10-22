@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # pin_images.sh on a copy of the EKS overlay's kustomization (make test-scripts).
 set -euo pipefail
+export PIN_QUIET=1
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -10,6 +11,7 @@ real=$HERE/../deploy/k8s/overlays/eks/kustomization.yaml
 cp "$real" "$tmp/k.yaml"
 before=$(grep -c 'newTag:' "$tmp/k.yaml")
 old=$(pin_of "$tmp/k.yaml" api); oldweb=$(pin_of "$tmp/k.yaml" web)
+h=$(git -C "$HERE/.." rev-parse HEAD | cut -c1-7)  # web pins must be commits of this history (or the one known foreign pin)
 
 # services: the five images move together, web stays, the previous pin is printed
 got=$("$HERE/pin_images.sh" abc1234 services "$tmp/k.yaml") || fail "pinning failed"
@@ -20,17 +22,17 @@ for s in ingest scoring api notify migrate; do [ "$(pin_of "$tmp/k.yaml" $s)" = 
 
 # web alone: the service lines stay byte-identical, comments and all
 cp "$real" "$tmp/k.yaml"
-got=$("$HERE/pin_images.sh" 1234abc web "$tmp/k.yaml") || fail "pinning web failed"
+got=$("$HERE/pin_images.sh" "$h" web "$tmp/k.yaml") || fail "pinning web failed"
 [ "$got" = "web=$oldweb" ] || fail "web: got $got"
-[ "$(pin_of "$tmp/k.yaml" web)" = 1234abc ] || fail "web not pinned"
+[ "$(pin_of "$tmp/k.yaml" web)" = "$h" ] || fail "web not pinned"
 nolit() { grep -v PRIVACY_POLICY_VERSION "$1"; }  # the in-force literals move with web (below); everything else must not
 [ "$(diff <(nolit "$real") <(nolit "$tmp/k.yaml") | grep -c "^[<>]")" = 2 ] || fail "only web's newTag line may change: $(diff "$real" "$tmp/k.yaml")"
 
 # both, in either order and with the file first or last
 cp "$real" "$tmp/k.yaml"
-got=$("$HERE/pin_images.sh" abc1234 web services "$tmp/k.yaml") || fail "pinning both failed"
+got=$("$HERE/pin_images.sh" "$h" web services "$tmp/k.yaml") || fail "pinning both failed"
 printf '%s\n' "$got" | grep -qx "web=$oldweb" && printf '%s\n' "$got" | grep -qx "services=$old" || fail "both previous pins are printed: $got"
-[ "$(grep -c 'newTag: "abc1234"' "$tmp/k.yaml")" = 6 ] || fail "six pins expected"
+[ "$(grep -c "newTag: \"$h\"" "$tmp/k.yaml")" = 6 ] || fail "six pins expected"
 
 # a group that was pinned to different commits: warned, all of it moves, both are printed
 cp "$real" "$tmp/k.yaml"
@@ -46,7 +48,7 @@ case "$got" in services=*,*) ;; *) fail "both old pins in the output: $got" ;; e
 "$HERE/pin_images.sh" ABC1234 web "$tmp/k.yaml" 2>/dev/null && fail "upper case is not a short SHA"
 "$HERE/pin_images.sh" abc1234 "$tmp/k.yaml" 2>/dev/null && fail "no group named: nothing to pin"
 printf 'images:\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "x"\n' > "$tmp/small.yaml"
-"$HERE/pin_images.sh" abc1234 web "$tmp/small.yaml" 2>/dev/null && fail "a group missing from the file must fail"
+"$HERE/pin_images.sh" "$h" web "$tmp/small.yaml" 2>/dev/null && fail "a group missing from the file must fail"
 # the privacy policy in force (D78, F1): web moves it to base's version AS OF the pinned commit,
 # services leave it alone. No date is hard-coded: the current value is read from the overlay and
 # the "new" one is a date that is never real.
@@ -59,23 +61,40 @@ echo '["2098-01-01","2099-12-31"]' > "$root/web/content/legal/privacy-versions.j
 base_env() { for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "${2:-$1}" > "$root/deploy/k8s/base/$s/config.env"; done; [ -z "${2:-}" ] || printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$1" > "$root/deploy/k8s/base/api/config.env"; }
 rgit() { git -C "$root" -c user.email=t@example.com -c user.name=test "$@"; }
 rgit init -q -b main
+# a commit from before config.env existed (the running web pin of #22's day): the newest page decides
+for l in en de; do mkdir -p "$root/web/content/legal/$l/privacy"; : > "$root/web/content/legal/$l/privacy/2097-05-05.mdx"; : > "$root/web/content/legal/$l/privacy/2097-01-01.mdx"; done
+rgit add -A; rgit commit -qm pages; pages_sha=$(rgit rev-parse HEAD | cut -c1-7)
+: > "$root/web/content/legal/de/privacy/2097-06-06.mdx"; rgit add -A; rgit commit -qm "de ahead"; ahead_sha=$(rgit rev-parse HEAD | cut -c1-7)
 base_env 2098-01-01; rgit add -A; rgit commit -qm old; old_sha=$(rgit rev-parse HEAD | cut -c1-7)
 base_env "$NEW"; rgit commit -qam new; new_sha=$(rgit rev-parse HEAD | cut -c1-7)
 pinp() { "$root/scripts/pin_images.sh" "$@"; }
 cp "$real" "$tmp/k.yaml"
 pinp "$new_sha" services "$tmp/k.yaml" >/dev/null 2>&1 || fail "services pin failed"
 [ "$(force "$tmp/k.yaml")" = "$cur $cur" ] || fail "pinning services must leave the version in force alone: $(force "$tmp/k.yaml")"
-pinp "$new_sha" web "$tmp/k.yaml" >/dev/null 2>"$tmp/err" || fail "web pin failed"
+env -u PIN_QUIET "$root/scripts/pin_images.sh" "$new_sha" web "$tmp/k.yaml" >/dev/null 2>"$tmp/err" || fail "web pin failed"
 [ "$(force "$tmp/k.yaml")" = "$NEW $NEW" ] || fail "pinning web must move the version in force to base's: $(force "$tmp/k.yaml")"
 grep -qx "in force: $cur -> $NEW" "$tmp/err" || fail "the move is reported: $(cat "$tmp/err")"
 # the base at the PINNED commit counts, not the working tree's
 cp "$real" "$tmp/k.yaml"
 pinp "$old_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at the older commit failed"
 [ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the version comes from base at the pinned commit: $(force "$tmp/k.yaml")"
-# a pin that is no commit here: the first listed version
+# a commit without config.env: the newest page, and both languages must agree
 cp "$real" "$tmp/k.yaml"
-pinp abc1234 web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin outside the history failed"
-[ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "outside the history the first listed version applies: $(force "$tmp/k.yaml")"
+pinp "$pages_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at a commit without config.env failed"
+[ "$(force "$tmp/k.yaml")" = "2097-05-05 2097-05-05" ] || fail "without config.env the newest page decides: $(force "$tmp/k.yaml")"
+cp "$real" "$tmp/k.yaml"
+pinp "$ahead_sha" web "$tmp/k.yaml" >/dev/null 2>&1 && fail "en and de disagree on the newest page: must fail"
+cmp -s "$real" "$tmp/k.yaml" || fail "a refused pin leaves the file untouched"
+# the one known foreign pin carries the first listed version; any other unknown sha is refused
+pinp f437747 web "$tmp/k.yaml" >/dev/null 2>&1 || fail "the foreign pin f437747 failed"
+[ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the foreign pin carries the first listed version: $(force "$tmp/k.yaml")"
+cp "$real" "$tmp/k.yaml"
+pinp abc1234 web "$tmp/k.yaml" >/dev/null 2>&1 && fail "an unknown sha must be refused, not treated as foreign"
+cmp -s "$real" "$tmp/k.yaml" || fail "a refused pin leaves the file untouched"
+echo '{"a":1}' > "$root/web/content/legal/privacy-versions.json"
+pinp f437747 web "$tmp/k.yaml" >/dev/null 2>"$tmp/err" && fail "a privacy-versions.json that is no list must fail"
+! grep -q Traceback "$tmp/err" || fail "a malformed list fails cleanly, no traceback"
+echo '["2098-01-01","2099-12-31"]' > "$root/web/content/legal/privacy-versions.json"
 # refusals leave the file untouched
 cp "$real" "$tmp/k.yaml"
 refuse() { # <why>

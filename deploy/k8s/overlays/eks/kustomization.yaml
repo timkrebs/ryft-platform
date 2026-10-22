@@ -77,7 +77,8 @@ images:
 # (deploy/k8s/base/{api,ingest}/config.env) once the web image that carries its page is
 # pinned above. promote moves it whenever it pins web (scripts/pin_images.sh), so the page
 # and the version go live in one sync; scripts/check_policy_in_force.sh fails when the
-# pinned web commit lacks the page. Keep both lines equal; a change rolls api and ingest.
+# pinned web commit lacks the page or serves a newer one at /privacy. Keep both lines equal;
+# a change rolls api and ingest.
 configMapGenerator:
   - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=2026-10-20] }
   - { name: ryft-config, namespace: ryft-ingest, behavior: merge, literals: [PRIVACY_POLICY_VERSION=2026-10-20] }

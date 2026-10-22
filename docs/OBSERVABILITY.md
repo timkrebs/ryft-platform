@@ -294,7 +294,7 @@ is no incident.
 ## Logs
 
 One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
-(`debug`, `info` — default —, `warn`, `error`) sets the level; it is set in `deploy/k8s/base/<service>/config.env`.
+(`debug`, `info` — default —, `warn`, `error`) sets the level; it is set in `deploy/k8s/base/<service>/config.env` (migrate's, in `deploy/k8s/base/migrate/configmap.yaml`).
 
 | Field | On | Meaning |
 | --- | --- | --- |

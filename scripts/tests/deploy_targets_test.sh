@@ -144,4 +144,29 @@ mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f437747\""; getline;
 mutate '/ryft\/api$/ { print "  - name: \"ghcr.io/timkrebs/ryft/api\""; next } { print }' "a quoted name"
 mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f4377470\""; next } { print }' "an 8-digit tag"
 
+# Bytes that are line breaks to YAML but not to this script: LS, PS, NEL (UTF-8 and raw) and CR
+# stop every mode with exit 2, so a hold reason cannot smuggle an `images:` entry (a newName).
+for name in LS PS NEL raw-NEL CR; do
+  case "$name" in
+    LS) bad=$'\xe2\x80\xa8' ;; PS) bad=$'\xe2\x80\xa9' ;; NEL) bad=$'\xc2\x85' ;; raw-NEL) bad=$'\x85' ;; CR) bad=$'\r' ;;
+  esac
+  new_repo "bytes-$name"
+  smuggle="  # hold: web 2026-10-23 reason${bad}  - name: ghcr.io/timkrebs/ryft/web${bad}    newName: ghcr.io/attacker/web"
+  awk -v l="$smuggle" '/ryft\/web$/ { print l } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: smuggled hold"
+  for m in "" --check --pins; do
+    rc=0; FORCE='' ./scripts/deploy_targets.sh $m >"$tmp/out" 2>"$tmp/err" || rc=$?
+    [ "$rc" = 2 ] || fail "$name: 'deploy_targets.sh $m' must exit 2 (got $rc)"
+    grep -q 'not printable ASCII' "$tmp/err" || fail "$name: no annotation: $(cat "$tmp/err")"
+    [ ! -s "$tmp/out" ] || fail "$name: no outputs"
+  done
+done
+# A CRLF overlay is the same thing, by accident.
+new_repo crlf; sed 's/$/\r/' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"
+rc=0; ./scripts/deploy_targets.sh >/dev/null 2>"$tmp/err" || rc=$?
+[ "$rc" = 2 ] || fail "a CRLF overlay must exit 2 (got $rc)"
+# --pins: the six images and their tags.
+new_repo pins
+[ "$(./scripts/deploy_targets.sh --pins | wc -l | tr -d ' ')" = 6 ] || fail "--pins: $(./scripts/deploy_targets.sh --pins)"
+./scripts/deploy_targets.sh --pins | grep -qx "web=$first" || fail "--pins lacks web=$first"
+
 echo "✓ deploy_targets_test: web/services/both/none, docs, pin commit, unknown pin, disagreeing pins, hold (and its revert drill), FORCE"
