@@ -69,4 +69,4 @@ images:
   # this pin (scripts/deploy_targets.sh). A rollback may pin an older ryft-web SHA such as
   # f437747 (the last image built in the archived ryft-web repository); it is not a commit here.
   - name: ghcr.io/timkrebs/ryft/web
-    newTag: "bfc51b8"
+    newTag: "332c252"
