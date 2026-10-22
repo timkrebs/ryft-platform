@@ -613,8 +613,9 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 
 #### `calibrating_reason`
 
-With `H = baseline_hrv_days`, `R = baseline_rhr_days` and `W` = the number of scored days among the 30 before
-`day` (the engine's window), the engine decides in this order:
+With `H = baseline_hrv_days`, `R = baseline_rhr_days` and `W` = the days with any data among the (up to) 30
+scored days before `day` (the engine's window; a day stored without data, e.g. before the account's first sync, does
+not count), the engine decides in this order:
 
 1. `min(H, R) >= 7` (`calibrating == false`) gives `null`.
 2. `W >= 7 && H == 0` gives `no_hrv`: the history is long enough, yet not one night has an HRV.
@@ -651,7 +652,7 @@ Examples (the changed fields only):
 { "baseline_days": 12, "baseline_hrv_days": 12, "baseline_rhr_days": 19, "calibrating": false, "calibrating_reason": null }
 ```
 
-The second is day one (`W = 0`); the fifth has 30 scored days and neither signal (`no_hrv` by precedence).
+The second is day one (`W = 0`, whatever empty days are stored before it); the fifth has 30 days with data and neither signal (`no_hrv` by precedence).
 
 ### `GET /v1/days/{day}` — one day
 
