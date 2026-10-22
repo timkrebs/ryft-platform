@@ -517,9 +517,12 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	// the stored rows the baselines were drawn from that hold any data, not the
 	// nights with a value: a phone-only month is 30 days of steps without an
 	// HRV; a new account has none, even after a range stored empty days for it.
+	// The day's own signals count too: the first night of a new source is not
+	// "no HRV".
 	hrvDays, rhrDays := lnHRVBase.N, rhrBase.N
 	var reason *string
-	if r := CalibratingReason(window, hrvDays, rhrDays); r != "" {
+	if r := CalibratingReason(Calibration{Window: window, HRVDays: hrvDays, RHRDays: rhrDays,
+		DayHRV: hrv != nil && *hrv > 0, DayRHR: rhr != nil && *rhr > 0}); r != "" {
 		reason = &r
 	}
 

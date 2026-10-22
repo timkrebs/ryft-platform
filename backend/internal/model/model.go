@@ -54,8 +54,8 @@ const (
 // (the rule is scoring.CalibratingReason).
 const (
 	CalibratingShortHistory = "short_history" // under 7 nights with both signals yet; waiting ends it
-	CalibratingNoHRV        = "no_hrv"        // 7+ days with data in the window, not one with an overnight HRV
-	CalibratingNoRHR        = "no_rhr"        // 7+ days with data in the window, not one with a resting HR
+	CalibratingNoHRV        = "no_hrv"        // 7+ days with data in the window, no overnight HRV there or that night
+	CalibratingNoRHR        = "no_rhr"        // 7+ days with data in the window, no resting HR there or that day
 )
 
 type Sample struct {

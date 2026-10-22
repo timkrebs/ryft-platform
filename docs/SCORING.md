@@ -310,7 +310,7 @@ a week without data does not shorten it). Three counts come out of that window:
 
 | Count | What it is | Stored as |
 | --- | --- | --- |
-| `W` | days in the window with any data (an overnight signal, heart rate or a logged session, sleep, steps or active energy: `store.History.HasData`), 0–30 | not stored |
+| `W` | days in the window with data: an overnight HRV, a resting HR or a respiratory rate, a strain (heart-rate minutes or a logged session), a night's sleep, steps or active energy (`store.History.HasData`, from `store.dataColumns`), 0–30. A day with only an SpO2, a nap, time in bed, a single heart-rate sample or a workout without heart rate does not count: rare, and it errs toward `short_history` | not stored |
 | `H` | of them, days with an overnight HRV (`hrv_ms > 0`): the N of the ln-HRV baseline | `baseline_hrv_days` (migration 0027) |
 | `R` | of them, days with a resting HR (`rhr > 0`): the N of the resting-HR baseline | `baseline_rhr_days` (0027) |
 
@@ -320,11 +320,12 @@ but a population spread (0.18 in ln HRV, 3.5 bpm, 1.0 breath/min), and the state
 `calibrating`, though recovery and readiness may already be there (mostly sleep).
 
 **Why it calibrates** (`calibrating_reason`, `scoring.CalibratingReason`, a pure
-function of `W`, `H`, `R`), in this order:
+function of `W`, `H`, `R` and whether the day itself has an overnight HRV and a resting
+HR), in this order:
 
 1. `min(H, R) >= 7`: `null`, not calibrating;
-2. `W >= 7` and `H == 0`: `no_hrv`;
-3. `W >= 7` and `R == 0`: `no_rhr`;
+2. `W >= 7`, `H == 0` and the day has no HRV either: `no_hrv`;
+3. `W >= 7`, `R == 0` and the day has no resting HR either: `no_rhr`;
 4. otherwise `short_history`.
 
 The question it answers for the app is "does waiting end this?". `short_history`: yes,
@@ -343,6 +344,10 @@ share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`)
   would make a watch user's first night `no_hrv` (30 rows, none with an HRV), and in
   the synthetic run below the two empty leading days would start `no_hrv` on the 6th
   day with data instead of the 8th. An iPhone alone still counts: its days have steps.
+- **The day's own signal counts.** The window holds only the days before, so on the
+  first morning of a new source (a watch after ten phone-only days, or back after 30
+  days off) it has no HRV yet, though the night has one. That morning is
+  `short_history`: a source has appeared and waiting ends it. The next morning `H = 1`.
 - **Only `H == 0` is `no_hrv`.** One to six HRV nights in the window are sporadic data
   (a watch worn some nights), and more nights do end them; calling that "no HRV
   source" would be wrong and would flip with every night.
@@ -361,8 +366,12 @@ steps a day gains with every sync do not). Rows scored before 0027 have `NULL` i
 three, served as `null` ("unknown", not a fourth reason) until a rescore fills them. A
 row an older scoring image wrote again after this one (a rollback re-pins images; that
 image leaves the columns as they were) no longer agrees with its `baseline_days` and
-`calibrating`, so the store serves it as unknown too (`store.knownCalibration`). A day
-that was never scored has all three `null`.
+`calibrating`, so the store serves it as unknown too (`store.knownCalibration`). That
+check cannot see everything: when the older image's write happens to keep the same
+`baseline_days` and `calibrating` (a re-score that changed neither), the counts and the
+reason it left are served though they may be stale (a count above `baseline_days`, or a
+reason that `W` or the day's own signal would now change). The next score by the
+current image corrects them. A day that was never scored has all three `null`.
 
 **The safety net** (`store.BehindHistoryDays`, the 15-minute pass) also compares the two
 counts with the nights their window holds now: `baseline_hrv_days < n_hrv` or
@@ -380,8 +389,11 @@ data appearing as a change); the pass re-scores today and yesterday anyway.
 **Calibration**, pinned without a database by `calibrating_test.go`: every branch
 (day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
 `no_rhr`; both 0 → `no_hrv`; `H = 3` of 30 → `short_history`; `H, R >= 7` → `null`; the
-7th window day as the edge) and, over every reachable state `0 <= H, R <= W <= 30`, that
-the reason is `null` exactly when `Recovery` says not calibrating. With
+7th window day as the edge; a new source's first morning, `H = R = 0` with the night's
+HRV → `short_history`) and, over every reachable state `0 <= H, R <= W <= 30` with and
+without the day's own signals, that the reason is `null` exactly when `Recovery` says not
+calibrating and that a signal is called missing only when neither the window nor the day
+has it. With
 `RYFT_TEST_POSTGRES_URL`, `TestEngineCalibratingReason` scores 40 nights for four
 set-ups (both signals; no HRV, the report that started this; no resting HR; neither):
 `short_history` through the 7th day (`W = 6`), the reason from the 8th (`W = 7`) on, and
@@ -390,9 +402,13 @@ days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonIgnoresE
 31 empty stored days before the first night change nothing (the first night is
 `short_history` with `W = 0`, not `no_hrv`). `TestEngineLateStepsRescoreTheReason`: a
 week of steps synced late for days stored empty turns the 8th day from `short_history`
-to `no_hrv` in the same pass. `TestEngineCalibratingReasonFollowsTheRescore`: a day
-scored before its history goes from `short_history` (0/0) to `null` (30/30) when the
-history arrives.
+to `no_hrv` in the same pass. `TestEngineCalibratingReasonNewSourceMorning`: 10 phone-only days, a watch, 35
+phone-only days, the watch again: `no_hrv` on the phone days from the 8th on,
+`short_history` on each first watch morning. `TestEngineCalibratingReasonFollowsTheRescore`:
+a day scored before its history goes from `short_history` (0/0) to `null` (30/30) when
+the history arrives. `TestEngineSafetyNetConvergesOnFreshScores`: on freshly scored
+accounts (in order, no HRV, days missing, empty leading days, a backfill newest first)
+every row's counts equal its 30 rows before, and the safety net picks nothing.
 
 **Model version: unchanged** (2026.10.1). Nothing that was stored moves: recovery,
 readiness, state, `calibrating` and `baseline_days` are computed as before, and the
@@ -405,9 +421,9 @@ with data), `null` from the 8th day with data; no HRV and neither, `short_histor
 those 9, then `no_hrv` on the other 53; HRV every 4th night, `short_history` until the
 7th HRV night, then `null`. The three fields are new and say what was already true. A
 bump would announce moved numbers in `GET /v1/model` where none moved, and rows without
-the fields are found by `baseline_hrv_days IS NULL`, not by their version. **Rescore**: the 15-minute pass
-re-scores today and yesterday of every active user, so the Today screen has the reason
-within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
+the fields are found by `baseline_hrv_days IS NULL`, not by their version.
+**Rescore**: the 15-minute pass re-scores today and yesterday of every active user, so
+the Today screen has the reason within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
 (optional; it moves no stored number, it fills the three fields).
 
 ## Model version

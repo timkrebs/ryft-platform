@@ -208,6 +208,57 @@ func TestEngineLateStepsRescoreTheReason(t *testing.T) {
 	}
 }
 
+// A watch's first morning is not "no HRV": 10 phone-only days (steps), then a
+// watch from 09-11 to 09-20, then 35 phone-only days, then the watch again on
+// 10-26. The window holds only the days before, so on each first watch morning
+// it has no HRV yet; the night's own HRV makes it short_history.
+func TestEngineCalibratingReasonNewSourceMorning(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	first := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	watch := func(d time.Time) bool {
+		return (d.Month() == 9 && d.Day() >= 11 && d.Day() <= 20) || (d.Month() == 10 && d.Day() == 26)
+	}
+	var segs []model.SleepSegment
+	var samples []model.Sample
+	for d := first; !d.After(time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)); d = d.AddDate(0, 0, 1) {
+		samples = append(samples, model.Sample{Type: model.SampleSteps, Start: d.Add(10 * time.Hour),
+			End: d.Add(11 * time.Hour), Value: 900, Unit: "count", Source: "phone"})
+		if watch(d) {
+			segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(7 * time.Hour),
+				Stage: model.SleepCore, Source: "watch"})
+			samples = append(samples,
+				model.Sample{Type: model.SampleHRVSDNN, Start: d.Add(3 * time.Hour), End: d.Add(3 * time.Hour),
+					Value: 60, Unit: "ms", Source: "watch"},
+				model.Sample{Type: model.SampleRestingHR, Start: d.Add(9 * time.Hour), End: d.Add(9 * time.Hour),
+					Value: 55, Unit: "count/min", Source: "watch"})
+		}
+	}
+	if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertSamples(ctx, user, samples); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ComputeRange(ctx, user, "2026-09-01", "2026-10-26"); err != nil {
+		t.Fatal(err)
+	}
+	days := scoresByDay(t, st, user, "2026-09-01", "2026-10-26")
+	short, noHRV := model.CalibratingShortHistory, model.CalibratingNoHRV
+	for day, want := range map[string]calib{
+		"2026-09-07": {0, 0, 0, true, short}, // W = 6
+		"2026-09-10": {0, 0, 0, true, noHRV}, // W = 9, a phone: nothing tonight either
+		"2026-09-11": {0, 0, 0, true, short}, // the watch's first morning
+		"2026-09-12": {1, 1, 1, true, short},
+		"2026-10-25": {0, 0, 0, true, noHRV}, // 30 phone days in the window
+		"2026-10-26": {0, 0, 0, true, short}, // the watch is back
+	} {
+		if got := calibOf(t, days[day]); got != want {
+			t.Errorf("%s: %+v, want %+v", day, got, want)
+		}
+	}
+}
+
 // A day scored before its history, then the history (the case PR #29 fixes):
 // the re-score in the same pass also brings the counts and the reason along,
 // from short_history with an empty window to null with a full one.
