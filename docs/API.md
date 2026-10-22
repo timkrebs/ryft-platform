@@ -618,21 +618,22 @@ scored days before `day` (the engine's window; a day stored without data, e.g. b
 not count), the engine decides in this order:
 
 1. `min(H, R) >= 7` (`calibrating == false`) gives `null`.
-2. `W >= 7 && H == 0` and the day itself has no HRV (`hrv_ms` is `null`) gives `no_hrv`: the history is long enough, yet not one night in the window, and not this one, has an HRV.
-3. `W >= 7 && R == 0` and the day itself has no resting HR (`rhr` is `null`) gives `no_rhr`: likewise for resting HR.
-4. Otherwise `short_history`.
+2. If the day brings a signal its window never had (`H == 0` and the day has an HRV, or `R == 0` and the day has a resting HR), `short_history`, for both signals: the source has just appeared.
+3. `W >= 7 && H == 0` and the day itself has no HRV (`hrv_ms` is `null`) gives `no_hrv`: the history is long enough, yet not one night in the window, and not this one, has an HRV.
+4. `W >= 7 && R == 0` and the day itself has no resting HR (`rhr` is `null`) gives `no_rhr`: likewise for resting HR.
+5. Otherwise `short_history`.
 
 So `calibrating_reason` is `null` exactly when `calibrating` is `false` (apart from the legacy and never-scored
 `null`s in the table). Decisions: a day-one account has `H = R = 0` too but `W < 7`, so it is `short_history` and
 waiting is correct; when both are 0, `no_hrv` wins because HRV is the heavier recovery signal and the app reads
 `baseline_rhr_days == 0` for the second gap (no combined value). One to six HRV nights in the window is
-`short_history` (sporadic data: more nights do end it), not `no_hrv`. So does the first morning an HRV source arrives: `H` counts the days before `day` and is still 0, but the day's own `hrv_ms` is there, so it is `short_history`, not `no_hrv`.
+`short_history` (sporadic data: more nights do end it), not `no_hrv`. So does the first morning a source arrives, for either signal: `H` and `R` count the days before `day` and are still 0, but the day's own `hrv_ms` (or `rhr`) is there, so it is `short_history`, not `no_hrv` / `no_rhr`. A new watch writes HRV at night and resting HR later in the morning, so without this step the morning would say `no_rhr` until the next sync.
 
 What each reason means for the app (no copy here):
 
 | Reason | Meaning | Does waiting end it? | Counts |
 | --- | --- | --- | --- |
-| `short_history` | Too little history to tell (fewer than 7 days with data), or a signal present on fewer than 7 days (including the first day one arrives). | Yes: `7 - baseline_days` more nights with both. | "N of 7 nights" (`baseline_days`) is meaningful. |
+| `short_history` | Too little history to tell (fewer than 7 days with data), or a signal present on fewer than 7 days (including the first day one arrives, for either signal). | Yes: `7 - baseline_days` more nights with both. | "N of 7 nights" (`baseline_days`) is meaningful. |
 | `no_hrv` | At least 7 days with data, but no overnight HRV in the 30-day window or on the day itself (phone only, or a watch that does not write HRV to Apple Health). | No, not until an HRV source appears. | Do not show "N of 7 nights"; `baseline_hrv_days` is 0. |
 | `no_rhr` | At least 7 days with data, but no resting HR in the window or on the day itself. | No, until a resting-HR source appears. | Do not show "N of 7 nights"; `baseline_rhr_days` is 0. |
 
@@ -647,12 +648,13 @@ Examples (the changed fields only):
 { "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
 { "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 24, "calibrating": true,  "calibrating_reason": "no_hrv" }
 { "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 24, "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 28, "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
 { "baseline_days": 0,  "baseline_hrv_days": 28, "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_rhr" }
 { "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_hrv" }
 { "baseline_days": 12, "baseline_hrv_days": 12, "baseline_rhr_days": 19, "calibrating": false, "calibrating_reason": null }
 ```
 
-The second is day one (`W = 0`, whatever empty days are stored before it). The third has 24 resting-HR nights and no HRV in the window, and the day has no `hrv_ms`; the fourth is the first morning a watch's HRV arrives (`hrv_ms` present, `H` still 0), hence `short_history`. The sixth has 30 days with data and neither signal (`no_hrv` by precedence).
+The second is day one (`W = 0`, whatever empty days are stored before it). The third has 24 resting-HR nights and no HRV in the window, and the day has no `hrv_ms`; the fourth is the first morning a watch's HRV arrives (`hrv_ms` present, `H` still 0), hence `short_history`. The fifth is the same for resting HR (`R` = 0, the day has `rhr`); the sixth has `R` = 0 and no `rhr` on the day, hence `no_rhr`. The seventh has 30 days with data, neither signal in the window and neither on the day (`no_hrv` by precedence).
 
 ### `GET /v1/days/{day}` — one day
 
