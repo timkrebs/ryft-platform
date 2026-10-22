@@ -7,19 +7,16 @@ import {
   checkPolicy,
   platformPolicyVersion,
   sitePolicyVersion,
-  versionFromConfigMap,
+  versionFromEnvFile,
 } from '../scripts/lib/policy.mjs';
 
-/** A repository root with the api and ingest ConfigMaps (a service mapped to null gets none). */
-function repo(versions: Record<string, string | null>) {
+/** A repository root with the api and ingest config.env (a service mapped to null gets none). */
+function repo(versions: Record<string, string | null>, line = (v: string) => `PRIVACY_POLICY_VERSION=${v}`) {
   const dir = mkdtempSync(join(tmpdir(), 'ryft-repo-'));
   for (const [svc, v] of Object.entries(versions)) {
     if (v === null) continue;
     mkdirSync(join(dir, 'deploy/k8s/base', svc), { recursive: true });
-    writeFileSync(
-      join(dir, 'deploy/k8s/base', svc, 'configmap.yaml'),
-      `data:\n  PRIVACY_POLICY_VERSION: "${v}"\n`,
-    );
+    writeFileSync(join(dir, 'deploy/k8s/base', svc, 'config.env'), `# comment\nOTHER=1\n${line(v)}\n`);
   }
   return dir;
 }
@@ -49,14 +46,50 @@ describe('privacy policy version check', () => {
     expect(sitePolicyVersion(site({ en: [] }), 'de')).toBeNull();
   });
 
-  it('parses quoted and unquoted ConfigMap values', () => {
-    expect(versionFromConfigMap('data:\n  PRIVACY_POLICY_VERSION: "2026-10-20"\n')).toBe(V);
-    expect(versionFromConfigMap('  PRIVACY_POLICY_VERSION: 2026-11-01 # bump')).toBe('2026-11-01');
-    expect(versionFromConfigMap('OTHER: 1')).toBeNull();
+  it('parses config.env lines of exactly one shape', () => {
+    expect(versionFromEnvFile('PRIVACY_POLICY_VERSION=2026-10-20\n')).toEqual({ version: V });
+    expect(versionFromEnvFile('A=1\r\nPRIVACY_POLICY_VERSION=2026-10-20\r\n')).toEqual({ version: V });
+    expect(versionFromEnvFile('OTHER=1').version).toBeNull();
+    expect(versionFromEnvFile('OTHER=1').problem).toBeUndefined();
   });
 
-  it('reads the ConfigMaps of the repository', () => {
+  it('ignores a commented-out version line', () => {
+    const text = '# PRIVACY_POLICY_VERSION=2026-01-01\nPRIVACY_POLICY_VERSION=2026-10-20\n';
+    expect(versionFromEnvFile(text)).toEqual({ version: V });
+    expect(versionFromEnvFile('# PRIVACY_POLICY_VERSION=2026-01-01\n')).toEqual({ version: null });
+  });
+
+  it.each([
+    ['quoted', 'PRIVACY_POLICY_VERSION="2026-10-20"'],
+    ['single-quoted', "PRIVACY_POLICY_VERSION='2026-10-20'"],
+    ['spaced', 'PRIVACY_POLICY_VERSION = 2026-10-20'],
+    ['trailing space', 'PRIVACY_POLICY_VERSION=2026-10-20 '],
+    ['inline-commented', 'PRIVACY_POLICY_VERSION=2026-10-20 # bump'],
+    ['not a date', 'PRIVACY_POLICY_VERSION=latest'],
+    ['yaml style', 'PRIVACY_POLICY_VERSION: 2026-10-20'],
+  ])('reports a %s line as a problem, not a miss', (_name, line) => {
+    const r = versionFromEnvFile(`${line}\n`);
+    expect(r.version).toBeNull();
+    expect(r.problem).toMatch(/not exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD/);
+    const p = platformPolicyVersion(repo({ api: V, ingest: V }, () => line));
+    expect(p.version).toBeNull();
+    expect(p.problem).toContain('deploy/k8s/base/api/config.env');
+    expect(p.problem).toContain('deploy/k8s/base/ingest/config.env');
+  });
+
+  it('reports a version set twice', () => {
+    const text = 'PRIVACY_POLICY_VERSION=2026-10-20\nPRIVACY_POLICY_VERSION=2026-11-01\n';
+    expect(versionFromEnvFile(text).problem).toMatch(/more than once/);
+  });
+
+  it('reads the config.env files of the repository', () => {
     expect(platformPolicyVersion(both(V))).toMatchObject({ version: V });
+  });
+
+  it('names the file when one is missing', () => {
+    const p = platformPolicyVersion(repo({ api: V, ingest: null }));
+    expect(p.version).toBeNull();
+    expect(p.problem).toBe('deploy/k8s/base/ingest/config.env: file not found');
   });
 
   it('is ok when both languages have the version and it is the newest', () => {
@@ -75,7 +108,7 @@ describe('privacy policy version check', () => {
     expect(r.problems.join('\n')).toMatch(/content\/legal\/en\/privacy\/2026-10-20\.mdx is missing/);
   });
 
-  it('fails when the ConfigMaps are ahead of the site', () => {
+  it('fails when config.env is ahead of the site', () => {
     const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: both('2026-11-01') });
     expect(r.problems.join('\n')).toMatch(/2026-11-01\.mdx is missing/);
     expect(r.problems.join('\n')).toMatch(
@@ -83,7 +116,7 @@ describe('privacy policy version check', () => {
     );
   });
 
-  it('fails when the site is ahead of the ConfigMaps (a new text nobody consents to)', () => {
+  it('fails when the site is ahead of config.env (a new text nobody consents to)', () => {
     const r = checkPolicy({
       siteRoot: site({ en: [V, '2026-11-01'], de: [V, '2026-11-01'] }),
       repoRoot: both(V),
@@ -101,9 +134,9 @@ describe('privacy policy version check', () => {
     expect(r.problems.join('\n')).toMatch(/api and ingest disagree/);
   });
 
-  it('fails when a ConfigMap has no version', () => {
+  it('fails when a config.env is missing', () => {
     const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: repo({ api: V, ingest: null }) });
-    expect(r.problems.join('\n')).toMatch(/not found in the ingest ConfigMap/);
+    expect(r.problems.join('\n')).toMatch(/deploy\/k8s\/base\/ingest\/config\.env: file not found/);
   });
 });
 
@@ -126,7 +159,7 @@ describe('privacy versions that users consented to', () => {
     expect(r.problems).toEqual([]);
   });
 
-  it('fails when the ConfigMaps are not the last entry of the list', () => {
+  it('fails when config.env is not the last entry of the list', () => {
     const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, ['2026-01-01']), repoRoot: both(V) });
     expect(r.problems.join('\n')).toMatch(
       /last entry of content\/legal\/privacy-versions\.json is 2026-01-01/,
@@ -168,7 +201,7 @@ describe('privacy versions that users consented to', () => {
     expect(checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot }).problems).toEqual([]);
   });
 
-  it('names the searched folder when the ConfigMaps are not there', () => {
+  it('names the searched folder when config.env is not there', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ryft-empty-'));
     const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: empty });
     expect(r.problems[0]).toContain(empty);
