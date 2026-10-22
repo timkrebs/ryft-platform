@@ -219,6 +219,10 @@ func TestLoadBetaScoringPathNeedsNoPolicy(t *testing.T) {
 // After the cutover (D102) RabbitMQ is the only broker: the old settings may still
 // say amqp, a leftover nats is refused at start-up, and the user comes in pairs.
 func TestEventsSettings(t *testing.T) {
+	// Everything else Load reads, so the developer's shell cannot change the outcome.
+	for _, k := range []string{"PORT", "METRICS_PORT", "AMQP_URL", "AMQP_CA_FILE", "AMQP_CERT_FILE", "AMQP_KEY_FILE", "DB_MAX_CONNS"} {
+		t.Setenv(k, "")
+	}
 	t.Setenv("DATABASE_URL", "postgres://x")
 	for _, c := range []struct {
 		backend, consume, user, pass string
