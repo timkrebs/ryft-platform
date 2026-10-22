@@ -10,12 +10,16 @@
 # A group is targeted when, in this order:
 #   1. it is held (`# hold: <group> <YYYY-MM-DD> <reason>` in the overlay) → NOT targeted, a warning
 #   2. FORCE names it (services | web | all)                    → targeted
-#   3. its pins disagree (services only) or are missing         → targeted
+#   3. its pins disagree (services only) or one is missing       → targeted
 #   4. its pin is no commit of this history (a ryft-web SHA, a typo) → targeted
 #   5. its directory differs between the pin and HEAD           → targeted, else not
 # The comparison is with the RUNNING pin, not with the previous commit: a change whose run
 # was cancelled or whose deploy PR was superseded stays "not deployed yet". The merged
 # pin commit changes neither directory, so it targets nothing.
+# The overlay is ASCII: any byte other than tab, newline and printable ASCII stops the script
+# (exit 2), in every mode. A CR, U+2028, U+2029 or U+0085 inside a comment is invisible to
+# the line-based reading here but a line break to the YAML parser kustomize uses, so a "hold
+# reason" could smuggle an `images:` entry (a newName) past every check.
 # Holds fail closed: a "#" followed by "hold" (any case) ANYWHERE on a line (also after a
 # newTag) that is not a standalone line reading `# hold: <services|web> <YYYY-MM-DD> <reason>`
 # stops the script (exit 2), in every mode, so a typo cannot silently stop being a hold.
@@ -32,12 +36,17 @@
 # RYFT image entry in the overlay to be exactly `- name: ghcr.io/timkrebs/ryft/<name>` and
 # `newTag: "<7 hex>"`: a newName or digest line would silently change what runs.
 #   HEAD_REF  the pull request's head branch (github.head_ref)
+#
+#   scripts/deploy_targets.sh --pins
+# The overlay's pins as `<image>=<newTag>` lines (empty tag: no pin), for check_registry.sh and
+# hold.sh, which compare them with what kustomize renders and with each other.
 # Needs the full history (fetch-depth: 0). bash 3.2-safe (macOS).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 overlay=deploy/k8s/overlays/eks/kustomization.yaml
 mode=targets; base=
 if [ "${1:-}" = --check ]; then mode=check; base=${2:-}; fi
+if [ "${1:-}" = --pins ]; then mode=pins; fi
 force=${FORCE:-none}
 case "$force" in none|services|web|all|"") ;; *) echo "deploy_targets: FORCE must be none, services, web or all, not '$force'" >&2; exit 2 ;; esac
 
@@ -70,7 +79,12 @@ hold_ok='^[[:space:]]*#[[:space:]]hold:[[:space:]](services|web)[[:space:]]([0-9
 
 # Every hold-looking line must parse. Exit 2 otherwise.
 validate_holds() {
-  local bad
+  local bad odd
+  odd=$(LC_ALL=C grep -a -n -v -E "^[ -~$(printf '\t')]*\$" "$overlay" | LC_ALL=C cut -d: -f1 | head -5 | paste -sd, -) || true
+  if [ -n "$odd" ]; then
+    echo "::error file=$overlay,line=${odd%%,*},title=overlay bytes::$overlay (line $odd) has a byte that is not printable ASCII, tab or newline: a CR (CRLF line endings), U+2028, U+2029 or U+0085 is a line break to YAML but not to this check. Retype the line in plain ASCII." >&2
+    exit 2
+  fi
   bad=$(grep -n -i -E "$hold_like" "$overlay" | grep -v -E "^[0-9]+:${hold_ok#^}" || true)  # a valid hold is a whole line
   if [ -n "$bad" ]; then
     printf '%s\n' "$bad" | while IFS= read -r l; do
@@ -92,6 +106,11 @@ hold_of() {
 emit() { printf '%s=%s\n' "$1" "$2"; }
 
 validate_holds
+
+if [ "$mode" = pins ]; then
+  for g in services web; do for img in $(group_images "$g"); do emit "$img" "$(tag_of "$img")"; done; done
+  exit 0
+fi
 
 if [ "$mode" = check ]; then
   holds_now=

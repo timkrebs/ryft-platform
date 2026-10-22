@@ -68,4 +68,29 @@ cp "$OVERLAY" "$tmp/orig"
 rc=0; ./scripts/hold.sh add web "x" >/dev/null 2>&1 || rc=$?
 [ "$rc" = 1 ] || fail "--check failure must exit 1 (got $rc)"
 cmp -s "$tmp/orig" "$OVERLAY" || fail "the file was not restored"
+# Line breaks YAML knows and the shell checks do not: LS, PS, NEL, CR, tab; and non-ASCII at all.
+setup bytes; cp "$OVERLAY" "$tmp/orig"
+for bad in $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xc2\x85' $'\r' $'\t' $'\xc3\xa4'; do
+  refuse add web "x${bad}  - name: ghcr.io/timkrebs/ryft/web${bad}    newName: ghcr.io/attacker/web"
+done
+cmp -s "$tmp/orig" "$OVERLAY" || fail "a refused call changed the file"
+# Public text: no @, no closing keywords; "fix in #57" and "see #57" are fine.
+for r in "ask @someone" "fixes #12" "Closes #12" "resolved: #3" "fix #7" "close org/repo#9" "CLOSED   #4"; do refuse add web "$r"; done
+for r in "broken AASA, fix in #57" "see #57" "prefixes #12"; do
+  TODAY=2026-10-22 ./scripts/hold.sh add web "$r" >/dev/null || fail "'$r' must be accepted"
+  ./scripts/hold.sh rm web >/dev/null
+done
+cmp -s "$tmp/orig" "$OVERLAY" || fail "add and rm did not round-trip"
+# Services pins that disagree: no hold on a mixed state.
+setup mixed; hand_pin ingest 1234567
+rc=0; ./scripts/hold.sh add services "x" >/dev/null 2>"$tmp/err" || rc=$?
+[ "$rc" = 1 ] || fail "disagreeing pins must exit 1 (got $rc)"
+grep -q 'pin_images.sh' "$tmp/err" || fail "no hint: $(cat "$tmp/err")"
+if grep -q '# hold:' "$OVERLAY"; then fail "a hold was written on mixed pins"; fi
+# A hold line with trailing blanks is still the same hold.
+setup trailing
+TODAY=2026-10-22 ./scripts/hold.sh add web "same" >/dev/null
+sed 's/^\(  # hold: web .*\)$/\1   /' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; cp "$OVERLAY" "$tmp/once"
+./scripts/hold.sh add web "same" | grep -q 'already held' || fail "trailing blanks made it a different hold"
+cmp -s "$tmp/once" "$OVERLAY" || fail "idempotent add changed the file"
 echo "✓ hold_test"

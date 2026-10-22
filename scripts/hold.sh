@@ -26,7 +26,7 @@ esac
 [ -f "$overlay" ] || { echo "hold: $overlay not found" >&2; exit 2; }
 
 # The same line shape as deploy_targets.sh; a group is matched whole.
-line_re="^[[:space:]]*#[[:space:]]hold:[[:space:]]${group}[[:space:]]+([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))[[:space:]]+([^[:space:]].*)\$"
+line_re="^[[:space:]]*#[[:space:]]hold:[[:space:]]${group}[[:space:]]([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))[[:space:]]+([^[:space:]].*[^[:space:]]|[^[:space:]])[[:space:]]*\$"
 existing=
 while IFS= read -r l; do
   if [[ $l =~ $line_re ]]; then existing=${BASH_REMATCH[1]}$'\t'${BASH_REMATCH[4]}; break; fi
@@ -47,7 +47,16 @@ if [ "$cmd" = add ]; then
   # Trim; one line; no control characters (a hold is a comment in a YAML file).
   reason=${reason#"${reason%%[![:space:]]*}"}; reason=${reason%"${reason##*[![:space:]]}"}
   [ -n "$reason" ] || { echo "hold: a reason is required (what is held and where the fix is tracked)" >&2; exit 2; }
-  case "$reason" in *[[:cntrl:]]*) echo "hold: the reason must be one line of plain text" >&2; exit 2 ;; esac
+  # Printable ASCII only: U+2028, U+2029, U+0085 and CR are line breaks to YAML (they would end
+  # the comment and let the rest of the "reason" be an `images:` entry) but not to the checks.
+  if printf '%s' "$reason" | LC_ALL=C grep -aq '[^ -~]' || [ "$(printf '%s' "$reason" | wc -l | tr -d ' ')" != 0 ]; then
+    echo "hold: the reason must be one line of printable ASCII (no accents, no line breaks)" >&2; exit 2
+  fi
+  # Reasons are public: they land in the overlay, in deploy PR bodies and in run summaries.
+  case "$reason" in *@*) echo "hold: no @ in a reason (it would ping or link an account); name an issue number, nothing personal" >&2; exit 2 ;; esac
+  if printf '%s' "$reason" | grep -Eiq '(^|[^[:alnum:]])(close[sd]?|fix(es|ed)?|resolve[sd]?)[^[:alnum:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'; then
+    echo "hold: a reason must not say 'fixes #N' (or close/resolve): GitHub would close the issue when the deploy PR merges. Write 'see #N'." >&2; exit 2
+  fi
   if [ -n "$existing" ]; then
     if [ "${existing#*$'\t'}" = "$reason" ]; then
       echo "hold: $group is already held since ${existing%%$'\t'*} with this reason: nothing changed"
@@ -57,6 +66,12 @@ if [ "$cmd" = add ]; then
     exit 1
   fi
   first=ingest; [ "$group" = web ] && first=web
+  if [ "$group" = services ]; then
+    pins=$(./scripts/deploy_targets.sh --pins | grep -E '^(ingest|scoring|api|notify|migrate)=' | cut -d= -f2 | sort -u)
+    if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != 1 ] || [ -z "$pins" ]; then
+      echo "hold: the five services images are not pinned to one commit ($(printf '%s' "$pins" | paste -sd, -)): a hold would freeze a mixed state. Set them all with scripts/pin_images.sh <sha> services first." >&2; exit 1
+    fi
+  fi
   date=${TODAY:-$(date -u +%Y-%m-%d)}
   line="  # hold: $group $date $reason"
   grep -q "^  - name: ghcr.io/timkrebs/ryft/$first\$" "$overlay" || { echo "hold: no '- name: ghcr.io/timkrebs/ryft/$first' entry in $overlay" >&2; exit 1; }

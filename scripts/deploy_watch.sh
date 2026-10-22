@@ -10,7 +10,10 @@
 #      not held), main's tip is older than DEPLOY_PR_MAX_HOURS and no deploy PR is open:
 #      promote failed, was skipped (no App variable, an environment without its secret) or
 #      the PR was closed on purpose.
-# The diff is deploy_targets.sh's own: run in a checkout of main with the whole history.
+# The diff is deploy_targets.sh's own: run in a checkout of an up-to-date main with the whole
+# history (a shallow clone exits 2). A hold dated in the future is a finding too (a typo).
+# c. reads the committer date of main's tip, not the last CI run: no Actions permission needed,
+# and the same answer in a test repository.
 # Exit 0: nothing to report. Exit 1: findings. Exit 2: the watch itself could not run.
 #   HOLD_MAX_DAYS         default 7
 #   DEPLOY_PR_MAX_HOURS   default 2
@@ -29,8 +32,13 @@ today=${TODAY:-$(date -u +%Y-%m-%d)}
 for v in "HOLD_MAX_DAYS=$hold_max_days" "DEPLOY_PR_MAX_HOURS=$pr_max_hours" "NOW=$now"; do
   case "${v#*=}" in ""|*[!0-9]*) echo "deploy_watch: ${v%%=*} must be a whole number, not '${v#*=}'" >&2; exit 2 ;; esac
 done
+# Whole numbers, leading zeros included ("08" is not octal).
+hold_max_days=$((10#$hold_max_days)); pr_max_hours=$((10#$pr_max_hours)); now=$((10#$now))
 case "$slug" in *[!a-z0-9-]*|"") echo "deploy_watch: odd DEPLOY_APP_SLUG '$slug'" >&2; exit 2 ;; esac
 [[ $today =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "deploy_watch: TODAY must be YYYY-MM-DD, not '$today'" >&2; exit 2; }
+if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
+  echo "deploy_watch: this is a shallow clone; deploy_targets.sh needs the whole history (checkout with fetch-depth: 0)" >&2; exit 2
+fi
 
 # Days since 1970-01-01 of a civil date (no date(1): GNU and BSD differ).
 daynum() { # <year> <month> <day>
@@ -41,10 +49,11 @@ daynum() { # <year> <month> <day>
   doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
   echo $((era * 146097 + doe - 719468))
 }
-# Epoch seconds of GitHub's 2026-10-22T06:10:23Z.
+# Epoch seconds of GitHub's 2026-10-22T06:10:23Z (a fraction of a second is tolerated); returns
+# 1 on anything else. Never `exit` in here: it runs in a command substitution.
 iso_epoch() {
-  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$'
-  [[ $1 =~ $re ]] || { echo "deploy_watch: odd timestamp '$1'" >&2; exit 2; }
+  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?Z$'
+  [[ $1 =~ $re ]] || return 1
   echo $(($(daynum "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}") * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]}))
 }
 
@@ -56,7 +65,7 @@ errf=$(mktemp); trap 'rm -f "$errf"' EXIT
 targets_ok=1; targets=
 if ! targets=$(FORCE=none ./scripts/deploy_targets.sh 2>"$errf"); then
   targets_ok=
-  find_ "scripts/deploy_targets.sh failed ($(head -c 300 "$errf" | tr '\n' ' ')): fix the overlay (a hold that does not parse, a missing pin) before anything else."
+  find_ "scripts/deploy_targets.sh failed ($(head -c 300 "$errf" | tr '\n' ' ')): fix the overlay (a hold that does not parse, a byte that is not printable ASCII) before anything else."
 fi
 cat "$errf" >&2
 val() { printf '%s\n' "$targets" | sed -n "s/^$1=//p" | head -1; }
@@ -71,24 +80,36 @@ if [ -n "$targets_ok" ]; then
     holds=$((holds + 1))
     g=${BASH_REMATCH[1]}; reason=${BASH_REMATCH[5]}
     age=$((t_today - $(daynum "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}")))
-    if [ "$age" -gt "$hold_max_days" ]; then
+    if [ "$age" -lt 0 ]; then
+      find_ "$g is held since ${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]}, which is $((-age)) day(s) in the future (today is $today UTC): \"$reason\". A typo in the date keeps the age check from ever firing; fix the date."
+    elif [ "$age" -gt "$hold_max_days" ]; then
       find_ "$g has been held for $age days (since ${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]}, limit $hold_max_days): \"$reason\". Ship the fix and release it (scripts/hold.sh rm $g in a PR), or renew it on purpose."
     fi
   done < "$overlay"
 fi
 
 # --- b. deploy PRs open for too long ---------------------------------------------------------
-# "<number> <branch> <createdAt>" of the App's own deploy/<sha> PRs (a fork's or a person's
-# with the same name is none of ours).
-expr='.[] | select(.isCrossRepository == false and .author.login == "app/SLUG" and (.headRefName | test("^deploy/[0-9a-f]{7}$"))) | "\(.number) \(.headRefName) \(.createdAt)"'
-open_n=0
-if list=$(gh pr list --state open --limit 200 --json number,headRefName,isCrossRepository,author,createdAt --jq "${expr//SLUG/$slug}" 2>"$errf"); then
-  while read -r n b created; do
+# "<number> <branch> <createdAt> <author>" of the same-repository PRs from deploy/<7 hex>
+# (a fork's is none of ours). The App's own count; anyone else's with that branch name is
+# a warning (the App renamed? a person using the reserved name?) and does not count as a deploy.
+expr='.[] | select(.isCrossRepository == false and (.headRefName | test("^deploy/[0-9a-f]{7}$"))) | "\(.number) \(.headRefName) \(.createdAt) \(.author.login)"'
+open_n=0; warned=
+if list=$(gh pr list --state open --limit 200 --json number,headRefName,isCrossRepository,author,createdAt --jq "$expr" 2>"$errf"); then
+  while read -r n b created who; do
     [ -n "${n:-}" ] || continue
+    if [ "$who" != "app/$slug" ]; then
+      warned="$warned#$n ($b by $who) "
+      echo "::warning title=deploy watch::#$n is from $b but not by app/$slug (by $who): not counted as a deploy PR. Did the App get renamed (DEPLOY_APP_SLUG)?" >&2
+      continue
+    fi
     open_n=$((open_n + 1))
-    age=$((now - $(iso_epoch "$created")))
+    if ! e=$(iso_epoch "$created"); then
+      find_ "#$n ($b) has a creation time I cannot read ('$created'): the age check cannot run for it."
+      continue
+    fi
+    age=$((now - e))
     if [ "$age" -gt $((pr_max_hours * 3600)) ]; then
-      find_ "#$n ($b) has been open for $((age / 3600)) h (limit $pr_max_hours h): it should have merged itself. Look at its checks, re-run or fix them, or close it to stop the deploy."
+      find_ "#$n ($b) has been open for $((age / 60)) min (limit $pr_max_hours h): it should have merged itself. Look at its checks, re-run or fix them, or close it and hold the group (scripts/hold.sh add <group> \"<reason>\") to stop the deploy."
     fi
   done <<EOT
 $list
@@ -120,5 +141,6 @@ fi
     echo "$nfind finding(s) (docs/OPERATIONS.md → Deploy and roll back → The deploy watch):"
     printf '%s' "$findings"
   fi
+  [ -z "$warned" ] || echo "Warning: PRs from a deploy/<sha> branch by someone other than app/$slug (not counted): $warned"
 } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ "$nfind" = 0 ]

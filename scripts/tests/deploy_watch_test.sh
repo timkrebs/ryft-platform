@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154,SC1091
+# shellcheck disable=SC2154,SC1091,SC2015,SC2016
 # scripts/deploy_watch.sh in throwaway repositories with a fake gh (make test-scripts): a hold
 # older than HOLD_MAX_DAYS, a deploy PR open too long and a targeted group on an old main with
 # no deploy PR fail it; everything else passes.
@@ -64,7 +64,7 @@ bad "a hold that does not parse" 'deploy_targets.sh failed'
 # b. deploy PRs: 1 h is fine, 3 h is not; other authors, forks and other branches are ignored.
 repo prs
 GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((1 * H)))") ok "a 1 h old deploy PR"
-GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((3 * H)))") bad "a 3 h old deploy PR" '#5 (deploy/abcdef0) has been open for 3 h'
+GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((3 * H)))") bad "a 3 h old deploy PR" '#5 (deploy/abcdef0) has been open for 180 min'
 GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((3 * H)))") DEPLOY_PR_MAX_HOURS=4 ok "DEPLOY_PR_MAX_HOURS=4 allows 3 h"
 GH_OPEN_PRS=$(prs "$(pr 6 deploy/abcdef0 $((9 * H)) true)" "$(pr 7 deploy/abcdef0 $((9 * H)) false alice)" "$(pr 8 deploy/rollback-web $((9 * H)))" "$(pr 9 feature/x $((9 * H)))" "$(pr 10 deploy/abcdef01 $((9 * H)))") ok "PRs that are not the App's deploy PRs"
 # c. a targeted group on an old main with no deploy PR; fresh main, an open PR, or a hold excuse it.
@@ -73,7 +73,7 @@ GIT_COMMITTER_DATE="$(iso $((NOW - 3 * H)))" git commit -q --amend --no-edit --d
 bad "web targeted, main 3 h old, no PR" 'web differs from its pin'
 grep -q "promote failed" "$tmp/summary" || fail "no hint what it means"
 GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((1 * H)))") ok "targeted, but a fresh deploy PR is open"
-GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((5 * H)))") bad "targeted, a stuck PR" 'has been open for 5 h'
+GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((5 * H)))") bad "targeted, a stuck PR" 'has been open for 300 min'
 if grep -q 'web differs from its pin' "$tmp/summary"; then fail "an open PR means c. stays quiet"; fi
 GIT_COMMITTER_DATE="$(iso $((NOW - 1 * H)))" git commit -q --amend --no-edit --date "$(iso $((NOW - 1 * H)))"
 ok "targeted, but main's tip is only 1 h old"
@@ -86,6 +86,31 @@ bad "services targeted, main old" 'services differs from its pin'
 # The merged pin commit targets nothing, however old.
 pin services "$(short)"; GIT_COMMITTER_DATE="$(iso $((NOW - 3 * H)))" git commit -q --amend --no-edit --date "$(iso $((NOW - 3 * H)))"
 ok "the merged pin commit"
+
+# A hold dated in the future would never age: a finding.
+repo hold-future; TODAY=2026-10-25 ./scripts/hold.sh add web "typo in the year" >/dev/null; git commit -qam hold
+bad "a hold dated 3 days ahead" 'in the future'
+# Leading zeros are decimal; a fraction of a second in createdAt is read; garbage is a finding
+# (a silent drop of the loop was a pass once).
+repo numbers
+GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((3 * H)))") DEPLOY_PR_MAX_HOURS=08 ok "DEPLOY_PR_MAX_HOURS=08 is eight hours"
+GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((9 * H)))") DEPLOY_PR_MAX_HOURS=08 bad "9 h against 08" 'has been open for 540 min'
+HOLD_MAX_DAYS=08 ok "HOLD_MAX_DAYS=08"
+frac=$(pr 5 deploy/abcdef0 $((3 * H)) | sed 's/Z"/.123Z"/')
+GH_OPEN_PRS=$(prs "$frac") bad "createdAt with a fraction of a second" 'has been open for 180 min'
+junk=$(pr 5 deploy/abcdef0 $((3 * H)) | sed 's/"createdAt":"[^"]*"/"createdAt":"yesterday"/')
+GH_OPEN_PRS=$(prs "$junk") bad "an unreadable createdAt" 'cannot read'
+# A PR from deploy/<7 hex> by someone else is warned about, is not a deploy PR, and does not excuse c.
+TIP_AGE=$((3 * H)) repo renamed; commit_file web/index.txt v2 "web: a change"
+GIT_COMMITTER_DATE="$(iso $((NOW - 3 * H)))" git commit -q --amend --no-edit --date "$(iso $((NOW - 3 * H)))"
+GH_OPEN_PRS=$(prs "$(pr 5 deploy/abcdef0 $((1 * H)) false alice)") bad "a person's deploy/<sha> PR with web targeted" 'web differs from its pin'
+grep -q 'not by app/ryft-deploy' "$tmp/err" || fail "no warning for the other author: $(cat "$tmp/err")"
+grep -q 'Warning: PRs from a deploy' "$tmp/summary" || fail "no warning in the summary"
+# A shallow clone cannot answer.
+git clone -q --depth 1 "file://$PWD" "$tmp/shallow"; mkdir -p "$tmp/shallow/scripts"
+cp "$HERE"/scripts/{deploy_watch,deploy_targets}.sh "$tmp/shallow/scripts/"
+rc=0; (cd "$tmp/shallow" && PATH="$tmp/bin:$PATH" ./scripts/deploy_watch.sh >/dev/null 2>"$tmp/err") || rc=$?
+[ "$rc" = 2 ] && grep -q 'shallow' "$tmp/err" || fail "a shallow clone must exit 2 (got $rc): $(cat "$tmp/err")"
 
 # A failing gh is a finding, not a pass.
 repo gh-fails
