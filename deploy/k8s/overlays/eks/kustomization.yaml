@@ -56,16 +56,17 @@ patches:
 # a hash sign followed by "hold" but does not parse stops the promote. Delete the line in a
 # PR to release it: that merge deploys main's head for the group (docs/OPERATIONS.md).
 images:
+  # hold: services 2026-10-22 rollback drill, previous pin
   - name: ghcr.io/timkrebs/ryft/ingest
-    newTag: "d6596fe"
+    newTag: "a9685b5"
   - name: ghcr.io/timkrebs/ryft/scoring
-    newTag: "d6596fe"
+    newTag: "a9685b5"
   - name: ghcr.io/timkrebs/ryft/api
-    newTag: "d6596fe"
+    newTag: "a9685b5"
   - name: ghcr.io/timkrebs/ryft/migrate
-    newTag: "d6596fe"
+    newTag: "a9685b5"
   - name: ghcr.io/timkrebs/ryft/notify
-    newTag: "d6596fe"
+    newTag: "a9685b5"
   # web: this repository's SHA, like the others (D107): the site is built from web/ by the
   # same CI and promoted in the same "deploy: images" PR, but only when web/ differs from
   # this pin (scripts/deploy_targets.sh). A rollback may pin an older ryft-web SHA such as
