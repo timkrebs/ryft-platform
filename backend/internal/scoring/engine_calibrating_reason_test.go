@@ -281,3 +281,81 @@ func TestEngineRescoreBehindSeesAStaleCount(t *testing.T) {
 		t.Fatalf("picked again after its re-score: %v", again)
 	}
 }
+
+// Freshly scored days are never "behind": for every stored row, the counts the
+// engine wrote (from ScoreHistory, in Go) equal the counts of the 30 stored rows
+// before it, and store.BehindHistoryDays (the same window in SQL) picks nothing,
+// so the 15-minute pass cannot re-pick a day it, or a sync, just scored. Five
+// accounts: both signals in order; no HRV source; days missing in between (no
+// row: the window is rows, not dates); 31 empty days before the first data; a
+// backfill newest first, settled by the re-score after each day.
+func TestEngineSafetyNetConvergesOnFreshScores(t *testing.T) {
+	var all []string
+	for d := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC); !d.After(time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)); d = d.AddDate(0, 0, 1) {
+		all = append(all, d.Format(dayLayout))
+	}
+	inOrder := func(from string) func(context.Context, *Engine, uuid.UUID) error {
+		return func(ctx context.Context, e *Engine, u uuid.UUID) error {
+			return e.ComputeRange(ctx, u, from, "2026-10-10")
+		}
+	}
+	for _, c := range []struct {
+		name  string
+		hrv   bool
+		from  string
+		score func(context.Context, *Engine, uuid.UUID) error
+	}{
+		{"both signals, in order", true, "2026-09-01", inOrder("2026-09-01")},
+		{"no HRV source", false, "2026-09-01", inOrder("2026-09-01")},
+		{"days missing in between", true, "2026-09-01", func(ctx context.Context, e *Engine, u uuid.UUID) error {
+			var some []string
+			for k, d := range all {
+				if k%5 != 2 {
+					some = append(some, d)
+				}
+			}
+			return e.ComputeDays(ctx, u, some)
+		}},
+		{"empty days before the data", true, "2026-07-31", inOrder("2026-07-31")},
+		{"backfill newest first", true, "2026-09-01", func(ctx context.Context, e *Engine, u uuid.UUID) error {
+			for k := len(all) - 1; k >= 0; k-- {
+				if err := e.ComputeDay(ctx, u, all[k]); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st, engine, user := engineStore(t)
+			ctx := context.Background()
+			seedSignals(t, st, user, c.hrv, true)
+			if err := c.score(ctx, engine, user); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := st.DailyScores(ctx, user, c.from, "2026-10-10")
+			if err != nil || len(rows) == 0 {
+				t.Fatalf("%d rows, %v", len(rows), err)
+			}
+			for k, r := range rows {
+				var h, n int
+				for _, p := range rows[max(0, k-baselineDays):k] {
+					if p.HRVms != nil && *p.HRVms > 0 {
+						h++
+					}
+					if p.RHR != nil && *p.RHR > 0 {
+						n++
+					}
+				}
+				if got := calibOf(t, r); got.hrv != h || got.rhr != n || got.days != min(h, n) {
+					t.Errorf("%s: stored H/R %d/%d (baseline_days %d), its 30 rows before hold %d/%d",
+						r.Day, got.hrv, got.rhr, got.days, h, n)
+				}
+			}
+			behind, err := st.BehindHistoryDays(ctx, user, c.from, baselineDays, 1000)
+			if err != nil || len(behind) != 0 {
+				t.Fatalf("freshly scored days picked as behind: %v %v", behind, err)
+			}
+		})
+	}
+}
