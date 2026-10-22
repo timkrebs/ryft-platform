@@ -32,7 +32,7 @@ export function sitePolicyVersion(root, locale = 'en') {
  * @returns {{version: string | null, problem?: string}}
  */
 export function versionFromEnvFile(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.startsWith('PRIVACY_POLICY_VERSION'));
+  const lines = text.split(/\r?\n/).filter((l) => /^\s*PRIVACY_POLICY_VERSION(?!\w)/.test(l));
   if (lines.length === 0) return { version: null };
   if (lines.length > 1) return { version: null, problem: 'PRIVACY_POLICY_VERSION is set more than once' };
   const m = lines[0].match(/^PRIVACY_POLICY_VERSION=(\d{4}-\d{2}-\d{2})$/);
@@ -42,7 +42,17 @@ export function versionFromEnvFile(text) {
       problem: `"${lines[0]}" is not exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD (no quotes, spaces or comment on the line: kustomize ships them as part of the value)`,
     };
   }
+  if (!isCalendarDate(m[1])) {
+    return { version: null, problem: `${m[1]} is not a calendar date (the services refuse it at start-up)` };
+  }
   return { version: m[1] };
+}
+
+/** YYYY-MM-DD that exists in the calendar (2026-11-31 does not; Go refuses it). */
+export function isCalendarDate(v) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
 /**
@@ -79,7 +89,8 @@ export function consentedVersions(siteRoot) {
   const path = join(siteRoot, 'content/legal/privacy-versions.json');
   try {
     const list = JSON.parse(readFileSync(path, 'utf8'));
-    const ok = Array.isArray(list) && list.length > 0 && list.every((v) => /^\d{4}-\d{2}-\d{2}$/.test(v));
+    const ok =
+      Array.isArray(list) && list.length > 0 && list.every((v) => typeof v === 'string' && isCalendarDate(v));
     return ok ? list : null;
   } catch {
     return null;
@@ -110,7 +121,7 @@ export function checkPolicy({ siteRoot, repoRoot }) {
   const listed = consentedVersions(siteRoot);
   if (!listed) {
     problems.push(
-      `content/legal/privacy-versions.json is missing or not a non-empty list of YYYY-MM-DD versions (searched ${siteRoot}).`,
+      `content/legal/privacy-versions.json is missing or not a non-empty list of valid YYYY-MM-DD dates (searched ${siteRoot}).`,
     );
   } else if (listed.at(-1) !== version) {
     problems.push(
