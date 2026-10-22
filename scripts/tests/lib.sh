@@ -4,6 +4,7 @@
 # web/, the EKS overlay (the real file) and the scripts, with both image groups pinned to
 # the first commit and a bare remote.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+export PIN_QUIET=1  # pin_images.sh reports "in force: A -> B" on stderr; the tests read it themselves
 OVERLAY=deploy/k8s/overlays/eks/kustomization.yaml
 tmp=$(mktemp -d)
 # Never write into the real job summary of the run that executes the tests.

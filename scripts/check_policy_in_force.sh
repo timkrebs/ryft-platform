@@ -11,10 +11,14 @@
 #  - the web image's commit does not SERVE the version at /privacy: the site shows the newest
 #    page per language (web/src/lib/content.ts), so the newest
 #    web/content/legal/{en,de}/privacy/<version>.mdx there must be the version in force. A pin
-#    that is not a commit of this history (f437747 was built in the archived ryft-web
-#    repository) passes only with the first listed version: that image carries nothing newer,
-#  - given a base ref (a pull request): the version in force changes to a page whose
-#    frontmatter says status: draft. An unchanged draft stays allowed.
+#    that is not a commit of this history passes only when it is the known foreign pin
+#    f437747 (built in the archived ryft-web repository) AND the version is the first listed
+#    one: that image carries nothing newer. Any other sha must be exactly one commit here,
+#  - given a base ref (a pull request; it must resolve): the version in force, or the one in
+#    base's config.env, changes to a version whose page is not status: published in both
+#    languages (frontmatter read like the site does; only exactly "published" passes). An
+#    unchanged draft stays allowed, and so does going back to a version listed before the
+#    one in force now.
 # So rolling web back past a policy version fails until the in-force pin goes back too, and a
 # newer page in the pinned web commit fails until the pin follows it.
 #   scripts/check_policy_in_force.sh [base-ref]        e.g. origin/main
@@ -102,18 +106,29 @@ jq -e --arg v "$v" 'index($v) != null' "$list" >/dev/null || err "the version in
 
 tag=$(printf '%s\n' "$found" | sed -n 's/^web //p' | head -1)
 [ -n "$tag" ] || err "the EKS overlay renders no ghcr.io/timkrebs/ryft/web image"
+# The pin must be exactly one commit of this history, or the one known foreign pin (built in the
+# archived ryft-web repository). An unknown or ambiguous short SHA is not "foreign".
+FOREIGN=f437747
+n_commits=0; n_objects=0; full=
+for o in $(git rev-parse --disambiguate="$tag" 2>/dev/null); do
+  n_objects=$((n_objects + 1))
+  if [ "$(git cat-file -t "$o")" = commit ]; then n_commits=$((n_commits + 1)); full=$o; fi
+done
+in_history=
+if [ "$n_commits" = 1 ]; then in_history=1
+elif [ "$n_objects" = 0 ] && [ "$tag" = "$FOREIGN" ]; then in_history=
+else err "web is pinned to $tag, which is not exactly one commit of this history ($n_commits found) and not the known foreign pin $FOREIGN"
+fi
 page() { # <lang> <version>: the page file's content in the pinned web image's tree
-  if [ -n "$in_history" ]; then git show "$tag^{commit}:web/content/legal/$1/privacy/$2.mdx" 2>/dev/null
+  if [ -n "$in_history" ]; then git show "$full:web/content/legal/$1/privacy/$2.mdx" 2>/dev/null
   else cat "web/content/legal/$1/privacy/$2.mdx" 2>/dev/null; fi
 }
-in_history=
-if git rev-parse -q --verify "$tag^{commit}" >/dev/null 2>&1; then
-  in_history=1
+if [ -n "$in_history" ]; then
   for lang in en de; do
-    git cat-file -e "$tag^{commit}:web/content/legal/$lang/privacy/$v.mdx" 2>/dev/null \
+    git cat-file -e "$full:web/content/legal/$lang/privacy/$v.mdx" 2>/dev/null \
       || err "the version in force, $v, has no $lang page in the pinned web image ($tag): web/content/legal/$lang/privacy/$v.mdx is missing there. Pin web to a commit that has it, or set the in-force pin back with it."
     # /privacy serves the newest file (web/src/lib/content.ts listMdx sorts and reverses).
-    newest=$(git ls-tree --name-only "$tag^{commit}:web/content/legal/$lang/privacy/" | sed -n 's/\.mdx$//p' | LC_ALL=C sort | tail -1)
+    newest=$(git ls-tree --name-only "$full:web/content/legal/$lang/privacy/" | sed -n 's/\.mdx$//p' | LC_ALL=C sort | tail -1)
     [ "$newest" = "$v" ] || err "web $tag serves $newest at /privacy ($lang), but $v is in force: users would consent to $v while reading $newest. Move web and the in-force pin together."
   done
 else
@@ -121,15 +136,46 @@ else
   [ "$v" = "$first" ] || err "web is pinned to $tag, which is not a commit of this history; that image carries only $first, but $v is in force"
 fi
 
-# A pull request that puts a draft text into force is refused; what is in force already stays.
+# Draft guard, on a pull request (a base ref is given). A version may BECOME the one in force, or
+# the published one in base's config.env, only when its page says status: published in both
+# languages. The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
+# on key or value, a trailing comment and spaces after the dashes are all normalised, and anything
+# that is not exactly "published" refuses. A version listed BEFORE the one that is in force now was
+# in force before, so going back to it is allowed (move web and the in-force pin back together).
+published() { # stdin: a page; exit 0 only when its frontmatter status is exactly published
+  LC_ALL=C awk '{ sub(/\r$/, "") } NR == 1 { sub(/^\357\273\277/, ""); if ($0 !~ /^---[ \t]*$/) exit } NR > 1 && /^---[ \t]*$/ { exit } /^["'"'"']?status["'"'"']?[ \t]*:/ { s = $0; sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); gsub(/["'"'"' \t]/, "", s); st = s } END { exit !(st == "published") }'
+}
+listed_before() { # <candidate> <current>: the candidate is listed before the current one
+  jq -e --arg a "$1" --arg b "$2" '(index($a)) as $i | (index($b)) as $j | $i != null and $j != null and $i < $j' "$list" >/dev/null
+}
 if [ -n "$base" ]; then
-  was=$(git show "$base:$overlay" 2>/dev/null | sed -n 's/^.*namespace: ryft-api,.*PRIVACY_POLICY_VERSION=\([^]]*\)\].*$/\1/p' | head -1 || true)
-  if [ -n "$was" ] && [ "$was" != "$v" ]; then
+  git rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || err "the base ref '$base' does not resolve: the draft guard cannot compare (fetch it, or pass origin/<base branch>)"
+  git cat-file -e "$base:$overlay" 2>/dev/null || err "$overlay does not exist on $base"
+  base_overlay=$(git show "$base:$overlay")
+  was=$(printf '%s\n' "$base_overlay" | sed -n 's/^.*namespace: ryft-api,.*PRIVACY_POLICY_VERSION=\([^]]*\)\].*$/\1/p' | head -1)
+  if [ -z "$was" ] && printf '%s\n' "$base_overlay" | grep -q PRIVACY_POLICY_VERSION; then
+    err "$overlay on $base mentions PRIVACY_POLICY_VERSION but the api literal does not parse: the draft guard cannot tell what was in force"
+  fi
+  # 1. the version in force changes (the deploy PR, or a hand-made pin)
+  if [ -n "$was" ] && [ "$was" != "$v" ] && ! listed_before "$v" "$was"; then
     for lang in en de; do
-      if page "$lang" "$v" | awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit } /^status:/ { s = $2; gsub(/["'"'"']/, "", s); if (s == "draft") f = 1 } END { exit !f }'; then
-        err "the version in force would change from $was to $v, and its $lang page is status: draft in web $tag. Publish the text first (the user's legal call)."
-      fi
+      page "$lang" "$v" | published \
+        || err "the version in force would change from $was to $v, and its $lang page in web $tag is not status: published. Publish the text first (the user's legal call), or go back to a version listed before $was."
     done
   fi
+  # 2. the published version in base's config.env changes (the person's policy PR, red before the deploy PR)
+  for s in api ingest; do
+    f=deploy/k8s/base/$s/config.env
+    old=$(git show "$base:$f" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
+    [ -n "$old" ] || continue
+    [ -f "$f" ] || err "$f exists on $base but not in this change"
+    new=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$f" | head -1)
+    if [ "$old" != "$new" ] && ! listed_before "$new" "$old"; then
+      for lang in en de; do
+        published < "web/content/legal/$lang/privacy/$new.mdx" \
+          || err "$f changes PRIVACY_POLICY_VERSION from $old to $new, and the $lang page web/content/legal/$lang/privacy/$new.mdx is not status: published (or missing). A draft version on main blocks every deploy PR until it is published or web is held (scripts/hold.sh add web \"<reason>\")."
+      done
+    fi
+  done
 fi
 echo "policy in force: $v (api and ingest agree; web $tag serves it at /privacy)"

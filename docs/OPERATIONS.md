@@ -289,6 +289,31 @@ minutes (D107). Argo CD does not roll back by itself (D95). Migrations stay (bel
 the previous release runs on the newer schema; how far back that works is under
 "Lockouts and rolling back across releases".
 
+**Configuration is part of the rollout** (F1). api, ingest, scoring and notify read
+`ryft-config-<hash>`, generated from `deploy/k8s/base/<service>/config.env` (migrate's
+`ryft-config` stays plain). Any edit renames the ConfigMap, so the Deployment rolls with the
+images that are pinned; Argo CD deletes the old ConfigMap only after the sync is healthy
+(`PruneLast`), and a failed rollout leaves it for the old pods. Roll back in git, never with
+`kubectl rollout undo` or by scaling an old ReplicaSet: it may name a pruned ConfigMap
+(`CreateContainerConfigError`) and self-heal reverts it anyway. Which commit to revert:
+
+- a **configuration** problem (a `config.env` value, the in-force pin): revert the merge that
+  changed it, i.e. the PR that touched `config.env` or `overlays/eks` by hand. The old content
+  gives the old name, so the pods roll back.
+- an **image** problem: the pins and a hold as above (`pin_images.sh <old> <group>` and
+  `hold.sh add <group> "<reason>"`), not a revert of the deploy PR's merge when it pinned
+  both groups. Leave the pin commits of the other group alone.
+
+**A web rollback moves the policy in force too.** `pin_images.sh <old> web` sets the version
+in force (api and ingest) to what the site at `<old>` serves: base's `config.env` there, or the
+newest privacy page for a commit from before `config.env` existed (the foreign `f437747`: the
+first listed version). If that differs from today's, api and ingest roll with web and the
+testers who consented to the newer version consent again (`consent_required` rises). The
+`manifests` job (`check_policy_in_force.sh`) refuses a web pin whose commit does not serve the
+version in force, so pin and version always go back together. A draft version on main blocks
+every deploy PR (services too), because the deploy PR would put a draft into force: publish the
+text, or hold web (`./scripts/hold.sh add web "<reason>"`).
+
 **Before you start** (a planned rollback or a drill; in an incident the first three may be
 red, which is why you are rolling back, the rest still holds):
 
@@ -401,8 +426,8 @@ The consumers: `kubectl -n ryft-scoring logs deploy/scoring | grep -E 'amqp (con
 (likewise notify), or `ryft_amqp_connected` in Grafana. The pods' `/metrics` cannot be
 reached through the API server's pod proxy (NetworkPolicy), so use the logs or Grafana.
 
-**Disruptions:** api and ingest have a PodDisruptionBudget; `web` runs two replicas with
-none yet (a change adds one), so a node drain can take both down briefly.
+**Disruptions:** api, ingest and `web` (two replicas, `maxUnavailable: 1`) have a
+PodDisruptionBudget, so a node drain takes one site pod at a time.
 
 **Re-run promote:** "Re-run failed jobs" on the latest run on main. An older run's
 promote exits with "not main's tip" and does nothing; use `gh workflow run ci --ref main
@@ -710,10 +735,12 @@ grep API_KEY deploy/k8s/overlays/local-postgres/secrets/api.env   # the bearer
 ```
 
 The four Deployment ConfigMaps are `ryft-config-<hash>` (a changed value renames them and
-rolls the pods). `kubectl apply` never prunes: the plain `ryft-config` of an install from
-before that change, and every older `ryft-config-<hash>`, stay behind unused. Delete them by
-hand when you like (`kubectl -n ryft-api get cm`; the one a Deployment's `envFrom` names is
-in use). Argo CD is not involved here.
+rolls the pods). `kubectl apply` never prunes: in ryft-api, ryft-ingest, ryft-scoring and
+ryft-notify the plain `ryft-config` of an install from before that change, and every older
+`ryft-config-<hash>`, stay behind unused. Delete them by hand when you like
+(`kubectl -n ryft-api get cm`; the one a Deployment's `envFrom` names is in use). In
+ryft-migrate the plain `ryft-config` stays in use: migrate's ConfigMap is not generated.
+Argo CD is not involved here.
 
 An install from before the per-namespace layout ran everything in namespace `ryft`.
 `kubectl apply` does not remove it: once the data has moved (backup and restore below),
