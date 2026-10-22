@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -242,11 +243,13 @@ func TestRetryTiers(t *testing.T) {
 	bus := b.bus("test")
 	var mu sync.Mutex
 	var at []time.Time
+	var again []bool
 	done := make(chan struct{})
-	consumeIngested(t, bus, func(context.Context, model.IngestedEvent) error {
+	consumeIngested(t, bus, func(ctx context.Context, _ model.IngestedEvent) error {
 		mu.Lock()
 		defer mu.Unlock()
 		at = append(at, time.Now())
+		again = append(again, events.Redelivered(ctx))
 		if len(at) < 4 {
 			return errors.New("not yet")
 		}
@@ -263,6 +266,10 @@ func TestRetryTiers(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	// The handler knows a retry from the first delivery (scoring's re-score, D100).
+	if want := []bool{false, true, true, true}; !slices.Equal(again, want) {
+		t.Errorf("redelivered per attempt: %v, want %v", again, want)
+	}
 	for i, tier := range []Tier{RetryTiers[0], RetryTiers[1], RetryTiers[2]} {
 		gap, want := at[i+1].Sub(at[i]), time.Duration(float64(tier.Delay)*scale)
 		if gap < want*8/10 {
