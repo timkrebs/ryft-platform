@@ -1,4 +1,4 @@
-// Package scoring implements the Whoop-style Recovery / Strain / Sleep model as
+// Package scoring implements RYFT's Recovery / Strain / Sleep model as
 // pure functions over already-loaded data. Nothing in this file touches the
 // database, so every formula is unit-testable (see algorithms_test.go) and
 // swappable without touching the service wiring in compute.go.
@@ -245,7 +245,7 @@ const (
 // Strain integrates HR samples against heart-rate reserve.
 //
 // Effective intensity i = max(0, HRR - hrrFloor) / (1 - hrrFloor), so a sedentary
-// day scores ~0 and a day with walking and stairs 3-6, like Whoop.
+// day scores ~0 and a day with walking and stairs 3-6.
 // TRIMP per minute = i * 0.64 * e^(1.92*i)   (Banister, male coefficients;
 // use 0.86 / 1.67 for female). Score = 21 * (1 - e^(-TRIMP/trimpScale)).
 func Strain(points []HRPoint, rhr, maxHR float64) StrainResult {

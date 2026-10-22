@@ -38,7 +38,7 @@ separate "no data" value, and the app should show the calibrating copy in both c
 ## D5 — Sleep quality labels: good ≥ 80, fair ≥ 60
 
 The prompt asks for `good | fair | poor` without thresholds, and its example (and the
-brand board) shows quality 82 as "good" — so Whoop's 85/70 split cannot be used. The
+brand board) shows quality 82 as "good" — so a stricter 85/70 split (good ≥ 85) cannot be used. The
 bands are good ≥ 80, fair 60–79, poor < 60 (`scoring.SleepQualityLabel`).
 
 ## D6 — Stage percentages: staged sleep for deep/light/rem, time in bed for awake
@@ -814,7 +814,7 @@ beyla on every node, kube-state-metrics, beyla's cache, the SDK injector).
 
 ## D58 — Train without M3: muscular load only from logged sessions
 
-M3 (Strain Coach: a strain target, bands, a duration-based muscular-load estimate) is
+M3 (strain target: a daily target with bands, and a duration-based muscular-load estimate) is
 deferred until the account flows are verified on a device; M3b (Train) was built
 first, as the user decided. M3b only needs from M3 a place for muscular load and its
 addition to the day's TRIMP, so that is all it takes: `workouts.muscular_load`,
