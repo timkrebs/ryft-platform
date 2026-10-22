@@ -1,11 +1,12 @@
 # shellcheck shell=bash
 # Shared by deploy_targets_test.sh and promote_test.sh (sourced; not a test itself).
 # A throwaway repository shaped like this one for the pieces the promote needs: backend/,
-# web/, the EKS overlay (the real file) and the scripts, with both image groups pinned to
+# web/, the EKS overlay (the real file minus its holds, with a fixed policy version) and the scripts, with both image groups pinned to
 # the first commit and a bare remote.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 export PIN_QUIET=1  # pin_images.sh reports "in force: A -> B" on stderr; the tests read it themselves
 OVERLAY=deploy/k8s/overlays/eks/kustomization.yaml
+FIXTURE_POLICY=2026-10-20  # the privacy version in the fixtures' overlay, config.env and list (not the live one)
 tmp=$(mktemp -d)
 # Never write into the real job summary of the run that executes the tests.
 export GITHUB_STEP_SUMMARY="$tmp/step_summary"
@@ -34,9 +35,12 @@ new_repo() {
   n=$((n+1)); r="$tmp/$1.$n"
   mkdir -p "$r/repo/scripts" "$r/repo/deploy/k8s/overlays/eks" "$r/repo/backend" "$r/repo/web"
   cp "$HERE"/scripts/{promote,pin_images,deploy_targets}.sh "$r/repo/scripts/"
-  for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; cp "$HERE/deploy/k8s/base/$s/config.env" "$r/repo/deploy/k8s/base/$s/"; done
-  mkdir -p "$r/repo/web/content/legal"; cp "$HERE/web/content/legal/privacy-versions.json" "$r/repo/web/content/legal/"
-  cp "$HERE/$OVERLAY" "$r/repo/$OVERLAY"
+  # Fixtures, never the live state: the real overlay gives the SHAPE (its comments, the six entries, the
+  # in-force literals), but its holds are stripped and its in-force literals set to FIXTURE_POLICY, so a
+  # hold on main, today's pins, the live privacy version or privacy-versions.json cannot change a result.
+  for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$FIXTURE_POLICY" > "$r/repo/deploy/k8s/base/$s/config.env"; done
+  mkdir -p "$r/repo/web/content/legal"; printf '["%s"]\n' "$FIXTURE_POLICY" > "$r/repo/web/content/legal/privacy-versions.json"
+  grep -v '^ *# hold: ' "$HERE/$OVERLAY" | sed -E "s/(PRIVACY_POLICY_VERSION=)[0-9-]+\]/\1$FIXTURE_POLICY]/" > "$r/repo/$OVERLAY"
   cd "$r/repo"
   git init -q -b main && git config user.email t@example.com && git config user.name test
   echo v1 > backend/main.go; echo v1 > web/index.txt; git add -A; git commit -qm "first"
