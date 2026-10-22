@@ -75,8 +75,10 @@ for bad in $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xc2\x85' $'\r' $'\t' $'\xc3\xa4'; 
 done
 cmp -s "$tmp/orig" "$OVERLAY" || fail "a refused call changed the file"
 # Public text: no @, no closing keywords; "fix in #57" and "see #57" are fine.
-for r in "ask @someone" "fixes #12" "Closes #12" "resolved: #3" "fix #7" "close org/repo#9" "CLOSED   #4"; do refuse add web "$r"; done
-for r in "broken AASA, fix in #57" "see #57" "prefixes #12"; do
+for r in "ask @someone" "fixes #12" "Closes #12" "resolved: #3" "fix #7" "close org/repo#9" "CLOSED   #4" \
+  "fixes https://github.com/o/r/issues/12" "Resolves: https://github.com/timkrebs/ryft-platform/issues/3" "closed http://www.github.com/o/r/issues/9" \
+  "fix github.com/o/r/pull/4" "fixes GH-12"; do refuse add web "$r"; done
+for r in "broken AASA, fix in #57" "see #57" "prefixes #12" "see https://github.com/o/r/issues/12" "fix in https://github.com/o/r/issues/12"; do
   TODAY=2026-10-22 ./scripts/hold.sh add web "$r" >/dev/null || fail "'$r' must be accepted"
   ./scripts/hold.sh rm web >/dev/null
 done

@@ -70,6 +70,25 @@ for bad in "# hold: webby 2026-10-23 x" "# hold: web x" "# hold: web 2026-13-01 
   grep -q '::error' "$tmp/err" || fail "no annotation for '$bad'"
   [ ! -s "$tmp/out" ] || fail "no outputs when a hold does not parse"
 done
+# The reason is public text: a hand-edited hold line is held to the rules hold.sh applies, in every mode.
+for bad in "# hold: web 2026-10-23 ask @someone" "# hold: web 2026-10-23 fixes #12" "# hold: services 2026-10-23 Closes org/repo#9" \
+  "# hold: web 2026-10-23 fixes https://github.com/o/r/issues/12" "# hold: web 2026-10-23 resolved: GH-3"; do
+  new_repo bad-reason; commit_file web/index.txt v2 "web: a change"
+  awk -v l="  $bad" '/ryft\/web$/ { print l } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: hand-written hold"
+  for m in "" --check --pins; do
+    rc=0; FORCE= ./scripts/deploy_targets.sh $m >"$tmp/out" 2>"$tmp/err" || rc=$?
+    [ "$rc" = 2 ] || fail "'$bad' ($m) must stop with exit 2 (got $rc)"
+    grep -q '::error.*hold reason' "$tmp/err" || fail "no annotation for the reason of '$bad': $(cat "$tmp/err")"
+  done
+done
+for ok in "# hold: web 2026-10-23 broken AASA, fix in #57" "# hold: web 2026-10-23 see https://github.com/o/r/issues/12" "# hold: web 2026-10-23 prefixes #12"; do
+  new_repo ok-reason; awk -v l="  $ok" '/ryft\/web$/ { print l } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: hand-written hold"
+  FORCE= ./scripts/deploy_targets.sh --check >/dev/null 2>"$tmp/err" || fail "'$ok' must pass: $(cat "$tmp/err")"
+done
+# --reason on its own (hold.sh calls it)
+./scripts/deploy_targets.sh --reason "broken AASA, see #57" || fail "--reason: a fine reason"
+rc=0; ./scripts/deploy_targets.sh --reason "fixes https://github.com/o/r/issues/12" 2>/dev/null || rc=$?; [ "$rc" = 2 ] || fail "--reason: an issue URL with a closing keyword (rc=$rc)"
+rc=0; ./scripts/deploy_targets.sh --reason 2>/dev/null || rc=$?; [ "$rc" = 2 ] || fail "--reason without a text (rc=$rc)"
 # The overlay as committed carries the convention in a comment but no hold of its own.
 new_repo real-overlay
 grep -q "main.s head for the group" "$OVERLAY" || fail "the overlay no longer documents the hold convention"
@@ -143,6 +162,24 @@ mutate '/ryft\/web$/ { print; getline; print "    newTag: latest"; next } { prin
 mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f437747\""; getline; print; print "  - name: ghcr.io/timkrebs/ryft/web"; print "    newName: ghcr.io/evil/web"; print "    newTag: \"f437747\""; next } { print }' "a second web entry with a newName"
 mutate '/ryft\/api$/ { print "  - name: \"ghcr.io/timkrebs/ryft/api\""; next } { print }' "a quoted name"
 mutate '/ryft\/web$/ { print; getline; print "    newTag: \"f4377470\""; next } { print }' "an 8-digit tag"
+
+# --check reads the whole overlay as an allowlist: these all fail, a comment and a blank line do not.
+new_repo allow; awk '{ print } /^kind:/ { print "# a harmless comment"; print "" }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: comment"
+chk; [ "$rc" = 0 ] || fail "comments and blank lines pass: $(cat "$tmp/err")"
+mutate '{ print } END { print "images:"; print "  - name: ghcr.io/timkrebs/ryft/web"; print "    newTag: \"f437747\"" }' "a second images key"
+mutate '/^images:/ { print "\"images\":"; next } { print }' "a quoted images key"
+mutate '/^images:/ { print "images :"; next } { print }' "a space before the colon of images"
+mutate '/^images:/ { print "images: [{name: ghcr.io/timkrebs/ryft/web, newName: ghcr.io/evil/web, newTag: \"f437747\"}]"; skip = 1; next } skip && /^[^ #]/ { skip = 0 } skip && /^ / { next } { print }' "a flow-style images list"
+mutate '{ print } /^kind:/ { print "namePrefix: evil-" }' "an unknown top-level key"
+mutate '{ print } /^kind:/ { print "replacements:"; print "  - source: {kind: ConfigMap, name: x}" }' "replacements"
+mutate '{ print } END { print "---"; print "images:"; print "  - name: ghcr.io/timkrebs/ryft/web"; print "    newName: ghcr.io/evil/web" }' "a second YAML document"
+mutate '/^patches:/ { print; print "  - patch: |-"; print "      - op: add"; next } { print }' "an inline patch"
+mutate '/^resources:/ { print; print "  - https://example.com/evil.yaml?x=1"; next } { print }' "a remote resource with a query"
+mutate '/^configMapGenerator:/ { print; print "  - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=2026-10-20, EXTRA=1] }"; next } { print }' "an extra literal"
+mutate '/ryft\/notify$/ { print "  - name: docker.io/library/postgres"; print "    newTag: \"abcdef0\""; getline; next } { print }' "an image that is not ours instead of notify"
+mutate '/ryft\/notify$/ { getline; next } { print }' "an entry missing"
+mutate '/ryft\/notify$/ { print "  - name: ghcr.io/timkrebs/ryft/miner"; next } { print }' "an unknown ryft image"
+mutate '/ryft\/api$/ { print; getline; print "    # a comment between name and tag is fine"; print; print "    newTag: \"abcdef0\""; next } { print }' "two newTag lines"
 
 # Bytes that are line breaks to YAML but not to this script: LS, PS, NEL (UTF-8 and raw) and CR
 # stop every mode with exit 2, so a hold reason cannot smuggle an `images:` entry (a newName).

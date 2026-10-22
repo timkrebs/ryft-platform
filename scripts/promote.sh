@@ -24,12 +24,11 @@
 #   GH_TOKEN  the GitHub App's installation token (PRs it opens run the checks)
 #   SLUG      the App's slug (its bot user commits)
 #   FORCE     passed through to deploy_targets.sh (workflow_dispatch input)
-#   CHECK_REGISTRY  the image check (default scripts/check_registry.sh; tests override)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${GH_TOKEN:?the GitHub App token}" "${SLUG:?the GitHub App slug}"
 case "$SLUG" in *[!a-z0-9-]*|"") echo "promote: odd App slug '$SLUG'" >&2; exit 2 ;; esac
-check=${CHECK_REGISTRY:-./scripts/check_registry.sh}
+check=./scripts/check_registry.sh  # no environment override: nothing a workflow sets can turn the registry check off
 # The tag is HEAD cut to 7 characters, like metadata-action's type=sha,format=short.
 # Not `rev-parse --short=7`: that returns 8 when seven are ambiguous, and the image jobs
 # have pushed the 7-character tag.

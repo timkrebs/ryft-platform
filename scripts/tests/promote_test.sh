@@ -39,7 +39,8 @@ reset_logs() { : > "$GH_LOG"; : > "$CHECK_LOG"; rm -f "$GH_BODY"; }
 # What the job sees: HEAD is main's tip on origin (STALE=1: a newer push already landed).
 run() {
   [ -n "${STALE:-}" ] || git push -q origin main:main
-  PATH="$tmp/bin:$PATH" GH_TOKEN=t SLUG=ryft-deploy CHECK_REGISTRY="$tmp/check.sh" ./scripts/promote.sh
+  cp "$tmp/check.sh" scripts/check_registry.sh  # promote runs it by path; the real one is not in the throwaway repository
+  PATH="$tmp/bin:$PATH" GH_TOKEN=t SLUG=ryft-deploy ./scripts/promote.sh
 }
 # pr <number> <branch> [fork] [author]: one PR as `gh pr list --json` shows it.
 pr() { printf '{"number":%s,"headRefName":"%s","isCrossRepository":%s,"author":{"login":"%s"},"mergedAt":null}' "$1" "$2" "${3:-false}" "${4:-app/ryft-deploy}"; }

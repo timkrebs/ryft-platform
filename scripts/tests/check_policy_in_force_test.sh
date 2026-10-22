@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 # scripts/check_policy_in_force.sh in a throwaway repository with a stubbed render (make test-scripts).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d); fakebin=$(mktemp -d); trap 'rm -rf "$tmp" "$fakebin"' EXIT
 fail() { echo "✗ check_policy_in_force_test: $*" >&2; exit 1; }
 mkdir -p "$tmp/scripts"; cp "$HERE/scripts/check_policy_in_force.sh" "$tmp/scripts/"
 cd "$tmp"; git init -q -b main; git config user.email t@example.com; git config user.name test
@@ -83,7 +84,9 @@ spec:
         name: web
 EOF
 }
-export RENDER_CMD="cat $tmp/rendered.yaml"
+# kustomize is a fake on PATH: it prints the file render() wrote (the script has no environment hook).
+mkdir -p "$fakebin"; printf '#!/bin/sh\n[ "$1 $2" = "kustomize deploy/k8s/overlays/eks" ] || exit 2\ncat "%s/rendered.yaml"\n' "$tmp" > "$fakebin/kubectl"; chmod +x "$fakebin/kubectl"
+export PATH="$fakebin:$PATH"
 ok()  { ./scripts/check_policy_in_force.sh "${BASE:-}" >"$tmp/out" 2>&1 || fail "should pass: $1 ($(cat "$tmp/out"))"; }
 bad() { if ./scripts/check_policy_in_force.sh "${BASE:-}" >"$tmp/out" 2>&1; then fail "should fail: $1"; fi; grep -q "$2" "$tmp/out" || fail "$1: message lacks '$2': $(cat "$tmp/out")"; }
 
@@ -156,6 +159,9 @@ variant "published, a tag (deliberately refused)" bad '---\nstatus: !!str publis
 variant "published, flow frontmatter (deliberately refused)" bad '---\n{status: published}\n---\n'
 variant "published, a block scalar (deliberately refused)" bad '---\nstatus: |\n  published\n---\n'
 variant "published, a continuation line (deliberately refused)" bad '---\nstatus: published\n  and more\n---\n'
+variant "published, a continuation line after a blank line (deliberately refused)" bad '---\nstatus: published\n\n  draft\n---\n'
+variant "published, a continuation line after blank lines and a comment (deliberately refused)" bad '---\nstatus: published\n\n# c\n\n  draft\n---\n'
+variant "published, a blank line, then another key" ok '---\nstatus: published\n\ntitle: x\n---\n'
 variant "published twice (deliberately refused)" bad '---\nstatus: published\nstatus: published\n---\n'
 variant "a quote inside the value" bad '---\nstatus: pub"lished"\n---\n'
 variant "a blank inside the value" bad '---\nstatus: "pub lished"\n---\n'
@@ -195,6 +201,12 @@ overlay_web "$flip"; git add -A; git commit -qm "base pins the published page"; 
 render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "web stays at the commit that published the text"
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""; bad "web rolled back past the in-place publish (same version label)" "bring the draft text back"
 render '"2026-10-20"' '"2026-10-20"' '"f437747"'; bad "web rolled back to the foreign image, which is a draft" "bring the draft text back"
+# a base overlay with a web entry whose tag the check cannot read refuses (it would skip the in-place guard)
+overlay_web "$flip"; sed -i.bak 's|- name: ghcr.io/timkrebs/ryft/web|- name: "ghcr.io/timkrebs/ryft/web"|' "$OV"; rm -f "$OV.bak"
+git add -A; git commit -qm "base overlay quotes the web name"; git branch -q -f base HEAD
+render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; bad "a base overlay whose web entry cannot be read" "cannot read"
+overlay_web "$flip"; git add -A; git commit -qm "base overlay reads again"; git branch -q -f base HEAD
+render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "a readable web entry on base again"
 # and a pull request that sets the page back to a draft
 mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-10-20\n' > $BC/$s/config.env; done
 git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
@@ -202,4 +214,4 @@ render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "the published text is unch
 page en 2026-10-20 draft
 bad "a published page set back to a draft in place" "cannot go back to a draft"
 git checkout -q -f main
-echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page), no env override, the checked ConfigMap is the one read, drafts only unchanged"
+echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page), no environment hook, the checked ConfigMap is the one read, drafts only unchanged"
