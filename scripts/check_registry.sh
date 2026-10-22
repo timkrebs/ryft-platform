@@ -25,20 +25,27 @@ ours=ghcr.io/timkrebs/ryft/
 for ref in $(printf '%s\n' "$refs" | grep '^ghcr\.io/' || true); do
   case "$ref" in "$ours"*) ;; *) echo "✗ $ref is not under $ours"; exit 1 ;; esac
 done
+# Every reference, from the overlay's render or from the arguments, is <name>:<tag> of one of our
+# six images (a typo such as ghrc.io/... used to pass silently: it is not ghcr.io, so nothing asked
+# the registry); and something was checked.
+[ -n "$refs" ] || { echo "✗ no image to check (the render is empty or no argument)"; exit 1; }
+while IFS= read -r ref; do
+  case "$ref" in
+    "$ours"*) ;;
+    *) if printf '%s\n' "$ref" | grep -qE '(^|/)(ingest|scoring|api|notify|migrate|web)([:@]|$)'; then echo "✗ $ref: one of our images from somewhere else"
+       else echo "✗ $ref: not one of our six images. overlays/eks renders no third-party image; a new one needs a digest and an entry in scripts/check_registry.sh"; fi
+       exit 1 ;;
+  esac
+  printf '%s\n' "$ref" | grep -qE "^${ours}(ingest|scoring|api|notify|migrate|web):[A-Za-z0-9_][A-Za-z0-9_.-]*\$" \
+    || { echo "✗ $ref: not <name>:<tag> of one of our six images (a digest, or a name that is not ours)"; exit 1; }
+done <<EOT
+$refs
+EOT
 if [ $# -eq 0 ]; then
-  [ -n "$refs" ] || { echo "✗ the EKS overlay renders no image at all"; exit 1; }
   pins=$(./scripts/deploy_targets.sh --pins)
   while IFS= read -r ref; do
-    case "$ref" in
-      "$ours"*) ;;
-      *) if printf '%s\n' "$ref" | grep -qE '(^|/)(ingest|scoring|api|notify|migrate|web)([:@]|$)'; then echo "✗ $ref: one of our images from somewhere else"
-         else echo "✗ $ref: not one of our six images. overlays/eks renders no third-party image; a new one needs a digest and an entry in scripts/check_registry.sh"; fi
-         exit 1 ;;
-    esac
-    printf '%s\n' "$ref" | grep -qE "^${ours}(ingest|scoring|api|notify|migrate|web):[A-Za-z0-9_][A-Za-z0-9_.-]*\$" \
-      || { echo "✗ $ref: not <name>:<tag> of one of our six images (a digest, or a name that is not ours)"; exit 1; }
     img=${ref%:*}; img=${img##*/}
-    printf '%s\n' "$pins" | grep -qx "$img=${ref##*:}" || { echo "✗ $ref: kustomize renders a tag the overlay's pin lines do not say (a newName/newTag trick, or a stale pin)"; exit 1; }
+    printf '%s\n' "$pins" | grep -qx "$img=${ref##*:}" || { echo "✗ $ref: the render has a tag the overlay's pin lines do not say (a newName/newTag trick, or a stale pin)"; exit 1; }
   done <<EOT
 $refs
 EOT
@@ -64,4 +71,8 @@ for ref in $(printf '%s\n' "$refs" | grep '^ghcr\.io/' || true); do
   else echo "✗ $ref: $code (not built yet, or a typo in newTag)"; missing=1
   fi
 done
-[ "$missing" = 0 ] || { echo "✗ fix newTag in deploy/k8s/overlays/eks/kustomization.yaml (the short SHA of a green CI run on main)"; exit 1; }
+if [ "$missing" != 0 ]; then
+  if [ $# -eq 0 ]; then echo "✗ fix newTag in deploy/k8s/overlays/eks/kustomization.yaml (the short SHA of a green CI run on main)"
+  else echo "✗ at least one of the given images is not in the registry (the short SHA of a green CI run on main)"; fi
+  exit 1
+fi

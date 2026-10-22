@@ -36,7 +36,7 @@
 # overlay as an ALLOWLIST: comments and blank lines, the top-level keys apiVersion, kind,
 # resources, patches, images and configMapGenerator once each (anything else at column 0,
 # a second `images:`, a flow-style or quoted key, a `---`, fails), resources and patches as
-# plain `- <path>` / `- path: <file>` lines (no inline patch), configMapGenerator as the two
+# `- ../../services/<name>` / `- <file>.yaml` and `- path: <file>.yaml` lines (no inline patch, no remote base, no ../), configMapGenerator as the two
 # in-force PRIVACY_POLICY_VERSION literals, and under images exactly the six entries
 # `- name: ghcr.io/timkrebs/ryft/<ingest|scoring|api|notify|migrate|web>` + `newTag: "<7 hex>"`,
 # each once: a newName, digest or any further line would silently change what runs.
@@ -183,8 +183,8 @@ if [ "$mode" = check ]; then
       if (seen[k]++) bad("the key " k " appears twice")
       next
     }
-    sec == "resources" { if ($0 !~ /^  - [A-Za-z0-9_.\/-]+[ \t]*$/) bad("resources: not a plain path: " $0); next }
-    sec == "patches"   { if ($0 !~ /^  - path: [A-Za-z0-9_.\/-]+[ \t]*$/) bad("patches: not a plain `- path: <file>` (no inline patch): " $0); next }
+    sec == "resources" { if ($0 !~ /^  - (\.\.\/\.\.\/services\/[a-z]+|[A-Za-z0-9_-]+\.yaml)[ \t]*$/) bad("resources: not `- ../../services/<name>` or `- <file>.yaml` (a remote base or a path out of the directory would render other code): " $0); next }
+    sec == "patches"   { if ($0 !~ /^  - path: [A-Za-z0-9_-]+\.yaml[ \t]*$/) bad("patches: not a plain `- path: <file>.yaml` (no inline patch, no ../): " $0); next }
     sec == "configMapGenerator" {
       if ($0 !~ /^  - \{ name: ryft-config, namespace: ryft-(api|ingest), behavior: merge, literals: \[PRIVACY_POLICY_VERSION=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\] \}[ \t]*$/) bad("configMapGenerator: not an in-force PRIVACY_POLICY_VERSION literal for ryft-api or ryft-ingest: " $0)
       next
@@ -211,7 +211,7 @@ if [ "$mode" = check ]; then
     }
   ' "$overlay")
   if [ -n "$entries" ]; then
-    printf '%s\n' "$entries" | while IFS= read -r l; do echo "::error file=$overlay,title=image entry::$l" >&2; done
+    printf '%s\n' "$entries" | while IFS= read -r l; do echo "::error file=$overlay,title=overlay::$l" >&2; done
     rc=1
   fi
   if [ -n "$base" ]; then

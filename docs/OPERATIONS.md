@@ -510,10 +510,15 @@ names an environment or reads the key (in any spelling: flow style, quoted keys,
 of the secret's name), if a workflow uses `pull_request_target` or `workflow_run`, calls an
 external reusable workflow (`uses:` other than `./.github/workflows/<file>`), uses
 `secrets: inherit` or reads `secrets` other than as `secrets.<NAME>`, or names one of the
-test hooks of the scripts. The same job fails on a hidden line break, control character,
-bidi control or BOM in any YAML file below `deploy/`, `.github/` and
-`infra/vault/tests/golden/` (`scripts/check_yaml_bytes.sh`; the pre-commit hook runs it on
-staged files of those folders, `make hooks`). "Not bypassable by administrators" is a
+test hooks of the scripts, or a YAML merge key. The same job fails on a hidden line break,
+control or other invisible character (format, private use, odd spaces), bidi control or BOM
+in ANY tracked file, by content and not by extension (kustomize also reads `Kustomization`
+and any file a `resources:` entry names), on the file names `Kustomization`,
+`kustomization.yml`, `.gitattributes` and `.gitmodules`, and (`make k8s-validate`) on a
+kustomization under `deploy/` that references a remote base or anything outside `deploy/`
+(`scripts/check_bytes.sh`, `scripts/check_kustomize_refs.sh`; the pre-commit hook runs the
+byte check on every staged file and needs python3, `make hooks`). `deploy/argocd/apps/`
+holds `*.yaml` files only. "Not bypassable by administrators" is a
 setting you confirm in the browser (step 3).
 
 **Set it up by rotating the key, not by moving it** (user only; the file that was on your

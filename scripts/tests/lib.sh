@@ -29,7 +29,8 @@ hold() {
   awk -v g="$1" -v r="$2" -v f="  - name: ghcr.io/timkrebs/ryft/$img" '$0 == f { print "  # hold: " g " 2026-10-23 " r } { print }' "$OVERLAY" > "$OVERLAY.new"
   mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: hold $1"
 }
-unhold() { grep -v '^ *# hold: ' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: release the hold"; }
+HOLD_LINE='^[[:space:]]*#[[:space:]]*hold:'  # the validator accepts tabs and spaces around the marker (deploy_targets.sh hold_ok)
+unhold() { grep -v "$HOLD_LINE" "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: release the hold"; }
 # new_repo <name>: cd into a fresh repository, both groups pinned to its first commit.
 new_repo() {
   n=$((n+1)); r="$tmp/$1.$n"
@@ -40,8 +41,11 @@ new_repo() {
   # hold on main, today's pins, the live privacy version or privacy-versions.json cannot change a result.
   for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$FIXTURE_POLICY" > "$r/repo/deploy/k8s/base/$s/config.env"; done
   mkdir -p "$r/repo/web/content/legal"; printf '["%s"]\n' "$FIXTURE_POLICY" > "$r/repo/web/content/legal/privacy-versions.json"
-  grep -v '^ *# hold: ' "$HERE/$OVERLAY" | sed -E "s/(PRIVACY_POLICY_VERSION=)[0-9-]+\]/\1$FIXTURE_POLICY]/" > "$r/repo/$OVERLAY"
-  cd "$r/repo"
+  grep -v "$HOLD_LINE" "$HERE/$OVERLAY" | sed -E "s/(PRIVACY_POLICY_VERSION=)[0-9-]+\]/\1$FIXTURE_POLICY]/" > "$r/repo/$OVERLAY"
+  if grep -qiE '#[[:space:]]*hold' "$r/repo/$OVERLAY"; then echo "lib.sh: a hold-like line is left in the fixture overlay: $(grep -niE '#[[:space:]]*hold' "$r/repo/$OVERLAY")" >&2; exit 1; fi
+  # promote runs the registry check by path; a test that fakes it sets FAKE_CHECK_REGISTRY once, in its setup.
+  [ -z "${FAKE_CHECK_REGISTRY:-}" ] || cp "$FAKE_CHECK_REGISTRY" "$r/repo/scripts/check_registry.sh"
+  cd "$r/repo" || exit 1
   git init -q -b main && git config user.email t@example.com && git config user.name test
   echo v1 > backend/main.go; echo v1 > web/index.txt; git add -A; git commit -qm "first"
   first=$(short)

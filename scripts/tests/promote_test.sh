@@ -34,12 +34,12 @@ printf '%s\n' "$@" >> "$CHECK_LOG"
 [ -z "${CHECK_FAIL:-}" ]
 G
 chmod +x "$tmp/bin/gh" "$tmp/check.sh"
+export FAKE_CHECK_REGISTRY="$tmp/check.sh"  # new_repo puts it in the throwaway repository (promote runs it by path)
 export GH_LOG="$tmp/gh.log" GH_BODY="$tmp/body.md" CHECK_LOG="$tmp/check.log"
 reset_logs() { : > "$GH_LOG"; : > "$CHECK_LOG"; rm -f "$GH_BODY"; }
 # What the job sees: HEAD is main's tip on origin (STALE=1: a newer push already landed).
 run() {
   [ -n "${STALE:-}" ] || git push -q origin main:main
-  cp "$tmp/check.sh" scripts/check_registry.sh  # promote runs it by path; the real one is not in the throwaway repository
   PATH="$tmp/bin:$PATH" GH_TOKEN=t SLUG=ryft-deploy ./scripts/promote.sh
 }
 # pr <number> <branch> [fork] [author]: one PR as `gh pr list --json` shows it.

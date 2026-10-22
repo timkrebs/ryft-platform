@@ -85,6 +85,9 @@ jobs:
               - 'scripts/**'
               - 'Makefile'
               - '.github/**'
+              - '.gitattributes'
+              - '**/.gitattributes'
+              - '.gitmodules'
               - 'docker-compose.yml'
               - 'backend/internal/events/amqpbus/**'
               - 'backend/cmd/rabbitmq-topology/**'
@@ -193,11 +196,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # First: the bytes of every YAML file below deploy/, .github/ and the Vault golden files. A
-      # hidden line break (U+2028, U+2029, U+0085, a lone CR) or a bidi control in a comment is a
-      # line break to the parsers and invisible to every line-based check after this one.
-      - name: YAML files have no hidden line breaks, controls, bidi controls or BOM
-        run: ./scripts/check_yaml_bytes.sh
+      # First: the bytes of every tracked file (not only YAML: kustomize also reads `Kustomization`
+      # and any extension named in resources/patches). A hidden line break (U+2028, U+2029, U+0085, a
+      # lone CR), a bidi control or another invisible character in a comment is a line break to the
+      # parsers and invisible to every line-based check after this one. Also refuses the file names
+      # Kustomization, kustomization.yml, .gitattributes and .gitmodules.
+      - name: Files have no hidden line breaks, controls, invisible characters, BOM or banned names
+        run: ./scripts/check_bytes.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: backend/go.mod
@@ -213,14 +218,16 @@ jobs:
       - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
         env:
           GOTOOLCHAIN: auto
+      # yq (mikefarah) pinned like the others, not the runner image's: check_workflows.sh parses with it.
+      - run: go install github.com/mikefarah/yq/v4@v4.54.1
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
-      # What actionlint cannot know, read from the parsed YAML (yq is on ubuntu-latest; the script
-      # fails without it): no pull_request_target/workflow_run, only `promote` names the
+      # What actionlint cannot know, read from the parsed YAML (the pinned yq first on PATH; the
+      # script fails without it): no pull_request_target/workflow_run, only `promote` names the
       # environment `deploy` and reads the deploy App's key, no external reusable workflow, no
       # `secrets: inherit`, no test hooks of the scripts.
-      - run: ./scripts/check_workflows.sh
+      - run: PATH="$(go env GOPATH)/bin:$PATH" ./scripts/check_workflows.sh
       # The privacy policy version that api and ingest name in config.env has its page in
       # English and German on the site, and the site has no page the platform does not
       # name (D107): consent is recorded against that version.

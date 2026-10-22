@@ -73,6 +73,10 @@ rc=0; CHECK_REGISTRY_OFFLINE=1 CHECK_RENDER=true RENDER_CMD=true CHECK_REGISTRY=
 # Arguments (promote's refs): the prefix rule applies to them too.
 chk ghcr.io/attacker/web:abcdef0
 [ "$rc" = 1 ] || fail "an argument outside our prefix must fail"
+for a in "ghrc.io/timkrebs/ryft/web:$first" "docker.io/library/postgres:17" "ghcr.io/timkrebs/ryft/miner:$first" "ghcr.io/timkrebs/ryft/web" "ghcr.io/timkrebs/ryft/web@sha256:$(printf 'a%.0s' $(seq 64))"; do
+  chk "ghcr.io/timkrebs/ryft/web:$first" "$a"; [ "$rc" = 1 ] || fail "the argument '$a' must fail even next to a good one (rc=$rc): $(cat "$tmp/out")"
+done
+chk ""; [ "$rc" = 1 ] || fail "an empty argument must fail (rc=$rc)"
 chk "ghcr.io/timkrebs/ryft/web:$first"
 [ "$rc" = 0 ] || fail "an argument of ours that the registry has: $(cat "$tmp/out")"
 echo "✓ check_registry_test: only our six images, exactly the pin lines, the registry's answer, no environment switch"

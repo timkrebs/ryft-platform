@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 dir=${1:-.github/workflows}
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; then
-  echo "::error title=workflow rule::check_workflows: yq (mikefarah, v4) is not installed, so the workflows cannot be parsed. ubuntu-latest has it; locally: brew install yq" >&2
+  echo "::error title=workflow rule::check_workflows: yq (mikefarah, v4) is not installed, so the workflows cannot be parsed. CI installs the pinned version (go install github.com/mikefarah/yq/v4); locally: brew install yq" >&2
   exit 2
 fi
 rc=0
@@ -152,9 +152,17 @@ for m in errs:
 sys.exit(1 if errs else 0)
 PYEOF
 
+errf=$(mktemp); trap 'rm -f "$errf"' EXIT
 for f in "${files[@]}"; do
-  if ! json=$(yq -o=json 'explode(.)' "$f" 2>&1); then
-    fail "$f: yq cannot parse it: $json"; continue
+  # A YAML merge key (`<<: *anchor`) is read differently by yq, by GitHub and by other readers.
+  if grep -Eq "(^|[{,[:space:]\"'])<<[\"']?[[:space:]]*:" "$f"; then
+    fail "$f: a YAML merge key (<<:) is not allowed in a workflow: the readers disagree about what it merges. Write the keys out."; continue
+  fi
+  if ! json=$(yq -o=json 'explode(.)' "$f" 2>"$errf"); then
+    fail "$f: yq cannot parse it: $(cat "$errf")"; continue
+  fi
+  if [ -s "$errf" ]; then
+    fail "$f: yq warned while parsing it: $(cat "$errf")"; continue
   fi
   if ! out=$(printf '%s' "$json" | python3 -I -c "$PY" "$f" "$(basename "$f")" 2>&1); then
     while IFS= read -r l; do [ -z "$l" ] || fail "$l"; done <<EOT
