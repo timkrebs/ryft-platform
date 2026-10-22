@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -251,6 +254,51 @@ func TestMigrateCalibratingReason(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `UPDATE daily_scores SET calibrating_reason='no_sleep' WHERE user_id=$1`, id); err == nil {
 		t.Fatal("calibrating_reason must refuse a value outside short_history, no_hrv, no_rhr")
+	}
+}
+
+// 0027 gives up on a held table after its lock_timeout (5 s) instead of waiting
+// with every reader queued behind it: the migration fails, nothing of it stays,
+// and it applies once the table is free.
+func TestMigrateCalibratingReasonGivesUpOnALock(t *testing.T) {
+	pool := freshDB(t, false)
+	ctx := context.Background()
+	if err := migrateTo(ctx, pool, quiet, 26); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := pool.Begin(ctx) // a long read: ACCESS SHARE, which ACCESS EXCLUSIVE waits for
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback(ctx) // released below; a no-op then
+	if _, err := reader.Exec(ctx, `SELECT count(*) FROM daily_scores`); err != nil {
+		t.Fatal(err)
+	}
+	wait, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = Migrate(wait, pool, quiet)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" { // lock_not_available
+		t.Fatalf("want a lock timeout, got %v", err)
+	}
+	if took := time.Since(start); took < 4*time.Second || took > 15*time.Second {
+		t.Fatalf("gave up after %s, want about 5 s", took)
+	}
+	if scalar[bool](t, pool, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 27)`) ||
+		scalar[bool](t, pool, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		  WHERE table_name = 'daily_scores' AND column_name = 'calibrating_reason')`) {
+		t.Fatal("a failed 0027 must leave nothing behind")
+	}
+	if err := reader.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, quiet); err != nil {
+		t.Fatalf("once the table is free: %v", err)
+	}
+	// SET LOCAL ends with the migration's transaction: the session keeps no timeout.
+	if got := scalar[string](t, pool, `SHOW lock_timeout`); got != "0" {
+		t.Fatalf("lock_timeout after the migration: %s", got)
 	}
 }
 
