@@ -47,7 +47,8 @@ prs() { local o="["; local sep=; for x in "$@"; do o="$o$sep$x"; sep=,; done; pr
 MERGE=https://github.com/o/r/pull/99
 pr_file() { git show "origin/deploy/$1:$OVERLAY"; }
 changed_pins() { # <branch-sha>: how many newTag lines the PR changes, against main
-  git diff --numstat main "origin/deploy/$1" -- "$OVERLAY" | cut -f1
+  # the in-force literals move with web; they are no pins
+  git diff -U0 main "origin/deploy/$1" -- "$OVERLAY" | grep -c '^+ *newTag:' || true
 }
 no_branch() { [ -z "$(git ls-remote --heads origin 'deploy/*')" ] && ! git rev-parse -q --verify "refs/heads/deploy/$1" >/dev/null; }
 
@@ -109,10 +110,14 @@ out=$(run) && echo "$out" | grep -q 'no group differs' || fail "the pin commit m
 [ ! -s "$GH_LOG" ] || fail "gh called for the pin commit"
 
 # 6. the running web pin is a ryft-web SHA (not in this history): web is pinned, services are not
-new_repo unknown-web; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; reset_logs
+# The base's version is NOT the first listed one (a later policy), so the in-force literals move too:
+# they are no pins and must not be counted as such.
+new_repo unknown-web; base_policy 2099-12-31; ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "deploy: web f437747"; reset_logs
+[ "$(in_force | cut -d' ' -f1)" != 2099-12-31 ] || fail "setup: the foreign pin carries the first listed version"
 commit_file README.md notes "docs: notes"; sha=$(short)
 run >/dev/null || fail "promote failed"
 [ "$(changed_pins "$sha")" = 1 ] || fail "only web moves"
+[ "$(in_force <(git show "origin/deploy/$sha:$OVERLAY"))" = "2099-12-31 2099-12-31" ] || fail "web pinned: the version in force moves to base's: $(pr_file "$sha" | grep PRIVACY)"
 pr_file "$sha" | grep -A1 'ryft/web$' | grep -q "newTag: \"$sha\"" || fail "web is not pinned"
 grep -q "^### web: \`f437747\` → \`$sha\` (pin not in this history)" "$GH_BODY" || fail "body: $(cat "$GH_BODY")"
 grep -q 'not one commit of this history' "$GH_BODY" || fail "the body must say the old pin is unknown"
@@ -192,7 +197,7 @@ for variant in pins extra-commit other-file; do
   new_repo rerun-differs; commit_file web/index.txt v2 "web: a change"; sha=$(short); run >/dev/null; git switch -q main
   git switch -q -c scratch "origin/deploy/$sha"
   case "$variant" in
-    pins) ./scripts/pin_images.sh 1234567 web "$OVERLAY" >/dev/null; git commit -qam "other pins" ;;
+    pins) ./scripts/pin_images.sh f437747 web "$OVERLAY" >/dev/null; git commit -qam "other pins" ;;
     extra-commit) git commit -q --allow-empty -m "an extra commit" ;;
     other-file) echo x > backend/extra.go; git add -A; git commit -qm "other file" ;;
   esac
@@ -243,5 +248,29 @@ grep -q "gh pr create" "$GH_LOG" || fail "the PR was not created"
 # 14. gh failing while the PRs are listed fails the job: no silent "no PRs to close", no branch pushed twice
 new_repo gh-fails; commit_file web/index.txt v2 "web: a change"; reset_logs
 GH_FAIL_LIST=1 run >/dev/null 2>&1 && fail "a failing gh pr list must fail the promote"
+
+# 15. the privacy policy in force moves with the web pin (D78, F1): one file, the body says so.
+# No date is hard-coded: what is in force now comes from the overlay, the new one is never real.
+NEWV=2099-12-31
+new_repo policy; before=$(in_force | cut -d' ' -f1); base_policy "$NEWV"; commit_file web/index.txt v2 "web: the new text"; sha=$(short); reset_logs
+run >/dev/null || fail "promote with a new policy failed"
+[ "$(in_force <(git show "origin/deploy/$sha:$OVERLAY"))" = "$NEWV $NEWV" ] \
+  || fail "web pinned: the in-force version must move to base's: $(pr_file "$sha" | grep PRIVACY)"
+[ "$(git diff --name-only main "origin/deploy/$sha")" = "$OVERLAY" ] || fail "the deploy branch must change only the kustomization: $(git diff --name-only main "origin/deploy/$sha")"
+grep -q "^privacy policy in force: $before → $NEWV (" "$GH_BODY" || fail "the body names the move: $(cat "$GH_BODY")"
+grep -q 'hold.sh add' "$GH_BODY" || fail "the body names the rollback commands: $(cat "$GH_BODY")"
+# web without a policy change: the line says unchanged
+new_repo policy-same; before=$(in_force | cut -d' ' -f1); commit_file web/index.txt v2 "web: a change"; sha=$(short); reset_logs
+run >/dev/null || fail "promote of web failed"
+grep -q "^privacy policy in force: unchanged at $before (" "$GH_BODY" || fail "the body says unchanged: $(cat "$GH_BODY")"
+# services alone: the base moved on, but the in-force pin and the body do not
+new_repo policy-services; before=$(in_force); base_policy "$NEWV"; commit_file backend/main.go v2 "scoring: a change"; sha=$(short); reset_logs
+run >/dev/null || fail "promote of services failed"
+[ "$(in_force <(git show "origin/deploy/$sha:$OVERLAY"))" = "$before" ] || fail "services pinned: the version in force must not move"
+! grep -q 'privacy policy in force' "$GH_BODY" || fail "no policy line without web: $(cat "$GH_BODY")"
+# base api and ingest disagree while web is pinned: the promote fails, nothing is created
+new_repo policy-disagree; base_policy "$NEWV" 2099-12-30; commit_file web/index.txt v2 "web: a change"; reset_logs
+run >/dev/null 2>&1 && fail "disagreeing base versions must stop the promote"
+! grep -q 'gh pr create' "$GH_LOG" || fail "no PR on disagreeing versions"
 
 echo "✓ promote_test: per-group pins in one PR, superseded PRs closed, docs/pin commits/holds skipped, registry first, 7-char tag"

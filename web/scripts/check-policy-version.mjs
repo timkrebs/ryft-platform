@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The privacy policy on the site and PRIVACY_POLICY_VERSION in deploy/k8s/base/{api,ingest}/
-// configmap.yaml (this repository) must be the same date: consent is recorded against that
+// config.env (this repository; the published version) must be the same date: consent is recorded against that
 // version, so content/legal/{en,de}/privacy/<version>.mdx must exist and be the newest, every
 // version in content/legal/privacy-versions.json must keep its page, api, ingest and the local
 // docker-compose.yml must agree. Warns by default; --strict fails (CI, in the manifests job).
@@ -19,7 +19,7 @@ for (const msg of warnings) {
   console.log(gha ? `::warning title=privacy policy version::${msg}` : `warn: ${msg}`);
 }
 if (problems.length === 0) {
-  console.log(`privacy policy: ${version} on the site (en, de) and in the ConfigMaps (${source}).`);
+  console.log(`privacy policy: ${version} on the site (en, de) and in config.env (${source}).`);
 } else {
   for (const msg of problems) {
     const level = strict ? 'error' : 'warning';

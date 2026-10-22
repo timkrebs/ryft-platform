@@ -1,6 +1,7 @@
 // The privacy policy version: ours (content/legal/<locale>/privacy/<version>.mdx, both
-// languages) against PRIVACY_POLICY_VERSION in this repository's api and ingest ConfigMaps
-// (and the local stack's docker-compose.yml), which consent is recorded against.
+// languages) against PRIVACY_POLICY_VERSION in this repository's api and ingest base env files
+// (deploy/k8s/base/{api,ingest}/config.env) and the local stack's docker-compose.yml, which
+// consent is recorded against.
 // content/legal/privacy-versions.json lists every version anyone may have consented to, oldest
 // first, the current one last: those pages must never disappear.
 // Node built-ins only: CI runs the check without `npm ci`.
@@ -22,34 +23,62 @@ export function sitePolicyVersion(root, locale = 'en') {
   return versions.at(-1) ?? null;
 }
 
-/** PRIVACY_POLICY_VERSION from a kustomize ConfigMap's text. */
-export function versionFromConfigMap(yaml) {
-  return yaml.match(/^\s*PRIVACY_POLICY_VERSION:\s*["']?([^"'\s#]+)["']?/m)?.[1] ?? null;
+/**
+ * PRIVACY_POLICY_VERSION from a kustomize env file (config.env). The line has exactly one shape,
+ * `PRIVACY_POLICY_VERSION=YYYY-MM-DD`: kustomize ships quotes, spaces and an inline comment as
+ * part of the value, so any other line that starts with the key is a problem, not a miss.
+ * Lines that start with `#` are comments and never match.
+ * @param {string} text
+ * @returns {{version: string | null, problem?: string}}
+ */
+export function versionFromEnvFile(text) {
+  const lines = text.split(/\r?\n/).filter((l) => /^\s*PRIVACY_POLICY_VERSION(?!\w)/.test(l));
+  if (lines.length === 0) return { version: null };
+  if (lines.length > 1) return { version: null, problem: 'PRIVACY_POLICY_VERSION is set more than once' };
+  const m = lines[0].match(/^PRIVACY_POLICY_VERSION=(\d{4}-\d{2}-\d{2})$/);
+  if (!m) {
+    return {
+      version: null,
+      problem: `"${lines[0]}" is not exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD (no quotes, spaces or comment on the line: kustomize ships them as part of the value)`,
+    };
+  }
+  if (!isCalendarDate(m[1])) {
+    return { version: null, problem: `${m[1]} is not a calendar date (the services refuse it at start-up)` };
+  }
+  return { version: m[1] };
+}
+
+/** YYYY-MM-DD that exists in the calendar (2026-11-31 does not; Go refuses it). */
+export function isCalendarDate(v) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
 /**
- * The platform's version from the ConfigMaps of the repository at `repoRoot`
- * (deploy/k8s/base/{api,ingest}/configmap.yaml). Both must carry it, and the same one.
+ * The published platform version: PRIVACY_POLICY_VERSION in the base env files of the repository
+ * at `repoRoot` (deploy/k8s/base/{api,ingest}/config.env). Both must carry it, and the same one.
+ * What is in force on EKS is set by promote with the web pin (overlays/eks); that is checked
+ * elsewhere (scripts/check_policy_in_force.sh).
  * @param {string} repoRoot
  * @returns {{version: string | null, source: string, problem?: string}}
  */
 export function platformPolicyVersion(repoRoot) {
-  const source = `${join(repoRoot, 'deploy/k8s/base')}/{${SERVICES.join(',')}}/configmap.yaml`;
+  const source = `${join(repoRoot, 'deploy/k8s/base')}/{${SERVICES.join(',')}}/config.env`;
   const found = SERVICES.map((s) => {
-    const path = join(repoRoot, `deploy/k8s/base/${s}/configmap.yaml`);
-    return [s, existsSync(path) ? versionFromConfigMap(readFileSync(path, 'utf8')) : null];
+    const rel = `deploy/k8s/base/${s}/config.env`;
+    const path = join(repoRoot, rel);
+    if (!existsSync(path)) return { s, rel, version: null, problem: 'file not found' };
+    return { s, rel, ...versionFromEnvFile(readFileSync(path, 'utf8')) };
   });
-  const missing = found.filter(([, v]) => !v).map(([s]) => s);
-  if (missing.length) {
-    return {
-      version: null,
-      source,
-      problem: `PRIVACY_POLICY_VERSION not found in the ${missing.join(' and ')} ConfigMap`,
-    };
+  const bad = found.filter((f) => !f.version);
+  if (bad.length) {
+    const detail = bad.map((f) => `${f.rel}: ${f.problem ?? 'PRIVACY_POLICY_VERSION not found'}`).join('; ');
+    return { version: null, source, problem: detail };
   }
-  const versions = [...new Set(found.map(([, v]) => v))];
+  const versions = [...new Set(found.map((f) => f.version))];
   if (versions.length > 1) {
-    const detail = found.map(([s, v]) => `${s}: ${v}`).join(', ');
+    const detail = found.map((f) => `${f.s}: ${f.version}`).join(', ');
     return { version: null, source, problem: `api and ingest disagree (${detail})` };
   }
   return { version: versions[0], source };
@@ -60,7 +89,8 @@ export function consentedVersions(siteRoot) {
   const path = join(siteRoot, 'content/legal/privacy-versions.json');
   try {
     const list = JSON.parse(readFileSync(path, 'utf8'));
-    const ok = Array.isArray(list) && list.length > 0 && list.every((v) => /^\d{4}-\d{2}-\d{2}$/.test(v));
+    const ok =
+      Array.isArray(list) && list.length > 0 && list.every((v) => typeof v === 'string' && isCalendarDate(v));
     return ok ? list : null;
   } catch {
     return null;
@@ -91,7 +121,7 @@ export function checkPolicy({ siteRoot, repoRoot }) {
   const listed = consentedVersions(siteRoot);
   if (!listed) {
     problems.push(
-      `content/legal/privacy-versions.json is missing or not a non-empty list of YYYY-MM-DD versions (searched ${siteRoot}).`,
+      `content/legal/privacy-versions.json is missing or not a non-empty list of valid YYYY-MM-DD dates (searched ${siteRoot}).`,
     );
   } else if (listed.at(-1) !== version) {
     problems.push(
@@ -136,7 +166,7 @@ export function checkPolicy({ siteRoot, repoRoot }) {
       .filter((v) => v !== version);
     if (others.length) {
       problems.push(
-        `docker-compose.yml (local stack) has PRIVACY_POLICY_VERSION ${others[0]}, the ConfigMaps ${version}: update it with the version.`,
+        `docker-compose.yml (local stack) has PRIVACY_POLICY_VERSION ${others[0]}, the config.env files ${version}: update it with the version.`,
       );
     }
   }

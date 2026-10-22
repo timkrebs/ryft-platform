@@ -228,6 +228,7 @@ k8s-validate:
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh
+	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check
 
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials

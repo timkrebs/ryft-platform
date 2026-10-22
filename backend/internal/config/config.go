@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -168,15 +169,17 @@ func parseMode(name, def string) (Mode, error) {
 type Beta struct {
 	Gate                 Mode   // BETA_GATE: accounts without a redeemed code (default off)
 	Consent              Mode   // CONSENT_ENFORCE: syncs and scoring without consent (default on)
-	PrivacyPolicyVersion string // PRIVACY_POLICY_VERSION, e.g. 2026-10-20
+	PrivacyPolicyVersion string // PRIVACY_POLICY_VERSION, a YYYY-MM-DD date; empty when unset
 	PrivacyPolicyURL     string // PRIVACY_POLICY_URL
 }
 
 // LoadBeta reads BETA_GATE (off|warn|on, default off), CONSENT_ENFORCE (off|warn|on,
-// default on), PRIVACY_POLICY_VERSION and
-// PRIVACY_POLICY_URL (both with the current defaults).
+// default on), PRIVACY_POLICY_VERSION (no default: trimmed, and a YYYY-MM-DD date
+// when set) and PRIVACY_POLICY_URL (default the site's /privacy). An unset version is
+// no error here, so scoring and its subcommands start without it; api and ingest
+// call RequirePolicy.
 func LoadBeta() (Beta, error) {
-	b := Beta{PrivacyPolicyVersion: getenv("PRIVACY_POLICY_VERSION", "2026-10-20"),
+	b := Beta{PrivacyPolicyVersion: strings.TrimSpace(os.Getenv("PRIVACY_POLICY_VERSION")),
 		PrivacyPolicyURL: getenv("PRIVACY_POLICY_URL", "https://ryftapp.de/privacy")}
 	var err error
 	if b.Gate, err = parseMode("BETA_GATE", string(ModeOff)); err != nil {
@@ -185,10 +188,25 @@ func LoadBeta() (Beta, error) {
 	if b.Consent, err = parseMode("CONSENT_ENFORCE", string(ModeOn)); err != nil {
 		return b, err
 	}
-	if len(b.PrivacyPolicyVersion) > 32 {
-		return b, errors.New("PRIVACY_POLICY_VERSION has at most 32 characters")
+	// Kustomize env files keep quotes and inline comments in the value: they fail
+	// here instead of becoming the version users consent to.
+	if v := b.PrivacyPolicyVersion; v != "" {
+		if _, err := time.Parse(time.DateOnly, v); err != nil {
+			return b, fmt.Errorf("PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got %q", v)
+		}
 	}
 	return b, nil
+}
+
+// RequirePolicy refuses a Beta without a privacy policy version. api and ingest
+// call it at start-up, before they connect to anything; scoring does not (any
+// recorded version counts there, D78).
+func (b Beta) RequirePolicy() error {
+	if b.PrivacyPolicyVersion == "" {
+		return errors.New("PRIVACY_POLICY_VERSION is required: api and ingest record and enforce consent against it (D78); " +
+			"set the published version (deploy/k8s/base/<service>/config.env, docker-compose.yml)")
+	}
+	return nil
 }
 
 // LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin

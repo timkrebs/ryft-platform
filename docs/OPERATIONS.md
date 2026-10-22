@@ -289,6 +289,33 @@ minutes (D107). Argo CD does not roll back by itself (D95). Migrations stay (bel
 the previous release runs on the newer schema; how far back that works is under
 "Lockouts and rolling back across releases".
 
+**Configuration is part of the rollout** (F1). api, ingest, scoring and notify read
+`ryft-config-<hash>`, generated from `deploy/k8s/base/<service>/config.env` (migrate's
+`ryft-config` stays plain). Any edit renames the ConfigMap, so the Deployment rolls with the
+images that are pinned; Argo CD deletes the old ConfigMap only after the sync is healthy
+(`PruneLast`), and a failed rollout leaves it for the old pods. Roll back in git, never with
+`kubectl rollout undo` or by scaling an old ReplicaSet: it may name a pruned ConfigMap
+(`CreateContainerConfigError`) and self-heal reverts it anyway. Which commit to revert:
+
+- a **configuration** problem (a `config.env` value such as `LOG_LEVEL`, or a hand-made change
+  of `overlays/eks`): revert the merge that changed it. The old content gives the old name, so
+  the pods roll back. Not for `PRIVACY_POLICY_VERSION`: a policy PR cannot be reverted (the
+  versions list is append-only and the check wants the newest page); see "Withdrawing a
+  version" under Beta → Consent, where a new version is the way.
+- an **image** problem: the pins and a hold as above (`pin_images.sh <old> <group>` and
+  `hold.sh add <group> "<reason>"`), not a revert of the deploy PR's merge when it pinned
+  both groups. Leave the pin commits of the other group alone.
+
+**A web rollback moves the policy in force too.** `pin_images.sh <old> web` sets the version
+in force (api and ingest) to what the site at `<old>` serves: base's `config.env` there, or the
+newest privacy page for a commit from before `config.env` existed (the foreign `f437747`: the
+first listed version). If that differs from today's, api and ingest roll with web and the
+testers who consented to the newer version consent again (`consent_required` rises). The
+`manifests` job (`check_policy_in_force.sh`) refuses a web pin whose commit does not serve the
+version in force, so pin and version always go back together. A draft version on main blocks
+every deploy PR (services too), because the deploy PR would put a draft into force: publish the
+text, or hold web (`./scripts/hold.sh add web "<reason>"`).
+
 **Before you start** (a planned rollback or a drill; in an incident the first three may be
 red, which is why you are rolling back, the rest still holds):
 
@@ -334,6 +361,12 @@ red, which is why you are rolling back, the rest still holds):
    ./scripts/pin_images.sh <old> services       # or: web   (the site may also go to "f437747", see Apex site)
    ./scripts/hold.sh add services "bad migration, see #57"      # or: web "broken AASA, see #57"
    ```
+   A **web** rollback also sets the version in force to what the site at `<old>` serves, and
+   `manifests` refuses the pair when the older site would bring back a draft text: if the
+   version in force was published in place (the same version label, `status: draft` then
+   `published`), rolling web back past the commit that published it, or to `f437747`, fails
+   `check_policy_in_force.sh` ("would bring the draft text back"). Pick an `<old>` at or after
+   the publishing commit, or hold web at the current pin.
    `hold.sh` writes exactly `# hold: <services|web> <YYYY-MM-DD UTC> <reason>` above the
    group's first image (the **ingest** entry for the services, **web** for the site), is
    idempotent, and runs `deploy_targets.sh --check` (any other line that starts like a
@@ -401,8 +434,8 @@ The consumers: `kubectl -n ryft-scoring logs deploy/scoring | grep -E 'amqp (con
 (likewise notify), or `ryft_amqp_connected` in Grafana. The pods' `/metrics` cannot be
 reached through the API server's pod proxy (NetworkPolicy), so use the logs or Grafana.
 
-**Disruptions:** api and ingest have a PodDisruptionBudget; `web` runs two replicas with
-none yet (a change adds one), so a node drain can take both down briefly.
+**Disruptions:** api, ingest and `web` (two replicas, `maxUnavailable: 1`) have a
+PodDisruptionBudget, so a node drain takes one site pod at a time.
 
 **Re-run promote:** "Re-run failed jobs" on the latest run on main. An older run's
 promote exits with "not main's tip" and does nothing; use `gh workflow run ci --ref main
@@ -709,6 +742,14 @@ kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 grep API_KEY deploy/k8s/overlays/local-postgres/secrets/api.env   # the bearer
 ```
 
+The four Deployment ConfigMaps are `ryft-config-<hash>` (a changed value renames them and
+rolls the pods). `kubectl apply` never prunes: in ryft-api, ryft-ingest, ryft-scoring and
+ryft-notify the plain `ryft-config` of an install from before that change, and every older
+`ryft-config-<hash>`, stay behind unused. Delete them by hand when you like
+(`kubectl -n ryft-api get cm`; the one a Deployment's `envFrom` names is in use). In
+ryft-migrate the plain `ryft-config` stays in use: migrate's ConfigMap is not generated.
+Argo CD is not involved here.
+
 An install from before the per-namespace layout ran everything in namespace `ryft`.
 `kubectl apply` does not remove it: once the data has moved (backup and restore below),
 delete it with `kubectl delete namespace ryft`.
@@ -767,7 +808,8 @@ API=https://api.ryftapp.de
 ```
 
 **Consent.** `POST /v1/sync` answers `403 consent_required` until the account consented
-to the current `PRIVACY_POLICY_VERSION` (configmaps of api and ingest, `2026-10-20`), and
+to the current `PRIVACY_POLICY_VERSION` (`config.env` of api and ingest, in force per
+`overlays/eks`; `2026-10-20` today), and
 scoring computes nothing for an account without consent. Nothing was backfilled, so the
 operator's own account consents once too: with the app build that has the consent
 screen, or by hand with its access token:
@@ -777,19 +819,56 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/v1/me/consent -d '{"polic
 ```
 
 **A new policy text** (only on the user's decision: everyone consents again) is **one
-PR**: `web/content/legal/{en,de}/privacy/<version>.mdx` (the old versions stay),
-`<version>` appended to `web/content/legal/privacy-versions.json`, and
-`PRIVACY_POLICY_VERSION` in both configmaps (api, ingest) and `docker-compose.yml`.
-`manifests` runs `node web/scripts/check-policy-version.mjs --strict` and fails on any
-mismatch or a missing page. After the merge the configmaps apply within about 3 minutes,
-but the page only with the web deploy 25–40 minutes later, and a configmap change rolls no
-pod (STATUS → open, F1): pods started in between (HPA, drain) take the new version while
-the others keep the old one. Until F1 is fixed: once `/privacy/<version>` is live, restart
-api and ingest so every pod agrees (the user runs it), then announce:
+PR and no restart**: `web/content/legal/{en,de}/privacy/<version>.mdx` (the old versions
+stay), `<version>` appended to `web/content/legal/privacy-versions.json`, and
+`PRIVACY_POLICY_VERSION` in `deploy/k8s/base/api/config.env`,
+`deploy/k8s/base/ingest/config.env` and `docker-compose.yml`. The base value is the version
+that is *published*. The version in force on EKS is a pin in
+`overlays/eks/kustomization.yaml` (two `ryft-config` literals, api and ingest) that CI's
+promote moves to the base's value in the same deploy PR that pins the web image carrying the
+page. So the page, web, api and ingest go live in one Argo CD sync: the merge itself changes
+nothing on EKS, and there is no interim restart. A service's ConfigMap is generated as
+`ryft-config-<hash>`, so a changed value renames it and rolls exactly the pods that read it.
+`manifests` runs `node web/scripts/check-policy-version.mjs --strict` (published version,
+pages, compose) and `scripts/check_policy_in_force.sh` (api and ingest agree, the pinned web
+commit serves the version at `/privacy`, newest page in both languages). If web is held or its build fails, the old version stays in force
+with the old site. The deploy PR body shows `privacy policy in force: A → B`.
+
+What to watch after the deploy PR merges (read-only):
 
 ```bash
-kubectl -n ryft-api rollout restart deploy/api && kubectl -n ryft-ingest rollout restart deploy/ingest
+for n in api ingest scoring notify; do kubectl -n ryft-$n get cm -o name; done   # ryft-config-<hash> (+ configmap/kube-root-ca.crt)
+kubectl -n ryft-api get deploy api -o jsonpath='{.spec.template.spec.containers[0].envFrom}'; echo
+for s in api ingest; do kubectl -n ryft-$s logs -l app=$s --tail=-1 --since=30m | grep '"msg":"beta"'; done
+make smoke-prod
 ```
+
+The roll is a rolling update of a minute or two in which old pods still serve the old
+version: `ryft_consents_total{action="stale"}` and `consent_required` refusals bump briefly
+and recover. The PostSync smoke consents through api and syncs through ingest, so it proves
+the two agree. Argo CD deletes the old `ryft-config-<old>` only after the sync is healthy
+(`PruneLast`); until then the old hash is still listed. Rolling a ReplicaSet back by hand is
+not a rollback path (its ConfigMap may be pruned, and self-heal reverts it): revert in git.
+
+Withdrawing a version. A policy PR itself cannot be reverted as a whole (the versions list is
+append-only), and the check requires the in-force version to be the NEWEST page of the pinned
+web commit (that is what `/privacy` serves). So setting the in-force pin back alone fails the
+check, and would be undone by the next web deploy anyway. A withdrawal is durable only as a
+NEW version (the corrected text, appended) or with web held and pinned back (`pin_images.sh`
+and `hold.sh add`, in one commit), never as the pin alone. If a sync fails in the middle (web
+stuck while api and ingest are already on the new version, or the reverse), move web and the
+in-force pin back together in one commit; the check refuses a pair that disagrees.
+On a pull request `check_policy_in_force.sh` also refuses a version that becomes the one in
+force, or the published one in `config.env`, unless its page in both languages says exactly
+`status: published` (read as the site reads it; a tag, flow frontmatter or a block scalar
+refuse even when published). Anything else is a draft for this check. Going back to a version
+listed before the one in force now is allowed. So a policy PR stays red until `status:
+published` is set in that same PR, and a draft version on main blocks every deploy PR, services
+too, until it is published or web is held. A text that is published cannot be un-published in
+place: the check also refuses a PR that sets a published page back to a draft, and a web pin
+that would serve the draft again under the same version (a rollback past the commit that
+published it, or to `f437747`, which carries 2026-10-20 as a draft). Publish a new version
+instead.
 
 Every tester consents again before the next sync;
 `ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
@@ -1000,7 +1079,9 @@ metrics-server), with a `PodDisruptionBudget` of `minAvailable: 1`, spread acros
 when there are several. On a **single-node** cluster a drain blocks on the second pod,
 because the first has nowhere to reschedule. Use `kubectl drain --disable-eviction`, or
 `kubectl -n ryft-api delete pdb api; kubectl -n ryft-ingest delete pdb ingest` before
-maintenance and re-apply afterwards. Pods that are not ready never count
+maintenance and re-apply afterwards. web (the apex site, two replicas) has a
+`PodDisruptionBudget` of `maxUnavailable: 1`: a drain or node group update takes one site pod
+at a time (it is not in local-postgres). Pods that are not ready never count
 (`unhealthyPodEvictionPolicy: AlwaysAllow`): during an outage, when no pod is ready, a
 drain or a node group update still goes through. Their Deployments carry no `replicas`, so
 re-applying never fights the HPA. scoring stays at one replica: it owns the 15-minute
@@ -1194,7 +1275,9 @@ timkrebs/ryft-platform --body <address>`, then `gh workflow run ci --ref main -f
 force=web`); an unset `TESTFLIGHT_URL` only hides the TestFlight button.
 
 **Rollback point:** `f437747`, the last image built in ryft-web (not a commit of this
-history, so it needs the hold, "Deploy and roll back"). **Never delete package versions of
+history, so it needs the hold, "Deploy and roll back"). It carries the privacy text
+2026-10-20 as a draft: once that version is published in place, `check_policy_in_force.sh`
+refuses a pin back to it. **Never delete package versions of
 `ryft/web`**, `latest` included: GHCR cannot untag, and a version may be a rollback point.
 
 **Verify a web deploy** after the Argo CD sync. The pods roll with one surge and none
@@ -1207,7 +1290,8 @@ back first, then investigate.
 ```bash
 kubectl -n argocd get applications ryft-platform                                   # Synced, Healthy
 kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo   # the deploy PR's pin, both pods
-for p in "" privacy terms support impressum de/privacy de/impressum privacy/2026-10-20 day/2026-10-19 auth/callback invite/TEST; do
+V=$(sed -nE 's/^.*ryft-api,.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\1/p' deploy/k8s/overlays/eks/kustomization.yaml)   # the policy version in force
+for p in "" privacy terms support impressum de/privacy de/impressum privacy/$V day/2026-10-19 auth/callback invite/TEST; do
   curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
 curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above

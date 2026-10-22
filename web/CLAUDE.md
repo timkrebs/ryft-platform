@@ -26,13 +26,17 @@ here: read from it, never write there.
   no CDNs), no forms. `localStorage` holds the theme choice and nothing else.
 - **Legal content is ported, not invented.** `content/legal/` holds the platform's drafts,
   restructured only. Keep every `TODO(user)`; never change legal meaning or add facts.
-  The privacy `version` equals `PRIVACY_POLICY_VERSION` in `../deploy/k8s/base/{api,ingest}/configmap.yaml`
-  (`node scripts/check-policy-version.mjs --strict`, also in CI). Only the user flips
+  The privacy `version` equals `PRIVACY_POLICY_VERSION` in `../deploy/k8s/base/{api,ingest}/config.env`
+  (kustomize env files; the line is exactly `PRIVACY_POLICY_VERSION=YYYY-MM-DD`, no quotes, spaces or
+  comment; `node scripts/check-policy-version.mjs --strict`, also in CI; that is the *published*
+  version). The version in force on EKS is set by promote together with the web pin
+  (`overlays/eks`), once the pinned image carries the page. Only the user flips
   `status: draft` → `published`, and a new privacy version (`PRIVACY_POLICY_VERSION`) only
   on the user's decision: it asks every user to consent again. The new text, its entry in
-  `content/legal/privacy-versions.json` and the version bump go in one PR; old versions
-  keep their pages. The page goes live with the web deploy, about 15 minutes after the
-  ConfigMap (the window is in `../docs/OPERATIONS.md`).
+  `content/legal/privacy-versions.json` and the version bump go in one PR (the en and de
+  pages, `privacy-versions.json`, base `config.env` of api and ingest, `docker-compose.yml`);
+  old versions keep their pages. The version goes into force with the web pin, not with the
+  merge (the window is in `../docs/OPERATIONS.md`).
 - **Science numbers come from `../docs/SCORING.md` and `../docs/ARCHITECTURE.md`**, by
   hand, for the model version in `content/science/meta.json`. A test fails when the
   platform's model version moves.
@@ -63,5 +67,5 @@ opens a PR in `timkrebs/ryft-platform` with `gh pr create --fill`. The PR title 
 privacy text and `PRIVACY_POLICY_VERSION` change in the same PR. Wait for the required checks
 (`gh pr checks --watch`), then ask the user to merge: the merge ships the site, not at once:
 CI builds the image and opens the pin PR, and Argo CD rolls it out (a privacy text goes live
-with the web deploy, about 15 minutes after the ConfigMap). Never commit to `main` directly, never force-push. Ask
+with the web deploy, and the version in force moves with the web pin). Never commit to `main` directly, never force-push. Ask
 before changing GitHub settings.

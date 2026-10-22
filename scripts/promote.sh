@@ -108,18 +108,25 @@ uid=$(gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
 git config user.name "${SLUG}[bot]"
 git config user.email "${uid}+${SLUG}[bot]@users.noreply.github.com"
 
+# The privacy policy version in force on EKS (the overlay's pin): pinning web moves it to the
+# base's version in the same commit (pin_images.sh), so the page and the version go live in
+# one sync. The deploy PR body says so.
+policy_of() { sed -nE 's/^.*namespace: ryft-api,.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\1/p' "$file" | head -1; }
+policy_before=$(policy_of)
+
 # What this run pins: one commit on this commit.
 git switch -q -c "$branch"
 ./scripts/pin_images.sh "$sha" "${groups[@]}" "$file" >/dev/null
 git commit -qam "deploy: images $sha"
 mine=$(git rev-parse HEAD)
+policy_after=$(policy_of)
 
 body=$(mktemp)
 trap 'rm -f "$body"' EXIT
 dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
 {
   echo "Pins ${groups[*]} to \`$sha\`. Merges itself once the checks pass; Argo CD then syncs ryft-platform (migrate first, the smoke last)."
-  echo "Close this PR to stop the deploy. Rollback: revert the merge commit, and add \`# hold: <group> <YYYY-MM-DD> <reason>\` to the overlay so the next push does not pin the same code again (docs/OPERATIONS.md)."
+  echo "Close this PR to stop the deploy, and hold the group (\`./scripts/hold.sh add <group> \"<reason>\"\`), or the deploy watch fails daily. Rollback: \`./scripts/pin_images.sh <old> <group>\` and \`./scripts/hold.sh add <group> \"<reason>\"\` in one commit (docs/OPERATIONS.md)."
   for g in services web; do
     pin=$(val "${g}_pin"); dir=$(dir_of "$g"); moved=
     for m in "${groups[@]}"; do [ "$m" = "$g" ] && moved=1; done
@@ -136,6 +143,16 @@ dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
       fi
     else
       echo "### $g: unchanged at \`$pin\` ($(val "${g}_why"))"
+    fi
+  done
+  for g in "${groups[@]}"; do
+    if [ "$g" = web ]; then
+      echo
+      if [ "${policy_before:-none}" = "${policy_after:-none}" ]; then
+        echo "privacy policy in force: unchanged at ${policy_before:-none} (it moves with the web pin: the page and the version go live in one sync)"
+      else
+        echo "privacy policy in force: ${policy_before:-none} → ${policy_after:-none} (it moves with the web pin: the page and the version go live in one sync)"
+      fi
     fi
   done
 } > "$body"

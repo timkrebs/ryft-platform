@@ -4,6 +4,7 @@
 # web/, the EKS overlay (the real file) and the scripts, with both image groups pinned to
 # the first commit and a bare remote.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+export PIN_QUIET=1  # pin_images.sh reports "in force: A -> B" on stderr; the tests read it themselves
 OVERLAY=deploy/k8s/overlays/eks/kustomization.yaml
 tmp=$(mktemp -d)
 # Never write into the real job summary of the run that executes the tests.
@@ -33,6 +34,8 @@ new_repo() {
   n=$((n+1)); r="$tmp/$1.$n"
   mkdir -p "$r/repo/scripts" "$r/repo/deploy/k8s/overlays/eks" "$r/repo/backend" "$r/repo/web"
   cp "$HERE"/scripts/{promote,pin_images,deploy_targets}.sh "$r/repo/scripts/"
+  for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; cp "$HERE/deploy/k8s/base/$s/config.env" "$r/repo/deploy/k8s/base/$s/"; done
+  mkdir -p "$r/repo/web/content/legal"; cp "$HERE/web/content/legal/privacy-versions.json" "$r/repo/web/content/legal/"
   cp "$HERE/$OVERLAY" "$r/repo/$OVERLAY"
   cd "$r/repo"
   git init -q -b main && git config user.email t@example.com && git config user.name test
@@ -41,6 +44,17 @@ new_repo() {
   pin services web "$first"
   git init -q --bare "$r/remote.git" && git remote add origin "$r/remote.git" && git push -q origin main
 }
+# base_policy <version> [ingest-version]: the published privacy policy version in base's config.env, as a commit.
+base_policy() {
+  local s v
+  for s in api ingest; do
+    v=$1; [ "$s" != ingest ] || v=${2:-$1}
+    sed -i.bak "s/^PRIVACY_POLICY_VERSION=.*/PRIVACY_POLICY_VERSION=$v/" "deploy/k8s/base/$s/config.env"; rm -f "deploy/k8s/base/$s/config.env.bak"
+  done
+  git commit -qam "policy $1"
+}
+# The version in force on EKS (the overlay's literals, api then ingest): "<api> <ingest>".
+in_force() { sed -nE 's/^.*namespace: ryft-(api|ingest),.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\2/p' "${1:-$OVERLAY}" | paste -sd' ' -; }
 # The overlay's pins, as `image=tag` lines.
 pins() { awk '/- name: ghcr.io\/timkrebs\/ryft\// { sub(/.*ryft\//, ""); n = $0 } /newTag:/ { gsub(/[" ]|newTag:/, ""); print n "=" $0 }' "$1"; }
 # hand_pin <image> <tag>: one image pinned by hand, as a commit (what a typo or a half-done revert looks like).

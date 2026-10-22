@@ -2,6 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # One-shot schema migration as the owner; the only workload holding that credential.
+# Its ConfigMap stays a plain, un-hashed ryft-config: the PreSync hook runs before the sync
+# creates anything, so a hashed name that only the sync creates would not exist yet. The
+# four Deployments' ConfigMaps are generated (base/<service>/config.env).
 resources:
   - configmap.yaml
   - job.yaml

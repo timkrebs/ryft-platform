@@ -4,7 +4,14 @@ kind: Kustomization
 # Consumes ingested and scores days. Its Service is only for the PostSync
 # smoke's /readyz and the metrics port; nothing else calls it.
 resources:
-  - configmap.yaml
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
+
+# ryft-config-<hash> from config.env: any edit, in this file or in an overlay, renames the
+# ConfigMap, so the Deployment's envFrom changes and the pods roll (a plain ConfigMap would
+# change no pod; D78, F1). config.env holds bare KEY=value lines and full-line comments:
+# kustomize keeps quotes, spaces and inline comments as part of the value.
+configMapGenerator:
+  - name: ryft-config
+    envs: [config.env]
