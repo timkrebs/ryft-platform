@@ -418,6 +418,17 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
 refuses entries out of order, an unknown metric or an unsorted `affects`.
 
+**Numbers of past days can change without a new version.** A day's baselines (the
+last 30 scored days), sleep debt and need, consistency and yesterday's strain come from
+the stored days before it. When late data changes one of those on a stored day,
+scoring re-scores the next 30 scored days with the same model, oldest first, never past
+today (a retried event does so even when its own day is already up to date); the
+15-minute pass re-scores days whose `baseline_days` is behind their history or whose
+baseline is missing although the history has the nights. `model_version` stays; a
+re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;
+a day first scored without its history moves by a median of 9 (p90 21) and leaves
+`calibrating`.
+
 ## Consent
 
 Scoring computes nothing for a user without a current consent to health-data

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -26,11 +27,14 @@ type Engine struct {
 	log      *slog.Logger
 	onScored func(context.Context, model.ScoredEvent)
 	consent  config.Mode
+	// maxAgain bounds the days one call scores beyond the ones it was asked
+	// for (ComputeDays): MaxRangeDays, smaller in tests.
+	maxAgain int
 }
 
 // NewEngine scores with the consent check on (CONSENT_ENFORCE's default).
 func NewEngine(st *store.Store, log *slog.Logger) *Engine {
-	return &Engine{st: st, log: log, consent: config.ModeOn}
+	return &Engine{st: st, log: log, consent: config.ModeOn, maxAgain: MaxRangeDays}
 }
 
 // SetConsentMode is CONSENT_ENFORCE: off or warn score accounts without a
@@ -77,10 +81,6 @@ const (
 // their health data, so nothing is scored (D78). Callers count it, not fail on it.
 var ErrNoConsent = errors.New("no consent to health-data processing")
 
-// maxCascadeDays bounds the days one call scores beyond the ones it was asked
-// for (ComputeDays); RescoreBehind picks up what it leaves.
-const maxCascadeDays = MaxRangeDays
-
 // ComputeRange recomputes every day in [from, to], inclusive, oldest first,
 // then the stored days after it whose history changed (ComputeDays).
 func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to string) error {
@@ -105,7 +105,8 @@ func (e *Engine) ComputeRange(ctx context.Context, userID uuid.UUID, from, to st
 	for d := a; !d.After(b); d = d.AddDate(0, 0, 1) {
 		days = append(days, d.Format(dayLayout))
 	}
-	return e.walk(ctx, userID, loc, days)
+	_, err = e.walk(ctx, userID, loc, days)
+	return err
 }
 
 // ComputeDay scores one local calendar day, then the stored days after it
@@ -124,41 +125,56 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 // days after the last such change, never past the user's today. Each day is
 // scored at most once per call, so a 400-day backfill costs its 400 days and
 // at most 30 more, not 400×30, and a re-score that changes nothing goes no
-// further than the days asked for. At most maxCascadeDays beyond those.
+// further than the days asked for; at most MaxRangeDays beyond them.
+//
+// On a redelivered event (events.Redelivered: a retry, or the broker's
+// redelivery) "nothing changed" proves nothing: the attempt before may have
+// written the change and failed before the days after. Then every asked-for
+// day counts as changed, so the retry finishes what the attempt began (D100).
 func (e *Engine) ComputeDays(ctx context.Context, userID uuid.UUID, days []string) error {
+	_, err := e.computeDays(ctx, userID, days)
+	return err
+}
+
+func (e *Engine) computeDays(ctx context.Context, userID uuid.UUID, days []string) (walked, error) {
 	if len(days) == 0 {
-		return nil
+		return walked{}, nil
 	}
 	user, loc, err := e.st.GetUser(ctx, userID)
 	if err != nil {
-		return err
+		return walked{}, err
 	}
 	if !e.Admits(user) {
 		metrics.DaysScored.WithLabelValues("no_consent").Add(float64(len(days)))
-		return ErrNoConsent
+		return walked{}, ErrNoConsent
 	}
 	return e.walk(ctx, userID, loc, days)
 }
+
+// walked counts the days a walk scored: the ones asked for, and the stored
+// days after a change scored again.
+type walked struct{ asked, again int }
 
 // walk scores the asked-for days and the stored days their changes reach,
 // oldest first, each once. reach is how many stored rows after the last
 // change are still to be scored; every day scored after it is one of them.
 // Stored days are fetched only where the asked-for days leave a gap, and as
 // late as possible, so a row another consumer wrote meanwhile is included.
-func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location, asked []string) error {
+func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location, asked []string) (walked, error) {
+	var w walked
 	for _, d := range asked {
 		if _, err := time.Parse(dayLayout, d); err != nil {
-			return fmt.Errorf("bad day %q: %w", d, err)
+			return w, fmt.Errorf("bad day %q: %w", d, err)
 		}
 	}
 	asked = slices.Compact(slices.Sorted(slices.Values(asked)))
 	today := time.Now().In(loc).Format(dayLayout)
+	redo := events.Redelivered(ctx)
 	var (
-		last     string   // the day scored last
-		reach    int      // stored rows after the last change still to score
-		stored   []string // fetched for that, all before the next asked-for day
-		cascaded int
-		capped   bool
+		last   string   // the day scored last
+		reach  int      // stored rows after the last change still to score
+		stored []string // fetched for that, all before the next asked-for day
+		capped bool
 	)
 	for {
 		if len(stored) == 0 && reach > 0 && last < today && (len(asked) == 0 || asked[0] > addDays(last, 1)) {
@@ -166,14 +182,14 @@ func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location,
 			if len(asked) > 0 && asked[0] <= today {
 				through = addDays(asked[0], -1)
 			}
-			if room := maxCascadeDays - cascaded; room > 0 {
+			if room := e.maxAgain - w.again; room > 0 {
 				var err error
 				if stored, err = e.st.ScoredDaysAfter(ctx, userID, last, through, min(reach, room)); err != nil {
-					return fmt.Errorf("days after %s: %w", last, err)
+					return w, fmt.Errorf("days after %s: %w", last, err)
 				}
 			} else if !capped {
 				capped = true
-				e.log.WarnContext(ctx, "rescore after history change capped", "after", last, "days", cascaded)
+				e.log.WarnContext(ctx, "rescore after history change capped", "after", last, "days", w.again)
 			}
 		}
 		var day string
@@ -184,18 +200,21 @@ func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location,
 		case len(asked) > 0:
 			day, asked = asked[0], asked[1:]
 		default:
-			if cascaded > 0 {
-				e.log.InfoContext(ctx, "rescored days after a history change", "days", cascaded, "through", last)
+			if w.again > 0 {
+				e.log.InfoContext(ctx, "rescored days after a history change", "days", w.again, "through", last)
 			}
-			return nil
+			return w, nil
 		}
 		changed, err := e.scoreDay(ctx, userID, day)
 		if err != nil {
-			return fmt.Errorf("day %s: %w", day, err)
+			return w, fmt.Errorf("day %s: %w", day, err)
 		}
 		if again {
-			cascaded++
+			w.again++
 			metrics.DaysRescored.WithLabelValues("history").Inc()
+		} else {
+			w.asked++
+			changed = changed || redo
 		}
 		switch {
 		case changed:
@@ -207,13 +226,14 @@ func (e *Engine) walk(ctx context.Context, userID uuid.UUID, loc *time.Location,
 	}
 }
 
-// RescoreBehind is the 15-minute pass's safety net for what ComputeDays
-// cannot see: a day scored before its history whose re-score was lost (an
-// attempt that failed half-way, whose retry finds nothing changed; two
-// consumers scoring neighbouring days at once; the cap). It scores again, oldest
-// first, up to n of the user's days within the last MaxRangeDays whose
-// baseline_days is below what their stored history now holds
-// (store.BehindHistoryDays), and returns how many it found.
+// RescoreBehind is the 15-minute pass's safety net for stored days whose
+// night counts or baselines show they were scored before their history and
+// never again (two consumers scoring neighbouring days at once, the cap, rows
+// from before the re-score existed): up to n of the user's days within the
+// last MaxRangeDays (store.BehindHistoryDays), oldest first, with the days
+// their re-score reaches. It sees counts and missing baselines only; a stale
+// value behind a right count is for ComputeDays to prevent. It returns how many
+// days it scored, the re-score after them included, also on an error.
 func (e *Engine) RescoreBehind(ctx context.Context, userID uuid.UUID, today string, n int) (int, error) {
 	from := addDays(today, -(MaxRangeDays - 1))
 	if from == "" {
@@ -223,9 +243,12 @@ func (e *Engine) RescoreBehind(ctx context.Context, userID uuid.UUID, today stri
 	if err != nil || len(days) == 0 {
 		return 0, err
 	}
-	metrics.DaysRescored.WithLabelValues("behind").Add(float64(len(days)))
-	e.log.InfoContext(ctx, "rescoring days behind their history", "days", len(days), "from", days[0])
-	return len(days), e.ComputeDays(ctx, userID, days)
+	w, err := e.computeDays(ctx, userID, days)
+	metrics.DaysRescored.WithLabelValues("behind").Add(float64(w.asked))
+	if w.asked > 0 {
+		e.log.InfoContext(ctx, "rescored days behind their history", "days", w.asked, "from", days[0])
+	}
+	return w.asked + w.again, err
 }
 
 const dayLayout = "2006-01-02"

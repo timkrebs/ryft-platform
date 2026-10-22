@@ -173,7 +173,7 @@ day's strain line up.
 one: per hour for heart rate, steps and active energy, and per night for sleep. See
 [`SCORING.md`](SCORING.md).
 
-**Baselines.** Each overnight signal is compared to your own previous 30 scored days.
+**Baselines.** Each overnight signal is compared to the last 30 scored days before it.
 HRV is compared in log space (it is log-normally distributed). With fewer than 7
 days the row is flagged `calibrating` and a population SD is used instead of yours;
 `calibrating_reason` says whether more nights end it (`short_history`) or a signal is
@@ -184,11 +184,15 @@ insights compare against exactly what recovery used. Since the baselines (and sl
 debt, consistency, yesterday's strain) are read from the stored rows before a day, a
 day can be scored before its history (a backfill that arrives newest first, a late
 HRV sample, a range replayed out of order). So when scoring a day writes a new row or
-changes what later days read from it, scoring re-scores the next 30 stored days after
-it in the same pass, oldest first, never past today, each day once
-(`Engine.ComputeDays`); a re-score that changes nothing stops there. The 15-minute
-pass re-scores, at most 50 a pass, days whose `baseline_days` is below what their
-stored history now holds (`Engine.RescoreBehind`), for what that cannot see.
+changes what later days are computed from (`store.historyInputs`), scoring re-scores
+the next 30 scored days after it in the same pass, oldest first, never past today,
+each day once (`Engine.ComputeDays`); a re-score that changes nothing stops there,
+except on a retried event, whose earlier attempt may have written the change and
+failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
+about 50 days a pass (the days their re-score reaches included) whose `baseline_days`
+is below what their stored history now holds, or whose baseline is missing although
+the history has the nights (`Engine.RescoreBehind`): two consumers at once, rows from
+before this existed. It compares counts, not values.
 
 **Trends.** `GET /v1/trends` reads one `daily_scores` column over a 7/30/90-day window
 (metric → column is a whitelist in `store.Trend`) plus, for HRV and resting HR, the
