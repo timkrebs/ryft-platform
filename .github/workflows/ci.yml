@@ -1,25 +1,120 @@
-# Every push: vet, race tests, lint, manifest validation, the end-to-end smoke test
-# and every Terraform root (offline); then build the images and push them to
-# ghcr.io/timkrebs/ryft/<service>:<short-sha>. On main, `promote` then pins the EKS
-# overlay to them in a PR that merges itself once its checks pass, and Argo CD
-# deploys the merge (docs/OPERATIONS.md → Deploy, D96). No :latest: nothing deploys it.
+# One workflow for the whole repository (D107). On a pull request a `changes` job picks the
+# checks the diff needs (path filters, job-level `if:`); a push to main and a manual run
+# execute every check. `ci-ok` needs them all and is the required check: a skipped check is
+# never a failed one, but a failed or cancelled one (or a failed `changes`) turns it red.
+# On main, after the checks: the services' images (backend/) and the site's (web/) go to
+# ghcr.io/timkrebs/ryft/<name>:<short-sha>, each only when its directory differs from its
+# running pin in the EKS overlay (scripts/deploy_targets.sh). `promote` then pins every group
+# it built in one PR that merges itself once its checks pass, and Argo CD deploys the merge
+# (docs/OPERATIONS.md -> Deploy, D96/D107). No :latest: nothing deploys it.
 name: ci
 
 on:
+  # Only main: a feature branch gets its checks from its pull request, once, under one name.
   push:
-    # The promote PRs' branches: their checks run once, as pull_request.
-    branches-ignore: ["deploy/**"]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build and pin a group although its source did not change (SUPPORT_EMAIL moved, say). A hold still wins.
+        type: choice
+        options: [none, services, web, all]
+        default: none
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR replaces its run. A run on main is never cancelled half way: that would
+  # leave a deploy/<sha> branch without its PR, or throw away image builds.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Public values, baked into the site's HTML (repository variables, not secrets).
+  NEXT_PUBLIC_TESTFLIGHT_URL: ${{ vars.TESTFLIGHT_URL }}
+  NEXT_PUBLIC_SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
 
 jobs:
+  # Which checks does this change need? Filters only on pull requests: on a push the filter
+  # would compare with the previous commit, which is not the question the image jobs ask
+  # (they compare with the running pin, scripts/deploy_targets.sh). The workflow file itself is
+  # in every filter, so a change to CI runs everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+      run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
+      run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
+      run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
+      run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
+      # Image groups to build and pin (never on a pull request).
+      services: ${{ steps.targets.outputs.services || 'false' }}
+      web: ${{ steps.targets.outputs.web || 'false' }}
+      # A hold is active: promote then runs for the sake of closing older deploy PRs.
+      held: ${{ steps.targets.outputs.held || 'false' }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            go:
+              - 'backend/**'
+              - '.golangci.yml'
+              - '.github/workflows/ci.yml'
+            smoke:
+              - 'backend/**'
+              - 'scripts/**'
+              - 'docker-compose.yml'
+              - 'Makefile'
+              - 'deploy/rabbitmq/dev/**'
+              - 'web/config/brand-denylist.json'
+              - 'web/scripts/check-brand.mjs'
+              - 'web/scripts/lib/brand.mjs'
+              - '.github/workflows/ci.yml'
+            manifests:
+              - 'deploy/**'
+              - 'infra/vault/**'
+              - 'scripts/**'
+              - 'Makefile'
+              - '.github/**'
+              - 'docker-compose.yml'
+              - 'backend/internal/events/amqpbus/**'
+              - 'backend/cmd/rabbitmq-topology/**'
+              - 'backend/go.mod'
+              - 'web/content/legal/**'
+              - 'web/scripts/check-policy-version.mjs'
+              - 'web/scripts/lib/policy.mjs'
+            terraform:
+              - 'infra/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'web/**'
+              - 'docs/SCORING.md'
+              - '.github/workflows/ci.yml'
+      - if: github.event_name != 'pull_request'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: github.event_name != 'pull_request'
+        id: targets
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          out=$(./scripts/deploy_targets.sh)
+          echo "$out"
+          echo "$out" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
     runs-on: ubuntu-latest
     # A throwaway server for the opt-in migration and store tests (account
     # deletion races); they create and drop their own databases.
@@ -49,8 +144,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -58,45 +155,93 @@ jobs:
       - run: go test -race -count=1 ./...
 
   lint:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8.0.0
         with:
           version: v2.15.0
           working-directory: backend
 
   manifests:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_manifests == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      # The whole history: the holds check reads the base branch, deploy_targets.sh the pins.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: backend/go.mod
           cache: false
+      # Node built-ins only (no npm ci): the policy check reads the site's legal pages and
+      # this repository's ConfigMaps.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+      # actionlint needs a newer Go than go.mod's; the toolchain download is verified by the Go
+      # checksum database. Only this step may switch toolchains.
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        env:
+          GOTOOLCHAIN: auto
       - run: make k8s-validate
+      # The workflows themselves (.github/actionlint.yaml holds the known gaps).
+      - run: actionlint
+      # The privacy policy version the api and ingest ConfigMaps name has its page in
+      # English and German on the site, and the site has no page the platform does not
+      # name (D107): consent is recorded against that version.
+      - run: node web/scripts/check-policy-version.mjs --strict
+      # The overlay's holds parse (a typo fails closed), the active ones go to the run summary,
+      # and a PR may not move the pin of a group that is held on its base branch.
+      - name: Holds in the EKS overlay
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: ./scripts/deploy_targets.sh --check ${BASE_REF:+"origin/$BASE_REF"}
+      # Consent was recorded against every version in the list: it only grows.
+      - name: The privacy versions list is append-only
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/check_privacy_versions.sh "origin/$BASE_REF"
       # Every image the overlay pins exists on ghcr.io (a promote PR, or a hand-made
       # pin with a typo: 101bc7 for 1015bc7 stopped the migrate job on 2026-10-21).
       - run: ./scripts/check_registry.sh
 
   smoke:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_smoke == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # check_pr_test runs the site's brand check, which needs the Node the site pins (the
+      # runner's own Node is older: its regexes use modifier groups).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
       - run: make up CONTAINER=docker
       - run: make smoke
       # Argo CD's PostSync smoke, the Go one in the migrate image.
       - run: make smoke-hook CONTAINER=docker
-      # trace.sh and friends against a fake kubectl and the running api.
+      # trace.sh, promote.sh, deploy_targets.sh, check_pr.sh and friends against fakes.
       - run: make test-scripts
       - if: failure()
         run: docker compose logs --no-color
@@ -105,8 +250,10 @@ jobs:
 
   # Every Terraform root, offline: no HCP Terraform token, no cloud credentials. State
   # lives in HCP Terraform and plans/applies run on the operator's machine
-  # (docs/OPERATIONS.md → Terraform state); CI only proves the code is sound.
+  # (docs/OPERATIONS.md -> Terraform state); CI only proves the code is sound.
   terraform:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_terraform == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -119,16 +266,18 @@ jobs:
       TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
       TF_IN_AUTOMATION: "true"
     steps:
-      - uses: actions/checkout@v5
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.16.6
           terraform_wrapper: false
-      - uses: terraform-linters/setup-tflint@v6
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
         with:
           tflint_version: v0.61.0
       - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.terraform-plugin-cache
           key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.root)) }}
@@ -139,9 +288,183 @@ jobs:
       - run: tflint --init && tflint --format compact
       - run: terraform test
 
+  # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
+  # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
+  # licences, routes, legal drafts, model version).
+  web-checks:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RYFT_APP_DIR: ${{ github.workspace }}/app
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: timkrebs/ryft-app
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npx eslint .
+      - run: npx prettier --check .
+      - name: Brand check (repository, last commit message, PR title)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          npm run brand
+          if [ -n "$PR_TITLE" ]; then printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title" && node scripts/check-brand.mjs --message "$RUNNER_TEMP/title"; fi
+      - run: npm run tokens:check
+      - run: npm run licenses:check
+      - run: node scripts/check-messages.mjs
+      - name: Unit tests
+        run: npx vitest run --exclude tests/output.test.ts
+        env:
+          REQUIRE_SIBLINGS: '1'
+      - run: npm run build
+      - name: Tests on the built site
+        run: npx vitest run tests/output.test.ts
+        env:
+          REQUIRE_OUT: '1'
+
+  web-e2e:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build the image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: web
+          load: true
+          # An attestation turns the result into an index, which `load` cannot take.
+          provenance: false
+          sbom: false
+          tags: ryft-web:ci
+          build-args: |
+            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
+            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      - name: Serve it as the cluster does (read-only, non-root, no capabilities)
+        run: |
+          docker run -d --name web -p 8080:8080 --read-only --tmpfs /tmp --tmpfs /var/cache/nginx \
+            --cap-drop ALL --security-opt no-new-privileges --user 101:101 ryft-web:ci
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8080/healthz && break; sleep 1; done
+      - name: Trivy (fail on critical)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:ci
+      - run: npx playwright install --with-deps chromium
+      - name: Playwright (every page, en + de, light + dark, axe)
+        run: npx playwright test
+        env:
+          BASE_URL: http://localhost:8080
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+      - name: Links (internal and external)
+        run: npm run links
+      - name: Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS)
+        run: npm run lighthouse
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: lighthouse
+          path: web/.lighthouseci
+          # A dot directory: without this the reports were never uploaded.
+          include-hidden-files: true
+          retention-days: 14
+      - if: always()
+        run: docker logs web | tail -50
+
+  # gitleaks over the whole history on every PR and push, with the reviewed allowlist in
+  # .gitleaks.toml (picked up from the repository root); HEAD only: gitleaks' default would scan
+  # every branch, and any pushed work in progress would turn every PR red. Not a prerequisite of the image
+  # jobs: a leak is fixed by rotating the secret, and a false positive must not block a hotfix.
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # A PR is judged by the base branch's allowlist, not by the one it may have edited, and by
+      # the base branch's .gitleaksignore (gitleaks always reads <source>/.gitleaksignore, so the
+      # PR's own file is replaced by the base's, or removed if the base has none).
+      - name: gitleaks
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/noignore"
+          cp .gitleaks.toml "$RUNNER_TEMP/gitleaks.toml"
+          if [ -n "$BASE_REF" ]; then
+            git show "origin/$BASE_REF:.gitleaksignore" > .gitleaksignore 2>/dev/null || rm -f .gitleaksignore
+            if git show "origin/$BASE_REF:.gitleaks.toml" > "$RUNNER_TEMP/base.toml" 2>/dev/null; then
+              mv "$RUNNER_TEMP/base.toml" "$RUNNER_TEMP/gitleaks.toml"
+            else
+              echo "::notice::$BASE_REF has no .gitleaks.toml yet: using the PR's"
+            fi
+          fi
+          docker run --rm -v "$PWD:/repo" \
+            -v "$RUNNER_TEMP/gitleaks.toml:/config/gitleaks.toml:ro" -v "$RUNNER_TEMP/noignore:/noignore:ro" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --config /config/gitleaks.toml --gitleaks-ignore-path /noignore \
+            --log-opts=HEAD --redact --no-banner --exit-code 1
+
+  # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
+  # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
+  # A new check job is one more entry in `needs`.
+  ci-ok:
+    # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
+    # required check counts as passing for branch protection.
+    if: always()
+    needs: [changes, test, lint, smoke, manifests, terraform, web-checks, web-e2e, secrets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
+
   images:
-    if: github.event_name == 'push'
-    needs: [test, lint, manifests, smoke]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.services == 'true'
+    needs: [changes, test, lint, manifests, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -150,21 +473,23 @@ jobs:
       matrix:
         service: [ingest, scoring, api, notify, migrate]
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/timkrebs/ryft/${{ matrix.service }}
           tags: |
             type=sha,format=short,prefix=
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: backend
           build-args: SERVICE=${{ matrix.service }}
@@ -175,30 +500,145 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-  # After the images of a push to main: pin deploy/k8s/overlays/eks to them on a branch
-  # deploy/<sha>, open "deploy: images <sha>" with the commits since the running pin, and
-  # let it merge itself (squash) once its required checks pass; Argo CD syncs the merge.
-  # Closing the PR blocks that deploy. Skipped when nothing under backend/ changed since
-  # the running pin, which also keeps the merged pin commit from promoting itself.
+  # The site's image, one job: build amd64 into the runner, scan it, and only then push both
+  # architectures from the same builder (its own layer cache makes the pushed amd64 manifest
+  # the one that was scanned; no shared GHA cache here, a poisoned cache entry must not reach
+  # a pushed image); scan the pushed digest again. A pushed but unpinned
+  # image is inert: nothing deploys it, and there is no :latest.
+  web-image:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.web == 'true'
+    needs: [changes, web-checks, web-e2e, manifests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # SUPPORT_EMAIL is baked into the HTML: unset, /beta would ship a TODO marker.
+      - name: SUPPORT_EMAIL is set
+        run: |
+          test -n "$NEXT_PUBLIC_SUPPORT_EMAIL" || { echo "::error::The repository variable SUPPORT_EMAIL is not set; the site would ship without a contact address. gh variable set SUPPORT_EMAIL, then re-run this job."; exit 1; }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/timkrebs/ryft/web
+          flavor: latest=false
+          tags: |
+            type=sha,format=short,prefix=
+      # The tag is the first seven characters of this commit, the same as promote.sh pins.
+      - name: Exactly one tag, the first 7 characters of the commit
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          want="ghcr.io/timkrebs/ryft/web:${GITHUB_SHA::7}"
+          [ "$TAGS" = "$want" ] || { echo "::error::tags are '$TAGS', want '$want'"; exit 1; }
+      - name: Build for the cluster's architecture (amd64), into the runner
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: web
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: ryft-web:scan
+          build-args: |
+            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
+            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
+      # SUPPORT_EMAIL lands on /beta (the mailto on /support is in the legal text itself, and
+      # /support always carries a TODO(user) marker for other drafts): the address is there and the
+      # support-address marker is not.
+      - name: The built site has its contact address
+        run: |
+          docker run -d --name web-scan -p 8080:8080 ryft-web:scan
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8080/healthz >/dev/null && break; sleep 1; done
+          curl -fsSL http://localhost:8080/beta -o "$RUNNER_TEMP/beta.html"
+          grep -qF "href=\"mailto:${NEXT_PUBLIC_SUPPORT_EMAIL}" "$RUNNER_TEMP/beta.html" || { echo "::error::/beta has no mailto: link to the support address"; exit 1; }
+          ! grep -qF 'TODO(user): support email address' "$RUNNER_TEMP/beta.html" || { echo "::error::/beta still carries the support-address TODO marker"; exit 1; }
+          docker rm -f web-scan >/dev/null
+      - name: Trivy before any push (fail on critical)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:scan
+      - id: build
+        name: Push amd64 and arm64 with provenance and an SBOM
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: web
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
+            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
+      - name: Trivy on the pushed digest (fail on critical)
+        env:
+          IMAGE: ghcr.io/timkrebs/ryft/web@${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            image --platform linux/amd64 --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "$IMAGE"
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### ghcr.io/timkrebs/ryft/web"
+            echo '```'
+            echo "$TAGS"
+            echo "digest: $DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # After the images of a push to main (or a manual run on main): pin deploy/k8s/overlays/eks
+  # to them on a branch deploy/<sha>, in ONE "deploy: images <sha>" PR that names, per group,
+  # the old pin and the commits since, close every older deploy/* PR as superseded, and let it
+  # merge itself (squash) once its required checks pass; Argo CD syncs the merge. Closing the
+  # PR blocks that deploy. The groups are the ones scripts/deploy_targets.sh targets: a
+  # directory that differs from its running pin, which also keeps the merged pin commit from
+  # promoting itself. All or nothing: it runs only when every targeted group was built.
+  # `!cancelled()`, not `always()`: a skipped job reports "skipped" whether it had nothing to
+  # do or its needs failed, so each targeted group must say "success".
   # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
   # RYFT_DEPLOY_APP_KEY): PRs made with GITHUB_TOKEN would not run the checks.
   promote:
-    # Skipped until the App exists (docs/STATUS.md → GitOps: your steps).
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RYFT_DEPLOY_APP_CLIENT_ID != ''
-    needs: [images]
+    # Skipped until the App exists (docs/STATUS.md -> GitOps: your steps).
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      && vars.RYFT_DEPLOY_APP_CLIENT_ID != '' && needs.changes.result == 'success'
+      && (needs.changes.outputs.services == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.held == 'true')
+      && (needs.changes.outputs.services != 'true' || needs.images.result == 'success')
+      && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
+    needs: [changes, images, web-image]
     runs-on: ubuntu-latest
+    # The App's token does the work; GITHUB_TOKEN gets nothing.
+    permissions: {}
     concurrency:
       group: promote
       cancel-in-progress: false
     steps:
       - id: app
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RYFT_DEPLOY_APP_CLIENT_ID }}
           private-key: ${{ secrets.RYFT_DEPLOY_APP_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
@@ -206,4 +646,5 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
+          FORCE: ${{ inputs.force }}
         run: ./scripts/promote.sh
