@@ -11,13 +11,16 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
-    # Version policy (docs/DECISIONS.md): Node moves as one unit (Docker build stage, .nvmrc,
-    # engines, @types/node) and only onto an LTS line. Node 26 becomes LTS on 2026-10-28:
-    # then delete the 26.x entries (here and in the docker block) and move all four together.
+    # Version policy (docs/DECISIONS.md): Node moves as one unit (Docker build stage tag and
+    # digest, .nvmrc, engines, @types/node), by hand, and only onto an LTS line (Node 26 from
+    # 2026-10-28). So no Node-major PRs for @types/node or the node image; these rules stay.
     # TypeScript 7 waits for typescript-eslint, whose peer range stops below 6.1.
+    # Cooldown: new releases wait 7 days. Security updates are not delayed by cooldown
+    # (GitHub's dependabot.yml reference: cooldown applies to version updates only).
+    cooldown: { default-days: 7 }
     ignore:
       - dependency-name: '@types/node'
-        versions: ['25.x', '26.x', '27.x']
+        update-types: ['version-update:semver-major']
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
   - package-ecosystem: docker
@@ -25,16 +28,20 @@ updates:
     schedule: { interval: weekly, day: monday }
     commit-message: { prefix: deps }
     # nginx stays on its stable (even) branch: patches arrive, a new branch (1.32 and so on)
-    # is a deliberate PR. Node: see the npm block.
+    # is a hand PR. Docker tags are only compared within the same suffix, so patches arrive
+    # only while it stays "-alpine3.24"; a new Alpine base is a hand PR too.
+    # Node: see the npm block (major bumps by hand; 24.x patches still flow).
+    cooldown: { default-days: 7 }
     ignore:
       - dependency-name: nginxinc/nginx-unprivileged
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
       - dependency-name: node
-        versions: ['25.x', '26.x', '27.x']
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
     commit-message: { prefix: deps }
+    cooldown: { default-days: 7 }
     groups:
       actions:
         patterns: ['*']
