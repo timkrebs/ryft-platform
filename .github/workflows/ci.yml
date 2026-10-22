@@ -204,9 +204,12 @@ jobs:
       # name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
       # The version in force on EKS (the overlay's pin, moved by promote with the web pin):
-      # api and ingest agree and the pinned web commit has its page in English and German.
+      # api and ingest agree and the pinned web commit serves it at /privacy (newest page, English and German).
+      # On a pull request it also refuses to put a draft text into force (an unchanged one stays).
       - name: The privacy policy in force has its page
-        run: ./scripts/check_policy_in_force.sh
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/check_policy_in_force.sh ${BASE_REF:+"origin/$BASE_REF"}
       # The overlay's holds parse (a typo fails closed), the active ones go to the run summary,
       # and a PR may not move the pin of a group that is held on its base branch.
       - name: Holds in the EKS overlay

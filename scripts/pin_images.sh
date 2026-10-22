@@ -10,8 +10,10 @@
 #   services=0fd4256        (comma-joined when the images were pinned to different commits)
 # Pinning web also moves the privacy policy version in force on EKS (the two PRIVACY_POLICY_VERSION
 # literals of the overlay's configMapGenerator, api and ingest) to the version of
-# deploy/k8s/base/{api,ingest}/config.env, so the page and the version go live in one sync
-# (D78, F1). It exits non-zero when the two base files disagree or the overlay lacks the
+# deploy/k8s/base/{api,ingest}/config.env AS OF the pinned commit (the first listed version in
+# web/content/legal/privacy-versions.json when the pin is no commit of this history), so the
+# page and the version go live in one sync (D78, F1). stderr: "in force: A -> B". It exits
+# non-zero when the two base files disagree, the version is no real date or the overlay lacks the
 # literals. Pinning services leaves them as they are.
 set -euo pipefail
 usage="usage: pin_images.sh <short-sha> <services|web>... [kustomization.yaml]"
@@ -58,25 +60,45 @@ for g in groups:
         print(f"! pin_images: the {g} images were pinned to different commits: {sorted(old)}", file=sys.stderr)
     print(f"{g}={','.join(sorted(old))}")
 if "web" in groups:
-    versions = {}
-    for s in ("api", "ingest"):
-        f = f"{root}/deploy/k8s/base/{s}/config.env"
+    import datetime, json, subprocess
+    # The version the pinned web image serves: base's version AT the pinned commit (not the
+    # working tree), or the first listed version when the pin is no commit of this history
+    # (an image from the archived ryft-web repository carries nothing newer).
+    def run(*a):
+        return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)
+    in_history = run("rev-parse", "-q", "--verify", sha + "^{commit}").returncode == 0
+    if in_history:
+        versions = {}
+        for s in ("api", "ingest"):
+            f = f"deploy/k8s/base/{s}/config.env"
+            r = run("show", f"{sha}:{f}")
+            if r.returncode != 0:
+                sys.exit(f"✗ pin_images: {f} does not exist at {sha}")
+            found = re.findall(r"^PRIVACY_POLICY_VERSION=([0-9]{4}-[0-9]{2}-[0-9]{2})$", r.stdout, re.M)
+            if len(found) != 1:
+                sys.exit(f"✗ pin_images: {f} at {sha} needs exactly one line PRIVACY_POLICY_VERSION=YYYY-MM-DD (bare, no quotes)")
+            versions[s] = found[0]
+        if versions["api"] != versions["ingest"]:
+            sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
+        version = versions["api"]
+    else:
         try:
-            found = re.findall(r"^PRIVACY_POLICY_VERSION=(\d{4}-\d{2}-\d{2})$", open(f).read(), re.M)
-        except OSError as e:
-            sys.exit(f"✗ pin_images: cannot read {f}: {e}")
-        if len(found) != 1:
-            sys.exit(f"✗ pin_images: {f} needs exactly one line PRIVACY_POLICY_VERSION=YYYY-MM-DD (bare, no quotes)")
-        versions[s] = found[0]
-    if versions["api"] != versions["ingest"]:
-        sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']}: they must agree")
-    version = versions["api"]
-    moved = 0
+            version = json.load(open(f"{root}/web/content/legal/privacy-versions.json"))[0]
+        except (OSError, ValueError, IndexError) as e:
+            sys.exit(f"✗ pin_images: {sha} is no commit of this history and the first listed privacy version cannot be read: {e}")
+    try:
+        datetime.date.fromisoformat(version)
+        assert re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", version)
+    except (ValueError, AssertionError):
+        sys.exit(f"✗ pin_images: privacy policy version '{version}' is not a real YYYY-MM-DD date")
+    moved, was = 0, None
     for i, line in enumerate(lines):
-        m = re.match(r"^(\s*- \{ name: ryft-config, namespace: ryft-(?:api|ingest), behavior: merge, literals: \[PRIVACY_POLICY_VERSION=)[^\]]*(\] \}\s*)$", line)
+        m = re.match(r"^(\s*- \{ name: ryft-config, namespace: ryft-(?:api|ingest), behavior: merge, literals: \[PRIVACY_POLICY_VERSION=)([^\]]*)(\] \}\s*)$", line)
         if m:
-            lines[i] = m.group(1) + version + m.group(2); moved += 1
+            was = was or m.group(2)
+            lines[i] = m.group(1) + version + m.group(3); moved += 1
     if moved != 2:
         sys.exit(f"✗ pin_images: expected the two PRIVACY_POLICY_VERSION literals (api, ingest) in {path}, found {moved}")
+    print(f"in force: {was} -> {version}", file=sys.stderr)
 open(path, "w").write("\n".join(lines))
 PY

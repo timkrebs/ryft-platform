@@ -500,6 +500,12 @@ kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 grep API_KEY deploy/k8s/overlays/local-postgres/secrets/api.env   # the bearer
 ```
 
+The four Deployment ConfigMaps are `ryft-config-<hash>` (a changed value renames them and
+rolls the pods). `kubectl apply` never prunes: the plain `ryft-config` of an install from
+before that change, and every older `ryft-config-<hash>`, stay behind unused. Delete them by
+hand when you like (`kubectl -n ryft-api get cm`; the one a Deployment's `envFrom` names is
+in use). Argo CD is not involved here.
+
 An install from before the per-namespace layout ran everything in namespace `ryft`.
 `kubectl apply` does not remove it: once the data has moved (backup and restore below),
 delete it with `kubectl delete namespace ryft`.
@@ -558,7 +564,8 @@ API=https://api.ryftapp.de
 ```
 
 **Consent.** `POST /v1/sync` answers `403 consent_required` until the account consented
-to the current `PRIVACY_POLICY_VERSION` (configmaps of api and ingest, `2026-10-20`), and
+to the current `PRIVACY_POLICY_VERSION` (`config.env` of api and ingest, in force per
+`overlays/eks`; `2026-10-20` today), and
 scoring computes nothing for an account without consent. Nothing was backfilled, so the
 operator's own account consents once too: with the app build that has the consent
 screen, or by hand with its access token:
@@ -580,13 +587,13 @@ nothing on EKS, and there is no interim restart. A service's ConfigMap is genera
 `ryft-config-<hash>`, so a changed value renames it and rolls exactly the pods that read it.
 `manifests` runs `node web/scripts/check-policy-version.mjs --strict` (published version,
 pages, compose) and `scripts/check_policy_in_force.sh` (api and ingest agree, the pinned web
-commit has both pages). If web is held or its build fails, the old version stays in force
+commit serves the version at `/privacy`, newest page in both languages). If web is held or its build fails, the old version stays in force
 with the old site. The deploy PR body shows `privacy policy in force: A → B`.
 
 What to watch after the deploy PR merges (read-only):
 
 ```bash
-for n in api ingest scoring notify; do kubectl -n ryft-$n get cm -o name; done   # only ryft-config-<hash>
+for n in api ingest scoring notify; do kubectl -n ryft-$n get cm -o name; done   # ryft-config-<hash> (+ configmap/kube-root-ca.crt)
 kubectl -n ryft-api get deploy api -o jsonpath='{.spec.template.spec.containers[0].envFrom}'; echo
 for s in api ingest; do kubectl -n ryft-$s logs -l app=$s --tail=-1 --since=30m | grep '"msg":"beta"'; done
 make smoke-prod
@@ -596,11 +603,19 @@ The roll is a rolling update of a minute or two in which old pods still serve th
 version: `ryft_consents_total{action="stale"}` and `consent_required` refusals bump briefly
 and recover. The PostSync smoke consents through api and syncs through ingest, so it proves
 the two agree. Argo CD deletes the old `ryft-config-<old>` only after the sync is healthy
-(`PruneLast`). Rolling a ReplicaSet back by hand is not a rollback path (its ConfigMap may be
-pruned, and self-heal reverts it): revert in git. A policy PR itself cannot be reverted as a
-whole (the versions list is append-only): set the in-force pin back, or ship a new version.
-Rolling web back past a policy version fails `check_policy_in_force.sh` until the pin goes
-back too.
+(`PruneLast`); until then the old hash is still listed. Rolling a ReplicaSet back by hand is
+not a rollback path (its ConfigMap may be pruned, and self-heal reverts it): revert in git.
+
+Withdrawing a version. A policy PR itself cannot be reverted as a whole (the versions list is
+append-only), and the check requires the in-force version to be the NEWEST page of the pinned
+web commit (that is what `/privacy` serves). So setting the in-force pin back alone fails the
+check, and would be undone by the next web deploy anyway. A withdrawal is durable only as a
+NEW version (the corrected text, appended) or with web held and pinned back (`pin_images.sh`
+and `hold.sh add`, in one commit), never as the pin alone. If a sync fails in the middle (web
+stuck while api and ingest are already on the new version, or the reverse), move web and the
+in-force pin back together in one commit; the check refuses a pair that disagrees.
+`check_policy_in_force.sh` also refuses, on a pull request, a CHANGE of the version in force to
+a page that is still `status: draft` (an unchanged draft stays): publish the text first.
 
 Every tester consents again before the next sync;
 `ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
@@ -963,7 +978,8 @@ what this is for. Roll back first, then investigate.
 ```bash
 kubectl -n argocd get applications ryft-platform                                   # Synced, Healthy
 kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo   # the deploy PR's pin, both pods
-for p in "" privacy terms support impressum de/privacy de/impressum privacy/2026-10-20 day/2026-10-19 auth/callback invite/TEST; do
+V=$(sed -nE 's/^.*ryft-api,.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\1/p' deploy/k8s/overlays/eks/kustomization.yaml)   # the policy version in force
+for p in "" privacy terms support impressum de/privacy de/impressum privacy/$V day/2026-10-19 auth/callback invite/TEST; do
   curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
 curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
