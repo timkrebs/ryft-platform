@@ -3,6 +3,7 @@ package store
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -15,11 +16,25 @@ func TestHistoryInputsCoverHistory(t *testing.T) {
 		"SleepNeedMin": {"sleep_need_min"}, "SleepActualMin": {"sleep_actual_min"},
 		"SleepStart": {"sleep_start"}, "SleepEnd": {"sleep_end"},
 		"NapMin": {"nap_min"}, // the next day's need subtracts this day's naps
-		// calibrating_reason's window: whether the day holds any data. The overnight
-		// signals, strain and sleep are compared by value already; steps and active
-		// energy by presence only (the steps a day gains with every sync change no
-		// later day). ScoreHistory computes it from exactly these columns.
-		"HasData": {"hrv_ms", "rhr", "resp_rate", "strain", "sleep_actual_min", "steps IS NULL", "active_kcal IS NULL"},
+		// calibrating_reason's window: whether one of dataColumns is set
+		// (ScoreHistory's SQL is built from them). Each must be compared, by value
+		// or by presence ("col IS NULL": the steps a day gains with every sync
+		// change no later day), or a day gaining only that would move W without a
+		// re-score of the days after it.
+		"HasData": nil,
+	}
+	for _, c := range dataColumns {
+		switch {
+		case slices.Contains(historyInputs, c):
+			inputs["HasData"] = append(inputs["HasData"], c)
+		case slices.Contains(historyInputs, c+" IS NULL"):
+			inputs["HasData"] = append(inputs["HasData"], c+" IS NULL")
+		default:
+			t.Errorf("History.HasData reads %s, but historyInputs compares it neither by value nor by presence", c)
+		}
+	}
+	if !strings.Contains(hasData, strings.Join(dataColumns, ", ")) {
+		t.Errorf("HasData's SQL %q is not built from dataColumns", hasData)
 	}
 	leftOut := map[string]string{
 		"Day":        "the key",

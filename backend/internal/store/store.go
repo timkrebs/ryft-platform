@@ -613,19 +613,30 @@ type History struct {
 	SleepStart     *time.Time // consistency
 	SleepEnd       *time.Time
 	Efficiency     *int // the planner (asleep / in bed)
-	// HasData: the day holds anything a source sent (an overnight signal, heart
-	// rate or a session, sleep, steps or active energy). A range or a rescore
-	// also stores days before an account's first data, with none of it; they
-	// do not count as history for calibrating_reason.
+	// HasData: one of dataColumns is set: an overnight HRV, a resting HR or a
+	// respiratory rate, a strain (heart-rate minutes or a logged session), a
+	// night's sleep, steps or active energy. A range or a rescore also stores
+	// days before an account's first data, with none of it; they do not count
+	// as history for calibrating_reason. Neither does a day with only an SpO2,
+	// a nap, time in bed or a workout without heart rate: rare, and it errs
+	// toward short_history.
 	HasData bool
 }
+
+// dataColumns are the daily_scores columns History.HasData looks at. Each is a
+// history input (historyInputs, by value or by presence), so a day gaining or
+// losing data re-scores the days after it; TestHistoryInputsCoverHistory
+// checks that.
+var dataColumns = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_actual_min", "steps", "active_kcal"}
+
+var hasData = "num_nonnulls(" + strings.Join(dataColumns, ", ") + ") > 0"
 
 // ScoreHistory returns up to n scored days strictly before `day`, newest first.
 func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, n int) ([]History, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min,
 		recovery, nap_min, sleep_start, sleep_end,
 		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END,
-		num_nonnulls(hrv_ms, rhr, resp_rate, strain, sleep_actual_min, steps, active_kcal) > 0
+		`+hasData+`
 		FROM daily_scores WHERE user_id=$1 AND day < $2::date ORDER BY day DESC LIMIT $3`, userID, day, n)
 	if err != nil {
 		return nil, err
