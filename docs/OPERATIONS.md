@@ -297,9 +297,11 @@ images that are pinned; Argo CD deletes the old ConfigMap only after the sync is
 `kubectl rollout undo` or by scaling an old ReplicaSet: it may name a pruned ConfigMap
 (`CreateContainerConfigError`) and self-heal reverts it anyway. Which commit to revert:
 
-- a **configuration** problem (a `config.env` value, the in-force pin): revert the merge that
-  changed it, i.e. the PR that touched `config.env` or `overlays/eks` by hand. The old content
-  gives the old name, so the pods roll back.
+- a **configuration** problem (a `config.env` value such as `LOG_LEVEL`, or a hand-made change
+  of `overlays/eks`): revert the merge that changed it. The old content gives the old name, so
+  the pods roll back. Not for `PRIVACY_POLICY_VERSION`: a policy PR cannot be reverted (the
+  versions list is append-only and the check wants the newest page); see "Withdrawing a
+  version" under Beta → Consent, where a new version is the way.
 - an **image** problem: the pins and a hold as above (`pin_images.sh <old> <group>` and
   `hold.sh add <group> "<reason>"`), not a revert of the deploy PR's merge when it pinned
   both groups. Leave the pin commits of the other group alone.
@@ -359,6 +361,12 @@ red, which is why you are rolling back, the rest still holds):
    ./scripts/pin_images.sh <old> services       # or: web   (the site may also go to "f437747", see Apex site)
    ./scripts/hold.sh add services "bad migration, see #57"      # or: web "broken AASA, see #57"
    ```
+   A **web** rollback also sets the version in force to what the site at `<old>` serves, and
+   `manifests` refuses the pair when the older site would bring back a draft text: if the
+   version in force was published in place (the same version label, `status: draft` then
+   `published`), rolling web back past the commit that published it, or to `f437747`, fails
+   `check_policy_in_force.sh` ("would bring the draft text back"). Pick an `<old>` at or after
+   the publishing commit, or hold web at the current pin.
    `hold.sh` writes exactly `# hold: <services|web> <YYYY-MM-DD UTC> <reason>` above the
    group's first image (the **ingest** entry for the services, **web** for the site), is
    idempotent, and runs `deploy_targets.sh --check` (any other line that starts like a
@@ -850,8 +858,17 @@ NEW version (the corrected text, appended) or with web held and pinned back (`pi
 and `hold.sh add`, in one commit), never as the pin alone. If a sync fails in the middle (web
 stuck while api and ingest are already on the new version, or the reverse), move web and the
 in-force pin back together in one commit; the check refuses a pair that disagrees.
-`check_policy_in_force.sh` also refuses, on a pull request, a CHANGE of the version in force to
-a page that is still `status: draft` (an unchanged draft stays): publish the text first.
+On a pull request `check_policy_in_force.sh` also refuses a version that becomes the one in
+force, or the published one in `config.env`, unless its page in both languages says exactly
+`status: published` (read as the site reads it; a tag, flow frontmatter or a block scalar
+refuse even when published). Anything else is a draft for this check. Going back to a version
+listed before the one in force now is allowed. So a policy PR stays red until `status:
+published` is set in that same PR, and a draft version on main blocks every deploy PR, services
+too, until it is published or web is held. A text that is published cannot be un-published in
+place: the check also refuses a PR that sets a published page back to a draft, and a web pin
+that would serve the draft again under the same version (a rollback past the commit that
+published it, or to `f437747`, which carries 2026-10-20 as a draft). Publish a new version
+instead.
 
 Every tester consents again before the next sync;
 `ryft_gate_refusals_total{code="consent_required"}` shows who has not yet.
@@ -1258,7 +1275,9 @@ timkrebs/ryft-platform --body <address>`, then `gh workflow run ci --ref main -f
 force=web`); an unset `TESTFLIGHT_URL` only hides the TestFlight button.
 
 **Rollback point:** `f437747`, the last image built in ryft-web (not a commit of this
-history, so it needs the hold, "Deploy and roll back"). **Never delete package versions of
+history, so it needs the hold, "Deploy and roll back"). It carries the privacy text
+2026-10-20 as a draft: once that version is published in place, `check_policy_in_force.sh`
+refuses a pin back to it. **Never delete package versions of
 `ryft/web`**, `latest` included: GHCR cannot untag, and a version may be a rollback point.
 
 **Verify a web deploy** after the Argo CD sync. The pods roll with one surge and none

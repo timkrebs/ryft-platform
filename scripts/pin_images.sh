@@ -10,11 +10,14 @@
 #   services=0fd4256        (comma-joined when the images were pinned to different commits)
 # Pinning web also moves the privacy policy version in force on EKS (the two PRIVACY_POLICY_VERSION
 # literals of the overlay's configMapGenerator, api and ingest) to the version of
-# deploy/k8s/base/{api,ingest}/config.env AS OF the pinned commit (the first listed version in
-# web/content/legal/privacy-versions.json when the pin is no commit of this history), so the
-# page and the version go live in one sync (D78, F1). stderr: "in force: A -> B". It exits
-# non-zero when the two base files disagree, the version is no real date or the overlay lacks the
-# literals. Pinning services leaves them as they are.
+# deploy/k8s/base/{api,ingest}/config.env AS OF the pinned commit, so the page and the version go
+# live in one sync (D78, F1). A commit from before config.env existed (before the F1 change) has
+# none: the newest web/content/legal/{en,de}/privacy/*.mdx there decides, and both languages must
+# agree. The one known foreign pin f437747 (built in the archived ryft-web repository) carries
+# 2026-10-20. Any other sha must resolve to exactly one commit of this history, else it exits
+# non-zero, as it does when the two base files disagree, the version is no real date or the overlay
+# lacks the literals. stderr: "in force: A -> B" (PIN_QUIET=1 silences it). Pinning services leaves
+# the literals as they are.
 set -euo pipefail
 usage="usage: pin_images.sh <short-sha> <services|web>... [kustomization.yaml]"
 sha=${1:?$usage}; shift
@@ -64,9 +67,10 @@ if "web" in groups:
     # The version the pinned web image serves, as of the pinned commit (not the working tree):
     # base's config.env there; for a commit from before config.env existed, the newest privacy
     # page there (both languages must agree: that is what /privacy serves). The one known
-    # foreign pin (f437747, built in the archived ryft-web repository) carries the first listed
-    # version. Any other sha must resolve to exactly one commit of this history.
+    # foreign pin (f437747, built in the archived ryft-web repository) carries 2026-10-20.
+    # Any other sha must resolve to exactly one commit of this history.
     FOREIGN = "f437747"
+    FOREIGN_VERSION = "2026-10-20"  # that image never changes: it carries this version, as a draft
     def run(*a):
         return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)
     cands = run("rev-parse", "--disambiguate=" + sha).stdout.split()
@@ -100,12 +104,7 @@ if "web" in groups:
                 sys.exit(f"✗ pin_images: at {sha} the newest privacy page is {newest['en']} in English and {newest['de']} in German")
             version = newest["en"]
     elif not cands and sha == FOREIGN:
-        try:
-            listed = json.load(open(f"{root}/web/content/legal/privacy-versions.json"))
-            version = listed[0]
-            assert isinstance(version, str)
-        except (OSError, ValueError, IndexError, KeyError, TypeError, AssertionError) as e:
-            sys.exit(f"✗ pin_images: the first listed privacy version cannot be read from web/content/legal/privacy-versions.json (a list of strings): {e!r}")
+        version = FOREIGN_VERSION
     else:
         sys.exit(f"✗ pin_images: {sha} is not exactly one commit of this history ({len(commits)} found) and not the known foreign pin {FOREIGN}")
     try:

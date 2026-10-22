@@ -109,20 +109,25 @@ tag=$(printf '%s\n' "$found" | sed -n 's/^web //p' | head -1)
 # The pin must be exactly one commit of this history, or the one known foreign pin (built in the
 # archived ryft-web repository). An unknown or ambiguous short SHA is not "foreign".
 FOREIGN=f437747
-n_commits=0; n_objects=0; full=
-for o in $(git rev-parse --disambiguate="$tag" 2>/dev/null); do
-  n_objects=$((n_objects + 1))
-  if [ "$(git cat-file -t "$o")" = commit ]; then n_commits=$((n_commits + 1)); full=$o; fi
-done
-in_history=
-if [ "$n_commits" = 1 ]; then in_history=1
-elif [ "$n_objects" = 0 ] && [ "$tag" = "$FOREIGN" ]; then in_history=
-else err "web is pinned to $tag, which is not exactly one commit of this history ($n_commits found) and not the known foreign pin $FOREIGN"
-fi
-page() { # <lang> <version>: the page file's content in the pinned web image's tree
-  if [ -n "$in_history" ]; then git show "$full:web/content/legal/$1/privacy/$2.mdx" 2>/dev/null
-  else cat "web/content/legal/$1/privacy/$2.mdx" 2>/dev/null; fi
+FOREIGN_VERSION=2026-10-20   # that image never changes: it carries this version, as a draft
+resolve_pin() { # <tag>: sets pin_kind (commit|foreign) and pin_full; returns 1 for anything else
+  local o n_c=0 n_o=0
+  pin_kind=; pin_full=
+  for o in $(git rev-parse --disambiguate="$1" 2>/dev/null); do
+    n_o=$((n_o + 1))
+    if [ "$(git cat-file -t "$o")" = commit ]; then n_c=$((n_c + 1)); pin_full=$o; fi
+  done
+  if [ "$n_c" = 1 ]; then pin_kind=commit
+  elif [ "$n_o" = 0 ] && [ "$1" = "$FOREIGN" ]; then pin_kind=foreign; pin_full=
+  else return 1; fi
 }
+resolve_pin "$tag" || err "web is pinned to $tag, which is not exactly one commit of this history and not the known foreign pin $FOREIGN"
+full=$pin_full; tag_kind=$pin_kind
+in_history=; [ "$pin_kind" != commit ] || in_history=1
+# The pages of an image (<kind> <full sha> <lang> <version>). The foreign image carries a draft:
+# nothing in this tree is published for it.
+page_at() { if [ "$1" = commit ]; then git show "$2:web/content/legal/$3/privacy/$4.mdx" 2>/dev/null; fi; }
+page() { page_at "$tag_kind" "$full" "$1" "$2"; }
 if [ -n "$in_history" ]; then
   for lang in en de; do
     git cat-file -e "$full:web/content/legal/$lang/privacy/$v.mdx" 2>/dev/null \
@@ -132,8 +137,7 @@ if [ -n "$in_history" ]; then
     [ "$newest" = "$v" ] || err "web $tag serves $newest at /privacy ($lang), but $v is in force: users would consent to $v while reading $newest. Move web and the in-force pin together."
   done
 else
-  first=$(jq -r '.[0]' "$list")
-  [ "$v" = "$first" ] || err "web is pinned to $tag, which is not a commit of this history; that image carries only $first, but $v is in force"
+  [ "$v" = "$FOREIGN_VERSION" ] || err "web is pinned to $tag, which is not a commit of this history; that image carries only $FOREIGN_VERSION, but $v is in force"
 fi
 
 # Draft guard, on a pull request (a base ref is given). A version may BECOME the one in force, or
@@ -143,7 +147,23 @@ fi
 # that is not exactly "published" refuses. A version listed BEFORE the one that is in force now was
 # in force before, so going back to it is allowed (move web and the in-force pin back together).
 published() { # stdin: a page; exit 0 only when its frontmatter status is exactly published
-  LC_ALL=C awk '{ sub(/\r$/, "") } NR == 1 { sub(/^\357\273\277/, ""); if ($0 !~ /^---[ \t]*$/) exit } NR > 1 && /^---[ \t]*$/ { exit } /^["'"'"']?status["'"'"']?[ \t]*:/ { s = $0; sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); gsub(/["'"'"' \t]/, "", s); st = s } END { exit !(st == "published") }'
+  # Normalised: BOM, CRLF, one pair of matching quotes around key or value, a trailing comment and
+  # blanks at the ends. Fail closed on purpose, even for a published text: a tag (!!str), flow
+  # frontmatter, a block scalar, a duplicate status key and a continuation line under status.
+  LC_ALL=C awk -v sq="'" -v dq='"' '
+    BEGIN { re = "^(status|" dq "status" dq "|" sq "status" sq ")[ \t]*:" }
+    { sub(/\r$/, "") }
+    NR == 1 { sub(/^\357\273\277/, ""); if ($0 !~ /^---[ \t]*$/) exit }
+    NR > 1 && /^---[ \t]*$/ { exit }
+    after { if ($0 ~ /^[ \t]+[^ \t]/) bad = 1; after = 0 }
+    NR > 1 && $0 ~ re {
+      s = $0; sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s)
+      c = substr(s, 1, 1)
+      if (length(s) >= 2 && (c == sq || c == dq) && substr(s, length(s), 1) == c) s = substr(s, 2, length(s) - 2)
+      if (seen++) bad = 1
+      st = s; after = 1
+    }
+    END { exit !(st == "published" && !bad) }'
 }
 listed_before() { # <candidate> <current>: the candidate is listed before the current one
   jq -e --arg a "$1" --arg b "$2" '(index($a)) as $i | (index($b)) as $j | $i != null and $j != null and $i < $j' "$list" >/dev/null
@@ -177,5 +197,26 @@ if [ -n "$base" ]; then
       done
     fi
   done
+  # 3. an in-place un-publish. A page that is published on base must stay published: in this change's
+  # tree for base's config.env version (a pull request that sets the page back to a draft) and in the
+  # pinned web image for the version in force (rolling web back past the publish, or to the foreign
+  # image, would bring the draft text back under the same version label).
+  base_web=$(printf '%s\n' "$base_overlay" | awk '/ghcr.io\/timkrebs\/ryft\/web[ \t]*$/ { h = 1; next } h && /newTag:/ { gsub(/[" ]|newTag:/, ""); print; exit }')
+  for lang in en de; do
+    bv=$(git show "$base:deploy/k8s/base/api/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
+    if [ -n "$bv" ] && git show "$base:web/content/legal/$lang/privacy/$bv.mdx" 2>/dev/null | published \
+      && ! published < "web/content/legal/$lang/privacy/$bv.mdx"; then
+      err "the $lang page of $bv is status: published on $base and is not in this change: a published policy text cannot go back to a draft in place. Publish a new version instead."
+    fi
+  done
+  if [ -n "$base_web" ] && [ "$base_web" != "$tag" ]; then
+    resolve_pin "$base_web" || err "the web pin on $base ($base_web) is not exactly one commit of this history and not $FOREIGN: cannot tell what it published"
+    base_kind=$pin_kind; base_full=$pin_full
+    for lang in en de; do
+      page_at "$base_kind" "$base_full" "$lang" "$v" | published || continue
+      page "$lang" "$v" | published \
+        || err "the $lang page of $v is status: published in the web image on $base ($base_web) but not in the one pinned now ($tag): rolling web back would bring the draft text back under the same version. Publish a new version, or keep web at or after $base_web."
+    done
+  fi
 fi
 echo "policy in force: $v (api and ingest agree; web $tag serves it at /privacy)"

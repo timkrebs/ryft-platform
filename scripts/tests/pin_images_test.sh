@@ -85,16 +85,12 @@ pinp "$pages_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at a commit
 cp "$real" "$tmp/k.yaml"
 pinp "$ahead_sha" web "$tmp/k.yaml" >/dev/null 2>&1 && fail "en and de disagree on the newest page: must fail"
 cmp -s "$real" "$tmp/k.yaml" || fail "a refused pin leaves the file untouched"
-# the one known foreign pin carries the first listed version; any other unknown sha is refused
+# the one known foreign pin carries 2026-10-20 whatever the list says; any other unknown sha is refused
 pinp f437747 web "$tmp/k.yaml" >/dev/null 2>&1 || fail "the foreign pin f437747 failed"
-[ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the foreign pin carries the first listed version: $(force "$tmp/k.yaml")"
+[ "$(force "$tmp/k.yaml")" = "2026-10-20 2026-10-20" ] || fail "the foreign pin carries 2026-10-20: $(force "$tmp/k.yaml")"
 cp "$real" "$tmp/k.yaml"
 pinp abc1234 web "$tmp/k.yaml" >/dev/null 2>&1 && fail "an unknown sha must be refused, not treated as foreign"
 cmp -s "$real" "$tmp/k.yaml" || fail "a refused pin leaves the file untouched"
-echo '{"a":1}' > "$root/web/content/legal/privacy-versions.json"
-pinp f437747 web "$tmp/k.yaml" >/dev/null 2>"$tmp/err" && fail "a privacy-versions.json that is no list must fail"
-! grep -q Traceback "$tmp/err" || fail "a malformed list fails cleanly, no traceback"
-echo '["2098-01-01","2099-12-31"]' > "$root/web/content/legal/privacy-versions.json"
 # refusals leave the file untouched
 cp "$real" "$tmp/k.yaml"
 refuse() { # <why>
