@@ -68,7 +68,7 @@ jobs:
             go:
               - 'backend/**'
               - '.golangci.yml'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/**'
             smoke:
               - 'backend/**'
               - 'scripts/**'
@@ -174,6 +174,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # What actionlint cannot know: no pull_request_target/workflow_run anywhere, and only
+      # `promote` names the environment `deploy` and reads the deploy App's key.
+      - run: ./scripts/check_workflows.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: backend/go.mod
@@ -645,7 +648,8 @@ jobs:
   # `!cancelled()`, not `always()`: a skipped job reports "skipped" whether it had nothing to
   # do or its needs failed, so each targeted group must say "success".
   # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
-  # RYFT_DEPLOY_APP_KEY): PRs made with GITHUB_TOKEN would not run the checks.
+  # RYFT_DEPLOY_APP_KEY, kept in the environment `deploy`, which only main may use): PRs made
+  # with GITHUB_TOKEN would not run the checks.
   promote:
     # Skipped until the App exists (docs/STATUS.md -> GitOps: your steps).
     if: >-
@@ -656,6 +660,7 @@ jobs:
       && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
     needs: [changes, images, web-image]
     runs-on: ubuntu-latest
+    environment: deploy
     # The App's token does the work; GITHUB_TOKEN gets nothing.
     permissions: {}
     concurrency:
