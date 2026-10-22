@@ -147,6 +147,18 @@ variant "flow frontmatter" bad '---\n{status: draft}\n---\n'
 variant "no status at all" bad '---\ntitle: x\n---\n'
 variant "no frontmatter" bad 'status: published\n'
 variant "an unknown status" bad '---\nstatus: review\n---\n'
+# the published forms of the same variants pass; the ones that fail closed even when published are deliberate
+variant "published, dashes with a trailing space" ok '--- \nstatus: published\n---\n'
+variant "published, quoted key" ok '---\n"status": published\n---\n'
+variant "published, single-quoted key and value" ok "---\n'status': 'published'\n---\n"
+variant "published, CRLF and a BOM" ok '\357\273\277---\r\nstatus: published\r\n---\r\n'
+variant "published, a tag (deliberately refused)" bad '---\nstatus: !!str published\n---\n'
+variant "published, flow frontmatter (deliberately refused)" bad '---\n{status: published}\n---\n'
+variant "published, a block scalar (deliberately refused)" bad '---\nstatus: |\n  published\n---\n'
+variant "published, a continuation line (deliberately refused)" bad '---\nstatus: published\n  and more\n---\n'
+variant "published twice (deliberately refused)" bad '---\nstatus: published\nstatus: published\n---\n'
+variant "a quote inside the value" bad '---\nstatus: pub"lished"\n---\n'
+variant "a blank inside the value" bad '---\nstatus: "pub lished"\n---\n'
 # going back to a version that was in force before (listed before the current one) is allowed, a draft or not
 overlay 2027-02-01; git add -A; git commit -qm "overlay at 2027-02-01"; git branch -q -f base HEAD
 page de 2026-10-20 draft; page en 2026-10-20 draft; git add -A; git commit -qm "old drafts" >/dev/null || true
@@ -162,9 +174,11 @@ for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-02-01\n' 
 bad "config.env moves to a version whose German page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
 page de 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
 ok "config.env back to what base has"
+rm -f $BC/api/config.env; bad "config.env exists on base but not in this change" "exists on"
+printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/api/config.env
 # the base ref must resolve and parse
 BASE=origin/nope; bad "a base ref that does not resolve" "does not resolve"
-BASE=base; git branch -q -f nolit HEAD~3; git show "base:$OV" > /dev/null
+BASE=base
 printf 'configMapGenerator: []\n' > "$OV"; git add -A; git commit -qm "overlay without literal"; git branch -q -f base HEAD; BASE=base
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "no literal on base yet (the PR that introduces it)"
 printf '# PRIVACY_POLICY_VERSION is pinned here\nconfigMapGenerator: []\n' > "$OV"; git add -A; git commit -qm "overlay mentions it"; git branch -q -f base HEAD
@@ -172,4 +186,20 @@ bad "the base overlay mentions the key but nothing parses" "does not parse"
 # an unknown short SHA is not "foreign"
 BASE=
 render '"2026-10-20"' '"2026-10-20"' '"abc1234"'; bad "an unknown short SHA" "not exactly one commit"
+# an in-place publish must not be undone: base pins web at a commit where the page is published
+git add -A; git commit -qm "state" >/dev/null || true
+git checkout -q -b side "$first"
+overlay_web() { mkdir -p "$(dirname "$OV")"; printf 'configMapGenerator:\n  - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=2026-10-20] }\nimages:\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$1" > "$OV"; }
+page en 2026-10-20; page de 2026-10-20; git add -A; git commit -qm "publish 2026-10-20 in place"; flip=$(git rev-parse HEAD | cut -c1-7)
+overlay_web "$flip"; git add -A; git commit -qm "base pins the published page"; git branch -q -f base HEAD; BASE=base
+render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "web stays at the commit that published the text"
+render '"2026-10-20"' '"2026-10-20"' "\"$first\""; bad "web rolled back past the in-place publish (same version label)" "bring the draft text back"
+render '"2026-10-20"' '"2026-10-20"' '"f437747"'; bad "web rolled back to the foreign image, which is a draft" "bring the draft text back"
+# and a pull request that sets the page back to a draft
+mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-10-20\n' > $BC/$s/config.env; done
+git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
+render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "the published text is unchanged"
+page en 2026-10-20 draft
+bad "a published page set back to a draft in place" "cannot go back to a draft"
+git checkout -q -f main
 echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page), no env override, the checked ConfigMap is the one read, drafts only unchanged"
