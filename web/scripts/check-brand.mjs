@@ -5,8 +5,9 @@
 //
 //   node scripts/check-brand.mjs              every tracked or new file, out/ if built, the last commit message
 //   node scripts/check-brand.mjs --out-only   only the built site (postbuild)
-//   node scripts/check-brand.mjs --staged     the staged versions of staged files (pre-commit)
-//   node scripts/check-brand.mjs --message F  a commit message file (commit-msg)
+//   node scripts/check-brand.mjs --staged     the staged versions of staged files under web/ (pre-commit)
+//   node scripts/check-brand.mjs --message F  a text file, scanned whole (CI: PR titles, commit messages)
+//   node scripts/check-brand.mjs --commit-msg F  git's message file in the commit-msg hook, as git will record it
 //
 // Exit 1 on any hard finding. Matches are printed masked, so the log doesn't repeat them.
 import { execFileSync } from 'node:child_process';
@@ -15,6 +16,7 @@ import { join, relative, resolve } from 'node:path';
 import { isMarkupPath, isTextPath, loadDenylist, redact, scanText } from './lib/brand.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
+const REPO = resolve(ROOT, '..'); // web/ is a folder of the platform repository
 const MAX_BYTES = 5 * 1024 * 1024;
 const args = process.argv.slice(2);
 const denylist = loadDenylist();
@@ -23,16 +25,25 @@ const denylist = loadDenylist();
 const inputs = [];
 
 if (args.includes('--message')) {
+  // The whole text, nothing stripped: CI feeds it PR titles and commit messages as they are.
   const file = args[args.indexOf('--message') + 1];
   inputs.push({ source: 'commit message', text: readFileSync(file, 'utf8') });
+} else if (args.includes('--commit-msg')) {
+  // The hook: what git will record from its message file (see hookMessageText).
+  const file = args[args.indexOf('--commit-msg') + 1];
+  inputs.push({ source: 'commit message', text: hookMessageText(readFileSync(file, 'utf8')) });
 } else if (args.includes('--staged')) {
-  const staged = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'])
+  // Only web/. The git calls run from the repository root (a hook in a linked worktree has
+  // GIT_DIR set, which makes `--relative` from web/ list the whole repository), limited by a
+  // pathspec; paths are shown relative to web/.
+  const staged = git(['diff', '--cached', '--name-only', '-z', '--diff-filter=d', '--', 'web'], REPO)
     .split('\0')
     .filter(Boolean);
-  for (const path of staged) {
+  for (const full of staged) {
+    const path = full.replace(/^web\//, '');
     inputs.push({ source: `path ${path}`, text: path });
     if (!isTextPath(path)) continue;
-    inputs.push({ source: path, text: git(['show', `:${path}`]) });
+    inputs.push({ source: path, text: git(['show', `:${full}`], REPO) });
   }
 } else {
   if (!args.includes('--out-only')) {
@@ -111,13 +122,50 @@ function* walk(dir) {
   }
 }
 
-function git(argv) {
+function git(argv, cwd = ROOT) {
   return execFileSync('git', argv, {
-    cwd: ROOT,
+    cwd,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
+}
+
+function gitConfig(key) {
+  try {
+    return git(['config', '--get', key], REPO).trim();
+  } catch {
+    return '';
+  }
+}
+
+function commentChar() {
+  const c = gitConfig('core.commentChar');
+  return c.length === 1 ? c : '#';
+}
+
+/**
+ * What git will record from the message file the commit-msg hook gets, following
+ * commit.cleanup (the --cleanup option of the one commit can't be seen from a hook).
+ * The editor template is recognised by its "Please enter the commit message" help.
+ *  - scissors: cut below the scissors line (`git commit -v` puts the diff there); with
+ *    `scissors`, or `default` + template.
+ *  - comments: lines starting with the comment character are blanked; with `strip`, or
+ *    `default` + template. With -m and the default, a `#` line is part of the message.
+ */
+function hookMessageText(raw) {
+  const cc = commentChar();
+  const cleanup = gitConfig('commit.cleanup') || 'default';
+  const lines = raw.split('\n');
+  const template = lines.some((l) => l.startsWith(`${cc} Please enter the commit message`));
+  const auto = cleanup === 'default' && template;
+  let kept = lines;
+  if (cleanup === 'scissors' || auto) {
+    const at = lines.findIndex((l) => l === `${cc} ------------------------ >8 ------------------------`);
+    if (at !== -1) kept = lines.slice(0, at);
+  }
+  const strip = cleanup === 'strip' || auto;
+  return kept.map((l) => (strip && l.startsWith(cc) ? '' : l)).join('\n');
 }
 
 function fail(message) {

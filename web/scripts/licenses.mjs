@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 // The data behind /licenses, generated at build time into src/generated/licenses.json:
 //   app  — the Swift packages the iOS app ships (config/app-packages.json, a snapshot of
-//          ../app's Package.resolved), each licence fetched from GitHub at its pinned
+//          ../../app's Package.resolved), each licence fetched from GitHub at its pinned
 //          revision, plus the Satoshi typeface;
 //   web  — every production npm dependency of this site (npm query .prod) with the
 //          licence text from its package, plus Satoshi.
 //
 //   node scripts/licenses.mjs              generate (fetches missing texts into .cache/licenses)
 //   node scripts/licenses.mjs --if-missing only when src/generated/licenses.json is absent
-//   node scripts/licenses.mjs --sync       refresh config/app-packages.json from ../app
-//   node scripts/licenses.mjs --check      exit 1 when the snapshot differs from ../app (CI)
+//   node scripts/licenses.mjs --sync       refresh config/app-packages.json from ../../app
+//   node scripts/licenses.mjs --check      exit 1 when the snapshot differs from ../../app (CI)
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const APP = resolve(ROOT, process.env.RYFT_APP_DIR ?? '../app');
+const APP = resolve(ROOT, process.env.RYFT_APP_DIR ?? '../../app');
 const RESOLVED = join(APP, 'Ryft.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved');
 const SNAPSHOT = join(ROOT, 'config/app-packages.json');
 const CACHE = join(ROOT, '.cache/licenses');
@@ -40,7 +40,7 @@ if (args.includes('--sync') || args.includes('--check')) {
     version: p.state.version ?? null,
     revision: p.state.revision,
   }));
-  const snapshot = `${JSON.stringify({ $comment: 'Snapshot of ../app Package.resolved pins. Refresh: npm run licenses -- --sync', pins }, null, 2)}\n`;
+  const snapshot = `${JSON.stringify({ $comment: 'Snapshot of ../../app Package.resolved pins. Refresh: npm run licenses -- --sync', pins }, null, 2)}\n`;
   if (args.includes('--check')) {
     const current = existsSync(SNAPSHOT) ? readFileSync(SNAPSHOT, 'utf8') : '';
     if (current !== snapshot) {

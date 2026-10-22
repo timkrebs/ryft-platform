@@ -118,6 +118,8 @@ sample card in the app's style. HANDOFF.md asks the app session for new captures
 
 ## D10 — Checks against the sibling repositories run in CI (2026-10-20)
 
+_Since the move into `plattform/web` (platform D107) the platform is this repository itself and only the app is a sibling (`../../app`); the rest of this entry is the two-repository record._
+
 `web/` is its own repository, but tokens, Swift licences, the AASA, the legal drafts, the
 model version and the policy version come from `ryft-app` and `ryft-platform`. Both are
 public, so CI checks them out next to `web/` (as locally) and the drift checks and tests

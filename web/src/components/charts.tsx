@@ -1,4 +1,4 @@
-// Instrument-style figures drawn in SVG, after ../app/docs/CHART_STYLE.md: 1.5 px linear
+// Instrument-style figures drawn in SVG, after ../../app/docs/CHART_STYLE.md: 1.5 px linear
 // lines, a trailing y axis, score scales fixed with their band thresholds as dashed rules,
 // markers only at today (filled) and the window's min and max (hollow), no fill, no glow.
 // Colours are token classes; numbers are tabular. Every figure states it is sample data.

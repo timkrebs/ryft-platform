@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 // still names its source (`portedFrom`), its text must equal the draft's, word for word;
 // the user removes `portedFrom` when editing a text for publication.
 const LEGAL = 'content/legal';
+// portedFrom paths are relative to the repository root (web/..); RYFT_ROOT overrides it.
 const RYFT = resolve(process.env.RYFT_ROOT ?? '..');
 const locales = ['en', 'de'] as const;
 
@@ -24,8 +25,10 @@ function files(locale: string): string[] {
   const dir = join(LEGAL, locale);
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory()
-      ? readdirSync(join(dir, e.name)).map((f) => `${e.name}/${f}`)
-      : e.name.endsWith('.mdx')
+      ? readdirSync(join(dir, e.name))
+          .filter((f) => !f.startsWith('.'))
+          .map((f) => `${e.name}/${f}`)
+      : e.name.endsWith('.mdx') && !e.name.startsWith('.')
         ? [e.name]
         : [],
   );
@@ -103,7 +106,8 @@ describe('legal content', () => {
         });
 
         const source = front.portedFrom ? join(RYFT, front.portedFrom) : null;
-        it.skipIf(!source || !existsSync(source))('says exactly what the platform draft says', () => {
+        it.skipIf(!source)('says exactly what the platform draft says', () => {
+          expect(existsSync(source!), `${source} (portedFrom) does not exist`).toBe(true);
           const html = readFileSync(source!, 'utf8');
           expect(mdxText(content)).toBe(htmlText(html));
           const todos = (s: string) => (s.match(/TODO\(user\)/g) ?? []).length;

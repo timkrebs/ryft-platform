@@ -1,5 +1,7 @@
 # Handoff — what the other two folders need from web/
 
+> **Historical.** This file describes the two-repository era (`ryft-web` next to `ryft-app` and `ryft-platform`). Since the move into `plattform/web` (platform D107) there is nothing to hand over between repositories; paths and steps below are kept as a record only.
+
 The site in `web/` replaces the ConfigMap site in `plattform/deploy/k8s/base/web/`. This file
 has three parts: what **you** decide or click, the exact change for the **platform session**,
 and what the **app session** needs. Nothing outside `web/` was edited; the platform change is

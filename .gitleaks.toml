@@ -1,0 +1,72 @@
+# gitleaks v8.30 configuration for ryft-platform. gitleaks loads it from the repo root
+# for `gitleaks git .` and `gitleaks dir .`, so the CI step needs no --config flag.
+#
+# The default rules stay on. Each allowlist below is scoped three ways with
+# condition = "AND": one rule, the file(s) that hold the fixture, and the exact shape of
+# the known non-secret. A real key, token or password added to the same files still
+# fails the scan. Rules for new entries: prove the value grants nothing, scope the entry
+# to a rule, a path and a value regex, and give the reason in a comment. Never add a
+# path-only or rule-only entry. Never use .gitleaksignore fingerprints: they are bound
+# to commit + line, so squash merges and `gitleaks dir` do not match them.
+
+title = "ryft-platform"
+
+[extend]
+useDefault = true
+
+# RabbitMQ routing keys are queue/event names (notify.wait.15m, session.scored)
+# generated from backend/internal/events/amqpbus/topology.go. generic-api-key fires on
+# the word "key". The allowlist covers only a line that is a routing key and nothing
+# else, with a dotted lower-case value. The dev broker users' passwords in
+# definitions.json are not covered.
+[[allowlists]]
+description = "RabbitMQ routing keys (queue names) in the generated topology"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)deploy/rabbitmq/(?:dev/definitions\.json|topology/topology\.yaml)$''']
+regexTarget = "line"
+regexes = ['''^\s*"?routing_?[kK]ey"?\s*:\s*"[a-z0-9]+(?:\.[a-z0-9]+)*"\s*,?\s*$''']
+
+# Test-only values built around the sentinel 0123456789. config_test feeds a 16-char key
+# to LoadAuth. roles_test logs in to a throw-away test Postgres as ryft_api.
+# check_api.py proves that a wrong key gets a 401. Only these exact values are allowed.
+[[allowlists]]
+description = "Fake API keys and role passwords in tests (0123456789 sentinel)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''(?:^|/)backend/internal/config/config_test\.go$''',
+  '''(?:^|/)backend/internal/db/roles_test\.go$''',
+  '''(?:^|/)scripts/check_api\.py$''',
+]
+regexes = ['''^(?:0123456789abcdef|pw-ryft_[a-z]+-(?:rotated-)?0123(?:456789)?|wrong-key-0123456789)$''']
+
+# The infra/vault tests run against mock providers only: nothing is created or written.
+# These two passwords are self-describing literals; any other password still fails.
+[[allowlists]]
+description = "Self-describing passwords in the mocked infra/vault tests"
+targetRules = ["hashicorp-tf-password"]
+condition = "AND"
+paths = ['''(?:^|/)infra/vault/tests/[^/]+\.tftest\.hcl$''']
+regexes = ['''^"?(?:owner-password-123|smoke-password)"?$''']
+
+# PEM-shaped text that holds no key, in three places:
+# - the prose placeholders in terraform.tfvars.example ("…the contents of AuthKey_<key id>.p8…");
+# - the validation regexes in variables.tf;
+# - the .p8 fixture in the tests: the public PKCS#8 header that every P-256 key starts
+#   with, then 130 'A's (it does not even decode as base64).
+# The regex runs over the finding's full line(s), not over the match alone. The
+# rule's lazy regex can run past a short placeholder and swallow the BEGIN line of the
+# next PEM, so checking only the matched text is not enough. A finding is allowed
+# only if all three hold:
+# - its lines contain no base64 run of 32+ characters (a real key has 64-char lines)
+#   other than the exact fixture;
+# - the text ends at an END marker, not at a bare BEGIN line with key material below it;
+# - it is in one of the three files.
+[[allowlists]]
+description = "PEM placeholders, validation regexes and the shape-only .p8 fixture in infra/vault"
+targetRules = ["private-key"]
+condition = "AND"
+paths = ['''(?:^|/)infra/vault/(?:variables\.tf|terraform\.tfvars\.example|tests/[^/]+\.tftest\.hcl)$''']
+regexTarget = "line"
+regexes = ['''^(?:[^A-Za-z0-9+/=]|[A-Za-z0-9+/=]{1,31}[^A-Za-z0-9+/=]|\\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgA{43}\\nA{87}\\n)*-----END PRIVATE KEY-----[^\n]{0,8}$''']

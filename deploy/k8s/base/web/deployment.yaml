@@ -14,7 +14,7 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101           # nginx in the ryft-web image
+        runAsUser: 101           # nginx in the web image
         runAsGroup: 101
         seccompProfile: { type: RuntimeDefault }
       topologySpreadConstraints:
@@ -24,8 +24,8 @@ spec:
           labelSelector: { matchLabels: { app: web } }
       containers:
         - name: nginx
-          # The whole site (pages, nginx config, AASA) is one image, built and pushed by
-          # timkrebs/ryft-web on every green main. The tag is pinned in overlays/eks.
+          # The whole site (pages, nginx config, AASA) is one image, built from web/ and pushed
+          # by this repository's CI (ghcr.io/timkrebs/ryft/web:<short sha>). The tag is pinned in overlays/eks.
           image: ghcr.io/timkrebs/ryft/web
           ports: [{ containerPort: 8080, name: http }]
           volumeMounts:

@@ -1,0 +1,33 @@
+# The PR title becomes the squash commit: "area: what changed" (any lower-case area, e.g. web,
+# deploy, infra/vault, events), and the denylisted brand is in neither the title nor any
+# commit message of the PR (a squash may land under a commit's message). Its own workflow,
+# so a title edit re-runs only this check; scripts/check_pr.sh holds the logic.
+# Required on main together with `ci-ok`.
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # The brand check and its denylist come from the base branch.
+          BRAND_BASE: origin/${{ github.base_ref }}
+        run: ./scripts/check_pr.sh "$TITLE" "$BASE" "$HEAD"

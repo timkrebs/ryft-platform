@@ -6,11 +6,9 @@ import { describe, expect, it } from 'vitest';
 // every universal link the app creates (AppRoute.swift → `var url`, the push table's
 // `session` form, and Supabase's auth callback).
 const AASA_PATH = 'public/.well-known/apple-app-site-association';
-const APP = resolve(process.env.RYFT_APP_DIR ?? '../app');
-const PLATFORM = resolve(process.env.RYFT_PLATFORM_DIR ?? '../plattform');
+const APP = resolve(process.env.RYFT_APP_DIR ?? '../../app');
 const ROUTE = join(APP, 'Ryft/Navigation/AppRoute.swift');
 const SUPABASE = join(APP, 'Ryft/App/SupabaseConfig.swift');
-const PLATFORM_AASA = join(PLATFORM, 'deploy/k8s/base/web/site/.well-known/apple-app-site-association');
 const hasApp = existsSync(ROUTE);
 if (!hasApp && process.env.REQUIRE_SIBLINGS) throw new Error(`${ROUTE} not found`);
 
@@ -74,17 +72,6 @@ describe('apple-app-site-association', () => {
     ]) {
       expect(covered(p), p).toBe(true);
     }
-  });
-
-  // The platform serves its copy until it switches to this image; ours may only add to it
-  // (/invite/* since 2026-10-21).
-  it.skipIf(!existsSync(PLATFORM_AASA))("covers everything the platform's file it replaces covers", () => {
-    const old = JSON.parse(readFileSync(PLATFORM_AASA, 'utf8')) as typeof aasa;
-    const ids = (a: typeof aasa) => a.applinks.details.flatMap((d) => d.appIDs);
-    expect(ids(aasa)).toEqual(ids(old));
-    expect(aasa.webcredentials).toEqual(old.webcredentials);
-    const all = (a: typeof aasa) => a.applinks.details.flatMap((d) => d.components);
-    expect(all(aasa)).toEqual(expect.arrayContaining(all(old)));
   });
 
   it.skipIf(!hasApp)('matches every universal link AppRoute creates', () => {
