@@ -1,7 +1,7 @@
 # RYFT platform
 
-Your own Whoop: Garmin watch → Apple Health → iOS app → Go microservices on
-Kubernetes → daily Recovery / Strain / Sleep scores.
+Daily Recovery, Strain and Sleep scores from any watch or ring that writes to Apple Health,
+through an iOS app and Go microservices on Kubernetes.
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — it explains the data
 flow, the schema and the scoring model. The HTTP contract with the app is
