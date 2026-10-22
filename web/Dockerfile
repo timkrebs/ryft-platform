@@ -4,7 +4,7 @@
 # The build stage runs on the builder's own architecture (the export is the same everywhere);
 # only the nginx stage is per target platform.
 
-FROM --platform=$BUILDPLATFORM node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM --platform=$BUILDPLATFORM node:26.12.0-alpine3.24@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS build
 WORKDIR /web
 ENV NEXT_TELEMETRY_DISABLED=1 CI=1
 COPY package.json package-lock.json ./
