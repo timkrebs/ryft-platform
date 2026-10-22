@@ -53,6 +53,7 @@ jobs:
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
+      run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -97,6 +98,17 @@ jobs:
             web:
               - 'web/**'
               - 'docs/SCORING.md'
+              - '.github/workflows/ci.yml'
+            # The alert rules and the synthetic checks; the checks' body markers are read from
+            # the site's own sources (the policy text and the AASA).
+            monitoring:
+              - 'deploy/grafana/**'
+              - 'scripts/synthetics.sh'
+              - 'scripts/synthetics_re2.go'
+              - 'scripts/tests/synthetics_test.sh'
+              - 'web/content/legal/**'
+              - 'web/public/.well-known/**'
+              - 'Makefile'
               - '.github/workflows/ci.yml'
       - if: github.event_name != 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,6 +300,25 @@ jobs:
       - run: tflint --init && tflint --format compact
       - run: terraform test
 
+  # Alert rules as code (promtool check and unit tests, mimirtool check) and the synthetic
+  # checks of ryftapp.de (offline validation, RE2, markers against the site's sources).
+  monitoring:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_monitoring == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - run: make alerts-check CONTAINER=docker
+      - run: ./scripts/synthetics.sh check
+      - run: bash scripts/tests/synthetics_test.sh
+
   # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
   # licences, routes, legal drafts, model version).
@@ -452,7 +483,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, test, lint, smoke, manifests, terraform, web-checks, web-e2e, secrets]
+    needs: [changes, test, lint, smoke, manifests, terraform, monitoring, web-checks, web-e2e, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
