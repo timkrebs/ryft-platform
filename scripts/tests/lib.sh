@@ -32,6 +32,7 @@ new_repo() {
   mkdir -p "$r/repo/scripts" "$r/repo/deploy/k8s/overlays/eks" "$r/repo/backend" "$r/repo/web"
   cp "$HERE"/scripts/{promote,pin_images,deploy_targets}.sh "$r/repo/scripts/"
   for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; cp "$HERE/deploy/k8s/base/$s/config.env" "$r/repo/deploy/k8s/base/$s/"; done
+  mkdir -p "$r/repo/web/content/legal"; cp "$HERE/web/content/legal/privacy-versions.json" "$r/repo/web/content/legal/"
   cp "$HERE/$OVERLAY" "$r/repo/$OVERLAY"
   cd "$r/repo"
   git init -q -b main && git config user.email t@example.com && git config user.name test

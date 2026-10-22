@@ -64,14 +64,14 @@ if seen != set(want):
 PY
 
 # 1. the in-force pin
-sedi 's/PRIVACY_POLICY_VERSION=2026-10-20/PRIVACY_POLICY_VERSION=2026-11-02/' "$EKS/kustomization.yaml"
+sedi 's/PRIVACY_POLICY_VERSION=[0-9-]*\]/PRIVACY_POLICY_VERSION=2099-12-31]/' "$EKS/kustomization.yaml"; grep -q 'PRIVACY_POLICY_VERSION=2099-12-31' "$EKS/kustomization.yaml" || fail "the in-force literals were not found in the overlay"
 render overlays/eks "$tmp/eks1.yaml"
 got=$(rolled "$tmp/eks0.yaml" "$tmp/eks1.yaml")
 [ "$got" = "$(printf 'Deployment/ryft-api/api\nDeployment/ryft-ingest/ingest')" ] || fail "moving the in-force pin must roll exactly api and ingest, rolled: $got"
 cp "$HERE/deploy/k8s/overlays/eks/kustomization.yaml" "$EKS/kustomization.yaml"
 
 # 2. the base version alone
-for s in api ingest; do sedi 's/^PRIVACY_POLICY_VERSION=.*/PRIVACY_POLICY_VERSION=2026-11-02/' "$tmp/k8s/base/$s/config.env"; done
+for s in api ingest; do sedi 's/^PRIVACY_POLICY_VERSION=.*/PRIVACY_POLICY_VERSION=2099-12-30/' "$tmp/k8s/base/$s/config.env"; done
 render overlays/eks "$tmp/eks2.yaml"
 got=$(rolled "$tmp/eks0.yaml" "$tmp/eks2.yaml")
 [ -z "$got" ] || fail "a base-only version change must roll nothing on EKS (the pin holds it), rolled: $got"

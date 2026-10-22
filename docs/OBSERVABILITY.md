@@ -254,7 +254,7 @@ is no incident.
 ## Logs
 
 One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
-(`debug`, `info` — default —, `warn`, `error`; ConfigMap `ryft-config`) sets the level.
+(`debug`, `info` — default —, `warn`, `error`) sets the level; it is set in `deploy/k8s/base/<service>/config.env`.
 
 | Field | On | Meaning |
 | --- | --- | --- |

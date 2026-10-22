@@ -126,7 +126,7 @@ trap 'rm -f "$body"' EXIT
 dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
 {
   echo "Pins ${groups[*]} to \`$sha\`. Merges itself once the checks pass; Argo CD then syncs ryft-platform (migrate first, the smoke last)."
-  echo "Close this PR to stop the deploy. Rollback: do not revert a merge that pinned both groups; follow docs/OPERATIONS.md (Deploy and roll back) with \`./scripts/pin_images.sh <old> <group>\` and \`./scripts/hold.sh add <group> \"<reason>\"\`, so the next push does not pin the same code again."
+  echo "Close this PR to stop the deploy, and hold the group (\`./scripts/hold.sh add <group> \"<reason>\"\`), or the deploy watch fails daily. Rollback: \`./scripts/pin_images.sh <old> <group>\` and \`./scripts/hold.sh add <group> \"<reason>\"\` in one commit (docs/OPERATIONS.md)."
   for g in services web; do
     pin=$(val "${g}_pin"); dir=$(dir_of "$g"); moved=
     for m in "${groups[@]}"; do [ "$m" = "$g" ] && moved=1; done
@@ -148,7 +148,11 @@ dir_of() { case "$1" in services) echo backend ;; web) echo web ;; esac; }
   for g in "${groups[@]}"; do
     if [ "$g" = web ]; then
       echo
-      echo "privacy policy in force: ${policy_before:-none} → ${policy_after:-none} (moves with the web pin: the page and the version go live in one sync)"
+      if [ "${policy_before:-none}" = "${policy_after:-none}" ]; then
+        echo "privacy policy in force: unchanged at ${policy_before:-none} (it moves with the web pin: the page and the version go live in one sync)"
+      else
+        echo "privacy policy in force: ${policy_before:-none} → ${policy_after:-none} (it moves with the web pin: the page and the version go live in one sync)"
+      fi
     fi
   done
 } > "$body"

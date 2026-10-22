@@ -23,7 +23,8 @@ cp "$real" "$tmp/k.yaml"
 got=$("$HERE/pin_images.sh" 1234abc web "$tmp/k.yaml") || fail "pinning web failed"
 [ "$got" = "web=$oldweb" ] || fail "web: got $got"
 [ "$(pin_of "$tmp/k.yaml" web)" = 1234abc ] || fail "web not pinned"
-[ "$(diff "$real" "$tmp/k.yaml" | grep -c '^[<>]')" = 2 ] || fail "only web's newTag line may change: $(diff "$real" "$tmp/k.yaml")"
+nolit() { grep -v PRIVACY_POLICY_VERSION "$1"; }  # the in-force literals move with web (below); everything else must not
+[ "$(diff <(nolit "$real") <(nolit "$tmp/k.yaml") | grep -c "^[<>]")" = 2 ] || fail "only web's newTag line may change: $(diff "$real" "$tmp/k.yaml")"
 
 # both, in either order and with the file first or last
 cp "$real" "$tmp/k.yaml"
@@ -46,26 +47,49 @@ case "$got" in services=*,*) ;; *) fail "both old pins in the output: $got" ;; e
 "$HERE/pin_images.sh" abc1234 "$tmp/k.yaml" 2>/dev/null && fail "no group named: nothing to pin"
 printf 'images:\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "x"\n' > "$tmp/small.yaml"
 "$HERE/pin_images.sh" abc1234 web "$tmp/small.yaml" 2>/dev/null && fail "a group missing from the file must fail"
-# the privacy policy in force (D78, F1): web moves it to base's version, services leave it alone
-root=$tmp/root; mkdir -p "$root/scripts" "$root/deploy/k8s/base/api" "$root/deploy/k8s/base/ingest"
-cp "$HERE/pin_images.sh" "$root/scripts/"
-for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-02\n' > "$root/deploy/k8s/base/$s/config.env"; done
+# the privacy policy in force (D78, F1): web moves it to base's version AS OF the pinned commit,
+# services leave it alone. No date is hard-coded: the current value is read from the overlay and
+# the "new" one is a date that is never real.
 force() { sed -nE 's/^.*namespace: ryft-(api|ingest),.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\2/p' "$1" | paste -sd' ' -; }
-[ "$(force "$real")" = "2026-10-20 2026-10-20" ] || fail "the overlay needs both in-force literals: $(force "$real")"
+cur=$(force "$real"); [ "${cur% *}" = "${cur#* }" ] && [ -n "$cur" ] || fail "the overlay needs both in-force literals, equal: $cur"
+cur=${cur%% *}; NEW=2099-12-31
+root=$tmp/root; mkdir -p "$root/scripts" "$root/deploy/k8s/base/api" "$root/deploy/k8s/base/ingest" "$root/web/content/legal"
+cp "$HERE/pin_images.sh" "$root/scripts/"
+echo '["2098-01-01","2099-12-31"]' > "$root/web/content/legal/privacy-versions.json"
+base_env() { for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "${2:-$1}" > "$root/deploy/k8s/base/$s/config.env"; done; [ -z "${2:-}" ] || printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$1" > "$root/deploy/k8s/base/api/config.env"; }
+rgit() { git -C "$root" -c user.email=t@example.com -c user.name=test "$@"; }
+rgit init -q -b main
+base_env 2098-01-01; rgit add -A; rgit commit -qm old; old_sha=$(rgit rev-parse HEAD | cut -c1-7)
+base_env "$NEW"; rgit commit -qam new; new_sha=$(rgit rev-parse HEAD | cut -c1-7)
+pinp() { "$root/scripts/pin_images.sh" "$@"; }
 cp "$real" "$tmp/k.yaml"
-"$root/scripts/pin_images.sh" abc1234 services "$tmp/k.yaml" >/dev/null || fail "services pin failed"
-[ "$(force "$tmp/k.yaml")" = "2026-10-20 2026-10-20" ] || fail "pinning services must leave the version in force alone"
-"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" >/dev/null || fail "web pin failed"
-[ "$(force "$tmp/k.yaml")" = "2026-11-02 2026-11-02" ] || fail "pinning web must move the version in force to base's: $(force "$tmp/k.yaml")"
+pinp "$new_sha" services "$tmp/k.yaml" >/dev/null 2>&1 || fail "services pin failed"
+[ "$(force "$tmp/k.yaml")" = "$cur $cur" ] || fail "pinning services must leave the version in force alone: $(force "$tmp/k.yaml")"
+pinp "$new_sha" web "$tmp/k.yaml" >/dev/null 2>"$tmp/err" || fail "web pin failed"
+[ "$(force "$tmp/k.yaml")" = "$NEW $NEW" ] || fail "pinning web must move the version in force to base's: $(force "$tmp/k.yaml")"
+grep -qx "in force: $cur -> $NEW" "$tmp/err" || fail "the move is reported: $(cat "$tmp/err")"
+# the base at the PINNED commit counts, not the working tree's
 cp "$real" "$tmp/k.yaml"
-printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-03\n' > "$root/deploy/k8s/base/ingest/config.env"
-"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" 2>/dev/null && fail "base api and ingest that disagree must fail"
-cmp -s "$real" "$tmp/k.yaml" || fail "a failed pin must leave the file untouched"
-printf 'PORT=8080\nPRIVACY_POLICY_VERSION="2026-11-02"\n' > "$root/deploy/k8s/base/ingest/config.env"
-"$root/scripts/pin_images.sh" abc1234 web "$tmp/k.yaml" 2>/dev/null && fail "a quoted version in config.env must fail"
-printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-11-02\n' > "$root/deploy/k8s/base/ingest/config.env"
+pinp "$old_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at the older commit failed"
+[ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the version comes from base at the pinned commit: $(force "$tmp/k.yaml")"
+# a pin that is no commit here: the first listed version
+cp "$real" "$tmp/k.yaml"
+pinp abc1234 web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin outside the history failed"
+[ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "outside the history the first listed version applies: $(force "$tmp/k.yaml")"
+# refusals leave the file untouched
+cp "$real" "$tmp/k.yaml"
+refuse() { # <why>
+  rgit commit -qam "$1"; s=$(rgit rev-parse HEAD | cut -c1-7)
+  pinp "$s" web "$tmp/k.yaml" >/dev/null 2>&1 && fail "must fail: $1"
+  cmp -s "$real" "$tmp/k.yaml" || fail "a failed pin must leave the file untouched ($1)"
+}
+base_env "$NEW" 2099-12-30; refuse "base api and ingest disagree"
+base_env "$NEW" "\"$NEW\""; refuse "a quoted version in config.env"
+base_env 2099-02-30; refuse "a date that does not exist"
+base_env "$(printf '\xd9\xa2\xd9\xa0\xd9\xa9\xd9\xa9-12-31')"; refuse "Unicode digits"
+base_env "$NEW"; rgit commit -qam fine
 grep -v 'namespace: ryft-ingest' "$real" > "$tmp/nolit.yaml"
-"$root/scripts/pin_images.sh" abc1234 web "$tmp/nolit.yaml" 2>/dev/null && fail "an overlay without both literals must fail when web is pinned"
+pinp "$new_sha" web "$tmp/nolit.yaml" >/dev/null 2>&1 && fail "an overlay without both literals must fail when web is pinned"
 
 kubectl kustomize "$(dirname "$real")" >/dev/null || fail "the real overlay no longer renders"
 echo "✓ pin_images_test: per group, web alone leaves the services byte-identical, previous pins printed, typos refused"
