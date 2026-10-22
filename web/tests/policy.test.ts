@@ -77,6 +77,28 @@ describe('privacy policy version check', () => {
     expect(p.problem).toContain('deploy/k8s/base/ingest/config.env');
   });
 
+  it('reports a date that is not in the calendar', () => {
+    const r = versionFromEnvFile('PRIVACY_POLICY_VERSION=2026-11-31\n');
+    expect(r.version).toBeNull();
+    expect(r.problem).toMatch(/not a calendar date/);
+    expect(versionFromEnvFile('PRIVACY_POLICY_VERSION=2028-02-29\n').version).toBe('2028-02-29');
+    expect(versionFromEnvFile('PRIVACY_POLICY_VERSION=2026-02-29\n').version).toBeNull();
+  });
+
+  it('rejects an impossible date in privacy-versions.json', () => {
+    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, ['2026-11-31', V]), repoRoot: both(V) });
+    expect(r.problems.join('\n')).toMatch(/privacy-versions\.json is missing or not a non-empty list/);
+  });
+
+  it('reports an indented version line, and ignores other keys with the same prefix', () => {
+    const r = versionFromEnvFile('  PRIVACY_POLICY_VERSION=2026-10-20\n');
+    expect(r.version).toBeNull();
+    expect(r.problem).toMatch(/not exactly/);
+    const other = 'PRIVACY_POLICY_VERSION_NEXT=2026-11-01\n';
+    expect(versionFromEnvFile(`${other}PRIVACY_POLICY_VERSION=2026-10-20\n`)).toEqual({ version: V });
+    expect(versionFromEnvFile(other)).toEqual({ version: null });
+  });
+
   it('reports a version set twice', () => {
     const text = 'PRIVACY_POLICY_VERSION=2026-10-20\nPRIVACY_POLICY_VERSION=2026-11-01\n';
     expect(versionFromEnvFile(text).problem).toMatch(/more than once/);

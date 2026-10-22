@@ -100,5 +100,10 @@ test.describe('routes the app depends on', () => {
     const css = await page.locator('link[rel="stylesheet"]').first().getAttribute('href');
     expect((await request.get(css!)).headers()['cache-control']).toContain('immutable');
     expect((await request.get('/')).headers()['cache-control']).toBe('public, max-age=300');
+    // The text in force is revalidated; a versioned text is fixed and may be cached.
+    for (const path of ['/privacy', '/de/privacy']) {
+      expect((await request.get(path)).headers()['cache-control'], path).toBe('no-cache');
+    }
+    expect((await request.get('/privacy/2026-10-20')).headers()['cache-control']).toBe('public, max-age=300');
   });
 });
