@@ -78,6 +78,8 @@ type dayExpect struct {
 	WorkoutSource string         `json:"workout_source"`
 	ReadinessNull bool           `json:"readiness_null"`
 	State         string         `json:"state"` // checked by the engine test when set
+	// calibrating_reason, checked by the engine test when set ("none": null).
+	CalibratingReason string `json:"calibrating_reason"`
 }
 
 // fixtureDay is one expanded day of a fixture: its data and expectations.
@@ -405,6 +407,15 @@ func checkEngineDay(t *testing.T, s model.DailyScore, e dayExpect) {
 	}
 	if e.State != "" && s.State != e.State {
 		t.Errorf("%sstate %s, want %s", at, s.State, e.State)
+	}
+	if e.CalibratingReason != "" {
+		got := "none"
+		if s.CalibratingReason != nil {
+			got = *s.CalibratingReason
+		}
+		if got != e.CalibratingReason {
+			t.Errorf("%scalibrating_reason %s, want %s", at, got, e.CalibratingReason)
+		}
 	}
 	if s.ModelVersion == nil || *s.ModelVersion != ModelVersion {
 		t.Errorf("%smodel_version %v", at, s.ModelVersion)

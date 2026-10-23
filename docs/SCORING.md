@@ -1,8 +1,9 @@
 # RYFT — scoring inputs
 
 How scoring treats the raw HealthKit data before any formula runs, how logged
-strength sessions become load (**Strength**, below), and how a night becomes need,
-quality, consistency and naps (**Sleep**, below). The other formulas
+strength sessions become load (**Strength**, below), how a night becomes need,
+quality, consistency and naps (**Sleep**, below), and why a day is calibrating
+(**Calibrating and its reason**, below). The other formulas
 (recovery, readiness, strain, sleep need) are described in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#scoring-internalscoringalgorithmsgo-unit-tested); the
 code is in `internal/scoring`.
@@ -301,6 +302,142 @@ or more, the card suggests the lower of the two highest days, rounded. One day a
 be a strap glitch; two are a pattern. Nothing changes until the user sets it; the cards
 are recomputed after every `PATCH /v1/me`.
 
+## Calibrating and its reason
+
+Recovery compares each overnight signal with the day's **window**: the scored days
+stored before it, at most 30 (`store.ScoreHistory`; stored rows, not calendar days, so
+a week without data does not shorten it). Three counts come out of that window:
+
+| Count | What it is | Stored as |
+| --- | --- | --- |
+| `W` | days in the window with data: an overnight HRV, a resting HR or a respiratory rate, a strain (heart-rate minutes or a logged session), a night's sleep, steps or active energy (`store.History.HasData`, from `store.dataColumns`), 0–30. A day with only an SpO2, a nap, time in bed, a single heart-rate sample or a workout without heart rate does not count: rare, and it errs toward `short_history` | not stored |
+| `H` | of them, days with an overnight HRV (`hrv_ms > 0`): the N of the ln-HRV baseline | `baseline_hrv_days` (migration 0027) |
+| `R` | of them, days with a resting HR (`rhr > 0`): the N of the resting-HR baseline | `baseline_rhr_days` (0027) |
+
+`baseline_days = min(H, R)` (0006) and `calibrating = baseline_days < 7`
+(`MinBaselineDays`). While a baseline has fewer than 7 values its SD is not the user's
+but a population spread (0.18 in ln HRV, 3.5 bpm, 1.0 breath/min), and the state is
+`calibrating`, though recovery and readiness may already be there (mostly sleep).
+
+**Why it calibrates** (`calibrating_reason`, `scoring.CalibratingReason`, a pure
+function of `W`, `H`, `R` and whether the day itself has an overnight HRV and a resting
+HR), in this order:
+
+1. `min(H, R) >= 7`: `null`, not calibrating;
+2. the day brings a signal its window never had (`H == 0` and the day has an HRV, or
+   `R == 0` and it has a resting HR): `short_history`, for both signals;
+3. `W >= 7`, `H == 0` and the day has no HRV either: `no_hrv`;
+4. `W >= 7`, `R == 0` and the day has no resting HR either: `no_rhr`;
+5. otherwise `short_history`.
+
+The question it answers for the app is "does waiting end this?". `short_history`: yes,
+after `7 − baseline_days` more nights with both signals. `no_hrv` / `no_rhr`: no, not
+until a source writes that signal to Apple Health (an iPhone alone, a watch that does not
+share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`):
+
+- **`W` decides when a missing signal counts as missing**, with the baselines' own bar
+  of 7. A new account has `H = R = 0` because nothing is there yet, so it is
+  `short_history` until its 8th day with data, the same day a complete account stops
+  calibrating. Counting calendar days instead would call a user who synced once a
+  month ago `no_hrv` on a single night.
+- **`W` counts days with data, not every stored row.** A range or a rescore stores
+  every day it covers, also the days before an account's first data
+  (`scripts/rescore_all.sh` goes 400 days back), with nothing in them. Counted, they
+  would make a watch user's first night `no_hrv` (30 rows, none with an HRV), and in
+  the synthetic run below the two empty leading days would start `no_hrv` on the 6th
+  day with data instead of the 8th. An iPhone alone still counts: its days have steps.
+- **The day's own signal counts, and a new one names nothing missing.** The window
+  holds only the days before, so on the first morning of a new source (a watch after
+  ten phone-only days, or back after 30 days off) it has no HRV yet, though the night
+  has one. That morning is `short_history` for both signals: a source has appeared and
+  its other signal may simply not be synced yet. A watch writes the HRV in the night
+  and its resting HR later in the day, so a score at 07:00 has the one and not the
+  other; calling that `no_rhr` would say "no resting-HR source" until the next sync.
+  The next morning the new signal is in the window (`H = 1`), and a signal still
+  missing then, in the window and on the day, is named (`no_rhr`).
+- **Only `H == 0` is `no_hrv`.** One to six HRV nights in the window are sporadic data
+  (a watch worn some nights), and more nights do end them; calling that "no HRV
+  source" would be wrong and would flip with every night.
+- **`no_hrv` before `no_rhr`** when both are 0: HRV carries 0.45 of recovery against
+  resting HR's 0.25, and `baseline_rhr_days == 0` shows the second gap.
+- It is a classification of a state the engine already had, from counts it already
+  had, not a new estimate: no published method applies, nothing is fitted, and the
+  threshold is `MinBaselineDays`, unchanged.
+
+**Stored, not derived on read**: `W` exists only while the day is scored, so the reason
+and both counts are written with the row. They are results, not history inputs: a
+change to them does not re-score the days after (`store.ScoreWrite`). Whether a day
+has data is an input, though: steps or active energy appearing on a day that had none
+re-score the days after it, as a changed HRV does (only their presence counts, so the
+steps a day gains with every sync do not). Rows scored before 0027 have `NULL` in all
+three, served as `null` ("unknown", not a fourth reason) until a rescore fills them. A
+row an older scoring image wrote again after this one (a rollback re-pins images; that
+image leaves the columns as they were) no longer agrees with its `baseline_days` and
+`calibrating`, so the store serves it as unknown too (`store.knownCalibration`). That
+check cannot see everything: when the older image's write happens to keep the same
+`baseline_days` and `calibrating` (a re-score that changed neither), the counts and the
+reason it left are served though they may be stale (a count above `baseline_days`, or a
+reason that `W` or the day's own signal would now change). The next score by the
+current image corrects them. A day that was never scored has all three `null`.
+
+**The safety net** (`store.BehindHistoryDays`, the 15-minute pass) also compares the two
+counts with the nights their window holds now: `baseline_hrv_days < n_hrv` or
+`baseline_rhr_days < n_rhr` picks the day. `baseline_days` is the smaller count, so the
+larger one (and its baseline) could move without it, as after a lost re-score; that row
+is picked once and, re-scored, has the window's counts and is not picked again
+(`TestEngineRescoreBehindSeesAStaleCount`). Rows scored before 0027 (`NULL` counts) are
+not picked for that: filling them through the pass would spend its 50 days a pass on
+the whole history of every active user for hours after the deploy, ahead of the days
+that are really behind, for a field the app reads as "unknown" anyway. They are filled
+by the next score of their day or by `scripts/rescore_all.sh`. `W` is not stored, so a
+reason stale only in `W` is left to the re-score after a change (which treats a day's
+data appearing as a change); the pass re-scores today and yesterday anyway.
+
+**Calibration**, pinned without a database by `calibrating_test.go`: every branch
+(day one `W = 0` → `short_history`; `W = 30, H = 0` → `no_hrv`; `W = 30, R = 0` →
+`no_rhr`; both 0 → `no_hrv`; `H = 3` of 30 → `short_history`; `H, R >= 7` → `null`; the
+7th window day as the edge; a new source's first morning, `H = R = 0` with the night's
+HRV and with or without its resting HR yet → `short_history`; the next morning, `H = 1`
+and still no resting HR → `no_rhr`) and, over every reachable state
+`0 <= H, R <= W <= 30` with and without the day's own signals, that the reason is `null`
+exactly when `Recovery` says not calibrating and that a signal is called missing only
+when neither the window nor the day has it and the day brings no signal its window
+lacked. With
+`RYFT_TEST_POSTGRES_URL`, `TestEngineCalibratingReason` scores 40 nights for four
+set-ups (both signals; no HRV, the report that started this; no resting HR; neither):
+`short_history` through the 7th day (`W = 6`), the reason from the 8th (`W = 7`) on, and
+`baseline_days = min(H, R)` on every day. The iPhone-only source fixture says the same:
+days 1–7 `short_history`, day 8 `no_hrv`. `TestEngineCalibratingReasonIgnoresEmptyDays`:
+31 empty stored days before the first night change nothing (the first night is
+`short_history` with `W = 0`, not `no_hrv`). `TestEngineLateStepsRescoreTheReason`: a
+week of steps synced late for days stored empty turns the 8th day from `short_history`
+to `no_hrv` in the same pass. `TestEngineCalibratingReasonNewSourceMorning`: 10 phone-only days, a watch, 35
+phone-only days, the watch again: `no_hrv` on the phone days from the 8th on,
+`short_history` on each first watch morning. `TestEngineCalibratingReasonBeforeTheRestingHR`:
+the first watch night scored at 07:00 with its HRV and without its resting HR is
+`short_history`, and stays so once the resting HR syncs; a watch that never writes one
+is `no_rhr` the next morning. `TestEngineCalibratingReasonFollowsTheRescore`:
+a day scored before its history goes from `short_history` (0/0) to `null` (30/30) when
+the history arrives. `TestEngineSafetyNetConvergesOnFreshScores`: on freshly scored
+accounts (in order, no HRV, days missing, empty leading days, a backfill newest first)
+every row's counts equal its 30 rows before, and the safety net picks nothing.
+
+**Model version: unchanged** (2026.10.1). Nothing that was stored moves: recovery,
+readiness, state, `calibrating` and `baseline_days` are computed as before, and the
+tests that pin them pass unchanged. Before/after over the synthetic generator
+(`scripts/synth.py 60`, scored as a 62-day range, in four set-ups: as generated, HRV on
+every 4th night, no HRV, neither HRV nor resting HR): none of the 31 `DailyScore`
+fields the api served before (`details` included) differs on any of the 248 days. The
+new fields there: as generated, `short_history` on the 9 calibrating days (2 empty, 7
+with data), `null` from the 8th day with data; no HRV and neither, `short_history` for
+those 9, then `no_hrv` on the other 53; HRV every 4th night, `short_history` until the
+7th HRV night, then `null`. The three fields are new and say what was already true. A
+bump would announce moved numbers in `GET /v1/model` where none moved, and rows without
+the fields are found by `baseline_hrv_days IS NULL`, not by their version.
+**Rescore**: the 15-minute pass re-scores today and yesterday of every active user, so
+the Today screen has the reason within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
+(optional; it moves no stored number, it fills the three fields).
+
 ## Model version
 
 `internal/scoring/version.go` names the model, `ModelVersion = "2026.10.1"`
@@ -327,8 +464,8 @@ last 30 scored days), sleep debt and need, consistency and yesterday's strain co
 the stored days before it. When late data changes one of those on a stored day,
 scoring re-scores the next 30 scored days with the same model, oldest first, never past
 today (a retried event does so even when its own day is already up to date); the
-15-minute pass re-scores days whose `baseline_days` is behind their history or whose
-baseline is missing although the history has the nights. `model_version` stays; a
+15-minute pass re-scores days whose `baseline_days` (or one of its two counts) is
+behind their history or whose baseline is missing although the history has the nights. `model_version` stays; a
 re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;
 a day first scored without its history moves by a median of 9 (p90 21) and leaves
 `calibrating`.

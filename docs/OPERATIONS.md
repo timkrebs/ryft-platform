@@ -150,8 +150,9 @@ the log shows `user rescored … n of N`, then `rescore done`. Locally:
 Days scored before their history (a backfill newest first, a late sample) need no
 rescore by hand: scoring re-scores the days after a changed day itself, a retried
 event included (log `rescored days after a history change`), and its 15-minute pass
-picks up about 50 days a pass whose `baseline_days` is behind their stored history or
-whose baseline is missing (log `rescored days behind their history`;
+picks up about 50 days a pass whose `baseline_days` (or one of its two counts) is
+behind their stored history or whose baseline is missing (log `rescored days behind
+their history`;
 `ryft_days_rescored_total`, `OBSERVABILITY.md`). A user whose re-score there failed is
 left until their next local day (the error is logged). Only users who synced in the
 last 48 hours get the pass; the others get it with their next sync, or now with

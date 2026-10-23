@@ -63,6 +63,31 @@ def ok(msg):
 
 
 STATES = {"balanced", "strained", "depleted", "calibrating"}
+REASONS = {"short_history", "no_hrv", "no_rhr"}
+
+
+def check_calibration(d, where):
+    """DailyScore → calibrating_reason: the keys are always there (null, not absent);
+    a row scored since they exist has both counts, baseline_days is the smaller one
+    and a reason exactly when calibrating; an older row has none of the three."""
+    keys = ("baseline_hrv_days", "baseline_rhr_days", "calibrating_reason")
+    check(all(k in d for k in keys), f"{where}: missing {[k for k in keys if k not in d]}")
+    h, r, why = (d[k] for k in keys)
+    if h is None:
+        check(r is None and why is None, f"{where}: counts {h}/{r}, reason {why}: all three or none")
+        return
+    check(r is not None and d["baseline_days"] == min(h, r), f"{where}: baseline_days {d['baseline_days']} != min({h}, {r})")
+    check((why is not None) == d["calibrating"], f"{where}: calibrating {d['calibrating']} with reason {why}")
+    check(why is None or why in REASONS, f"{where}: calibrating_reason {why!r}")
+    # What the rule guarantees: a signal is named missing only when neither the window
+    # nor the day has it, and never on a day that brings a signal its window lacked.
+    day_hrv, day_rhr = (d.get("hrv_ms") or 0) > 0, (d.get("rhr") or 0) > 0
+    arrives = (h == 0 and day_hrv) or (r == 0 and day_rhr)
+    check(why != "no_hrv" or (h == 0 and not day_hrv and not arrives),
+          f"{where}: no_hrv with {h} HRV nights, hrv_ms {d.get('hrv_ms')}, rhr {d.get('rhr')}")
+    check(why != "no_rhr" or (r == 0 and not day_rhr and not arrives),
+          f"{where}: no_rhr with {r} resting-HR nights, rhr {d.get('rhr')}, hrv_ms {d.get('hrv_ms')}")
+
 
 # ---- 2.1 readiness ------------------------------------------------------------
 days = get(f"/v1/days?to={TODAY}")
@@ -75,6 +100,7 @@ for d in days:
     if r is not None and not d["calibrating"]:
         want = "balanced" if r >= 67 else "strained" if r >= 34 else "depleted"
         check(d["state"] == want, f"{d['day']}: state {d['state']} for readiness {r}")
+    check_calibration(d, d["day"])
 ok(f"/v1/days: readiness + state on {len(days)} days")
 
 # ---- 2.2 sleep ----------------------------------------------------------------
@@ -101,6 +127,12 @@ def rnd(x):
 
 
 detail = get(f"/v1/days/{TODAY}")
+check_calibration(detail["score"], f"/v1/days/{TODAY}")
+check(detail["score"]["baseline_hrv_days"] is not None, f"/v1/days/{TODAY}: scored just now, yet no calibration counts")
+# A day never scored: the placeholder has the keys, all null.
+never = get("/v1/days/2001-01-01")["score"]
+check([never.get(k, "absent") for k in ("baseline_hrv_days", "baseline_rhr_days", "calibrating_reason")] == [None] * 3,
+      f"/v1/days/2001-01-01: a never-scored day's counts and reason must be null: {never}")
 s = detail["sleep"]
 check(s is not None, "/v1/days/{today}: sleep is null after a synced night")
 check_night(s, "day sleep")
