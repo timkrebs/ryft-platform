@@ -269,6 +269,14 @@ NetworkPolicy shapes, workloads without a namespace, images that run any command
 listing. **Lead's decision:** #38 gets 1, 2, 10, 11, the empty-rule NetworkPolicy shapes, the GitGuardian rename and
 honest wording of what the invariants cover; 3–9 belong in an admission-level policy in the cluster (CI scripts
 can't enforce pod security completely) — a separate ticket, platform-architect first.
+Round 3 (`445d29a`): one application per path, projects bound to their paths, unknown projects refused; the effective
+auth environment (no `envFrom` prefix, no `valueFrom` for the auth variables, `USER_ID` refused, Secret `data`/`stringData`
+checked); `fullmatch`; empty renders fail; `CONSENT_SERVICE_NAMESPACES` (GitGuardian); a "Not checked" paragraph.
+CI then failed: the job-wide `GIT_ALLOW_PROTOCOL=file` broke `actions/checkout` itself ("transport 'https' not
+allowed") → the lead moved it into a step after the checkout (`94bffb5`). Final security check of 445d29a: fit to
+merge within scope, no new high; lows → the admission ticket: `.` path segments not normalised (a second `ryft` app on
+the same tree, same rules), root.yaml's path not bound, the operators path can include workload paths (Argo's project
+stops it), a CRD's map-valued `name` crashes renderpolicy (fails closed).
 
 ## D — Synthetic Monitoring (#20)
 security-privacy-reviewer: no blocker, no user data, the token never reaches argv/disk/logs (`-K -` on stdin, verified
