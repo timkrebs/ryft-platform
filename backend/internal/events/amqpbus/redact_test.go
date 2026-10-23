@@ -17,6 +17,10 @@ func TestRedactedHidesThePassword(t *testing.T) {
 		"amqps://rabbit:5671":                      "amqps://rabbit:5671",
 		"http://ryft:" + pw + "@rabbit:5672/vhost": "http://ryft:xxxxx@rabbit:5672/vhost",
 		"amqp://ryft:" + pw + "@ra bbit/":          "(unparseable url)",
+		// opaque: no User for url.Redacted to mask
+		"ryft:" + pw + "@rabbit:5672/ryft":  "(unparseable url)",
+		"amqp:ryft:" + pw + "@rabbit:5672/": "(unparseable url)",
+		"amqps:///ryft":                     "(unparseable url)",
 	} {
 		got := Redacted(raw)
 		if got != want || strings.Contains(got, pw) {
@@ -28,8 +32,17 @@ func TestRedactedHidesThePassword(t *testing.T) {
 // The bad-scheme error of Open quotes the URL redacted.
 func TestOpenBadSchemeHidesThePassword(t *testing.T) {
 	pw := strings.Repeat("p", 3) + "-" + strings.Repeat("w", 3)
-	_, err := Open(context.Background(), Options{URL: "http://ryft:" + pw + "@rabbit:5672/"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	_, err := Open(context.Background(), Options{URL: "http://ryft:" + pw + "@rabbit:5672/"}, log)
 	if err == nil || strings.Contains(err.Error(), pw) || !strings.Contains(err.Error(), "xxxxx") {
 		t.Fatalf("%v", err)
+	}
+	// Opaque URLs have no user to mask: the scheme "ryft" (amqp:// forgotten) is
+	// refused without quoting, and amqp:user:pw@host passes the scheme check but
+	// not the host check, so nothing opens, logs or echoes it.
+	for _, raw := range []string{"ryft:" + pw + "@rabbit:5672/ryft", "amqp:ryft:" + pw + "@rabbit:5672/", "amqps:"} {
+		if _, err := Open(context.Background(), Options{URL: raw}, log); err == nil || strings.Contains(err.Error(), pw) {
+			t.Errorf("%q: %v", raw, err)
+		}
 	}
 }
