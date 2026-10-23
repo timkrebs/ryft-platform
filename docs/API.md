@@ -8,14 +8,14 @@ wire types (`../app/Ryft/Networking/Models.swift`) mirror the shapes below and
 query parameters, new response fields. A field is never renamed, removed or
 retyped without moving to `/v2`. Clients must ignore response fields they do not
 know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `stage`,
-`severity` will not gain values without `/v2`, so they can be decoded as Swift enums.
+`severity`, `calibrating_reason` will not gain values without `/v2`, so they can be decoded as Swift enums.
 `Insight.id`, `Insight.metric` and `Workout.activity` are **open** strings.
 
 ## Screens → endpoints
 
 | Screen | Numbers | Endpoint |
 | --- | --- | --- |
-| Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt | `GET /v1/days/{today}` → `score` |
+| Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt, why a day is calibrating (`calibrating_reason`, `baseline_hrv_days`, `baseline_rhr_days`) | `GET /v1/days/{today}` → `score` |
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
 | Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
 | Sleep — Week / Month | nightly totals and stages, consistency, bedtime / wake strip, averages | `GET /v1/sleep?range=week` / `month` |
@@ -566,7 +566,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
   "sleep_need_base_min": 460, "sleep_need_strain_min": 37, "sleep_need_debt_min": 41, "sleep_need_nap_min": 0, "nap_min": 25,
   "sleep_quality": 91, "sleep_consistency": 81,
   "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
-  "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "calibrating": false,
+  "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "baseline_hrv_days": 30, "baseline_rhr_days": 30,
+  "calibrating": false, "calibrating_reason": null,
   "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
 ```
 
@@ -600,12 +601,60 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `spo2` | number? | Overnight mean, percent. |
 | `hrv_baseline_ms` | number? | The 30-day HRV baseline `hrv_ms` was scored against: geometric mean of up to 30 scored days before `day`. |
 | `rhr_baseline` | number? | The 30-day resting-HR baseline `rhr` was scored against. |
-| `baseline_days` | int | Nights of history behind the baselines (the smaller of HRV and resting-HR days among the 30 scored days before `day`), 0–30. "Calibrating — N nights to go" is `7 − baseline_days`. |
-| `calibrating` | bool | `baseline_days < 7`. |
+| `baseline_days` | int | Nights of history behind the baselines (the smaller of HRV and resting-HR days among the 30 scored days before `day`), 0–30. "Calibrating — N nights to go" is `7 − baseline_days` and holds only when `calibrating_reason` is `short_history`; with `no_hrv` / `no_rhr` waiting does not end it. |
+| `calibrating` | bool | `baseline_days < 7` on a scored day; `false` on a day that was never scored (the placeholder of `GET /v1/days/{day}`). |
+| `baseline_hrv_days` | int? | N of the HRV baseline: scored days among the 30 before `day` that have an overnight HRV, 0-30. `baseline_days = min(baseline_hrv_days, baseline_rhr_days)`. `null` (read it as unknown) on a day that was never scored, on rows scored before this field existed (until rescored), and on a row last written by an older scoring image after a rollback that disagrees with `baseline_days` / `calibrating` (the server serves such a row's fields as unknown). |
+| `baseline_rhr_days` | int? | The same for resting HR (scored days among the 30 before `day` with a resting HR), 0-30. Same `null` rule. |
+| `calibrating_reason` | string? | Why `calibrating` is `true`: `short_history`, `no_hrv` or `no_rhr` (closed enum, rule below). `null` when `calibrating` is `false` and on a day that was never scored. Also `null` on a calibrating row scored before this field existed (until it is rescored) or written by an older scoring image after a rollback: treat that as "unknown", not as a fourth reason. |
 | `scoring_state` | string | `scored`, `pending` (data newer than the score: scoring is queued or running), `waiting_for_sleep` (today: no night uploaded yet), `stale` (today: no new data for over 20 h). Past days are `scored` or `pending`. Closed enum, as `SyncStatus.today.state`. |
 | `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
 | `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
+
+#### `calibrating_reason`
+
+With `H = baseline_hrv_days`, `R = baseline_rhr_days` and `W` = the days with any data among the (up to) 30
+scored days before `day` (the engine's window; a day stored without data, e.g. before the account's first sync, does
+not count), the engine decides in this order:
+
+1. `min(H, R) >= 7` (`calibrating == false`) gives `null`.
+2. If the day brings a signal its window never had (`H == 0` and the day has an HRV, or `R == 0` and the day has a resting HR), `short_history`, for both signals: the source has just appeared.
+3. `W >= 7 && H == 0` and the day itself has no HRV (`hrv_ms` is `null`) gives `no_hrv`: the history is long enough, yet not one night in the window, and not this one, has an HRV.
+4. `W >= 7 && R == 0` and the day itself has no resting HR (`rhr` is `null`) gives `no_rhr`: likewise for resting HR.
+5. Otherwise `short_history`.
+
+So `calibrating_reason` is `null` exactly when `calibrating` is `false` (apart from the legacy and never-scored
+`null`s in the table). Decisions: a day-one account has `H = R = 0` too but `W < 7`, so it is `short_history` and
+waiting is correct; when both are 0, `no_hrv` wins because HRV is the heavier recovery signal and the app reads
+`baseline_rhr_days == 0` for the second gap (no combined value). One to six HRV nights in the window is
+`short_history` (sporadic data: more nights do end it), not `no_hrv`. So does the first morning a source arrives, for either signal: `H` and `R` count the days before `day` and are still 0, but the day's own `hrv_ms` (or `rhr`) is there, so it is `short_history`, not `no_hrv` / `no_rhr`. A new watch writes HRV at night and resting HR later in the morning, so without this step the morning would say `no_rhr` until the next sync.
+
+What each reason means for the app (no copy here):
+
+| Reason | Meaning | Does waiting end it? | Counts |
+| --- | --- | --- | --- |
+| `short_history` | Too little history to tell (fewer than 7 days with data), or a signal present on fewer than 7 days (including the first day one arrives, for either signal). | Yes: `7 - baseline_days` more nights with both. | "N of 7 nights" (`baseline_days`) is meaningful. |
+| `no_hrv` | At least 7 days with data, but no overnight HRV in the 30-day window or on the day itself (phone only, or a watch that does not write HRV to Apple Health). | No, not until an HRV source appears. | Do not show "N of 7 nights"; `baseline_hrv_days` is 0. |
+| `no_rhr` | At least 7 days with data, but no resting HR in the window or on the day itself. | No, until a resting-HR source appears. | Do not show "N of 7 nights"; `baseline_rhr_days` is 0. |
+
+`recovery` and `readiness` may still be present while calibrating (recovery averages the inputs that exist, here
+mostly sleep); `state` stays `calibrating`. Old clients ignore the new fields and keep showing `baseline_days`.
+`calibrating_reason` is a closed enum in v1: it gains no values without `/v2`, so it decodes as a Swift enum.
+
+Examples (the changed fields only):
+
+```json
+{ "baseline_days": 3,  "baseline_hrv_days": 3,  "baseline_rhr_days": 5,  "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 24, "calibrating": true,  "calibrating_reason": "no_hrv" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 24, "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 28, "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
+{ "baseline_days": 0,  "baseline_hrv_days": 28, "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_rhr" }
+{ "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "no_hrv" }
+{ "baseline_days": 12, "baseline_hrv_days": 12, "baseline_rhr_days": 19, "calibrating": false, "calibrating_reason": null }
+```
+
+The second is day one (`W = 0`, whatever empty days are stored before it). The third has 24 resting-HR nights and no HRV in the window, and the day has no `hrv_ms`; the fourth is the first morning a watch's HRV arrives (`hrv_ms` present, `H` still 0), hence `short_history`. The fifth is the same for resting HR (`R` = 0, the day has `rhr`); the sixth has `R` = 0 and no `rhr` on the day, hence `no_rhr`. The seventh has 30 days with data, neither signal in the window and neither on the day (`no_hrv` by precedence).
 
 ### `GET /v1/days/{day}` — one day
 
@@ -1300,6 +1349,7 @@ endpoint of a running stack with it.
 import Foundation
 
 enum ReadinessState: String, Codable { case balanced, strained, depleted, calibrating }
+enum CalibratingReason: String, Codable { case shortHistory = "short_history", noHrv = "no_hrv", noRhr = "no_rhr" }
 enum SleepQualityLabel: String, Codable { case good, fair, poor }
 enum SleepStageName: String, Codable { case deep, light, rem, awake, asleep }
 enum InsightSeverity: String, Codable { case warn, notice, info }
@@ -1332,7 +1382,10 @@ struct DailyScore: Codable, Identifiable {
     let hrvBaselineMs: Double?
     let rhrBaseline: Double?
     let baselineDays: Int
+    let baselineHrvDays: Int?
+    let baselineRhrDays: Int?
     let calibrating: Bool
+    let calibratingReason: CalibratingReason?
     let computedAt: Date
     let modelVersion: String?
     let scoringState: ScoringState
@@ -2027,6 +2080,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-21 | `GET /readyz` of ingest no longer answers `503` while the event broker is unreachable (a sync's events wait in the outbox, so syncs keep being accepted). No shape change. |
 | 2026-10-20 | **Accounts and sync state**: gates in `warn` mode with the `X-RYFT-Gate` response header (Errors); request ids are to be shown exactly as received; the `X-RYFT-Device-ID` request header and `User.account_hint`; `GET /v1/me/sync` (`SyncStatus`: `gate`, last sync, newest record per kind, today's scoring state, pending days, `expected_within_sec`, `resync_requested_at`); `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring`; the silent refresh push after every sync's scored days (Push). **Behaviour:** an unknown sample `type` or sleep `stage` is ignored and counted (`ignored.*.unknown_type`) instead of failing the sync with `422`; records more than 24 h in the future or older than 400 days are ignored (`outside_window`); identical re-sends no longer count in `samples` / `workouts` (`ignored.*.duplicate`). Swift: `ScoringState`, `AccountHint`, `TodayState`, `SyncStatus`, `SyncResponse` and its parts, `DailyScore.scoringState`, `User.accountHint`. |
 | 2026-10-20 | **Beta** (external TestFlight): error `code` (`invite_required`, `consent_required`; `APIErrorBody.code`); consent to health-data processing (`POST`/`DELETE /v1/me/consent`, `User.consent`, `GET /v1/config` → `privacy_policy_version` / `privacy_policy_url`; `POST /v1/sync` needs it); invite codes (`POST /v1/me/invite`, `User.beta_access`); `User.birth_year` / `max_hr_source` and `PATCH /v1/me` `birth_year` / `max_hr_manual` (Tanaka estimate); `User.sources`; `SyncRequest.app_version` / `os_version` and `source_bundle_id` on samples, sleep segments and workouts; `model_version` on `DailyScore` and `Workout`, `GET /v1/model`; `POST /v1/feedback`; insights `no-heart-rate-source`, `max-hr-observed`. **Behaviour:** sync answers `403 consent_required` until the user consents, and nothing is scored without consent; with the beta gate on, accounts without a redeemed code get `403 invite_required`. Swift: `APIErrorCode`, `Consent`, `UserSource`, `SourceKind`, `MaxHRSource`, `ConsentPost`, `InvitePost`, `ModelInfo`, `ModelChange`, `FeedbackCategory`, `FeedbackPost`, the new fields. |

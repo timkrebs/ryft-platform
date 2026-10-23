@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -594,9 +595,10 @@ func roundZones(z []float64) []float64 {
 
 // History is the per-day input the scoring baselines need. What the later
 // days' rows are computed from (HRV, RHR, RespRate, Strain, SleepNeedMin,
-// SleepActualMin, SleepStart, SleepEnd, and NapMin: the next day's need
-// subtracts this day's naps, which it reads from the raw segments) are the
-// row's history inputs, historyInputs; the others are left out on purpose.
+// SleepActualMin, SleepStart, SleepEnd, NapMin: the next day's need subtracts
+// this day's naps, which it reads from the raw segments; and HasData: whether
+// the day holds any data, calibrating_reason's window) are the row's history
+// inputs, historyInputs; the others are left out on purpose.
 // TestHistoryInputsCoverHistory fails until a new field is one or the other.
 type History struct {
 	Day            string
@@ -611,13 +613,30 @@ type History struct {
 	SleepStart     *time.Time // consistency
 	SleepEnd       *time.Time
 	Efficiency     *int // the planner (asleep / in bed)
+	// HasData: one of dataColumns is set: an overnight HRV, a resting HR or a
+	// respiratory rate, a strain (heart-rate minutes or a logged session), a
+	// night's sleep, steps or active energy. A range or a rescore also stores
+	// days before an account's first data, with none of it; they do not count
+	// as history for calibrating_reason. Neither does a day with only an SpO2,
+	// a nap, time in bed or a workout without heart rate: rare, and it errs
+	// toward short_history.
+	HasData bool
 }
+
+// dataColumns are the daily_scores columns History.HasData looks at. Each is a
+// history input (historyInputs, by value or by presence), so a day gaining or
+// losing data re-scores the days after it; TestHistoryInputsCoverHistory
+// checks that.
+var dataColumns = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_actual_min", "steps", "active_kcal"}
+
+var hasData = "num_nonnulls(" + strings.Join(dataColumns, ", ") + ") > 0"
 
 // ScoreHistory returns up to n scored days strictly before `day`, newest first.
 func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, n int) ([]History, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), hrv_ms, rhr, resp_rate, strain, sleep_need_min, sleep_actual_min,
 		recovery, nap_min, sleep_start, sleep_end,
-		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END
+		CASE WHEN in_bed_min > 0 THEN round(100.0 * least(sleep_actual_min, in_bed_min) / in_bed_min)::int END,
+		`+hasData+`
 		FROM daily_scores WHERE user_id=$1 AND day < $2::date ORDER BY day DESC LIMIT $3`, userID, day, n)
 	if err != nil {
 		return nil, err
@@ -625,7 +644,7 @@ func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, 
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (History, error) {
 		var h History
 		err := r.Scan(&h.Day, &h.HRV, &h.RHR, &h.RespRate, &h.Strain, &h.SleepNeedMin, &h.SleepActualMin,
-			&h.Recovery, &h.NapMin, &h.SleepStart, &h.SleepEnd, &h.Efficiency)
+			&h.Recovery, &h.NapMin, &h.SleepStart, &h.SleepEnd, &h.Efficiency, &h.HasData)
 		return h, err
 	})
 }
@@ -677,22 +696,37 @@ type ScoreWrite struct {
 	FirstRecovery bool
 	// InputsChanged: the row is new, or one of its historyInputs changed, so
 	// the stored days whose ScoreHistory window holds it were scored against a
-	// history that is gone. Recovery and baseline_days are left out on
-	// purpose: they follow from the baselines, so a re-score of the days after
-	// a change settles instead of chasing itself.
+	// history that is gone. Recovery and baseline_days (with its counts and
+	// calibrating_reason) are left out on purpose: they follow from the
+	// baselines, so a re-score of the days after a change settles instead of
+	// chasing itself.
 	InputsChanged bool
 }
 
 // historyInputs are the daily_scores columns the later days are computed from
-// (History): UpsertDailyScore reports a change in any of them. Constants only;
-// the comparison below is built from them once.
+// (History): UpsertDailyScore reports a change in any of them. An entry is a
+// column, compared by value, or "column IS NULL", compared by presence only
+// (HasData needs no more: the steps a day gains with every sync change no
+// later day). Constants only; the comparison below is built from them once.
 var historyInputs = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_need_min", "sleep_actual_min",
-	"sleep_start", "sleep_end", "nap_min"}
+	"sleep_start", "sleep_end", "nap_min", "steps IS NULL", "active_kcal IS NULL"}
 
 var (
+	historyColumns   = strings.Join(inputColumns(historyInputs), ", ")
 	oldHistoryInputs = "o." + strings.Join(historyInputs, ", o.")
 	newHistoryInputs = "daily_scores." + strings.Join(historyInputs, ", daily_scores.")
 )
+
+// inputColumns is the column each historyInputs entry reads, once each.
+func inputColumns(inputs []string) []string {
+	var cols []string
+	for _, in := range inputs {
+		if c := strings.Fields(in)[0]; !slices.Contains(cols, c) {
+			cols = append(cols, c)
+		}
+	}
+	return cols
+}
 
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
@@ -707,7 +741,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 			return w, err
 		}
 	}
-	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery, `+strings.Join(historyInputs, ", ")+`
+	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery, `+historyColumns+`
 		  FROM daily_scores WHERE user_id=$1 AND day=$2::date)
 		INSERT INTO daily_scores
 		(user_id, day, recovery, strain, sleep_performance, sleep_need_min, sleep_actual_min, sleep_debt_min,
@@ -715,9 +749,10 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 sleep_start, sleep_end, in_bed_min, deep_min, light_min, rem_min, awake_min, sleep_has_stages,
 		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
 		 muscular_trimp, strength_min, volume_kg, nap_min, sleep_quality, sleep_consistency,
-		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, model_version, computed_at)
+		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, model_version,
+		 baseline_hrv_days, baseline_rhr_days, calibrating_reason, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -734,7 +769,8 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 nap_min=EXCLUDED.nap_min, sleep_quality=EXCLUDED.sleep_quality, sleep_consistency=EXCLUDED.sleep_consistency,
 		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
 		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min,
-		 model_version=EXCLUDED.model_version, computed_at=now()
+		 model_version=EXCLUDED.model_version, baseline_hrv_days=EXCLUDED.baseline_hrv_days,
+		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason, computed_at=now()
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL,
 		 NOT EXISTS (SELECT 1 FROM old o WHERE (`+oldHistoryInputs+`) IS NOT DISTINCT FROM (`+newHistoryInputs+`))`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
@@ -742,7 +778,8 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
-		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin, d.ModelVersion).Scan(&w.FirstRecovery, &w.InputsChanged)
+		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin, d.ModelVersion,
+		d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason).Scan(&w.FirstRecovery, &w.InputsChanged)
 	return w, err
 }
 
@@ -760,24 +797,28 @@ func (s *Store) ScoredDaysAfter(ctx context.Context, userID uuid.UUID, after, th
 // BehindHistoryDays returns up to n stored days from `from` on, oldest first,
 // that were scored before their history arrived, judged against the `window`
 // stored rows before them as computeDay counts them from ScoreHistory: a
-// baseline_days below the smaller of their HRV and resting-HR nights now, or
-// an HRV or resting-HR baseline missing although the window has such a night
-// (an account without HRV has baseline_days 0 either way). It sees counts and
-// missing baselines, not a stale value behind a right count. The scan starts
+// baseline_days below the smaller of their HRV and resting-HR nights now, an
+// HRV or resting-HR baseline missing although the window has such a night (an
+// account without HRV has baseline_days 0 either way), or one of the two
+// counts behind baseline_days (0027) below its nights now: the larger count
+// moves without baseline_days, and its baseline with it. Rows scored before
+// 0027 have no counts and are not picked for that. It sees counts and missing
+// baselines, not a stale value behind a right count. The scan starts
 // 2×window days before `from`, so the windows of daily rows are whole; a
 // window cut short by a gap only undercounts, so it can hide a row but never
 // picks one a re-score would leave as it is. One pass over the user's rows by
 // the primary key, no index of its own.
 func (s *Store) BehindHistoryDays(ctx context.Context, userID uuid.UUID, from string, window, n int) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD') FROM (
-		  SELECT day, baseline_days, hrv_baseline_ms, rhr_baseline,
+		  SELECT day, baseline_days, hrv_baseline_ms, rhr_baseline, baseline_hrv_days, baseline_rhr_days,
 		    count(*) FILTER (WHERE hrv_ms > 0) OVER w AS n_hrv,
 		    count(*) FILTER (WHERE rhr > 0) OVER w AS n_rhr
 		  FROM daily_scores WHERE user_id=$1 AND day >= $2::date - 2 * $3::int
 		  WINDOW w AS (ORDER BY day ROWS BETWEEN $3::int PRECEDING AND 1 PRECEDING)
 		) h
 		WHERE day >= $2::date AND (baseline_days < least(n_hrv, n_rhr)
-		  OR (hrv_baseline_ms IS NULL AND n_hrv > 0) OR (rhr_baseline IS NULL AND n_rhr > 0))
+		  OR (hrv_baseline_ms IS NULL AND n_hrv > 0) OR (rhr_baseline IS NULL AND n_rhr > 0)
+		  OR baseline_hrv_days < n_hrv OR baseline_rhr_days < n_rhr)
 		ORDER BY day LIMIT $4`, userID, from, window, n)
 	if err != nil {
 		return nil, err
@@ -831,7 +872,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		strength_min, volume_kg, sleep_performance, sleep_need_min,
 		sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, nap_min, sleep_quality, sleep_consistency,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
-		calibrating, details, computed_at, model_version
+		baseline_hrv_days, baseline_rhr_days, calibrating, calibrating_reason, details, computed_at, model_version
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
 	if err != nil {
 		return nil, err
@@ -844,10 +885,12 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 			&d.SleepNeedBaseMin, &d.SleepNeedStrainMin, &d.SleepNeedDebtMin, &d.SleepNeedNapMin, &d.NapMin, &d.SleepQuality, &d.SleepConsistency,
 			&d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
-			&d.BaselineDays, &d.Calibrating, &details, &d.ComputedAt, &d.ModelVersion)
+			&d.BaselineDays, &d.BaselineHRVDays, &d.BaselineRHRDays, &d.Calibrating, &d.CalibratingReason,
+			&details, &d.ComputedAt, &d.ModelVersion)
 		if err != nil {
 			return d, err
 		}
+		knownCalibration(&d)
 		if len(details) > 0 {
 			_ = json.Unmarshal(details, &d.Details)
 		}
@@ -856,6 +899,22 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		}
 		return d, nil
 	})
+}
+
+// knownCalibration keeps a row's baseline_hrv_days, baseline_rhr_days and
+// calibrating_reason only while they agree with its baseline_days and
+// calibrating, as every row scoring writes does (baseline_days is the smaller
+// count; a reason exactly when calibrating). A row that an older scoring image
+// wrote again after this one (a rollback re-pins images; that image does not
+// know the columns and leaves them as they were) no longer agrees, and reads as
+// a row scored before the fields existed: all three null, "unknown"
+// (docs/API.md → calibrating_reason), until it is scored again.
+func knownCalibration(d *model.DailyScore) {
+	h, r := d.BaselineHRVDays, d.BaselineRHRDays
+	if h != nil && r != nil && min(*h, *r) == d.BaselineDays && (d.CalibratingReason != nil) == d.Calibrating {
+		return
+	}
+	d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason = nil, nil, nil
 }
 
 // ---- trends ----------------------------------------------------------------

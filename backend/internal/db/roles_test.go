@@ -199,6 +199,26 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_notify SELECT users.%s: %v, want %v", col, has, want)
 		}
 	}
+	// 0027: scoring writes why a day calibrates, the api reads it, notify and
+	// ingest do not see it (they have no business with it).
+	for _, col := range []string{"baseline_hrv_days", "baseline_rhr_days", "calibrating_reason"} {
+		for _, c := range []struct {
+			role, priv string
+			want       bool
+		}{
+			{"ryft_scoring", "SELECT", true}, {"ryft_scoring", "INSERT", true}, {"ryft_scoring", "UPDATE", true},
+			{"ryft_api", "SELECT", true}, {"ryft_api", "UPDATE", false}, {"ryft_api", "INSERT", false},
+			{"ryft_notify", "SELECT", false}, {"ryft_ingest", "SELECT", false},
+		} {
+			var has bool
+			if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, 'public.daily_scores', $2, $3)`, c.role, col, c.priv).Scan(&has); err != nil {
+				t.Fatal(err)
+			}
+			if has != c.want {
+				t.Errorf("%s %s daily_scores.%s: %v, want %v", c.role, c.priv, col, has, c.want)
+			}
+		}
+	}
 	// scoring writes the learned sleep baseline (0013), nothing else of a user.
 	for col, want := range map[string]bool{"sleep_base_min": true, "sleep_base_source": true, "sleep_base_learned_min": true,
 		"sleep_base_learned_at": true, "sleep_base_manual": false, "tz": false, "max_hr": false, "email": false} {

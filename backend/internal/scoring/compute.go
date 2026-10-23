@@ -338,6 +338,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	var lnHRV, rhrs, resps []float64
 	var yesterdayStrain float64
+	var window int // the days in hist with any data: calibrating_reason's W
 	yesterday := dayStart.AddDate(0, 0, -1).Format("2006-01-02")
 	// Consistency: the last 7 nights, this one included.
 	firstNight := dayStart.AddDate(0, 0, -(consistencyDays - 1)).Format("2006-01-02")
@@ -360,6 +361,9 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 		}
 		if h.Day == yesterday && h.Strain != nil {
 			yesterdayStrain = *h.Strain
+		}
+		if h.HasData {
+			window++
 		}
 	}
 	debt := SleepDebtFrom(hist)
@@ -509,14 +513,26 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 
 	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
 	version := ModelVersion
+	// The counts behind baseline_days, and why the day calibrates. The window is
+	// the stored rows the baselines were drawn from that hold any data, not the
+	// nights with a value: a phone-only month is 30 days of steps without an
+	// HRV; a new account has none, even after a range stored empty days for it.
+	// The day's own signals count too: the first night of a new source is not
+	// "no HRV".
+	hrvDays, rhrDays := lnHRVBase.N, rhrBase.N
+	var reason *string
+	if r := CalibratingReason(Calibration{Window: window, HRVDays: hrvDays, RHRDays: rhrDays,
+		DayHRV: hrv != nil && *hrv > 0, DayRHR: rhr != nil && *rhr > 0}); r != "" {
+		reason = &r
+	}
 
 	row := model.DailyScore{
 		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, Steps: steps, ActiveKcal: kcal,
 		SleepPerformance: sleepPerf,
 		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &debt,
 		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
-		BaselineDays: min(lnHRVBase.N, rhrBase.N),
-		Calibrating:  rec.Calibrating, Details: details,
+		BaselineDays: min(hrvDays, rhrDays), BaselineHRVDays: &hrvDays, BaselineRHRDays: &rhrDays,
+		Calibrating: rec.Calibrating, CalibratingReason: reason, Details: details,
 		SleepNeedBaseMin: &parts.Base, SleepNeedStrainMin: &parts.Strain, SleepNeedDebtMin: &parts.Debt,
 		SleepNeedNapMin: &parts.Nap, NapMin: &napMin, SleepQuality: quality, SleepConsistency: consistency,
 		ModelVersion: &version,

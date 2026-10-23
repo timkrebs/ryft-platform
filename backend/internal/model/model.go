@@ -50,6 +50,14 @@ const (
 	StateCalibrating = "calibrating" // baselines not established yet, or no score
 )
 
+// Why a day is calibrating: DailyScore.calibrating_reason, a closed enum
+// (the rule is scoring.CalibratingReason).
+const (
+	CalibratingShortHistory = "short_history" // under 7 nights with both signals yet; waiting ends it
+	CalibratingNoHRV        = "no_hrv"        // 7+ days with data in the window, no overnight HRV there or that night
+	CalibratingNoRHR        = "no_rhr"        // 7+ days with data in the window, no resting HR there or that day
+)
+
 type Sample struct {
 	Type   string    `json:"type"`
 	Start  time.Time `json:"start"`
@@ -228,10 +236,13 @@ type DailyScore struct {
 	RHR                *float64       `json:"rhr"`
 	RespRate           *float64       `json:"resp_rate"`
 	SpO2               *float64       `json:"spo2"`
-	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"` // 30-day baseline hrv_ms is scored against
-	RHRBaseline        *float64       `json:"rhr_baseline"`    // 30-day baseline rhr is scored against
-	BaselineDays       int            `json:"baseline_days"`   // nights of history behind the baselines, 0..30
-	Calibrating        bool           `json:"calibrating"`     // baseline_days < 7
+	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"`    // 30-day baseline hrv_ms is scored against
+	RHRBaseline        *float64       `json:"rhr_baseline"`       // 30-day baseline rhr is scored against
+	BaselineDays       int            `json:"baseline_days"`      // nights of history behind the baselines, 0..30
+	BaselineHRVDays    *int           `json:"baseline_hrv_days"`  // of the 30 scored days before, those with an HRV; nil: not known
+	BaselineRHRDays    *int           `json:"baseline_rhr_days"`  // … with a resting HR; baseline_days = min of the two
+	Calibrating        bool           `json:"calibrating"`        // baseline_days < 7
+	CalibratingReason  *string        `json:"calibrating_reason"` // Calibrating* when calibrating; nil otherwise or not known
 	Details            map[string]any `json:"details"`
 	ComputedAt         time.Time      `json:"computed_at"`
 	// The scoring model that computed the row; nil before versions existed.
