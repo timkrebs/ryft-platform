@@ -12,6 +12,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/apns"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -212,11 +213,19 @@ func (s *Service) CheckStale(ctx context.Context) error {
 			continue
 		}
 		day, hours := local.Format(dayLayout), int(now.Sub(*r.LastSample).Hours())
-		if err := s.deliver(ctx, &r, model.NotifySyncStale, day, apns.PushAlert, func(string) ([]byte, string, time.Time) {
+		// The stale loop's context has no user; the lines below get it from here,
+		// as the event handlers' do from main, so no line carries user_id twice.
+		f := logx.Fields{}
+		if old := logx.FieldsFrom(ctx); old != nil {
+			f = *old
+		}
+		f.UserID = r.ID.String()
+		uctx := logx.WithFields(ctx, &f)
+		if err := s.deliver(uctx, &r, model.NotifySyncStale, day, apns.PushAlert, func(string) ([]byte, string, time.Time) {
 			m := Stale(day, hours, now)
 			return m.Payload(), m.Category + "-" + day, m.Expires
 		}); err != nil {
-			s.Log.ErrorContext(ctx, "sync stale", "user_id", r.ID, "err", err)
+			s.Log.ErrorContext(uctx, "sync stale", "err", err)
 		}
 	}
 	return nil
@@ -256,7 +265,7 @@ func (s *Service) deliver(ctx context.Context, r *store.Recipient, category, day
 		result = "failed"
 	}
 	count(category, result)
-	s.Log.InfoContext(ctx, "push", "category", category, "day", day, "user_id", r.ID, "devices", accepted, "of", len(r.Tokens))
+	s.Log.InfoContext(ctx, "push", "category", category, "day", day, "devices", accepted, "of", len(r.Tokens))
 	return nil
 }
 
@@ -296,7 +305,7 @@ func (s *Service) sendAll(ctx context.Context, r *store.Recipient, category, pus
 			}
 		default:
 			s.Log.WarnContext(ctx, "apns refused", "category", category, "status", res.Status, "reason", res.Reason,
-				"user_id", r.ID, "device_id", t.DeviceID)
+				"device_id", t.DeviceID)
 		}
 	}
 	r.Tokens = kept // a later send of the same event skips the dropped ones
@@ -349,7 +358,7 @@ func (s *Service) refresh(ctx context.Context, ev model.RefreshEvent) error {
 	if accepted == 0 {
 		result = "failed"
 		if lastErr != nil {
-			s.Log.WarnContext(ctx, "refresh push", "user_id", ev.UserID, "err", lastErr)
+			s.Log.WarnContext(ctx, "refresh push", "err", lastErr)
 		}
 	}
 	count(Refresh, result)

@@ -19,6 +19,6 @@ func Open(ctx context.Context, cfg config.Config, name string, log *slog.Logger)
 	if err != nil {
 		return nil, err
 	}
-	log.Info("events", "broker", "amqp", "url", cfg.AMQP.URL)
+	log.Info("events", "broker", "amqp", "url", amqpbus.Redacted(cfg.AMQP.URL))
 	return bus, nil
 }
