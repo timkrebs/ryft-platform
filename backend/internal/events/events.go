@@ -16,9 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
@@ -171,7 +171,7 @@ func DecodeIngested(key string, data []byte) (model.IngestedEvent, error) {
 	case KeySessionCompleted:
 		var s model.SessionCompletedEvent
 		if err := json.Unmarshal(data, &s); err != nil {
-			return model.IngestedEvent{}, decodeError(err)
+			return model.IngestedEvent{}, logx.JSONError(err)
 		}
 		if s.Day == "" {
 			return model.IngestedEvent{}, errors.New("session event without a day")
@@ -182,28 +182,11 @@ func DecodeIngested(key string, data []byte) (model.IngestedEvent, error) {
 	case KeyIngested:
 		var ev model.IngestedEvent
 		if err := json.Unmarshal(data, &ev); err != nil {
-			return ev, decodeError(err)
+			return ev, logx.JSONError(err)
 		}
 		return ev, nil
 	}
 	return model.IngestedEvent{}, fmt.Errorf("not an event for scoring: %q", key)
-}
-
-// decodeError is a json.Unmarshal error without the value it quotes: a type
-// mismatch names the number it could not store ("number 61.7"), and a scored
-// event carries recovery and sleep. The error is logged and goes into the
-// dead-letter headers; the field and the type are enough to find the bug.
-func decodeError(err error) error {
-	var te *json.UnmarshalTypeError
-	if !errors.As(err, &te) {
-		return err
-	}
-	kind, _, _ := strings.Cut(te.Value, " ")
-	field := te.Field
-	if te.Struct != "" {
-		field = te.Struct + "." + te.Field
-	}
-	return fmt.Errorf("json: cannot unmarshal %s into %s of type %v", kind, field, te.Type)
 }
 
 // NotifyMessage is one event for notify: exactly one of the three is set.
@@ -231,7 +214,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeyScored:
 		m.Scored = &model.ScoredEvent{}
 		if err := json.Unmarshal(data, m.Scored); err != nil {
-			return m, fmt.Errorf("bad scored event: %w", decodeError(err))
+			return m, fmt.Errorf("bad scored event: %w", logx.JSONError(err))
 		}
 		if m.Scored.Day == "" {
 			return m, errors.New("scored event without a day")
@@ -239,7 +222,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeyRefresh:
 		m.Refresh = &model.RefreshEvent{}
 		if err := json.Unmarshal(data, m.Refresh); err != nil {
-			return m, fmt.Errorf("bad refresh event: %w", decodeError(err))
+			return m, fmt.Errorf("bad refresh event: %w", logx.JSONError(err))
 		}
 		if m.Refresh.Day == "" {
 			return m, errors.New("refresh event without a day")
@@ -247,7 +230,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeySessionScored:
 		m.SessionScored = &model.SessionScoredEvent{}
 		if err := json.Unmarshal(data, m.SessionScored); err != nil {
-			return m, fmt.Errorf("bad session scored event: %w", decodeError(err))
+			return m, fmt.Errorf("bad session scored event: %w", logx.JSONError(err))
 		}
 		if m.SessionScored.Day == "" {
 			return m, errors.New("session scored event without a day")

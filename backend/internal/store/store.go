@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -579,7 +580,7 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 	}
 	if len(zones) > 0 {
 		if err := json.Unmarshal(zones, &w.ZoneMinutes); err != nil {
-			return w, fmt.Errorf("workout %s zone_minutes: %w", id, err)
+			return w, fmt.Errorf("workout %s zone_minutes: %w", id, logx.JSONError(err))
 		}
 	}
 	return w, nil
@@ -842,7 +843,7 @@ func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (Da
 	}
 	if len(zones) > 0 {
 		if err := json.Unmarshal(zones, &l.ZoneMinutes); err != nil {
-			return l, fmt.Errorf("day %s zone_minutes: %w", day, err)
+			return l, fmt.Errorf("day %s zone_minutes: %w", day, logx.JSONError(err))
 		}
 	}
 	return l, nil

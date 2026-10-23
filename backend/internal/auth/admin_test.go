@@ -101,3 +101,29 @@ func TestAdminGetUser(t *testing.T) {
 		t.Fatalf("unknown user: %v", err)
 	}
 }
+
+// A refused admin call is logged by the api and shown in the admin view: its
+// error holds the status and GoTrue's error_code, never the body's free text.
+func TestAdminErrorsHoldNoBody(t *testing.T) {
+	body := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+	for b, code := range map[string]string{
+		`{"code":500,"error_code":"unexpected_failure","msg":"cannot load tim@example.com"}`: "unexpected_failure",
+		`<html>tim@example.com is down</html>`:                                               "no error_code",
+		`{"error_code":"tim@example.com"}`:                                                   "no error_code",
+	} {
+		body = b
+		_, gerr := a.GetUser(context.Background(), uuid.New())
+		derr := a.DeleteUser(context.Background(), uuid.New())
+		for _, err := range []error{gerr, derr} {
+			if err == nil || !strings.Contains(err.Error(), "500 Internal Server Error: "+code) || strings.Contains(err.Error(), "tim@") {
+				t.Errorf("%s: %v, want the status and %q only", b, err, code)
+			}
+		}
+	}
+}

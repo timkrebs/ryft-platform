@@ -121,27 +121,26 @@ func TestOutcomes(t *testing.T) {
 }
 
 // An event that does not decode is logged and dead-lettered with its error, so
-// the error names the field and the type, never the value: a scored event
-// carries a recovery and the minutes asleep (OPERATIONS → Data protection (logs)).
+// the error names the field and the type, never the value. The scored event is
+// the one with numbers: recovery, readiness, sleep performance, minutes asleep
+// (the other events hold ids and days, whose errors quote no value anyway).
 func TestDecodeErrorsQuoteNoValues(t *testing.T) {
-	user := uuid.NewString()
-	notify := func(k string, b []byte) error { _, err := DecodeNotify(k, b); return err }
-	scoring := func(k string, b []byte) error { _, err := DecodeIngested(k, b); return err }
-	for name, c := range map[string]struct {
-		key, body, field string
-		decode           func(string, []byte) error
-	}{
-		"scored recovery": {KeyScored, `{"user_id":"` + user + `","day":"2026-10-21","recovery":61.7}`, "ScoredEvent.recovery", notify},
-		"scored sleep":    {KeyScored, `{"user_id":"` + user + `","day":"2026-10-21","sleep_min":4617.25}`, "ScoredEvent.sleep_min", notify},
-		"refresh":         {KeyRefresh, `{"user_id":"` + user + `","day":61.7}`, "RefreshEvent.day", notify},
-		"ingested":        {KeyIngested, `{"user_id":"` + user + `","days":[61.7]}`, "IngestedEvent.days", scoring},
+	scored := func(field string) string {
+		return `{"user_id":"` + uuid.NewString() + `","day":"2026-10-21","` + field + `":61.7}`
+	}
+	for body, field := range map[string]string{
+		scored("recovery"):          "ScoredEvent.recovery",
+		scored("readiness"):         "ScoredEvent.readiness",
+		scored("sleep_performance"): "ScoredEvent.sleep_performance",
+		scored("sleep_min"):         "ScoredEvent.sleep_min",
+		`[61.7]`:                    "Go value", // not an object
 	} {
-		err := c.decode(c.key, []byte(c.body))
+		_, err := DecodeNotify(KeyScored, []byte(body))
 		if err == nil {
-			t.Fatalf("%s: must not decode", name)
+			t.Fatalf("%s: must not decode", body)
 		}
-		if msg := err.Error(); strings.Contains(msg, "61.7") || strings.Contains(msg, "4617") || !strings.Contains(msg, c.field) {
-			t.Errorf("%s: %q: want the field %s and no value", name, msg, c.field)
+		if msg := err.Error(); strings.Contains(msg, "61.7") || !strings.Contains(msg, field) || strings.Contains(msg, "  ") {
+			t.Errorf("%s: %q: want the field %s and no value", body, msg, field)
 		}
 	}
 }
