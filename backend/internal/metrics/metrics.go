@@ -27,6 +27,11 @@ var (
 		Help:    "HTTP request latency by route pattern.",
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	}, []string{"route"})
+	TextRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_text_refused_total",
+		Help: "Requests refused for text Postgres cannot store (a NUL, or bytes that are not UTF-8), by route pattern " +
+			"and where it was found: body (422), url (400) or database (422; a path that bypassed the first two).",
+	}, []string{"route", "at"})
 
 	// ingest.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{

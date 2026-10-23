@@ -1513,9 +1513,10 @@ scripts/seed_demo.py`.
 - **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
   line's keys allowlisted), `TestSyncLogsCountsOnly` and
   `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies` and
-  `TestErrorPathsLogNoBodies` (api), `TestDecodeErrorsQuoteNoValues` (events),
-  `TestJSONErrorDropsTheValue` (logx), `TestTransportErrorsHideTheDeviceToken` (apns),
-  `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
+  `TestErrorPathsLogNoBodies` (api), `TestSyncRefusesNULBeforeTheDatabase` and
+  `TestWritesRefuseNULBeforeTheDatabase` (a NUL's `422`/`400` logs the access line
+  only), `TestDecodeErrorsQuoteNoValues` (events), `TestJSONErrorDropsTheValue` (logx),
+  `TestTransportErrorsHideTheDeviceToken` (apns), `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
   its keys are listed there.
 - **Older lines:** before this change `scored day` carried the day's scores and inputs
   (readiness, state, recovery, strain, sleep, nap, sleep need, HRV, resting HR), a

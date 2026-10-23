@@ -52,6 +52,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Auth | Every `/v1/*` request carries `Authorization: Bearer <access token>`: the Supabase Auth access token of the signed-in user (a JWT; Sign in with Apple through Supabase). See **Authentication** below. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
 | Users | Every response is scoped to the token's user. There is no sign-up call: the platform creates the user on the first authenticated request. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB for `POST /v1/sync`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB for everything else (`413`). |
+| Text | Strings never contain U+0000 (NUL), which the database cannot store: a `\u0000` in any string of a request body is `422`, `%00` in the path or query `400` (Errors → **NUL**). Strip it from text the user enters or pastes. |
 | Keys | `snake_case`. The app decodes with `.convertFromSnakeCase`. |
 | Timestamps | RFC 3339 strings, e.g. `"2026-10-18T05:12:00Z"`; fractional seconds may appear. |
 | Days | `YYYY-MM-DD`, a calendar day in the user's timezone (`users.tz`, see `GET /v1/me`). The night that *ends* on day D belongs to D. |
@@ -94,18 +95,39 @@ not keeps working. `GET /v1/me/sync` → `gate` says the same.
 
 | Status | When |
 | --- | --- |
-| `400` | Malformed JSON, unknown body field, malformed date / UUID in query or path |
+| `400` | Malformed JSON (a raw 0x00 byte in the body included), unknown body field, malformed date / UUID in query or path, a path or query holding `%00` or bytes that are not UTF-8 |
 | `401` | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token, or the account was deleted (checked before routing, so any `/v1/*` path). Refresh the session once and retry; a second `401` means sign in again. |
 | `403` | Changing a built-in exercise, plan or behavior; and the two `code`s above: `invite_required` (no beta access), `consent_required` (sync without consent to the current policy) |
 | `404` | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method |
 | `409` | The id is taken by another user's or a built-in exercise or plan; completing a discarded session. **`PUT /v1/sessions/{id}`**: the server has newer sets — the body is then the server's `Session`, not the error shape. |
 | `413` | Request body over the limit (32 MiB for `POST /v1/sync`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB otherwise). For sync, send smaller pages. |
-| `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone |
+| `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`) |
 | `429` | Too many requests; wait `Retry-After` seconds: the per-user rate limit (see **Conventions**), or a second `POST /v1/recompute` within a minute. The edge also limits each client IP (20/s, bursts of 50) before any token is checked; that `429` has a plain-text body, so do not require JSON on a `429`. |
 | `500` | Unexpected server error. The message is always `"internal error"`; the details are in the server log under `request_id`. |
 | `503` | Retry after `Retry-After`: the token could not be checked right now (Supabase keys unreachable — **not** a sign-in problem, keep the session), the database or the queue is down, or the request ran out of time (`"request timed out"`); `/readyz`. |
 
 The message is for logs and debugging; branch on the status code, not the text.
+
+**NUL.** The database cannot store U+0000, so no request may carry it as text. Both
+services check every request the same way, after authentication (a missing token is still
+`401`) and before any of the request is stored:
+
+| Where | Status | Body |
+| --- | --- | --- |
+| A body's JSON has `\u0000` in a string: a value or an object key, at any depth, also in a field the server would otherwise ignore or normalise (an unknown sample `type`, `locale`) | `422` | `{ "error": "strings must not contain the NUL character (\\u0000)", "request_id": "…" }` |
+| A body holds a raw 0x00 byte (not JSON) | `400` | `{ "error": "bad json: invalid character '\\x00' in string literal", "request_id": "…" }` (the text after `bad json:` varies) |
+| The path or the query holds `%00` or bytes that are not UTF-8 (`?q=%FF`) | `400` | `{ "error": "the path and query must be UTF-8 text without NUL characters", "request_id": "…" }` |
+| A header holds a NUL byte | `400` | plain text, from the HTTP server before anything else, authentication included (do not require JSON) |
+
+```json
+{ "error": "strings must not contain the NUL character (\\u0000)", "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c" }
+```
+
+The whole request is refused (a sync stores none of its records); there is no `code`, since
+only the app can fix it: strip U+0000 and send again. `"\\u0000"` (an escaped backslash,
+then `u0000`) is six ordinary characters and is stored as written. Should the database
+itself ever refuse a request's text, the answer is a `422` as well, with
+`"the request holds text that cannot be stored (a NUL character or bytes that are not UTF-8)"`.
 
 ### Authentication
 
@@ -2080,6 +2102,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-23 | Errors: a NUL (U+0000, `\u0000` in JSON) in any string of a request body, value or object key, is `422` with the error shape and no `code` (was `500`: `POST /v1/sync`, feedback, journal, Train, profile, push and every other write); nothing is stored. `%00` or bytes that are not UTF-8 in the path or query are `400` (was `500` where the value reached the database, as `GET /v1/exercises?q=`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header stays the HTTP server's plain-text `400`. **Behaviour:** a NUL in a field the server used to ignore or normalise (an unknown sample `type`, `locale`) now fails the request with `422` too. No shape change; Swift: none. |
 | 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-21 | `GET /readyz` of ingest no longer answers `503` while the event broker is unreachable (a sync's events wait in the outbox, so syncs keep being accepted). No shape change. |
 | 2026-10-20 | **Accounts and sync state**: gates in `warn` mode with the `X-RYFT-Gate` response header (Errors); request ids are to be shown exactly as received; the `X-RYFT-Device-ID` request header and `User.account_hint`; `GET /v1/me/sync` (`SyncStatus`: `gate`, last sync, newest record per kind, today's scoring state, pending days, `expected_within_sec`, `resync_requested_at`); `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring`; the silent refresh push after every sync's scored days (Push). **Behaviour:** an unknown sample `type` or sleep `stage` is ignored and counted (`ignored.*.unknown_type`) instead of failing the sync with `422`; records more than 24 h in the future or older than 400 days are ignored (`outside_window`); identical re-sends no longer count in `samples` / `workouts` (`ignored.*.duplicate`). Swift: `ScoringState`, `AccountHint`, `TodayState`, `SyncStatus`, `SyncResponse` and its parts, `DailyScore.scoringState`, `User.accountHint`. |
