@@ -292,15 +292,31 @@ SELECT a.pid, a.state, a.xact_start, now() - a.xact_start AS open_for, a.wait_ev
 FROM pg_locks l JOIN pg_stat_activity a USING (pid)
 WHERE l.relation = 'public.daily_scores'::regclass       -- the migration's table
 ORDER BY a.xact_start;
--- whoever is blocked, and by whom
-SELECT pid, pg_blocking_pids(pid) AS blocked_by, left(query, 80) FROM pg_stat_activity
-WHERE cardinality(pg_blocking_pids(pid)) > 0;
+-- long-open transactions (the migrator has given up by now, so nobody is blocked any more)
+SELECT pid, backend_type, state, wait_event, xact_start, now() - xact_start AS open_for,
+       left(query, 100) AS query
+FROM pg_stat_activity
+WHERE xact_start < now() - interval '5 seconds' AND pid <> pg_backend_pid()
+ORDER BY xact_start;
 ```
 
 Usually the blocker is a long transaction (`state = 'idle in transaction'`, or a long
-read). Let it finish, or end it if it is safe (`SELECT pg_cancel_backend(pid)`; then
-`pg_terminate_backend(pid)` as the last resort), then rerun: `argocd app sync
-ryft-platform` (the hook Job is recreated), or at a quiet time. Nothing needs undoing.
+read). Let it finish, or end it if it is safe. `idle in transaction`: only
+`SELECT pg_terminate_backend(pid)` helps; `pg_cancel_backend(pid)` returns true but the
+session keeps its lock. `pg_cancel_backend` ends a running query (`state = 'active'`)
+only. Never kill an autovacuum worker whose query says "to prevent wraparound"; it can
+be the blocker, and the migration waits for it or goes first.
+
+A failed run is not free: each attempt queues every query on the target table for up to
+5 s. With `backoffLimit` 4 (5 pods per Job) and three syncs that is up to about 15 short
+stalls over about 10 minutes. No alert fires, but latency spikes; so rerun once the
+blocker is gone, not blindly: `argocd app sync ryft-platform` (the hook Job is
+recreated), or at a quiet time. Nothing needs undoing.
+
+`Seed` (built-in exercises and plans, run by the same Job after the migrations) also runs
+under `locked()` and gets the same 5 s timeout. Its error is the raw `55P03` ("canceling
+statement due to lock timeout") without the `apply ...` wrapper, from the `migrate` log
+line `seed`; the same rerun applies.
 
 The migrate Job has `ttlSecondsAfterFinished: 3600`: an hour after it finished its Pod
 and logs are gone. What the hooks did stays in the operation state of the application:

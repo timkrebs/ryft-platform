@@ -96,7 +96,8 @@ const migrationLock = 7_419_001
 // (Postgres lock_timeout, error 55P03). Without it a migration that needs a strong
 // lock on a busy table waits indefinitely and every later query queues behind its
 // request. A var so tests can shorten it; a migration may still set its own with
-// SET LOCAL, which runs after this and wins (0027 does, 5 s).
+// SET LOCAL, which runs after this and wins (0027 does, 5 s). Tests that change it
+// must not run in parallel; locked reads it once per call.
 var lockTimeout = 5 * time.Second
 
 // Migrate applies every migrations/NNNN_*.sql file not yet recorded in
@@ -147,8 +148,12 @@ func migrateTo(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, upTo i
 			if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
 				var pgErr *pgconn.PgError
 				if errors.As(err, &pgErr) && pgErr.Code == "55P03" { // lock_not_available
-					return fmt.Errorf("apply %s: hit the lock timeout (%s default; nothing applied, schema_migrations unchanged; "+
-						"find the blocker in pg_stat_activity and pg_locks, then rerun): %w", e.Name(), lockTimeout, err)
+					where := ""
+					if pgErr.Where != "" { // e.g. `while updating tuple (0,1) in relation "t"`: ids and names, no row values
+						where = " [" + pgErr.Where + "]"
+					}
+					return fmt.Errorf("apply %s: hit the lock timeout%s (this migration rolled back, earlier ones of this run stay applied; "+
+						"find the blocker in pg_stat_activity and pg_locks, then rerun): %w", e.Name(), where, err)
 				}
 				return fmt.Errorf("apply %s: %w", e.Name(), err)
 			}
@@ -173,6 +178,7 @@ func migrateTo(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, upTo i
 // (bounded by ctx) instead of being cut off; it is transaction-local, so it never
 // reaches the pool.
 func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
+	timeout := lockTimeout
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -181,7 +187,7 @@ func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLock); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", lockTimeout.Milliseconds())); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", timeout.Milliseconds())); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {

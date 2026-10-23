@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // shortLockTimeout injects the migrator's lock_timeout for one test.
@@ -23,7 +24,8 @@ func shortLockTimeout(t *testing.T, d time.Duration) {
 // the migrator's lock_timeout, and the setting ends with the transaction.
 func TestMigratorLockTimeoutIsPerTransaction(t *testing.T) {
 	pool := freshDB(t, false)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	shortLockTimeout(t, 700*time.Millisecond)
 
 	var inside string
@@ -59,8 +61,20 @@ func TestMigratorLockTimeoutIsPerTransaction(t *testing.T) {
 	if took := time.Since(start); took < 500*time.Millisecond || took > 5*time.Second {
 		t.Fatalf("gave up after %s, want about 700 ms", took)
 	}
-	if got := scalar[string](t, pool, `SHOW lock_timeout`); got != "0" {
-		t.Fatalf("lock_timeout leaked into the pool: %s", got)
+	// After a *committed* locked() on the only connection of a pool, the session must
+	// carry no timeout (a session-level SET would survive a commit).
+	cfg := pool.Config().Copy()
+	cfg.MaxConns = 1
+	one, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer one.Close()
+	if err := locked(ctx, one, func(pgx.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := scalar[string](t, one, `SHOW lock_timeout`); got != "0" {
+		t.Fatalf("lock_timeout leaked into the pool after a commit: %s", got)
 	}
 }
 
@@ -69,7 +83,8 @@ func TestMigratorLockTimeoutIsPerTransaction(t *testing.T) {
 // schema_migrations stays as it was.
 func TestMigrateFailureNamesTheMigrationAndTheMigrationsSettingWins(t *testing.T) {
 	pool := freshDB(t, false)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if err := migrateTo(ctx, pool, quiet, 26); err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +106,8 @@ func TestMigrateFailureNamesTheMigrationAndTheMigrationsSettingWins(t *testing.T
 	if took := time.Since(start); took < 4*time.Second {
 		t.Fatalf("0027's own 5 s must win over the migrator's 300 ms, gave up after %s", took)
 	}
-	if !strings.Contains(err.Error(), "0027_calibrating_reason.sql") || !strings.Contains(err.Error(), "lock timeout") {
-		t.Fatalf("the error must name the migration and the lock timeout: %v", err)
+	if !strings.Contains(err.Error(), "0027_calibrating_reason.sql") || !strings.Contains(err.Error(), "find the blocker") {
+		t.Fatalf("the error must name the migration and carry the wrapper text: %v", err)
 	}
 	if got := scalar[int](t, pool, `SELECT max(version) FROM schema_migrations`); got != 26 {
 		t.Fatalf("schema_migrations after the failed 0027: max version %d, want 26", got)
@@ -103,7 +118,8 @@ func TestMigrateFailureNamesTheMigrationAndTheMigrationsSettingWins(t *testing.T
 // it waits for the first and then runs.
 func TestMigratorWaitOnTheAdvisoryLockIsNotCut(t *testing.T) {
 	pool := freshDB(t, false)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	shortLockTimeout(t, 200*time.Millisecond)
 	first, err := pool.Begin(ctx)
 	if err != nil {
