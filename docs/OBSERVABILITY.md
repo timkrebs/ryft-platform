@@ -310,14 +310,15 @@ One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
 | `code` | the access line of a refused request | The error code (`invite_required`, `consent_required`) or, for a `401`/auth `503`, the reason (`expired`, `signature`, `deleted`, …). |
 | `gate` | the access line of a request a gate in `warn` mode let through | The code(s) it would have been refused with, as in `X-RYFT-Gate`. |
 | `err` | errors and warnings | The internal error. Clients only ever see `"internal error"` and the request ID. |
-| `day`, `model_version`, `inputs_changed` | scoring's `scored day`, one per day scored | The day, the model that scored it, and whether its history inputs changed (then the days after it are scored again: `rescored days after a history change`). No score, input or state: those are in `daily_scores` and the admin view. |
+| `day`, `model_version`, `inputs_changed` | scoring's `scored day`, one per day scored | The day, the model that scored it, and whether its history inputs changed. The days after it are scored again when they did or when the event was a retry (`inputs_changed` is then often `false`: the first attempt wrote the change): `rescored days after a history change`. No score, input or state: those are in `daily_scores` and the admin view. |
 
 Never logged: health values (scores, samples, sleep, workouts, baselines, the learned
 sleep need, the readiness state), tokens (APNs device tokens included), the
-`Authorization` header, email addresses, device names, request bodies, feedback text
-(OPERATIONS → Data protection (logs), with the tests that pin it). The lines still tie
-`user_id` to paths with dates, so limit who can read them and keep them no longer than
-you need.
+`Authorization` header, email addresses, device names, request bodies, feedback text.
+OPERATIONS → Data protection (logs) has the two exceptions (a panic's stack, a pgx
+encode error), the tests that pin the rule and what older lines still hold. The lines
+tie `user_id` to paths with dates, so limit who can read them and keep them no longer
+than you need.
 
 **Finding a request** a user reports (the app shows or logs `request_id`):
 
@@ -349,6 +350,6 @@ fields @timestamp, data.service, data.msg, data.status, data.err
 **Who can read them:** anyone whose IAM identity may call `logs:GetLogEvents` or
 `logs:StartQuery` on the group *and* `kms:Decrypt` on the key `alias/ryft-prod-euc1-logs`.
 Today that is the account's administrators only. Treat any grant as access to the users'
-personal data (and, for 14 days after the deploy of `fix/no-health-values-in-logs`, to
-the scores older `scored day` lines carried): no broad `CloudWatchLogsReadOnlyAccess` for others, and no export to buckets or
-third parties. Cost at alpha volume is around €1 a month, plus €1 for the key.
+personal data, and until 14 days after the deploy that stopped logging health values
+(OPERATIONS → Data protection (logs), older lines) to their scores: no broad
+`CloudWatchLogsReadOnlyAccess` for others, and no export to buckets or third parties. Cost at alpha volume is around €1 a month, plus €1 for the key.
