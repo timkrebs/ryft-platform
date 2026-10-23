@@ -88,7 +88,8 @@ func Run(ctx context.Context, c Config) (Result, error) {
 	if token == "" {
 		t, err := signIn(ctx, c)
 		if err != nil {
-			return res, fmt.Errorf("sign-in of %s: %w", c.Email, err)
+			// Not the address: the job logs this error, and no email goes into a log.
+			return res, fmt.Errorf("sign-in of the smoke user (SMOKE_EMAIL): %w", err)
 		}
 		token = t
 	}

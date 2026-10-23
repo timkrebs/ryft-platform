@@ -15,6 +15,8 @@ case " $* " in
     echo '[pod/ingest-2/ingest] {"time":"2026-10-20T17:44:00Z","level":"INFO","msg":"http","service":"ingest","status":200,"request_id":"01a15a69-0000-7000-8000-000000000000"}' ;;
   *" -n ryft-api "*)
     echo '[pod/api-2/api] {"time":"2026-10-20T17:43:42.150Z","level":"ERROR","msg":"request failed","service":"api","err":"boom","request_id":"01a15a69-7142-7a8b-aba2-c099a5fcd1e4"}' ;;
+  *" -n ryft-scoring "*)
+    echo '[pod/scoring-1/scoring] {"time":"2026-10-20T17:43:44Z","level":"INFO","msg":"scored day","service":"scoring","day":"2026-10-20","model_version":"2026.10.1","inputs_changed":true,"request_id":"01a15a69-7142-7a8b-aba2-c099a5fcd1e4","user_id":"00000000-0000-0000-0000-000000000001"}' ;;
 esac
 K
 chmod +x "$fake/kubectl"
@@ -23,7 +25,7 @@ run() { PATH="$fake:$PATH" /bin/bash "$HERE/trace.sh" "$@"; }
 
 out=$(run 01a15a69-71427a8b-aba2-c099a5fcd1e4 --no-user 2>"$fake/err") || fail "trace failed: $(cat "$fake/err")"
 grep -q 'request id: 01a15a69-71427a8b-aba2-c099a5fcd1e4 → 01a15a69-7142-7a8b-aba2-c099a5fcd1e4' "$fake/err" || fail "the lost hyphen is not put back: $(cat "$fake/err")"
-[ "$(echo "$out" | wc -l | tr -d ' ')" = 2 ] || fail "want 2 lines (ingest, api), got: $out"
+[ "$(echo "$out" | wc -l | tr -d ' ')" = 3 ] || fail "want 3 lines (ingest, api, scoring), got: $out"
 echo "$out" | python3 -c '
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
@@ -31,6 +33,8 @@ i = next(r for r in rows if r["service"] == "ingest")
 a = next(r for r in rows if r["service"] == "api")
 assert i["status"] == 403 and i["code"] == "consent_required" and i["pod"] == "ingest-1" and i["user"].startswith("00000000"), i
 assert a["msg"] == "request failed" and a["error"] == "boom" and "status" not in a, a
+s = next(r for r in rows if r["service"] == "scoring")
+assert s["msg"] == "scored day" and s["day"] == "2026-10-20" and s["model_version"] == "2026.10.1" and s["inputs_changed"] is True, s
 ' || fail "unexpected lines: $out"
 if run 01a15a69-dead-beef-aba2-c099a5fcd1e4 --no-user >/dev/null 2>"$fake/err"; then fail "an unknown id must fail"; fi
 grep -q 'in no pod' "$fake/err" || fail "unknown id message: $(cat "$fake/err")"

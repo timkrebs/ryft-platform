@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,25 @@ func TestBackgroundPriorityAndGoneTokens(t *testing.T) {
 	}
 	if (Result{Status: 400, Reason: "PayloadTooLarge"}).Gone() || (Result{Status: 429}).Gone() {
 		t.Fatal("only a dead token is gone")
+	}
+}
+
+// notify logs a transport failure, and the broker's retry carries it: the error
+// must not quote the request URL, which holds the device token. A cancelled
+// context is still recognisable.
+func TestTransportErrorsHideTheDeviceToken(t *testing.T) {
+	f, c := newFake(t)
+	f.Close()
+	token := strings.Repeat("a1b2c3d4", 8) // shaped like a device token, built so no scanner sees a key
+	n := Notification{Token: token, Env: Sandbox, PushType: PushAlert, Payload: []byte(`{}`)}
+	_, err := c.Send(context.Background(), n)
+	if err == nil || strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "/3/device/") {
+		t.Fatalf("server down: %v, want an error without the device token", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.Send(ctx, n); !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), token) {
+		t.Fatalf("cancelled: %v", err)
 	}
 }
 

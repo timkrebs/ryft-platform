@@ -61,7 +61,8 @@ func (e *Engine) LearnBaseline(ctx context.Context, userID uuid.UUID, today stri
 	if err != nil {
 		return "", err
 	}
-	e.log.InfoContext(ctx, "sleep baseline learned", "minutes", minutes, "applied", changed)
+	// Not the minutes: a person's usual sleep is a health value.
+	e.log.InfoContext(ctx, "sleep baseline learned", "applied", changed)
 	if !changed {
 		return LearnKept, nil
 	}

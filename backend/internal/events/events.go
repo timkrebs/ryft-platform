@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
@@ -170,7 +171,7 @@ func DecodeIngested(key string, data []byte) (model.IngestedEvent, error) {
 	case KeySessionCompleted:
 		var s model.SessionCompletedEvent
 		if err := json.Unmarshal(data, &s); err != nil {
-			return model.IngestedEvent{}, err
+			return model.IngestedEvent{}, logx.JSONError(err)
 		}
 		if s.Day == "" {
 			return model.IngestedEvent{}, errors.New("session event without a day")
@@ -180,8 +181,10 @@ func DecodeIngested(key string, data []byte) (model.IngestedEvent, error) {
 			RequestID: s.RequestID, SessionID: &id}, nil
 	case KeyIngested:
 		var ev model.IngestedEvent
-		err := json.Unmarshal(data, &ev)
-		return ev, err
+		if err := json.Unmarshal(data, &ev); err != nil {
+			return ev, logx.JSONError(err)
+		}
+		return ev, nil
 	}
 	return model.IngestedEvent{}, fmt.Errorf("not an event for scoring: %q", key)
 }
@@ -211,7 +214,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeyScored:
 		m.Scored = &model.ScoredEvent{}
 		if err := json.Unmarshal(data, m.Scored); err != nil {
-			return m, fmt.Errorf("bad scored event: %w", err)
+			return m, fmt.Errorf("bad scored event: %w", logx.JSONError(err))
 		}
 		if m.Scored.Day == "" {
 			return m, errors.New("scored event without a day")
@@ -219,7 +222,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeyRefresh:
 		m.Refresh = &model.RefreshEvent{}
 		if err := json.Unmarshal(data, m.Refresh); err != nil {
-			return m, fmt.Errorf("bad refresh event: %w", err)
+			return m, fmt.Errorf("bad refresh event: %w", logx.JSONError(err))
 		}
 		if m.Refresh.Day == "" {
 			return m, errors.New("refresh event without a day")
@@ -227,7 +230,7 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 	case KeySessionScored:
 		m.SessionScored = &model.SessionScoredEvent{}
 		if err := json.Unmarshal(data, m.SessionScored); err != nil {
-			return m, fmt.Errorf("bad session scored event: %w", err)
+			return m, fmt.Errorf("bad session scored event: %w", logx.JSONError(err))
 		}
 		if m.SessionScored.Day == "" {
 			return m, errors.New("session scored event without a day")

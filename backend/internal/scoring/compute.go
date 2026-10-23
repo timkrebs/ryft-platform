@@ -549,8 +549,10 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: day, Recovery: *recovery, Readiness: readiness,
 			State: state, SleepPerformance: sleepPerf, SleepMin: sleep.AsleepMin})
 	}
-	e.log.InfoContext(ctx, "scored day", "day", day, "readiness", deref(readiness), "state", state, "recovery", rec.Score, "strain", deref(strainScore), "muscular_trimp", strength.TRIMP,
-		"sleep_min", sleep.AsleepMin, "nap_min", napMin, "sleep_need", need, "hrv", deref(hrv), "rhr", deref(rhr), "calibrating", rec.Calibrating)
+	// Which day, by which model, and whether it moves the days after it: no
+	// score, input or state (docs/OPERATIONS.md → Data protection (logs)). The
+	// values are in daily_scores and the admin view, the counts in the metrics.
+	e.log.InfoContext(ctx, "scored day", "day", day, "model_version", version, "inputs_changed", written.InputsChanged)
 	return written.InputsChanged, nil
 }
 

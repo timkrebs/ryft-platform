@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -171,6 +172,12 @@ func (c *Client) send(ctx context.Context, base string, n Notification, refresh 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// net/http's error quotes the URL, and the URL holds the device token:
+		// keep only the cause, which notify logs and the broker's retry carries.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return Result{}, fmt.Errorf("apns: %s: %w", ue.Op, ue.Err)
+		}
 		return Result{}, fmt.Errorf("apns: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()

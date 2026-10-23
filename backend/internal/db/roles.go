@@ -133,6 +133,45 @@ func roleNames() []string {
 	return out
 }
 
+// EnsureServiceRoles creates the service roles that pool's server lacks, NOLOGIN
+// as migrations 0009 and 0015 do, and returns once all of them exist. It is
+// for the integration tests, which migrate databases of their own on one
+// server from several packages at once: roles are the server's, and on a
+// fresh server two migrations creating the same role race. The one whose
+// CREATE ROLE waited for the other's commit can fail its next GRANT with
+// "role does not exist" (its backend still holds the miss it looked up
+// first). Created up front, every migration finds them. Concurrent callers
+// are safe: the loser's error is ignored and pg_roles decides.
+func EnsureServiceRoles(ctx context.Context, pool *pgxpool.Pool) error {
+	roles := roleNames()
+	for attempt := 0; ; attempt++ {
+		var missing []string
+		if err := pool.QueryRow(ctx, `SELECT coalesce(array_agg(r), '{}') FROM unnest($1::text[]) r
+			WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)`, roles).Scan(&missing); err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if attempt == 10 {
+			return fmt.Errorf("service roles still missing: %v", missing)
+		}
+		for _, r := range missing {
+			_, err := pool.Exec(ctx, "CREATE ROLE "+pgx.Identifier{r}.Sanitize()+" NOLOGIN")
+			var pe *pgconn.PgError
+			switch {
+			case err == nil:
+			case errors.As(err, &pe) && (pe.Code == "42710" || pe.Code == "23505" || pe.Code == "XX000"):
+				// duplicate_object, unique_violation, "tuple concurrently updated":
+				// another caller created it; the next pass checks.
+				time.Sleep(20 * time.Millisecond)
+			default:
+				return err
+			}
+		}
+	}
+}
+
 // scramIterations matches Postgres's default (scram_iterations, PG 16+).
 const scramIterations = 4096
 

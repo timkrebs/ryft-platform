@@ -119,3 +119,28 @@ func TestOutcomes(t *testing.T) {
 		t.Fatal("permanent errors are recognised")
 	}
 }
+
+// An event that does not decode is logged and dead-lettered with its error, so
+// the error names the field and the type, never the value. The scored event is
+// the one with numbers: recovery, readiness, sleep performance, minutes asleep
+// (the other events hold ids and days, whose errors quote no value anyway).
+func TestDecodeErrorsQuoteNoValues(t *testing.T) {
+	scored := func(field string) string {
+		return `{"user_id":"` + uuid.NewString() + `","day":"2026-10-21","` + field + `":61.7}`
+	}
+	for body, field := range map[string]string{
+		scored("recovery"):          "ScoredEvent.recovery",
+		scored("readiness"):         "ScoredEvent.readiness",
+		scored("sleep_performance"): "ScoredEvent.sleep_performance",
+		scored("sleep_min"):         "ScoredEvent.sleep_min",
+		`[61.7]`:                    "Go value", // not an object
+	} {
+		_, err := DecodeNotify(KeyScored, []byte(body))
+		if err == nil {
+			t.Fatalf("%s: must not decode", body)
+		}
+		if msg := err.Error(); strings.Contains(msg, "61.7") || !strings.Contains(msg, field) || strings.Contains(msg, "  ") {
+			t.Errorf("%s: %q: want the field %s and no value", body, msg, field)
+		}
+	}
+}

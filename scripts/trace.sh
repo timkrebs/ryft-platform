@@ -53,7 +53,7 @@ for raw in open(sys.argv[1]):
         print(json.dumps({"pod": pod, "line": js.strip()[:300]}))
         continue
     out = {"time": d.get("time"), "service": d.get("service"), "pod": pod}
-    for k in ("method", "path", "status", "code", "gate", "dur_ms", "route"):
+    for k in ("method", "path", "status", "code", "gate", "dur_ms", "route", "day", "model_version", "inputs_changed"):
         if k in d:
             out[k] = d[k]
     if d.get("user_id"):

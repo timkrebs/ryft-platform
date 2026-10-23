@@ -982,7 +982,8 @@ scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4        # also with a lost 
 
 It reads every pod of api, ingest, scoring and notify (`--tail=-1`, `--since 48h`), prints
 each line with the id as compact JSON (time, service, pod, method, path, status, code,
-gate, user, duration, error), then the account it belonged to. Older than the pods: in
+gate, user, duration, error; for scoring's `scored day` the day, model version and
+`inputs_changed`), then the account it belonged to. Older than the pods: in
 CloudWatch (OBSERVABILITY → Logs).
 
 **One account:** `scripts/user.sh <id | first 8 digits | email> [--emails]` shows the
@@ -1443,13 +1444,42 @@ scripts/seed_demo.py`.
 
 ## Data protection (logs)
 
-- **What is logged:** one access line per request (method, path, status, bytes, duration,
-  route, request id, user id) and what the services decide (a sync's counts, a scored day
-  with its scores, errors). **Never logged:** request or response bodies, query strings,
-  tokens, the `Authorization` header, email addresses, feedback messages, invite notes.
-  Paths carry dates and resource ids (`/v1/days/2026-10-19`, `/v1/workouts/<uuid>`).
-  scoring's `scored day` lines carry a user's daily scores next to the user id: the logs
-  are health data.
+- **What is logged:** one access line per request (method, path, status, bytes,
+  duration, route, request id, user id) and what the services decide: a sync's counts
+  and device id, which day was scored by which model (`scored day`: `day`,
+  `model_version`, `inputs_changed`), a push's category and day, errors with their
+  cause. Paths carry dates and resource ids (`/v1/days/2026-10-19`,
+  `/v1/workouts/<uuid>`), so the lines still show when someone used the app and which
+  days they opened: personal data, read and kept as below.
+- **Never logged:** health values (no score, sample, sleep or workout value, baseline,
+  learned sleep need or readiness state, neither as a field nor in an error's text: a
+  body that does not decode is named by its field and type, not by its value), request
+  or response bodies, query strings, tokens (APNs device tokens too: a failed push's
+  error does not quote its URL), the `Authorization` header, email addresses (the smoke
+  user's too), device names, feedback messages and diagnostics, invite notes. Supabase's
+  admin API errors are logged as the status and GoTrue's `error_code`, never the body.
+- **Exceptions**, both from bugs and rare: a panic's stack trace (`debug.Stack()` in
+  `httpx.Recover`) shows the arguments of the calls on it as hex words, and pgx's error
+  for an argument it cannot encode (an int64 too large for an `int4` column) quotes that
+  argument. Fixing the bug needs both; read such lines as health data.
+- **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
+  line's keys allowlisted), `TestSyncLogsCountsOnly` and
+  `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies` and
+  `TestErrorPathsLogNoBodies` (api), `TestDecodeErrorsQuoteNoValues` (events),
+  `TestJSONErrorDropsTheValue` (logx), `TestTransportErrorsHideTheDeviceToken` (apns),
+  `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
+  its keys are listed there.
+- **Older lines:** before this change `scored day` carried the day's scores and inputs
+  (readiness, state, recovery, strain, sleep, nap, sleep need, HRV, resting HR), a
+  failed push's error the device token (`refresh push`, `sync stale` and the broker's
+  retry lines), and a `bad event` line the number it could not decode, which the dead
+  letter's `Ryft-Error` header kept as well. CloudWatch and the dead-letter queues keep
+  14 days, so all of it is gone 14 days after the deploy of this change (the first
+  `deploy: images` PR after it merged; `docs/STATUS.md` has the date).
+- **A rescore by hand** (`scripts/rescore_all.sh`: `kubectl exec … /app rescore`)
+  prints to the operator's terminal, not to the pod's log, so none of it reaches
+  CloudWatch; its `scored day` lines hold no values now. Output saved from a run before
+  this change holds every day's scores: delete it.
 - **Where and how long:** stdout of each pod (on the node until the pod goes); CloudWatch
   Logs (Fluent Bit ships the `ryft-*` namespaces), **14 days**, encrypted with a key only
   `/ryft/*` groups may use (`infra/aws/kubernetes/logs.tf`, D52). **Not in Grafana

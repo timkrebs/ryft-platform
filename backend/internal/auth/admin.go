@@ -100,8 +100,7 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 		return AdminUserInfo{}, ErrNoAuthUser
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return AdminUserInfo{}, adminError("get user", resp)
 	}
 	var u struct {
 		Email        string     `json:"email"`
@@ -147,6 +146,20 @@ func (a *Admin) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	return fmt.Errorf("supabase admin: delete user: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	return adminError("delete user", resp)
+}
+
+// adminError is a refused admin call as a log line may hold it (the api logs
+// it, the admin view shows it): the status and GoTrue's error_code, never the
+// body, whose msg is free text.
+func adminError(op string, resp *http.Response) error {
+	var body struct {
+		ErrorCode string `json:"error_code"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
+	code := body.ErrorCode
+	if code == "" || len(code) > 64 || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz_0123456789") != "" {
+		code = "no error_code"
+	}
+	return fmt.Errorf("supabase admin: %s: %s: %s", op, resp.Status, code)
 }
