@@ -26,21 +26,25 @@ import (
 	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/logx/logcheck"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
 // syncLogKeys is every line a sync logs with the keys it may carry besides
-// logx's and the request's: counts, the device id, the status and an error's
-// cause (docs/OPERATIONS.md → Data protection (logs)). Any other line or key
-// fails the tests below.
-var syncLogKeys = map[string][]string{
-	"http":           {"method", "path", "status", "bytes", "dur_ms", "code", "gate"},
-	"request failed": {"status", "err"},
-	"sync":           {"device", "samples", "sleep", "workouts", "days"},
+// logx's and the request's, and the kind of each value: counts, the device id,
+// the status and an error's cause (docs/OPERATIONS.md → Data protection
+// (logs)). Any other line, key or kind of value fails the tests below, so a
+// score under a count key (a float, a number that is not a count) cannot slip
+// through.
+var syncLogKeys = logcheck.Lines{
+	"http":           logcheck.HTTP(model.CodeInviteRequired, model.CodeConsentRequired),
+	"request failed": logcheck.RequestFailed(),
+	"sync": {"device": logcheck.UUID, "samples": logcheck.Count, "sleep": logcheck.Count,
+		"workouts": logcheck.Count, "days": logcheck.Count},
 }
 
-var baseLogKeys = []string{"time", "level", "msg", "service", "request_id", "client_request_id", "user_id", "route"}
+var syncStandardKeys = logcheck.Standard("ingest")
 
 // syncServer is POST /v1/sync as main serves it (Instrument, Recover) for user,
 // every line of it, httpx.Fail's included, written to the buffer.
@@ -61,35 +65,27 @@ func syncServer(t *testing.T, st *store.Store, pool *pgxpool.Pool, user model.Us
 	}))), &buf
 }
 
-// checkSyncLog fails on a line or key syncLogKeys does not allow, on any of
-// texts and on any of numbers as a value. It returns the lines by message.
+// checkSyncLog fails on a line, key or kind of value syncLogKeys does not
+// allow, on any of texts and on any of numbers as a value. It returns the lines
+// by message.
 func checkSyncLog(t *testing.T, out string, texts []string, numbers []float64) map[string][]map[string]any {
 	t.Helper()
-	lines := map[string][]map[string]any{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("not a JSON line: %q", line)
-		}
-		delete(rec, "time") // 07:38:47.3… is a time, not a resting heart rate
-		msg, _ := rec["msg"].(string)
-		lines[msg] = append(lines[msg], rec)
-		allowed, known := syncLogKeys[msg]
-		if !known {
-			t.Errorf("a new log line %q: check it against the rule, then list its keys in syncLogKeys: %s", msg, line)
-		}
-		for k, v := range rec {
-			if !slices.Contains(baseLogKeys, k) && !slices.Contains(allowed, k) {
-				t.Errorf("%q carries %s, which it may not: %s", msg, k, line)
+	lines, problems := logcheck.Check(out, syncStandardKeys, syncLogKeys)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	for msg, recs := range lines {
+		for _, rec := range recs {
+			for k, v := range rec {
+				if f, ok := v.(float64); ok && slices.Contains(numbers, f) {
+					t.Errorf("%q carries a value of the request as %s: %v", msg, k, rec)
+				}
 			}
-			if f, ok := v.(float64); ok && slices.Contains(numbers, f) {
-				t.Errorf("%q carries a value of the request as %s: %s", msg, k, line)
-			}
-		}
-		b, _ := json.Marshal(rec)
-		for _, s := range texts {
-			if bytes.Contains(b, []byte(s)) {
-				t.Errorf("%q holds %q: %s", msg, s, line)
+			b, _ := json.Marshal(rec)
+			for _, s := range texts {
+				if bytes.Contains(b, []byte(s)) {
+					t.Errorf("%q holds %q: %s", msg, s, b)
+				}
 			}
 		}
 	}
