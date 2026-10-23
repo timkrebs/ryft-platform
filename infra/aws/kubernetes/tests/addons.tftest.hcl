@@ -314,8 +314,43 @@ run "argocd_cannot_switch_off_or_bypass_the_admission_layer" {
   assert {
     condition = alltrue([for r in yamldecode(helm_release.argocd.values[0]).server.clusterRoleRules.rules :
       length(setintersection(r.verbs, ["create", "update", "delete", "patch"])) == 0 ||
-    contains([["events"], ["applications"], ["pods"], ["jobs"], ["deployments", "statefulsets"]], r.resources)])
-    error_message = "the server writes only the UI actions: events, applications, delete a pod or job, restart a Deployment or StatefulSet"
+    contains([["events"], ["applications"]], r.resources)])
+    error_message = "the server writes only events and Applications: a leaked token of the public UI (D103) must not patch or delete workloads"
+  }
+  assert {
+    condition = (
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.verbs, "escalate") && contains(r.resources, "clusterroles")])) == toset([
+        "rabbitmq-cluster-operator-role", "rabbitmq-cluster-service-binding-role",
+        "messaging-topology-manager-role", "messaging-topology-metrics-auth-role", "messaging-topology-metrics-reader",
+      ]) &&
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.verbs, "bind") && contains(r.resources, "clusterroles")])) == toset([
+        "rabbitmq-cluster-operator-role", "messaging-topology-manager-role", "messaging-topology-metrics-auth-role",
+      ]) &&
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.verbs, "escalate") && contains(r.resources, "roles")])) == toset([
+        "rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role",
+      ]) &&
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.verbs, "bind") && contains(r.resources, "roles")])) == toset([
+        "rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role",
+      ])
+    )
+    error_message = "escalate and bind name exactly the operators' roles (deploy/rabbitmq/operators)"
+  }
+  assert {
+    condition = (
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.resources, "mutatingwebhookconfigurations") && can(r.resourceNames)])) == toset([
+        "cluster-operator-mutating-webhook-configuration", "messaging-topology-mutating-webhook-configuration",
+      ]) &&
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.resources, "validatingwebhookconfigurations") && can(r.resourceNames)])) == toset([
+        "cluster-operator-validating-webhook-configuration", "messaging-topology-validating-webhook-configuration",
+      ])
+    )
+    error_message = "webhook configurations are changed or deleted only by the operators' four names"
   }
   assert {
     condition = (

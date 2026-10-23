@@ -176,10 +176,8 @@ locals {
     { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = ["get"] },
     { apiGroups = [""], resources = ["events"], verbs = ["list", "create"] },
     { apiGroups = ["argoproj.io"], resources = ["applications"], verbs = ["get", "list", "update", "watch"] },
-    # UI actions: delete a pod or a job, restart a Deployment or StatefulSet.
-    { apiGroups = [""], resources = ["pods"], verbs = ["delete"] },
-    { apiGroups = ["batch"], resources = ["jobs"], verbs = ["delete"] },
-    { apiGroups = ["apps"], resources = ["deployments", "statefulsets"], verbs = ["patch"] },
+    # No write on workloads: the UI is public (D103), so a leaked server token must not be
+    # able to rewrite a pod template. Restarts and deletes are the cluster admin's kubectl.
   ]
 
   argocd_values = {

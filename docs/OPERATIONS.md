@@ -268,9 +268,19 @@ that is not listed is refused with `forbidden` in the sync:
 | controller | get, list, watch, create on the two webhook-configuration resources; update, patch, delete only on the four operator-owned names | The operators' two Mutating and two ValidatingWebhookConfigurations. Never `ValidatingAdmissionPolicy` or `-Binding` |
 | controller | nothing on `secrets` in the cluster, `pods/exec`, `pods/ephemeralcontainers`, non-resource URLs | No Secret is in git (VSO makes them). Its own Secrets in `argocd` come from the namespaced Role |
 | server | get on the same kinds (and pods/log), list and create events, get/list/update/watch Applications | The UI's live manifests and logs. Nothing on `admissionregistration.k8s.io`, no secrets |
-| server | delete pods and Jobs, patch Deployments and StatefulSets | The UI's actions (delete a pod, restart a Deployment); nothing else is written |
+| server | no write on workloads | The UI is public (D103): a leaked server token must not rewrite a pod template or delete pods. No runbook uses the UI for restarts or deletes (the broker restart, D98, is `kubectl`); they are the cluster admin's |
 | both | `resource.respectRBAC: strict`; `exec.enabled: false` | The controller then skips resource types it may not list instead of failing on them; no terminal in the UI |
 | ApplicationSet | controller at 0 replicas (this chart version has no enabled flag) | Applications are the files in `deploy/argocd/apps` |
+
+**Limit, stated plainly:** T12-f alone does not stop the controller identity from being
+handed write on admission policies. Three operator ClusterRoles are in both its `escalate`
+and `bind` lists, so a compromised controller (or a bad commit to
+`deploy/rabbitmq/operators`) can add that permission to one of them and bind it to itself.
+Until the admission rules for the operators' roles (P6) and for Argo CD's own objects (P7)
+are in Deny, the operators path is as trusted as cluster-admin; the layer is fully
+RBAC-protected only after that. The server cannot do this (no write on RBAC kinds). A
+structural fix, for a later decision: manage the operators' ClusterRoles and bindings in
+Terraform with the add-ons, so Argo CD needs no `escalate` or `bind`.
 
 The namespaced Roles in `argocd` stay the chart's (Secrets and ConfigMaps there are
 Argo CD's own state: the admin account, repository credentials, `argocd-cm`).
