@@ -522,6 +522,23 @@ byte check on every staged file and needs python3, `make hooks`). `deploy/argocd
 holds `*.yaml` files only. "Not bypassable by administrators" is a
 setting you confirm in the browser (step 3).
 
+**What a kustomization or an Argo CD app may contain.** Both are read by an allowlist, not
+by a list of forbidden things (kustomize reads `Resources:` and a long-s `resources:` like
+`resources:` and decodes `!!binary`, so no list of bad spellings is complete). The schema is
+`scripts/lib/yamlpolicy.py`: exact, case-sensitive keys (a kustomization: `apiVersion`, `kind`,
+`namespace`, `resources`, `patches` with `path`/`patch`/`target`, `images` with `name`/`newTag`,
+`labels`, `configMapGenerator`/`secretGenerator` with `envs`/`literals`/`options.labels`,
+`generatorOptions`; an app: one `spec.source` with `repoURL`, `targetRevision`, `path`, never
+`sources`, `kustomize`, `helm`, `plugin` or `directory`), the YAML tags `!!map !!seq !!str !!int
+!!bool !!null` only, no `<<`, `!!binary`, anchor or alias, one document per file, regular files
+and no symlink anywhere in the tree (the byte check refuses tracked symlinks and runs in its own
+`bytes` job on every run, no path filter, and `ci-ok` needs it). An app's path is below `deploy/`
+and its kustomizations pass `scripts/check_kustomize_refs.sh`. To add a key, change the schema in
+`scripts/lib/yamlpolicy.py` (and the test in `scripts/tests/check_kustomize_refs_test.sh`) in the
+same PR as its first use. Characters that render as nothing are written as `\u` escapes in
+sources, not typed: no file is exempt from the byte check. CI's `yq` is the release binary,
+checked against a sha256 in `ci.yml` (move both together).
+
 **Set it up by rotating the key, not by moving it** (user only; the file that was on your
 disk and in the repository secret is gone afterwards, and the old key stops working):
 

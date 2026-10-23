@@ -186,6 +186,21 @@ jobs:
           version: v2.15.0
           working-directory: backend
 
+  # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
+  # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
+  # symlink, an image, a hidden line break in a file no filter names). About a second. `images`,
+  # `web-image` and `ci-ok` need it; the `manifests` job repeats it as its first step, so that
+  # nothing there parses a tree whose bytes are not clean.
+  bytes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
+        run: ./scripts/check_bytes.sh
+
   manifests:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_manifests == 'true'
@@ -201,7 +216,7 @@ jobs:
       # lone CR), a bidi control or another invisible character in a comment is a line break to the
       # parsers and invisible to every line-based check after this one. Also refuses the file names
       # Kustomization, kustomization.yml, .gitattributes and .gitmodules.
-      - name: Files have no hidden line breaks, controls, invisible characters, BOM or banned names
+      - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
         run: ./scripts/check_bytes.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -218,18 +233,29 @@ jobs:
       - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
         env:
           GOTOOLCHAIN: auto
-      # yq (mikefarah) pinned like the others, not the runner image's: check_workflows.sh parses with it.
-      - run: go install github.com/mikefarah/yq/v4@v4.54.1
+      # yq (mikefarah) pinned, not the runner image's: the workflow, kustomization and Argo CD checks
+      # parse with it. The release binary, verified against a sha256 kept here (no Go toolchain
+      # download per run). To move it: the new tag and `sha256sum yq_linux_amd64` of that
+      # release (cross-check with the release's `checksums` file).
+      - name: Install yq v4.54.1
         env:
-          GOTOOLCHAIN: auto  # yq needs a newer Go than go.mod's (verified by the Go checksum database)
+          YQ_VERSION: v4.54.1
+          YQ_SHA256: 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+        run: |
+          mkdir -p "$RUNNER_TEMP/yq-bin"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/yq-bin/yq" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  $RUNNER_TEMP/yq-bin/yq" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/yq-bin/yq"
+          echo "$RUNNER_TEMP/yq-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yq-bin/yq" --version | grep -F "version ${YQ_VERSION}"
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
-      # What actionlint cannot know, read from the parsed YAML (the pinned yq first on PATH; the
+      # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
       # script fails without it): no pull_request_target/workflow_run, only `promote` names the
       # environment `deploy` and reads the deploy App's key, no external reusable workflow, no
       # `secrets: inherit`, no test hooks of the scripts.
-      - run: PATH="$(go env GOPATH)/bin:$PATH" ./scripts/check_workflows.sh
+      - run: ./scripts/check_workflows.sh
       # The privacy policy version that api and ingest name in config.env has its page in
       # English and German on the site, and the site has no page the platform does not
       # name (D107): consent is recorded against that version.
@@ -509,7 +535,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, test, lint, smoke, manifests, terraform, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, monitoring, web-checks, web-e2e, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -521,7 +547,7 @@ jobs:
 
   images:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.services == 'true'
-    needs: [changes, test, lint, manifests, smoke]
+    needs: [changes, bytes, test, lint, manifests, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -564,7 +590,7 @@ jobs:
   # image is inert: nothing deploys it, and there is no :latest.
   web-image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.web == 'true'
-    needs: [changes, web-checks, web-e2e, manifests]
+    needs: [changes, bytes, web-checks, web-e2e, manifests]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
