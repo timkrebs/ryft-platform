@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,17 +17,28 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// Keys a scoring log line must never carry: scores, inputs, the state and the
-// learned sleep (docs/OPERATIONS.md → Data protection (logs)).
-var healthLogKeys = []string{"readiness", "recovery", "strain", "state", "hrv", "rhr", "resp", "spo2",
-	"sleep_min", "nap_min", "sleep_need", "sleep_performance", "muscular_trimp", "minutes", "steps", "kcal",
-	"calibrating"}
+// engineLogKeys is every line the engine logs with the keys it may carry
+// (besides logLineKeys): what was scored, never a score, an input or a state
+// (docs/OPERATIONS.md → Data protection (logs)). Any other key fails, so a score
+// under a new name (recovery as "score") cannot slip through; a new line is
+// added here once it is checked against that rule.
+var engineLogKeys = map[string][]string{
+	"scored day":                           {"day", "model_version", "inputs_changed"},
+	"rescored days after a history change": {"days", "through"},
+	"rescored days behind their history":   {"days", "from"},
+	"rescore after history change capped":  {"after", "days"},
+	"mark scored":                          {"day", "err"},
+	"sleep baseline learned":               {"applied"},
+}
+
+// logLineKeys are on every line: logx's and the context's.
+var logLineKeys = []string{"time", "level", "msg", "service", "request_id", "client_request_id", "user_id", "route"}
 
 // A scoring run at debug level — ten days in order, a late night that re-scores
 // the days after it, a learned sleep baseline — logs which days it scored and
-// nothing of the person's data: none of the keys above, and none of the seeded
+// nothing of the person's data: only the keys above, and none of the seeded
 // values (HRV 61.7 ms, resting HR 47.3, 14.7 breaths a minute, 517 minutes
-// asleep, 12345 steps), whatever the key.
+// asleep, 12345 steps) under any key.
 func TestEngineLogsNoHealthValues(t *testing.T) {
 	st, _, user := engineStore(t)
 	var buf bytes.Buffer
@@ -106,18 +118,20 @@ func TestEngineLogsNoHealthValues(t *testing.T) {
 			bytes.Contains(b, []byte("14.7")) {
 			t.Errorf("a seeded value in %s", line)
 		}
-		for _, k := range healthLogKeys {
-			if _, ok := rec[k]; ok {
-				t.Errorf("%q carries %s: %s", rec["msg"], k, line)
-			}
-		}
-		for k, v := range rec {
-			if f, ok := v.(float64); ok && (f == 517 || f == 12345 || f == 61.7 || f == 47.3 || f == 14.7) {
-				t.Errorf("%q carries a seeded value as %s: %s", rec["msg"], k, line)
-			}
-		}
 		msg, _ := rec["msg"].(string)
 		msgs[msg]++
+		allowed, known := engineLogKeys[msg]
+		if !known {
+			t.Errorf("a new scoring log line %q: check it against the rule, then list its keys in engineLogKeys: %s", msg, line)
+		}
+		for k, v := range rec {
+			if k != "time" && !slices.Contains(logLineKeys, k) && !slices.Contains(allowed, k) {
+				t.Errorf("%q carries %s, which it may not: %s", msg, k, line)
+			}
+			if f, ok := v.(float64); ok && (f == 517 || f == 12345 || f == 61.7 || f == 47.3 || f == 14.7) {
+				t.Errorf("%q carries a seeded value as %s: %s", msg, k, line)
+			}
+		}
 		if msg == "scored day" && rec["user_id"] == user.String() {
 			if rec["model_version"] != ModelVersion || rec["request_id"] != "req-logs" {
 				t.Errorf("a scored day names its model and its request: %s", line)
