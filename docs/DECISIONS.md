@@ -2243,3 +2243,41 @@ sent, and whether a second account shares its phone.
   schema change in the same PR (OPERATIONS → "What a kustomization or an Argo CD app may contain").
   `.gitattributes` and `.gitmodules` may not exist. Argo CD's own repo-server isn't constrained by
   these checks; they gate what reaches `main`.
+
+## D120 — Admission: Pod Security labels plus ValidatingAdmissionPolicy, owned by Terraform (amends D95)
+
+- **Why (2026-10-23):** D115's CI checks hold a small set of render invariants. Pod security, images
+  per namespace, commands, NetworkPolicy and Traefik shapes, the VSO objects, the operators' cluster
+  power and the Argo CD objects are not checked, and whatever is written in the cluster (Argo CD's
+  public UI, the operators, VSO, a break-glass apply, the hand-applied projects) never passes CI.
+- **Decision:** Pod Security Admission stays the pod-security mechanism (`restricted` on every `ryft-*`
+  namespace, `rabbitmq-system` and `argocd`; `monitoring` privileged, D51). Eleven
+  ValidatingAdmissionPolicies (GA since 1.30; EKS 1.36) cover the rest. No Kyverno or Gatekeeper: pods
+  on CPU-bound nodes and a webhook that blocks or fails open, for features not needed yet.
+  Design and rule set: `docs/work/2026-10-23-admission/design.md`.
+- **Owner:** the chart `infra/aws/kubernetes/charts/admission-policy` with a committed values file, in a
+  `helm_release` the user applies. **The AppProjects and `root.yaml` are rendered by Terraform** from
+  `deploy/argocd/project.yaml` and `root.yaml` (the user's choice), the same decoded value P7 compares
+  against: one file, one owner, no hand apply (amends D95's "applied by hand"; an apply during a pause
+  resumes the root). Bindings are exempt from admission, so RBAC guards them: Argo CD's ClusterRoles
+  are narrowed first, in an apply of their own.
+- **Rollout:** Warn+Audit until an exercise checklist and 7 days pass, then Deny+Audit in four steps by
+  blast radius (small config apps; what Argo applies; runtime Pods and the operators; Argo CD's own
+  objects last). P7 skips the controller's status writes; P10 judges only requests that set or change
+  an operation, so terminate-op, pause and refresh always work. Signals: the audit log in CloudWatch,
+  two API server metric families, and KSM series of each binding's actions.
+- **Testing:** CI job `admission`, **required in `ci-ok`**: kind at EKS's minor with Argo CD's CRDs, the
+  chart, every render as a server-side dry run under Argo CD's identity, one refused fixture per rule;
+  a kind e2e with Argo CD, the operators and the broker before production and on every upgrade.
+- **Break-glass:** the user only: patch or delete a binding (always possible), restored by Terraform;
+  drift alerts and a `check` block catch one left behind. No separate IAM role.
+- **Operators (D97, the user's consent):** both RabbitMQ operators are namespace-scoped (T12-g), so
+  neither reads Secrets outside its namespaces.
+- **Accepted:** operator images by tag; no image signatures; cross-object invariants in CI only; the
+  operators' cluster-wide Secret reads until T12-g lands; and, until it is verified what argocd-server
+  writes as a sync's revision, `argocd app sync --revision <sha>` after a pause (rollback and `--local`
+  are refused).
+- **Consequences:** a change to `project.yaml` reaches the cluster with the user's apply. A new
+  Argo-made namespace, a new mutating webhook on RYFT pods (the SDK injector excludes `ryft-*`), a
+  Vault address change, or an operator upgrade that renames an object or adds an image needs the chart
+  first. A new service doesn't (images and app paths are patterns).

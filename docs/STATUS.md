@@ -405,7 +405,9 @@ Technical:
 - **An admission policy in the cluster:** designed (`docs/work/2026-10-23-admission/design.md`,
   security-reviewed three rounds): Pod Security labels plus ValidatingAdmissionPolicy (CEL), owned by
   Terraform in `infra/aws/kubernetes`, Warn+Audit first, then Deny in four steps by blast radius.
-  **Waiting for your five decisions** (the note's "Open questions"); then the tickets T12-a…k.
+  Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
+  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
+  in progress; nothing reaches the cluster before your applies (the note's §5 commands).
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).
 - **Supply chain** (#17's review): pin `tonistiigi/binfmt` and `moby/buildkit` by digest;

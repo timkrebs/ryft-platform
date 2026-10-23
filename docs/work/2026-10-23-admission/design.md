@@ -1,6 +1,7 @@
 # Admission policy for `ryft-prod-euc1`: design (2026-10-23, revision 3)
 
-Ticket T12. Author: platform-architect. Status: proposal. Nothing here is built or applied.
+Ticket T12. Author: platform-architect. Status: **decided 2026-10-23** (the user's answers under
+"Decisions"; D120). Nothing here is built or applied yet.
 
 **Read for this note:**
 - `infra/aws`: EKS `kubernetes_version = "1.36"`; the eks module ships the `audit`, `api` and
@@ -659,24 +660,18 @@ helm -n kube-system history admission-policy && helm -n kube-system rollback adm
 - `CLAUDE.md` (yours): admission policies and AppProjects are Terraform's, and `project.yaml` reaches the
   cluster with your apply.
 
-## Open questions for the user
+## Decisions (the user, 2026-10-23)
 
-1. **B2: who owns the AppProjects?**
-   - Recommended: Terraform renders them and `root.yaml` from the same file, and P7 compares against it.
-     One owner and no hand apply; it amends D95, and a Terraform apply during a pause resumes the root.
-   - Minimal: keep the hand apply. P7 checks generic invariants and refuses writes from Argo's service
-     accounts, and OPERATIONS:208 gets an exception.
-2. **T12-g, both operators (D97 consent).** Recommended. It patches the vendored releases to stop
-   cluster-wide Secret reads, which admission can't see. Yes or no?
-3. **Should `admission` be required in `ci-ok`?** Recommended yes. It costs about 3–4 minutes on PRs
-   touching `deploy/`, not on promote PRs.
-4. **The SDK injector.** Recommended: exclude `ryft-*`; command 0 shows its reach. You apply it with
-   `make monitoring-apply`.
-5. **Break-glass.** Is your `kubectl patch` of a binding, restored by Terraform and watched by the drift
-   alert, acceptable? The alternative is a separate IAM break-glass role (one more access entry in
-   `infra/aws`).
+1. **B2: Terraform owns the AppProjects** (and `root.yaml`), rendered from `deploy/argocd/project.yaml`
+   and `root.yaml`; P7 compares against the same decoded value. Amends D95 (no hand apply; an apply
+   during a pause resumes the root). T12-b is in scope.
+2. **T12-g: yes**, both RabbitMQ operators are namespace-scoped (D97 consent given).
+3. **`admission` is required in `ci-ok`.**
+4. **The SDK injector excludes `ryft-*`** (T12-h; the user applies the monitoring values).
+5. **Break-glass:** the user patches or deletes a binding (always possible); Terraform restores; the
+   drift alert and the `check` block catch one left behind. No separate IAM role.
 
-## Draft DECISIONS entry (unnumbered)
+## DECISIONS entry (D120, in DECISIONS.md)
 
 ```markdown
 ## D<n> — Admission: Pod Security labels plus ValidatingAdmissionPolicy, owned by Terraform (amends D95)
