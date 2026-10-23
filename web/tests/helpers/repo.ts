@@ -46,7 +46,12 @@ export function makeRepo({ hooks = false } = {}) {
     mkdirSync(dirname(join(repo, 'web', f)), { recursive: true });
     cpSync(resolve(f), join(repo, 'web', f));
   }
-  if (hooks) cpSync(resolve('../.githooks'), join(repo, '.githooks'), { recursive: true });
+  if (hooks) {
+    cpSync(resolve('../.githooks'), join(repo, '.githooks'), { recursive: true });
+    // The pre-commit hook runs the byte check on every staged file (it needs python3).
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    cpSync(resolve('../scripts/check_bytes.sh'), join(repo, 'scripts/check_bytes.sh'));
+  }
   write(repo, 'README.md', 'x\n');
   git(repo, 'add', '-A');
   git(repo, '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'init');

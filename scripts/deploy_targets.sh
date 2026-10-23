@@ -32,10 +32,23 @@
 # own branches) that changes the newTag of a group held on the base. (An older open deploy PR
 # therefore cannot undo a rollback; people's PRs, a second rollback among them, are not
 # blocked; a rollback PR that moves newTag and adds the hold in one commit passes, because
-# the base is not held yet; a PR that only removes the hold passes.) It also requires every
-# RYFT image entry in the overlay to be exactly `- name: ghcr.io/timkrebs/ryft/<name>` and
-# `newTag: "<7 hex>"`: a newName or digest line would silently change what runs.
+# the base is not held yet; a PR that only removes the hold passes.) It also reads the whole
+# overlay as an ALLOWLIST: comments and blank lines, the top-level keys apiVersion, kind,
+# resources, patches, images and configMapGenerator once each (anything else at column 0,
+# a second `images:`, a flow-style or quoted key, a `---`, fails), resources and patches as
+# `- ../../services/<name>` / `- <file>.yaml` and `- path: <file>.yaml` lines (no inline patch, no remote base, no ../), configMapGenerator as the two
+# in-force PRIVACY_POLICY_VERSION literals, and under images exactly the six entries
+# `- name: ghcr.io/timkrebs/ryft/<ingest|scoring|api|notify|migrate|web>` + `newTag: "<7 hex>"`,
+# each once: a newName, digest or any further line would silently change what runs.
 #   HEAD_REF  the pull request's head branch (github.head_ref)
+#
+#   scripts/deploy_targets.sh --reason "<text>"
+# Whether a hold's reason is fit to be public, with no overlay needed: it lands in the overlay,
+# in deploy PR bodies and in run summaries, so no `@` (it would ping or link an account) and no
+# GitHub closing keyword (close/fix/resolve, any inflection) right before an issue reference
+# (`#12`, `org/repo#12`, `GH-12`, or an issues URL): the deploy PR's merge would close the
+# issue. Exit 2 with the reason why, else 0. The same rules run on every hold line in the
+# overlay (every mode), so a hand-edited line is checked as well; hold.sh calls this mode.
 #
 #   scripts/deploy_targets.sh --pins
 # The overlay's pins as `<image>=<newTag>` lines (empty tag: no pin), for check_registry.sh and
@@ -47,6 +60,25 @@ overlay=deploy/k8s/overlays/eks/kustomization.yaml
 mode=targets; base=
 if [ "${1:-}" = --check ]; then mode=check; base=${2:-}; fi
 if [ "${1:-}" = --pins ]; then mode=pins; fi
+if [ "${1:-}" = --reason ]; then mode=reason; fi
+
+# A hold's reason is public text (see the header). Prints why on stderr and returns 1 when it is not fit.
+reason_problem() { # <reason> [<line number in the overlay>]
+  local where=
+  [ -z "${2:-}" ] || where=",file=$overlay,line=$2"
+  case "$1" in
+    *@*) echo "::error title=hold reason$where::a hold reason must not contain @ (it would ping or link an account); name an issue number, nothing personal" >&2; return 1 ;;
+  esac
+  if printf '%s' "$1" | grep -Eiq '(^|[^[:alnum:]])(close[sd]?|fix(es|ed)?|resolve[sd]?)[^[:alnum:]]+(([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+|GH-[0-9]+|(https?://)?([[:alnum:]-]+\.)?github\.com/[^[:space:]]*/(issues|pull)/[0-9]+)'; then
+    echo "::error title=hold reason$where::a hold reason must not say 'fixes #N' (or close/resolve, with a #N, GH-N or an issue URL): GitHub would close the issue when the deploy PR merges. Write 'see #N'." >&2; return 1
+  fi
+  return 0
+}
+if [ "$mode" = reason ]; then
+  [ "$#" = 2 ] || { echo "usage: deploy_targets.sh --reason \"<text>\"" >&2; exit 2; }
+  reason_problem "$2" || exit 2
+  exit 0
+fi
 force=${FORCE:-none}
 case "$force" in none|services|web|all|"") ;; *) echo "deploy_targets: FORCE must be none, services, web or all, not '$force'" >&2; exit 2 ;; esac
 
@@ -92,6 +124,15 @@ validate_holds() {
     done
     exit 2
   fi
+  # The reasons are public text: hand-edited lines are held to the rules hold.sh applies.
+  local l bad_reason=
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    reason_problem "$(printf '%s' "${l#*:}" | sed -E 's/^[[:space:]]*#[[:space:]]hold:[[:space:]](services|web)[[:space:]][0-9-]{10}[[:space:]]+//')" "${l%%:*}" || bad_reason=1
+  done <<EOT
+$(grep -n -E "$hold_ok" "$overlay" || true)
+EOT
+  [ -z "$bad_reason" ] || exit 2
 }
 
 # "<date> <reason>" of the group's hold line, or return 1 when there is none.
@@ -126,19 +167,51 @@ if [ "$mode" = check ]; then
     fi
   } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >/dev/null
   rc=0
-  # The image entries: exactly name + a quoted 7-hex newTag, nothing else.
+  # The whole overlay as an allowlist (see the header): every line is a comment, a blank, a known
+  # top-level key, or a line of exactly the shape its section allows. Anything else is reported.
   entries=$(awk '
+    function bad(m) { print NR ": " m }
+    function endname() { if (pend) { bad(name " is not followed by newTag: \"<7 hex>\""); pend = 0 } }
+    /^[ \t]*$/ { next }
     /^[ \t]*#/ { next }
-    state == 1 { if ($0 ~ /^    newTag: "[0-9a-f]{7}"[ \t]*$/) { state = 2; next } print NR ": " name " is not followed by newTag: \"<7 hex>\""; state = 0 }
-    state == 2 { state = 0; if ($0 ~ /^    [^ #]/) { print NR ": " name " has a further key: " $0; next } }
-    /ghcr\.io\/timkrebs\/ryft\// {
-      if ($0 ~ /^  - name: ghcr\.io\/timkrebs\/ryft\/[a-z-]+[ \t]*$/) { name = $0; sub(/.*ryft\//, "", name); state = 1; next }
-      print NR ": not a plain image entry: " $0
+    /^[^ \t]/ {
+      endname(); sec = ""
+      if ($0 == "apiVersion: kustomize.config.k8s.io/v1beta1") k = "apiVersion"
+      else if ($0 == "kind: Kustomization") k = "kind"
+      else if ($0 ~ /^(resources|patches|images|configMapGenerator):[ \t]*$/) { k = $0; sub(/:.*/, "", k); sec = k }
+      else { bad("not an allowed top-level line (apiVersion, kind, resources, patches, images, configMapGenerator; each a plain key): " $0); next }
+      if (seen[k]++) bad("the key " k " appears twice")
+      next
     }
-    /^[ \t]+(newName|digest):/ { print NR ": " $0 }
+    sec == "resources" { if ($0 !~ /^  - (\.\.\/\.\.\/services\/[a-z]+|[A-Za-z0-9_-]+\.yaml)[ \t]*$/) bad("resources: not `- ../../services/<name>` or `- <file>.yaml` (a remote base or a path out of the directory would render other code): " $0); next }
+    sec == "patches"   { if ($0 !~ /^  - path: [A-Za-z0-9_-]+\.yaml[ \t]*$/) bad("patches: not a plain `- path: <file>.yaml` (no inline patch, no ../): " $0); next }
+    sec == "configMapGenerator" {
+      if ($0 !~ /^  - \{ name: ryft-config, namespace: ryft-(api|ingest), behavior: merge, literals: \[PRIVACY_POLICY_VERSION=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\] \}[ \t]*$/) bad("configMapGenerator: not an in-force PRIVACY_POLICY_VERSION literal for ryft-api or ryft-ingest: " $0)
+      next
+    }
+    sec == "images" {
+      if (pend) {
+        pend = 0
+        if ($0 ~ /^    newTag: "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]"[ \t]*$/) next
+        bad(name " is not followed by newTag: \"<7 hex>\" (found: " $0 ")")
+      }
+      if ($0 ~ /^  - name: ghcr\.io\/timkrebs\/ryft\/(ingest|scoring|api|notify|migrate|web)[ \t]*$/) {
+        name = $0; sub(/.*ryft\//, "", name); sub(/[ \t]+$/, "", name)
+        if (names[name]++) bad("image " name " is listed twice")
+        pend = 1; next
+      }
+      bad("images: not a plain entry of one of the six ryft images (a newName, digest, other image or other shape): " $0); next
+    }
+    { bad("a line outside every allowed section: " $0) }
+    END {
+      endname()
+      if (!seen["images"]) print "0: the overlay has no images: key"
+      split("ingest scoring api notify migrate web", six, " ")
+      for (i = 1; i <= 6; i++) if (!names[six[i]]) print "0: no images entry for " six[i]
+    }
   ' "$overlay")
   if [ -n "$entries" ]; then
-    printf '%s\n' "$entries" | while IFS= read -r l; do echo "::error file=$overlay,title=image entry::$l" >&2; done
+    printf '%s\n' "$entries" | while IFS= read -r l; do echo "::error file=$overlay,title=overlay::$l" >&2; done
     rc=1
   fi
   if [ -n "$base" ]; then

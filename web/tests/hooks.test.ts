@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -74,9 +74,10 @@ describe.each([
 });
 
 describe('git hooks without node', () => {
-  // A PATH with git, sh and dirname but no node, and no place the hooks probe.
+  // A PATH with git, sh and dirname but no node, and no place the hooks probe. The byte check
+  // (bash, env, python3) is there: it runs first and must pass, so the node messages are the ones seen.
   const bin = mkdtempSync(join(tmpdir(), 'ryft-nonode-'));
-  for (const tool of ['git', 'sh', 'dirname']) {
+  for (const tool of ['git', 'sh', 'dirname', 'bash', 'env', 'python3']) {
     const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
     symlinkSync(found, join(bin, tool));
   }
@@ -105,5 +106,69 @@ describe('git hooks without node', () => {
     symlinkSync(node, join(probed, 'node'));
     const r = commit(repo, 'web: d', { ...env, RYFT_HOOKS_NODE_DIRS: probed });
     expect(r.status, r.stdout + r.stderr).toBe(0);
+  });
+});
+
+describe('git hooks and the byte check', () => {
+  const tools = (names: string[]) => {
+    const bin = mkdtempSync(join(tmpdir(), 'ryft-tools-'));
+    for (const tool of names) {
+      const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+      symlinkSync(found, join(bin, tool));
+    }
+    return bin;
+  };
+  const node = spawnSync('sh', ['-c', 'command -v node'], { encoding: 'utf8' }).stdout.trim();
+
+  it('refuses a staged hidden line break before the brand check', () => {
+    write(repo, 'backend/ls.go', '// a\u2028b\n');
+    git(repo, 'add', 'backend/ls.go');
+    const r = commit(repo, 'backend: ls');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/U\+2028/);
+    git(repo, 'reset', '-q', '--', 'backend/ls.go');
+  });
+
+  it('fails closed without python3, and says so', () => {
+    const bin = tools(['git', 'sh', 'dirname', 'bash', 'env']);
+    const probed = join(bin, 'probed');
+    mkdirSync(probed);
+    symlinkSync(node, join(probed, 'node'));
+    write(repo, 'backend/py.go', 'package py\n');
+    git(repo, 'add', 'backend/py.go');
+    const r = commit(repo, 'backend: py', { PATH: bin, RYFT_HOOKS_NODE_DIRS: probed });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/python3 not found/);
+    git(repo, 'reset', '-q', '--', 'backend/py.go');
+  });
+
+  it('fails closed when scripts/check_bytes.sh is missing', () => {
+    const lone = makeRepo({ hooks: true });
+    rmSync(join(lone, 'scripts/check_bytes.sh'));
+    write(lone, 'backend/m.go', 'package m\n');
+    git(lone, 'add', 'backend/m.go');
+    const hooks = join(lone, '.githooks');
+    const r = spawnSync(
+      'git',
+      [
+        '-c',
+        `core.hooksPath=${hooks}`,
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@example.test',
+        'commit',
+        '-q',
+        '-m',
+        'backend: m',
+      ],
+      {
+        cwd: lone,
+        encoding: 'utf8',
+        env: cleanEnv(),
+      },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/check_bytes\.sh/);
   });
 });

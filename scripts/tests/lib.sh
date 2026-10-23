@@ -1,11 +1,12 @@
 # shellcheck shell=bash
 # Shared by deploy_targets_test.sh and promote_test.sh (sourced; not a test itself).
 # A throwaway repository shaped like this one for the pieces the promote needs: backend/,
-# web/, the EKS overlay (the real file) and the scripts, with both image groups pinned to
+# web/, the EKS overlay (the real file minus its holds, with a fixed policy version) and the scripts, with both image groups pinned to
 # the first commit and a bare remote.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 export PIN_QUIET=1  # pin_images.sh reports "in force: A -> B" on stderr; the tests read it themselves
 OVERLAY=deploy/k8s/overlays/eks/kustomization.yaml
+FIXTURE_POLICY=2026-10-20  # the privacy version in the fixtures' overlay, config.env and list (not the live one)
 tmp=$(mktemp -d)
 # Never write into the real job summary of the run that executes the tests.
 export GITHUB_STEP_SUMMARY="$tmp/step_summary"
@@ -28,16 +29,23 @@ hold() {
   awk -v g="$1" -v r="$2" -v f="  - name: ghcr.io/timkrebs/ryft/$img" '$0 == f { print "  # hold: " g " 2026-10-23 " r } { print }' "$OVERLAY" > "$OVERLAY.new"
   mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: hold $1"
 }
-unhold() { grep -v '^ *# hold: ' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: release the hold"; }
+HOLD_LINE='^[[:space:]]*#[[:space:]]*hold:'  # the validator accepts tabs and spaces around the marker (deploy_targets.sh hold_ok)
+unhold() { grep -v "$HOLD_LINE" "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "deploy: release the hold"; }
 # new_repo <name>: cd into a fresh repository, both groups pinned to its first commit.
 new_repo() {
   n=$((n+1)); r="$tmp/$1.$n"
   mkdir -p "$r/repo/scripts" "$r/repo/deploy/k8s/overlays/eks" "$r/repo/backend" "$r/repo/web"
   cp "$HERE"/scripts/{promote,pin_images,deploy_targets}.sh "$r/repo/scripts/"
-  for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; cp "$HERE/deploy/k8s/base/$s/config.env" "$r/repo/deploy/k8s/base/$s/"; done
-  mkdir -p "$r/repo/web/content/legal"; cp "$HERE/web/content/legal/privacy-versions.json" "$r/repo/web/content/legal/"
-  cp "$HERE/$OVERLAY" "$r/repo/$OVERLAY"
-  cd "$r/repo"
+  # Fixtures, never the live state: the real overlay gives the SHAPE (its comments, the six entries, the
+  # in-force literals), but its holds are stripped and its in-force literals set to FIXTURE_POLICY, so a
+  # hold on main, today's pins, the live privacy version or privacy-versions.json cannot change a result.
+  for s in api ingest; do mkdir -p "$r/repo/deploy/k8s/base/$s"; printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$FIXTURE_POLICY" > "$r/repo/deploy/k8s/base/$s/config.env"; done
+  mkdir -p "$r/repo/web/content/legal"; printf '["%s"]\n' "$FIXTURE_POLICY" > "$r/repo/web/content/legal/privacy-versions.json"
+  grep -v "$HOLD_LINE" "$HERE/$OVERLAY" | sed -E "s/(PRIVACY_POLICY_VERSION=)[0-9-]+\]/\1$FIXTURE_POLICY]/" > "$r/repo/$OVERLAY"
+  if grep -qiE '#[[:space:]]*hold' "$r/repo/$OVERLAY"; then echo "lib.sh: a hold-like line is left in the fixture overlay: $(grep -niE '#[[:space:]]*hold' "$r/repo/$OVERLAY")" >&2; exit 1; fi
+  # promote runs the registry check by path; a test that fakes it sets FAKE_CHECK_REGISTRY once, in its setup.
+  [ -z "${FAKE_CHECK_REGISTRY:-}" ] || cp "$FAKE_CHECK_REGISTRY" "$r/repo/scripts/check_registry.sh"
+  cd "$r/repo" || exit 1
   git init -q -b main && git config user.email t@example.com && git config user.name test
   echo v1 > backend/main.go; echo v1 > web/index.txt; git add -A; git commit -qm "first"
   first=$(short)

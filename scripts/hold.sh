@@ -53,10 +53,8 @@ if [ "$cmd" = add ]; then
     echo "hold: the reason must be one line of printable ASCII (no accents, no line breaks)" >&2; exit 2
   fi
   # Reasons are public: they land in the overlay, in deploy PR bodies and in run summaries.
-  case "$reason" in *@*) echo "hold: no @ in a reason (it would ping or link an account); name an issue number, nothing personal" >&2; exit 2 ;; esac
-  if printf '%s' "$reason" | grep -Eiq '(^|[^[:alnum:]])(close[sd]?|fix(es|ed)?|resolve[sd]?)[^[:alnum:]]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'; then
-    echo "hold: a reason must not say 'fixes #N' (or close/resolve): GitHub would close the issue when the deploy PR merges. Write 'see #N'." >&2; exit 2
-  fi
+  # (the same rules run on every hold line in the overlay, scripts/deploy_targets.sh --reason)
+  ./scripts/deploy_targets.sh --reason "$reason" || { echo "hold: the reason is refused" >&2; exit 2; }
   if [ -n "$existing" ]; then
     if [ "${existing#*$'\t'}" = "$reason" ]; then
       echo "hold: $group is already held since ${existing%%$'\t'*} with this reason: nothing changed"

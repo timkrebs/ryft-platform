@@ -18,6 +18,13 @@ for doc in open("deploy/argocd/project.yaml").read().split("\n---\n"):
     if name:
         projects[name.group(1)] = re.findall(r'namespace:\s*"?([^"\s},]+)"?\s*}', doc)
 bad, warn = [], []
+# Argo's directory source applies *.yaml, *.yml, *.json and *.jsonnet from apps/ (the checks and the
+# kubeconform loop in the Makefile read *.yaml only): nothing else may be in that directory.
+import os
+for e in sorted(os.listdir("deploy/argocd/apps")):
+    full = os.path.join("deploy/argocd/apps", e)
+    if not (e.endswith(".yaml") and not e.startswith(".") and os.path.isfile(full) and not os.path.islink(full)):
+        bad.append(f"{full}: apps/ holds only regular *.yaml files (Argo applies .yml, .json and .jsonnet there too, and nothing else here is checked)")
 apps = sorted(glob.glob("deploy/argocd/apps/*.yaml")) + ["deploy/argocd/root.yaml"]
 for f in apps:
     doc = open(f).read()

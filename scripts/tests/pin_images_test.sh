@@ -7,7 +7,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fail() { echo "✗ pin_images_test: $*" >&2; exit 1; }
 pin_of() { grep -A1 "ghcr.io/timkrebs/ryft/$2\$" "$1" | sed -nE 's/.*newTag: *"?([^"]*)"?/\1/p'; }
-real=$HERE/../deploy/k8s/overlays/eks/kustomization.yaml
+# The real overlay's shape, not its state: holds stripped, in-force literals fixed (a hold on main or a
+# new privacy version must not change this test).
+live=$HERE/../deploy/k8s/overlays/eks/kustomization.yaml
+real=$tmp/real.yaml
+grep -v '^[[:space:]]*#[[:space:]]*hold:' "$live" | sed -E 's/(PRIVACY_POLICY_VERSION=)[0-9-]+\]/\12026-10-20]/' > "$real"
 cp "$real" "$tmp/k.yaml"
 before=$(grep -c 'newTag:' "$tmp/k.yaml")
 old=$(pin_of "$tmp/k.yaml" api); oldweb=$(pin_of "$tmp/k.yaml" web)
@@ -106,5 +110,5 @@ base_env "$NEW"; rgit commit -qam fine
 grep -v 'namespace: ryft-ingest' "$real" > "$tmp/nolit.yaml"
 pinp "$new_sha" web "$tmp/nolit.yaml" >/dev/null 2>&1 && fail "an overlay without both literals must fail when web is pinned"
 
-kubectl kustomize "$(dirname "$real")" >/dev/null || fail "the real overlay no longer renders"
+kubectl kustomize "$(dirname "$live")" >/dev/null || fail "the real overlay no longer renders"
 echo "✓ pin_images_test: per group, web alone leaves the services byte-identical, previous pins printed, typos refused"

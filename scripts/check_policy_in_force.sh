@@ -22,19 +22,19 @@
 # So rolling web back past a policy version fails until the in-force pin goes back too, and a
 # newer page in the pinned web commit fails until the pin follows it.
 #   scripts/check_policy_in_force.sh [base-ref]        e.g. origin/main
-#   RENDER_CMD  how the overlay is rendered (default: kubectl kustomize deploy/k8s/overlays/eks)
+# The overlay is rendered by `kubectl kustomize deploy/k8s/overlays/eks`; there is no environment
+# switch for that (the tests put a fake kubectl on PATH).
 # The render is kustomize's canonical block-style YAML; the parse below reads only the metadata
 # block and the keys under it, and fails closed on anything it cannot place.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-render=${RENDER_CMD:-kubectl kustomize deploy/k8s/overlays/eks}
 base=${1:-}
 list=web/content/legal/privacy-versions.json
 overlay=deploy/k8s/overlays/eks/kustomization.yaml
 err() { echo "::error title=policy in force::$*" >&2; exit 1; }
 
 rendered=$(mktemp); trap 'rm -f "$rendered"' EXIT
-$render > "$rendered" || err "cannot render the EKS overlay"
+kubectl kustomize deploy/k8s/overlays/eks > "$rendered" || err "cannot render the EKS overlay"
 
 # Lines: "cm <namespace> <configmap name> <raw value>", "deploy <namespace> <name> <refs, comma-joined>",
 # "override <namespace> <name>" (a container entry named like the key), "web <tag>".
@@ -155,7 +155,7 @@ published() { # stdin: a page; exit 0 only when its frontmatter status is exactl
     { sub(/\r$/, "") }
     NR == 1 { sub(/^\357\273\277/, ""); if ($0 !~ /^---[ \t]*$/) exit }
     NR > 1 && /^---[ \t]*$/ { exit }
-    after { if ($0 ~ /^[ \t]+[^ \t]/) bad = 1; after = 0 }
+    after { if ($0 ~ /^[ \t]*$/ || $0 ~ /^[ \t]*#/) next; if ($0 ~ /^[ \t]+[^ \t]/) bad = 1; after = 0 }  # a blank or comment line keeps the continuation open
     NR > 1 && $0 ~ re {
       s = $0; sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s)
       c = substr(s, 1, 1)
@@ -202,6 +202,9 @@ if [ -n "$base" ]; then
   # pinned web image for the version in force (rolling web back past the publish, or to the foreign
   # image, would bring the draft text back under the same version label).
   base_web=$(printf '%s\n' "$base_overlay" | awk '/ghcr.io\/timkrebs\/ryft\/web[ \t]*$/ { h = 1; next } h && /newTag:/ { gsub(/[" ]|newTag:/, ""); print; exit }')
+  if [ -z "$base_web" ] && printf '%s\n' "$base_overlay" | grep -q 'ghcr.io/timkrebs/ryft/web'; then
+    err "$overlay on $base has a ghcr.io/timkrebs/ryft/web entry whose newTag this check cannot read: it cannot tell what web published there. Keep the entry as '- name: ghcr.io/timkrebs/ryft/web' and 'newTag: \"<sha>\"'."
+  fi
   for lang in en de; do
     bv=$(git show "$base:deploy/k8s/base/api/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
     if [ -n "$bv" ] && git show "$base:web/content/legal/$lang/privacy/$bv.mdx" 2>/dev/null | published \

@@ -225,8 +225,8 @@ break-glass below.
    day). A change to manifests only (no new
    image) deploys on its own merge. The job runs in the GitHub environment `deploy`
    (below) and signs with the deploy App's key from there.
-3. **Argo CD syncs.** It picks a merge up within about three minutes (the repository is
-   polled); a release, from the merge of the change to the new pods, takes about 15
+3. **Argo CD syncs.** It picks a merge up within two to six minutes (the repository is
+   polled and cached; the rollback drill saw 2:20 and 6:08); a release, from the merge of the change to the new pods, takes about 15
    minutes, because the images are built and the deploy PR passes its checks first. Waves
    order the applications: wave 0 the Vault objects, wave 1 the RabbitMQ operators, wave 2
    the broker, wave 3 `ryft-platform`. Inside `ryft-platform` there are no sync waves
@@ -339,7 +339,9 @@ red, which is why you are rolling back, the rest still holds):
   is in progress, `GH_REPO=timkrebs/ryft-platform ./scripts/deploy_watch.sh` reports OK.
 - Argo CD: `kubectl -n argocd get applications` all Synced and Healthy.
 - The images you roll back to exist: `./scripts/check_registry.sh
-  ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<old>`.
+  ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<old>` for the services, and
+  `./scripts/check_registry.sh ghcr.io/timkrebs/ryft/web:<old>` for the site (`web:<old>` is
+  its own tag: the services' SHA is no proof that it exists).
 - Nothing else merges while the hold stands (a merge that touches the group's directory
   would be built after the release, not before, but a second deploy PR confuses the proof).
 - Know the way back (the undo below) before you merge.
@@ -386,7 +388,11 @@ red, which is why you are rolling back, the rest still holds):
    hold fails `manifests`: a mistyped hold would otherwise be ignored). **The reason is
    public** (the overlay, deploy PR bodies, run summaries): printable ASCII, one line, an
    issue number and nothing else, no names, ids, e-mail addresses or health details;
-   `hold.sh` refuses `@` and "fixes/closes/resolves #N" (the merge would close the issue).
+   `hold.sh` refuses `@` and "fixes/closes/resolves" before `#N`, `GH-N` or an issue URL (the
+   merge would close the issue); `deploy_targets.sh --check` applies the same rules to every
+   hold line in the overlay, so a hand-edited line fails `manifests` too. `--check` also reads the
+   whole overlay as an allowlist: only the six plain image entries, a single `images:` key and
+   the known top-level keys; anything else fails.
    When the deploy PR moved both groups and only one is bad, change only that one; do not
    `git revert` the whole merge. GitHub's Revert button works too (its `Revert "…"` title
    passes `pr-title`), but you still add the hold.
@@ -395,7 +401,7 @@ red, which is why you are rolling back, the rest still holds):
    required reviews, so no human sits in between. When someone must approve, merge by
    hand (no `--auto`) after the review. Pushing as admin to skip the checks (D96) is for
    the user only; an agent never does.
-4. Argo CD picks the merge up within about three minutes and rolls the group back like
+4. Argo CD picks the merge up within two to six minutes (drill: 2:20 and 6:08) and rolls the group back like
    any release. For a **services** rollback the hooks are the OLD release's: PreSync
    migrate and PostSync smoke run the `migrate:<old>` image (limits below). A web
    rollback leaves migrate and the smoke on the services pin.
@@ -476,7 +482,7 @@ hold exactly what you applied, and resume.
 | `<group> has been held for N days` (`HOLD_MAX_DAYS`, 7) | A rollback never finished. | Ship the fix and release the hold (above), or renew it on purpose: `hold.sh rm`, then `hold.sh add` in a PR. |
 | `<group> is held since <date>, which is N day(s) in the future` | A typo in the date would keep the age check from ever firing. | Fix the date in the overlay (UTC `YYYY-MM-DD`; `hold.sh` writes today's). |
 | `#N (deploy/<sha>) has been open for N min` (`DEPLOY_PR_MAX_HOURS`, 2) | The deploy PR should have merged itself. | Open it: red checks (fix or re-run), no auto-merge, a branch rule. Close it **and hold the group** to stop the deploy. |
-| `<group> differs from its pin, main's tip is N h old and no deploy PR is open` | promote failed, was skipped (no `RYFT_DEPLOY_APP_CLIENT_ID`; or no App key anywhere: an environment without its secret falls back to the repository's, so this needs both missing), or its PR was closed on purpose. | The latest `ci` run on main: re-run failed jobs, or `gh workflow run ci --ref main -f force=<group>`; to keep a stopped deploy stopped, hold the group. |
+| `<group> differs from its pin, main's tip is N h old and no deploy PR is open` | promote failed (a missing key is this: with no `RYFT_DEPLOY_APP_KEY` in the environment and none in the repository, `create-github-app-token` fails and the job is red, not skipped), was skipped (only `RYFT_DEPLOY_APP_CLIENT_ID` unset skips it), or its PR was closed on purpose. | The latest `ci` run on main: re-run failed jobs, or `gh workflow run ci --ref main -f force=<group>`; to keep a stopped deploy stopped, hold the group. |
 | `scripts/deploy_targets.sh failed` | A hold that does not parse, or a byte in the overlay that is not printable ASCII (a CR, U+2028, U+2029, U+0085: line breaks to YAML). A missing or disagreeing pin is not this: it targets the group. | Fix the overlay first. |
 | `could not list the open pull requests` / `a creation time I cannot read` | The token lacks `pull-requests: read`, or GitHub's answer changed. | The workflow's `permissions`; the script. |
 
@@ -499,9 +505,22 @@ The `promote` job runs in the GitHub environment `deploy`, restricted to the bra
 `main` and not bypassable by administrators, and the deploy App's private key
 `RYFT_DEPLOY_APP_KEY` lives there. Only a job on `main` that names the environment can
 read it: a workflow edited in a pull request, or run from another branch, cannot. The
-environment has no required reviewers (the promote is unattended). CI's `lint` job
-(`scripts/check_workflows.sh`) fails if any other job names an environment or reads the
-key, or if a workflow uses `pull_request_target` or `workflow_run`.
+environment has no required reviewers (the promote is unattended). CI's `manifests` job
+(`scripts/check_workflows.sh`, which parses the workflows with `yq`) fails if any other job
+names an environment or reads the key (in any spelling: flow style, quoted keys, any case
+of the secret's name), if a workflow uses `pull_request_target` or `workflow_run`, calls an
+external reusable workflow (`uses:` other than `./.github/workflows/<file>`), uses
+`secrets: inherit` or reads `secrets` other than as `secrets.<NAME>`, or names one of the
+test hooks of the scripts, or a YAML merge key. The same job fails on a hidden line break,
+control or other invisible character (format, private use, odd spaces), bidi control or BOM
+in ANY tracked file, by content and not by extension (kustomize also reads `Kustomization`
+and any file a `resources:` entry names), on the file names `Kustomization`,
+`kustomization.yml`, `.gitattributes` and `.gitmodules`, and (`make k8s-validate`) on a
+kustomization under `deploy/` that references a remote base or anything outside `deploy/`
+(`scripts/check_bytes.sh`, `scripts/check_kustomize_refs.sh`; the pre-commit hook runs the
+byte check on every staged file and needs python3, `make hooks`). `deploy/argocd/apps/`
+holds `*.yaml` files only. "Not bypassable by administrators" is a
+setting you confirm in the browser (step 3).
 
 **Set it up by rotating the key, not by moving it** (user only; the file that was on your
 disk and in the repository secret is gone afterwards, and the old key stops working):
@@ -521,6 +540,11 @@ disk and in the repository secret is gone afterwards, and the old key stops work
    gh api repos/timkrebs/ryft-platform/environments/deploy --jq '{p: .deployment_branch_policy, bypass: .can_admins_bypass}'
    gh api repos/timkrebs/ryft-platform/environments/deploy/deployment-branch-policies --jq '.branch_policies[] | [.name,.type]'
    ```
+   **Then confirm "admin bypass off" in the browser:** Settings → Environments → `deploy` →
+   "Allow administrators to bypass configured protection rules" must be **unchecked**
+   (untick it and Save if not). `can_admins_bypass` is not in GitHub's REST schema, so the
+   `PUT` above may be ignored and the `bypass` field of the `GET` may print `null` or
+   `true`: the checkbox is the proof. Do not go on to step 4 before it is off.
 4. Put the new key in the environment and check that it is there:
    ```bash
    gh secret set RYFT_DEPLOY_APP_KEY --env deploy -R timkrebs/ryft-platform < "$key"
@@ -549,7 +573,7 @@ environment is refused.
 git switch -c ci/env-proof origin/main
 printf 'name: env-proof\non: pull_request\npermissions: {}\njobs:\n  proof:\n    runs-on: ubuntu-latest\n    environment: deploy\n    steps:\n      - run: "true"\n' > .github/workflows/env-proof.yml
 git add .github/workflows/env-proof.yml && git commit -m "ci: environment proof (do not merge)" && git push -u origin ci/env-proof
-gh pr create --draft --fill && gh pr checks     # proof: failed, "not allowed to deploy to deploy" (and lint: only promote may name it)
+gh pr create --draft --fill && gh pr checks     # proof: failed, "not allowed to deploy to deploy" (and manifests: only promote may name it)
 gh pr close --delete-branch                    # then
 ```
 

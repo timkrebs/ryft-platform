@@ -1,10 +1,17 @@
 #!/bin/sh
-# The brand guard on the staged files under web/ (web/scripts/check-brand.mjs,
-# web/config/brand-denylist.json). Other staged files are not its business: the rule for
-# them is the commit message check (commit-msg) and CI.
+# 1. The bytes of every staged file (scripts/check_bytes.sh --staged: hidden line breaks,
+#    controls, bidi and other invisible characters, BOM, invalid UTF-8, banned file names).
+#    Python only, no Node; fails closed when python3 is missing, but only for a commit that
+#    stages a file.
+# 2. The brand guard on the staged files under web/ (web/scripts/check-brand.mjs,
+#    web/config/brand-denylist.json). Other staged files are not its business: the rule for
+#    them is the commit message check (commit-msg) and CI.
 hooks=$(dirname "$0")
 . "$hooks/_node.sh"
 cd "$(git rev-parse --show-toplevel)" || exit 1
+if ! git diff --cached --quiet --diff-filter=d; then
+  ./scripts/check_bytes.sh --staged || exit 1
+fi
 git diff --cached --quiet --diff-filter=d -- web && exit 0
 ensure_node || no_node pre-commit
 exec node web/scripts/check-brand.mjs --staged

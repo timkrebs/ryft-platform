@@ -34,12 +34,13 @@ printf '%s\n' "$@" >> "$CHECK_LOG"
 [ -z "${CHECK_FAIL:-}" ]
 G
 chmod +x "$tmp/bin/gh" "$tmp/check.sh"
+export FAKE_CHECK_REGISTRY="$tmp/check.sh"  # new_repo puts it in the throwaway repository (promote runs it by path)
 export GH_LOG="$tmp/gh.log" GH_BODY="$tmp/body.md" CHECK_LOG="$tmp/check.log"
 reset_logs() { : > "$GH_LOG"; : > "$CHECK_LOG"; rm -f "$GH_BODY"; }
 # What the job sees: HEAD is main's tip on origin (STALE=1: a newer push already landed).
 run() {
   [ -n "${STALE:-}" ] || git push -q origin main:main
-  PATH="$tmp/bin:$PATH" GH_TOKEN=t SLUG=ryft-deploy CHECK_REGISTRY="$tmp/check.sh" ./scripts/promote.sh
+  PATH="$tmp/bin:$PATH" GH_TOKEN=t SLUG=ryft-deploy ./scripts/promote.sh
 }
 # pr <number> <branch> [fork] [author]: one PR as `gh pr list --json` shows it.
 pr() { printf '{"number":%s,"headRefName":"%s","isCrossRepository":%s,"author":{"login":"%s"},"mergedAt":null}' "$1" "$2" "${3:-false}" "${4:-app/ryft-deploy}"; }
