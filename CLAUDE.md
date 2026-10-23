@@ -55,7 +55,7 @@ The site for ryftapp.de: pages, legal texts (`content/legal`), the AASA and the 
 Its rules are in `web/CLAUDE.md` (Claude Code loads it inside `web/`); read it before touching
 `web/`. The brand rule applies to `web/**`, to the built output and to every commit message in
 the repository: `make hooks` once per clone installs `.githooks`, CI checks it too. With the
-hooks installed every commit needs Node (they fail closed without it). Tokens, the
+hooks installed every commit needs Node and python3 (they fail closed without either). Tokens, the
 Swift-licence snapshot and the AASA test read the app at `../app` (`RYFT_APP_DIR`). Targets:
 `make web-install web-test web-build web-e2e web-image web-serve web-tokens`. The merge ships
 the site: CI builds the image and promotes it (details in the CI docs). A privacy text and

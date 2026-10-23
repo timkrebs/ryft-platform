@@ -692,7 +692,7 @@ run under Pod Security `restricted`. It is kept as chosen, with four changes:
   `admin/ryft/monitoring`, synced by the operator. The chart reads it from that Secret
   (`remoteConfig.secret.create: false`), never from a `--set` flag. The token shown
   during onboarding must be rotated.
-- **Logs:** RYFT's pod logs carry users' daily scores and go to CloudWatch (D52), not
+- **Logs:** RYFT's pod logs carried users' daily scores until D114 and go to CloudWatch (D52), not
   Grafana Cloud. Because the collector can read every log file on the node, this is a
   Fleet Management setting (exclude `ryft-.*`), checked by an empty Logs query, not an
   enforced boundary. Making it one would mean dropping `filesystem-log-reader` from the
@@ -2051,3 +2051,195 @@ sent, and whether a second account shares its phone.
   in `promote.sh`); D96's "No deploy without a backend change" holds per group; D95's
   rollback by revert needs the hold; D18's "Every push gets a short-SHA tag" now means every
   push to main.
+
+## D108 — The site's toolchain: stable lines only, majors by hand, ignores in the Dependabot config
+
+- **Why (2026-10-22):** Dependabot's first run on `web/` opened five majors at once (#12–#16); one was red, two were
+  mainline or pre-LTS lines, and merging any of them alone would have split what moves together.
+- **nginx follows its stable (even) branch.** Patches arrive by Dependabot; a new stable branch (1.32 …) or a new
+  Alpine base is a hand PR. Docker tags compare only within the same suffix, so patches stop silently when the base
+  image moves to a new `-alpine` suffix: watch for it.
+- **Node moves as one unit and only onto an LTS line:** the Docker build stage (tag and digest), `web/.nvmrc`,
+  `engines` and `@types/node`, in one hand PR. Node 26 is LTS from 2026-10-28.
+- **A major goes in when it needs no code change and the rest of the toolchain declares or demonstrably supports it.**
+  ESLint 10 went in (#19): its support for eslint-plugin-react and -import relies on eslint-config-next's
+  `fixupPluginRules` shim; those plugins don't declare ESLint 10 yet. TypeScript 7 waits for typescript-eslint (peer
+  `<6.1.0`).
+- **The skipped updates are `ignore` rules in `.github/dependabot.yml`** (`update-types`, not `versions: N.x`, which
+  the docker ecosystem does not understand), and every ecosystem has a 7-day `cooldown` (version updates only;
+  security updates are not delayed).
+
+## D109 — Synthetic Monitoring checks ryftapp.de from outside
+
+- **Why (2026-10-22, the user's choice):** nothing outside the cluster checked the site: a page that is wrong but
+  healthy, a broken AASA (universal links, password AutoFill) or the certificate Traefik serves raised no alert.
+- **Grafana Cloud Synthetic Monitoring, free tier:** four HTTP checks (home; `/privacy` with a marker only the policy
+  has; the AASA, `application/json`, no redirect, the app ID; `www` → apex), every 5 minutes from two EU probes,
+  ≈69,000 of 100,000 executions a month. TLS required, no redirect followed; certificate expiry from the same runs.
+- **As code, applied by hand:** `deploy/grafana/synthetics/ryftapp.json`, `scripts/synthetics.sh` and
+  `make synthetics-check` / `synthetics-apply` (an upsert by job name; unchanged checks are skipped), like
+  `alerts-apply`. Not Terraform: a provider and a state for four checks, and the token in tfvars. The SM token is
+  tenant-wide: one per session, deleted afterwards.
+- **Guards:** `synthetics.sh check` (CI job `monitoring`) validates the regexps with RE2 (Go), refuses anything but
+  ryftapp.de targets and allow-listed keys, and asserts the body markers against the repository's AASA and newest
+  privacy page, so a rewording fails its PR instead of paging after the deploy.
+- **Alerts** (`deploy/grafana/alerts/ryft.yaml`): SiteDown (critical, every probe failing 10 minutes), a single probe
+  failing now and then (warning, quiet after a full outage), the `www` redirect, the certificate (< 14 days), and a
+  check that stopped reporting (per job). No new processor: the probes fetch public pages.
+
+## D110 — The deploy key lives in a `deploy` environment; a daily watch; holds are written by a script
+
+- **Why (2026-10-22):** the App key that opens auto-merging deploy PRs was a repository secret any workflow run could
+  read; a promote that failed or never ran left no mark; nothing noticed a forgotten hold.
+- **Environment `deploy`:** only `main`, no admin bypass, no reviewers (the promote stays unattended); only `promote`
+  names it (`scripts/check_workflows.sh` in `lint`, which also refuses `pull_request_target` and `workflow_run`). Set
+  up by rotating the key: a new key in the environment, the repository copy deleted right after the merge, the old key
+  revoked in the App.
+- **`deploy-watch.yml`, daily, read-only token:** fails (a GitHub mail to whoever last edited the cron line) on a hold
+  older than 7 days or dated in the future, an App deploy PR open longer than 2 hours, or a group that differs from
+  its pin on a main tip older than 2 hours with no deploy PR. It reuses `deploy_targets.sh`.
+- **`scripts/hold.sh add|rm`** writes the hold line; reasons are public, one line of printable ASCII, no `@` and no
+  closing keywords (they reach the deploy PR's body).
+- **The EKS overlay is printable ASCII only** (`deploy_targets.sh` fails closed on any other byte): a review showed
+  that U+2028, U+2029, NEL or CR inside a comment are line breaks to the YAML parser and could add an `images:`
+  entry. `check_registry.sh` accepts only `ghcr.io/timkrebs/ryft/` and compares the rendered tags with the pins.
+- **Runbook** (OPERATIONS → Deploy and roll back) rewritten from the drill preparation: services rollback with
+  `pin_images.sh`, merge by hand (no `--auto`) when someone must approve, release as two merges, verification, rollback
+  limits, the undo path; a selective `argocd app sync --resource` skips the hooks (Argo CD v3.5.6) and is user-only.
+
+## D111 — A service's configuration rolls its pods; the privacy policy goes into force with its page (amends D78, D107)
+
+- **Why (F1, 2026-10-22):** api, ingest, scoring and notify read the plain ConfigMap `ryft-config` through `envFrom`,
+  so an edit rolled no pod; after a new `PRIVACY_POLICY_VERSION` api and ingest disagreed until restarted by hand.
+  Consent is recorded against that version (D78). Rolling alone would have switched the version ~3 minutes after the
+  merge and the page 25–40 minutes later.
+- **Hashed ConfigMaps:** `ryft-config-<hash>` from `deploy/k8s/base/<service>/config.env` for the four; migrate's
+  stays plain (its PreSync hook runs before a new name exists). Argo prunes the old one only after a healthy sync
+  (`PruneLast`); roll back in git, never with `kubectl rollout undo`.
+- **The version in force on EKS** is a pin next to web's image (two literals, api and ingest). Promote sets it to the
+  base version of the commit it pins web to, so page and version go live in one sync (the user's choice, 2026-10-22);
+  a hold or a failed web build keeps the old pair. A web rollback moves the version back with it (`pin_images.sh
+  <old> web` reads the version at `<old>`, the newest page for commits before this change).
+- **`scripts/check_policy_in_force.sh` (`manifests`, also on the App's deploy PRs):** api and ingest agree; a real
+  date; listed; the in-force version is the page `/privacy` serves (the newest, en and de) in the pinned web commit;
+  nothing else (a container `env`, another ConfigMap) can set it; a web pin is exactly one commit here or the known
+  foreign `f437747`. **Drafts:** the version may change only to a page marked `published` in both languages (a policy
+  PR with a draft is red), or back to one that was in force before. A withdrawal is durable only as a new version or
+  with web held.
+- **No default in Go:** api and ingest refuse to start without a valid date, in every mode, before they connect; the
+  web check accepts only `PRIVACY_POLICY_VERSION=YYYY-MM-DD` with a real calendar date.
+- **`/privacy` and `/de/privacy` are `no-cache`** (the version pages stay cacheable), so the text in force is the one
+  shown.
+- **web gets a PodDisruptionBudget** (`maxUnavailable: 1`, unhealthy pods always evictable).
+- **Not chosen:** `replacements` into an annotation (dates became timestamps; overlay changes unseen), the version in
+  each Deployment's env, kustomize's internal hash annotation, Reloader.
+- **Known gap (the user's Terraform):** a `PRIVACY_POLICY_VERSION` key in Vault's `service_secrets` would override the
+  ConfigMap (the secret comes later in `envFrom`); a validation in `infra/vault` should refuse it.
+
+## D112 — A change in a day's history re-scores the days after it, in the handler
+
+- **Why (2026-10-22, found while investigating the app's calibrating report):** baselines,
+  sleep debt and need, consistency and yesterday's strain come from the 30 stored rows before
+  a day (`ScoreHistory`). Nothing re-scored later days when an earlier one changed, so a day
+  scored before its history (a backfill arriving newest first, a late HRV sample, a replayed
+  range, two consumers in a rollout surge) kept `baseline_days = 0` or stale baselines for
+  good. Production had no such row yet (checked 2026-10-22).
+- **Detected on the write:** `UpsertDailyScore` reports whether one of `store.historyInputs`
+  changed (the columns later days read, compared in SQL on the stored values; presence of
+  steps and active energy after D113). Results such as `recovery` and `baseline_days` are left
+  out, so a re-score settles. A guard test fails when `store.History` gains a field that is
+  neither compared nor left out with a reason.
+- **In the handler, not through the outbox:** `Engine.ComputeDays` scores the asked days, then
+  the next 30 stored days after the last change, oldest first, never past the user's today,
+  each day once, at most 400 extra. The outbox (D101) tells other services; a range sent back
+  to scoring itself could interleave with the user's next events. A duplicate changes nothing
+  and stops (D100); a retry or broker redelivery (`events.Redelivered`) re-scores the 30 days
+  after its days, so a cascade interrupted half-way is finished. A DLQ replay arrives as a first
+  delivery: follow it with `POST /v1/recompute` (open: a marker in `dlq.sh`).
+- **Safety net:** the 15-minute pass re-scores about 50 days a pass, round robin, whose stored
+  counts are below the nights their window holds or whose baselines are missing. It compares
+  counts, not values.
+- **No push for a past day** (the morning push is for the user's today and the first recovery
+  only, D70), and **no `ModelVersion` bump**: the rules did not change; past numbers can change
+  after the fact with the same version (SCORING.md → Model version).
+
+## D113 — `calibrating_reason` says why a day is calibrating
+
+- **Why (the app's request, 2026-10-21):** the reporter's account has no HRV source at all;
+  `baseline_days = min(HRV nights, RHR nights)` stays 0 and "0 of 7 nights" never ends by
+  waiting. The app could not tell that from a short history.
+- **Contract (additive, API.md → `#### calibrating_reason`):** `baseline_hrv_days`,
+  `baseline_rhr_days` and `calibrating_reason` (`short_history | no_hrv | no_rhr`, a closed
+  enum). The rule, in order: null when both counts are ≥ 7; `short_history` when the day brings
+  a signal its window never had (a new watch writes HRV at night and resting HR later in the
+  morning); `no_hrv` when the window has ≥ 7 days with data, no HRV night, and the day itself
+  has none (it wins when both are missing); `no_rhr` likewise; else `short_history`.
+- **W counts days with data,** not stored rows: a rescore stores empty rows before an
+  account's first data, and counting them would say `no_hrv` on a watch user's first night.
+  The data columns are one list (`store.dataColumns`), each compared as a history input.
+- **Storage:** migration 0027, three nullable columns without a default, a CHECK on the reason,
+  no cross-column constraint (an older image writing after a rollback must not fail),
+  `lock_timeout` 5 s. Rows the server can't vouch for (before 0027, or rewritten by an older
+  image so that the fields disagree with `baseline_days`/`calibrating`) are served as null
+  ("unknown"). No stored number moved; `ModelVersion` stays.
+
+## D114 — The logs hold no health values (amends D51's "Logs")
+
+- **Why (2026-10-23):** the `scored day` line logged every day's recovery, readiness, strain,
+  sleep, HRV and resting HR since the scaffold, against OPERATIONS → Data protection (logs);
+  D112's cascades and every rescore multiplied it.
+- **Decision:** `scored day` keeps only `day`, `model_version`, `inputs_changed` (plus
+  `request_id`, `user_id`; the line `trace.sh` follows, so Info). No learned sleep minutes; no
+  APNs device token in transport errors (it reached the retry/dead-letter lines and the DLQ
+  header); decode errors name field and type, not the value; GoTrue admin errors keep status
+  and `error_code`; no email in the smoke's error. Tests allowlist the keys of each log line
+  and seed distinctive values. The full `user_id` stays (pseudonymous, as the privacy text
+  says).
+- **Known exceptions, documented:** a panic's stack trace can show arguments as hex; a pgx
+  encode error can quote an argument. A hand-run rescore prints to the operator's terminal.
+- **Old lines** leave CloudWatch 14 days after the deploy (2026-11-06). The privacy text still
+  says scoring logs the daily scores (now more than happens); its correction goes into the next
+  policy version after that date — a new version asks every user to consent again.
+
+## D115 — Checks read what the parsers read
+
+- **Why (2026-10-22/23):** kustomize, Argo CD and GitHub treat U+0085, U+2028, U+2029 and a lone
+  CR as line breaks while grep and awk do not, and kustomize reads field names case-insensitively,
+  decodes `!!binary`, follows symlinks and reads files without a `.yaml` extension. A comment line
+  or a renamed key could carry content no reviewer sees (a sidecar with `envFrom: ryft-secrets`, a
+  remote base, an allow-all NetworkPolicy) — each reproduced by the security review.
+- **Decision: allowlists instead of denylists**, at three levels.
+  - **Bytes:** `scripts/check_bytes.sh` (one character policy, `scripts/lib/charpolicy.py`) reads
+    every tracked file by content — invalid UTF-8, controls, format and default-ignorable
+    characters (reserved ranges included), separators, BOM; a variation selector only after a
+    symbol; no symlinks or submodules; binary extensions skipped except under `deploy/` and
+    `.github/`; no path exemptions (escapes in source instead). It runs in a `bytes` job with no
+    path filter that `ci-ok`, `images` and `web-image` need, and in pre-commit.
+  - **Structure:** kustomizations and Argo CD applications are parsed by yq against an exact,
+    case-sensitive key schema whose path-typed fields drive the reference walk, and a YAML tag
+    allowlist; every decoded key and string under `deploy/` passes the character policy; inline
+    patches are literal blocks; references are plain paths below `deploy/` with no dotted
+    segment (no remote base, even behind a decoy directory); env lines need `=`; only `root.yaml`
+    uses the `ryft-root` project; the EKS overlay has its own allowlist. `check_workflows.sh`
+    parses workflows (no external reusable workflows, `secrets: inherit`, dynamic secrets, merge
+    or binary tags, or the scripts' test hooks).
+  - **Render:** one Argo CD application per path, each project bound to its paths (`ryft-root` to
+    `root.yaml`, `ryft-operators` to the operators); every app is rendered with
+    `GIT_ALLOW_PROTOCOL=file` (no remote fetch; job-wide in `manifests` and `smoke`) and checked
+    for a small set of production invariants (`scripts/lib/renderpolicy.py`): only the pinned ryft
+    images (and the broker's digest-pinned RabbitMQ image); `AUTH_MODE=supabase` in the effective
+    container environment (no `envFrom` prefix, no `valueFrom` for the auth variables, no API key,
+    insecure flag or `USER_ID`, Secrets included); default-deny intact in every `ryft-*` namespace
+    and no empty allow-all rule; no `argoproj.io` object outside `apps/`. `check_registry.sh`
+    checks the pins exist; empty renders fail.
+  - **Not a policy engine:** pod security (privileged, host*, hostPath, PSA labels), images per
+    namespace and command overrides, NetworkPolicy rule shapes, the VSO objects and the operators
+    project's cluster power are not covered by these CI checks — they belong in an admission
+    policy in the cluster (open, STATUS).
+- **Tools:** yq is a sha256-checked release binary from one install script for every job.
+- **Script tests build their fixtures** (holds stripped, a fixed policy version, no live
+  `deploy/` file), so a hold or a manifest cleanup on main can't turn `smoke` red (the drill).
+- **Consequence:** a new kustomization key, tag, reference shape, label or invariant exception is a
+  schema change in the same PR (OPERATIONS → "What a kustomization or an Argo CD app may contain").
+  `.gitattributes` and `.gitmodules` may not exist. Argo CD's own repo-server isn't constrained by
+  these checks; they gate what reaches `main`.
