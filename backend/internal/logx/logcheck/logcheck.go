@@ -15,7 +15,6 @@
 package logcheck
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -144,8 +143,12 @@ func IntBetween(lo, hi int) Kind {
 // that cannot rule a health value out.
 func Text(max int) Kind {
 	return func(v any) error {
-		if s, ok := v.(string); !ok || len(s) > max {
-			return fmt.Errorf("want a string of at most %d bytes, have %T", max, v)
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("want a string, have %T", v)
+		}
+		if len(s) > max {
+			return fmt.Errorf("a string of %d bytes, at most %d", len(s), max)
 		}
 		return nil
 	}
@@ -188,41 +191,4 @@ func HTTP(codes ...string) Keys {
 // RequestFailed returns the keys of httpx.Fail's line.
 func RequestFailed() Keys {
 	return Keys{"status": IntBetween(500, 599), "err": Text(1024)}
-}
-
-// Check parses out (one JSON object per line) and returns the lines by
-// message, without their time (07:38:47.3 is a time, not a heart rate), and
-// every violation: a message not in lines, a key neither listed for it nor
-// standard, a value of the wrong kind or shape. The caller scans the lines for
-// the request's own values on top.
-func Check(out string, standard Keys, lines Lines) (byMsg map[string][]map[string]any, problems []string) {
-	byMsg = map[string][]map[string]any{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			problems = append(problems, fmt.Sprintf("not a JSON line: %q", line))
-			continue
-		}
-		msg, _ := rec["msg"].(string)
-		keys, known := lines[msg]
-		if !known {
-			problems = append(problems, fmt.Sprintf("a new log line %q: check it against the rule, then list its keys: %s", msg, line))
-		}
-		for k, v := range rec {
-			kind, ok := keys[k]
-			if !ok {
-				kind, ok = standard[k]
-			}
-			if !ok {
-				problems = append(problems, fmt.Sprintf("%q carries %s, which it may not: %s", msg, k, line))
-				continue
-			}
-			if err := kind(v); err != nil {
-				problems = append(problems, fmt.Sprintf("%q: %s: %v: %s", msg, k, err, line))
-			}
-		}
-		delete(rec, "time")
-		byMsg[msg] = append(byMsg[msg], rec)
-	}
-	return byMsg, problems
 }

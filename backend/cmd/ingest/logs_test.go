@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -70,24 +69,9 @@ func syncServer(t *testing.T, st *store.Store, pool *pgxpool.Pool, user model.Us
 // by message.
 func checkSyncLog(t *testing.T, out string, texts []string, numbers []float64) map[string][]map[string]any {
 	t.Helper()
-	lines, problems := logcheck.Check(out, syncStandardKeys, syncLogKeys)
+	lines, problems := logcheck.Check(out, syncStandardKeys, syncLogKeys, logcheck.Forbidden{Texts: texts, Numbers: numbers})
 	for _, p := range problems {
 		t.Error(p)
-	}
-	for msg, recs := range lines {
-		for _, rec := range recs {
-			for k, v := range rec {
-				if f, ok := v.(float64); ok && slices.Contains(numbers, f) {
-					t.Errorf("%q carries a value of the request as %s: %v", msg, k, rec)
-				}
-			}
-			b, _ := json.Marshal(rec)
-			for _, s := range texts {
-				if bytes.Contains(b, []byte(s)) {
-					t.Errorf("%q holds %q: %s", msg, s, b)
-				}
-			}
-		}
 	}
 	return lines
 }
@@ -125,12 +109,26 @@ func syncBody(broken, source string, before bool) string {
 			"avg_hr": 152.3, "max_hr": 181.9, "energy_kcal": 612.4, "distance_m": 10234.5, "source": "` + src("workouts") + `"}]}`
 }
 
-func post(t *testing.T, srv http.Handler, body string, want int) {
+func post(t *testing.T, srv http.Handler, body string, want int) []byte {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/sync", strings.NewReader(body)))
 	if rec.Code != want {
 		t.Fatalf("%d %s, want %d", rec.Code, rec.Body, want)
+	}
+	return rec.Body.Bytes()
+}
+
+// assertStatuses pins the status of each line, in order: the requests are known.
+func assertStatuses(t *testing.T, recs []map[string]any, want ...float64) {
+	t.Helper()
+	if len(recs) != len(want) {
+		t.Fatalf("%d lines, want %d: %v", len(recs), len(want), recs)
+	}
+	for i, r := range recs {
+		if r["status"] != want[i] {
+			t.Errorf("line %d: status %v, want %v", i, r["status"], want[i])
+		}
 	}
 }
 
@@ -154,6 +152,8 @@ func TestSyncErrorPathsLogNoHealthData(t *testing.T) {
 	if len(lines["http"]) != 3 || len(lines["request failed"]) != 1 {
 		t.Fatalf("want three access lines and the 500's cause:\n%s", buf)
 	}
+	assertStatuses(t, lines["http"], 400, 422, 500)
+	assertStatuses(t, lines["request failed"], 500)
 }
 
 // Integration test, opt-in like internal/db's: RYFT_TEST_POSTGRES_URL is a
@@ -206,17 +206,33 @@ func TestSyncLogsCountsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, buf := syncServer(t, st, pool, user)
-	post(t, srv, syncBody("", "", false), http.StatusOK)
+	body := syncBody("", "", false)
+	var sent struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal([]byte(body), &sent); err != nil { // the request names the device
+		t.Fatal(err)
+	}
+	var answer struct {
+		Days []string `json:"days_touched"`
+	}
+	if err := json.Unmarshal(post(t, srv, body, http.StatusOK), &answer); err != nil || len(answer.Days) == 0 {
+		t.Fatalf("the sync names the days it touched: %v %v", answer, err)
+	}
 	nul := `Tims Apple Watch\u0000`
 	for _, part := range []string{"samples", "sleep", "workouts"} {
 		post(t, srv, syncBody(part, nul, false), http.StatusInternalServerError)
 	}
 
 	lines := checkSyncLog(t, buf.String(), syncTexts, syncNumbers)
-	if s := lines["sync"]; len(s) != 1 || s[0]["samples"] != 3.0 || s[0]["sleep"] != 1.0 || s[0]["workouts"] != 1.0 {
+	// Exact, not just a count: the kinds are the backstop, the known values the check.
+	if s := lines["sync"]; len(s) != 1 || s[0]["samples"] != 3.0 || s[0]["sleep"] != 1.0 || s[0]["workouts"] != 1.0 ||
+		s[0]["days"] != float64(len(answer.Days)) || s[0]["device"] != sent.DeviceID {
 		t.Fatalf("one sync line with its counts: %v", s)
 	}
+	assertStatuses(t, lines["http"], 200, 500, 500, 500)
 	failed := lines["request failed"]
+	assertStatuses(t, failed, 500, 500, 500)
 	if len(failed) != 3 {
 		t.Fatalf("three failed syncs: %v", failed)
 	}

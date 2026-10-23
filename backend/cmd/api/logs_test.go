@@ -3,12 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,26 +82,24 @@ func send(t *testing.T, srv http.Handler, method, path, body string, want int) {
 // allow and on what the requests carried; it returns the lines by message.
 func checkWriteLog(t *testing.T, out string) map[string][]map[string]any {
 	t.Helper()
-	lines, problems := logcheck.Check(out, writeStandardKeys, writeLogKeys)
+	lines, problems := logcheck.Check(out, writeStandardKeys, writeLogKeys, logcheck.Forbidden{Texts: writeTexts, Numbers: writeNumbers})
 	for _, p := range problems {
 		t.Error(p)
 	}
-	for msg, recs := range lines {
-		for _, rec := range recs {
-			for k, v := range rec {
-				if f, ok := v.(float64); ok && slices.Contains(writeNumbers, f) {
-					t.Errorf("%q carries the request's value as %s: %v", msg, k, rec)
-				}
-			}
-			b, _ := json.Marshal(rec)
-			for _, s := range writeTexts {
-				if bytes.Contains(b, []byte(s)) {
-					t.Errorf("%q holds %q: %s", msg, s, b)
-				}
-			}
+	return lines
+}
+
+// assertStatuses pins the status of each line, in order: the requests are known.
+func assertStatuses(t *testing.T, recs []map[string]any, want ...float64) {
+	t.Helper()
+	if len(recs) != len(want) {
+		t.Fatalf("%d lines, want %d: %v", len(recs), len(want), recs)
+	}
+	for i, r := range recs {
+		if r["status"] != want[i] {
+			t.Errorf("line %d: status %v, want %v", i, r["status"], want[i])
 		}
 	}
-	return lines
 }
 
 const (
@@ -138,6 +134,8 @@ func TestErrorPathsLogNoBodies(t *testing.T) {
 	if len(lines["http"]) != 4 || len(lines["request failed"]) != 2 {
 		t.Fatalf("want four access lines and the 500s' causes:\n%s", buf)
 	}
+	assertStatuses(t, lines["http"], 500, 422, 400, 500)
+	assertStatuses(t, lines["request failed"], 500, 500)
 }
 
 // Stored in Postgres, a feedback report logs its id, category and how many
@@ -164,9 +162,15 @@ func TestWritesLogNoBodies(t *testing.T) {
 	send(t, journal, http.MethodPut, "/v1/journal/"+day, journalBody("3"), http.StatusOK)
 
 	lines := checkWriteLog(t, buf.String())
-	if f := lines["feedback received"]; len(f) != 1 || f[0]["category"] != "data" || f[0]["request_ids"] != 1.0 {
-		t.Fatalf("one feedback line with its category and count: %v", f)
+	var stored int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM feedback WHERE user_id = $1`, user.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
 	}
+	if f := lines["feedback received"]; len(f) != 1 || f[0]["category"] != "data" || f[0]["request_ids"] != 1.0 ||
+		f[0]["feedback_id"] != float64(stored) {
+		t.Fatalf("one feedback line with its stored id, category and count (%d): %v", stored, f)
+	}
+	assertStatuses(t, lines["http"], 204, 422, 200)
 	if len(lines["http"]) != 3 || len(lines["request failed"]) != 0 {
 		t.Fatalf("three access lines, no failure:\n%s", buf)
 	}

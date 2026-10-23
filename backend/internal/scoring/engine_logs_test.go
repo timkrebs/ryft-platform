@@ -3,7 +3,6 @@ package scoring
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
@@ -82,9 +81,11 @@ func TestEngineLogsNoHealthValues(t *testing.T) {
 	if err := engine.ComputeDay(ctx, user, "2026-09-30"); err != nil {
 		t.Fatal(err)
 	}
-	if d := scoresByDay(t, st, user, "2026-10-10", "2026-10-10")["2026-10-10"]; d.HRVms == nil || *d.HRVms != 61.7 ||
-		d.RHR == nil || *d.RHR != 47.3 || d.SleepActualMin == nil || *d.SleepActualMin != 517 {
-		t.Fatalf("the fixture must reach the scores, or the test proves nothing: %+v", d)
+	last := scoresByDay(t, st, user, "2026-10-10", "2026-10-10")["2026-10-10"]
+	if last.HRVms == nil || *last.HRVms != 61.7 || last.RHR == nil || *last.RHR != 47.3 ||
+		last.SleepActualMin == nil || *last.SleepActualMin != 517 ||
+		last.Recovery == nil || last.SleepPerformance == nil {
+		t.Fatalf("the fixture must reach the scores, or the test proves nothing: %+v", last)
 	}
 
 	// The weekly estimate of another account learns 517 minutes.
@@ -113,29 +114,40 @@ func TestEngineLogsNoHealthValues(t *testing.T) {
 
 	scored := map[string]bool{}
 	msgs := map[string]int{}
-	lines, problems := logcheck.Check(buf.String(), logLineKeys, engineLogKeys)
+	// Values no line may hold: the seeds, what the run computed from them
+	// (recovery, sleep performance) and the learner's recovery of 80.
+	forbid := logcheck.Forbidden{
+		Texts:   []string{"61.7", "47.3", "14.7"},
+		Numbers: []float64{517, 12345, 61.7, 47.3, 14.7, float64(recovery), float64(*last.Recovery), float64(*last.SleepPerformance)},
+	}
+	for _, n := range forbid.Numbers {
+		if n == 1 || n == 10 || n == 11 {
+			t.Fatalf("the scan would collide with a count of days or the day count: %v", n)
+		}
+	}
+	lines, problems := logcheck.Check(buf.String(), logLineKeys, engineLogKeys, forbid)
 	for _, p := range problems {
 		t.Error(p)
 	}
 	for msg, recs := range lines {
 		msgs[msg] = len(recs)
 		for _, rec := range recs {
-			if b, _ := json.Marshal(rec); bytes.Contains(b, []byte("61.7")) || bytes.Contains(b, []byte("47.3")) ||
-				bytes.Contains(b, []byte("14.7")) {
-				t.Errorf("a seeded value in %s", b)
+			if msg != "scored day" || rec["user_id"] != user.String() {
+				continue
 			}
-			for k, v := range rec {
-				if f, ok := v.(float64); ok && (f == 517 || f == 12345 || f == 61.7 || f == 47.3 || f == 14.7) {
-					t.Errorf("%q carries a seeded value as %s: %v", msg, k, rec)
-				}
+			day, ok := rec["day"].(string)
+			if !ok {
+				t.Fatalf("a scored day names its day: %v", rec)
 			}
-			if msg == "scored day" && rec["user_id"] == user.String() {
-				if rec["model_version"] != ModelVersion || rec["request_id"] != requestID {
-					t.Errorf("a scored day names its model and its request: %v", rec)
-				}
-				scored[rec["day"].(string)] = true
+			if rec["model_version"] != ModelVersion || rec["request_id"] != requestID {
+				t.Errorf("a scored day names its model and its request: %v", rec)
 			}
+			scored[day] = true
 		}
+	}
+	// Exact, not only a count in range: the run is known. Ten days follow the late night.
+	if a := lines["rescored days after a history change"]; len(a) != 1 || a[0]["days"] != 10.0 || a[0]["through"] != "2026-10-10" {
+		t.Errorf("the re-score after the late night is 10 days through 2026-10-10: %v", a)
 	}
 	// What operators follow a sync by stays: every day scored, the re-score, the estimate.
 	for k := 0; k <= 10; k++ {
