@@ -382,6 +382,13 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
 - **The calibrating report** → #29 (D112), #30 (D113), #35 (D114); production had no day
   scored before its history (your query, 0 rows).
 
+**Follow-ups of 2026-10-23: done**
+
+- **The migrator** bounds every lock wait with a 5 s `lock_timeout`, set after its advisory
+  lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
+- **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
+  APNs refusals log a status code and a bare code only (D117).
+
 **Open (2026-10-23)**
 
 Yours:
@@ -395,6 +402,8 @@ Yours:
 - **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
   `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
   ConfigMap in `envFrom` and would override the version in force.
+- **Postgres version:** confirm the hosted major version once (`select version();` in the
+  Supabase SQL editor); the repo targets 17 (SUPABASE.md → Postgres version).
 - **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
   `argocd app resources ryft-platform --orphaned`.
 - Optional: squash commits take the PR title; approval for outside contributors' runs; the
@@ -402,12 +411,12 @@ Yours:
   versioned (`/privacy/<version>`): your call.
 
 Technical:
-- **An admission policy in the cluster** (design first, platform-architect; an
-  `infra/aws/kubernetes` change for you): the CI checks of D115 hold a small set of render
-  invariants, not pod security — privileged pods, host access, PSA labels, images per
-  namespace and command overrides, NetworkPolicy rule shapes, the VSO objects (VaultConnection
-  address, templates) and the operators project's cluster power need enforcement at admission
-  (OPERATIONS → "What a kustomization or an Argo CD app may contain" → Not checked).
+- **An admission policy in the cluster:** designed (`docs/work/2026-10-23-admission/design.md`,
+  security-reviewed three rounds): Pod Security labels plus ValidatingAdmissionPolicy (CEL), owned by
+  Terraform in `infra/aws/kubernetes`, Warn+Audit first, then Deny in four steps by blast radius.
+  Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
+  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
+  in progress; nothing reaches the cluster before your applies (the note's §5 commands).
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).
 - **Supply chain** (#17's review): pin `tonistiigi/binfmt` and `moby/buildkit` by digest;
@@ -418,11 +427,11 @@ Technical:
   safe, or `maxSurge: 0` for scoring.
 - **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
   half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
-- **The migrator** sets no `lock_timeout` (only 0027 does): one for every migration; name
-  the Postgres major version in `SUPABASE.md`.
 - **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
-- **Log tests**: pin the allowed keys' value types (a health value under `applied` would
-  pass); GoTrue errors via `resp.StatusCode`.
+- **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
+  and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
+  admin and train lines; cut pgx's "unable to encode" error to the argument's index in one
+  `logx` helper; an invite code can stay in the access line's `path` after a failed delete.
 - **The deploy watch** alerts by GitHub mail only (no dead-man signal): look at its runs
   weekly.
 - The never-scored placeholder of `GET /v1/days/{day}` says `calibrating: false` with

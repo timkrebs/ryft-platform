@@ -3,12 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,20 +19,24 @@ import (
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/logx/logcheck"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
 // writeLogKeys is every line the writes below log with the keys it may carry
-// besides logx's and the request's (docs/OPERATIONS.md → Data protection
-// (logs)). Any other line or key fails the tests.
-var writeLogKeys = map[string][]string{
-	"http":              {"method", "path", "status", "bytes", "dur_ms", "code", "gate"},
-	"request failed":    {"status", "err"},
-	"feedback received": {"feedback_id", "category", "request_ids"},
+// besides logx's and the request's, and the kind of each value (docs/OPERATIONS.md
+// → Data protection (logs)). Any other line, key or kind of value fails the
+// tests, so a score under a count key cannot slip through.
+var writeLogKeys = logcheck.Lines{
+	"http":           logcheck.HTTP(model.CodeInviteRequired, model.CodeConsentRequired),
+	"request failed": logcheck.RequestFailed(),
+	"feedback received": {"feedback_id": logcheck.Count,
+		"category":    logcheck.Enum(model.FeedbackBug, model.FeedbackIdea, model.FeedbackData, model.FeedbackOther),
+		"request_ids": logcheck.CountMax(maxRequestIDs)},
 }
 
-var baseLogKeys = []string{"time", "level", "msg", "service", "request_id", "client_request_id", "user_id", "route"}
+var writeStandardKeys = logcheck.Standard("api")
 
 // What the requests below carry that no log line may.
 var (
@@ -76,39 +78,28 @@ func send(t *testing.T, srv http.Handler, method, path, body string, want int) {
 	}
 }
 
-// checkWriteLog fails on a line or key writeLogKeys does not allow and on what
-// the requests carried; it returns the lines by message.
+// checkWriteLog fails on a line, key or kind of value writeLogKeys does not
+// allow and on what the requests carried; it returns the lines by message.
 func checkWriteLog(t *testing.T, out string) map[string][]map[string]any {
 	t.Helper()
-	lines := map[string][]map[string]any{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("not a JSON line: %q", line)
-		}
-		delete(rec, "time")
-		msg, _ := rec["msg"].(string)
-		lines[msg] = append(lines[msg], rec)
-		allowed, known := writeLogKeys[msg]
-		if !known {
-			t.Errorf("a new log line %q: check it against the rule, then list its keys in writeLogKeys: %s", msg, line)
-		}
-		for k, v := range rec {
-			if !slices.Contains(baseLogKeys, k) && !slices.Contains(allowed, k) {
-				t.Errorf("%q carries %s, which it may not: %s", msg, k, line)
-			}
-			if f, ok := v.(float64); ok && slices.Contains(writeNumbers, f) {
-				t.Errorf("%q carries the request's value as %s: %s", msg, k, line)
-			}
-		}
-		b, _ := json.Marshal(rec)
-		for _, s := range writeTexts {
-			if bytes.Contains(b, []byte(s)) {
-				t.Errorf("%q holds %q: %s", msg, s, line)
-			}
-		}
+	lines, problems := logcheck.Check(out, writeStandardKeys, writeLogKeys, logcheck.Forbidden{Texts: writeTexts, Numbers: writeNumbers})
+	for _, p := range problems {
+		t.Error(p)
 	}
 	return lines
+}
+
+// assertStatuses pins the status of each line, in order: the requests are known.
+func assertStatuses(t *testing.T, recs []map[string]any, want ...float64) {
+	t.Helper()
+	if len(recs) != len(want) {
+		t.Fatalf("%d lines, want %d: %v", len(recs), len(want), recs)
+	}
+	for i, r := range recs {
+		if r["status"] != want[i] {
+			t.Errorf("line %d: status %v, want %v", i, r["status"], want[i])
+		}
+	}
 }
 
 const (
@@ -143,6 +134,8 @@ func TestErrorPathsLogNoBodies(t *testing.T) {
 	if len(lines["http"]) != 4 || len(lines["request failed"]) != 2 {
 		t.Fatalf("want four access lines and the 500s' causes:\n%s", buf)
 	}
+	assertStatuses(t, lines["http"], 500, 422, 400, 500)
+	assertStatuses(t, lines["request failed"], 500, 500)
 }
 
 // Stored in Postgres, a feedback report logs its id, category and how many
@@ -169,9 +162,15 @@ func TestWritesLogNoBodies(t *testing.T) {
 	send(t, journal, http.MethodPut, "/v1/journal/"+day, journalBody("3"), http.StatusOK)
 
 	lines := checkWriteLog(t, buf.String())
-	if f := lines["feedback received"]; len(f) != 1 || f[0]["category"] != "data" || f[0]["request_ids"] != 1.0 {
-		t.Fatalf("one feedback line with its category and count: %v", f)
+	var stored int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM feedback WHERE user_id = $1`, user.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
 	}
+	if f := lines["feedback received"]; len(f) != 1 || f[0]["category"] != "data" || f[0]["request_ids"] != 1.0 ||
+		f[0]["feedback_id"] != float64(stored) {
+		t.Fatalf("one feedback line with its stored id, category and count (%d): %v", stored, f)
+	}
+	assertStatuses(t, lines["http"], 204, 422, 200)
 	if len(lines["http"]) != 3 || len(lines["request failed"]) != 0 {
 		t.Fatalf("three access lines, no failure:\n%s", buf)
 	}
