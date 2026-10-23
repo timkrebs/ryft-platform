@@ -31,11 +31,12 @@ groups:
         # through: the client got a 422 and nothing was logged, where it used to be a logged
         # 500. A path the normalisation missed, or a server-side bug writing bad text. The
         # second term sees a route's first refusal, which increase() misses: the series is
-        # created at 1 (OBSERVABILITY.md → Alerts).
+        # created at 1. It counts as new only if it had no sample in the hour before the
+        # last one, so a scrape gap around the offset does not fire (OBSERVABILITY.md → Alerts).
         expr: |
           sum by (namespace, route) (increase(ryft_http_text_refused_total{at="database"}[1h])) > 0
             or sum by (namespace, route) (ryft_http_text_refused_total{at="database"}
-              unless ryft_http_text_refused_total{at="database"} offset 1h) > 0
+              unless last_over_time(ryft_http_text_refused_total{at="database"}[1h] offset 1h)) > 0
         labels: { severity: warning }
         annotations: { summary: "{{ $labels.namespace }} {{ $labels.route }}: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
       - alert: SyncSlow
