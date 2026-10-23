@@ -258,7 +258,7 @@ decode `\L`/`\n` (ASCII bytes); N4 reserved default-ignorable ranges; N5 brand.m
 only, default-deny intact, supabase auth, no argoproj kinds outside apps/). → all back to gitops-engineer as round 2,
 including the invariants check.
 Round 2 (`46788a3`, `3fecd6e`): CI green (the `bytes` job and the shared yq install worked); GitGuardian flagged
-`AUTH_NAMESPACES = ("ryft-api", "ryft-ingest")` as an "Authentication Tuple" — a false positive, not a required
+a constant holding the two consent services' namespace names (its name began with AUTH) as an "Authentication Tuple" — a false positive, not a required
 check. Security re-verify: N1 (incl. any-case github.com, `.git`, decoys; `GIT_ALLOW_PROTOCOL=file` proven), N3
 (outer document), N4, N5 and the extras done; 68 old variants still refused. The render invariants have bypasses:
 (1, high) a path is checked once under the first app's project (a shadow app in `ryft-operators` switches the strict
