@@ -1517,6 +1517,36 @@ scripts/seed_demo.py`.
   `TestJSONErrorDropsTheValue` (logx), `TestTransportErrorsHideTheDeviceToken` (apns),
   `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
   its keys are listed there.
+  - **Value kinds:** each allowed key also has a kind of value, pinned by the test-only
+    package `internal/logx/logcheck` (a depguard rule keeps production code from importing
+    it): UUIDs for user, request and device ids, `YYYY-MM-DD` for days, closed enums for
+    category, code, gate, method, level, service and model version, booleans for flags,
+    non-negative integers for counts (bounded where a bound is known: `request_ids` at most
+    20, rescored days at most `MaxRangeDays`), an integer 100 to 599 for a status, RFC 3339
+    for the time. A float, a score or a string under a count key fails; so does a key that
+    appears twice on a line (`encoding/json` keeps the last, and logx appends `user_id` and
+    the request's keys after the call site's, so a duplicate would hide one). The known
+    values of each test (recovery, readiness, device tokens, the seeded samples) are
+    scanned for in the raw line. `TestSyncLogKindsRejectMutations`,
+    `TestWriteLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
+    `TestNotifyLogKindsRejectMutations` feed the checker synthetic lines (a float under
+    `applied`, a score under a renamed key, a non-UUID `user_id`, a duplicate key, …) and
+    require a problem that names the mutated key; `TestNotifyLogsNoHealthValuesOrTokens`
+    pins the notify service's lines.
+  - **Third-party errors:** the admin (GoTrue), Sign in with Apple and APNs errors that are
+    logged or shown hold the response's status code with the standard phrase
+    (`logx.StatusLine`, never `resp.Status`, whose text is the server's), and from the body
+    only a bare code: `error_code` / `error` as `[a-z_0-9]{1,64}`, an APNs `reason` as
+    letters only (else "no error code" / "unrecognised"); an undecodable GoTrue body is a
+    fixed "undecodable response". The AMQP URL is logged redacted.
+  - **Accepted gaps:** an integer health value under an integer count key (`samples`,
+    `days`, `bytes`) passes by type; only a known bound or the test's known values catch
+    it. `err` is free text up to 1 KiB (including pgx's "unable to encode" quote of an
+    argument, see above), covered only by the scans for the values a test knows.
+    `client_request_id` accepts what httpx accepts (`[A-Za-z0-9._:-]{1,128}`, the
+    contract of `X-Request-ID`), digits and dots included. The lines of the amqpbus and
+    events panic paths, of auth, httpx and the account, admin and train handlers, and of
+    `cmd/notify`'s stale-check loop have no key test yet.
 - **Older lines:** before this change `scored day` carried the day's scores and inputs
   (readiness, state, recovery, strain, sleep, nap, sleep need, HRV, resting HR), a
   failed push's error the device token (`refresh push`, `sync stale` and the broker's
