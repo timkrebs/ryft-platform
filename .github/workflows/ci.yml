@@ -220,6 +220,8 @@ jobs:
           GOTOOLCHAIN: auto
       # yq (mikefarah) pinned like the others, not the runner image's: check_workflows.sh parses with it.
       - run: go install github.com/mikefarah/yq/v4@v4.54.1
+        env:
+          GOTOOLCHAIN: auto  # yq needs a newer Go than go.mod's (verified by the Go checksum database)
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
