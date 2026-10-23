@@ -382,6 +382,11 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
 - **The calibrating report** → #29 (D112), #30 (D113), #35 (D114); production had no day
   scored before its history (your query, 0 rows).
 
+**Follow-ups of 2026-10-23: done**
+
+- **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
+  APNs refusals log a status code and a bare code only (D117).
+
 **Open (2026-10-23)**
 
 Yours:
@@ -421,8 +426,10 @@ Technical:
 - **The migrator** sets no `lock_timeout` (only 0027 does): one for every migration; name
   the Postgres major version in `SUPABASE.md`.
 - **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
-- **Log tests**: pin the allowed keys' value types (a health value under `applied` would
-  pass); GoTrue errors via `resp.StatusCode`.
+- **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
+  and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
+  admin and train lines; cut pgx's "unable to encode" error to the argument's index in one
+  `logx` helper; an invite code can stay in the access line's `path` after a failed delete.
 - **The deploy watch** alerts by GitHub mail only (no dead-man signal): look at its runs
   weekly.
 - The never-scored placeholder of `GET /v1/days/{day}` says `calibrating: false` with
