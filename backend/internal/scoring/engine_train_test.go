@@ -34,6 +34,10 @@ func engineStore(t *testing.T) (*store.Store, *Engine, uuid.UUID) {
 		t.Fatal(err)
 	}
 	t.Cleanup(root.Close)
+	// The roles first: tests of other packages migrate on this server at the same time.
+	if err := db.EnsureServiceRoles(ctx, root); err != nil {
+		t.Fatal(err)
+	}
 	name := fmt.Sprintf("ryft_enginetest_%d", rand.Uint32())
 	if _, err := root.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)
