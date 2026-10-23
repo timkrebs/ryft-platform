@@ -112,34 +112,42 @@ func TestNotifyLogsNoHealthValuesOrTokens(t *testing.T) {
 		s.St, s.APNs, s.Log = ls, la, log
 		return s, ls, la
 	}
-	ctx := logx.WithFields(context.Background(), &logx.Fields{RequestID: uuid.NewString()})
+	// An event's context as cmd/notify builds it: the request and the user. The
+	// lines then must not log user_id themselves, or it would be there twice.
+	handle := func(s *Service, user uuid.UUID, m events.NotifyMessage) error {
+		return s.Handle(logx.WithFields(context.Background(), &logx.Fields{RequestID: uuid.NewString(), UserID: user.String()}), m)
+	}
 
 	// 1. everything works, and one device refuses
 	s, ls, _ := build()
 	ls.failDelivered, ls.failDrop, ls.failSent = true, true, true
-	if err := s.Handle(ctx, morningEvent("2026-10-19")); err != nil {
+	ev := morningEvent("2026-10-19")
+	ev.Scored.UserID = ls.recipient.ID
+	if err := handle(s, ls.recipient.ID, ev); err != nil {
 		t.Fatal(err)
 	}
 	// 2. APNs down and the release fails
 	s, ls, la := build()
 	la.down, ls.failRelease = true, true
-	if err := s.Handle(ctx, morningEvent("2026-10-19")); err == nil {
+	ev = morningEvent("2026-10-19")
+	ev.Scored.UserID = ls.recipient.ID
+	if err := handle(s, ls.recipient.ID, ev); err == nil {
 		t.Fatal("APNs unreachable: the event is retried")
 	}
 	// 3. a refresh to an unreachable APNs
 	s, st, la := build()
 	la.down = true
-	if err := s.Handle(ctx, events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: st.recipient.ID, Day: "2026-10-19"}}); err != nil {
+	if err := handle(s, st.recipient.ID, events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: st.recipient.ID, Day: "2026-10-19"}}); err != nil {
 		t.Fatal(err)
 	}
-	// 4. the stale check to an unreachable APNs
+	// 4. the stale check to an unreachable APNs, in the loop's context: no user in it
 	s, st, la = build()
 	la.down = true
 	old := now.Add(-21 * time.Hour)
 	stale := st.recipient
 	stale.LastSample = &old
 	st.stale = []store.Recipient{stale}
-	if err := s.CheckStale(ctx); err != nil {
+	if err := s.CheckStale(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,6 +158,14 @@ func TestNotifyLogsNoHealthValuesOrTokens(t *testing.T) {
 	lines, problems := logcheck.Check(buf.String(), notifyStandardKeys, notifyLogKeys, forbid)
 	for _, p := range problems {
 		t.Error(p)
+	}
+	// whose it is stays on every line, from the context
+	for msg, recs := range lines {
+		for _, r := range recs {
+			if _, ok := r["user_id"].(string); !ok {
+				t.Errorf("%q has no user_id: %v", msg, r)
+			}
+		}
 	}
 	// every line the service writes was reached, or the test proves nothing
 	for msg := range notifyLogKeys {
