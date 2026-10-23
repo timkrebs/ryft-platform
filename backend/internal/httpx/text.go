@@ -17,6 +17,7 @@ import (
 // keep it from becoming a 500 (docs/API.md → Errors → NUL):
 //   - ReadJSON: a "\u0000" in any string of the body, key or value → ErrNUL, 422;
 //   - ReadJSONStripNUL (POST /v1/sync): the same "\u0000" removed, page accepted;
+//   - both: json.RawMessage fields re-encoded, bad UTF-8 → U+FFFD (raw.go);
 //   - WithRoutes: a NUL or non-UTF-8 byte in the path or query → 400;
 //   - Fail: the database's refusal, for a path that bypasses them → 422.
 //

@@ -111,7 +111,8 @@ func Fail(w http.ResponseWriter, r *http.Request, err error) {
 
 // ReadJSON decodes the request body into v, rejecting unknown fields, bodies
 // over limit and, once the JSON decoded, a "\u0000" in any of its strings
-// (ErrNUL: Postgres cannot store it). Answer its error with WriteDecodeError.
+// (ErrNUL: Postgres cannot store it); json.RawMessage fields come out
+// re-encoded (raw.go). Answer its error with WriteDecodeError.
 func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	scan := newNULScanner(r.Body)
@@ -126,7 +127,7 @@ func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error 
 		countRefused(r, "body")
 		return ErrNUL
 	}
-	return nil
+	return normalizeRaw(v)
 }
 
 // ReadJSONStripNUL is ReadJSON for a body whose strings the client cannot
@@ -144,18 +145,22 @@ func ReadJSONStripNUL(w http.ResponseWriter, r *http.Request, v any, limit int64
 	if strip.removed > 0 {
 		metrics.NULStripped.WithLabelValues(routeOf(r)).Inc()
 	}
-	return nil
+	return normalizeRaw(v)
 }
 
 // WriteDecodeError answers a ReadJSON failure: 413 for an oversized body,
-// 422 for a NUL in a string, 400 otherwise (raw 0x00 bytes included: not JSON).
+// 422 for a NUL in a string or a raw JSON field that cannot be stored, 400
+// otherwise (raw 0x00 bytes included: not JSON).
 func WriteDecodeError(w http.ResponseWriter, err error) {
 	var tooLarge *http.MaxBytesError
+	var raw *RawJSONError
 	switch {
 	case errors.As(err, &tooLarge):
 		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body over %d bytes", tooLarge.Limit))
 	case errors.Is(err, ErrNUL):
 		WriteError(w, http.StatusUnprocessableEntity, ErrNUL.Error())
+	case errors.As(err, &raw):
+		WriteError(w, http.StatusUnprocessableEntity, raw.Error())
 	default:
 		WriteError(w, http.StatusBadRequest, "bad json: "+err.Error())
 	}

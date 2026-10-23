@@ -119,6 +119,8 @@ services check every request the same way, after authentication (a missing token
 | A body holds a raw 0x00 byte (not JSON) | `400` | `{ "error": "bad json: invalid character '\\x00' in string literal", "request_id": "…" }` (the text after `bad json:` varies) |
 | The path or the query holds `%00` or bytes that are not UTF-8 (`?q=%FF`) | `400` | `{ "error": "the path and query must be UTF-8 text without NUL characters", "request_id": "…" }` |
 | A header holds a NUL byte | `400` | plain text, from the HTTP server before anything else, authentication included (do not require JSON) |
+| Free-form JSON (`POST /v1/feedback` → `diagnostics`) holds bytes that are not UTF-8 or a lone surrogate (`"\ud800"`) | `2xx` | stored with U+FFFD in their place |
+| Free-form JSON holds a number beyond double precision (`1e400`) | `422` | `{ "error": "diagnostics: a number is out of range", "request_id": "…" }` |
 
 ```json
 { "error": "strings must not contain the NUL character (\\u0000)", "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c" }
@@ -129,7 +131,10 @@ strip U+0000 and send again. A sync is the exception: its strings come from Heal
 the device (source names, bundle ids, the device name, versions), which nobody can
 correct, and a refused page would stall its stream, so ingest removes every `\u0000` from
 the page's strings and stores the rest. `"\\u0000"` (an escaped backslash, then `u0000`)
-is six ordinary characters and is stored as written, on every route. Should the database
+is six ordinary characters and is stored as written, on every route. Free-form JSON is
+stored as the server decodes it, like every other field: text that is not valid Unicode
+becomes U+FFFD, numbers are kept as double precision (about 16 significant digits), and
+keys and values otherwise as sent (a NUL in them is the `422` above). Should the database
 itself ever refuse a request's text, the answer is a `422` as well, with
 `"the request holds text that cannot be stored (a NUL character or bytes that are not UTF-8)"`.
 
@@ -577,8 +582,8 @@ the app can say "recalculated with model 2026.11.1" and show the entry.
 
 `message` 1–4000 characters; `category` `bug`, `idea`, `data` or `other` (default);
 `app_version`, `build`, `device_model`, `os_version` strings up to 64 characters;
-`request_ids` up to 20 (each up to 64); `diagnostics` any JSON object up to 32 KiB.
-`204`. At most 10 per user and day (`429`). Deleted with the account. Do not put health
+`request_ids` up to 20 (each up to 64); `diagnostics` any JSON object up to 32 KiB,
+stored as decoded (numbers as double precision; Errors → NUL). `204`. At most 10 per user and day (`429`). Deleted with the account. Do not put health
 values into `message` or `diagnostics` that the user did not write themselves.
 
 ### `GET /v1/days?from=YYYY-MM-DD&to=YYYY-MM-DD` — daily scores
@@ -2107,7 +2112,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-10-23 | Errors → NUL: a NUL (U+0000, `\u0000` in JSON) in a string of a request body, value or object key, is `422` with the error shape and no `code`; nothing is stored. It was a `500` where the text reached the database: `POST /v1/feedback` (`message`, the version and device fields, `request_ids`, `diagnostics`), Train names and notes (`PUT /v1/sessions/{id}`, `PUT /v1/plans/{id}`, `POST /v1/exercises`, `PATCH /v1/exercises/{id}`), `POST /v1/behaviors` (`name`) and `POST /v1/me/consent` (`app_version`); fields checked before (`tz`, notification categories, the push `token`, invite codes, `policy_version`, journal times) were and stay `422`. **`POST /v1/sync`** (was `500`) removes the NULs from its strings and accepts the page instead. `%00` or bytes that are not UTF-8 in the path or query are `400` (`GET /v1/exercises?q=` was `500`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header the HTTP server's plain-text `400`. **Behaviour:** a NUL in push `locale`, which was normalised away (`204`), is now `422`. No shape change; Swift: none. |
+| 2026-10-23 | Errors → NUL: a NUL (U+0000, `\u0000` in JSON) in a string of a request body, value or object key, is `422` with the error shape and no `code`; nothing is stored. It was a `500` where the text reached the database: `POST /v1/feedback` (`message`, the version and device fields, `request_ids`, `diagnostics`), Train names and notes (`PUT /v1/sessions/{id}`, `PUT /v1/plans/{id}`, `POST /v1/exercises`, `PATCH /v1/exercises/{id}`), `POST /v1/behaviors` (`name`) and `POST /v1/me/consent` (`app_version`); fields checked before (`tz`, notification categories, the push `token`, invite codes, `policy_version`, journal times) were and stay `422`. **`POST /v1/sync`** (was `500`) removes the NULs from its strings and accepts the page instead. `%00` or bytes that are not UTF-8 in the path or query are `400` (`GET /v1/exercises?q=` was `500`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header the HTTP server's plain-text `400`. Feedback `diagnostics` with bytes that are not UTF-8 or a lone surrogate is stored with U+FFFD in their place, and with a number beyond double precision is `422` (all three were `500`). **Behaviour:** a NUL in push `locale`, which was normalised away (`204`), is now `422`; `diagnostics` numbers are stored as double precision. No shape change; Swift: none. |
 | 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-21 | `GET /readyz` of ingest no longer answers `503` while the event broker is unreachable (a sync's events wait in the outbox, so syncs keep being accepted). No shape change. |
 | 2026-10-20 | **Accounts and sync state**: gates in `warn` mode with the `X-RYFT-Gate` response header (Errors); request ids are to be shown exactly as received; the `X-RYFT-Device-ID` request header and `User.account_hint`; `GET /v1/me/sync` (`SyncStatus`: `gate`, last sync, newest record per kind, today's scoring state, pending days, `expected_within_sec`, `resync_requested_at`); `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring`; the silent refresh push after every sync's scored days (Push). **Behaviour:** an unknown sample `type` or sleep `stage` is ignored and counted (`ignored.*.unknown_type`) instead of failing the sync with `422`; records more than 24 h in the future or older than 400 days are ignored (`outside_window`); identical re-sends no longer count in `samples` / `workouts` (`ignored.*.duplicate`). Swift: `ScoringState`, `AccountHint`, `TodayState`, `SyncStatus`, `SyncResponse` and its parts, `DailyScore.scoringState`, `User.accountHint`. |

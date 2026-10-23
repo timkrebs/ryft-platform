@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -131,8 +132,10 @@ func TestWritesRefuseNULBeforeTheDatabase(t *testing.T) {
 
 // Against Postgres, the requests that were a 500 are a 422 or a 400: a report
 // whose message Postgres refused as text (22021) or whose diagnostics it
-// refused as jsonb (22P05), and a search for a NUL (22021). Nothing is stored;
-// the escaped backslash is stored as written.
+// refused as jsonb (22P05), and a search for a NUL (22021). Raw diagnostics
+// that were a 500 too are repaired and stored (bytes that are not UTF-8: 22021;
+// a lone surrogate: 22P02) or a 422 (a number beyond numeric: 22003). Only the
+// accepted reports are stored; the escaped backslash as written.
 func TestNULIs4xxWithPostgres(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
@@ -142,32 +145,40 @@ func TestNULIs4xxWithPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, buf := nulServer(t, st, user)
-	for target, c := range map[string]struct {
-		method, body string
-		want         int
+	for _, c := range []struct {
+		name, method, path, body string
+		want                     int
 	}{
-		"text":        {"POST", `{"message": "bad night\u0000", "category": "data"}`, 422},
-		"jsonb key":   {"POST", `{"message": "bad night", "diagnostics": {"woke at 3\u0000": true}}`, 422},
-		"jsonb value": {"POST", `{"message": "bad night", "diagnostics": {"hrv_ms": 61.7, "note": "woke at 3\u0000"}}`, 422},
-		"search":      {"GET", "", 400},
-		"escaped":     {"POST", `{"message": "bad night C:\\u0000", "diagnostics": {"note": "\\u0000"}}`, 204},
+		{"text", "POST", "/v1/feedback", `{"message": "bad night\u0000", "category": "data"}`, 422},
+		{"jsonb key", "POST", "/v1/feedback", `{"message": "bad night", "diagnostics": {"woke at 3\u0000": true}}`, 422},
+		{"jsonb value", "POST", "/v1/feedback", `{"message": "bad night", "diagnostics": {"hrv_ms": 61.7, "note": "woke at 3\u0000"}}`, 422},
+		{"search", "GET", "/v1/exercises?q=curl%00", "", 400},
+		{"escaped", "POST", "/v1/feedback", `{"message": "escaped C:\\u0000", "diagnostics": {"note": "\\u0000"}}`, 204},
+		{"raw not UTF-8", "POST", "/v1/feedback", "{\"message\": \"raw utf8\", \"diagnostics\": {\"note\": \"woke\xff at 3\"}}", 204},
+		{"raw lone surrogate", "POST", "/v1/feedback", `{"message": "raw surrogate", "diagnostics": {"note": "\ud800"}}`, 204},
+		{"raw number", "POST", "/v1/feedback", `{"message": "raw number", "diagnostics": {"hrv_ms": 1e1000000}}`, 422},
 	} {
-		path := "/v1/feedback"
-		if c.method == "GET" {
-			path = "/v1/exercises?q=curl%00"
-		}
-		if rec := callNUL(srv, c.method, path, c.body); rec.Code != c.want {
-			t.Errorf("%s: %d %s, want %d", target, rec.Code, rec.Body, c.want)
+		if rec := callNUL(srv, c.method, c.path, c.body); rec.Code != c.want {
+			t.Errorf("%s: %d %s, want %d", c.name, rec.Code, rec.Body, c.want)
 		}
 	}
-	var n int
-	var message, note string
-	if err := pool.QueryRow(ctx, `SELECT count(*), min(message), min(diagnostics->>'note') FROM feedback WHERE user_id = $1`,
-		user.ID).Scan(&n, &message, &note); err != nil || n != 1 || message != `bad night C:\u0000` || note != `\u0000` {
-		t.Fatalf("only the escaped report, as written: %d %q %q %v", n, message, note, err)
+	rows, err := pool.Query(ctx, `SELECT message, diagnostics->>'note' FROM feedback WHERE user_id = $1`, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := map[string]string{}
+	for rows.Next() {
+		var message, note string
+		if err := rows.Scan(&message, &note); err != nil {
+			t.Fatal(err)
+		}
+		stored[message] = note
+	}
+	if want := map[string]string{`escaped C:\u0000`: `\u0000`, "raw utf8": "woke\uFFFD at 3", "raw surrogate": "\uFFFD"}; !reflect.DeepEqual(stored, want) {
+		t.Fatalf("stored %q, want %q", stored, want)
 	}
 	lines := checkWriteLog(t, buf.String())
-	if len(lines["http"]) != 5 || len(lines["feedback received"]) != 1 || len(lines["request failed"]) != 0 {
-		t.Fatalf("five access lines, one report, no failure:\n%s", buf)
+	if len(lines["http"]) != 8 || len(lines["feedback received"]) != 3 || len(lines["request failed"]) != 0 {
+		t.Fatalf("eight access lines, three reports, no failure:\n%s", buf)
 	}
 }
