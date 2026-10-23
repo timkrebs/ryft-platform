@@ -2263,3 +2263,24 @@ sent, and whether a second account shares its phone.
   instead of waiting: run it off-peak, or give that migration its own `SET LOCAL lock_timeout`
   with the reason in its header. The repo targets Postgres 17; the hosted version is the user's
   to confirm (SUPABASE.md).
+
+## D117 — Log tests pin each value's kind, not only its key (amends D114)
+
+- **Why (2026-10-23):** D114's tests allowlisted the keys of each log line, so a health value
+  under an allowed key (a recovery score as `applied`, `days` or a duplicate `user_id`) passed.
+- **Decision:** `internal/logx/logcheck` (test-only; a depguard rule keeps it out of the
+  services) gives every allowed key a kind: UUID, day, RFC 3339 time, bool, enum, a count with a
+  bound where one is known, a pattern, or text with a length limit. A line with a duplicate key
+  fails (slog writes both, `encoding/json` keeps the last); the known-values scans read the raw
+  line. Each test pins the exact counts it can know (rescored days, the sync's days, the
+  feedback id, the statuses in order) and each package has mutation tests that must fail on the
+  key they break. notify's lines are covered the same way (scores, readiness, device tokens).
+- **Third-party errors:** GoTrue, Sign in with Apple and APNs refusals are logged as the
+  response's status code, the standard phrase (`logx.StatusLine`) and a bare code that matches
+  a fixed pattern — never the status line's text or the body; a GoTrue body that doesn't decode
+  is a fixed error. The AMQP URL is logged without its password.
+- **Accepted gaps (OPERATIONS → Data protection (logs)):** an integer health value under a count
+  key without a known bound passes by type (the known-values scans still look); `err` is free
+  text up to 1 KiB (pgx's encode error can quote an argument, D114); `client_request_id` accepts
+  what httpx accepts (the contract); the broker and panic lines, auth, httpx and several handler
+  lines have no allowlist test yet (STATUS).

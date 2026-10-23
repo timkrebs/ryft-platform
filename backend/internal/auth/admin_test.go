@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +100,76 @@ func TestAdminGetUser(t *testing.T) {
 	}
 	if _, err := a.GetUser(context.Background(), uuid.New()); !errors.Is(err, ErrNoAuthUser) {
 		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+// The status in a refused admin call is the response's, not whatever the body
+// or the status line says: a body whose "code" claims another status, or has
+// none, or is not JSON, and a status line with free text for a reason phrase,
+// still log the real status, the standard phrase and, from the body, only a
+// well-formed error_code.
+func TestAdminErrorsLogTheResponseStatus(t *testing.T) {
+	status, reason, body := 0, "", ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+			status, reason, len(body), body)
+		_ = buf.Flush()
+	}))
+	t.Cleanup(srv.Close)
+	a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+	for _, c := range []struct {
+		name   string
+		status int
+		reason string
+		body   string
+		want   string
+	}{
+		{"body code claims success", 502, "Bad Gateway", `{"code":200,"error_code":"bad_jwt"}`, "502 Bad Gateway: bad_jwt"},
+		{"body code claims another error", 401, "Unauthorized", `{"code":404,"error_code":"user_not_found"}`, "401 Unauthorized: user_not_found"},
+		{"body code is a string", 503, "Service Unavailable", `{"code":"418","error_code":"over_request_rate_limit"}`, "503 Service Unavailable: over_request_rate_limit"},
+		{"body without a code", 500, "Internal Server Error", `{"error_code":"unexpected_failure"}`, "500 Internal Server Error: unexpected_failure"},
+		{"empty body", 502, "Bad Gateway", ``, "502 Bad Gateway: no error_code"},
+		{"body not JSON", 403, "Forbidden", `<html>403 for tim@example.com</html>`, "403 Forbidden: no error_code"},
+		{"body code only", 429, "Too Many Requests", `{"code":200,"msg":"tim@example.com"}`, "429 Too Many Requests: no error_code"},
+		{"free text in the reason phrase", 500, "tim@example.com is down", `{"error_code":"unexpected_failure"}`, "500 Internal Server Error: unexpected_failure"},
+		{"status without a standard phrase", 520, "Web Server Is Down", `{"error_code":"unexpected_failure"}`, "520 unknown status: unexpected_failure"},
+	} {
+		status, reason, body = c.status, c.reason, c.body
+		_, gerr := a.GetUser(context.Background(), uuid.New())
+		derr := a.DeleteUser(context.Background(), uuid.New())
+		for op, err := range map[string]error{"get user": gerr, "delete user": derr} {
+			if err == nil || err.Error() != "supabase admin: "+op+": "+c.want {
+				t.Errorf("%s (%s): %v, want %q", c.name, op, err, c.want)
+			}
+		}
+	}
+}
+
+// A 200 whose body does not decode is logged and shown in the admin view as a
+// fixed error: json's own message quotes the value ("parsing time "tim@...""),
+// and the value is an email.
+func TestAdminGetUserUndecodableBodyQuotesNothing(t *testing.T) {
+	for _, body := range []string{
+		`{"last_sign_in_at":"tim@example.com"}`,
+		`{"identities":[{"last_sign_in_at":"tim@example.com"}]}`,
+		`{"email":42,"identities":"tim@example.com"}`,
+		`{"email":"tim@example.com"`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+		_, err := a.GetUser(context.Background(), uuid.New())
+		srv.Close()
+		if err == nil || err.Error() != "supabase admin: get user: undecodable response" {
+			t.Errorf("%s: %v", body, err)
+		}
 	}
 }
 

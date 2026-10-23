@@ -386,6 +386,8 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
 
 - **The migrator** bounds every lock wait with a 5 s `lock_timeout`, set after its advisory
   lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
+- **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
+  APNs refusals log a status code and a bare code only (D117).
 
 **Open (2026-10-23)**
 
@@ -426,8 +428,10 @@ Technical:
 - **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
   half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
 - **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
-- **Log tests**: pin the allowed keys' value types (a health value under `applied` would
-  pass); GoTrue errors via `resp.StatusCode`.
+- **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
+  and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
+  admin and train lines; cut pgx's "unable to encode" error to the argument's index in one
+  `logx` helper; an invite code can stay in the access line's `path` after a failed delete.
 - **The deploy watch** alerts by GitHub mail only (no dead-man signal): look at its runs
   weekly.
 - The never-scored placeholder of `GET /v1/days/{day}` says `calibrating: false` with

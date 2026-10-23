@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -187,7 +188,14 @@ func (c *Client) send(ctx context.Context, base string, n Notification, refresh 
 			Reason string `json:"reason"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
-		res.Reason = body.Reason
+		// Logged by notify: APNs reasons are CamelCase words (BadDeviceToken);
+		// anything else is the server's free text.
+		res.Reason = "unrecognised"
+		if reasonPattern.MatchString(body.Reason) {
+			res.Reason = body.Reason
+		}
 	}
 	return res, nil
 }
+
+var reasonPattern = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
