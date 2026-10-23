@@ -12,7 +12,8 @@ Secret vault-auth-token, and on Pods no kube-api-access-* volume.
 
 The broker's exemption (commands and args, exec probes and hooks, the token) covers
 exactly: the StatefulSet rabbitmq-server written by the Cluster Operator, Pods whose
-controller is that StatefulSet, and (a matchCondition, not a variable) an UPDATE of that
+controller is that StatefulSet and that the statefulset-controller creates (an UPDATE must
+keep the owner references), and (a matchCondition, not a variable) an UPDATE of that
 StatefulSet by any writer that only changes the restartedAt template annotation (D98's
 `rollout restart`).
 */ -}}
@@ -63,7 +64,10 @@ spec:
           (variables.reqKind == 'StatefulSet' && variables.o.metadata.name == {{ $brokerSts | toJson }} &&
             request.userInfo.username == {{ include "admission.user.clusterOperator" . | toJson }}) ||
           (variables.reqKind == 'Pod' && has(variables.o.metadata.ownerReferences) &&
-            variables.o.metadata.ownerReferences.exists(r, has(r.controller) && r.controller == true && r.kind == 'StatefulSet' && r.name == {{ $brokerSts | toJson }})))
+            variables.o.metadata.ownerReferences.exists(r, has(r.controller) && r.controller == true && r.kind == 'StatefulSet' && r.name == {{ $brokerSts | toJson }}) &&
+            (request.operation == 'CREATE' ?
+              request.userInfo.username == {{ .Values.broker.statefulSetControllerUser | toJson }} :
+              (has(oldObject.metadata.ownerReferences) && dyn(oldObject).metadata.ownerReferences == variables.o.metadata.ownerReferences))))
   validations:
     - expression: |-
         variables.containers.all(c,

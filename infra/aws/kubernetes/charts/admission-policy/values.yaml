@@ -74,6 +74,9 @@ operators:
 broker:
   namespace: ryft-rabbitmq
   statefulSetName: rabbitmq-server
+  # Who may create the broker's Pods: ownerReferences are written by the requester, so the
+  # Pod exemption of P2 also needs this creator (an UPDATE must keep the owner references).
+  statefulSetControllerUser: system:serviceaccount:kube-system:statefulset-controller
   # the only pod-template annotations RabbitmqCluster.spec.override may set (P11)
   overrideAnnotations: [prometheus.io/path, prometheus.io/port, prometheus.io/scrape]
 
