@@ -161,5 +161,7 @@ func adminError(op string, resp *http.Response) error {
 	if code == "" || len(code) > 64 || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz_0123456789") != "" {
 		code = "no error_code"
 	}
-	return fmt.Errorf("supabase admin: %s: %s: %s", op, resp.Status, code)
+	// The status is the code and our own reason phrase: resp.Status echoes the
+	// server's status line, whose text is as third-party as the body.
+	return fmt.Errorf("supabase admin: %s: %d %s: %s", op, resp.StatusCode, http.StatusText(resp.StatusCode), code)
 }
