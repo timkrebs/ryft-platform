@@ -13,8 +13,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ $# -gt 0 ]; then refs=$(printf '%s\n' "$@")
-else refs=$(kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u)
+else
+  rendered=$(env GIT_ALLOW_PROTOCOL=file kubectl kustomize deploy/k8s/overlays/eks)
+  refs=$(printf '%s\n' "$rendered" | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u)
 fi
+[ -n "$refs" ] || { echo "check_registry: no image to check (the render failed or the overlay is empty): refusing to pass on nothing" >&2; exit 1; }
 
 # The registry answers for any ghcr.io image, so first: ours. Every ghcr.io reference is under
 # ghcr.io/timkrebs/ryft/ (a newName in the overlay would render another owner's image and it

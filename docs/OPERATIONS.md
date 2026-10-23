@@ -511,7 +511,7 @@ names an environment or reads the key (in any spelling: flow style, quoted keys,
 of the secret's name), if a workflow uses `pull_request_target` or `workflow_run`, calls an
 external reusable workflow (`uses:` other than `./.github/workflows/<file>`), uses
 `secrets: inherit` or reads `secrets` other than as `secrets.<NAME>`, or names one of the
-test hooks of the scripts, or a YAML merge key. The same job fails on a hidden line break,
+test hooks of the scripts, or a YAML merge key. CI's `bytes` job (no path filter, on every run; `ci-ok` and the image jobs need it) fails on a hidden line break,
 control or other invisible character (format, private use, odd spaces), bidi control or BOM
 in ANY tracked file, by content and not by extension (kustomize also reads `Kustomization`
 and any file a `resources:` entry names), on the file names `Kustomization`,
@@ -604,13 +604,61 @@ gh pr close --delete-branch                    # then
    whole loop), then a revert of that pin and of the revert (proves rollback); times in
    `STATUS.md`.
 
+### What a kustomization or an Argo CD app may contain
+
+Both are read by an allowlist, not by a list of forbidden things: kustomize reads `Resources:`
+and the U+017F spelling `reſources:` like `resources:`, and decodes `!!binary`, so no list of
+bad spellings is complete. The schema is `scripts/lib/yamlpolicy.py`:
+
+- exact, case-sensitive keys. A kustomization: `apiVersion`, `kind`, `namespace`, `resources`,
+  `patches` (`path`, `patch`, `target`), `images` (`name`, `newTag`), `labels`,
+  `configMapGenerator` / `secretGenerator` (`envs`, `literals`, `options.labels`),
+  `generatorOptions`. An app: one `spec.source` (`repoURL`, `targetRevision`, `path`), never
+  `sources`, `kustomize`, `helm`, `plugin` or `directory`;
+- the YAML tags `!!map !!seq !!str !!int !!bool !!null` only; no `<<`, `!!binary`, anchor or alias;
+  one document per file (a trailing `---` is a second one); regular files, no symlink in the tree;
+- an inline `patch:` is a literal block (`|` or `|-`), and no key or string may DECODE to a line break
+  or invisible character (a double-quoted `\L` or `\x85` would);
+- every field that names a file is typed `Path(...)` in the schema and is checked by what it names
+  (`scripts/check_kustomize_refs.sh`): plain relative paths below `deploy/`, no symlink, and in
+  `resources:` no name that kustomize could read as a remote URL (a segment with a dot, such as
+  `github.com/org/repo`, is refused even when a directory of that name exists: kustomize clones first);
+- an app's path is below `deploy/`, one application per path; the project is one of `ryft`,
+  `ryft-operators` (bound to `deploy/rabbitmq/operators`) and `ryft-root` (`root.yaml` only);
+  every path is rendered (git limited to `file://`) and the render keeps a SMALL set of production
+  invariants (`scripts/lib/renderpolicy.py`): no `argoproj.io` object; for the `ryft` project only
+  our six images with 7-hex tags (plus a digest-pinned rabbitmq, compared by pattern); no
+  `API_KEY`, `ALLOW_INSECURE_APIKEY_AUTH` or `USER_ID` and `AUTH_MODE=supabase` in ConfigMaps,
+  Secrets (decoded) and container env, no `valueFrom` for them, no `envFrom[].prefix`; default-deny
+  intact in every `ryft-*` namespace with a workload; no NetworkPolicy rule that allows every peer
+  (empty, `from: []` / `to: []`, ports only).
+
+**Not checked** (the follow-up is an admission policy, see `docs/STATUS.md`): pod security
+(privileged, `host*`, `hostPath`), Namespace objects and Pod Security labels, which image runs in
+which namespace, `command` / `args`, the broker image beyond its pattern, NetworkPolicy shapes
+beyond the above (`ipBlock`, `namespaceSelector`), workloads without `metadata.namespace`, Vault
+Secrets Operator objects (the `VaultConnection` address, transformation templates), the power of
+the operators project's cluster roles, and `project.yaml` itself (the check reads it from the
+pull request). Do not read a green check as "production-safe".
+
+`make k8s-validate` (CI's `manifests` job) runs these checks. The byte check
+(`scripts/check_bytes.sh`, CI's `bytes` job) refuses tracked symlinks, reads every file under
+`deploy/` and `.github/` as text whatever its extension, and has no exemption by path: characters
+that render as nothing are written as `\u` escapes in sources. CI's `yq` is the release
+binary from `scripts/install_yq.sh` (version and sha256 in that file; `manifests` and `smoke` both run it).
+
+**To add a key**, change the schema in `scripts/lib/yamlpolicy.py` and the test in
+`scripts/tests/check_kustomize_refs_test.sh` in the same PR as its first use; a new path-carrying key
+is a `Path(kind)` there, so its references are followed automatically.
+
 ### Adding a service
 
 An entry in `infra/vault` `services` (namespace, Vault namespace, credentials), apply,
 commit the generated `deploy/k8s/overlays/vault-namespaces/<svc>`; its manifests under
 `deploy/k8s/services/<svc>`, included in `overlays/eks`; a file
 `deploy/argocd/apps/vault-<svc>.yaml` (wave 0). `make k8s-validate` checks that every
-application renders.
+application renders and keeps the production invariants. If the service needs a kustomization or
+app key the repository does not use yet, extend the schema first (previous section).
 
 ### Lockouts and rolling back across releases
 

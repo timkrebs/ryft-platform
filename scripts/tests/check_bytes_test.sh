@@ -6,7 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail() { echo "✗ check_bytes_test: $*" >&2; exit 1; }
-mkdir -p "$tmp/scripts"; cp "$HERE/scripts/check_bytes.sh" "$tmp/scripts/"
+mkdir -p "$tmp/scripts"; mkdir -p "$tmp/scripts/lib"; cp "$HERE/scripts/check_bytes.sh" "$tmp/scripts/"; cp "$HERE/scripts/lib/charpolicy.py" "$tmp/scripts/lib/"
 cd "$tmp"; git init -q -b main; git config user.email t@example.com; git config user.name test
 mkdir -p deploy/k8s .github/workflows infra/vault/tests/golden web/scripts/lib backend/internal/notify
 printf 'a: 1  # arrows -> \xe2\x86\x92 and dashes \xe2\x80\x94, accents \xc3\xa4, a tab\there\n' > deploy/k8s/ok.yaml
@@ -16,7 +16,7 @@ git add -A; git commit -qm first
 run() { rc=0; ./scripts/check_bytes.sh "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
 
 run; [ "$rc" = 0 ] || fail "clean files must pass (rc=$rc): $(cat "$tmp/err")"
-grep -q '4 files' "$tmp/out" || fail "four files expected: $(cat "$tmp/out")"
+grep -q '5 files' "$tmp/out" || fail "five files expected: $(cat "$tmp/out")"
 
 # bad <name> <printf format of the injected bytes>: in a comment of each covered directory.
 bad() {
@@ -71,15 +71,33 @@ rm -f deploy/k8s/new.yaml
 # A NUL does not make a file "binary": it is a finding, in a text extension and in none.
 printf 'a: 1\0 # \xe2\x80\xa8\n' > data.bin; git add data.bin; run; [ "$rc" = 1 ] || fail "a file with a NUL is still checked"
 git rm -q -f --cached data.bin; rm -f data.bin
-# The binary list: an image is not decoded; its look-alike without the extension is.
-printf '\x89PNG\xff\xfe\x80' > logo.png; git add logo.png; run; [ "$rc" = 0 ] || fail "a png is on the binary list"
-git rm -q -f --cached logo.png; rm -f logo.png
+# The binary list: an image is not decoded anywhere except under deploy/ and .github/, where a file with
+# that extension is read as text (kustomize can name any file there); its look-alike without the extension
+# is always decoded.
+mkdir -p web/public docs/img
+printf '\x89PNG\xff\xfe\x80' > web/public/logo.png; git add web/public/logo.png; run; [ "$rc" = 0 ] || fail "a png under web/ is on the binary list: $(cat "$tmp/err")"
+printf '\x89PNG\xff\xfe\x80' > docs/img/shot.png; git add docs/img/shot.png; run; [ "$rc" = 0 ] || fail "a png under docs/ is not decoded either: $(cat "$tmp/err")"
+printf '\x89PNG\xff\xfe\x80' > deploy/k8s/logo.png; git add deploy/k8s/logo.png; run
+[ "$rc" = 1 ] && grep -q 'binary extension is read as text' "$tmp/err" || fail "a png under deploy/ is read, with a specific message (rc=$rc): $(cat "$tmp/err")"
+printf 'a: 1 # \xe2\x80\xa8 hidden\n' > .github/workflows/x.pdf; git add .github/workflows/x.pdf; run
+[ "$rc" = 1 ] && grep -q 'x.pdf' "$tmp/err" || fail "a text file named .pdf in .github/ must be read (rc=$rc)"
+git rm -q -f --cached web/public/logo.png docs/img/shot.png deploy/k8s/logo.png .github/workflows/x.pdf; rm -rf web/public docs deploy/k8s/logo.png .github/workflows/x.pdf
 printf '\x89PNG\xff\xfe\x80' > logo; git add logo; run; [ "$rc" = 1 ] || fail "invalid UTF-8 in a file without a binary extension must fail"
 git rm -q -f --cached logo; rm -f logo
 # Unicode categories beyond the named ones: format (zero width), private use, a no-break space, noncharacter.
 for cp in '\xe2\x80\x8b' '\xe2\x81\xa0' '\xc2\xad' '\xee\x80\x80' '\xc2\xa0' '\xe2\x80\x83' '\xe3\x80\x80' '\xef\xb7\x90' '\xef\xbf\xbe'; do
   bad "category character $cp" "$cp"
 done
+for cp in '\xe2\x81\xa5' '\xef\xbf\xb0' '\xef\xbf\xb8' '\xf3\xa0\x80\x81' '\xf3\xa0\x84\x80'; do
+  bad "reserved default-ignorable range $cp" "$cp"
+done
+# U+FE0F: one, directly after a symbol, is fine (the emoji picker inserts it); anywhere else it is not.
+printf 'ok: \xe2\x9c\x85\xef\xb8\x8f and \xe2\x96\xb6\xef\xb8\x8e\n' > deploy/k8s/ok2.yaml; git add deploy/k8s/ok2.yaml; run
+[ "$rc" = 0 ] || fail "one variation selector after a symbol must pass: $(cat "$tmp/err")"
+for v in 'a\xef\xb8\x8f' '\xe2\x9c\x85\xef\xb8\x8f\xef\xb8\x8f' '\xe2\x9c\x85\xef\xb8\x80' ' \xef\xb8\x8f'; do
+  printf "x: $v\n" > deploy/k8s/ok2.yaml; run; [ "$rc" = 1 ] || fail "a variation selector in this place must fail: $v"
+done
+git rm -q -f --cached deploy/k8s/ok2.yaml; rm -f deploy/k8s/ok2.yaml
 # Banned names, wherever they are.
 for n in Kustomization kustomization.yml deploy/k8s/Kustomization deploy/k8s/kustomization.yml KUSTOMIZATION.YAML .gitattributes web/.gitattributes .gitmodules; do
   mkdir -p "$(dirname "$n")"; printf 'a: 1\n' > "$n"; git add "$n"; run
@@ -88,14 +106,49 @@ for n in Kustomization kustomization.yml deploy/k8s/Kustomization deploy/k8s/kus
 done
 printf 'k: v\n' > deploy/k8s/kustomization.yaml; git add deploy/k8s/kustomization.yaml; run; [ "$rc" = 0 ] || fail "kustomization.yaml is the right name"
 git rm -q -f --cached deploy/k8s/kustomization.yaml; rm -f deploy/k8s/kustomization.yaml
-# The exceptions are by path and by character.
-printf 'x = /[\xc2\xad\xe2\x80\x8b]/\n' > web/scripts/lib/brand.mjs; git add web/scripts/lib/brand.mjs; run; [ "$rc" = 0 ] || fail "brand.mjs may hold format characters: $(cat "$tmp/err")"
-printf 'x = /[\xe2\x80\xa8]/\n' > web/scripts/lib/brand.mjs; run; [ "$rc" = 1 ] || fail "not even brand.mjs may hold a line break"
-git rm -q -f --cached web/scripts/lib/brand.mjs; rm -f web/scripts/lib/brand.mjs
-printf 'x := "a\xc2\xa0b"\n' > backend/internal/notify/messages.go; git add backend/internal/notify/messages.go; run; [ "$rc" = 0 ] || fail "messages.go may hold a no-break space"
-printf 'x := "a\xe2\x80\x8bb"\n' > backend/internal/notify/messages.go; run; [ "$rc" = 1 ] || fail "messages.go may hold nothing but U+00A0"
-printf 'x := "a\xc2\xa0b"\n' > other.go; git add other.go; run; [ "$rc" = 1 ] || fail "a no-break space elsewhere must fail"
-git rm -q -f --cached backend/internal/notify/messages.go other.go; rm -f backend/internal/notify/messages.go other.go
+# No file is exempt (brand.mjs's character class and the notification texts used to be): the
+# characters are written as escapes there, and the escape (backslash, u, four digits) is plain ASCII.
+bs=$(printf '\134')
+for f in web/scripts/lib/brand.mjs backend/internal/notify/messages.go backend/internal/notify/notify_test.go; do
+  for cp in '\xc2\xa0' '\xc2\xad' '\xe2\x80\x8b' '\xe3\x85\xa4'; do
+    printf 'x = "a%sb"\n' "$(printf "$cp")" > "$f"; git add "$f"; run
+    [ "$rc" = 1 ] || fail "$f may not hold a raw $cp (rc=$rc)"
+  done
+  printf 'x = "a%su00a0b" /[%su00AD%su200B-%su200F]/\n' "$bs" "$bs" "$bs" "$bs" > "$f"; git add "$f"; run
+  [ "$rc" = 0 ] || fail "$f with escapes must pass: $(cat "$tmp/err")"
+  git rm -q -f --cached "$f"; rm -f "$f"
+done
+
+# Default-ignorable characters that are not format characters, in a comment and in a file name.
+for cp in '\xcd\x8f' '\xe1\x85\x9f' '\xe1\x85\xa0' '\xe1\x9e\xb4' '\xe1\x9e\xb5' '\xe1\xa0\x8b' '\xe3\x85\xa4' '\xef\xbe\xa0' '\xef\xb8\x80' '\xef\xb8\x8f' '\xf3\xa0\x84\x80' '\xe2\xa0\x80' '\xcc\xb6'; do
+  bad "default-ignorable $cp" "$cp"
+done
+n="deploy/k8s/re$(printf '\xe3\x85\xa4')sources.yaml"; printf 'a: 1\n' > "$n"; git add "$n"; run
+[ "$rc" = 1 ] && grep -q 'file NAME' "$tmp/err" || fail "an invisible character in a file name must fail (rc=$rc)"
+git rm -q -f --cached "$n"; rm -f "$n"
+
+# Links: a tracked symlink is refused wherever it is and whatever it points to or is called (a
+# png-named link to a kustomization-shaped file carries text no check would read), as is a submodule entry.
+printf 'a: 1\n' > target.txt
+ln -s target.txt deploy/k8s/og.png; git add deploy/k8s/og.png; run
+[ "$rc" = 1 ] && grep -q 'symlink is not allowed' "$tmp/err" || fail "a symlink named .png must fail (rc=$rc): $(cat "$tmp/err")"
+git rm -q -f --cached deploy/k8s/og.png; rm -f deploy/k8s/og.png
+ln -s target.txt web/public-link.png; git add web/public-link.png; run
+[ "$rc" = 1 ] && grep -q 'symlink is not allowed' "$tmp/err" || fail "a symlink named .png under web/ must fail too (rc=$rc)"
+git rm -q -f --cached web/public-link.png; rm -f web/public-link.png
+ln -s ../../../etc/hostname dangling; git add dangling; run; [ "$rc" = 1 ] || fail "a dangling symlink must fail"
+git rm -q -f --cached dangling; rm -f dangling
+run target.txt; [ "$rc" = 0 ] || fail "a regular file named on the command line passes"
+ln -s target.txt link.yaml; run link.yaml; [ "$rc" = 1 ] || fail "a symlink named on the command line must fail (rc=$rc)"
+rm -f link.yaml target.txt
+git update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,sub; run
+[ "$rc" = 1 ] && grep -q 'submodule' "$tmp/err" || fail "a submodule entry must fail (rc=$rc): $(cat "$tmp/err")"
+git rm -q -f --cached sub
+# A type change (a tracked file replaced by a symlink) is seen by --staged.
+printf 'a: 1\n' > deploy/k8s/swap.yaml; git add deploy/k8s/swap.yaml; git commit -qm swap
+rm deploy/k8s/swap.yaml; ln -s ok.yaml deploy/k8s/swap.yaml; git add deploy/k8s/swap.yaml
+run --staged; [ "$rc" = 1 ] && grep -q 'symlink is not allowed' "$tmp/err" || fail "--staged must see a type change to a symlink (rc=$rc): $(cat "$tmp/err")"
+git reset -q HEAD deploy/k8s/swap.yaml; rm -f deploy/k8s/swap.yaml; git checkout -q -- deploy/k8s/swap.yaml; git rm -q -f deploy/k8s/swap.yaml; git commit -qm unswap
 
 # --staged reads what is staged, not the working tree.
 printf 'a: 1 # \xe2\x80\xa8\n' > deploy/k8s/ok.yaml; git add deploy/k8s/ok.yaml; cp "$tmp/keep" deploy/k8s/ok.yaml
@@ -117,4 +170,4 @@ git rm -q -r --cached . ; run; [ "$rc" = 2 ] || fail "no tracked file must exit 
 # The real tree.
 cd "$HERE"; rc=0; ./scripts/check_bytes.sh >"$tmp/out" 2>"$tmp/err" || rc=$?
 [ "$rc" = 0 ] || fail "the repository's own YAML must pass: $(cat "$tmp/err")"
-echo "✓ check_bytes_test: line breaks, controls, bidi, BOM and invalid UTF-8 fail in every tracked file, banned names and the exceptions by path"
+echo "✓ check_bytes_test: line breaks, controls, bidi, BOM and invalid UTF-8 fail in every tracked file, banned names, symlinks, default-ignorable characters; no file is exempt"

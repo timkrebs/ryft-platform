@@ -51,6 +51,8 @@ export function makeRepo({ hooks = false } = {}) {
     // The pre-commit hook runs the byte check on every staged file (it needs python3).
     mkdirSync(join(repo, 'scripts'), { recursive: true });
     cpSync(resolve('../scripts/check_bytes.sh'), join(repo, 'scripts/check_bytes.sh'));
+    mkdirSync(join(repo, 'scripts/lib'), { recursive: true });
+    cpSync(resolve('../scripts/lib/charpolicy.py'), join(repo, 'scripts/lib/charpolicy.py'));
   }
   write(repo, 'README.md', 'x\n');
   git(repo, 'add', '-A');

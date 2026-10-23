@@ -74,7 +74,7 @@ func Language(locale string) string {
 // pct formats a score: "82%" in English, "82 %" in German.
 func pct(v int, lang string) string {
 	if lang == "de" {
-		return strconv.Itoa(v) + " %"
+		return strconv.Itoa(v) + "\u00a0%"
 	}
 	return strconv.Itoa(v) + "%"
 }
