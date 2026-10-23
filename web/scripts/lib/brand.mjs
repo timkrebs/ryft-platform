@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const DENYLIST = fileURLToPath(new URL('../../config/brand-denylist.json', import.meta.url));
 
-// Characters that render as nothing but split a word for a naive search.
-const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g;
+// Characters that render as nothing but split a word for a naive search: every default-ignorable code point
+// (Unicode's own property, so reserved ranges are covered), the other format characters, and the braille blank.
+const INVISIBLE = /[\p{Default_Ignorable_Code_Point}\p{Cf}\u2800]/gu;
 
 const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', shy: '' };
 
