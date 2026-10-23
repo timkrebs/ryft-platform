@@ -6,7 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail() { echo "✗ check_bytes_test: $*" >&2; exit 1; }
-mkdir -p "$tmp/scripts"; cp "$HERE/scripts/check_bytes.sh" "$tmp/scripts/"
+mkdir -p "$tmp/scripts"; mkdir -p "$tmp/scripts/lib"; cp "$HERE/scripts/check_bytes.sh" "$tmp/scripts/"; cp "$HERE/scripts/lib/charpolicy.py" "$tmp/scripts/lib/"
 cd "$tmp"; git init -q -b main; git config user.email t@example.com; git config user.name test
 mkdir -p deploy/k8s .github/workflows infra/vault/tests/golden web/scripts/lib backend/internal/notify
 printf 'a: 1  # arrows -> \xe2\x86\x92 and dashes \xe2\x80\x94, accents \xc3\xa4, a tab\there\n' > deploy/k8s/ok.yaml
@@ -16,7 +16,7 @@ git add -A; git commit -qm first
 run() { rc=0; ./scripts/check_bytes.sh "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
 
 run; [ "$rc" = 0 ] || fail "clean files must pass (rc=$rc): $(cat "$tmp/err")"
-grep -q '4 files' "$tmp/out" || fail "four files expected: $(cat "$tmp/out")"
+grep -q '5 files' "$tmp/out" || fail "five files expected: $(cat "$tmp/out")"
 
 # bad <name> <printf format of the injected bytes>: in a comment of each covered directory.
 bad() {
@@ -71,21 +71,33 @@ rm -f deploy/k8s/new.yaml
 # A NUL does not make a file "binary": it is a finding, in a text extension and in none.
 printf 'a: 1\0 # \xe2\x80\xa8\n' > data.bin; git add data.bin; run; [ "$rc" = 1 ] || fail "a file with a NUL is still checked"
 git rm -q -f --cached data.bin; rm -f data.bin
-# The binary list: below web/ an image is not decoded; its look-alike without the extension is, and so
-# is the same name anywhere else (a png outside web/ is read like text).
-mkdir -p web/public
+# The binary list: an image is not decoded anywhere except under deploy/ and .github/, where a file with
+# that extension is read as text (kustomize can name any file there); its look-alike without the extension
+# is always decoded.
+mkdir -p web/public docs/img
 printf '\x89PNG\xff\xfe\x80' > web/public/logo.png; git add web/public/logo.png; run; [ "$rc" = 0 ] || fail "a png under web/ is on the binary list: $(cat "$tmp/err")"
-git rm -q -f --cached web/public/logo.png; rm -f web/public/logo.png
-printf '\x89PNG\xff\xfe\x80' > logo.png; git add logo.png; run; [ "$rc" = 1 ] || fail "a png outside web/ must be decoded (and fail here)"
-printf 'a: 1 # \xe2\x80\xa8 hidden\n' > deploy/k8s/icon.png; git add deploy/k8s/icon.png; run
-[ "$rc" = 1 ] && grep -q 'deploy/k8s/icon.png' "$tmp/err" || fail "a text file named .png in deploy/ must be read (rc=$rc)"
-git rm -q -f --cached logo.png deploy/k8s/icon.png; rm -f logo.png deploy/k8s/icon.png
+printf '\x89PNG\xff\xfe\x80' > docs/img/shot.png; git add docs/img/shot.png; run; [ "$rc" = 0 ] || fail "a png under docs/ is not decoded either: $(cat "$tmp/err")"
+printf '\x89PNG\xff\xfe\x80' > deploy/k8s/logo.png; git add deploy/k8s/logo.png; run
+[ "$rc" = 1 ] && grep -q 'binary extension is read as text' "$tmp/err" || fail "a png under deploy/ is read, with a specific message (rc=$rc): $(cat "$tmp/err")"
+printf 'a: 1 # \xe2\x80\xa8 hidden\n' > .github/workflows/x.pdf; git add .github/workflows/x.pdf; run
+[ "$rc" = 1 ] && grep -q 'x.pdf' "$tmp/err" || fail "a text file named .pdf in .github/ must be read (rc=$rc)"
+git rm -q -f --cached web/public/logo.png docs/img/shot.png deploy/k8s/logo.png .github/workflows/x.pdf; rm -rf web/public docs deploy/k8s/logo.png .github/workflows/x.pdf
 printf '\x89PNG\xff\xfe\x80' > logo; git add logo; run; [ "$rc" = 1 ] || fail "invalid UTF-8 in a file without a binary extension must fail"
 git rm -q -f --cached logo; rm -f logo
 # Unicode categories beyond the named ones: format (zero width), private use, a no-break space, noncharacter.
 for cp in '\xe2\x80\x8b' '\xe2\x81\xa0' '\xc2\xad' '\xee\x80\x80' '\xc2\xa0' '\xe2\x80\x83' '\xe3\x80\x80' '\xef\xb7\x90' '\xef\xbf\xbe'; do
   bad "category character $cp" "$cp"
 done
+for cp in '\xe2\x81\xa5' '\xef\xbf\xb0' '\xef\xbf\xb8' '\xf3\xa0\x80\x81' '\xf3\xa0\x84\x80'; do
+  bad "reserved default-ignorable range $cp" "$cp"
+done
+# U+FE0F: one, directly after a symbol, is fine (the emoji picker inserts it); anywhere else it is not.
+printf 'ok: \xe2\x9c\x85\xef\xb8\x8f and \xe2\x96\xb6\xef\xb8\x8e\n' > deploy/k8s/ok2.yaml; git add deploy/k8s/ok2.yaml; run
+[ "$rc" = 0 ] || fail "one variation selector after a symbol must pass: $(cat "$tmp/err")"
+for v in 'a\xef\xb8\x8f' '\xe2\x9c\x85\xef\xb8\x8f\xef\xb8\x8f' '\xe2\x9c\x85\xef\xb8\x80' ' \xef\xb8\x8f'; do
+  printf "x: $v\n" > deploy/k8s/ok2.yaml; run; [ "$rc" = 1 ] || fail "a variation selector in this place must fail: $v"
+done
+git rm -q -f --cached deploy/k8s/ok2.yaml; rm -f deploy/k8s/ok2.yaml
 # Banned names, wherever they are.
 for n in Kustomization kustomization.yml deploy/k8s/Kustomization deploy/k8s/kustomization.yml KUSTOMIZATION.YAML .gitattributes web/.gitattributes .gitmodules; do
   mkdir -p "$(dirname "$n")"; printf 'a: 1\n' > "$n"; git add "$n"; run

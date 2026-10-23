@@ -216,7 +216,7 @@ synthetics-apply:
 	@./scripts/synthetics.sh apply
 
 k8s-validate:
-	@set -e; out=$$(mktemp); gen=; \
+	@set -e; export GIT_ALLOW_PROTOCOL=file; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
 	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
 	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
@@ -252,7 +252,7 @@ k8s-check-registry:
 	./scripts/check_registry.sh
 
 k8s-check-images:
-	@imgs=$$(kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
+	@imgs=$$(GIT_ALLOW_PROTOCOL=file kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
 	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)'; printf '%s\n' "$$imgs" | grep -E ':latest$$'); \
 	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"

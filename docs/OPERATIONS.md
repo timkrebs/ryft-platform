@@ -511,7 +511,7 @@ names an environment or reads the key (in any spelling: flow style, quoted keys,
 of the secret's name), if a workflow uses `pull_request_target` or `workflow_run`, calls an
 external reusable workflow (`uses:` other than `./.github/workflows/<file>`), uses
 `secrets: inherit` or reads `secrets` other than as `secrets.<NAME>`, or names one of the
-test hooks of the scripts, or a YAML merge key. The same job fails on a hidden line break,
+test hooks of the scripts, or a YAML merge key. CI's `bytes` job (no path filter, on every run; `ci-ok` and the image jobs need it) fails on a hidden line break,
 control or other invisible character (format, private use, odd spaces), bidi control or BOM
 in ANY tracked file, by content and not by extension (kustomize also reads `Kustomization`
 and any file a `resources:` entry names), on the file names `Kustomization`,
@@ -521,23 +521,6 @@ kustomization under `deploy/` that references a remote base or anything outside 
 byte check on every staged file and needs python3, `make hooks`). `deploy/argocd/apps/`
 holds `*.yaml` files only. "Not bypassable by administrators" is a
 setting you confirm in the browser (step 3).
-
-**What a kustomization or an Argo CD app may contain.** Both are read by an allowlist, not
-by a list of forbidden things (kustomize reads `Resources:` and a long-s `resources:` like
-`resources:` and decodes `!!binary`, so no list of bad spellings is complete). The schema is
-`scripts/lib/yamlpolicy.py`: exact, case-sensitive keys (a kustomization: `apiVersion`, `kind`,
-`namespace`, `resources`, `patches` with `path`/`patch`/`target`, `images` with `name`/`newTag`,
-`labels`, `configMapGenerator`/`secretGenerator` with `envs`/`literals`/`options.labels`,
-`generatorOptions`; an app: one `spec.source` with `repoURL`, `targetRevision`, `path`, never
-`sources`, `kustomize`, `helm`, `plugin` or `directory`), the YAML tags `!!map !!seq !!str !!int
-!!bool !!null` only, no `<<`, `!!binary`, anchor or alias, one document per file, regular files
-and no symlink anywhere in the tree (the byte check refuses tracked symlinks and runs in its own
-`bytes` job on every run, no path filter, and `ci-ok` needs it). An app's path is below `deploy/`
-and its kustomizations pass `scripts/check_kustomize_refs.sh`. To add a key, change the schema in
-`scripts/lib/yamlpolicy.py` (and the test in `scripts/tests/check_kustomize_refs_test.sh`) in the
-same PR as its first use. Characters that render as nothing are written as `\u` escapes in
-sources, not typed: no file is exempt from the byte check. CI's `yq` is the release binary,
-checked against a sha256 in `ci.yml` (move both together).
 
 **Set it up by rotating the key, not by moving it** (user only; the file that was on your
 disk and in the repository secret is gone afterwards, and the old key stops working):
@@ -621,13 +604,49 @@ gh pr close --delete-branch                    # then
    whole loop), then a revert of that pin and of the revert (proves rollback); times in
    `STATUS.md`.
 
+### What a kustomization or an Argo CD app may contain
+
+Both are read by an allowlist, not by a list of forbidden things: kustomize reads `Resources:`
+and the U+017F spelling `reſources:` like `resources:`, and decodes `!!binary`, so no list of
+bad spellings is complete. The schema is `scripts/lib/yamlpolicy.py`:
+
+- exact, case-sensitive keys. A kustomization: `apiVersion`, `kind`, `namespace`, `resources`,
+  `patches` (`path`, `patch`, `target`), `images` (`name`, `newTag`), `labels`,
+  `configMapGenerator` / `secretGenerator` (`envs`, `literals`, `options.labels`),
+  `generatorOptions`. An app: one `spec.source` (`repoURL`, `targetRevision`, `path`), never
+  `sources`, `kustomize`, `helm`, `plugin` or `directory`;
+- the YAML tags `!!map !!seq !!str !!int !!bool !!null` only; no `<<`, `!!binary`, anchor or alias;
+  one document per file (a trailing `---` is a second one); regular files, no symlink in the tree;
+- an inline `patch:` is a literal block (`|` or `|-`), and no key or string may DECODE to a line break
+  or invisible character (a double-quoted `\L` or `\x85` would);
+- every field that names a file is typed `Path(...)` in the schema and is checked by what it names
+  (`scripts/check_kustomize_refs.sh`): plain relative paths below `deploy/`, no symlink, and in
+  `resources:` no name that kustomize could read as a remote URL (a segment with a dot, such as
+  `github.com/org/repo`, is refused even when a directory of that name exists: kustomize clones first);
+- an app's path is below `deploy/`; only `root.yaml` uses the project `ryft-root`; every path is
+  rendered (git limited to `file://`) and the render keeps the production invariants
+  (`scripts/lib/renderpolicy.py`): no `argoproj.io` object, only our six images with 7-hex tags
+  (plus the broker's digest-pinned rabbitmq), `AUTH_MODE=supabase` and no `API_KEY` /
+  `ALLOW_INSECURE_APIKEY_AUTH`, the default-deny NetworkPolicy intact in every `ryft-*` namespace.
+
+`make k8s-validate` (CI's `manifests` job) runs these checks. The byte check
+(`scripts/check_bytes.sh`, CI's `bytes` job) refuses tracked symlinks, reads every file under
+`deploy/` and `.github/` as text whatever its extension, and has no exemption by path: characters
+that render as nothing are written as `\u` escapes in sources. CI's `yq` is the release
+binary from `scripts/install_yq.sh` (version and sha256 in that file; `manifests` and `smoke` both run it).
+
+**To add a key**, change the schema in `scripts/lib/yamlpolicy.py` and the test in
+`scripts/tests/check_kustomize_refs_test.sh` in the same PR as its first use; a new path-carrying key
+is a `Path(kind)` there, so its references are followed automatically.
+
 ### Adding a service
 
 An entry in `infra/vault` `services` (namespace, Vault namespace, credentials), apply,
 commit the generated `deploy/k8s/overlays/vault-namespaces/<svc>`; its manifests under
 `deploy/k8s/services/<svc>`, included in `overlays/eks`; a file
 `deploy/argocd/apps/vault-<svc>.yaml` (wave 0). `make k8s-validate` checks that every
-application renders.
+application renders and keeps the production invariants. If the service needs a kustomization or
+app key the repository does not use yet, extend the schema first (previous section).
 
 ### Lockouts and rolling back across releases
 

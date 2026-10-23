@@ -234,20 +234,9 @@ jobs:
         env:
           GOTOOLCHAIN: auto
       # yq (mikefarah) pinned, not the runner image's: the workflow, kustomization and Argo CD checks
-      # parse with it. The release binary, verified against a sha256 kept here (no Go toolchain
-      # download per run). To move it: the new tag and `sha256sum yq_linux_amd64` of that
-      # release (cross-check with the release's `checksums` file).
-      - name: Install yq v4.54.1
-        env:
-          YQ_VERSION: v4.54.1
-          YQ_SHA256: 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
-        run: |
-          mkdir -p "$RUNNER_TEMP/yq-bin"
-          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/yq-bin/yq" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          echo "${YQ_SHA256}  $RUNNER_TEMP/yq-bin/yq" | sha256sum -c -
-          chmod 0755 "$RUNNER_TEMP/yq-bin/yq"
-          echo "$RUNNER_TEMP/yq-bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/yq-bin/yq" --version | grep -F "version ${YQ_VERSION}"
+      # parse with it. The release binary checked against a sha256 (scripts/install_yq.sh holds both
+      # the version and the checksum; `smoke` installs it the same way for the script tests).
+      - run: ./scripts/install_yq.sh
       - run: make k8s-validate
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
@@ -305,6 +294,8 @@ jobs:
       - run: make smoke
       # Argo CD's PostSync smoke, the Go one in the migrate image.
       - run: make smoke-hook CONTAINER=docker
+      # The script tests parse with yq (check_kustomize_refs, check_workflows): the pinned one, as in `manifests`.
+      - run: ./scripts/install_yq.sh
       # trace.sh, promote.sh, deploy_targets.sh, check_pr.sh and friends against fakes.
       - run: make test-scripts
       - if: failure()
