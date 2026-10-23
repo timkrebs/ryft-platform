@@ -55,12 +55,30 @@ func holdsRaw(t reflect.Type, seen map[reflect.Type]bool) bool {
 		return holdsRaw(t.Elem(), seen)
 	case reflect.Struct:
 		for i := range t.NumField() {
-			if f := t.Field(i); (f.IsExported() || f.Anonymous) && holdsRaw(f.Type, seen) {
+			if f := t.Field(i); decoded(f) && holdsRaw(f.Type, seen) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// decoded says whether encoding/json fills field f from a request, by its
+// rules: not json:"-", and exported, or embedded with a struct type (or a
+// pointer to one), whose exported fields are promoted. An embedded unexported
+// slice or map is ignored, so the walk never has to set one.
+func decoded(f reflect.StructField) bool {
+	if f.Tag.Get("json") == "-" {
+		return false
+	}
+	if !f.Anonymous {
+		return f.IsExported()
+	}
+	t := f.Type
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return f.IsExported() || t.Kind() == reflect.Struct
 }
 
 func walkRaw(v reflect.Value, path string) error {
@@ -72,7 +90,7 @@ func walkRaw(v reflect.Value, path string) error {
 	case reflect.Struct:
 		for i := range v.NumField() {
 			f := v.Type().Field(i)
-			if !f.IsExported() && !f.Anonymous || !holdsRaw(f.Type, map[reflect.Type]bool{}) {
+			if !decoded(f) || !holdsRaw(f.Type, map[reflect.Type]bool{}) {
 				continue
 			}
 			if err := walkRaw(v.Field(i), joinPath(path, jsonName(f))); err != nil {
@@ -91,6 +109,9 @@ func walkRaw(v reflect.Value, path string) error {
 			}
 		}
 	case reflect.Map:
+		if !v.CanInterface() { // reached through an unexported field: SetMapIndex would panic
+			return nil
+		}
 		for _, k := range v.MapKeys() {
 			e := reflect.New(v.Type().Elem()).Elem()
 			e.Set(v.MapIndex(k))
@@ -103,10 +124,11 @@ func walkRaw(v reflect.Value, path string) error {
 	return nil
 }
 
-// reencode decodes a RawMessage into an any and marshals it again.
+// reencode decodes a RawMessage into an any and marshals it again. One it
+// cannot set (behind an unexported field) the request cannot have filled.
 func reencode(v reflect.Value, path string) error {
 	raw := v.Bytes()
-	if len(raw) == 0 {
+	if len(raw) == 0 || !v.CanSet() {
 		return nil
 	}
 	var x any

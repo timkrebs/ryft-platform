@@ -80,6 +80,54 @@ func TestNormalizeRaw(t *testing.T) {
 	}
 }
 
+type (
+	rawSlice []json.RawMessage
+	rawMap   map[string]json.RawMessage
+	rawInner struct {
+		Raw json.RawMessage `json:"raw"`
+	}
+	embedsRaw struct {
+		rawSlice                 // unexported non-struct: encoding/json ignores it
+		rawMap                   // the same
+		rawInner                 // unexported struct: its exported fields are the request's
+		Note     string          `json:"note"`
+		Skip     json.RawMessage `json:"-"`
+		hidden   json.RawMessage
+	}
+)
+
+// The walk reaches what encoding/json fills and nothing else: embedded
+// unexported slices and maps, json:"-" and unexported fields stay as they are
+// (and setting them cannot panic), an embedded unexported struct's exported
+// fields are re-encoded.
+func TestNormalizeRawFollowsEncodingJSON(t *testing.T) {
+	var e embedsRaw
+	if err := json.Unmarshal([]byte(`{"raw": "\ud800", "note": "x"}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	lone := json.RawMessage(`"\ud800"`)
+	e.rawSlice, e.rawMap, e.Skip, e.hidden = rawSlice{lone}, rawMap{"k": lone}, lone, lone
+	if err := normalizeRaw(&e); err != nil {
+		t.Fatal(err)
+	}
+	if string(e.Raw) != `"`+"�"+`"` {
+		t.Errorf("the embedded struct's field: %s", e.Raw)
+	}
+	// The guards behind the rules: a value read through an unexported field is
+	// left alone, never set.
+	v := reflect.ValueOf(&e).Elem()
+	for _, name := range []string{"rawSlice", "rawMap", "hidden"} {
+		if err := walkRaw(v.FieldByName(name), name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, raw := range map[string]json.RawMessage{"slice": e.rawSlice[0], "map": e.rawMap["k"], "skip": e.Skip, "hidden": e.hidden} {
+		if string(raw) != string(lone) {
+			t.Errorf("%s was changed: %s", name, raw)
+		}
+	}
+}
+
 // Which request models hold raw JSON: the feedback's diagnostics; never the
 // sync, whose page must not be refused for a value it carries (D118).
 func TestRequestModelsWithRawJSON(t *testing.T) {
