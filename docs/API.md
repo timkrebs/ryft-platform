@@ -101,7 +101,7 @@ not keeps working. `GET /v1/me/sync` → `gate` says the same.
 | `404` | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method |
 | `409` | The id is taken by another user's or a built-in exercise or plan; completing a discarded session. **`PUT /v1/sessions/{id}`**: the server has newer sets — the body is then the server's `Session`, not the error shape. |
 | `413` | Request body over the limit (32 MiB for `POST /v1/sync`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB otherwise). For sync, send smaller pages. |
-| `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`) |
+| `422` | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`; an enum parameter holding `%00` is `400`: the URL is refused before the parameter is read), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`) |
 | `429` | Too many requests; wait `Retry-After` seconds: the per-user rate limit (see **Conventions**), or a second `POST /v1/recompute` within a minute. The edge also limits each client IP (20/s, bursts of 50) before any token is checked; that `429` has a plain-text body, so do not require JSON on a `429`. |
 | `500` | Unexpected server error. The message is always `"internal error"`; the details are in the server log under `request_id`. |
 | `503` | Retry after `Retry-After`: the token could not be checked right now (Supabase keys unreachable — **not** a sign-in problem, keep the session), the database or the queue is down, or the request ran out of time (`"request timed out"`); `/readyz`. |
@@ -109,8 +109,8 @@ not keeps working. `GET /v1/me/sync` → `gate` says the same.
 The message is for logs and debugging; branch on the status code, not the text.
 
 **NUL.** The database cannot store U+0000, so no request may carry it as text. Both
-services check every request the same way, after authentication (a missing token is still
-`401`) and before any of the request is stored:
+services check every request, after authentication (a missing token is still `401`) and
+before any of it is stored:
 
 | Where | Status | Body |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ services check every request the same way, after authentication (a missing token
 | A body holds a raw 0x00 byte (not JSON) | `400` | `{ "error": "bad json: invalid character '\\x00' in string literal", "request_id": "…" }` (the text after `bad json:` varies) |
 | The path or the query holds `%00` or bytes that are not UTF-8 (`?q=%FF`) | `400` | `{ "error": "the path and query must be UTF-8 text without NUL characters", "request_id": "…" }` |
 | A header holds a NUL byte | `400` | plain text, from the HTTP server before anything else, authentication included (do not require JSON) |
-| Free-form JSON (`POST /v1/feedback` → `diagnostics`) holds bytes that are not UTF-8 or a lone surrogate (`"\ud800"`) | `2xx` | stored with U+FFFD in their place |
+| Free-form JSON (`POST /v1/feedback` → `diagnostics`) holds bytes that are not UTF-8 or a lone surrogate (`"\ud800"`) | `204` | stored with U+FFFD in their place |
 | Free-form JSON holds a number beyond double precision (`1e400`) | `422` | `{ "error": "diagnostics: a number is out of range", "request_id": "…" }` |
 
 ```json
