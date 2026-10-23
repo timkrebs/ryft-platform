@@ -1420,12 +1420,23 @@ scripts/seed_demo.py`.
 ## Data protection (logs)
 
 - **What is logged:** one access line per request (method, path, status, bytes, duration,
-  route, request id, user id) and what the services decide (a sync's counts, a scored day
-  with its scores, errors). **Never logged:** request or response bodies, query strings,
-  tokens, the `Authorization` header, email addresses, feedback messages, invite notes.
-  Paths carry dates and resource ids (`/v1/days/2026-10-19`, `/v1/workouts/<uuid>`).
-  scoring's `scored day` lines carry a user's daily scores next to the user id: the logs
-  are health data.
+  route, request id, user id) and what the services decide: a sync's counts and device
+  id, which day was scored by which model (`scored day`: `day`, `model_version`,
+  `inputs_changed`), a push's category and day, errors. **Never logged:** health values —
+  no score, sample, sleep or workout value, baseline, learned sleep need or readiness
+  state, in no line and in no error's text (an event that does not decode names the field
+  and the type, not the value) —, request or response bodies, query strings, tokens (APNs
+  device tokens too: a failed push's error does not quote its URL), the `Authorization`
+  header, email addresses (the smoke user's too), device names, feedback messages and
+  diagnostics, invite notes. Tests pin it: `TestEngineLogsNoHealthValues` (scoring, a
+  run at debug level), `TestSyncErrorPathsLogNoHealthData` (ingest),
+  `TestErrorPathsLogNoBodies` (api), `TestDecodeErrorsQuoteNoValues` (events),
+  `TestTransportErrorsHideTheDeviceToken` (apns). Paths carry dates and resource ids
+  (`/v1/days/2026-10-19`, `/v1/workouts/<uuid>`), so the lines still show when someone
+  used the app and which days they opened: personal data, read and kept as below. Until
+  `fix/no-health-values-in-logs` (2026-10-23), `scored day` carried the day's scores and
+  inputs (readiness, state, recovery, strain, sleep, nap, sleep need, HRV, resting HR);
+  those lines leave CloudWatch 14 days after that image is deployed.
 - **Where and how long:** stdout of each pod (on the node until the pod goes); CloudWatch
   Logs (Fluent Bit ships the `ryft-*` namespaces), **14 days**, encrypted with a key only
   `/ryft/*` groups may use (`infra/aws/kubernetes/logs.tf`, D52). **Not in Grafana

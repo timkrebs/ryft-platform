@@ -146,13 +146,17 @@ func TestSmokeFails(t *testing.T) {
 		"another model":  {&fake{model: "2026.10.1", scored: "2026.09.1", beta: true}, nil, `scored with model "2026.09.1", the api serves "2026.10.1"`},
 		"never rescored": {&fake{scoreAfter: 1 << 30, model: "m", scored: "m", beta: true}, nil, "was not rescored within 300ms"},
 		"gate on":        {&fake{model: "m", scored: "m"}, nil, "BETA_GATE is on and the smoke user"},
-		"bad password":   {&fake{model: "m", scored: "m", beta: true}, func(c *Config) { c.Password = "nope" }, "sign-in of smoke@ryftapp.de: 400"},
+		"bad password":   {&fake{model: "m", scored: "m", beta: true}, func(c *Config) { c.Password = "nope" }, "sign-in of the smoke user (SMOKE_EMAIL): 400"},
 		"not ready":      {&fake{model: "m", scored: "m", beta: true, ready: map[string]int{"scoring": 503}}, nil, "/readyz/scoring: 503, want 200"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := run(t, c.f, c.mod)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err %v, want %q", err, c.want)
+			}
+			// The job logs the error, and no email goes into a log.
+			if strings.Contains(err.Error(), "@") {
+				t.Fatalf("the error names an email address: %v", err)
 			}
 		})
 	}
