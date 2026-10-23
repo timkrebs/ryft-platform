@@ -1562,10 +1562,11 @@ scripts/seed_demo.py`.
 - **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
   line's keys allowlisted), `TestSyncLogsCountsOnly` and
   `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies` and
-  `TestErrorPathsLogNoBodies` (api), `TestDecodeErrorsQuoteNoValues` (events),
-  `TestJSONErrorDropsTheValue` (logx), `TestTransportErrorsHideTheDeviceToken` (apns),
-  `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
-  its keys are listed there.
+  `TestErrorPathsLogNoBodies` (api), `TestSyncStripsNULBeforeTheDatabase` and
+  `TestWritesRefuseNULBeforeTheDatabase` (a NUL removed, or refused with `422`/`400`,
+  logs no text), `TestDecodeErrorsQuoteNoValues` (events), `TestJSONErrorDropsTheValue`
+  (logx), `TestTransportErrorsHideTheDeviceToken` (apns), `TestAdminErrorsHoldNoBody`
+  (auth). A new line on the paths they run fails them until its keys are listed there.
   - **Value kinds:** each allowed key also has a kind of value, pinned by the test-only
     package `internal/logx/logcheck` (a depguard rule keeps production code from importing
     it): UUIDs for user, request and device ids, `YYYY-MM-DD` for days, closed enums for
