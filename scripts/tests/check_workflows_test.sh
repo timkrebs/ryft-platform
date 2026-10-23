@@ -367,6 +367,20 @@ bad "a YAML merge key in flow style" 'merge key' "name: x
 on: push
 jobs:
   a: {<<: {runs-on: x}, steps: [{run: true}]}"
+bad "an explicit !!merge key (the tag, not the text)" 'merge key' "name: x
+on: push
+jobs:
+  a:
+    !!merge '<<': {runs-on: x}
+    steps:
+      - run: true"
+bad "a !!binary name" 'merge key' "name: !!binary eA==
+on: push
+jobs:
+  a:
+    runs-on: x
+    steps:
+      - run: true"
 fresh; printf 'name: x\non: [push\njobs: {\n' > "$d/x.yml"; run
 [ "$rc" = 1 ] || fail "a file that does not parse must fail (rc=$rc)"
 fresh; : > "$d/x.yml"; run

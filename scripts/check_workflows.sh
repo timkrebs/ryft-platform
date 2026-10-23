@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The workflow rules that actionlint cannot know (CI's `manifests` job). The workflows are PARSED
-# (yq, mikefarah v4, preinstalled on ubuntu-latest), not grepped, so flow style, quoted keys,
+# (yq, mikefarah v4, the pinned release in CI), not grepped, so flow style, quoted keys,
 # `environment : deploy`, YAML escapes in names and anchors read as GitHub reads them:
 #   1. no workflow triggers on pull_request_target or workflow_run: they run with the base
 #      repository's secrets and token on code a pull request influences;
@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 dir=${1:-.github/workflows}
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; then
-  echo "::error title=workflow rule::check_workflows: yq (mikefarah, v4) is not installed, so the workflows cannot be parsed. CI installs the pinned version (go install github.com/mikefarah/yq/v4); locally: brew install yq" >&2
+  echo "::error title=workflow rule::check_workflows: yq (mikefarah, v4) is not installed, so the workflows cannot be parsed. CI installs the pinned release binary (sha256-checked); locally: brew install yq" >&2
   exit 2
 fi
 rc=0
@@ -157,6 +157,11 @@ for f in "${files[@]}"; do
   # A YAML merge key (`<<: *anchor`) is read differently by yq, by GitHub and by other readers.
   if grep -Eq "(^|[{,[:space:]\"'])<<[\"']?[[:space:]]*:" "$f"; then
     fail "$f: a YAML merge key (<<:) is not allowed in a workflow: the readers disagree about what it merges. Write the keys out."; continue
+  fi
+  # By tag, not by text and not by yq's warning: `<<` is !!merge, a !!binary key or value is decoded
+  # by other readers into something else than it looks like.
+  if tags=$(yq -o=json -I0 '[... | tag] | unique' "$f" 2>/dev/null) && printf '%s' "$tags" | grep -Eq '"!!(merge|binary)"'; then
+    fail "$f: a YAML merge key (<<, !!merge) or a !!binary node is not allowed in a workflow: the readers disagree about it. Write the keys and values out."; continue
   fi
   if ! json=$(yq -o=json 'explode(.)' "$f" 2>"$errf"); then
     fail "$f: yq cannot parse it: $(cat "$errf")"; continue

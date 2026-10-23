@@ -38,15 +38,22 @@ generatorOptions:
 
 patches:
   - target: { kind: ConfigMap, name: ryft-config, namespace: ryft-ingest }
-    patch: &apikey |-
+    patch: |-
       - op: replace
         path: /data/AUTH_MODE
         value: apikey
       - op: add
         path: /data/ALLOW_INSECURE_APIKEY_AUTH
         value: "true"
+  # The same patch again, written out: no YAML anchors in a kustomization (scripts/lib/yamlpolicy.py).
   - target: { kind: ConfigMap, name: ryft-config, namespace: ryft-api }
-    patch: *apikey
+    patch: |-
+      - op: replace
+        path: /data/AUTH_MODE
+        value: apikey
+      - op: add
+        path: /data/ALLOW_INSECURE_APIKEY_AUTH
+        value: "true"
   # The public management UI is EKS's (rabbitmq.ryftapp.de, D103); here port-forward.
   - patch: |-
       $patch: delete
