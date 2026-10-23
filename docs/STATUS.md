@@ -402,12 +402,10 @@ Yours:
   versioned (`/privacy/<version>`): your call.
 
 Technical:
-- **An admission policy in the cluster** (design first, platform-architect; an
-  `infra/aws/kubernetes` change for you): the CI checks of D115 hold a small set of render
-  invariants, not pod security — privileged pods, host access, PSA labels, images per
-  namespace and command overrides, NetworkPolicy rule shapes, the VSO objects (VaultConnection
-  address, templates) and the operators project's cluster power need enforcement at admission
-  (OPERATIONS → "What a kustomization or an Argo CD app may contain" → Not checked).
+- **An admission policy in the cluster:** designed (`docs/work/2026-10-23-admission/design.md`,
+  security-reviewed three rounds): Pod Security labels plus ValidatingAdmissionPolicy (CEL), owned by
+  Terraform in `infra/aws/kubernetes`, Warn+Audit first, then Deny in four steps by blast radius.
+  **Waiting for your five decisions** (the note's "Open questions"); then the tickets T12-a…k.
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).
 - **Supply chain** (#17's review): pin `tonistiigi/binfmt` and `moby/buildkit` by digest;
