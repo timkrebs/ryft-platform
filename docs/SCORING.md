@@ -463,7 +463,8 @@ refuses entries out of order, an unknown metric or an unsorted `affects`.
 last 30 scored days), sleep debt and need, consistency and yesterday's strain come from
 the stored days before it. When late data changes one of those on a stored day,
 scoring re-scores the next 30 scored days with the same model, oldest first, never past
-today (a retried event does so even when its own day is already up to date); the
+today (a retried event, or a dead letter replayed with `scripts/dlq.sh`, does so even
+when its own day is already up to date); the
 15-minute pass re-scores days whose `baseline_days` (or one of its two counts) is
 behind their history or whose baseline is missing although the history has the nights. `model_version` stays; a
 re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;

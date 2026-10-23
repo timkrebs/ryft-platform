@@ -33,6 +33,13 @@ import (
 // HeaderAttempt counts a message's failed handlings (0 or absent: the first try).
 const HeaderAttempt = "x-ryft-attempt"
 
+// HeaderReplayed marks a dead letter that scripts/dlq.sh put back on ryft.events. Its
+// handler takes it as a redelivery (events.Redelivered): the attempts before the dead
+// letter may have done part of the work. Only the boolean true counts; it is apart from
+// HeaderAttempt, so a replayed letter gets all its attempts again, and every copy into a
+// delay tier or the dead-letter queue keeps it.
+const HeaderReplayed = "x-ryft-replayed"
+
 // ErrUnroutable: the broker had no queue for the event's routing key (a topology
 // that lacks a binding), so nothing would ever handle it.
 var ErrUnroutable = errors.New("amqp: unroutable (no queue bound for this key)")
@@ -482,10 +489,16 @@ func (b *Bus) subscribe(ctx context.Context, log *slog.Logger, conn *amqp.Connec
 // handle runs the handler for one delivery and settles it: ack; a copy into a delay
 // tier and ack; a copy into the dead-letter queue and ack; or, when even that publish
 // fails, a reject with requeue, which the broker counts against the queue's delivery
-// limit (and then dead-letters itself).
+// limit (and then dead-letters itself). A retry tier's copy, the broker's redelivery and
+// a replayed dead letter (HeaderReplayed) reach the handler as a redelivery.
 func (b *Bus) handle(ctx context.Context, log *slog.Logger, queue string, d amqp.Delivery, h handler) {
 	attempt := attemptOf(d)
-	if attempt > 0 || d.Redelivered {
+	replayed, malformed := replayOf(d)
+	if malformed {
+		log.Warn("amqp: ignoring "+HeaderReplayed+", it is not the boolean true", "queue", queue, "key", keyOf(d),
+			"type", fmt.Sprintf("%T", d.Headers[HeaderReplayed]))
+	}
+	if attempt > 0 || d.Redelivered || replayed {
 		metrics.Redeliveries.WithLabelValues(queue).Inc()
 		ctx = events.WithRedelivery(ctx)
 	}
@@ -565,6 +578,19 @@ func (b *Bus) deadLetter(ctx context.Context, log *slog.Logger, queue string, d 
 func copyOf(d amqp.Delivery, h amqp.Table) amqp.Publishing {
 	return amqp.Publishing{Headers: h, ContentType: d.ContentType, DeliveryMode: amqp.Persistent, MessageId: d.MessageId,
 		Type: keyOf(d), Timestamp: d.Timestamp, Body: d.Body}
+}
+
+// replayOf reads HeaderReplayed strictly: replayed only for the boolean true under exactly
+// that name. Any other value there (a string typed into the management UI, a number,
+// false) is malformed and does not count.
+func replayOf(d amqp.Delivery) (replayed, malformed bool) {
+	v, ok := d.Headers[HeaderReplayed]
+	if !ok {
+		return false, false
+	}
+	b, isBool := v.(bool)
+	replayed = isBool && b
+	return replayed, !replayed
 }
 
 // attemptOf reads HeaderAttempt, whatever integer type it arrived as.

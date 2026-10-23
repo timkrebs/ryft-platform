@@ -157,8 +157,9 @@ their history`;
 left until their next local day (the error is logged). Only users who synced in the
 last 48 hours get the pass; the others get it with their next sync, or now with
 `POST /v1/recompute` or `scripts/rescore_all.sh`. A scoring letter replayed from
-`dlq.scoring` arrives as a first delivery: follow it with a `POST /v1/recompute` of its
-days if late data was involved.
+`dlq.scoring` (`scripts/dlq.sh replay`, RabbitMQ → Dead letters) arrives as a redelivery:
+like a retry, it re-scores the days after its days and finishes what its failed attempts
+began, so no recompute is needed after a replay.
 
 **Learned sleep baseline** (`SCORING.md` → Sleep): scoring estimates it every Sunday from
 04:00 local on its own. To run it for every user now (after a deploy, or after changing
@@ -734,9 +735,19 @@ management API itself:
 ```bash
 scripts/dlq.sh list                       # per queue, one line per letter: subject, attempts, error
 scripts/dlq.sh show dlq.scoring 5         # in full
-scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key
+scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key, as a redelivery
 scripts/dlq.sh purge dlq.notify           # notify's: a push hours late is wrong (replay refuses without --force)
 ```
+
+A replay publishes each letter to `ryft.events` with its key, marked `x-ryft-replayed:
+true` and without the `Ryft-*`, `x-death` and `x-ryft-attempt` headers. Its consumer
+handles it as a redelivery (`events.Redelivered`), so a scoring letter re-scores the 30
+days after its days and finishes a re-score its attempts left half-done (D112); it is
+counted in `ryft_nats_redeliveries_total`. It gets all six attempts again; if it fails
+them, it is back in the DLQ and `list` shows it with `"replayed_before": true` (replaying
+it again before the cause is fixed only repeats that). A letter the broker does not route
+goes back into its DLQ as it was, and the script exits 1. A usage error or notify's
+refusal stops before the script reaches the cluster.
 
 Re-drive after fixing the cause (a deploy, a data fix). scoring's letters only name a
 user and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same if a

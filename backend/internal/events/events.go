@@ -294,8 +294,8 @@ func Deferred(err error) (time.Duration, bool) {
 type redeliveryKey struct{}
 
 // WithRedelivery marks ctx as handling a message that came before: a retry
-// tier's copy, or one the broker delivered again after a consumer died. The
-// transport sets it.
+// tier's copy, one the broker delivered again after a consumer died, or a dead
+// letter replayed with scripts/dlq.sh. The transport sets it.
 func WithRedelivery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, redeliveryKey{}, true)
 }

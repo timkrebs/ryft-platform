@@ -73,7 +73,7 @@ var (
 	// The name is from NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
-		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
+		Help: "Messages received again, per queue: redelivered by the broker, a retry tier's copy, or a dead letter replayed by hand.",
 	}, []string{"consumer"})
 
 	// scoring.

@@ -44,6 +44,10 @@ completion), and the publisher's relay sends it with the broker's confirm.
   A retry is an acknowledged copy with `x-ryft-attempt`, never a requeue; the broker's
   own delivery limit only catches what the client cannot settle (a consumer that died
   holding the message).
+- **Replay** (`scripts/dlq.sh replay`, after the cause is fixed): the letter goes back to
+  `ryft.events` with its key, `x-ryft-replayed: true` and none of the DLQ's or the tiers'
+  headers. Its handler takes it as a redelivery (`events.Redelivered`), with six attempts
+  again; the marker is a header of its own, not a faked attempt count.
 - **Deferral** (notify in quiet hours): the longest wait tier that fits, again until the
   handler stops deferring; not an attempt.
 - **`events.Permanent`** (the event's user no longer exists): dropped and counted, not
