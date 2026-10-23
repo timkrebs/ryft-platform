@@ -159,7 +159,8 @@ last 48 hours get the pass; the others get it with their next sync, or now with
 `POST /v1/recompute` or `scripts/rescore_all.sh`. A scoring letter replayed from
 `dlq.scoring` (`scripts/dlq.sh replay`, RabbitMQ → Dead letters) arrives as a redelivery:
 like a retry, it re-scores the days after its days and finishes what its failed attempts
-began, so no recompute is needed after a replay.
+began, so no recompute is needed after a replay (once scoring runs an image that reads
+the marker; until then follow a replay with `POST /v1/recompute`).
 
 **Learned sleep baseline** (`SCORING.md` → Sleep): scoring estimates it every Sunday from
 04:00 local on its own. To run it for every user now (after a deploy, or after changing
@@ -354,7 +355,7 @@ red, which is why you are rolling back, the rest still holds):
 | Before the merge | a local check or CI is red, no approval | Close the PR, delete the branch. |
 | PreSync | migrate fails or hangs | Nothing rolled; Argo retries twice; then the undo. |
 | Rollout | a pod crash-loops or stays unready for 3 minutes, or api or ingest has fewer than one ready | The old ReplicaSet keeps serving; the undo. |
-| PostSync / verify | the smoke fails, `/v1/me` is not 401, dead letters grow (`scripts/dlq.sh list`), `ArgoSyncFailed` | The undo. |
+| PostSync / verify | the smoke fails, `/v1/me` is not 401, dead letters grow (`KUBE_CONTEXT=<context> scripts/dlq.sh list`), `ArgoSyncFailed` | The undo. |
 | Hold window | a deploy PR appears | Close it, then the undo; find out why promote ran. |
 
 1. Find the last "deploy: images" merge that moved the group, and the pins before it.
@@ -730,24 +731,42 @@ ryft-rabbitmq get vhosts,exchanges,queues,bindings,policies,users,permissions,to
 
 **Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
 failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
-management API itself:
+management API itself, on the cluster you name (`KUBE_CONTEXT=<context>` or `--context
+<context>`; it never uses kubectl's current context, `scripts/lib/kube.sh`):
 
 ```bash
+export KUBE_CONTEXT=<context>             # kubectl config get-contexts -o name
 scripts/dlq.sh list                       # per queue, one line per letter: subject, attempts, error
-scripts/dlq.sh show dlq.scoring 5         # in full
+scripts/dlq.sh show dlq.scoring 5         # in full (n: 1 to 1000, or all)
 scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key, as a redelivery
 scripts/dlq.sh purge dlq.notify           # notify's: a push hours late is wrong (replay refuses without --force)
+scripts/dlq.sh put-back <dir>             # letters a failed replay kept in <dir>, back into their DLQ
 ```
 
 A replay publishes each letter to `ryft.events` with its key, marked `x-ryft-replayed:
 true` and without the `Ryft-*`, `x-death` and `x-ryft-attempt` headers. Its consumer
 handles it as a redelivery (`events.Redelivered`), so a scoring letter re-scores the 30
 days after its days and finishes a re-score its attempts left half-done (D112); it is
-counted in `ryft_nats_redeliveries_total`. It gets all six attempts again; if it fails
-them, it is back in the DLQ and `list` shows it with `"replayed_before": true` (replaying
-it again before the cause is fixed only repeats that). A letter the broker does not route
-goes back into its DLQ as it was, and the script exits 1. A usage error or notify's
-refusal stops before the script reaches the cluster.
+counted in `ryft_nats_redeliveries_total`. A scoring image from before the marker
+ignores it: until scoring runs an image with it (check the pin in `overlays/eks`, and
+that no hold keeps the services back), follow a replay with `POST /v1/recompute` of its
+days. It gets all six attempts again; if it fails them, it is back in the DLQ and `list`
+shows it with `"replayed_before": true` (replaying it again before the cause is fixed
+only repeats that).
+
+A replay republishes only the keys its queue's consumer is bound for (`dlq.scoring`:
+`ingested`, `session.completed`; `dlq.notify`: `scored`, `session.scored`, `refresh`) and
+only a letter whose type is its key. Any other letter (a forged type: the broker's
+administrator would otherwise send it where its publisher may not) goes back into its
+DLQ as it was and is named on stderr, as is a letter the broker does not route; the
+script then exits 1. Taking letters off and republishing them are separate calls, so a
+dropped port-forward can strand letters half-way: the script puts back what is left on
+its way out, and if even that fails it keeps them in a directory it names (mode 700,
+without the credentials). Put them back with `scripts/dlq.sh put-back <dir>` once the
+cluster answers again. A letter can then be in its DLQ twice (put back after a publish
+whose answer was lost); handlers are idempotent (D100). Every argument is checked first,
+and without a named context the script reaches no cluster; credentials go to `curl` in a
+config file, never on its command line.
 
 Re-drive after fixing the cause (a deploy, a data fix). scoring's letters only name a
 user and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same if a

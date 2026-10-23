@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -563,16 +564,30 @@ func (b *Bus) deadLetter(ctx context.Context, log *slog.Logger, queue string, d 
 	for k, v := range d.Headers {
 		h[k] = v
 	}
-	h[events.HeaderSubject] = keyOf(d)
+	subject := subjectOf(queue, d)
+	h[events.HeaderSubject] = subject
 	h[events.HeaderConsumer] = queue
 	h[events.HeaderDeliveries] = strconv.Itoa(attempts)
 	h[events.HeaderError] = reason
 	err := b.publish(ctx, ExchangeDLX, queue, copyOf(d, h))
-	metrics.EventsDLQ.WithLabelValues(keyOf(d), metrics.Result(err)).Inc()
+	metrics.EventsDLQ.WithLabelValues(subject, metrics.Result(err)).Inc()
 	if err == nil {
-		log.Warn("event dead-lettered", "queue", queue, "dlq", DLQ(queue), "key", keyOf(d), "attempts", attempts, "err", cause)
+		log.Warn("event dead-lettered", "queue", queue, "dlq", DLQ(queue), "key", subject, "attempts", attempts, "err", cause)
 	}
 	return err
+}
+
+// subjectOf is the key a dead letter is filed under (Ryft-Subject, the key scripts/dlq.sh
+// replays it with, and the DLQ metric's label): the delivery's type when queue's
+// consumer is bound for it, else its routing key. A publisher may write only its own
+// routing keys (topic permissions, D99) but sets the type freely, so a type that no
+// binding of this queue admits is not trusted: it goes into neither the DLQ's subject
+// nor a metric label.
+func subjectOf(queue string, d amqp.Delivery) string {
+	if slices.Contains(consumerKeys[queue], d.Type) {
+		return d.Type
+	}
+	return d.RoutingKey
 }
 
 func copyOf(d amqp.Delivery, h amqp.Table) amqp.Publishing {

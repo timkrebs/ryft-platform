@@ -104,7 +104,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync, or in scoring a day, without consent, D78). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
-| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), by routing key, into `dlq.scoring`/`dlq.notify` (D99): `ok`, or `error` (the publish failed; the message was rejected, and the broker's delivery limit dead-letters it). Before the cutover, `subject` was the NATS subject (`ryft.ingested`). |
+| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), into `dlq.scoring`/`dlq.notify` (D99), by `subject`: the event's type when the queue's consumer is bound for it, else the routing key it came with (a type set by the publisher never becomes a label on its own, so the label values are the topology's keys and queue names); then `result`: `ok`, or `error` (the publish failed; the message was rejected, and the broker's delivery limit dead-letters it). Before the cutover, `subject` was the NATS subject (`ryft.ingested`). |
 | `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
 | `ryft_event_handler_panics_total` | counter | `subject` | scoring, notify | Event handlers that panicked: the message is retried and, at its last delivery, dead-lettered, instead of the service crashing (D92). Any is a bug. |
 | `ryft_amqp_connected` | gauge | — | ingest, api, scoring, notify | 1 while the connection to RabbitMQ is up, 0 while it reconnects (backoff 1 s → 30 s with jitter). Registered when the service connects (migrate has none). |
@@ -215,7 +215,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Sync to score p50 / p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[15m])))` (repeat for 0.5) |
 | Dead letters | stacked bars, 1 h buckets | `sum by (subject, result) (increase(ryft_events_dlq_total[1h]))` |
 | Queue depths (RabbitMQ) | time series | `max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft"})`, `max by (queue) (rabbitmq_queue_messages_unacked{vhost="ryft"})` |
-| Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `scripts/dlq.sh list`) |
+| Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `KUBE_CONTEXT=<context> scripts/dlq.sh list`) |
 | Broker nodes and alarms | state timeline | `count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"})`, `max by (instance) (rabbitmq_alarms_memory_used_watermark + rabbitmq_alarms_free_disk_space_watermark)` |
 | Broker memory per node | time series | `max by (instance) (rabbitmq_process_resident_memory_bytes)` (the alarm at about 520 MB) |
 | Connected to RabbitMQ | state timeline | `min by (namespace) (ryft_amqp_connected)`, and `sum by (namespace) (increase(ryft_amqp_reconnects_total[1h]))` |
@@ -262,11 +262,11 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
 | RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
 | SyncToScoreSlow | warning | p95 from sync to score over 2 min, 15 min | scoring's CPU and database time, the backlog, a large backfill |
-| DeadLetters | warning | an event was dead-lettered | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
+| DeadLetters | warning | an event was dead-lettered | `KUBE_CONTEXT=<context> scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
 | DeadLetterPublishFailing | critical | not even the dead-letter publish worked | the broker, the consumer's rights |
 | PublishFailing | warning | the relay's sends fail, 10 min | the broker; the outbox keeps the events (OutboxBacklog follows) |
 | RabbitMQBacklog | warning | > 100 events ready in `scoring` or `notify`, 15 min | is the consumer connected (`ryft_amqp_connected`), its logs |
-| RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
+| RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `KUBE_CONTEXT=<context> scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
 | RabbitMQAlarm | critical | a node's memory or disk alarm, 2 min (publishers are blocked) | queue depths (a consumer that stopped), `rabbitmq-diagnostics -q alarms` |
 | RabbitMQNodeDown | warning | fewer than three nodes report, 5 min | `kubectl -n ryft-rabbitmq get pods`, a node drain, the PDB |
 | AMQPDisconnected | warning | a service's connection to RabbitMQ is down, 5 min | its log (`amqp` lines: TLS, password, the broker); scoring's and notify's `/readyz` |
