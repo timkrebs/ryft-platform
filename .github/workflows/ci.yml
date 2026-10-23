@@ -205,16 +205,17 @@ jobs:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_manifests == 'true'
     runs-on: ubuntu-latest
-    # Every step that renders (kubectl kustomize in make, check_registry, check_policy_in_force, the
-    # script tests) may only use git over file://: a remote base that slipped through fails the build.
-    env:
-      GIT_ALLOW_PROTOCOL: file
     steps:
       # The whole history: the holds check reads the base branch, deploy_targets.sh the pins.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      # From here on every step that renders (kubectl kustomize in make, check_registry,
+      # check_policy_in_force, the script tests) may only use git over file://: a remote base that
+      # slipped through fails the build. Not job-wide: the checkout above fetches over https.
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
       # First: the bytes of every tracked file (not only YAML: kustomize also reads `Kustomization`
       # and any extension named in resources/patches). A hidden line break (U+2028, U+2029, U+0085, a
       # lone CR), a bidi control or another invisible character in a comment is a line break to the
@@ -281,12 +282,13 @@ jobs:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_smoke == 'true'
     runs-on: ubuntu-latest
-    env:
-      GIT_ALLOW_PROTOCOL: file  # make test-scripts renders overlays (see manifests)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # make test-scripts renders overlays: git over file:// only from here on (see manifests).
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: backend/go.mod
