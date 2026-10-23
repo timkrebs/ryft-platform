@@ -25,7 +25,9 @@ infra/aws/
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
-    └── tests/addons.tftest.hcl
+    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11 + bindings (D120)
+    ├── admission.tf admission-values.yaml   the release (off), its committed values, the checks
+    └── tests/addons.tftest.hcl tests/admission.tftest.hcl
 ```
 
 ## What it creates
@@ -102,6 +104,73 @@ $(terraform output -raw load_balancer_hostname_command)       # the NLB hostname
 images on GHCR (the first CI run) and, for the app's Release build, Supabase auth (M1).
 Once applied, cert-manager issues the `api.ryftapp.de` certificate and ExternalDNS points
 the name at the NLB within a minute or two.
+
+## Admission policies (D120)
+
+`infra/aws/kubernetes/admission.tf` installs eleven built-in ValidatingAdmissionPolicies
+(P1–P11) and twelve bindings (P2 has one for templates and one for Pods) from the local
+chart `charts/admission-policy`, as the release `admission-policy` in `kube-system`. They
+judge what PSA cannot: images per namespace, commands and service account tokens, the
+auth-mode keys, NetworkPolicy and Traefik shapes, the Vault Secrets Operator objects, the
+RabbitMQ operators' cluster power and reach, the broker, and Argo CD's own objects. No pods
+run for them and no webhook can be down; the cost is nil (API server CPU only).
+
+**It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.
+It also holds the Vault address P4 pins (a test compares it with the generated
+`deploy/k8s/overlays/vault-namespaces/*/vault.yaml`), Argo CD's service account names and
+the action of each binding, `audit` or `deny`:
+
+| `actions` value | `validationActions` | Meaning |
+| --- | --- | --- |
+| `audit` (the default) | `Warn`, `Audit` | the request passes; `kubectl` warns and the audit log in CloudWatch records it |
+| `deny` | `Deny`, `Audit` | the request is refused and recorded |
+| break-glass | `Warn`, `Audit` for **every** binding | the policies stay visible and stop refusing |
+
+`Deny` is never combined with `Warn` (the API server refuses that), and anything that is
+not exactly `deny` is applied as `Warn`+`Audit`. A rollout step is a reviewed pull request
+that edits `admission-values.yaml` (see the keys' comments for the steps A–D), followed by
+your apply. Changing `enabled` to `false` later destroys the release and every policy.
+
+Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass` (bool),
+`admission_actions` (a one-plan override per binding) and `admission_enabled` (a plan-only
+override of the file; never apply with it set).
+
+Outputs: `admission_enabled` and `admission_binding_actions` (what each binding is given).
+`check` blocks warn on every plan about an action or binding the chart does not have, a
+Vault address that differs from the generated `vault.yaml`, a P7 on `deny` without its
+AppProjects (T12-b), and **drift**: a binding that is missing, was patched, or was left in
+break-glass (it reads the bindings from the cluster, so it needs the cluster like any plan).
+
+Chart values worth knowing (`charts/admission-policy/values.yaml`):
+
+- `projects`: the decoded `deploy/argocd/project.yaml` documents P7 compares AppProjects
+  against. Empty until T12-b wires it, which makes P7 refuse every AppProject write, so keep
+  the `argocd` binding on `audit` until then.
+- `netpol.brokerEgressPublic`: `true` while `ryft-rabbitmq` still has its 443 egress rule
+  open to `0.0.0.0/0`; the PR that narrows it (T12-k) sets it to `false`.
+- `breakGlass`, `actions`, `vpcCIDR`, `vaultAddress`: set from the file and the variables.
+
+Render and check the chart without a cluster (the values file is the CI input too):
+
+```bash
+helm lint infra/aws/kubernetes/charts/admission-policy -f infra/aws/kubernetes/admission-values.yaml
+helm template admission-policy infra/aws/kubernetes/charts/admission-policy \
+  -f infra/aws/kubernetes/admission-values.yaml                  # all Warn+Audit
+helm template admission-policy infra/aws/kubernetes/charts/admission-policy \
+  -f infra/aws/kubernetes/admission-values.yaml --set breakGlass=true,actions.vso=deny  # still Warn+Audit
+```
+
+Bump `version` in `charts/admission-policy/Chart.yaml` with every template change, or the
+Helm provider does not upgrade the release.
+
+**Break-glass (you only).** Bindings are exempt from admission, so this always works:
+`kubectl patch validatingadmissionpolicybinding <name> --type=merge -p
+'{"spec":{"validationActions":["Warn","Audit"]}}'` (or delete the binding). Restore, or plan
+it ahead, with the release: `terraform apply -target=helm_release.admission_policy
+[-var='admission_break_glass=true']`; a patch is invisible to Helm, so restore a patched
+binding with `-replace=helm_release.admission_policy`. A release stuck in `pending-upgrade`:
+`helm -n kube-system history admission-policy`, then `helm -n kube-system rollback
+admission-policy <last deployed revision>`. The full runbook comes with the later tickets.
 
 ## Cost
 

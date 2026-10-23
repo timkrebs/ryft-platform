@@ -1,0 +1,67 @@
+{{- /*
+P4 ryft-vso (C, U; all namespaces, any writer). The Vault Secrets Operator objects are
+held to the shape infra/vault generates: keys are allowlisted per kind (the CRD-defaulted
+ones included: skipTLSVerify, kubernetes.tokenExpirationSeconds, destination.create and
+overwrite, hmacSecretData). Other secrets.hashicorp.com kinds are refused.
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-vso" "id" "P4" "summary" "Vault Secrets Operator objects keep the shape infra/vault generates") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["secrets.hashicorp.com"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["*"]
+  matchConditions:
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: spec
+      expression: dyn(object).spec
+  validations:
+    - expression: variables.reqKind in ['VaultConnection', 'VaultAuth', 'VaultStaticSecret']
+      message: "P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'VaultConnection' ||
+        (variables.spec.all(k, k in ['address', 'skipTLSVerify']) &&
+         has(variables.spec.address) && variables.spec.address == {{ .Values.vaultAddress | toJson }} &&
+         (!has(variables.spec.skipTLSVerify) || variables.spec.skipTLSVerify == false))
+      message: "P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'VaultAuth' ||
+        (variables.spec.all(k, k in ['vaultConnectionRef', 'namespace', 'method', 'mount', 'kubernetes']) &&
+         has(variables.spec.method) && variables.spec.method == 'kubernetes' &&
+         has(variables.spec.mount) && variables.spec.mount == {{ .Values.vso.authMount | toJson }} &&
+         has(variables.spec.vaultConnectionRef) && variables.spec.vaultConnectionRef == {{ .Values.vso.connectionName | toJson }} &&
+         has(variables.spec.kubernetes) &&
+         variables.spec.kubernetes.all(k, k in ['role', 'serviceAccount', 'audiences', 'tokenExpirationSeconds']) &&
+         has(variables.spec.kubernetes.audiences) && variables.spec.kubernetes.audiences == [{{ .Values.vso.audience | toJson }}])
+      message: "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, and no allowedNamespaces."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'VaultStaticSecret' ||
+        (variables.spec.all(k, k in ['vaultAuthRef', 'mount', 'type', 'path', 'refreshAfter', 'hmacSecretData', 'destination', 'rolloutRestartTargets']) &&
+         has(variables.spec.vaultAuthRef) && !variables.spec.vaultAuthRef.contains('/') &&
+         has(variables.spec.mount) && variables.spec.mount == {{ .Values.vso.kvMount | toJson }} &&
+         has(variables.spec.type) && variables.spec.type == 'kv-v2' &&
+         (!has(variables.spec.rolloutRestartTargets) || variables.spec.rolloutRestartTargets.all(t, t.all(k, k in ['kind', 'name']))))
+      message: "P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'VaultStaticSecret' ||
+        (has(variables.spec.destination) &&
+         variables.spec.destination.all(k, k in ['name', 'create', 'overwrite', 'labels', 'transformation']) &&
+         has(variables.spec.destination.name) &&
+         (variables.spec.destination.name in {{ .Values.vso.secretNames | toJson }} ||
+          {{ .Values.vso.secretNamePrefixes | toJson }}.exists(p, variables.spec.destination.name.startsWith(p))) &&
+         has(variables.spec.destination.transformation) &&
+         variables.spec.destination.transformation.all(k, k == 'excludeRaw') &&
+         has(variables.spec.destination.transformation.excludeRaw) && variables.spec.destination.transformation.excludeRaw == true)
+      message: "P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "vso" "policy" "ryft-vso" "id" "P4" "step" "A") }}

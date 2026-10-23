@@ -1,0 +1,2 @@
+{{- /* Renders nothing; fails the render on values the chart cannot honour. */ -}}
+{{- include "admission.validate" . -}}

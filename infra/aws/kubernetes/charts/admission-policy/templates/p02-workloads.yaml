@@ -1,0 +1,126 @@
+{{- /*
+P2 ryft-workloads (C, U): Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Job and
+CronJob in ryft-* and rabbitmq-system. Two bindings: `templates` (everything but Pod,
+what Argo applies) and `pods` (what controllers create at runtime).
+
+Images: ryft-<svc> runs <registry>/<svc>:<7 hex> (ryft-smoke runs the migrate image),
+ryft-rabbitmq the broker's digest-pinned image, rabbitmq-system only the two operators
+with command [/manager]; no image volumes anywhere. In ryft-*: no command (exec probes and
+exec lifecycle hooks count as commands), args only [smoke] on the migrate image in
+ryft-smoke, automountServiceAccountToken false, no projected token, nothing that refers to
+Secret vault-auth-token, and on Pods no kube-api-access-* volume.
+
+The broker's exemption (commands and args, exec probes and hooks, the token) covers
+exactly: the StatefulSet rabbitmq-server written by the Cluster Operator, Pods whose
+controller is that StatefulSet, and (a matchCondition, not a variable) an UPDATE of that
+StatefulSet by any writer that only changes the restartedAt template annotation (D98's
+`rollout restart`).
+*/ -}}
+{{- $brokerSts := .Values.broker.statefulSetName -}}
+{{- $restartedAt := "kubectl.kubernetes.io/restartedAt" -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-workloads" "id" "P2" "summary" "images, commands, service account tokens and vault-auth-token of RYFT and operator workloads") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      {{- include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE")) | nindent 6 }}
+      {{- include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE")) | nindent 6 }}
+  matchConditions:
+    - name: ryft-or-operators-namespace
+      expression: request.namespace.startsWith('ryft-') || request.namespace == {{ .Values.operators.namespace | toJson }}
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+    - name: not-a-broker-restart
+      # D98's fallback: kubectl rollout restart statefulset rabbitmq-server. The only
+      # change is spec.template.metadata.annotations[restartedAt]; every other key of
+      # spec and of the template's metadata is equal in both versions.
+      expression: |-
+        !(request.operation == 'UPDATE' && request.kind.kind == 'StatefulSet' &&
+          request.namespace == {{ .Values.broker.namespace | toJson }} &&
+          dyn(object).metadata.name == {{ $brokerSts | toJson }} &&
+          dyn(object).spec.all(k, k == 'template' || (k in dyn(oldObject).spec && dyn(object).spec[k] == dyn(oldObject).spec[k])) &&
+          dyn(oldObject).spec.all(k, k == 'template' || k in dyn(object).spec) &&
+          dyn(object).spec.template.all(k, k == 'metadata' || (k in dyn(oldObject).spec.template && dyn(object).spec.template[k] == dyn(oldObject).spec.template[k])) &&
+          dyn(oldObject).spec.template.all(k, k == 'metadata' || k in dyn(object).spec.template) &&
+          dyn(object).spec.template.metadata.all(k, k == 'annotations' || (k in dyn(oldObject).spec.template.metadata && dyn(object).spec.template.metadata[k] == dyn(oldObject).spec.template.metadata[k])) &&
+          dyn(oldObject).spec.template.metadata.all(k, k == 'annotations' || k in dyn(object).spec.template.metadata) &&
+          (has(dyn(object).spec.template.metadata.annotations) ? dyn(object).spec.template.metadata.annotations : {}).all(k,
+            k == {{ $restartedAt | toJson }} || (k in (has(dyn(oldObject).spec.template.metadata.annotations) ? dyn(oldObject).spec.template.metadata.annotations : {}) &&
+              dyn(object).spec.template.metadata.annotations[k] == dyn(oldObject).spec.template.metadata.annotations[k])) &&
+          (has(dyn(oldObject).spec.template.metadata.annotations) ? dyn(oldObject).spec.template.metadata.annotations : {}).all(k,
+            k == {{ $restartedAt | toJson }} || k in (has(dyn(object).spec.template.metadata.annotations) ? dyn(object).spec.template.metadata.annotations : {})))
+  variables:
+    {{- include "admission.podVariables" . | nindent 4 }}
+    - name: inRyft
+      expression: variables.ns.startsWith('ryft-')
+    - name: imagePrefix
+      expression: |-
+        {{ .Values.images.registry | toJson }} + '/' +
+        (variables.ns in {{ .Values.images.repositoryByNamespace | toJson }} ? {{ .Values.images.repositoryByNamespace | toJson }}[variables.ns] : variables.ns.substring(5)) + ':'
+    # The broker's own objects, which the Cluster Operator builds with commands and a token.
+    - name: broker
+      expression: |-
+        variables.ns == {{ .Values.broker.namespace | toJson }} && (
+          (variables.reqKind == 'StatefulSet' && variables.o.metadata.name == {{ $brokerSts | toJson }} &&
+            request.userInfo.username == {{ include "admission.user.clusterOperator" . | toJson }}) ||
+          (variables.reqKind == 'Pod' && has(variables.o.metadata.ownerReferences) &&
+            variables.o.metadata.ownerReferences.exists(r, has(r.controller) && r.controller == true && r.kind == 'StatefulSet' && r.name == {{ $brokerSts | toJson }})))
+  validations:
+    - expression: |-
+        variables.containers.all(c,
+          variables.ns == {{ .Values.broker.namespace | toJson }} ? c.image.matches({{ .Values.images.broker | toJson }}) :
+          variables.ns == {{ .Values.operators.namespace | toJson }} ? c.image.matches({{ .Values.images.operators | toJson }}) :
+          (c.image.startsWith(variables.imagePrefix) && c.image.substring(size(variables.imagePrefix)).matches('^[0-9a-f]{7}$')))
+      message: "P2: a container image is not the one this namespace may run."
+      reason: Forbidden
+    - expression: variables.volumes.all(v, !has(v.image))
+      message: "P2: image volumes are not allowed."
+      reason: Forbidden
+    - expression: |-
+        variables.ns != {{ .Values.operators.namespace | toJson }} ||
+        variables.containers.all(c, has(c.command) && c.command == ['/manager'])
+      message: "P2: an operator container must run exactly /manager."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft || variables.broker ||
+        variables.containers.all(c,
+          (!has(c.command) || size(c.command) == 0) &&
+          ['livenessProbe', 'readinessProbe', 'startupProbe'].all(p, !(p in c) || !('exec' in c[p])) &&
+          (!('lifecycle' in c) || ['postStart', 'preStop'].all(h, !(h in c.lifecycle) || !('exec' in c.lifecycle[h]))))
+      message: "P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft || variables.broker ||
+        variables.containers.all(c, !has(c.args) || size(c.args) == 0 ||
+          (variables.ns == 'ryft-smoke' && c.args == ['smoke'] && c.image.startsWith({{ printf "%s/migrate:" .Values.images.registry | toJson }})))
+      message: "P2: a RYFT container must not set args (only the smoke hook's [smoke])."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft || variables.broker ||
+        (has(variables.podSpec.automountServiceAccountToken) && variables.podSpec.automountServiceAccountToken == false)
+      message: "P2: a RYFT workload must set automountServiceAccountToken: false."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft || variables.broker ||
+        variables.volumes.all(v, !has(v.projected) || !has(v.projected.sources) || v.projected.sources.all(s, !has(s.serviceAccountToken)))
+      message: "P2: a RYFT workload must not project a service account token."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft || variables.broker || variables.reqKind != 'Pod' ||
+        variables.volumes.all(v, !v.name.startsWith('kube-api-access-'))
+      message: "P2: a RYFT Pod must not carry a kube-api-access volume."
+      reason: Forbidden
+    - expression: |-
+        !variables.inRyft ||
+        (variables.volumes.all(v,
+            (!has(v.secret) || !has(v.secret.secretName) || v.secret.secretName != 'vault-auth-token') &&
+            (!has(v.projected) || !has(v.projected.sources) ||
+              v.projected.sources.all(s, !has(s.secret) || !has(s.secret.name) || s.secret.name != 'vault-auth-token'))) &&
+          variables.containers.all(c,
+            (!has(c.env) || c.env.all(e, !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef) || e.valueFrom.secretKeyRef.name != 'vault-auth-token')) &&
+            (!has(c.envFrom) || c.envFrom.all(f, !has(f.secretRef) || f.secretRef.name != 'vault-auth-token'))))
+      message: "P2: a RYFT workload must not use Secret vault-auth-token."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "workloads-templates" "policy" "ryft-workloads" "suffix" "templates" "id" "P2" "step" "B" "rules" (include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE")))) }}
+---
+{{ include "admission.binding" (dict "root" . "key" "workloads-pods" "policy" "ryft-workloads" "suffix" "pods" "id" "P2" "step" "C" "rules" (include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE")))) }}

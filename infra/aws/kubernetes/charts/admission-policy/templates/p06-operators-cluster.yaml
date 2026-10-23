@@ -1,0 +1,104 @@
+{{- /*
+P6 ryft-operators-cluster (C, U; requester Argo CD). What the operators project
+(rabbitmq-operators, project ryft-operators) may put on the cluster:
+ - CustomResourceDefinitions of rabbitmq.com only, without a conversion webhook;
+ - ClusterRoles named rabbitmq-cluster-* or messaging-topology-*: no wildcard, no
+   escalate, bind or impersonate, no aggregationRule or aggregate-to label, no grant on
+   admissionregistration.k8s.io, apiextensions.k8s.io, argoproj.io or secrets.hashicorp.com,
+   on cluster RBAC, nodes or serviceaccounts/token, and no non-resource URL but /metrics;
+ - ClusterRoleBindings only to those roles, only for the two operator service accounts;
+ - the four webhook configurations, with services in rabbitmq-system, never a url, on
+   rabbitmq.com only;
+ - Roles and RoleBindings only in rabbitmq-system, roleRef.kind Role, subjects only the
+   two operator service accounts.
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-operators-cluster" "id" "P6" "summary" "cluster-scoped power Argo CD may give the RabbitMQ operators") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apiextensions.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["customresourcedefinitions"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+      - apiGroups: ["admissionregistration.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  matchConditions:
+    - name: requester-is-argocd
+      expression: request.userInfo.username in {{ include "admission.cel.argoUsers" . }}
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: o
+      expression: dyn(object)
+    - name: rules
+      expression: |-
+        has(variables.o.rules) ? variables.o.rules : []
+    - name: subjects
+      expression: |-
+        has(variables.o.subjects) ? variables.o.subjects : []
+    - name: operatorAccounts
+      expression: |-
+        [{{ .Values.operators.clusterOperatorServiceAccount | toJson }}, {{ .Values.operators.topologyOperatorServiceAccount | toJson }}]
+    - name: roleNameOk
+      expression: |-
+        {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.o.metadata.name.startsWith(p))
+  validations:
+    - expression: |-
+        variables.reqKind != 'CustomResourceDefinition' ||
+        (variables.o.spec.group == 'rabbitmq.com' &&
+         (!has(variables.o.spec.conversion) || !has(variables.o.spec.conversion.strategy) || variables.o.spec.conversion.strategy == 'None'))
+      message: "P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRole' ||
+        (variables.roleNameOk && !has(variables.o.aggregationRule) &&
+         (!has(variables.o.metadata.labels) ||
+          variables.o.metadata.labels.all(k, !k.startsWith('rbac.authorization.k8s.io/aggregate-to-'))))
+      message: "P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRole' ||
+        variables.rules.all(r,
+          (!has(r.verbs) || r.verbs.all(v, v != '*' && !(v in ['escalate', 'bind', 'impersonate']))) &&
+          (!has(r.resources) || r.resources.all(x, x != '*')) &&
+          (!has(r.apiGroups) || r.apiGroups.all(g, g != '*')) &&
+          (!has(r.apiGroups) || r.apiGroups.all(g, !(g in ['admissionregistration.k8s.io', 'apiextensions.k8s.io', 'argoproj.io', 'secrets.hashicorp.com']))) &&
+          (!has(r.resources) || r.resources.all(x, !(x in ['clusterroles', 'clusterrolebindings', 'serviceaccounts/token']) && x != 'nodes' && !x.startsWith('nodes/'))) &&
+          (!has(r.nonResourceURLs) || r.nonResourceURLs.all(u, u == '/metrics')))
+      message: "P6: a ClusterRole of the operators must not hold a wildcard, escalate, bind, impersonate, or a grant on admission, CRDs, Argo CD, VSO, cluster RBAC, nodes, service account tokens or non-resource URLs but /metrics."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRoleBinding' ||
+        (variables.o.roleRef.kind == 'ClusterRole' &&
+         {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.o.roleRef.name.startsWith(p)) &&
+         variables.subjects.all(s, s.kind == 'ServiceAccount' && has(s.namespace) && s.namespace == {{ .Values.operators.namespace | toJson }} && s.name in variables.operatorAccounts))
+      message: "P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['MutatingWebhookConfiguration', 'ValidatingWebhookConfiguration']) ||
+        (variables.o.metadata.name in {{ .Values.operators.webhookConfigurations | toJson }} &&
+         has(variables.o.webhooks) &&
+         variables.o.webhooks.all(w,
+           has(w.clientConfig.service) && !has(w.clientConfig.url) &&
+           w.clientConfig.service.namespace == {{ .Values.operators.namespace | toJson }} &&
+           has(w.rules) && w.rules.all(r, has(r.apiGroups) && r.apiGroups.all(g, g == 'rabbitmq.com'))))
+      message: "P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['Role', 'RoleBinding']) ||
+        (request.namespace == {{ .Values.operators.namespace | toJson }} &&
+         (variables.reqKind == 'Role' ||
+          (variables.o.roleRef.kind == 'Role' &&
+           variables.subjects.all(s, s.kind == 'ServiceAccount' && has(s.namespace) && s.namespace == {{ .Values.operators.namespace | toJson }} && s.name in variables.operatorAccounts))))
+      message: "P6: Roles and RoleBindings are allowed only in rabbitmq-system, for the two operator service accounts."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "operators-cluster" "policy" "ryft-operators-cluster" "id" "P6" "step" "A") }}
