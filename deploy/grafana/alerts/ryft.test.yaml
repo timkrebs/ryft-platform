@@ -77,6 +77,32 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95)" }
+  - name: the database refuses a route's text for the first time
+    interval: 1m
+    input_series:
+      # The series appears at 1 (the counter is created by its first refusal), which
+      # increase() alone never sees; the client's own refusals (at="body") never alert.
+      - { series: 'ryft_http_text_refused_total{namespace="ryft-api",pod="api-1",route="POST /v1/feedback",at="database"}', values: '_x10 1x100' }
+      - { series: 'ryft_http_text_refused_total{namespace="ryft-api",pod="api-1",route="POST /v1/feedback",at="body"}', values: '1+5x110' }
+    alert_rule_test:
+      - { eval_time: 5m, alertname: TextRefusedByDatabase, exp_alerts: [] }
+      - eval_time: 15m
+        alertname: TextRefusedByDatabase
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: ryft-api, route: POST /v1/feedback }
+            exp_annotations: { summary: "ryft-api POST /v1/feedback: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
+      - { eval_time: 90m, alertname: TextRefusedByDatabase, exp_alerts: [] }
+  - name: the database refuses a route's text again
+    interval: 1m
+    input_series:
+      - { series: 'ryft_http_text_refused_total{namespace="ryft-ingest",pod="ingest-1",route="POST /v1/sync",at="database"}', values: '1x100 2x30' }
+    alert_rule_test:
+      - { eval_time: 90m, alertname: TextRefusedByDatabase, exp_alerts: [] }
+      - eval_time: 110m
+        alertname: TextRefusedByDatabase
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: ryft-ingest, route: POST /v1/sync }
+            exp_annotations: { summary: "ryft-ingest POST /v1/sync: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
   - name: feedback and certificates
     interval: 1m
     input_series:

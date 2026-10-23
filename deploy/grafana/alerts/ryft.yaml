@@ -26,6 +26,18 @@ groups:
       - alert: Panics
         expr: sum(increase(ryft_http_panics_total[15m])) > 0
         labels: { severity: critical }
+      - alert: TextRefusedByDatabase
+        # Postgres refused a request's text (SQLSTATE 22021/22P05) that httpx's checks let
+        # through: the client got a 422 and nothing was logged, where it used to be a logged
+        # 500. A path the normalisation missed, or a server-side bug writing bad text. The
+        # second term sees a route's first refusal, which increase() misses: the series is
+        # created at 1 (OBSERVABILITY.md → Alerts).
+        expr: |
+          sum by (namespace, route) (increase(ryft_http_text_refused_total{at="database"}[1h])) > 0
+            or sum by (namespace, route) (ryft_http_text_refused_total{at="database"}
+              unless ryft_http_text_refused_total{at="database"} offset 1h) > 0
+        labels: { severity: warning }
+        annotations: { summary: "{{ $labels.namespace }} {{ $labels.route }}: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
       - alert: SyncSlow
         expr: histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10
         for: 15m
