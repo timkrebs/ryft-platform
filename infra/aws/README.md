@@ -160,6 +160,23 @@ helm template admission-policy infra/aws/kubernetes/charts/admission-policy \
   -f infra/aws/kubernetes/admission-values.yaml --set breakGlass=true,actions.vso=deny  # still Warn+Audit
 ```
 
+**Offline CEL test.** `make admission-celtest` (`charts/admission-policy/celtest/`, its own Go
+module) renders the chart with the committed values and the decoded `project.yaml`,
+renders `deploy/` (`helm template`, `kubectl kustomize`; read-only, no cluster), and
+evaluates every policy with the Kubernetes CEL libraries (the apiserver's compiler,
+validator and cost budget) against:
+
+- every object of those renders, on create and update, which must all be admitted;
+- the hand-written fixtures in `celtest/testdata/objects.json` and the mutations in the Go
+  files, one or more refused fixture per rule, plus the exemptions and carve-outs that must
+  pass (the broker, finalizer removal, the controller's status writes, P10's operations).
+
+It exits non-zero on any mismatch. Needs `helm`, `kubectl` (kustomize only), `yq` and Go.
+It proves the expressions compile, evaluate and decide as intended on those objects. It
+does **not** involve an API server: `status.typeChecking`, CRD defaulting, admission
+ordering and the apiserver-dependent claims (a–d, f–m of the design) are T12-d's kind job.
+It is not in CI yet.
+
 Bump `version` in `charts/admission-policy/Chart.yaml` with every template change, or the
 Helm provider does not upgrade the release.
 

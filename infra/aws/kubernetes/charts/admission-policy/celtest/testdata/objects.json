@@ -1,0 +1,264 @@
+{
+  "statefulset-rabbitmq-server": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "rabbitmq-server",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {
+      "replicas": 3,
+      "serviceName": "rabbitmq-nodes",
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "rabbitmq"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "rabbitmq"
+          },
+          "annotations": {
+            "prometheus.io/scrape": "true"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "rabbitmq-server",
+          "automountServiceAccountToken": true,
+          "initContainers": [
+            {
+              "name": "setup-container",
+              "image": "docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58",
+              "command": [
+                "sh",
+                "-c",
+                "cp /tmp/x /var/y"
+              ]
+            }
+          ],
+          "containers": [
+            {
+              "name": "rabbitmq",
+              "image": "docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58",
+              "args": [
+                "--x"
+              ],
+              "lifecycle": {
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/bash",
+                      "-c",
+                      "rabbitmq-upgrade await_online_quorum_plus_one"
+                    ]
+                  }
+                }
+              },
+              "readinessProbe": {
+                "tcpSocket": {
+                  "port": "amqps"
+                }
+              },
+              "env": [
+                {
+                  "name": "MY_POD_NAME",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.name"
+                    }
+                  }
+                },
+                {
+                  "name": "RABBITMQ_ERLANG_COOKIE",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "rabbitmq-erlang-cookie",
+                      "key": "cookie"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "kube-api-access-xyz",
+              "projected": {
+                "sources": [
+                  {
+                    "serviceAccountToken": {
+                      "path": "token",
+                      "expirationSeconds": 3607
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "cronjob-c": {
+    "apiVersion": "batch/v1",
+    "kind": "CronJob",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "spec": {
+      "jobTemplate": {
+        "spec": {
+          "template": {
+            "spec": {
+              "automountServiceAccountToken": false,
+              "containers": [
+                {
+                  "name": "c",
+                  "image": "busybox"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "namespace-ryft-evil": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "ryft-evil",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted"
+      }
+    }
+  },
+  "namespace-monitoring": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "monitoring",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "privileged"
+      }
+    }
+  },
+  "namespace-argocd": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "argocd",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "privileged"
+      }
+    }
+  },
+  "namespace-ryft-": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "generateName": "ryft-",
+      "labels": {
+      }
+    }
+  },
+  "vaultdynamicsecret-x": {
+    "apiVersion": "secrets.hashicorp.com/v1beta1",
+    "kind": "VaultDynamicSecret",
+    "metadata": {
+      "name": "x",
+      "namespace": "ryft-api"
+    },
+    "spec": {
+    }
+  },
+  "configmap-c": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "AUTH_MODE": "apikey"
+    }
+  },
+  "configmap-c-1": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "API_KEY": "x"
+    }
+  },
+  "secret-ryft-secrets": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "USER_ID": "eA=="
+    }
+  },
+  "secret-ryft-secrets-2": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "AUTH_MODE": "c3VwYWJhc2U="
+    }
+  },
+  "secret-ryft-secrets-3": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "DATABASE_URL": "eA=="
+    }
+  },
+  "shovel-s": {
+    "apiVersion": "rabbitmq.com/v1beta1",
+    "kind": "Shovel",
+    "metadata": {
+      "name": "s",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {
+    }
+  },
+  "service-s": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "s",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {
+    }
+  },
+  "applicationset-x": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "ApplicationSet",
+    "metadata": {
+      "name": "x",
+      "namespace": "argocd"
+    },
+    "spec": {
+    }
+  }
+}
