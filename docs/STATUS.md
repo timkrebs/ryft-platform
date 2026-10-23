@@ -14,11 +14,21 @@ everything from git, CI promotes images by PR, ryft-platform syncs itself (D94�
 D103). The move from **NATS to RabbitMQ** is complete (2026-10-21, R1–R4, D97–D102):
 RabbitMQ carries every event through the outbox, NATS and its namespace are gone; the
 record of each release is under **RabbitMQ: your steps**. Open: the Argo CD health check
-for autoscalers (D105, an `infra/aws/kubernetes` apply) and the rollback drill.
+for autoscalers (D105, an `infra/aws/kubernetes` apply); the rollback drill ran on 2026-10-22
+(`docs/work/2026-10-22-followups/drill.md`).
 The **website lives here** since 2026-10-21 (D107): `timkrebs/ryft-web` imported with its
 history as `web/`, one CI for Go and the site, one promote per image group with a hold for
-rollbacks. Live since 2026-10-22 06:32 UTC (`ghcr.io/timkrebs/ryft/web:bfc51b8`); ryft-web
-is frozen, archiving it is your last step (**Web in this repository**).
+rollbacks. Live since 2026-10-22 06:32 UTC; ryft-web is archived with a pointer here.
+The **follow-ups** (2026-10-22/23, D108–D111, D115) are deployed: the site's toolchain
+policy (#19), Synthetic Monitoring for ryftapp.de as code (#20; your one-time setup is
+open), the deploy key rotated into a `deploy` environment with a daily deploy watch and
+`hold.sh` (#21), configuration that rolls its pods and a privacy version that goes into
+force with its page (F1, #22), the rollback drill, and byte checks and allowlists for
+every file, kustomization and Argo CD app (#31, #38). The app's **calibrating report**
+(2026-10-22/23, D112–D114, `docs/work/2026-10-22-calibrating/`): the reporter's account has
+no HRV source; days are re-scored when their history changes (#29); `DailyScore` carries
+`calibrating_reason` and per-signal counts (#30, migration 0027, last 30 days rescored);
+the logs hold no health values any more (#35).
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -239,6 +249,8 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | Public admin UIs (2026-10-21, D103) | In the kind cluster with the Traefik chart 42.0.0 (v3.7.14) and the broker: `rabbitmq.ryftapp.de` through Traefik → the management UI 200, the API 200 with the default user and 401 with a wrong password, HSTS; Traefik verifies the node's certificate (a wrong `serverName` → 500 with an x509 error); without the Traefik rule in the broker's network policy the request times out (504). Argo CD with the chart's Ingress and `server.insecure`: the UI 200, `POST /api/v1/session` 200 with the password and 401 without, HSTS. `terraform test` infra/aws/kubernetes 11 runs; `make k8s-validate` (the ServersTransport, Middlewares and Ingress against Traefik's schemas). Not verified: the Let's Encrypt certificates and DNS records on ryft-prod-euc1, the `argocd` CLI with `--grpc-web` (not installed here). |
 | Apex site from ryft-web (2026-10-21, D106) | Before: `ghcr.io/timkrebs/ryft/web:f437747` pulled anonymously (linux/amd64 and arm64), run locally as in the pod (uid 101, read-only root, tmpfs `/tmp` and `/var/cache/nginx`): every URL 200, the AASA production's plus `/invite/*`. PR #3 merged 18:32:16 UTC (`2cc55ef`), the new image served from 18:36:43: `/`, `/privacy`, `/terms`, `/support`, `/impressum`, `/de/privacy`, `/de/impressum`, `/privacy/2026-10-20`, `/day/2026-10-19`, `/auth/callback`, `/invite/TEST` 200 `text/html`; the AASA 200 `application/json`, no redirect; the CSP with the script hashes on 10 of 10 requests (both pods); `www` → `https://ryftapp.de/`; `/privacy/` → 301 `/privacy`. `promote_test.sh` fails with the old filter and passes with the new. Not checked: the pods' image through kubectl (the session's AWS login had expired). |
 | The site from this repository (2026-10-22, D107) | Before: PR #9's own run (every job, the workflow changed): web-checks, web-e2e (the nginx image, 150 Playwright/axe pages, links, Lighthouse), secrets, manifests, smoke, test, lint, terraform ×4, `ci-ok`, `pr-title` green; `ci-ok` red on the first run (actionlint, `GITHUB_BASE_REF` in a test), as designed. After: `web-image` built amd64, checked `/beta` for the address, Trivy, pushed both architectures (provenance, SBOM), Trivy on the digest; `ghcr.io/timkrebs/ryft/web:bfc51b8` exists. #18 changed only web's `newTag` (`f437747` → `bfc51b8`), authored by `app/ryft-deploy`, auto-merged after `changes`, `manifests`, `secrets`, `pr-title`, `ci-ok` (everything else skipped). Live from 06:32:14 UTC (2:50 after the merge): `/`, `/privacy`, `/terms`, `/support`, `/impressum`, `/de/privacy`, `/de/impressum`, `/privacy/2026-10-20`, `/day/2026-10-19`, `/auth/callback`, `/invite/TEST`, `/beta`, `/de/beta`, `/science` 200 `text/html`; the AASA 200 `application/json`, no redirect, appID `M77SKHKG63.dev.timkrebs.ryft`, the ten paths, `webcredentials`, and Apple's CDN copy identical; `/beta` links `mailto:support@ryftapp.de` with no TODO marker; the CSP's hashes match every inline script on `/`, `/privacy`, `/beta`, no external script; `www` → apex, `/privacy/` → 301 `/privacy`, HSTS; the 2026-10-21 legal texts (#10 of ryft-web) served; `api.ryftapp.de/v1/me` 401. Not checked: the pods' image and Argo CD's state through kubectl (the session's AWS login had expired) — the served text proves the new image; check `kubectl -n argocd get applications ryft-platform` once. |
+| Web follow-ups (2026-10-22/23, D108–D111, D115) | Every PR reviewed by code and security (SRE where runtime changed); findings fixed and re-verified before merge (`docs/work/2026-10-22-followups/review.md`). Deploys watched read-only: web `332c252` (#19 → #23, the first build with #17's actions); F1 (#22: four ConfigMaps renamed, migrate and smoke Succeeded, then #25 — the first promote in environment `deploy` with the rotated key); the drill (#26 rollback with a hold, promote held, the watch OK, #27 release, #28 deploy; Argo pickup 2–6 min); #31 (web image `a4ad9f7`, #36). |
+| The calibrating report (2026-10-22/23, D112–D114) | Root cause from admin aggregates (the reporter has 0 HRV nights) and your SQL (0 stale rows); #29 and #30 reviewed by code, scoring and database, #35 by security and code; migration 0027 applied (`migration applied 0027_calibrating_reason.sql`); `scripts/rescore_all.sh 30` (2 users, 0 failed, model 2026.10.1); a fresh production `scored day` line carries only `day, inputs_changed, model_version, request_id, user_id` and the standard fields (`docs/work/2026-10-22-calibrating/review.md`). |
 | Accounts and sync (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0022–0025 on plain Postgres and the Supabase shape (grants, RLS), gate modes in api, ingest and scoring (the warn header and metric, scoring's consent mode), the audit middleware (written after the call, short ids, `409` when ambiguous), the admin detail with a fake Supabase admin API (identities, relay emails, masking), the merge over every table (dry run equal to the real run, conflicts kept, children of dropped parents not copied, a second run `404`, `from` deletable afterwards), the score queue (queued, marked, pruned, the p95), the sync screen (unknown types, window, duplicates), today's state, the refresh throttle shared with the morning push, a panicking handler retried, the NATS permissions for `ryft.refresh` and its dead letters; `golangci-lint` 0 issues. `make up && make smoke` over the existing volume with 0022–0025 applied: the admin detail and short ids, two accounts on one phone merged (plan first, `404` the second time), `account_hint` (and none without the device header or for the account itself), `GET /v1/me/sync` with nothing pending once scored, `scoring_state`, the `SyncResponse` counts (a re-send and an unknown type ignored), and the refresh path (sync → scoring → `ryft.refresh` → notify, counted without a key). `scripts/smoke_prod.sh` against compose with and without the admin key; its key lookup with a fake `terraform` (found for production, never for another URL). `make test-scripts` (trace with a fake kubectl). `make check-swift`: the mirror decodes `SyncStatus` and the new fields; the app's current models still decode everything. `make alerts-check`: 21 rules with `SyncToScoreSlow`'s unit test. `infra/vault` `terraform test` 18 runs. `make k8s-validate`. `scripts/trace.sh` against production found the incident's line. A rollback past the refresh subject on a throwaway NATS 2.11. Not verified: anything else against production (not deployed), a merge on real accounts, a refresh push reaching a device. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
@@ -309,7 +321,11 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 ## Not done / not verified
 
 **Web in this repository: your steps, in this order** (D107; PR bodies have the details).
-Steps 1–6 are done (2026-10-22); 7–10 are open.
+All done (2026-10-22): the docs PR (#10); ryft-web archived with the README pointer (its
+ruleset was off for that one push, then back on unchanged) and the description "Moved to
+timkrebs/ryft-platform (web/)"; its package access removed, `make hooks`, `make
+web-install` and `../web.old` (yours); the `deploy` environment of step 10 is #21 (D110),
+the two other settings stay optional.
 
 1. **Freeze ryft-web** (any time; before its README commit): `gh workflow disable ci -R timkrebs/ryft-web`
 2. **Merge #6** and let its "deploy: images" PR merge (the services, identical binaries).
@@ -347,36 +363,70 @@ Steps 1–6 are done (2026-10-22); 7–10 are open.
     -f approval_policy=all_external_contributors`); the App key in a `deploy` environment limited
     to `main` (follow-up below).
 
-**Web in this repository: open**
+**Web follow-ups and the calibrating report: done** (every PR's reviews, fixes and deploy
+record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibrating/review.md`)
 
-- **F1:** a ConfigMap-only change of `PRIVACY_POLICY_VERSION` rolls no pod (api/ingest mix
-  versions until restarted; OPERATIONS → A new policy text has the interim restart). Fix:
-  roll on change (Deployment env as in `events.yaml`, or a hashed configMapGenerator); then
-  the check reads it there. The Go default (`internal/config`) should fail outside local
-  mode instead of pinning `2026-10-20`.
-- No external probe of `ryftapp.de` (a page that is wrong but healthy is not alerted; the
-  PostSync smoke covers `api.` only): a Grafana synthetic check for `/privacy`, the AASA
-  (200, `application/json`, no redirect) and `www`.
-- No alert for a stale hold, a stuck deploy PR or a group targeted for a day without a PR:
-  a daily scheduled check that fails (mail) on those.
-- `scripts/hold.sh add|rm <group> "<reason>"`; a PodDisruptionBudget for web (two
-  replicas, none today); the rollback drill now with a hold, and whether `argocd app sync
-  ryft-platform --resource apps:Deployment:web` skips the hooks (a 3 a.m. bypass when
-  migrate blocks).
-- The App key in a `deploy` environment restricted to `main`; Dependabot for the `docker
-  run` images (Trivy, gitleaks) and the services' Go modules and base images; the services'
-  `images` still use the GHA cache.
-- `PRIVACY_POLICY_URL` could be versioned (`/privacy/<version>`), so the app links the exact
-  consented text: your call.
-- `../ROADMAP.md` still names milestone M3 the old way and has 10 mentions of the
-  denylisted brand (lines 45, 159, 161, 191, 281, 292, 319, 371, 410, 469): your file.
-- **Dependabot is on** (2026-10-22): #12 nginx 1.31.7, #13 node 26 (base image, major),
-  #14 eslint 10, #15 @types/node 26, #16 typescript 7 (majors), #17 the actions group (8,
-  some majors). None merges itself; each runs the web checks; review the majors one by one.
-- **For the app session:** nothing in `../app` names ryft-web or its CI (checked
-  `docs/APP_STORE.md`, `TESTFLIGHT.md`, `AGENT_FLEET.md`, `API_REQUESTS.md`); the URLs are
-  unchanged. A legal text or AASA change is now a PR in `timkrebs/ryft-platform` (`web/`);
-  the app's hits of the denylisted brand are in `web/docs/BRAND_CHECK.md`.
+- **F1** → #22 (D111): hashed ConfigMaps roll their pods; the version in force on EKS is a
+  pin promote moves with web's; `check_policy_in_force.sh`; api/ingest refuse to start
+  without a valid version; web PDB.
+- **External probe** → #20 (D109); **stale hold / stuck deploy PR / targeted without a PR**
+  → the daily deploy watch, #21 (D110); **`hold.sh`**, **the deploy environment** → #21;
+  **the rollback drill** → 2026-10-22, `drill.md` (it found that a hold turned `smoke` red;
+  fixed in #31). A selective `argocd app sync --resource` skips the hooks (Argo CD v3.5.6).
+- **Dependabot majors** → #19 (D108): ESLint 10 in, nginx stays on the stable branch, Node
+  26 waits for its LTS (2026-10-28), TypeScript 7 for typescript-eslint; #17 (the actions
+  group) merged.
+- **Hidden line breaks and look-alike YAML** → #31, #38 (D115).
+- **`../ROADMAP.md`**: the 10 lines with the denylisted brand reworded (milestone names
+  kept, as you chose).
+- **The calibrating report** → #29 (D112), #30 (D113), #35 (D114); production had no day
+  scored before its history (your query, 0 rows).
+
+**Open (2026-10-23)**
+
+Yours:
+- **Synthetic Monitoring, once** (OPERATIONS → Monitoring): initialise it in Grafana Cloud,
+  then `make synthetics-apply` and `make alerts-apply`; until then the checks and alerts of
+  #20 are not live.
+- **The privacy text in force (2026-10-20)** is still `status: draft`, with `TODO(user)` for
+  the controller's name and address and the supervisory authority. Its sentence that
+  scoring logs the daily scores over-describes since #35: fold the correction into the next
+  policy version after **2026-11-06** (the old log lines have left CloudWatch by then).
+- **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
+  `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
+  ConfigMap in `envFrom` and would override the version in force.
+- **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
+  `argocd app resources ryft-platform --orphaned`.
+- Optional: squash commits take the PR title; approval for outside contributors' runs; the
+  `bytes` job as a required check (`ci-ok` already needs it). `PRIVACY_POLICY_URL`
+  versioned (`/privacy/<version>`): your call.
+
+Technical:
+- **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
+  `@types/node` in one PR (D108).
+- **Supply chain** (#17's review): pin `tonistiigi/binfmt` and `moby/buildkit` by digest;
+  Trivy before push for the service images; provenance `mode=max` carries the push event
+  payload. Dependabot for the `docker run` images and the services' Go modules and base
+  images; the services' `images` still use the GHA cache.
+- **scoring** runs two consumers for 10–30 s during a rollout surge: confirm its timer is
+  safe, or `maxSurge: 0` for scoring.
+- **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
+  half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
+- **The migrator** sets no `lock_timeout` (only 0027 does): one for every migration; name
+  the Postgres major version in `SUPABASE.md`.
+- **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
+- **Log tests**: pin the allowed keys' value types (a health value under `applied` would
+  pass); GoTrue errors via `resp.StatusCode`.
+- **The deploy watch** alerts by GitHub mail only (no dead-man signal): look at its runs
+  weekly.
+- The never-scored placeholder of `GET /v1/days/{day}` says `calibrating: false` with
+  `state: "calibrating"` (pre-existing).
+
+**For the app session:** `docs/work/2026-10-22-calibrating/app-answers.md` answers
+`../app/docs/API_REQUESTS.md` (AASA done — add `applinks:ryftapp.de`; `calibrating_reason`
+live; the reporter has no HRV source; past days can change after the fact with the same
+`model_version`). The rest of that file is the next brief. A legal text or AASA change is a
+PR here (`web/`); the app's hits of the denylisted brand are in `web/docs/BRAND_CHECK.md`.
 
 **GitOps: your steps, in this order** (OPERATIONS.md → Deploy and roll back → Cutover):
 
@@ -420,8 +470,9 @@ Steps 1–6 are done (2026-10-22); 7–10 are open.
 7. **Prove the loop:** a merge that changes nothing: done (`d733f68`: ryft-platform
    stayed Synced, no sync, no hooks). A real promote PR: done (PR #2: opened 13:17:53,
    merged by itself 13:21:03 after CI, Argo CD synced 13:22, healthy with the smoke
-   13:29 including one retry; about 4 minutes without the HPA failure). Still to do:
-   the rollback drill, a revert of a pin and of the revert, after the D105 apply.
+   13:29 including one retry; about 4 minutes without the HPA failure). The rollback
+   drill ran on 2026-10-22 with a hold (`docs/work/2026-10-22-followups/drill.md`); the
+   D105 apply is still open.
 8. **Argo CD's HPA health check** (D105): `(cd infra/aws/kubernetes && terraform plan
    -out=tfplan && terraform apply tfplan)`; the plan changes only `helm_release.argocd`
    (argocd-cm), no restart of the services.
