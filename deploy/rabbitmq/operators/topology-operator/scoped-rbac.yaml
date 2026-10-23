@@ -1,0 +1,94 @@
+# The Messaging Topology Operator's rights in ryft-rabbitmq only (T12-g, D97): the
+# release's ClusterRole messaging-topology-manager-role (cluster-wide secrets) is deleted
+# by kustomization.yaml and its rules live here as a Role, the same rules. The operator
+# watches ryft-rabbitmq alone (OPERATOR_SCOPE_NAMESPACE). Its leader election stays in
+# rabbitmq-system (the release's own Role); the tokenreview roles for its metrics stay
+# cluster roles (they read no Secret). An upgrade compares these rules with the new
+# release's ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: messaging-topology-manager-role
+  namespace: ryft-rabbitmq
+  labels:
+    app.kubernetes.io/name: messaging-topology-operator
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, get, list, update, watch]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [rabbitmq.com]
+    resources:
+      - bindings
+      - exchanges
+      - federations
+      - operatorpolicies
+      - permissions
+      - policies
+      - queues
+      - schemareplications
+      - shovels
+      - superstreams
+      - topicpermissions
+      - users
+      - vhosts
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [rabbitmq.com]
+    resources:
+      - bindings/finalizers
+      - exchanges/finalizers
+      - federations/finalizers
+      - operatorpolicies/finalizers
+      - permissions/finalizers
+      - policies/finalizers
+      - queues/finalizers
+      - schemareplications/finalizers
+      - shovels/finalizers
+      - superstreams/finalizers
+      - topicpermissions/finalizers
+      - users/finalizers
+      - vhosts/finalizers
+    verbs: [update]
+  - apiGroups: [rabbitmq.com]
+    resources:
+      - bindings/status
+      - exchanges/status
+      - federations/status
+      - operatorpolicies/status
+      - permissions/status
+      - policies/status
+      - queues/status
+      - schemareplications/status
+      - shovels/status
+      - superstreams/status
+      - topicpermissions/status
+      - users/status
+      - vhosts/status
+    verbs: [get, patch, update]
+  - apiGroups: [rabbitmq.com]
+    resources: [rabbitmqclusters]
+    verbs: [get, list, watch]
+  - apiGroups: [rabbitmq.com]
+    resources: [rabbitmqclusters/status]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: messaging-topology-manager-rolebinding
+  namespace: ryft-rabbitmq
+  labels:
+    app.kubernetes.io/name: messaging-topology-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: messaging-topology-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: messaging-topology-operator
+    namespace: rabbitmq-system

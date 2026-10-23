@@ -351,7 +351,8 @@ queues, policies, users and rights as the Topology Operator's objects
 replica each. `deploy/k8s/services/<service>`
 puts each into its namespace. `overlays/eks` composes the services on EKS, with
 Secrets from Vault through the operator; `deploy/rabbitmq` holds the broker (with
-`deploy/rabbitmq/operators`).
+`deploy/rabbitmq/operators`: both RabbitMQ operators run in `rabbitmq-system` and are
+scoped to `ryft-rabbitmq`, with Roles there instead of cluster-wide secret rights, T12-g).
 `overlays/local-postgres` composes them with an in-cluster Postgres, a nightly
 `pg_dump` CronJob and generated per-namespace Secrets.
 

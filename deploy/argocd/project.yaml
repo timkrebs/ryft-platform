@@ -68,6 +68,8 @@ spec:
     - https://github.com/timkrebs/ryft-platform.git
   destinations:
     - { server: https://kubernetes.default.svc, namespace: rabbitmq-system }
+    # The operators' Roles and RoleBindings in the namespace they are scoped to (T12-g, D97).
+    - { server: https://kubernetes.default.svc, namespace: ryft-rabbitmq }
   clusterResourceWhitelist:
     - { group: "", kind: Namespace }
     - { group: apiextensions.k8s.io, kind: CustomResourceDefinition }

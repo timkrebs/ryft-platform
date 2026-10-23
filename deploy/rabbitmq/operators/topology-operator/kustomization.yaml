@@ -4,11 +4,32 @@
 # CA in its trust store. It talks to the broker's management API over HTTPS
 # (management-tls, 15671) and trusts the system pool, so ca.crt from ../ca.yaml is
 # mounted into /etc/ssl/certs (the operator's documented way).
+# Scope (T12-g): OPERATOR_SCOPE_NAMESPACE limits the operator's caches to ryft-rabbitmq, and
+# its cluster-wide manager ClusterRole and binding (secrets) are deleted for the Role in
+# scoped-rbac.yaml. Webhooks, CRDs, leader election and the metrics auth roles stay as released.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - messaging-topology-operator-1.20.4.yaml
+  - scoped-rbac.yaml
 patches:
+  - target: { kind: Deployment, name: messaging-topology-operator }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value: [{ name: OPERATOR_SCOPE_NAMESPACE, value: ryft-rabbitmq }]
+  - target: { kind: ClusterRole, name: messaging-topology-manager-role }
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata: { name: messaging-topology-manager-role }
+  - target: { kind: ClusterRoleBinding, name: messaging-topology-manager-rolebinding }
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata: { name: messaging-topology-manager-rolebinding }
   - target: { kind: Namespace, name: rabbitmq-system }
     patch: |-
       $patch: delete

@@ -1,0 +1,68 @@
+# The Cluster Operator's rights in ryft-rabbitmq only (T12-g, D97): the release's
+# ClusterRole rabbitmq-cluster-operator-role (cluster-wide secrets, pods update, pods/exec)
+# is deleted by kustomization.yaml and its rules live here as a Role, the same rules. The
+# operator watches ryft-rabbitmq alone (OPERATOR_SCOPE_NAMESPACE). Its leader election
+# stays in rabbitmq-system (the release's own Role). It creates the nodes' peer-discovery
+# Role (endpoints get, events create): it holds both below, so it may grant them. An
+# upgrade compares these rules with the new release's ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-cluster-operator-role
+  namespace: ryft-rabbitmq
+  labels:
+    app.kubernetes.io/component: rabbitmq-operator
+    app.kubernetes.io/name: rabbitmq-cluster-operator
+    app.kubernetes.io/part-of: rabbitmq
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, persistentvolumeclaims, secrets, serviceaccounts, services]
+    verbs: [create, get, list, update, watch]
+  - apiGroups: [""]
+    resources: [endpoints]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, get, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, update, watch]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [create, delete, get, list, update, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [rabbitmq.com]
+    resources: [rabbitmqclusters]
+    verbs: [create, get, list, update, watch]
+  - apiGroups: [rabbitmq.com]
+    resources: [rabbitmqclusters/finalizers]
+    verbs: [update]
+  - apiGroups: [rabbitmq.com]
+    resources: [rabbitmqclusters/status]
+    verbs: [get, patch, update]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, roles]
+    verbs: [create, delete, get, list, update, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-cluster-operator-rolebinding
+  namespace: ryft-rabbitmq
+  labels:
+    app.kubernetes.io/component: rabbitmq-operator
+    app.kubernetes.io/name: rabbitmq-cluster-operator
+    app.kubernetes.io/part-of: rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-cluster-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq-cluster-operator
+    namespace: rabbitmq-system

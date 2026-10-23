@@ -2,11 +2,32 @@
 # https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.1/cluster-operator.yml).
 # Changes are patches here: the Namespace comes from ../namespace.yaml, and the requests
 # fit nodes that are short of CPU (the release asks 200m for an operator that idles).
+# Scope (T12-g): OPERATOR_SCOPE_NAMESPACE limits the operator's caches to ryft-rabbitmq, and
+# its cluster-wide ClusterRole and binding (secrets, pods update) are deleted for the
+# Role in scoped-rbac.yaml. Webhooks, CRDs and the leader election Role stay as released.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - cluster-operator-2.23.1.yml
+  - scoped-rbac.yaml
 patches:
+  - target: { kind: Deployment, name: rabbitmq-cluster-operator }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: OPERATOR_SCOPE_NAMESPACE, value: ryft-rabbitmq }
+  - target: { kind: ClusterRole, name: rabbitmq-cluster-operator-role }
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata: { name: rabbitmq-cluster-operator-role }
+  - target: { kind: ClusterRoleBinding, name: rabbitmq-cluster-operator-rolebinding }
+    patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata: { name: rabbitmq-cluster-operator-rolebinding }
   - target: { kind: Namespace, name: rabbitmq-system }
     patch: |-
       $patch: delete
