@@ -50,7 +50,7 @@ func TestMorningPayload(t *testing.T) {
 		t.Fatalf("title %q", got)
 	}
 	de := Morning("2026-10-19", 82, &r, model.StateDepleted, berlin, "de")
-	if Render(de.TitleKey, de.TitleArgs, "de") != "Erholung 82 %" || de.BodyKey != "MORNING_SCORE_BODY_DEPLETED" {
+	if Render(de.TitleKey, de.TitleArgs, "de") != "Erholung 82\u00a0%" || de.BodyKey != "MORNING_SCORE_BODY_DEPLETED" {
 		t.Fatalf("german: %+v", de)
 	}
 	if !de.Expires.Equal(time.Date(2026, 10, 20, 0, 0, 0, 0, berlin)) {
@@ -291,7 +291,7 @@ func TestMorningSendsOncePerDay(t *testing.T) {
 			}
 		}
 	}
-	if en[0] != "82%" || de[0] != "82 %" {
+	if en[0] != "82%" || de[0] != "82\u00a0%" {
 		t.Fatalf("arguments per device language: en %v de %v", en, de)
 	}
 	if err := s.Handle(context.Background(), morningEvent("2026-10-19")); err != nil || len(ap.sent) != 4 {
