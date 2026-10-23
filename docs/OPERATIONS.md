@@ -772,6 +772,22 @@ about 130 MiB idle); the disk alarm
 at 1 GB free of 10 GiB. Either blocks every publisher until it clears
 (`RabbitMQAlarm`); first look at the queue depths (a consumer that stopped consuming).
 
+**The broker's egress** (T12-k): besides the other nodes, the NetworkPolicy lets the broker
+reach port 443 inside the VPC (`10.0.0.0/16`) only, for the peer discovery plugin
+(`rabbitmq_peer_discovery_k8s`), which talks to the API server's private ENIs. It is
+plausible, not yet proven, that the plugin never leaves the VPC, so after the sync of
+`broker-rabbitmq` do the canary (one node, the other two keep every queue):
+
+```bash
+kubectl -n ryft-rabbitmq delete pod rabbitmq-server-2
+kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq     # ALLREPLICASREADY True again, within a few minutes
+kubectl -n ryft-rabbitmq logs rabbitmq-server-2 -c rabbitmq | grep -i -E "peer discovery|k8s|timeout|refused"
+```
+
+If the node does not rejoin (`ALLREPLICASREADY` stays False, the log shows the discovery
+timing out), revert this PR alone: the policy returns to `0.0.0.0/0:443` on the next sync.
+Do the canary before relying on a node drain.
+
 **Upgrades:** RabbitMQ: change the image digest in
 `deploy/rabbitmq/cluster/rabbitmqcluster.yaml`; the operator replaces the nodes one at a
 time. The operators: vendor the new release files byte for byte into
