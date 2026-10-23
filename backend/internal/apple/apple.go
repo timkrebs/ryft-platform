@@ -15,10 +15,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/timkrebs/ryft/internal/logx"
 )
 
 // Config is the developer-account side of Sign in with Apple.
@@ -178,5 +181,13 @@ func (c *Client) post(ctx context.Context, path string, form url.Values, out any
 	case "invalid_client", "unauthorized_client":
 		return ErrInvalidClient
 	}
-	return fmt.Errorf("apple %s: %s %s", path, resp.Status, e.Error)
+	// Logged by the api: the status code with the standard phrase (resp.Status
+	// echoes the server's text) and the body's error only as a bare code.
+	code := e.Error
+	if !errorCode.MatchString(code) {
+		code = "no error code"
+	}
+	return fmt.Errorf("apple %s: %s: %s", path, logx.StatusLine(resp.StatusCode), code)
 }
+
+var errorCode = regexp.MustCompile(`^[a-z_0-9]{1,64}$`)

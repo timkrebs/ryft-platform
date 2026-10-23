@@ -60,6 +60,14 @@ func newFake(t *testing.T) (*fakeAPNs, *Client) {
 		case strings.HasSuffix(r.URL.Path, "/bad"):
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = io.WriteString(w, `{"reason":"BadDeviceToken"}`)
+		case strings.HasSuffix(r.URL.Path, "/free"):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"reason":"tim@example.com is down"}`)
+		case strings.HasSuffix(r.URL.Path, "/long"):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"reason":"`+strings.Repeat("A", 65)+`"}`)
+		case strings.HasSuffix(r.URL.Path, "/empty"):
+			w.WriteHeader(http.StatusBadRequest)
 		default:
 			w.Header().Set("apns-id", "11111111-2222-3333-4444-555555555555")
 			w.WriteHeader(http.StatusOK)
@@ -114,6 +122,19 @@ func TestBackgroundPriorityAndGoneTokens(t *testing.T) {
 	}
 	if (Result{Status: 400, Reason: "PayloadTooLarge"}).Gone() || (Result{Status: 429}).Gone() {
 		t.Fatal("only a dead token is gone")
+	}
+}
+
+// notify logs the reason of a refusal: only a bare CamelCase word of at most 64
+// letters survives; free text, a long word or no body is "unrecognised".
+func TestRefusalReasonIsAWordOrUnrecognised(t *testing.T) {
+	_, c := newFake(t)
+	for path, want := range map[string]string{"bad": "BadDeviceToken", "gone": "Unregistered",
+		"free": "unrecognised", "long": "unrecognised", "empty": "unrecognised"} {
+		res, err := c.Send(context.Background(), Notification{Token: path, Env: Sandbox, PushType: PushAlert, Payload: []byte(`{}`)})
+		if err != nil || res.Reason != want {
+			t.Errorf("%s: reason %q (%v), want %q", path, res.Reason, err, want)
+		}
 	}
 }
 

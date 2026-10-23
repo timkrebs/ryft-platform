@@ -110,7 +110,7 @@ func New(o Options, log *slog.Logger) (*Bus, error) {
 	}
 	u, err := url.Parse(o.URL)
 	if err != nil || (u.Scheme != "amqp" && u.Scheme != "amqps") {
-		return nil, fmt.Errorf("AMQP_URL must be amqp:// or amqps://, got %q", o.URL)
+		return nil, fmt.Errorf("AMQP_URL must be amqp:// or amqps://, got %q", Redacted(o.URL))
 	}
 	cfg := amqp.Config{
 		Heartbeat:  10 * time.Second,

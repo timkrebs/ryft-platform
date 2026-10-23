@@ -138,6 +138,7 @@ func TestAdminErrorsLogTheResponseStatus(t *testing.T) {
 		{"body not JSON", 403, "Forbidden", `<html>403 for tim@example.com</html>`, "403 Forbidden: no error_code"},
 		{"body code only", 429, "Too Many Requests", `{"code":200,"msg":"tim@example.com"}`, "429 Too Many Requests: no error_code"},
 		{"free text in the reason phrase", 500, "tim@example.com is down", `{"error_code":"unexpected_failure"}`, "500 Internal Server Error: unexpected_failure"},
+		{"status without a standard phrase", 520, "Web Server Is Down", `{"error_code":"unexpected_failure"}`, "520 unknown status: unexpected_failure"},
 	} {
 		status, reason, body = c.status, c.reason, c.body
 		_, gerr := a.GetUser(context.Background(), uuid.New())
@@ -146,6 +147,28 @@ func TestAdminErrorsLogTheResponseStatus(t *testing.T) {
 			if err == nil || err.Error() != "supabase admin: "+op+": "+c.want {
 				t.Errorf("%s (%s): %v, want %q", c.name, op, err, c.want)
 			}
+		}
+	}
+}
+
+// A 200 whose body does not decode is logged and shown in the admin view as a
+// fixed error: json's own message quotes the value ("parsing time "tim@...""),
+// and the value is an email.
+func TestAdminGetUserUndecodableBodyQuotesNothing(t *testing.T) {
+	for _, body := range []string{
+		`{"last_sign_in_at":"tim@example.com"}`,
+		`{"identities":[{"last_sign_in_at":"tim@example.com"}]}`,
+		`{"email":42,"identities":"tim@example.com"}`,
+		`{"email":"tim@example.com"`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+		_, err := a.GetUser(context.Background(), uuid.New())
+		srv.Close()
+		if err == nil || err.Error() != "supabase admin: get user: undecodable response" {
+			t.Errorf("%s: %v", body, err)
 		}
 	}
 }
