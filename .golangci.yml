@@ -10,6 +10,7 @@ linters:
   enable:
     - bodyclose       # unclosed HTTP response bodies
     - copyloopvar     # pre-Go 1.22 loop variable copies
+    - depguard        # internal/logx/logcheck is for tests only (D114)
     - errorlint       # wrapped errors compared with == or type-switched
     - gosec           # security smells
     - misspell
@@ -20,6 +21,13 @@ linters:
     - unconvert       # redundant conversions
     - usestdlibvars   # http.MethodGet over "GET", etc.
   settings:
+    depguard:
+      rules:
+        logcheck-tests-only:
+          files: ["!$test"]
+          deny:
+            - pkg: github.com/timkrebs/ryft/internal/logx/logcheck
+              desc: test-only (D114)
     gosec:
       excludes:
         - G115 # int conversions: values here are bounded scores and minutes

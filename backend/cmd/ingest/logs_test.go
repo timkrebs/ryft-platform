@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,21 +25,25 @@ import (
 	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/logx/logcheck"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
 // syncLogKeys is every line a sync logs with the keys it may carry besides
-// logx's and the request's: counts, the device id, the status and an error's
-// cause (docs/OPERATIONS.md → Data protection (logs)). Any other line or key
-// fails the tests below.
-var syncLogKeys = map[string][]string{
-	"http":           {"method", "path", "status", "bytes", "dur_ms", "code", "gate"},
-	"request failed": {"status", "err"},
-	"sync":           {"device", "samples", "sleep", "workouts", "days"},
+// logx's and the request's, and the kind of each value: counts, the device id,
+// the status and an error's cause (docs/OPERATIONS.md → Data protection
+// (logs)). Any other line, key or kind of value fails the tests below, so a
+// score under a count key (a float, a number that is not a count) cannot slip
+// through.
+var syncLogKeys = logcheck.Lines{
+	"http":           logcheck.HTTP(model.CodeInviteRequired, model.CodeConsentRequired),
+	"request failed": logcheck.RequestFailed(),
+	"sync": {"device": logcheck.UUID, "samples": logcheck.Count, "sleep": logcheck.Count,
+		"workouts": logcheck.Count, "days": logcheck.Count},
 }
 
-var baseLogKeys = []string{"time", "level", "msg", "service", "request_id", "client_request_id", "user_id", "route"}
+var syncStandardKeys = logcheck.Standard("ingest")
 
 // syncServer is POST /v1/sync as main serves it (Instrument, Recover) for user,
 // every line of it, httpx.Fail's included, written to the buffer.
@@ -61,37 +64,14 @@ func syncServer(t *testing.T, st *store.Store, pool *pgxpool.Pool, user model.Us
 	}))), &buf
 }
 
-// checkSyncLog fails on a line or key syncLogKeys does not allow, on any of
-// texts and on any of numbers as a value. It returns the lines by message.
+// checkSyncLog fails on a line, key or kind of value syncLogKeys does not
+// allow, on any of texts and on any of numbers as a value. It returns the lines
+// by message.
 func checkSyncLog(t *testing.T, out string, texts []string, numbers []float64) map[string][]map[string]any {
 	t.Helper()
-	lines := map[string][]map[string]any{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("not a JSON line: %q", line)
-		}
-		delete(rec, "time") // 07:38:47.3… is a time, not a resting heart rate
-		msg, _ := rec["msg"].(string)
-		lines[msg] = append(lines[msg], rec)
-		allowed, known := syncLogKeys[msg]
-		if !known {
-			t.Errorf("a new log line %q: check it against the rule, then list its keys in syncLogKeys: %s", msg, line)
-		}
-		for k, v := range rec {
-			if !slices.Contains(baseLogKeys, k) && !slices.Contains(allowed, k) {
-				t.Errorf("%q carries %s, which it may not: %s", msg, k, line)
-			}
-			if f, ok := v.(float64); ok && slices.Contains(numbers, f) {
-				t.Errorf("%q carries a value of the request as %s: %s", msg, k, line)
-			}
-		}
-		b, _ := json.Marshal(rec)
-		for _, s := range texts {
-			if bytes.Contains(b, []byte(s)) {
-				t.Errorf("%q holds %q: %s", msg, s, line)
-			}
-		}
+	lines, problems := logcheck.Check(out, syncStandardKeys, syncLogKeys, logcheck.Forbidden{Texts: texts, Numbers: numbers})
+	for _, p := range problems {
+		t.Error(p)
 	}
 	return lines
 }
@@ -129,12 +109,26 @@ func syncBody(broken, source string, before bool) string {
 			"avg_hr": 152.3, "max_hr": 181.9, "energy_kcal": 612.4, "distance_m": 10234.5, "source": "` + src("workouts") + `"}]}`
 }
 
-func post(t *testing.T, srv http.Handler, body string, want int) {
+func post(t *testing.T, srv http.Handler, body string, want int) []byte {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/sync", strings.NewReader(body)))
 	if rec.Code != want {
 		t.Fatalf("%d %s, want %d", rec.Code, rec.Body, want)
+	}
+	return rec.Body.Bytes()
+}
+
+// assertStatuses pins the status of each line, in order: the requests are known.
+func assertStatuses(t *testing.T, recs []map[string]any, want ...float64) {
+	t.Helper()
+	if len(recs) != len(want) {
+		t.Fatalf("%d lines, want %d: %v", len(recs), len(want), recs)
+	}
+	for i, r := range recs {
+		if r["status"] != want[i] {
+			t.Errorf("line %d: status %v, want %v", i, r["status"], want[i])
+		}
 	}
 }
 
@@ -158,6 +152,8 @@ func TestSyncErrorPathsLogNoHealthData(t *testing.T) {
 	if len(lines["http"]) != 3 || len(lines["request failed"]) != 1 {
 		t.Fatalf("want three access lines and the 500's cause:\n%s", buf)
 	}
+	assertStatuses(t, lines["http"], 400, 422, 500)
+	assertStatuses(t, lines["request failed"], 500)
 }
 
 // Integration test, opt-in like internal/db's: RYFT_TEST_POSTGRES_URL is a
@@ -210,17 +206,33 @@ func TestSyncLogsCountsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, buf := syncServer(t, st, pool, user)
-	post(t, srv, syncBody("", "", false), http.StatusOK)
+	body := syncBody("", "", false)
+	var sent struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal([]byte(body), &sent); err != nil { // the request names the device
+		t.Fatal(err)
+	}
+	var answer struct {
+		Days []string `json:"days_touched"`
+	}
+	if err := json.Unmarshal(post(t, srv, body, http.StatusOK), &answer); err != nil || len(answer.Days) == 0 {
+		t.Fatalf("the sync names the days it touched: %v %v", answer, err)
+	}
 	nul := `Tims Apple Watch\u0000`
 	for _, part := range []string{"samples", "sleep", "workouts"} {
 		post(t, srv, syncBody(part, nul, false), http.StatusInternalServerError)
 	}
 
 	lines := checkSyncLog(t, buf.String(), syncTexts, syncNumbers)
-	if s := lines["sync"]; len(s) != 1 || s[0]["samples"] != 3.0 || s[0]["sleep"] != 1.0 || s[0]["workouts"] != 1.0 {
+	// Exact, not just a count: the kinds are the backstop, the known values the check.
+	if s := lines["sync"]; len(s) != 1 || s[0]["samples"] != 3.0 || s[0]["sleep"] != 1.0 || s[0]["workouts"] != 1.0 ||
+		s[0]["days"] != float64(len(answer.Days)) || s[0]["device"] != sent.DeviceID {
 		t.Fatalf("one sync line with its counts: %v", s)
 	}
+	assertStatuses(t, lines["http"], 200, 500, 500, 500)
 	failed := lines["request failed"]
+	assertStatuses(t, failed, 500, 500, 500)
 	if len(failed) != 3 {
 		t.Fatalf("three failed syncs: %v", failed)
 	}
