@@ -402,6 +402,12 @@ Yours:
   versioned (`/privacy/<version>`): your call.
 
 Technical:
+- **An admission policy in the cluster** (design first, platform-architect; an
+  `infra/aws/kubernetes` change for you): the CI checks of D115 hold a small set of render
+  invariants, not pod security — privileged pods, host access, PSA labels, images per
+  namespace and command overrides, NetworkPolicy rule shapes, the VSO objects (VaultConnection
+  address, templates) and the operators project's cluster power need enforcement at admission
+  (OPERATIONS → "What a kustomization or an Argo CD app may contain" → Not checked).
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).
 - **Supply chain** (#17's review): pin `tonistiigi/binfmt` and `moby/buildkit` by digest;

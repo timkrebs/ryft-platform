@@ -239,6 +239,37 @@ a hold blocking every image build — and adds no gap that main doesn't already 
 key and tag allowlists for kustomizations and Argo apps, no symlinks, binary skips only under web/, the byte check in an
 unfiltered job, `!!merge` refused, escapes instead of exemptions) as the next PR at once.
 
+## H2 — allowlists for kustomizations and Argo apps (#38)
+gitops-engineer: `5cc3d69`, `9067d11`, `9875e7c`; every v7 reproduction fails now, main's files pass.
+code-reviewer: **blocker** — `brand.mjs`'s escaped class breaks Prettier's width, so `web-checks`/`ci-ok` are red.
+Should-fix: (2) the key schema and the reference walk are separate lists (adding a path-carrying key such as `files`
+passes unchecked; `files` was used by old bases) → path-typed schema fields the walk follows; (3) the new test reads
+live `deploy/` files (deleting `events.yaml` would turn main's `smoke` red); (4) a wrong value type ends in a traceback
+that hides the findings; (5) the pinned yq only in `manifests`, `smoke` uses the runner's; (6) binaries outside `web/`
+and emoji with U+FE0F are refused — document or relax; (7) D-entry details (D115 in #39). Nits: test runtime (91 s in
+CI), error hints, OPERATIONS placement and wording, `curl --retry`. Verified: render-identical local-postgres,
+`brand.mjs` identical over all code points, notify text byte-identical, the `bytes` job wiring, the yq checksum.
+security-privacy-reviewer: findings 1–8 of #31's re-verify done; every earlier reproduction fails a gate. New: **N1
+(high, a regression of this PR)** `github.com/<org>/<repo>` passes the segment rule with a committed decoy directory
+and kustomize still clones the remote; **N2 (high)** a new app pointing at a path whose kustomization renders a nested
+`Application` (project `ryft`, `source.kustomize.images` → a foreign image) passes; N3 double-quoted inline patches
+decode `\L`/`\n` (ASCII bytes); N4 reserved default-ignorable ranges; N5 brand.mjs's class. Outside the PR: a visible
+`config.env` edit to `AUTH_MODE=apikey` passes every gate → a render-level production-invariants check (pinned images
+only, default-deny intact, supabase auth, no argoproj kinds outside apps/). → all back to gitops-engineer as round 2,
+including the invariants check.
+Round 2 (`46788a3`, `3fecd6e`): CI green (the `bytes` job and the shared yq install worked); GitGuardian flagged
+`AUTH_NAMESPACES = ("ryft-api", "ryft-ingest")` as an "Authentication Tuple" — a false positive, not a required
+check. Security re-verify: N1 (incl. any-case github.com, `.git`, decoys; `GIT_ALLOW_PROTOCOL=file` proven), N3
+(outer document), N4, N5 and the extras done; 68 old variants still refused. The render invariants have bypasses:
+(1, high) a path is checked once under the first app's project (a shadow app in `ryft-operators` switches the strict
+rules off); (2, high) the auth rule reads names, not the effective env (`envFrom` prefix, `valueFrom`, Secret keys;
+`USER_ID`); (3–9) the operators project's power, VSO objects (VaultConnection address, templates), allow-all
+NetworkPolicy shapes, workloads without a namespace, images that run any command, privileged pods and PSA labels,
+`project.yaml` read from the PR, inline literal patches not decoded; (10, 11) `$` vs fullmatch, fail-open image
+listing. **Lead's decision:** #38 gets 1, 2, 10, 11, the empty-rule NetworkPolicy shapes, the GitGuardian rename and
+honest wording of what the invariants cover; 3–9 belong in an admission-level policy in the cluster (CI scripts
+can't enforce pod security completely) — a separate ticket, platform-architect first.
+
 ## D — Synthetic Monitoring (#20)
 security-privacy-reviewer: no blocker, no user data, the token never reaches argv/disk/logs (`-K -` on stdin, verified
 with a curl argv logger). Should-fix: (1) `SM_API_URL` guard is prefix-only (`http://127.0.0.1@evil/` and lookalike

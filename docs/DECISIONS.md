@@ -2208,16 +2208,38 @@ sent, and whether a second account shares its phone.
   decodes `!!binary`, follows symlinks and reads files without a `.yaml` extension. A comment line
   or a renamed key could carry content no reviewer sees (a sidecar with `envFrom: ryft-secrets`, a
   remote base, an allow-all NetworkPolicy) — each reproduced by the security review.
-- **Decision:** allowlists instead of denylists. `scripts/check_bytes.sh` reads every tracked file
-  by content (invalid UTF-8, controls, format and default-ignorable characters, separators, BOM;
-  no symlinks or submodules; binary extensions skipped only under `web/`; no path exemptions) in
-  a `bytes` job with no path filter, and in pre-commit. Kustomizations and Argo CD applications are
-  parsed by yq against an exact, case-sensitive key schema and a YAML tag allowlist; references
-  are plain paths below `deploy/`; the EKS overlay is an allowlist of its own; `check_registry.sh`
-  fails on any rendered image outside the pinned ryft refs; `check_workflows.sh` parses workflows
-  (no external reusable workflows, `secrets: inherit`, dynamic secrets or the scripts' test
-  hooks). yq is a sha256-checked release binary.
-- **Script tests build their fixtures** (holds stripped, a fixed policy version), so a hold on
-  main can't turn `smoke` red (found by the rollback drill).
-- **Consequence:** a new kustomization key, tag or reference shape is a schema change in the same
-  PR (OPERATIONS). `.gitattributes` and `.gitmodules` may not exist.
+- **Decision: allowlists instead of denylists**, at three levels.
+  - **Bytes:** `scripts/check_bytes.sh` (one character policy, `scripts/lib/charpolicy.py`) reads
+    every tracked file by content — invalid UTF-8, controls, format and default-ignorable
+    characters (reserved ranges included), separators, BOM; a variation selector only after a
+    symbol; no symlinks or submodules; binary extensions skipped except under `deploy/` and
+    `.github/`; no path exemptions (escapes in source instead). It runs in a `bytes` job with no
+    path filter that `ci-ok`, `images` and `web-image` need, and in pre-commit.
+  - **Structure:** kustomizations and Argo CD applications are parsed by yq against an exact,
+    case-sensitive key schema whose path-typed fields drive the reference walk, and a YAML tag
+    allowlist; every decoded key and string under `deploy/` passes the character policy; inline
+    patches are literal blocks; references are plain paths below `deploy/` with no dotted
+    segment (no remote base, even behind a decoy directory); env lines need `=`; only `root.yaml`
+    uses the `ryft-root` project; the EKS overlay has its own allowlist. `check_workflows.sh`
+    parses workflows (no external reusable workflows, `secrets: inherit`, dynamic secrets, merge
+    or binary tags, or the scripts' test hooks).
+  - **Render:** one Argo CD application per path, each project bound to its paths (`ryft-root` to
+    `root.yaml`, `ryft-operators` to the operators); every app is rendered with
+    `GIT_ALLOW_PROTOCOL=file` (no remote fetch; job-wide in `manifests` and `smoke`) and checked
+    for a small set of production invariants (`scripts/lib/renderpolicy.py`): only the pinned ryft
+    images (and the broker's digest-pinned RabbitMQ image); `AUTH_MODE=supabase` in the effective
+    container environment (no `envFrom` prefix, no `valueFrom` for the auth variables, no API key,
+    insecure flag or `USER_ID`, Secrets included); default-deny intact in every `ryft-*` namespace
+    and no empty allow-all rule; no `argoproj.io` object outside `apps/`. `check_registry.sh`
+    checks the pins exist; empty renders fail.
+  - **Not a policy engine:** pod security (privileged, host*, hostPath, PSA labels), images per
+    namespace and command overrides, NetworkPolicy rule shapes, the VSO objects and the operators
+    project's cluster power are not covered by these CI checks — they belong in an admission
+    policy in the cluster (open, STATUS).
+- **Tools:** yq is a sha256-checked release binary from one install script for every job.
+- **Script tests build their fixtures** (holds stripped, a fixed policy version, no live
+  `deploy/` file), so a hold or a manifest cleanup on main can't turn `smoke` red (the drill).
+- **Consequence:** a new kustomization key, tag, reference shape, label or invariant exception is a
+  schema change in the same PR (OPERATIONS → "What a kustomization or an Argo CD app may contain").
+  `.gitattributes` and `.gitmodules` may not exist. Argo CD's own repo-server isn't constrained by
+  these checks; they gate what reaches `main`.
