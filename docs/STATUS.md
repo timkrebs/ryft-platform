@@ -388,6 +388,8 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
   lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
 - **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
   APNs refusals log a status code and a bare code only (D117).
+- **NUL and non-UTF-8 text** gets a `422`/`400` instead of a 500; the sync strips U+0000 and
+  accepts the page; raw JSON fields are normalised; a database refusal is alerted (D118).
 
 **Open (2026-10-23)**
 
@@ -427,7 +429,11 @@ Technical:
   safe, or `maxSurge: 0` for scoring.
 - **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
   half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
-- **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
+- **Alerts miss a counter's first event:** `Panics`, `DeadLetters`, `DeadLetterPublishFailing`,
+  `NewFeedback`, `PushFailing`, `APNsRejectsOurKey`, `AccountDeletionIncomplete` and
+  `EventsUnroutable` use `increase()` on CounterVecs created at 1, so the first event per label
+  set never fires (promtool-proven). Initialise the known label values with `Add(0)` at start-up
+  (sre; D118's alert already handles it).
 - **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
   and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
   admin and train lines; cut pgx's "unable to encode" error to the argument's index in one

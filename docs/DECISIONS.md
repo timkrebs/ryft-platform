@@ -2285,6 +2285,29 @@ sent, and whether a second account shares its phone.
   what httpx accepts (the contract); the broker and panic lines, auth, httpx and several handler
   lines have no allowlist test yet (STATUS).
 
+## D118 — Text the database can't store is refused at the edge; the sync strips NUL instead
+
+- **Why (2026-10-23):** Postgres can't store U+0000 in text (22021) or jsonb (22P05), nor bytes that
+  aren't UTF-8; such a request was a 500 (feedback, Train sessions and plans, exercises, behaviors,
+  consent, the exercise search, the sync).
+- **Decision:** `httpx` checks every request: `ReadJSON` scans the body lexically, so `\u0000` in any
+  string, value or key, is `422` with the error shape and no `code` (`"\\u0000"` is six ordinary
+  characters); `WithRoutes` refuses `%00` or non-UTF-8 in the path or query with `400`, after auth;
+  raw JSON fields (`json.RawMessage`, feedback `diagnostics`) are decoded and encoded again, so bad
+  UTF-8 and lone surrogates become U+FFFD and an out-of-range number is a `422`; `Fail` answers
+  SQLSTATE 22021/22P05 with `422` as a backstop, counted in `ryft_http_text_refused_total{at="database"}`
+  and alerted (`TextRefusedByDatabase`), never logged (D114, D117).
+- **The sync strips instead (`POST /v1/sync`):** its strings come from HealthKit and the device (source
+  and device names, bundle ids), which the user can't change, and the app advances a stream's anchor
+  only after an accepted page and doesn't retry a `422`; one NUL would stall that stream for good. So
+  the sync removes U+0000 from every string and accepts the page (`ryft_http_nul_stripped_total`).
+  User-authored text elsewhere keeps the `422`: a silent edit of what someone wrote is worse.
+- **Not chosen:** mapping the errors in the store (about 100 query functions, and its errors also feed
+  scoring and notify); adding 22P02/22003 to the backstop (they also mean server bugs).
+- **Consequences:** the app should strip U+0000 from text the user enters (low priority; the sync needs
+  no change). A `database` count above 0 means a path the checks missed or a server-side bug producing
+  bad text. Numbers in `diagnostics` are stored as double precision.
+
 ## D120 — Admission: Pod Security labels plus ValidatingAdmissionPolicy, owned by Terraform (amends D95)
 
 - **Why (2026-10-23):** D115's CI checks hold a small set of render invariants. Pod security, images
