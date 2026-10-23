@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -195,6 +196,152 @@ func TestReadJSONEmptyBodyIsEOF(t *testing.T) {
 	err := ReadJSON(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/x", http.NoBody), &v, 256)
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("want io.EOF, got %v", err)
+	}
+}
+
+// withoutNUL is the stripper's oracle: a decoded JSON value with U+0000
+// removed from every string, keys included.
+func withoutNUL(v any) any {
+	switch v := v.(type) {
+	case string:
+		return strings.ReplaceAll(v, "\x00", "")
+	case []any:
+		out := make([]any, len(v))
+		for i, x := range v {
+			out[i] = withoutNUL(x)
+		}
+		return out
+	case map[string]any:
+		out := map[string]any{}
+		for k, x := range v {
+			out[strings.ReplaceAll(k, "\x00", "")] = withoutNUL(x)
+		}
+		return out
+	}
+	return v
+}
+
+// readAllIn reads r to the end in reads of size bytes.
+func readAllIn(r io.Reader, size int) ([]byte, error) {
+	var out []byte
+	p := make([]byte, size)
+	for {
+		n, err := r.Read(p)
+		out = append(out, p[:n]...)
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+	}
+}
+
+// The stripper removes exactly the "\u0000" escapes the scanner finds, from
+// values and keys, and passes every other byte as written: an escaped backslash
+// before "u0000" stays, and so does text that is not JSON (the decoder refuses
+// it). What decodes is what encoding/json decodes without its NULs, however the
+// source and the caller split the reads.
+func TestNULStripper(t *testing.T) {
+	for _, c := range []struct {
+		in, out string
+		removed int
+		valid   bool
+	}{
+		{`"\u0000"`, `""`, 1, true},
+		{`"a\u0000b"`, `"ab"`, 1, true},
+		{`"\u00000"`, `"0"`, 1, true},
+		{`"\u0000\u0000\u0000"`, `""`, 3, true},
+		{`{"k\u0000": "v\u0000", "n": [1, "\u0000x"]}`, `{"k": "v", "n": [1, "x"]}`, 3, true},
+		{`"€\u0000€"`, `"€€"`, 1, true},
+		{`"\\u0000"`, `"\\u0000"`, 0, true},
+		{`"\\\u0000"`, `"\\"`, 1, true},
+		{`"\\\\u0000"`, `"\\\\u0000"`, 0, true},
+		{`["a\"", "\u0000"]`, `["a\"", ""]`, 1, true},
+		{`"\/\u0000\n"`, `"\/\n"`, 1, true},
+		{`"\u000A\u0001\uD83D\uDE00"`, `"\u000A\u0001\uD83D\uDE00"`, 0, true},
+		{`{"u0000": 0}`, `{"u0000": 0}`, 0, true},
+		// Not JSON, passed on as it came: an escape cut off, a bad digit, a NUL outside a string.
+		{`"\u00`, `"\u00`, 0, false},
+		{`"\u000"`, `"\u000"`, 0, false},
+		{`{"a": 1, \u0000}`, `{"a": 1, \u0000}`, 0, false},
+	} {
+		var want any
+		if c.valid {
+			if err := json.Unmarshal([]byte(c.in), &want); err != nil {
+				t.Fatal(err)
+			}
+			want = withoutNUL(want)
+		}
+		for name, read := range map[string]func(*nulStripper) ([]byte, error){
+			"whole":               func(s *nulStripper) ([]byte, error) { return io.ReadAll(s) },
+			"source byte by byte": func(s *nulStripper) ([]byte, error) { s.r = iotest.OneByteReader(s.r); return io.ReadAll(s) },
+			"six-byte reads":      func(s *nulStripper) ([]byte, error) { return readAllIn(s, 6) },
+		} {
+			s := &nulStripper{r: strings.NewReader(c.in)}
+			out, err := read(s)
+			if err != nil || string(out) != c.out || s.removed != c.removed {
+				t.Errorf("%s (%s): %q, %d removed, %v; want %q, %d", c.in, name, out, s.removed, err, c.out, c.removed)
+				continue
+			}
+			var got any
+			if err := json.Unmarshal(out, &got); (err == nil) != c.valid {
+				t.Errorf("%s (%s): decodes %v, want valid %v", c.in, name, err, c.valid)
+			} else if c.valid && !reflect.DeepEqual(got, want) {
+				t.Errorf("%s (%s): decodes to %#v, want %#v", c.in, name, got, want)
+			}
+		}
+	}
+	// A NUL between the halves of a surrogate pair joins them: the pair, not two U+FFFD.
+	out, _ := io.ReadAll(&nulStripper{r: strings.NewReader(`"\ud83d\u0000\ude00"`)})
+	if string(out) != `"\ud83d\ude00"` {
+		t.Errorf("surrogates around a NUL: %q", out)
+	}
+	if _, err := (&nulStripper{r: strings.NewReader(`"\u00`)}).Read(make([]byte, 3)); err != nil {
+		t.Errorf("a short first read: %v", err)
+	}
+}
+
+// POST /v1/sync's decode: every "\u0000" goes, keys included (a key then names
+// its field, or is unknown: 400), the rest decodes and the request counts once;
+// an escaped backslash stays; raw 0x00 is still a 400 and an oversized body a 413.
+func TestReadJSONStripNUL(t *testing.T) {
+	var got nulPayload
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
+		got = nulPayload{}
+		if err := ReadJSONStripNUL(w, r, &got, 256); err != nil {
+			WriteDecodeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := chain(WithRoutes(mux))
+	stripped := metrics.NULStripped.WithLabelValues("POST /sync")
+	before := testutil.ToFloat64(stripped)
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sync", strings.NewReader(body)))
+		return rec.Code
+	}
+	if code := post(`{"note\u0000": "Tims\u0000 Watch", "sets": [{"tags": {"k\u0000": "v\u0000"}}]}`); code != 204 ||
+		got.Note != "Tims Watch" || got.Sets[0].Tags["k"] != "v" {
+		t.Fatalf("stripped: %d %+v", code, got)
+	}
+	if code := post(`{"note": "C:\\u0000"}`); code != 204 || got.Note != `C:\u0000` {
+		t.Fatalf("escaped backslash: %d %+v", code, got)
+	}
+	for body, want := range map[string]int{
+		`{"hrv\u0000": 61.7}`:                                400,
+		"{\"note\": \"Tims\x00\"}":                           400,
+		`{"note": "\u0000` + strings.Repeat("x", 300) + `"}`: 413,
+	} {
+		if code := post(body); code != want {
+			t.Errorf("%.30s: %d, want %d", body, code, want)
+		}
+	}
+	if n := testutil.ToFloat64(stripped) - before; n != 1 {
+		t.Errorf("one accepted body had NULs removed (refused ones do not count), counted %v", n)
 	}
 }
 

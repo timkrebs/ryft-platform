@@ -52,7 +52,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Auth | Every `/v1/*` request carries `Authorization: Bearer <access token>`: the Supabase Auth access token of the signed-in user (a JWT; Sign in with Apple through Supabase). See **Authentication** below. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
 | Users | Every response is scoped to the token's user. There is no sign-up call: the platform creates the user on the first authenticated request. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB for `POST /v1/sync`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB for everything else (`413`). |
-| Text | Strings never contain U+0000 (NUL), which the database cannot store: a `\u0000` in any string of a request body is `422`, `%00` in the path or query `400` (Errors → **NUL**). Strip it from text the user enters or pastes. |
+| Text | Strings never contain U+0000 (NUL), which the database cannot store: a `\u0000` in a string of a request body is `422`, `%00` in the path or query `400` (Errors → **NUL**). Strip it from every string the app sends (typed text and HealthKit-derived names); `POST /v1/sync` removes it itself and accepts the page. |
 | Keys | `snake_case`. The app decodes with `.convertFromSnakeCase`. |
 | Timestamps | RFC 3339 strings, e.g. `"2026-10-18T05:12:00Z"`; fractional seconds may appear. |
 | Days | `YYYY-MM-DD`, a calendar day in the user's timezone (`users.tz`, see `GET /v1/me`). The night that *ends* on day D belongs to D. |
@@ -114,7 +114,8 @@ services check every request the same way, after authentication (a missing token
 
 | Where | Status | Body |
 | --- | --- | --- |
-| A body's JSON has `\u0000` in a string: a value or an object key, at any depth, also in a field the server would otherwise ignore or normalise (an unknown sample `type`, `locale`) | `422` | `{ "error": "strings must not contain the NUL character (\\u0000)", "request_id": "…" }` |
+| A body's JSON has `\u0000` in a string: a value or an object key, at any depth, also in a field the server would otherwise ignore or normalise (`locale`); every route but `POST /v1/sync` | `422` | `{ "error": "strings must not contain the NUL character (\\u0000)", "request_id": "…" }` |
+| `POST /v1/sync` with `\u0000` in a string, value or key | `200` | the page is stored without its NULs (a key then names its field; one that names none is still `400`) |
 | A body holds a raw 0x00 byte (not JSON) | `400` | `{ "error": "bad json: invalid character '\\x00' in string literal", "request_id": "…" }` (the text after `bad json:` varies) |
 | The path or the query holds `%00` or bytes that are not UTF-8 (`?q=%FF`) | `400` | `{ "error": "the path and query must be UTF-8 text without NUL characters", "request_id": "…" }` |
 | A header holds a NUL byte | `400` | plain text, from the HTTP server before anything else, authentication included (do not require JSON) |
@@ -123,9 +124,12 @@ services check every request the same way, after authentication (a missing token
 { "error": "strings must not contain the NUL character (\\u0000)", "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c" }
 ```
 
-The whole request is refused (a sync stores none of its records); there is no `code`, since
-only the app can fix it: strip U+0000 and send again. `"\\u0000"` (an escaped backslash,
-then `u0000`) is six ordinary characters and is stored as written. Should the database
+The `422` refuses the whole request; there is no `code`, since only the app can fix it:
+strip U+0000 and send again. A sync is the exception: its strings come from HealthKit and
+the device (source names, bundle ids, the device name, versions), which nobody can
+correct, and a refused page would stall its stream, so ingest removes every `\u0000` from
+the page's strings and stores the rest. `"\\u0000"` (an escaped backslash, then `u0000`)
+is six ordinary characters and is stored as written, on every route. Should the database
 itself ever refuse a request's text, the answer is a `422` as well, with
 `"the request holds text that cannot be stored (a NUL character or bytes that are not UTF-8)"`.
 
@@ -250,7 +254,8 @@ record that is not counted there is in `ignored`, per reason:
 `days_touched` (and `scoring.queued_days`) are the local days queued for rescoring;
 `scoring.expected_within_sec` is how long scoring has recently taken from a sync to the
 score (the 95th percentile over every account and the last 6 hours; 30 until it knows).
-`GET /v1/me/sync` says when they are done. Errors: `400` bad JSON, `422` validation
+`GET /v1/me/sync` says when they are done. A `\u0000` in any string is removed, not
+refused (Errors → NUL). Errors: `400` bad JSON, `422` validation
 (`device_id` missing, `end` before `start`, workout without `id`), `403` `invite_required`
 / `consent_required` (Errors above): keep the HealthKit anchors and send the same pages
 again once that is resolved.
@@ -2102,7 +2107,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-10-23 | Errors: a NUL (U+0000, `\u0000` in JSON) in any string of a request body, value or object key, is `422` with the error shape and no `code` (was `500`: `POST /v1/sync`, feedback, journal, Train, profile, push and every other write); nothing is stored. `%00` or bytes that are not UTF-8 in the path or query are `400` (was `500` where the value reached the database, as `GET /v1/exercises?q=`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header stays the HTTP server's plain-text `400`. **Behaviour:** a NUL in a field the server used to ignore or normalise (an unknown sample `type`, `locale`) now fails the request with `422` too. No shape change; Swift: none. |
+| 2026-10-23 | Errors → NUL: a NUL (U+0000, `\u0000` in JSON) in a string of a request body, value or object key, is `422` with the error shape and no `code`; nothing is stored. It was a `500` where the text reached the database: `POST /v1/feedback` (`message`, the version and device fields, `request_ids`, `diagnostics`), Train names and notes (`PUT /v1/sessions/{id}`, `PUT /v1/plans/{id}`, `POST /v1/exercises`, `PATCH /v1/exercises/{id}`), `POST /v1/behaviors` (`name`) and `POST /v1/me/consent` (`app_version`); fields checked before (`tz`, notification categories, the push `token`, invite codes, `policy_version`, journal times) were and stay `422`. **`POST /v1/sync`** (was `500`) removes the NULs from its strings and accepts the page instead. `%00` or bytes that are not UTF-8 in the path or query are `400` (`GET /v1/exercises?q=` was `500`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header the HTTP server's plain-text `400`. **Behaviour:** a NUL in push `locale`, which was normalised away (`204`), is now `422`. No shape change; Swift: none. |
 | 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-21 | `GET /readyz` of ingest no longer answers `503` while the event broker is unreachable (a sync's events wait in the outbox, so syncs keep being accepted). No shape change. |
 | 2026-10-20 | **Accounts and sync state**: gates in `warn` mode with the `X-RYFT-Gate` response header (Errors); request ids are to be shown exactly as received; the `X-RYFT-Device-ID` request header and `User.account_hint`; `GET /v1/me/sync` (`SyncStatus`: `gate`, last sync, newest record per kind, today's scoring state, pending days, `expected_within_sec`, `resync_requested_at`); `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring`; the silent refresh push after every sync's scored days (Push). **Behaviour:** an unknown sample `type` or sleep `stage` is ignored and counted (`ignored.*.unknown_type`) instead of failing the sync with `422`; records more than 24 h in the future or older than 400 days are ignored (`outside_window`); identical re-sends no longer count in `samples` / `workouts` (`ignored.*.duplicate`). Swift: `ScoringState`, `AccountHint`, `TodayState`, `SyncStatus`, `SyncResponse` and its parts, `DailyScore.scoringState`, `User.accountHint`. |

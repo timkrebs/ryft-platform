@@ -129,6 +129,24 @@ func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error 
 	return nil
 }
 
+// ReadJSONStripNUL is ReadJSON for a body whose strings the client cannot
+// correct (POST /v1/sync: HealthKit's source names, the device's name): it
+// removes every "\u0000" from them, keys and values, and decodes the rest
+// instead of refusing it, so one NUL cannot stall an upload stream.
+func ReadJSONStripNUL(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	strip := &nulStripper{r: r.Body}
+	dec := json.NewDecoder(strip)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if strip.removed > 0 {
+		metrics.NULStripped.WithLabelValues(routeOf(r)).Inc()
+	}
+	return nil
+}
+
 // WriteDecodeError answers a ReadJSON failure: 413 for an oversized body,
 // 422 for a NUL in a string, 400 otherwise (raw 0x00 bytes included: not JSON).
 func WriteDecodeError(w http.ResponseWriter, err error) {

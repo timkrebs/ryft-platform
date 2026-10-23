@@ -32,6 +32,10 @@ var (
 		Help: "Requests refused for text Postgres cannot store (a NUL, or bytes that are not UTF-8), by route pattern " +
 			"and where it was found: body (422), url (400) or database (422; a path that bypassed the first two).",
 	}, []string{"route", "at"})
+	NULStripped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_nul_stripped_total",
+		Help: "Requests accepted after the NUL characters were removed from their body's strings (POST /v1/sync), by route pattern.",
+	}, []string{"route"})
 
 	// ingest.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{
