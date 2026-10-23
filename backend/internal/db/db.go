@@ -4,6 +4,7 @@ package db
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -90,6 +92,14 @@ func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgx
 // pooler hands the session to someone else.
 const migrationLock = 7_419_001
 
+// lockTimeout bounds how long any statement of a migration waits for a lock
+// (Postgres lock_timeout, error 55P03). Without it a migration that needs a strong
+// lock on a busy table waits indefinitely and every later query queues behind its
+// request. A var so tests can shorten it; a migration may still set its own with
+// SET LOCAL, which runs after this and wins (0027 does, 5 s). Tests that change it
+// must not run in parallel; locked reads it once per call.
+var lockTimeout = 5 * time.Second
+
 // Migrate applies every migrations/NNNN_*.sql file not yet recorded in
 // schema_migrations, in numeric order, each in its own transaction under the
 // migration lock (re-checking schema_migrations inside it). cmd/migrate runs
@@ -136,6 +146,15 @@ func migrateTo(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, upTo i
 				return nil
 			}
 			if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "55P03" { // lock_not_available
+					where := ""
+					if pgErr.Where != "" { // e.g. `while updating tuple (0,1) in relation "t"`: ids and names, no row values
+						where = " [" + pgErr.Where + "]"
+					}
+					return fmt.Errorf("apply %s: hit the lock timeout%s (this migration rolled back, earlier ones of this run stay applied; "+
+						"find the blocker in pg_stat_activity and pg_locks, then rerun): %w", e.Name(), where, err)
+				}
 				return fmt.Errorf("apply %s: %w", e.Name(), err)
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version); err != nil {
@@ -154,14 +173,21 @@ func migrateTo(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, upTo i
 	return nil
 }
 
-// locked runs fn in a transaction holding the migration lock.
+// locked runs fn in a transaction holding the migration lock. lock_timeout is set
+// only after the advisory lock is held, so a second migrator waits for the first
+// (bounded by ctx) instead of being cut off; it is transaction-local, so it never
+// reaches the pool.
 func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
+	timeout := lockTimeout
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLock); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", timeout.Milliseconds())); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {
