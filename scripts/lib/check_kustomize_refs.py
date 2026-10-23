@@ -41,7 +41,7 @@ def ref(f, key, entry, kind, queue):
     here = os.path.dirname(f)
     if not isinstance(entry, str) or not entry:
         return say(f, f"{key}: an entry that is not a plain string: {entry!r}")
-    if not all(SEGMENT.match(s) for s in entry.split("/") if s):
+    if not all(SEGMENT.fullmatch(s) for s in entry.split("/") if s):
         return say(f, f"{key}: {entry!r} is not a plain relative path (remote, absolute or odd characters)")
     if entry.startswith("/") or entry.endswith("/") or "//" in entry:
         return say(f, f"{key}: {entry!r} has a leading, trailing or doubled slash: write the path without it")

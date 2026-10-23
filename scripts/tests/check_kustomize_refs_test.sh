@@ -338,6 +338,31 @@ fixture; sed 's/podSelector: {}/podSelector: { matchLabels: { app: none } }/' de
 fixture; printf 'patches:\n  - target: { kind: NetworkPolicy, name: default-deny }\n    patch: |-\n      - { op: add, path: /spec/ingress, value: [{}] }\n' >> "$K"; argo; expect "default-deny patched to allow all ingress" 'empty ingress rule'
 fixture; printf 'patches:\n  - target: { kind: NetworkPolicy, name: default-deny }\n    patch: |-\n      $patch: delete\n      apiVersion: networking.k8s.io/v1\n      kind: NetworkPolicy\n      metadata: { name: default-deny }\n' >> "$K"; argo; expect "default-deny deleted by a patch" 'no intact default-deny'
 
+# --- round 3: shadow apps, project binding, the effective environment, allow-all peers ---
+fixture; sed 's|name: svc|name: aa-shadow|; s|project: ryft$|project: ryft-operators|' "$A" > deploy/argocd/apps/aa-shadow.yaml
+printf -- '---\napiVersion: argoproj.io/v1alpha1\nkind: AppProject\nmetadata: { name: ryft-operators, namespace: argocd }\nspec:\n  destinations:\n    - { server: https://kubernetes.default.svc, namespace: "ryft-*" }\n' >> deploy/argocd/project.yaml
+argo; expect "an operators-project app on a workload path (shadowing the real app)" 'may only deploy'
+fixture; sed 's|name: svc|name: zz-twin|' "$A" > deploy/argocd/apps/zz-twin.yaml; argo; expect "two apps on one path" 'one application per path'
+fixture; sed 's|project: ryft$|project: default|' "$A" > "$A.new"; mv "$A.new" "$A"; printf -- '---\napiVersion: argoproj.io/v1alpha1\nkind: AppProject\nmetadata: { name: default, namespace: argocd }\nspec:\n  destinations:\n    - { server: "*", namespace: "*" }\n' >> deploy/argocd/project.yaml; argo; expect "a project that is defined but not one of ours" 'is not one of'
+fixture; printf '            - { name: USER_ID, value: x }\n' >> deploy/k8s/base/api.yaml; argo; expect "a USER_ID env var" 'environment variable USER_ID'
+fixture; printf '          envFrom:\n            - { prefix: A, secretRef: { name: tuning } }\n' >> deploy/k8s/base/api.yaml; printf 'secretGenerator:\n  - name: tuning\n    literals: [UTH_MODE=apikey, PI_KEY=x, LLOW_INSECURE_APIKEY_AUTH=true]\n' >> "$K"; argo; expect "envFrom with a prefix that renames keys" 'envFrom with a prefix'
+fixture; printf '            - { name: AUTH_MODE, valueFrom: { configMapKeyRef: { name: ryft-config, key: MODE } } }\n' >> deploy/k8s/base/api.yaml; printf 'MODE=apikey\n' >> deploy/k8s/base/config.env; argo; expect "AUTH_MODE from valueFrom" 'valueFrom'
+fixture; printf '            - { name: API_KEY, valueFrom: { secretKeyRef: { name: s, key: k } } }\n' >> deploy/k8s/base/api.yaml; argo; expect "API_KEY from valueFrom" 'valueFrom'
+fixture; printf 'secretGenerator:\n  - name: tuning\n    literals: [AUTH_MODE=apikey]\n' >> "$K"; argo; expect "AUTH_MODE as a Secret key (base64 data decoded)" 'AUTH_MODE='
+fixture; printf 'secretGenerator:\n  - name: tuning\n    literals: [API_KEY=x]\n' >> "$K"; argo; expect "API_KEY as a Secret key" 'API_KEY'
+fixture; printf '  ingress:\n    - from: []\n' >> deploy/k8s/base/deny.yaml; argo; expect "ingress from: []" 'without peers'
+fixture; printf '  egress:\n    - to: []\n      ports: [{ port: 443 }]\n' >> deploy/k8s/base/deny.yaml; argo; expect "egress to: []" 'without peers'
+fixture; printf '  egress:\n    - ports: [{ port: 443 }]\n' >> deploy/k8s/base/deny.yaml; argo; expect "an egress rule with only ports" 'without peers'
+# A trailing newline does not pass a pattern (fullmatch, not match with $).
+fixture
+python3 -B -I - "$HERE/scripts/lib" <<'PY' || fail "a trailing newline passed a pattern"
+import sys
+sys.path.insert(0, sys.argv[1])
+import renderpolicy as r
+assert not r.OUR_IMAGE.fullmatch("ghcr.io/timkrebs/ryft/api:abc1234\n")
+assert r.OUR_IMAGE.fullmatch("ghcr.io/timkrebs/ryft/api:abc1234")
+PY
+
 # --- git may only use file:// while kustomize renders ---
 fixture; mkdir "$tmp/bin"; real_kubectl=$(command -v kubectl)
 printf '#!/bin/sh\necho "$GIT_ALLOW_PROTOCOL" >> "%s/protocol"\nexec "%s" "$@"\n' "$tmp" "$real_kubectl" > "$tmp/bin/kubectl"; chmod +x "$tmp/bin/kubectl"

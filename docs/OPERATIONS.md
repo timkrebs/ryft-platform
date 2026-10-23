@@ -623,11 +623,23 @@ bad spellings is complete. The schema is `scripts/lib/yamlpolicy.py`:
   (`scripts/check_kustomize_refs.sh`): plain relative paths below `deploy/`, no symlink, and in
   `resources:` no name that kustomize could read as a remote URL (a segment with a dot, such as
   `github.com/org/repo`, is refused even when a directory of that name exists: kustomize clones first);
-- an app's path is below `deploy/`; only `root.yaml` uses the project `ryft-root`; every path is
-  rendered (git limited to `file://`) and the render keeps the production invariants
-  (`scripts/lib/renderpolicy.py`): no `argoproj.io` object, only our six images with 7-hex tags
-  (plus the broker's digest-pinned rabbitmq), `AUTH_MODE=supabase` and no `API_KEY` /
-  `ALLOW_INSECURE_APIKEY_AUTH`, the default-deny NetworkPolicy intact in every `ryft-*` namespace.
+- an app's path is below `deploy/`, one application per path; the project is one of `ryft`,
+  `ryft-operators` (bound to `deploy/rabbitmq/operators`) and `ryft-root` (`root.yaml` only);
+  every path is rendered (git limited to `file://`) and the render keeps a SMALL set of production
+  invariants (`scripts/lib/renderpolicy.py`): no `argoproj.io` object; for the `ryft` project only
+  our six images with 7-hex tags (plus a digest-pinned rabbitmq, compared by pattern); no
+  `API_KEY`, `ALLOW_INSECURE_APIKEY_AUTH` or `USER_ID` and `AUTH_MODE=supabase` in ConfigMaps,
+  Secrets (decoded) and container env, no `valueFrom` for them, no `envFrom[].prefix`; default-deny
+  intact in every `ryft-*` namespace with a workload; no NetworkPolicy rule that allows every peer
+  (empty, `from: []` / `to: []`, ports only).
+
+**Not checked** (the follow-up is an admission policy, see `docs/STATUS.md`): pod security
+(privileged, `host*`, `hostPath`), Namespace objects and Pod Security labels, which image runs in
+which namespace, `command` / `args`, the broker image beyond its pattern, NetworkPolicy shapes
+beyond the above (`ipBlock`, `namespaceSelector`), workloads without `metadata.namespace`, Vault
+Secrets Operator objects (the `VaultConnection` address, transformation templates), the power of
+the operators project's cluster roles, and `project.yaml` itself (the check reads it from the
+pull request). Do not read a green check as "production-safe".
 
 `make k8s-validate` (CI's `manifests` job) runs these checks. The byte check
 (`scripts/check_bytes.sh`, CI's `bytes` job) refuses tracked symlinks, reads every file under

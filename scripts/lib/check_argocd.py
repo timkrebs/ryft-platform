@@ -14,6 +14,11 @@ REPO = "https://github.com/timkrebs/ryft-platform.git"
 APPS_DIR = "deploy/argocd/apps"
 ROOT_FILE = "deploy/argocd/root.yaml"
 ROOT_PROJECT = "ryft-root"  # the only project that may hold Applications; only root.yaml may use it
+# The projects an application may name, and the paths a project is bound to (None: any path below deploy/).
+# ryft-root is root.yaml's alone; ryft-operators holds the RabbitMQ operators and nothing else, because the
+# render invariants of renderpolicy.py are weaker for it (third-party images, cluster roles). An unknown
+# project (even one that project.yaml defines, such as `default`) is refused.
+PROJECT_PATHS = {"ryft": None, "ryft-operators": {"deploy/rabbitmq/operators"}, ROOT_PROJECT: {"deploy/argocd/apps"}}
 ROOT_PATH = APPS_DIR  # the one application whose path is a plain directory of manifests
 bad, warn = [], []
 
@@ -87,7 +92,7 @@ def main():
     apps = sorted(f for f in (os.path.join(APPS_DIR, e) for e in os.listdir(APPS_DIR))
                   if f.endswith(".yaml") and os.path.isfile(f) and not os.path.islink(f) and not os.path.basename(f).startswith(".")
                   and os.path.basename(f) != "kustomization.yaml") + ["deploy/argocd/root.yaml"]
-    checked = set()
+    owners = {}  # path -> the application that uses it: one application per path
     for f in apps:
         doc, errs, _paths = yamlpolicy.load(f, yamlpolicy.APPLICATION)
         bad.extend(f"{f}: {e}" for e in errs)
@@ -104,6 +109,12 @@ def main():
         if project not in projects:
             bad.append(f"{f}: project {project} is not in project.yaml")
             continue
+        if project not in PROJECT_PATHS:
+            bad.append(f"{f}: the project {project} is not one of {sorted(PROJECT_PATHS)}")
+            continue
+        if project != ROOT_PROJECT and PROJECT_PATHS[project] is not None and path not in PROJECT_PATHS[project]:
+            bad.append(f"{f}: the project {project} may only deploy {sorted(PROJECT_PATHS[project])}, not {path}")
+            continue
         if project == ROOT_PROJECT and f != ROOT_FILE:
             bad.append(f"{f}: the project {ROOT_PROJECT} (which may create Applications) is for {ROOT_FILE} only")
             continue
@@ -115,6 +126,10 @@ def main():
                 bad.append(f"{f}: no sync wave")
             if ann.get("argocd.argoproj.io/compare-options") != "ServerSideDiff=true":
                 bad.append(f"{f}: no server-side diff (StatefulSets drift without it)")
+        if path in owners:
+            bad.append(f"{f}: {path} is already deployed by {owners[path]}: one application per path (a second project could apply weaker render rules to the same path)")
+            continue
+        owners[path] = f
         pf = path_findings(path)
         if pf:
             bad.extend(f"{f}: {e}" for e in pf)
@@ -128,9 +143,6 @@ def main():
         if os.path.islink(k) or not os.path.isfile(k):
             bad.append(f"{f}: {path} has no regular kustomization.yaml (Argo would apply the directory's raw files)")
             continue
-        if path in checked:
-            continue
-        checked.add(path)
         r = subprocess.run(["./scripts/check_kustomize_refs.sh", path], capture_output=True, text=True)
         if r.returncode != 0:
             bad.append(f"{f}: the kustomizations under {path} fail scripts/check_kustomize_refs.sh: {(r.stderr or r.stdout).strip()[:600]}")
@@ -147,7 +159,7 @@ def main():
         print(f"✗ check_argocd: {b}")
     if bad:
         return 1
-    print(f"✓ {len(apps)} Argo CD applications: one spec.source each (no sources, kustomize, helm, plugin or directory overrides), this repository, a path below deploy/ whose kustomizations pass the reference check and render, their projects' namespaces; the renders keep the production invariants (images, auth mode, default-deny, no Applications)")
+    print(f"✓ {len(apps)} Argo CD applications: one spec.source each (no sources, kustomize, helm, plugin or directory overrides), this repository, a path below deploy/ whose kustomizations pass the reference check and render, their projects' namespaces; one application per path, the project bound to its path; the renders keep a SMALL set of production invariants (see scripts/lib/renderpolicy.py: images, AUTH_MODE, empty or allow-all NetworkPolicy rules, default-deny per namespace, no Applications). NOT checked here: pod security, Namespace objects, command/args, VSO objects. Follow-up: admission policy (docs/STATUS)")
     return 0
 
 

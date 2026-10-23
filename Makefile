@@ -252,8 +252,10 @@ k8s-check-registry:
 	./scripts/check_registry.sh
 
 k8s-check-images:
-	@imgs=$$(GIT_ALLOW_PROTOCOL=file kubectl kustomize deploy/k8s/overlays/eks | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
-	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)'; printf '%s\n' "$$imgs" | grep -E ':latest$$'); \
+	@set -e; rendered=$$(GIT_ALLOW_PROTOCOL=file kubectl kustomize deploy/k8s/overlays/eks); \
+	imgs=$$(printf '%s\n' "$$rendered" | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
+	[ -n "$$imgs" ] || { echo "✗ the render of overlays/eks holds no image: the render failed or the overlay is empty"; exit 1; }; \
+	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)' || true; printf '%s\n' "$$imgs" | grep -E ':latest$$' || true); \
 	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
 
