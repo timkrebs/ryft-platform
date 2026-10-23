@@ -252,6 +252,45 @@ argocd app get ryft-platform                                        # objects, h
 argocd app diff ryft-platform                                       # git vs. cluster
 ```
 
+**What Argo CD may no longer do** (T12-f, D120). Its ClusterRoles are written in
+`infra/aws/kubernetes/argocd.tf` (the chart's defaults give the controller `*` and the
+server delete/get/patch on everything), so a compromised Argo CD, or a commit to
+`deploy/argocd`, cannot switch off the admission layer. Each rule has a reason; a kind
+that is not listed is refused with `forbidden` in the sync:
+
+| Who | Rule | Why |
+| --- | --- | --- |
+| controller | get, list, watch, create, update, patch, delete on configmaps, services, serviceaccounts, Deployments, HPAs, Jobs, Ingresses, NetworkPolicies, PDBs, Traefik Middlewares and ServersTransports, cert-manager Certificates and Issuers, the Vault Secrets Operator's VaultAuth, VaultConnection and VaultStaticSecret, the nine `rabbitmq.com` kinds | What `kustomize build` of the paths in `deploy/argocd/apps` renders. Jobs: the PreSync migrate and PostSync smoke hooks (created, and deleted by `BeforeHookCreation`). Server-side apply and the server-side diff need `patch` |
+| controller | get, list, watch on pods, ReplicaSets, StatefulSets | The resource tree (read only) |
+| controller | get, list, watch, create, update, patch on namespaces and CustomResourceDefinitions; no `delete` | Namespace `ryft-web`, `rabbitmq-system`, the operators' 14 CRDs (project `ryft-operators`). Deleting either removes everything in it, the broker's data included, so pruning one is an admin's act |
+| controller | all verbs on ClusterRoles, ClusterRoleBindings, Roles, RoleBindings | The operators' app (`deploy/rabbitmq/operators`) |
+| controller | `escalate` on the five operator ClusterRoles and the two leader-election Roles; `bind` on the three bound ClusterRoles and the two Roles, all by `resourceNames` | Kubernetes only lets you write or bind a role whose permissions you hold. The cluster operator's role has `pods/exec`, which Argo CD must not hold. By name, so Argo CD cannot create a new powerful role |
+| controller | get, list, watch, create on the two webhook-configuration resources; update, patch, delete only on the four operator-owned names | The operators' two Mutating and two ValidatingWebhookConfigurations. Never `ValidatingAdmissionPolicy` or `-Binding` |
+| controller | nothing on `secrets` in the cluster, `pods/exec`, `pods/ephemeralcontainers`, non-resource URLs | No Secret is in git (VSO makes them). Its own Secrets in `argocd` come from the namespaced Role |
+| server | get on the same kinds (and pods/log), list and create events, get/list/update/watch Applications | The UI's live manifests and logs. Nothing on `admissionregistration.k8s.io`, no secrets |
+| server | delete pods and Jobs, patch Deployments and StatefulSets | The UI's actions (delete a pod, restart a Deployment); nothing else is written |
+| both | `resource.respectRBAC: strict`; `exec.enabled: false` | The controller then skips resource types it may not list instead of failing on them; no terminal in the UI |
+| ApplicationSet | controller at 0 replicas (this chart version has no enabled flag) | Applications are the files in `deploy/argocd/apps` |
+
+The namespaced Roles in `argocd` stay the chart's (Secrets and ConfigMaps there are
+Argo CD's own state: the admin account, repository credentials, `argocd-cm`).
+
+What an operator does instead:
+
+- **A shell in a pod, or an ephemeral debug container:** the cluster admin's job (your own
+  AWS identity and `kubectl exec` / `kubectl debug`). The Argo CD UI has no terminal.
+- **Read a Secret:** `kubectl get secret` as admin; Argo CD cannot show it.
+- **Delete a namespace or a CRD:** `kubectl delete` as admin, after the commit that removes
+  it from git; the sync reports it as an orphan to prune and stays OutOfSync until then.
+- **Anything on admission policies:** only `terraform apply` (`infra/aws/kubernetes`).
+- **A new kind in a path of `deploy/argocd/apps`:** add its rule to `argocd.tf` and apply
+  that first (Terraform plan: only `helm_release.argocd`), then merge the manifests;
+  otherwise the sync fails with `forbidden` on that kind.
+- **Where it shows:** `argocd app get <app>` names the refused kind. A controller log line
+  `Failed to ... forbidden` or a sync condition `ComparisonError` means a rule is missing.
+- **Roll back the narrowing:** revert the commit and apply `infra/aws/kubernetes`; the chart
+  returns to its defaults. (Only then, if an urgent sync is blocked.)
+
 **Pause** (a deploy must not happen now, or break-glass): the root re-applies every
 Application from git, so pause it first, then the one application:
 

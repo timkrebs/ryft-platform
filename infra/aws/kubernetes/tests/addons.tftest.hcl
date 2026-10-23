@@ -229,8 +229,8 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
   }
   assert {
     condition = alltrue([for c in ["controller", "server", "repoServer", "applicationSet"] :
-    yamldecode(helm_release.argocd.values[0])[c].replicas == 1 && can(yamldecode(helm_release.argocd.values[0])[c].resources.requests.cpu)])
-    error_message = "non-HA, and every component with explicit requests (the nodes are CPU-bound, D94)"
+    yamldecode(helm_release.argocd.values[0])[c].replicas == (c == "applicationSet" ? 0 : 1) && can(yamldecode(helm_release.argocd.values[0])[c].resources.requests.cpu)])
+    error_message = "non-HA (the ApplicationSet controller is off, T12-f), and every component with explicit requests (the nodes are CPU-bound, D94)"
   }
   assert {
     condition     = yamldecode(helm_release.argocd.values[0]).configs.secret.argocdServerAdminPassword == "$2a$10$mockbcrypthash"
@@ -247,5 +247,85 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
   assert {
     condition     = kubernetes_namespace_v1.argocd.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted"
     error_message = "the argocd namespace enforces Pod Security restricted"
+  }
+}
+
+run "argocd_cannot_switch_off_or_bypass_the_admission_layer" {
+  # T12-f (D120): the rendered values, not the chart's `*` defaults.
+  command = apply
+
+  assert {
+    condition = (
+      yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.enabled == true &&
+      yamldecode(helm_release.argocd.values[0]).server.clusterRoleRules.enabled == true
+    )
+    error_message = "both ClusterRoles must come from our rules, or the chart gives the controller * and the server delete/get/patch on everything"
+  }
+  assert {
+    condition = alltrue(flatten([for c in ["controller", "server"] : [
+      for r in yamldecode(helm_release.argocd.values[0])[c].clusterRoleRules.rules :
+      !contains(r.apiGroups, "*") && !contains(r.resources, "*") && !contains(r.verbs, "*")
+    ]]))
+    error_message = "no wildcard group, resource or verb in either ClusterRole"
+  }
+  assert {
+    condition = alltrue(flatten([for c in ["controller", "server"] : [
+      for r in yamldecode(helm_release.argocd.values[0])[c].clusterRoleRules.rules :
+      !contains(r.resources, "pods/exec") && !contains(r.resources, "pods/ephemeralcontainers") && !contains(r.resources, "secrets") && !contains(r.resources, "serviceaccounts/token")
+    ]]))
+    error_message = "neither ClusterRole may have pods/exec, pods/ephemeralcontainers, secrets or serviceaccounts/token"
+  }
+  assert {
+    condition = alltrue(flatten([for c in ["controller", "server"] : [
+      for r in yamldecode(helm_release.argocd.values[0])[c].clusterRoleRules.rules :
+      alltrue([for res in r.resources : !strcontains(res, "admissionpolic")])
+    ]]))
+    error_message = "no ValidatingAdmissionPolicy or -Binding (nor Mutating...) in either ClusterRole"
+  }
+  assert {
+    condition = length([for r in yamldecode(helm_release.argocd.values[0]).server.clusterRoleRules.rules :
+    r if contains(r.apiGroups, "admissionregistration.k8s.io")]) == 0
+    error_message = "the server has nothing on admissionregistration.k8s.io"
+  }
+  assert {
+    condition = alltrue(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules : [
+      for res in r.resources : contains(["mutatingwebhookconfigurations", "validatingwebhookconfigurations"], res)
+    ] if contains(r.apiGroups, "admissionregistration.k8s.io")]))
+    error_message = "on admissionregistration.k8s.io the controller has the two webhook configuration resources only"
+  }
+  assert {
+    condition = alltrue([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+      can(r.resourceNames) if contains(r.apiGroups, "admissionregistration.k8s.io") && length(setintersection(r.verbs, ["update", "patch", "delete"])) > 0
+    ])
+    error_message = "changing or deleting a webhook configuration only by name"
+  }
+  assert {
+    condition = alltrue(flatten([for c in ["controller", "server"] : [
+      for r in yamldecode(helm_release.argocd.values[0])[c].clusterRoleRules.rules :
+      can(r.resourceNames) if length(setintersection(r.verbs, ["escalate", "bind", "impersonate"])) > 0
+    ]]))
+    error_message = "escalate and bind only by resourceNames"
+  }
+  assert {
+    condition = alltrue([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+    !contains(r.verbs, "delete") if contains(r.resources, "namespaces") || contains(r.resources, "customresourcedefinitions")])
+    error_message = "the controller must not delete namespaces or CRDs (that takes their objects, the broker's data, along)"
+  }
+  assert {
+    condition = alltrue([for r in yamldecode(helm_release.argocd.values[0]).server.clusterRoleRules.rules :
+      length(setintersection(r.verbs, ["create", "update", "delete", "patch"])) == 0 ||
+    contains([["events"], ["applications"], ["pods"], ["jobs"], ["deployments", "statefulsets"]], r.resources)])
+    error_message = "the server writes only the UI actions: events, applications, delete a pod or job, restart a Deployment or StatefulSet"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.argocd.values[0]).configs.cm["resource.respectRBAC"] == "strict" &&
+      yamldecode(helm_release.argocd.values[0]).configs.cm["exec.enabled"] == false
+    )
+    error_message = "resource.respectRBAC must be strict and the UI terminal off"
+  }
+  assert {
+    condition     = yamldecode(helm_release.argocd.values[0]).applicationSet.replicas == 0
+    error_message = "the ApplicationSet controller is off (this chart version has no enabled flag)"
   }
 }

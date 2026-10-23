@@ -81,6 +81,107 @@ locals {
     "prometheus.io/path"   = "/metrics"
   } }
 
+  # --- RBAC (T12-f, D120): Argo CD cannot switch off or bypass the admission layer. ---
+  # The chart's defaults give the application controller `*` on everything and the
+  # server delete/get/patch on everything (so secrets, and the ValidatingAdmissionPolicy
+  # and -Binding objects). Both ClusterRoles are replaced by the lists below, derived
+  # from `kubectl kustomize` of every path in deploy/argocd/apps and the kinds in
+  # deploy/argocd/project.yaml. docs/OPERATIONS.md has the reason for each rule. A kind
+  # added to a path under deploy/argocd/apps needs its rule here first.
+  argocd_crud  = ["get", "list", "watch", "create", "update", "patch", "delete"]
+  argocd_apply = ["get", "list", "watch", "create", "update", "patch"] # no delete
+
+  # The operators' roles, as rendered from deploy/rabbitmq/operators.
+  argocd_operator_cluster_roles = [
+    "rabbitmq-cluster-operator-role",
+    "rabbitmq-cluster-service-binding-role",
+    "messaging-topology-manager-role",
+    "messaging-topology-metrics-auth-role",
+    "messaging-topology-metrics-reader",
+  ]
+  argocd_operator_bound_cluster_roles = [ # roleRef of the three ClusterRoleBindings
+    "rabbitmq-cluster-operator-role",
+    "messaging-topology-manager-role",
+    "messaging-topology-metrics-auth-role",
+  ]
+  argocd_operator_roles = [ # roleRef of the two RoleBindings in rabbitmq-system
+    "rabbitmq-cluster-leader-election-role",
+    "messaging-topology-leader-election-role",
+  ]
+  argocd_operator_mutating_webhooks = [
+    "cluster-operator-mutating-webhook-configuration",
+    "messaging-topology-mutating-webhook-configuration",
+  ]
+  argocd_operator_validating_webhooks = [
+    "cluster-operator-validating-webhook-configuration",
+    "messaging-topology-validating-webhook-configuration",
+  ]
+  argocd_rabbitmq_kinds = ["rabbitmqclusters", "vhosts", "exchanges", "queues", "bindings", "policies", "users", "permissions", "topicpermissions"]
+
+  # Kinds the workloads' paths render; the controller applies, updates and prunes them.
+  argocd_controller_managed = [
+    { apiGroups = [""], resources = ["configmaps", "services", "serviceaccounts"], verbs = local.argocd_crud },
+    { apiGroups = ["apps"], resources = ["deployments"], verbs = local.argocd_crud },
+    { apiGroups = ["autoscaling"], resources = ["horizontalpodautoscalers"], verbs = local.argocd_crud },
+    { apiGroups = ["batch"], resources = ["jobs"], verbs = local.argocd_crud }, # PreSync migrate, PostSync smoke
+    { apiGroups = ["networking.k8s.io"], resources = ["ingresses", "networkpolicies"], verbs = local.argocd_crud },
+    { apiGroups = ["policy"], resources = ["poddisruptionbudgets"], verbs = local.argocd_crud },
+    { apiGroups = ["traefik.io"], resources = ["middlewares", "serverstransports"], verbs = local.argocd_crud },
+    { apiGroups = ["cert-manager.io"], resources = ["certificates", "issuers"], verbs = local.argocd_crud },
+    { apiGroups = ["secrets.hashicorp.com"], resources = ["vaultauths", "vaultconnections", "vaultstaticsecrets"], verbs = local.argocd_crud },
+    { apiGroups = ["rabbitmq.com"], resources = local.argocd_rabbitmq_kinds, verbs = local.argocd_crud },
+  ]
+
+  # No `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, no `*`, no non-resource
+  # URL, nothing on (Validating|Mutating)AdmissionPolicy or -Binding.
+  argocd_controller_rules = concat(
+    local.argocd_controller_managed,
+    [
+      # Read only, to draw the resource tree.
+      { apiGroups = [""], resources = ["pods"], verbs = ["get", "list", "watch"] },
+      { apiGroups = ["apps"], resources = ["replicasets", "statefulsets"], verbs = ["get", "list", "watch"] },
+      # Cluster-scoped kinds of the projects. Namespaces and CRDs: no `delete`, which would
+      # take every object in them along; an admin removes one on purpose.
+      { apiGroups = [""], resources = ["namespaces"], verbs = local.argocd_apply },
+      { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = local.argocd_apply },
+      # The operators' ClusterRoles, bindings and the two leader-election Roles.
+      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = local.argocd_crud },
+      # A role may only be written or bound by someone who holds its permissions (the
+      # cluster operator's has pods/exec) or may escalate/bind it: only these names.
+      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["escalate"], resourceNames = local.argocd_operator_cluster_roles },
+      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"], resourceNames = local.argocd_operator_bound_cluster_roles },
+      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate", "bind"], resourceNames = local.argocd_operator_roles },
+      # The operators' four webhook configurations (ryft-operators project): get, list,
+      # watch and create cannot be limited by name; changing or deleting one can.
+      { apiGroups = ["admissionregistration.k8s.io"], resources = ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"], verbs = ["get", "list", "watch", "create"] },
+      { apiGroups = ["admissionregistration.k8s.io"], resources = ["mutatingwebhookconfigurations"], verbs = ["update", "patch", "delete"], resourceNames = local.argocd_operator_mutating_webhooks },
+      { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingwebhookconfigurations"], verbs = ["update", "patch", "delete"], resourceNames = local.argocd_operator_validating_webhooks },
+    ],
+  )
+
+  # The server shows live objects and logs and does a few actions; it syncs nothing.
+  # Nothing on admissionregistration.k8s.io, no secrets, no pods/exec, no pods/ephemeralcontainers.
+  argocd_server_rules = [
+    { apiGroups = [""], resources = ["configmaps", "services", "serviceaccounts", "namespaces", "pods", "pods/log"], verbs = ["get"] },
+    { apiGroups = ["apps"], resources = ["deployments", "replicasets", "statefulsets"], verbs = ["get"] },
+    { apiGroups = ["autoscaling"], resources = ["horizontalpodautoscalers"], verbs = ["get"] },
+    { apiGroups = ["batch"], resources = ["jobs"], verbs = ["get"] },
+    { apiGroups = ["networking.k8s.io"], resources = ["ingresses", "networkpolicies"], verbs = ["get"] },
+    { apiGroups = ["policy"], resources = ["poddisruptionbudgets"], verbs = ["get"] },
+    { apiGroups = ["traefik.io"], resources = ["middlewares", "serverstransports"], verbs = ["get"] },
+    { apiGroups = ["cert-manager.io"], resources = ["certificates", "issuers"], verbs = ["get"] },
+    { apiGroups = ["secrets.hashicorp.com"], resources = ["vaultauths", "vaultconnections", "vaultstaticsecrets"], verbs = ["get"] },
+    { apiGroups = ["rabbitmq.com"], resources = local.argocd_rabbitmq_kinds, verbs = ["get"] },
+    { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = ["get"] },
+    { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = ["get"] },
+    { apiGroups = [""], resources = ["events"], verbs = ["list", "create"] },
+    { apiGroups = ["argoproj.io"], resources = ["applications"], verbs = ["get", "list", "update", "watch"] },
+    # UI actions: delete a pod or a job, restart a Deployment or StatefulSet.
+    { apiGroups = [""], resources = ["pods"], verbs = ["delete"] },
+    { apiGroups = ["batch"], resources = ["jobs"], verbs = ["delete"] },
+    { apiGroups = ["apps"], resources = ["deployments", "statefulsets"], verbs = ["patch"] },
+  ]
+
   argocd_values = {
     global = {
       # The public host; also argocd-cm's url (the links Argo CD builds).
@@ -101,6 +202,12 @@ locals {
       params = { "server.insecure" = true }
       cm = merge(local.argocd_rabbitmq_health, {
         "admin.enabled" = true
+        # Strict: the controller lists and watches only the resource types its ClusterRole
+        # allows, instead of failing on the rest (T12-f); the narrowed rules need it.
+        "resource.respectRBAC" = "strict"
+        # No terminal into pods from the UI (the chart would add pods/exec to the server's
+        # role); exec is the cluster admin's job.
+        "exec.enabled" = false
         # Restores the health of Application resources (removed in Argo CD 1.8), so
         # the app-of-apps waits in each sync wave until the previous wave's
         # applications are healthy: Vault secrets, then the broker, then the services.
@@ -170,16 +277,18 @@ locals {
     }
 
     controller = {
-      replicas       = 1
-      podAnnotations = local.argocd_scrape.controller
+      clusterRoleRules = { enabled = true, rules = local.argocd_controller_rules }
+      replicas         = 1
+      podAnnotations   = local.argocd_scrape.controller
       resources = {
         requests = { cpu = "50m", memory = "256Mi" }
         limits   = { memory = "768Mi" }
       }
     }
     server = {
-      replicas       = 1
-      podAnnotations = local.argocd_scrape.server
+      clusterRoleRules = { enabled = true, rules = local.argocd_server_rules }
+      replicas         = 1
+      podAnnotations   = local.argocd_scrape.server
       resources = {
         requests = { cpu = "10m", memory = "64Mi" }
         limits   = { memory = "256Mi" }
@@ -207,8 +316,11 @@ locals {
         limits   = { memory = "512Mi" }
       }
     }
+    # Off: this chart version has no enabled flag, so zero replicas. The applications are
+    # plain files in deploy/argocd/apps; an ApplicationSet could create Applications
+    # outside the fixed set the admission layer allows (D120). The CRD stays.
     applicationSet = {
-      replicas = 1
+      replicas = 0
       resources = {
         requests = { cpu = "10m", memory = "32Mi" }
         limits   = { memory = "128Mi" }
