@@ -2244,6 +2244,26 @@ sent, and whether a second account shares its phone.
   `.gitattributes` and `.gitmodules` may not exist. Argo CD's own repo-server isn't constrained by
   these checks; they gate what reaches `main`.
 
+## D116 — The migrator bounds every lock wait (5 s `lock_timeout`)
+
+- **Why (2026-10-23):** a migration that needs a strong lock on a busy table waited without
+  limit, and every later query on that table queued behind its lock request (the shape of the
+  2026-10-20 outage). Only 0027 set its own `lock_timeout` (D113).
+- **Decision:** `locked()` sets a transaction-local `lock_timeout` of 5 s (`set_config(…,
+  true)`) right **after** `pg_advisory_xact_lock`, so a second migrator still waits for the first
+  (bounded by `cmd/migrate`'s context and the Job's deadline). Every migration and Seed run
+  under it; a migration's own `SET LOCAL` runs later and wins. A constant with a test hook, no
+  env setting. No `statement_timeout`: backfills legitimately run long.
+- **Failure:** the timed-out migration rolls back (earlier ones of the run stay applied); the
+  error names the file, the lock timeout and where to look; the PreSync hook fails, the sync stops
+  before anything rolls, Argo CD retries, the running pods keep serving. Each attempt can stall
+  queries on that table for up to 5 s (up to about 15 times over 10 minutes; no alert): find and
+  end the blocker first (OPERATIONS → Deploy and roll back), then sync.
+- **Consequence:** an `ALTER` on a table with long writers (`samples` under sync load) fails fast
+  instead of waiting: run it off-peak, or give that migration its own `SET LOCAL lock_timeout`
+  with the reason in its header. The repo targets Postgres 17; the hosted version is the user's
+  to confirm (SUPABASE.md).
+
 ## D117 — Log tests pin each value's kind, not only its key (amends D114)
 
 - **Why (2026-10-23):** D114's tests allowlisted the keys of each log line, so a health value

@@ -384,6 +384,8 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
 
 **Follow-ups of 2026-10-23: done**
 
+- **The migrator** bounds every lock wait with a 5 s `lock_timeout`, set after its advisory
+  lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
 - **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
   APNs refusals log a status code and a bare code only (D117).
 
@@ -400,6 +402,8 @@ Yours:
 - **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
   `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
   ConfigMap in `envFrom` and would override the version in force.
+- **Postgres version:** confirm the hosted major version once (`select version();` in the
+  Supabase SQL editor); the repo targets 17 (SUPABASE.md → Postgres version).
 - **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
   `argocd app resources ryft-platform --orphaned`.
 - Optional: squash commits take the PR title; approval for outside contributors' runs; the
@@ -423,8 +427,6 @@ Technical:
   safe, or `maxSurge: 0` for scoring.
 - **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
   half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
-- **The migrator** sets no `lock_timeout` (only 0027 does): one for every migration; name
-  the Postgres major version in `SUPABASE.md`.
 - **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
 - **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
   and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
