@@ -1,0 +1,1062 @@
+{
+  "statefulset-rabbitmq-server": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "rabbitmq-server",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {
+      "replicas": 3,
+      "serviceName": "rabbitmq-nodes",
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "rabbitmq"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "rabbitmq"
+          },
+          "annotations": {
+            "prometheus.io/scrape": "true"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "rabbitmq-server",
+          "automountServiceAccountToken": true,
+          "initContainers": [
+            {
+              "name": "setup-container",
+              "image": "docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58",
+              "command": [
+                "sh",
+                "-c",
+                "cp /tmp/x /var/y"
+              ]
+            }
+          ],
+          "containers": [
+            {
+              "name": "rabbitmq",
+              "image": "docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58",
+              "args": [
+                "--x"
+              ],
+              "lifecycle": {
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/bash",
+                      "-c",
+                      "rabbitmq-upgrade await_online_quorum_plus_one"
+                    ]
+                  }
+                }
+              },
+              "readinessProbe": {
+                "tcpSocket": {
+                  "port": "amqps"
+                }
+              },
+              "env": [
+                {
+                  "name": "MY_POD_NAME",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.name"
+                    }
+                  }
+                },
+                {
+                  "name": "RABBITMQ_ERLANG_COOKIE",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "rabbitmq-erlang-cookie",
+                      "key": "cookie"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "kube-api-access-xyz",
+              "projected": {
+                "sources": [
+                  {
+                    "serviceAccountToken": {
+                      "path": "token",
+                      "expirationSeconds": 3607
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "cronjob-c": {
+    "apiVersion": "batch/v1",
+    "kind": "CronJob",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "spec": {
+      "jobTemplate": {
+        "spec": {
+          "template": {
+            "spec": {
+              "automountServiceAccountToken": false,
+              "containers": [
+                {
+                  "name": "c",
+                  "image": "busybox"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "namespace-ryft-evil": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "ryft-evil",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted"
+      }
+    }
+  },
+  "namespace-monitoring": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "monitoring",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "privileged"
+      }
+    }
+  },
+  "namespace-argocd": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "argocd",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "privileged"
+      }
+    }
+  },
+  "namespace-ryft-": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "generateName": "ryft-",
+      "labels": {}
+    }
+  },
+  "vaultdynamicsecret-x": {
+    "apiVersion": "secrets.hashicorp.com/v1beta1",
+    "kind": "VaultDynamicSecret",
+    "metadata": {
+      "name": "x",
+      "namespace": "ryft-api"
+    },
+    "spec": {}
+  },
+  "configmap-c": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "AUTH_MODE": "apikey"
+    }
+  },
+  "configmap-c-1": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+      "name": "c",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "API_KEY": "x"
+    }
+  },
+  "secret-ryft-secrets": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "USER_ID": "eA=="
+    }
+  },
+  "secret-ryft-secrets-2": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "AUTH_MODE": "c3VwYWJhc2U="
+    }
+  },
+  "secret-ryft-secrets-3": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api"
+    },
+    "data": {
+      "DATABASE_URL": "eA=="
+    }
+  },
+  "shovel-s": {
+    "apiVersion": "rabbitmq.com/v1beta1",
+    "kind": "Shovel",
+    "metadata": {
+      "name": "s",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {}
+  },
+  "service-s": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "s",
+      "namespace": "ryft-rabbitmq"
+    },
+    "spec": {}
+  },
+  "applicationset-x": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "ApplicationSet",
+    "metadata": {
+      "name": "x",
+      "namespace": "argocd"
+    },
+    "spec": {}
+  },
+  "clusterrole-rabbitmq-cluster-operator-role": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRole",
+    "metadata": {
+      "name": "rabbitmq-cluster-operator-role"
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "configmaps",
+          "persistentvolumeclaims",
+          "secrets",
+          "serviceaccounts",
+          "services"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "endpoints"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "patch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "pods"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "pods/exec"
+        ],
+        "verbs": [
+          "create"
+        ]
+      },
+      {
+        "apiGroups": [
+          "apps"
+        ],
+        "resources": [
+          "statefulsets"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "discovery.k8s.io"
+        ],
+        "resources": [
+          "endpointslices"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/finalizers"
+        ],
+        "verbs": [
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/status"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rbac.authorization.k8s.io"
+        ],
+        "resources": [
+          "rolebindings",
+          "roles"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      }
+    ]
+  },
+  "clusterrolebinding-rabbitmq-cluster-operator-rolebinding": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRoleBinding",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/component": "rabbitmq-operator",
+        "app.kubernetes.io/name": "rabbitmq-cluster-operator",
+        "app.kubernetes.io/part-of": "rabbitmq"
+      },
+      "name": "rabbitmq-cluster-operator-rolebinding"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "ClusterRole",
+      "name": "rabbitmq-cluster-operator-role"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "rabbitmq-cluster-operator",
+        "namespace": "rabbitmq-system"
+      }
+    ]
+  },
+  "clusterrole-messaging-topology-manager-role": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRole",
+    "metadata": {
+      "name": "messaging-topology-manager-role"
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "secrets"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "services"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "events.k8s.io"
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create",
+          "patch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings",
+          "exchanges",
+          "federations",
+          "operatorpolicies",
+          "permissions",
+          "policies",
+          "queues",
+          "schemareplications",
+          "shovels",
+          "superstreams",
+          "topicpermissions",
+          "users",
+          "vhosts"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "patch",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings/finalizers",
+          "exchanges/finalizers",
+          "federations/finalizers",
+          "operatorpolicies/finalizers",
+          "permissions/finalizers",
+          "policies/finalizers",
+          "queues/finalizers",
+          "schemareplications/finalizers",
+          "shovels/finalizers",
+          "superstreams/finalizers",
+          "topicpermissions/finalizers",
+          "users/finalizers",
+          "vhosts/finalizers"
+        ],
+        "verbs": [
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings/status",
+          "exchanges/status",
+          "federations/status",
+          "operatorpolicies/status",
+          "permissions/status",
+          "policies/status",
+          "queues/status",
+          "schemareplications/status",
+          "shovels/status",
+          "superstreams/status",
+          "topicpermissions/status",
+          "users/status",
+          "vhosts/status"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/status"
+        ],
+        "verbs": [
+          "get"
+        ]
+      }
+    ]
+  },
+  "role-cluster-operator-ryft-rabbitmq": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "Role",
+    "metadata": {
+      "name": "rabbitmq-cluster-operator-role",
+      "namespace": "ryft-rabbitmq",
+      "labels": {
+        "app.kubernetes.io/component": "rabbitmq-operator",
+        "app.kubernetes.io/name": "rabbitmq-cluster-operator",
+        "app.kubernetes.io/part-of": "rabbitmq"
+      }
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "configmaps",
+          "persistentvolumeclaims",
+          "secrets",
+          "serviceaccounts",
+          "services"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "endpoints"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "patch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "pods"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "pods/exec"
+        ],
+        "verbs": [
+          "create"
+        ]
+      },
+      {
+        "apiGroups": [
+          "apps"
+        ],
+        "resources": [
+          "statefulsets"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "discovery.k8s.io"
+        ],
+        "resources": [
+          "endpointslices"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/finalizers"
+        ],
+        "verbs": [
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/status"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rbac.authorization.k8s.io"
+        ],
+        "resources": [
+          "rolebindings",
+          "roles"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      }
+    ]
+  },
+  "rolebinding-cluster-operator-ryft-rabbitmq": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "rabbitmq-cluster-operator-rolebinding",
+      "namespace": "ryft-rabbitmq",
+      "labels": {
+        "app.kubernetes.io/component": "rabbitmq-operator",
+        "app.kubernetes.io/name": "rabbitmq-cluster-operator",
+        "app.kubernetes.io/part-of": "rabbitmq"
+      }
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "rabbitmq-cluster-operator-role"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "rabbitmq-cluster-operator",
+        "namespace": "rabbitmq-system"
+      }
+    ]
+  },
+  "role-topology-manager-ryft-rabbitmq": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "Role",
+    "metadata": {
+      "name": "messaging-topology-manager-role",
+      "namespace": "ryft-rabbitmq",
+      "labels": {
+        "app.kubernetes.io/name": "messaging-topology-operator"
+      }
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "secrets"
+        ],
+        "verbs": [
+          "create",
+          "get",
+          "list",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "services"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "events.k8s.io"
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create",
+          "patch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings",
+          "exchanges",
+          "federations",
+          "operatorpolicies",
+          "permissions",
+          "policies",
+          "queues",
+          "schemareplications",
+          "shovels",
+          "superstreams",
+          "topicpermissions",
+          "users",
+          "vhosts"
+        ],
+        "verbs": [
+          "create",
+          "delete",
+          "get",
+          "list",
+          "patch",
+          "update",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings/finalizers",
+          "exchanges/finalizers",
+          "federations/finalizers",
+          "operatorpolicies/finalizers",
+          "permissions/finalizers",
+          "policies/finalizers",
+          "queues/finalizers",
+          "schemareplications/finalizers",
+          "shovels/finalizers",
+          "superstreams/finalizers",
+          "topicpermissions/finalizers",
+          "users/finalizers",
+          "vhosts/finalizers"
+        ],
+        "verbs": [
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "bindings/status",
+          "exchanges/status",
+          "federations/status",
+          "operatorpolicies/status",
+          "permissions/status",
+          "policies/status",
+          "queues/status",
+          "schemareplications/status",
+          "shovels/status",
+          "superstreams/status",
+          "topicpermissions/status",
+          "users/status",
+          "vhosts/status"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters"
+        ],
+        "verbs": [
+          "get",
+          "list",
+          "watch"
+        ]
+      },
+      {
+        "apiGroups": [
+          "rabbitmq.com"
+        ],
+        "resources": [
+          "rabbitmqclusters/status"
+        ],
+        "verbs": [
+          "get"
+        ]
+      }
+    ]
+  },
+  "rolebinding-topology-manager-ryft-rabbitmq": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "messaging-topology-manager-rolebinding",
+      "namespace": "ryft-rabbitmq",
+      "labels": {
+        "app.kubernetes.io/name": "messaging-topology-operator"
+      }
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "messaging-topology-manager-role"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "messaging-topology-operator",
+        "namespace": "rabbitmq-system"
+      }
+    ]
+  },
+  "namespace-as-infra-vault": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "ryft-api",
+      "labels": {
+        "app.kubernetes.io/part-of": "ryft",
+        "ryft.dev/service": "api",
+        "ryft.dev/vault-namespace": "admin_ryft_api",
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted"
+      }
+    }
+  },
+  "namespace-as-argocd-tf": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "argocd",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted"
+      }
+    }
+  },
+  "namespace-as-infra-vault-monitoring": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "monitoring",
+      "labels": {
+        "app.kubernetes.io/part-of": "ryft",
+        "ryft.dev/service": "monitoring",
+        "pod-security.kubernetes.io/enforce": "privileged",
+        "pod-security.kubernetes.io/warn": "privileged",
+        "pod-security.kubernetes.io/audit": "privileged"
+      }
+    }
+  },
+  "role-peer-discovery": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "Role",
+    "metadata": {
+      "name": "rabbitmq-peer-discovery",
+      "namespace": "ryft-rabbitmq"
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "endpoints"
+        ],
+        "verbs": [
+          "get"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create"
+        ]
+      }
+    ]
+  },
+  "rolebinding-server": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "rabbitmq-server",
+      "namespace": "ryft-rabbitmq"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "rabbitmq-peer-discovery"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "rabbitmq-server",
+        "namespace": "ryft-rabbitmq"
+      }
+    ]
+  }
+}

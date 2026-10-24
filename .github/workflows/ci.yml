@@ -97,6 +97,8 @@ jobs:
               - 'web/scripts/lib/policy.mjs'
             terraform:
               - 'infra/**'
+              # infra/aws/kubernetes' test compares its Vault address with these generated files
+              - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
             web:
               - 'web/**'
