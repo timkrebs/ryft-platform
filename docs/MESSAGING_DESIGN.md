@@ -44,6 +44,12 @@ completion), and the publisher's relay sends it with the broker's confirm.
   A retry is an acknowledged copy with `x-ryft-attempt`, never a requeue; the broker's
   own delivery limit only catches what the client cannot settle (a consumer that died
   holding the message).
+- **The key:** a delivery from `ryft.events` is handled by its routing key, which the
+  publisher's topic permission limits; its `type` must be empty or the same, else it is
+  a bad event, dead-lettered under the routing key (so ingest cannot get a session
+  handled by calling its `ingested` message `session.completed`). A retry tier's copy
+  comes back through `ryft.requeue` and is handled by the type its first delivery was
+  checked with.
 - **Replay** (`scripts/dlq.sh replay`, after the cause is fixed): the letter goes back to
   `ryft.events` with its key, `x-ryft-replayed: true` and none of the DLQ's or the tiers'
   headers. Its handler takes it as a redelivery (`events.Redelivered`), with six attempts

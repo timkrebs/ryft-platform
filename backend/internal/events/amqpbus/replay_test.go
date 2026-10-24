@@ -86,37 +86,77 @@ func TestReplayMarker(t *testing.T) {
 	}
 }
 
-// A dead letter is filed under its type only when the queue's consumer is bound for it;
-// else under its routing key, which the publisher's topic permission limits (D99). So a
-// forged type reaches neither the DLQ's Ryft-Subject (the key dlq.sh replays with) nor the
-// DLQ metric's label.
+// A dead letter is filed under its event key only when its type matches and the queue's
+// consumer is bound for that key; else under its routing key, which the publisher's topic
+// permission limits (D99). So a forged type reaches neither the DLQ's Ryft-Subject (the
+// key dlq.sh replays with) nor the DLQ metric's label.
 func TestSubjectOf(t *testing.T) {
-	for _, c := range []struct{ queue, typ, key, want string }{
-		{events.ConsumerScoring, events.KeyIngested, events.KeyIngested, events.KeyIngested},
-		{events.ConsumerScoring, events.KeyIngested, events.ConsumerScoring, events.KeyIngested}, // a retry: back with the queue's name
-		{events.ConsumerScoring, events.KeySessionCompleted, events.KeySessionCompleted, events.KeySessionCompleted},
-		{events.ConsumerScoring, events.KeyScored, events.KeyIngested, events.KeyIngested}, // forged
-		{events.ConsumerScoring, "anything", events.KeyIngested, events.KeyIngested},
-		{events.ConsumerScoring, "", events.KeyIngested, events.KeyIngested},
-		{events.ConsumerNotify, events.KeyRefresh, events.KeyRefresh, events.KeyRefresh},
-		{events.ConsumerNotify, events.KeyIngested, events.ConsumerNotify, events.ConsumerNotify},
-		{"elsewhere", events.KeyIngested, "k", "k"},
+	for _, c := range []struct{ queue, exchange, typ, key, want string }{
+		{events.ConsumerScoring, ExchangeEvents, events.KeyIngested, events.KeyIngested, events.KeyIngested},
+		{events.ConsumerScoring, ExchangeRequeue, events.KeyIngested, events.ConsumerScoring, events.KeyIngested}, // a retry
+		{events.ConsumerScoring, ExchangeEvents, events.KeySessionCompleted, events.KeySessionCompleted, events.KeySessionCompleted},
+		{events.ConsumerScoring, ExchangeEvents, events.KeyScored, events.KeyIngested, events.KeyIngested},           // forged
+		{events.ConsumerScoring, ExchangeEvents, events.KeySessionCompleted, events.KeyIngested, events.KeyIngested}, // forged, and bound
+		{events.ConsumerScoring, ExchangeEvents, "anything", events.KeyIngested, events.KeyIngested},
+		{events.ConsumerScoring, ExchangeEvents, "", events.KeyIngested, events.KeyIngested},
+		{events.ConsumerNotify, ExchangeEvents, events.KeyRefresh, events.KeyRefresh, events.KeyRefresh},
+		{events.ConsumerNotify, ExchangeRequeue, events.KeyIngested, events.ConsumerNotify, events.ConsumerNotify}, // not notify's
+		{"elsewhere", ExchangeEvents, events.KeyIngested, "k", "k"},
 	} {
-		if got := subjectOf(c.queue, amqp.Delivery{Type: c.typ, RoutingKey: c.key}); got != c.want {
-			t.Errorf("subjectOf(%s, type %q, key %q) = %q, want %q", c.queue, c.typ, c.key, got, c.want)
+		d := amqp.Delivery{Exchange: c.exchange, Type: c.typ, RoutingKey: c.key}
+		if got := subjectOf(c.queue, d); got != c.want {
+			t.Errorf("subjectOf(%s, %s, type %q, key %q) = %q, want %q", c.queue, c.exchange, c.typ, c.key, got, c.want)
 		}
 	}
 	// Through handle: a delivery that does not decode is dead-lettered under that subject
 	// (the publish fails here, no broker: counted as an error, under the same label).
 	label := func(s string) float64 { return testutil.ToFloat64(metrics.EventsDLQ.WithLabelValues(s, "error")) }
 	forged, routed := label("forged-type"), label(events.KeyIngested)
-	d := amqp.Delivery{Type: "forged-type", RoutingKey: events.KeyIngested, Body: []byte("{}")}
+	d := amqp.Delivery{Type: "forged-type", RoutingKey: events.KeyIngested, Body: []byte("{}")} // not from ryft.events
 	(&Bus{}).handle(context.Background(), quiet, events.ConsumerScoring, d, func(context.Context, amqp.Delivery, *string) error {
 		return badEvent{errors.New("not an event for scoring")}
 	})
 	if label("forged-type") != forged || label(events.KeyIngested) != routed+1 {
 		t.Errorf("the dead letter is counted under its type (%v) instead of its routing key (%v)",
 			label("forged-type")-forged, label(events.KeyIngested)-routed)
+	}
+}
+
+// From ryft.events a delivery is handled by its routing key, which the publisher's topic
+// permission limits: a type that says otherwise (ingest, which may publish only `ingested`,
+// calling its message session.completed) is a bad event, dead-lettered under the routing
+// key without reaching the handler. A retry tier's copy (ryft.requeue, the queue's name as
+// routing key) is handled by the type its first delivery was checked with.
+func TestTypeMustMatchItsKey(t *testing.T) {
+	for _, c := range []struct {
+		exchange, typ, key string
+		handled            bool
+		as                 string
+	}{
+		{ExchangeEvents, events.KeyIngested, events.KeyIngested, true, events.KeyIngested},
+		{ExchangeEvents, "", events.KeyIngested, true, events.KeyIngested},
+		{ExchangeEvents, events.KeySessionCompleted, events.KeySessionCompleted, true, events.KeySessionCompleted},
+		{ExchangeEvents, events.KeySessionCompleted, events.KeyIngested, false, events.KeyIngested},
+		{ExchangeEvents, events.KeyScored, events.KeyIngested, false, events.KeyIngested},
+		{ExchangeRequeue, events.KeySessionCompleted, events.ConsumerScoring, true, events.KeySessionCompleted},
+		{ExchangeRequeue, "", events.ConsumerScoring, true, events.ConsumerScoring},
+	} {
+		d := amqp.Delivery{Exchange: c.exchange, Type: c.typ, RoutingKey: c.key, Body: []byte("{}")}
+		if got := keyOf(d); got != c.as {
+			t.Errorf("keyOf(%s, type %q, key %q) = %q, want %q", c.exchange, c.typ, c.key, got, c.as)
+		}
+		bad := testutil.ToFloat64(metrics.EventsDLQ.WithLabelValues(c.as, "error"))
+		called := false
+		(&Bus{}).handle(context.Background(), quiet, events.ConsumerScoring, d, func(context.Context, amqp.Delivery, *string) error {
+			called = true
+			return nil
+		})
+		if called != c.handled {
+			t.Errorf("%s, type %q, key %q: handled %v, want %v", c.exchange, c.typ, c.key, called, c.handled)
+		}
+		if got, want := testutil.ToFloat64(metrics.EventsDLQ.WithLabelValues(c.as, "error"))-bad, map[bool]float64{true: 0, false: 1}[c.handled]; got != want {
+			t.Errorf("%s, type %q, key %q: dead-lettered under %q %v times, want %v", c.exchange, c.typ, c.key, c.as, got, want)
+		}
 	}
 }
 
@@ -364,5 +404,61 @@ func TestForgedTypeIsNotReplayed(t *testing.T) {
 	case <-handled:
 		t.Error("scoring handled the forged message")
 	default:
+	}
+}
+
+// Against a broker: a message ingest may publish (`ingested`) that calls itself
+// session.completed is not handled as a session; it is dead-lettered under `ingested`,
+// with its type kept. A real session.completed, and its retry, are handled.
+func TestTypeMustMatchItsKeyOnTheBroker(t *testing.T) {
+	b := newBroker(t)
+	bus := b.bus("test")
+	var mu sync.Mutex
+	var got []model.IngestedEvent
+	failed := false
+	consumeIngested(t, bus, func(_ context.Context, ev model.IngestedEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, ev)
+		if ev.Reason == events.ReasonSessionCompleted && !failed {
+			failed = true
+			return errors.New("once") // its retry comes back through ryft.requeue
+		}
+		return nil
+	})
+	body, _ := json.Marshal(model.SessionCompletedEvent{UserID: uuid.New(), SessionID: uuid.New(), Day: "2026-10-21"})
+	b.call(http.MethodPost, "/api/exchanges/"+b.vhost+"/"+ExchangeEvents+"/publish", map[string]any{
+		"routing_key": events.KeyIngested, "payload": string(body), "payload_encoding": "string",
+		"properties": map[string]any{"type": events.KeySessionCompleted, "message_id": "forged-session", "delivery_mode": 2},
+	})
+	d, ok := b.get(DLQ(events.ConsumerScoring))
+	if !ok {
+		t.Fatal("the forged session is not dead-lettered")
+	}
+	if d.Headers[events.HeaderSubject] != events.KeyIngested || d.Type != events.KeySessionCompleted || d.MessageId != "forged-session" {
+		t.Errorf("dead letter: subject %v, type %q, id %q", d.Headers[events.HeaderSubject], d.Type, d.MessageId)
+	}
+	session := model.SessionCompletedEvent{UserID: uuid.New(), SessionID: uuid.New(), Day: "2026-10-20"}
+	if err := bus.PublishSessionCompleted(context.Background(), session, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+	}
+	time.Sleep(time.Duration(float64(RetryTiers[1].Delay) * scale * 2))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("want the real session and its retry, got %+v", got)
+	}
+	for _, ev := range got {
+		if ev.Reason != events.ReasonSessionCompleted || ev.UserID != session.UserID || len(ev.Days) != 1 || ev.Days[0] != session.Day {
+			t.Errorf("handled %+v, want the real session", ev)
+		}
 	}
 }
