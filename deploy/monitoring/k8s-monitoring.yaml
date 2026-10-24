@@ -11,6 +11,78 @@
 cluster:
   name: ryft-prod-euc1
 
+# ---- Admission signals (T12-e, D120; docs/OBSERVABILITY.md → Admission) ----------------
+# Fleet Management owns the cluster's usual pipelines. This block adds two small scrapes
+# the chart owns, each with its own job label (so nothing collides with a Fleet series):
+#   1. the API servers' admission metrics (apiServer below, one target per endpoint of
+#      default/kubernetes, not the VIP), kept by an allow-list;
+#   2. kube-state-metrics' custom-resource-state series for the policy bindings (the
+#      config is under telemetryServices.kube-state-metrics).
+# Every other source of clusterMetrics is off, or Fleet's pipelines would be duplicated.
+# The data needs a destination of the chart's own: the stack's Prometheus write endpoint
+# with the same user and token as OpenCost (ryft-secrets PROM_USERNAME, GC_TOKEN). The
+# token therefore needs the metrics:write scope; if the pods log 401/403 from remote_write,
+# add the scope to the access policy (OPERATIONS → Admission policy signals).
+destinations:
+  admission-signals:
+    type: prometheus
+    url: https://prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom/push
+    auth:
+      type: basic
+      usernameKey: PROM_USERNAME
+      passwordKey: GC_TOKEN
+    # With an existing secret the chart reads every other field from it too (tenant id,
+    # client TLS), and ryft-secrets has neither: the tenant id is the same PROM_USERNAME
+    # (Grafana Cloud's tenant is the Prometheus user), and the client TLS block goes, as
+    # for the remote config above.
+    tenantIdKey: PROM_USERNAME
+    tls: null
+    secret:
+      create: false
+      name: ryft-secrets
+      namespace: monitoring
+
+clusterMetrics:
+  enabled: true
+  destinations: [admission-signals]
+  # The chart needs to be told which collector runs the scrapes: the clustered
+  # cluster-wide one (a single replica; both collectors are Fleet-assigned otherwise).
+  collector: alloy-deployment
+  kubelet: { enabled: false }
+  kubeletResource: { enabled: false }
+  kubeletProbes: { enabled: false }
+  cadvisor: { enabled: false }
+  apiServer:
+    enabled: true
+    jobLabel: ryft/kube-apiserver-admission
+    scrapeInterval: 60s
+    metricsTuning:
+      # The chart anchors this regex and always keeps up and scrape_samples_scraped.
+      # The latency histogram is kept as _sum and _count only (no buckets): nothing
+      # alerts on its quantiles, and its buckets would be most of the series.
+      includeMetrics:
+        - apiserver_validating_admission_policy_check_total
+        - apiserver_validating_admission_policy_check_duration_seconds_(sum|count)
+        - pod_security_evaluations_total
+    # Pod Security counts every Pod it allows too; only its refusals are of interest.
+    extraMetricProcessingRules: |-
+      rule {
+        source_labels = ["__name__", "decision"]
+        regex = "pod_security_evaluations_total;(allow|exempt)"
+        action = "drop"
+      }
+  kube-state-metrics:
+    enabled: true
+    jobLabel: ryft/admission-bindings
+    metricsTuning:
+      useDefaultAllowList: false
+      includeMetrics:
+        - kube_customresource_admission_binding_.*
+
+# The chart's self-report would add its own series to the new destination.
+selfReporting:
+  enabled: false
+
 collectorCommon:
   alloy:
     remoteConfig:
@@ -62,6 +134,50 @@ telemetryServices:
     deploy: true
   kube-state-metrics:
     deploy: true
+    # Claim (m): the policy bindings as metrics, checked in the kind e2e (T12-d). The role
+    # needs list/watch on them; the chart adds the CRD read for customResourceState itself.
+    # Metrics (kept by clusterMetrics.kube-state-metrics above):
+    #   kube_customresource_admission_binding_info{name,policy,step,key,intended_action,break_glass} 1
+    #   kube_customresource_admission_binding_action{name,action} 1 for each live validation action
+    # A label the object lacks (break_glass off break-glass) is simply not there.
+    rbac:
+      extraRules:
+        - apiGroups: [admissionregistration.k8s.io]
+          resources: [validatingadmissionpolicybindings]
+          verbs: [list, watch]
+    customResourceState:
+      enabled: true
+      config:
+        kind: CustomResourceStateMetrics
+        spec:
+          resources:
+            - groupVersionKind:
+                group: admissionregistration.k8s.io
+                version: v1
+                kind: ValidatingAdmissionPolicyBinding
+              metricNamePrefix: kube_customresource
+              labelsFromPath:
+                name: [metadata, name]
+              metrics:
+                - name: admission_binding_info
+                  help: A ValidatingAdmissionPolicyBinding of the admission-policy chart and the action it was committed with.
+                  each:
+                    type: Info
+                    info:
+                      labelsFromPath:
+                        policy: [metadata, labels, admission.ryft.dev/policy]
+                        step: [metadata, labels, admission.ryft.dev/step]
+                        key: [metadata, labels, admission.ryft.dev/key]
+                        intended_action: [metadata, labels, admission.ryft.dev/intended-action]
+                        break_glass: [metadata, labels, admission.ryft.dev/break-glass]
+                - name: admission_binding_action
+                  help: 1 for each validation action (Deny, Warn, Audit) the binding has now, 0 for the others.
+                  each:
+                    type: StateSet
+                    stateSet:
+                      labelName: action
+                      path: [spec, validationActions]
+                      list: [Deny, Warn, Audit]
   beyla:
     deploy: true
     k8sCache:
