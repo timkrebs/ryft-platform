@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/timkrebs/ryft/internal/logx"
 )
 
 // Admin calls the Supabase Auth admin API with the project's secret key. Only
@@ -112,7 +114,8 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 		} `json:"identities"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&u); err != nil {
-		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %w", err)
+		// Not %w: a decode error quotes the value ("parsing time "tim@..."").
+		return AdminUserInfo{}, errors.New("supabase admin: get user: undecodable response")
 	}
 	out := AdminUserInfo{Email: u.Email, LastSignInAt: u.LastSignInAt}
 	for _, i := range u.Identities {
@@ -161,5 +164,7 @@ func adminError(op string, resp *http.Response) error {
 	if code == "" || len(code) > 64 || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz_0123456789") != "" {
 		code = "no error_code"
 	}
-	return fmt.Errorf("supabase admin: %s: %s: %s", op, resp.Status, code)
+	// The status is the code and our own reason phrase: resp.Status echoes the
+	// server's status line, whose text is as third-party as the body.
+	return fmt.Errorf("supabase admin: %s: %s: %s", op, logx.StatusLine(resp.StatusCode), code)
 }

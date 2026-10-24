@@ -275,6 +275,55 @@ failed for). Argo CD retries a failed sync twice (1 and 2 minutes later); after 
 waits for the next commit, or `argocd app sync ryft-platform`. The release itself is in
 when only the smoke failed: decide between a fix and a rollback.
 
+**A migration that hits the lock timeout.** The migrator sets `lock_timeout` to 5 s in
+every migration's transaction (`internal/db`, `lockTimeout`; a migration may set its own
+`SET LOCAL`, which wins; 0027 does, also 5 s). A migration that cannot get its lock in
+that time fails with `apply 00NN_name.sql: hit the lock timeout ...` (SQLSTATE 55P03).
+Its transaction rolls back: `schema_migrations` and the schema stay as they were, the
+earlier migrations of the run stay applied. The migrate Job exits 1 (the Job retries up
+to its `backoffLimit`, with the same outcome while the blocker lives), the PreSync hook
+fails, the sync fails before anything rolls and Argo CD retries it twice; the running
+pods are untouched and keep serving. The wait for the migration lock itself (a second
+migrator, e.g. an overlapping sync) is not cut by this timeout; it ends with the Job's
+10 minute context. The services never migrate, they only wait for the schema
+(`WaitMigrated`). `statement_timeout` is not set: a migration that runs long (a backfill)
+is not killed, but it holds its locks while it runs.
+
+Find the blocker (as the database owner, in the Supabase SQL editor or `psql`):
+
+```sql
+-- sessions holding or waiting for locks on the table the migration names
+SELECT a.pid, a.state, a.xact_start, now() - a.xact_start AS open_for, a.wait_event_type,
+       l.mode, l.granted, left(a.query, 120) AS query
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.relation = 'public.daily_scores'::regclass       -- the migration's table
+ORDER BY a.xact_start;
+-- long-open transactions (the migrator has given up by now, so nobody is blocked any more)
+SELECT pid, backend_type, state, wait_event, xact_start, now() - xact_start AS open_for,
+       left(query, 100) AS query
+FROM pg_stat_activity
+WHERE xact_start < now() - interval '5 seconds' AND pid <> pg_backend_pid()
+ORDER BY xact_start;
+```
+
+Usually the blocker is a long transaction (`state = 'idle in transaction'`, or a long
+read). Let it finish, or end it if it is safe. `idle in transaction`: only
+`SELECT pg_terminate_backend(pid)` helps; `pg_cancel_backend(pid)` returns true but the
+session keeps its lock. `pg_cancel_backend` ends a running query (`state = 'active'`)
+only. Never kill an autovacuum worker whose query says "to prevent wraparound"; it can
+be the blocker, and the migration waits for it or goes first.
+
+A failed run is not free: each attempt queues every query on the target table for up to
+5 s. With `backoffLimit` 4 (5 pods per Job) and three syncs that is up to about 15 short
+stalls over about 10 minutes. No alert fires, but latency spikes; so rerun once the
+blocker is gone, not blindly: `argocd app sync ryft-platform` (the hook Job is
+recreated), or at a quiet time. Nothing needs undoing.
+
+`Seed` (built-in exercises and plans, run by the same Job after the migrations) also runs
+under `locked()` and gets the same 5 s timeout. Its error is the raw `55P03` ("canceling
+statement due to lock timeout") without the `apply ...` wrapper, from the `migrate` log
+line `seed`; the same rerun applies.
+
 The migrate Job has `ttlSecondsAfterFinished: 3600`: an hour after it finished its Pod
 and logs are gone. What the hooks did stays in the operation state of the application:
 
@@ -1559,6 +1608,36 @@ scripts/seed_demo.py`.
   `TestJSONErrorDropsTheValue` (logx), `TestTransportErrorsHideTheDeviceToken` (apns),
   `TestAdminErrorsHoldNoBody` (auth). A new line on the paths they run fails them until
   its keys are listed there.
+  - **Value kinds:** each allowed key also has a kind of value, pinned by the test-only
+    package `internal/logx/logcheck` (a depguard rule keeps production code from importing
+    it): UUIDs for user, request and device ids, `YYYY-MM-DD` for days, closed enums for
+    category, code, gate, method, level, service and model version, booleans for flags,
+    non-negative integers for counts (bounded where a bound is known: `request_ids` at most
+    20, rescored days at most `MaxRangeDays`), an integer 100 to 599 for a status, RFC 3339
+    for the time. A float, a score or a string under a count key fails; so does a key that
+    appears twice on a line (`encoding/json` keeps the last, and logx appends `user_id` and
+    the request's keys after the call site's, so a duplicate would hide one). The known
+    values of each test (recovery, readiness, device tokens, the seeded samples) are
+    scanned for in the raw line. `TestSyncLogKindsRejectMutations`,
+    `TestWriteLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
+    `TestNotifyLogKindsRejectMutations` feed the checker synthetic lines (a float under
+    `applied`, a score under a renamed key, a non-UUID `user_id`, a duplicate key, …) and
+    require a problem that names the mutated key; `TestNotifyLogsNoHealthValuesOrTokens`
+    pins the notify service's lines.
+  - **Third-party errors:** the admin (GoTrue), Sign in with Apple and APNs errors that are
+    logged or shown hold the response's status code with the standard phrase
+    (`logx.StatusLine`, never `resp.Status`, whose text is the server's), and from the body
+    only a bare code: `error_code` / `error` as `[a-z_0-9]{1,64}`, an APNs `reason` as
+    letters only (else "no error code" / "unrecognised"); an undecodable GoTrue body is a
+    fixed "undecodable response". The AMQP URL is logged redacted.
+  - **Accepted gaps:** an integer health value under an integer count key (`samples`,
+    `days`, `bytes`) passes by type; only a known bound or the test's known values catch
+    it. `err` is free text up to 1 KiB (including pgx's "unable to encode" quote of an
+    argument, see above), covered only by the scans for the values a test knows.
+    `client_request_id` accepts what httpx accepts (`[A-Za-z0-9._:-]{1,128}`, the
+    contract of `X-Request-ID`), digits and dots included. The lines of the amqpbus and
+    events panic paths, of auth, httpx and the account, admin and train handlers, and of
+    `cmd/notify`'s stale-check loop have no key test yet.
 - **Older lines:** before this change `scored day` carried the day's scores and inputs
   (readiness, state, recovery, strain, sleep, nap, sleep need, HRV, resting HR), a
   failed push's error the device token (`refresh push`, `sync stale` and the broker's

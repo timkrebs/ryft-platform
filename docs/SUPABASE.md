@@ -192,6 +192,15 @@ replicas or `DB_MAX_CONNS`.
 into the pods and add `sslrootcert=/path/to/prod-ca-2021.crt&sslmode=verify-full` to
 `DATABASE_URL` (the backup job's `pg_dump` understands the same parameters).
 
+## Postgres version
+
+The repo targets **Postgres 17**: `docker-compose.yml`, the `local-postgres` overlay
+(`postgres:17-alpine`) and the integration tests (`RYFT_TEST_POSTGRES_URL`, throwaway
+`postgres:17-alpine`) all use it. There is no `supabase/config.toml` in this repo (no
+`major_version` to read), so the production version is **not confirmed by the repo**:
+the hosted project's version is set by Supabase. Confirm it once with
+`select version();` in the SQL editor and correct this section if it differs.
+
 ## Local development
 
 Compose and `deploy/k8s/overlays/local-postgres` run plain Postgres with

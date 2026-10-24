@@ -10,9 +10,22 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
+
+// StatusLine is an HTTP status as a log line or an error may hold it: the code
+// and the standard phrase, "unknown status" for a code net/http has none for
+// (520). Never resp.Status, whose text is the server's.
+func StatusLine(code int) string {
+	text := http.StatusText(code)
+	if text == "" {
+		text = "unknown status"
+	}
+	return strconv.Itoa(code) + " " + text
+}
 
 // Fields are the per-request values every log line carries. The outermost
 // HTTP middleware creates them; inner layers fill in what they learn (the
