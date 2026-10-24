@@ -192,11 +192,13 @@ PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a6
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
+	scripts/admission_intended.sh --check; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
+	sed '/^namespace:/d' deploy/grafana/alerts/admission-intended.yaml > "$$d/admission-intended.rules.yaml"; \
 	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml /rules/admission-intended.rules.yaml; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml /alerts/admission-intended.yaml
 
 alerts-apply: alerts-check
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
@@ -204,7 +206,7 @@ alerts-apply: alerts-check
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
 
 # External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name

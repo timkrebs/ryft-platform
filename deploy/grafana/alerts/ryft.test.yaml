@@ -342,18 +342,21 @@ tests:
       # SiteDown's condition (no probe passes for 10 minutes) never holds
       - { eval_time: 100m, alertname: SiteDown, exp_alerts: [] }
 
+
+
   # ---- admission policies (T12-e) --------------------------------------------------------
-  # Counters: the first event of a child (created at 1, nothing to subtract), steady and
-  # growing series, the scrape's own start, and the gate on the bindings.
+  # Counters: the first event of a new child (created at 1, nothing to subtract), steady and
+  # growing series, the scrape's own start and a recovered scrape, Pod Security without any
+  # binding. Bindings: kube-state-metrics' series against the committed actions, which the
+  # tests feed as ryft:admission_binding_intended (scripts/admission_intended.sh generates it).
   - name: admission violation, first event of a new series (no increase to see)
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x120' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="warn",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.2.9:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="warn",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.2.9:443"}', values: '_x30 1x90' }
     alert_rule_test:
       - { eval_time: 25m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - eval_time: 31m
@@ -368,12 +371,11 @@ tests:
   - name: admission violation, steady counters stay quiet and an increase fires
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x120' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '3x60 4x60' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '3x60 4x60' }
     alert_rule_test:
-      # the scrape's first minutes: the series look new, but the endpoint's scrape is not 12 minutes old
+      # the scrape's first minutes: the series look new, but the scrape was not up 12 minutes ago
       - { eval_time: 5m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - { eval_time: 20m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - { eval_time: 59m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
@@ -385,32 +387,48 @@ tests:
               summary: "Admission policy ryft-namespaces (ryft-namespaces) flagged a request that was admitted"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - { eval_time: 80m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-  - name: admission alerts stay quiet while no binding exists (chart disabled)
+  - name: admission alerts stay quiet in Phase 0 (no ryft policies, no bindings)
     interval: 1m
     input_series:
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="deny",error_type="internal_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x200' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="other",policy_binding="other",enforcement_action="deny",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="other",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operators-cluster",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-templates",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-auth-env",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-traefik",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-pods",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operator-reach",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd-operation",intended_action="deny"}', values: '1x300' }
     alert_rule_test:
       - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionPolicyError, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionBindingMissing, exp_alerts: [] }
+      - { eval_time: 31m, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionBindingDrift, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionBreakGlass, exp_alerts: [] }
-  - name: admission gate looks back an hour (a kube-state-metrics blip does not blind denials)
+      - { eval_time: 31m, alertname: AdmissionSignalsMissing, exp_alerts: [] }
+      - { eval_time: 31m, alertname: AdmissionScrapeDown, exp_alerts: [] }
+  - name: admission denials, pod-capable bindings are critical, the rest warning, violations that were denied are not
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x20 _x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x170' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-argocd",policy_binding="ryft-argocd",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x100 1x100' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operator-reach",policy_binding="ryft-operator-reach",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-auth-env",policy_binding="ryft-auth-env",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-templates",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
     alert_rule_test:
       - eval_time: 31m
         alertname: AdmissionPolicyDenied
@@ -419,28 +437,9 @@ tests:
             exp_annotations:
               summary: "Admission policy ryft-namespaces (ryft-namespaces) refused a request"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # the bindings have been gone for 80 minutes: a chart that is switched off
-      - { eval_time: 101m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
-  - name: admission denials, pods, and violations that were denied
-    interval: 1m
-    input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="deny"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-pods",policy="P2",step="C",key="workloads-pods",intended_action="deny"}', values: '1x120' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{decision="allow",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '50+50x120' }
-    alert_rule_test:
-      - eval_time: 31m
-        alertname: AdmissionPolicyDenied
-        exp_alerts:
-          - exp_labels: { severity: warning, policy: ryft-namespaces, policy_binding: ryft-namespaces }
+          - exp_labels: { severity: warning, policy: ryft-workloads, policy_binding: ryft-workloads-templates }
             exp_annotations:
-              summary: "Admission policy ryft-namespaces (ryft-namespaces) refused a request"
+              summary: "Admission policy ryft-workloads (ryft-workloads-templates) refused a request"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - eval_time: 31m
         alertname: AdmissionPodDenied
@@ -449,65 +448,158 @@ tests:
             exp_annotations:
               summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: critical, source: Pod Security, policy_level: baseline }
+          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-operator-reach }
             exp_annotations:
-              summary: "A Pod was refused by admission (Pod Security); a re-create can be refused too"
+              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-auth-env }
+            exp_annotations:
+              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       # the audit counts of a binding that denies are the denial, not a violation
       - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - { eval_time: 50m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
       - { eval_time: 50m, alertname: AdmissionPodDenied, exp_alerts: [] }
-  - name: admission pod security in warn mode is a violation, allow is nothing
+  - name: admission pod security enforce refusals page without any binding (new child and increase)
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x120' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'pod_security_evaluations_total{decision="deny",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{decision="allow",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '50+50x120' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x170' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '1x100 2x100' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="allow",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '50+50x200' }
+    alert_rule_test:
+      - { eval_time: 29m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - eval_time: 31m
+        alertname: AdmissionPodDenied
+        exp_alerts:
+          - exp_labels: { severity: critical, source: Pod Security, policy_level: baseline }
+            exp_annotations:
+              summary: "A Pod was refused by admission (Pod Security); a re-create can be refused too"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - { eval_time: 50m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      # restricted: an existing child that increments at 100m
+      - { eval_time: 90m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - eval_time: 102m
+        alertname: AdmissionPodDenied
+        exp_alerts:
+          - exp_labels: { severity: critical, source: Pod Security, policy_level: restricted }
+            exp_annotations:
+              summary: "A Pod was refused by admission (Pod Security); a re-create can be refused too"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - { eval_time: 120m, alertname: AdmissionPodDenied, exp_alerts: [] }
+  - name: admission pod security, warn and audit denials are violations, enforce on other resources is neither
+    interval: 1m
+    input_series:
+      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
+      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="audit",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="job",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="allow",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '50+50x200' }
     alert_rule_test:
       - eval_time: 31m
         alertname: AdmissionPolicyViolation
         exp_alerts:
-          - exp_labels: { severity: info, mode: warn, policy: pod-security, policy_binding: pod-security-warn }
+          - exp_labels: { severity: info, policy: pod-security, policy_binding: pod-security-warn, mode: warn }
             exp_annotations:
               summary: "Admission policy pod-security (pod-security-warn) flagged a request that was admitted"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: info, policy: pod-security, policy_binding: pod-security-audit, mode: audit }
+            exp_annotations:
+              summary: "Admission policy pod-security (pod-security-audit) flagged a request that was admitted"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
       - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
-  - name: admission policy evaluation error
+  - name: admission a recovered scrape does not make old children look new
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operators-cluster",policy="P6",step="A",key="operators-cluster",intended_action="deny"}', values: '1x120' }
+      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '0x90 1x100' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x90 1x100' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x90 1x100' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x90 1x100' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="warn",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x90 1x100' }
+      # an endpoint with no up series at all
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.9.9:443"}', values: '_x30 1x160' }
+      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.9.9:443"}', values: '_x30 1x160' }
+    alert_rule_test:
+      - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - { eval_time: 92m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - { eval_time: 95m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - { eval_time: 150m, alertname: AdmissionPodDenied, exp_alerts: [] }
+      - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
+      - { eval_time: 92m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
+      - { eval_time: 95m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
+      - { eval_time: 150m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
+  - name: admission policy evaluation error, critical when it refuses, warning when admitted
+    interval: 1m
+    input_series:
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="deny",error_type="internal_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="deny",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-broker",policy_binding="ryft-broker",enforcement_action="deny",error_type="out_of_budget",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-traefik",policy_binding="ryft-traefik",enforcement_action="warn",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
     alert_rule_test:
       - eval_time: 31m
         alertname: AdmissionPolicyError
         exp_alerts:
-          - exp_labels: { severity: critical, policy: ryft-operators-cluster, policy_binding: ryft-operators-cluster, error_type: internal_error }
+          - exp_labels: { severity: critical, policy: ryft-operators-cluster, policy_binding: ryft-operators-cluster, error_type: compile_error }
             exp_annotations:
-              summary: "Admission policy ryft-operators-cluster (ryft-operators-cluster) fails to evaluate (internal_error)"
+              summary: "Admission policy ryft-operators-cluster (ryft-operators-cluster) fails to evaluate (compile_error) and refuses requests"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: critical, policy: ryft-broker, policy_binding: ryft-broker, error_type: out_of_budget }
+            exp_annotations:
+              summary: "Admission policy ryft-broker (ryft-broker) fails to evaluate (out_of_budget) and refuses requests"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: warning, policy: ryft-vso, policy_binding: ryft-vso, error_type: invalid_error }
+            exp_annotations:
+              summary: "Admission policy ryft-vso (ryft-vso) fails to evaluate (invalid_error); requests are admitted"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: warning, policy: ryft-traefik, policy_binding: ryft-traefik, error_type: invalid_error }
+            exp_annotations:
+              summary: "Admission policy ryft-traefik (ryft-traefik) fails to evaluate (invalid_error); requests are admitted"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - { eval_time: 50m, alertname: AdmissionPolicyError, exp_alerts: [] }
-  # Bindings: the chart makes 12.
   - name: admission bindings, eleven of twelve
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-vso",policy="P4",step="A",key="vso",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operators-cluster",policy="P6",step="A",key="operators-cluster",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-broker",policy="P11",step="A",key="broker",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-templates",policy="P2",step="B",key="workloads-templates",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-netpol",policy="P3",step="B",key="netpol",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-auth-env",policy="P5",step="B",key="auth-env",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-traefik",policy="P9",step="B",key="traefik",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-pods",policy="P2",step="C",key="workloads-pods",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operator-reach",policy="P8",step="C",key="operator-reach",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd",policy="P7",step="D",key="argocd",intended_action="audit"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
     alert_rule_test:
       - { eval_time: 5m, alertname: AdmissionBindingMissing, exp_alerts: [] }
+      - eval_time: 15m
+        alertname: AdmissionBindingMissing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "11 of 12 admission policy bindings exist"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+  - name: admission bindings, eleven of ryft and one that is not ours
+    interval: 1m
+    input_series:
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="other-binding",policy_name="ryft-other-binding"}', values: '1x120' }
+    alert_rule_test:
       - eval_time: 15m
         alertname: AdmissionBindingMissing
         exp_alerts:
@@ -518,41 +610,41 @@ tests:
   - name: admission bindings, all twelve
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-vso",policy="P4",step="A",key="vso",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operators-cluster",policy="P6",step="A",key="operators-cluster",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-broker",policy="P11",step="A",key="broker",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-templates",policy="P2",step="B",key="workloads-templates",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-netpol",policy="P3",step="B",key="netpol",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-auth-env",policy="P5",step="B",key="auth-env",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-traefik",policy="P9",step="B",key="traefik",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-pods",policy="P2",step="C",key="workloads-pods",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operator-reach",policy="P8",step="C",key="operator-reach",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd",policy="P7",step="D",key="argocd",intended_action="audit"}', values: '1x120' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd-operation",policy="P10",step="D",key="argocd-operation",intended_action="audit"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x120' }
     alert_rule_test:
       - { eval_time: 30m, alertname: AdmissionBindingMissing, exp_alerts: [] }
   - name: admission bindings, none ever (chart disabled)
     interval: 1m
     input_series:
-      - { series: 'up{job="ryft/admission-bindings"}', values: '1x120' }
+      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x120' }
     alert_rule_test:
       - { eval_time: 30m, alertname: AdmissionBindingMissing, exp_alerts: [] }
   - name: admission bindings, all gone after they existed
     interval: 1m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-vso",policy="P4",step="A",key="vso",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operators-cluster",policy="P6",step="A",key="operators-cluster",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-broker",policy="P11",step="A",key="broker",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-templates",policy="P2",step="B",key="workloads-templates",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-netpol",policy="P3",step="B",key="netpol",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-auth-env",policy="P5",step="B",key="auth-env",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-traefik",policy="P9",step="B",key="traefik",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-workloads-pods",policy="P2",step="C",key="workloads-pods",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-operator-reach",policy="P8",step="C",key="operator-reach",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd",policy="P7",step="D",key="argocd",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd-operation",policy="P10",step="D",key="argocd-operation",intended_action="audit"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x60' }
     alert_rule_test:
       - { eval_time: 65m, alertname: AdmissionBindingMissing, exp_alerts: [] }
       - eval_time: 80m
@@ -562,73 +654,101 @@ tests:
             exp_annotations:
               summary: "0 of 12 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  # Drift: six bindings, right or wrong in different ways.
+  - name: admission binding committed as deny that does not deny, while others do
+    interval: 5m
+    input_series:
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Deny"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Audit"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
+    alert_rule_test:
+      - { eval_time: 5m, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
+      - eval_time: 1h
+        alertname: AdmissionBindingNotDenying
+        exp_alerts:
+          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-broker, intended_action: deny }
+            exp_annotations:
+              summary: "Binding ryft-broker is committed as deny but does not deny"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+      # one binding denies: that is not the break-glass
+      - { eval_time: 5h, alertname: AdmissionBreakGlass, exp_alerts: [] }
+      - { eval_time: 5h, alertname: AdmissionBindingDrift, exp_alerts: [] }
   - name: admission binding drift against the committed action
     interval: 5m
     input_series:
-      # ryft-vso: committed deny, Deny+Audit: fine
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-vso",policy="P4",step="A",key="vso",intended_action="deny"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Deny"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Warn"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Audit"}', values: '1x60' }
-      # ryft-broker: committed deny, patched to Warn+Audit without the label (the fast path, forgotten)
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-broker",policy="P11",step="A",key="broker",intended_action="deny"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Deny"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Warn"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Audit"}', values: '1x60' }
-      # ryft-namespaces: committed audit, Warn+Audit: fine
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-namespaces",policy="P1",step="B",key="namespaces",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-namespaces",action="Deny"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-namespaces",action="Warn"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-namespaces",action="Audit"}', values: '1x60' }
-      # ryft-netpol: committed deny, break-glass labelled and Warn+Audit: fine (AdmissionBreakGlass's)
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-netpol",policy="P3",step="B",key="netpol",intended_action="deny",break_glass="true"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Deny"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Warn"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Audit"}', values: '1x60' }
-      # ryft-traefik: break-glass labelled but still Deny+Audit: wrong
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-traefik",policy="P9",step="B",key="traefik",intended_action="deny",break_glass="true"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-traefik",action="Deny"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-traefik",action="Warn"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-traefik",action="Audit"}', values: '1x60' }
-      # ryft-argocd: committed audit, edited to Deny+Audit by hand
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-argocd",policy="P7",step="D",key="argocd",intended_action="audit"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-argocd",action="Deny"}', values: '1x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-argocd",action="Warn"}', values: '0x60' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-argocd",action="Audit"}', values: '1x60' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol",intended_action="audit"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-traefik",intended_action="audit"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="audit"}', values: '1x300' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x80' }
+      # fine: Deny+Audit for deny, Warn+Audit for audit
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Deny"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
+      # deny without Audit
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Deny"}', values: '1x80' }
+      # audit with Deny (and the others)
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Deny"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Audit"}', values: '1x80' }
+      # audit without Warn
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",action="Audit"}', values: '1x80' }
+      # audit without Audit
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",action="Warn"}', values: '1x80' }
     alert_rule_test:
-      # pending for two hours
-      - { eval_time: 60m, alertname: AdmissionBindingDrift, exp_alerts: [] }
+      - { eval_time: 1h, alertname: AdmissionBindingDrift, exp_alerts: [] }
       - eval_time: 3h
         alertname: AdmissionBindingDrift
         exp_alerts:
-          - exp_labels: { severity: warning, name: ryft-broker, policy: P11, step: A, key: broker, intended_action: deny }
+          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-broker, intended_action: deny }
             exp_annotations:
-              summary: "Binding ryft-broker (P11) does not carry the actions it was committed with (deny)"
+              summary: "Binding ryft-broker does not carry the actions it was committed with (deny)"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, name: ryft-traefik, policy: P9, step: B, key: traefik, intended_action: deny, break_glass: "true" }
+          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-netpol, intended_action: audit }
             exp_annotations:
-              summary: "Binding ryft-traefik (P9) does not carry the actions it was committed with (deny)"
+              summary: "Binding ryft-netpol does not carry the actions it was committed with (audit)"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, name: ryft-argocd, policy: P7, step: D, key: argocd, intended_action: audit }
+          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-traefik, intended_action: audit }
             exp_annotations:
-              summary: "Binding ryft-argocd (P7) does not carry the actions it was committed with (audit)"
+              summary: "Binding ryft-traefik does not carry the actions it was committed with (audit)"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission break-glass left on
+          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-argocd, intended_action: audit }
+            exp_annotations:
+              summary: "Binding ryft-argocd does not carry the actions it was committed with (audit)"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - { eval_time: 3h, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
+      - { eval_time: 3h, alertname: AdmissionBreakGlass, exp_alerts: [] }
+  - name: admission break-glass left on (no binding denies)
     interval: 5m
     input_series:
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-netpol",policy="P3",step="B",key="netpol",intended_action="deny",break_glass="true"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-broker",policy="P11",step="A",key="broker",intended_action="deny",break_glass="true"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_info{name="ryft-vso",policy="P4",step="A",key="vso",intended_action="deny"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Deny"}', values: '0x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Warn"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-netpol",action="Audit"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Deny"}', values: '0x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Warn"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-broker",action="Audit"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Deny"}', values: '1x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Warn"}', values: '0x80' }
-      - { series: 'kube_customresource_admission_binding_action{name="ryft-vso",action="Audit"}', values: '1x80' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Audit"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
+      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
     alert_rule_test:
       - { eval_time: 3h, alertname: AdmissionBreakGlass, exp_alerts: [] }
       - eval_time: 5h
@@ -636,7 +756,34 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations:
-              summary: "Admission break-glass has been on for 4 hours (2 bindings are Warn+Audit only)"
+              summary: "No admission binding denies although 2 are committed as deny (break-glass?) for 4 hours"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # labelled break-glass with matching actions is not drift
-      - { eval_time: 5h, alertname: AdmissionBindingDrift, exp_alerts: [] }
+      # NotDenying leaves the all-bindings case to AdmissionBreakGlass
+      - { eval_time: 5h, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
+  - name: admission scrapes missing and down
+    interval: 1m
+    input_series:
+      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x60' }
+      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x10 0x50' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AdmissionSignalsMissing, exp_alerts: [] }
+      - { eval_time: 20m, alertname: AdmissionScrapeDown, exp_alerts: [] }
+      - eval_time: 40m
+        alertname: AdmissionScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/admission-bindings, instance: "10.0.3.3:8080" }
+            exp_annotations:
+              summary: "The admission scrape ryft/admission-bindings of 10.0.3.3:8080 has been down for 15 minutes"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+  - name: admission scrapes, nothing reports the bindings
+    interval: 1m
+    input_series:
+      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x60' }
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AdmissionSignalsMissing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/admission-bindings }
+            exp_annotations:
+              summary: "No ryft/admission-bindings scrape results for 15 minutes; the admission alerts are blind"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
