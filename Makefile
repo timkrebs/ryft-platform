@@ -168,6 +168,7 @@ k8s-apply-local:
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
 k8s-rabbitmq:
+	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | kubectl apply -f -
 	kubectl apply --server-side --force-conflicts -k deploy/rabbitmq/operators
 	for d in rabbitmq-cluster-operator messaging-topology-operator; do kubectl -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
 	kubectl apply --server-side --force-conflicts -k $(RABBITMQ)
