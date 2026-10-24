@@ -6,7 +6,8 @@
 # restore it with this release (docs/OPERATIONS.md).
 #
 # The AppProjects that P7 compares against (T12-b) are not wired yet: local.admission_projects
-# stays empty until then, so P7 refuses every AppProject write; keep its binding on audit.
+# stays empty until then, so P7 refuses every AppProject write; the release refuses to be
+# planned with that binding on deny.
 
 locals {
   admission_file     = yamldecode(file("${path.module}/admission-values.yaml"))
@@ -27,7 +28,7 @@ locals {
   # What each binding's validationActions end up as. Break-glass: Warn+Audit everywhere.
   # Anything that is not exactly "deny" is Warn+Audit (the safe side), and Deny never meets
   # Warn: the API server refuses that combination. The chart derives the same lists from
-  # `actions` and `breakGlass`.
+  # `actions` and `breakGlass`; the drift check compares the cluster with the chart's render.
   admission_effective = {
     for k, v in local.admission_requested :
     k => (var.admission_break_glass || v != "deny") ? ["Warn", "Audit"] : ["Deny", "Audit"]
@@ -37,12 +38,17 @@ locals {
   # (Terraform-owned AppProjects) wires them; until then P7 has no constant.
   admission_projects = []
 
-  # The VaultConnections infra/vault generates (a check and a test compare their address).
+  # Netpol's open broker egress rule is admitted while this is true (T12-k closes it).
+  admission_broker_egress_public = try(local.admission_file.netpol.brokerEgressPublic, local.admission_defaults.netpol.brokerEgressPublic)
+
+  # The VaultConnections infra/vault generates: every file must hold exactly one address
+  # (quotes stripped); a check and a test compare it with admission-values.yaml.
   vault_namespaces_dir = "${path.module}/../../../deploy/k8s/overlays/vault-namespaces"
-  vault_addresses = distinct(flatten([
+  vault_address_by_file = {
     for f in fileset(local.vault_namespaces_dir, "*/vault.yaml") :
-    [for m in regexall("(?m)^\\s+address:\\s*(\\S+)\\s*$", file("${local.vault_namespaces_dir}/${f}")) : m[0]]
-  ]))
+    f => [for m in regexall("(?m)^\\s+address:\\s*\"?([^\"\\s]+)\"?\\s*$", file("${local.vault_namespaces_dir}/${f}")) : m[0]]
+  }
+  vault_addresses = distinct(flatten(values(local.vault_address_by_file)))
 
   # Handed to the chart. The file's keys but `enabled`, with the full action map.
   admission_values = merge(
@@ -54,6 +60,50 @@ locals {
       projects   = local.admission_projects
     },
   )
+
+  # The chart as it renders with exactly those values (offline), as objects: what the
+  # cluster should hold. Null documents (comments only) are dropped.
+  # (The data sources have count 0 while disabled, so these loops are empty then; a splat of
+  # null is an empty list, which keeps the types of the two branches out of it.)
+  admission_rendered = [
+    for d in flatten([
+      for t in data.helm_template.admission : [
+        for path, m in t.manifests :
+        [for doc in split("\n---\n", m) : try(yamldecode(doc), null)]
+      ]
+    ]) : d if d != null
+  ]
+  admission_rendered_policies = { for d in local.admission_rendered : d.metadata.name => d if d.kind == "ValidatingAdmissionPolicy" }
+  admission_rendered_bindings = { for d in local.admission_rendered : d.metadata.name => d if d.kind == "ValidatingAdmissionPolicyBinding" }
+
+  # What the cluster holds (null objects when the list returned nothing, or under a mock).
+  admission_live_policies = { for o in flatten([for t in data.kubernetes_resources.admission_policies : t.objects[*]]) : o.metadata.name => o }
+  admission_live_bindings = { for o in flatten([for t in data.kubernetes_resources.admission_bindings : t.objects[*]]) : o.metadata.name => o }
+}
+
+data "helm_template" "admission" {
+  count = local.admission_enabled ? 1 : 0
+
+  name      = "admission-policy"
+  namespace = "kube-system"
+  chart     = "${path.module}/charts/admission-policy"
+  values    = [yamlencode(local.admission_values)]
+}
+
+data "kubernetes_resources" "admission_policies" {
+  count = local.admission_enabled ? 1 : 0
+
+  api_version    = "admissionregistration.k8s.io/v1"
+  kind           = "ValidatingAdmissionPolicy"
+  label_selector = "app.kubernetes.io/part-of=admission-policy"
+}
+
+data "kubernetes_resources" "admission_bindings" {
+  count = local.admission_enabled ? 1 : 0
+
+  api_version    = "admissionregistration.k8s.io/v1"
+  kind           = "ValidatingAdmissionPolicyBinding"
+  label_selector = "app.kubernetes.io/part-of=admission-policy"
 }
 
 resource "helm_release" "admission_policy" {
@@ -65,10 +115,24 @@ resource "helm_release" "admission_policy" {
   max_history = 10 # `helm -n kube-system rollback admission-policy` after a stuck upgrade
 
   values = [yamlencode(local.admission_values)]
+
+  lifecycle {
+    # A deny that would refuse every request of its kind. The chart refuses to render these
+    # too; here the plan stops before Helm runs.
+    precondition {
+      condition     = !(contains(local.admission_effective["argocd"], "Deny") && length(local.admission_projects) == 0)
+      error_message = "The argocd binding (P7) is set to deny, but the AppProjects it compares with are not wired (T12-b): it would refuse every AppProject write."
+    }
+    precondition {
+      condition     = !(contains(local.admission_effective["netpol"], "Deny") && local.admission_broker_egress_public)
+      error_message = "The netpol binding (P3) is set to deny while netpol.brokerEgressPublic is true: ryft-rabbitmq's open 443 egress rule would be refused. Close it first (T12-k)."
+    }
+  }
 }
 
 # Misconfiguration that would not fail an apply: an action the chart cannot honour, a Vault
-# address that no longer matches what infra/vault generates, a P7 without its constant.
+# address that no longer matches what infra/vault generates, a variable standing in for the
+# reviewed file.
 check "admission_values" {
   assert {
     condition = alltrue([
@@ -81,41 +145,65 @@ check "admission_values" {
 
 check "admission_vault_address" {
   assert {
-    condition     = length(local.vault_addresses) == 1 && local.vault_addresses[0] == local.admission_file.vaultAddress
-    error_message = "vaultAddress in admission-values.yaml differs from the VaultConnections infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml). P4 would refuse them all (or none)."
-  }
-}
-
-check "admission_projects_wired" {
-  assert {
-    condition     = !(local.admission_enabled && contains(local.admission_effective["argocd"], "Deny") && length(local.admission_projects) == 0)
-    error_message = "P7 (binding argocd) is set to deny, but the AppProjects it compares with are not wired (T12-b): it would refuse every AppProject write."
-  }
-}
-
-# Drift: a binding patched, deleted or left in break-glass by hand. Helm does not see a
-# patch; this does (and the AdmissionBindingMissing / Drift alerts). Restore with
-#   terraform apply -target=helm_release.admission_policy -replace=helm_release.admission_policy
-# It also warns once, before the first apply after `enabled: true`, that nothing is there yet.
-check "admission_binding_drift" {
-  data "kubernetes_resources" "bindings" {
-    api_version    = "admissionregistration.k8s.io/v1"
-    kind           = "ValidatingAdmissionPolicyBinding"
-    label_selector = "app.kubernetes.io/part-of=admission-policy"
-  }
-
-  assert {
-    # A conditional, not &&: Terraform evaluates both operands of &&, and the objects are
-    # null when the provider is mocked or the list call returned nothing.
-    condition = !local.admission_enabled ? true : (
-      data.kubernetes_resources.bindings.objects == null ? false : (
-        length(data.kubernetes_resources.bindings.objects) == length(local.admission_keys) &&
-        alltrue([
-          for o in data.kubernetes_resources.bindings.objects :
-          toset(o.spec.validationActions) == toset(try(local.admission_effective[o.metadata.labels["admission.ryft.dev/key"]], []))
-        ])
-      )
+    condition = (
+      length(local.vault_address_by_file) > 0 &&
+      alltrue([for f, a in local.vault_address_by_file : length(a) == 1]) &&
+      length(local.vault_addresses) == 1 && local.vault_addresses[0] == local.admission_file.vaultAddress
     )
-    error_message = "The ValidatingAdmissionPolicyBindings in the cluster differ from admission-values.yaml: one is missing, was patched, or is left in break-glass (not applied yet after enabling, if this is the first plan). Restore with terraform apply -target=helm_release.admission_policy -replace=helm_release.admission_policy."
+    error_message = "vaultAddress in admission-values.yaml differs from the VaultConnections infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml), or a file does not hold exactly one address. P4 would refuse them all (or none)."
+  }
+}
+
+check "admission_enabled_override" {
+  assert {
+    condition     = var.admission_enabled == null
+    error_message = "admission_enabled is set by variable. The switch is `enabled` in the reviewed admission-values.yaml; do not run an apply with this variable."
+  }
+}
+
+# Drift: a policy or binding that is missing, was patched, or was left in break-glass by hand.
+# Helm does not see a patch; this does (and the AdmissionBindingMissing / Drift alerts). The
+# cluster is compared with the chart's own render of the same values: actions, policy name and
+# resource rules of each binding; match constraints, conditions, variables and validations of
+# each policy. Restore with
+#   terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'
+# (quoted: zsh globs the brackets; a replace uninstalls every policy for a moment). It also
+# warns once, before the first apply after `enabled: true`, that nothing is there yet.
+check "admission_binding_drift" {
+  assert {
+    condition = !local.admission_enabled ? true : (
+      length(local.admission_rendered_bindings) == length(local.admission_keys) &&
+      length(local.admission_live_bindings) == length(local.admission_rendered_bindings) &&
+      alltrue([
+        for name, want in local.admission_rendered_bindings : (
+          contains(keys(local.admission_live_bindings), name) &&
+          want.spec.policyName == local.admission_live_bindings[name].spec.policyName &&
+          toset(want.spec.validationActions) == toset(local.admission_live_bindings[name].spec.validationActions) &&
+          jsonencode([for r in try(want.spec.matchResources.resourceRules, []) : [r.resources, r.operations]]) ==
+          jsonencode([for r in try(local.admission_live_bindings[name].spec.matchResources.resourceRules, []) : [r.resources, r.operations]])
+        )
+      ])
+    )
+    error_message = "The ValidatingAdmissionPolicyBindings in the cluster differ from the chart's render of admission-values.yaml: one is missing, was patched (actions, policy, resource rules) or is left in break-glass (or nothing is applied yet, on the first plan after enabling). Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
+  }
+}
+
+check "admission_policy_drift" {
+  assert {
+    condition = !local.admission_enabled ? true : (
+      length(local.admission_rendered_policies) == 11 &&
+      length(local.admission_live_policies) == length(local.admission_rendered_policies) &&
+      alltrue([
+        for name, want in local.admission_rendered_policies : (
+          contains(keys(local.admission_live_policies), name) &&
+          jsonencode([for v in want.spec.validations : v.expression]) == jsonencode([for v in local.admission_live_policies[name].spec.validations : v.expression]) &&
+          jsonencode([for v in try(want.spec.matchConditions, []) : v.expression]) == jsonencode([for v in try(local.admission_live_policies[name].spec.matchConditions, []) : v.expression]) &&
+          jsonencode([for v in try(want.spec.variables, []) : [v.name, v.expression]]) == jsonencode([for v in try(local.admission_live_policies[name].spec.variables, []) : [v.name, v.expression]]) &&
+          jsonencode([for r in want.spec.matchConstraints.resourceRules : [r.resources, r.operations]]) == jsonencode([for r in local.admission_live_policies[name].spec.matchConstraints.resourceRules : [r.resources, r.operations]]) &&
+          want.spec.failurePolicy == local.admission_live_policies[name].spec.failurePolicy
+        )
+      ])
+    )
+    error_message = "The ValidatingAdmissionPolicies in the cluster differ from the chart's render: one is missing, was edited (expressions, conditions, variables, match rules, failurePolicy), or an upgrade is not applied. Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
   }
 }
