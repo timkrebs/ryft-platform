@@ -463,28 +463,49 @@ func checkGolden() {
 	want, err := os.ReadFile(path)
 	must(err)
 	if string(want) != b.String() {
-		fmt.Println("FAIL the refusals differ from", path, "(UPDATE_GOLDEN=1 rewrites it after a review):")
-		wl, gl := strings.Split(string(want), "\n"), strings.Split(b.String(), "\n")
-		seen := map[string]bool{}
-		for _, l := range wl {
-			seen[l] = true
+		// Diff per case: a case whose refusals changed is named once, with both versions.
+		parse := func(text string) map[string][]string {
+			out := map[string][]string{}
+			cur := ""
+			for _, l := range strings.Split(text, "\n") {
+				switch {
+				case l == "":
+				case strings.HasPrefix(l, "    "):
+					out[cur] = append(out[cur], strings.TrimPrefix(l, "    "))
+				default:
+					cur = l
+					out[cur] = nil
+				}
+			}
+			return out
 		}
-		shown := 0
-		for _, l := range gl {
-			if !seen[l] && shown < 20 {
-				fmt.Println("  + " + l)
-				shown++
+		wm, gm := parse(string(want)), parse(b.String())
+		var changed []string
+		for n, w := range wm {
+			g, ok := gm[n]
+			switch {
+			case !ok:
+				changed = append(changed, n+"\n    was refused with: "+strings.Join(w, " | ")+"\n    now: admitted")
+			case strings.Join(w, "\n") != strings.Join(g, "\n"):
+				changed = append(changed, n+"\n    was: "+strings.Join(w, " | ")+"\n    now: "+strings.Join(g, " | "))
 			}
 		}
-		got := map[string]bool{}
-		for _, l := range gl {
-			got[l] = true
-		}
-		for _, l := range wl {
-			if !got[l] && shown < 40 {
-				fmt.Println("  - " + l)
-				shown++
+		for n, g := range gm {
+			if _, ok := wm[n]; !ok {
+				changed = append(changed, n+"\n    new refusal: "+strings.Join(g, " | "))
 			}
+		}
+		sort.Strings(changed)
+		fmt.Printf("FAIL %d case(s) are refused differently from %s (UPDATE_GOLDEN=1 rewrites it after a review):\n", len(changed), path)
+		for i, c := range changed {
+			if i == 25 {
+				fmt.Printf("  ... and %d more\n", len(changed)-i)
+				break
+			}
+			fmt.Println("  " + c)
+		}
+		if len(changed) == 0 {
+			fmt.Println("  (the file differs in layout only: regenerate it)")
 		}
 		failures++
 	}

@@ -139,12 +139,30 @@ func runHardening(c *chart) {
 		set(o, "metadata/name", name)
 		return o
 	}
-	add("P8 operator writes the peer-discovery role", cop, "CREATE", roleP8("rabbitmq-peer-discovery"))
-	add("P8 operator writes the server rolebinding", cop, "CREATE", rbP8("rabbitmq-server"))
+	add("P8 operator writes the peer-discovery role", cop, "CREATE", fx("role-peer-discovery"))
+	add("P8 operator writes the server rolebinding", cop, "CREATE", fx("rolebinding-server"))
+	x := fx("role-peer-discovery")
+	set(x, "rules", jv(`[{"apiGroups":[""],"resources":["endpoints"],"verbs":["get"]},{"apiGroups":[""],"resources":["events"],"verbs":["create"]},{"apiGroups":[""],"resources":["secrets"],"verbs":["get"]}]`))
+	add("P8 the peer-discovery role with a third rule", cop, "CREATE", x, "P8: the peer-discovery Role may hold only")
+	x = fx("role-peer-discovery")
+	set(x, "rules/0/verbs", jv(`["get","list"]`))
+	add("P8 the peer-discovery role with more verbs", cop, "CREATE", x, "P8: the peer-discovery Role may hold only")
+	x = fx("rolebinding-server")
+	set(x, "roleRef/name", "rabbitmq-cluster-operator-role")
+	add("P8 the server rolebinding to the operator's own role", cop, "CREATE", x, "P8: the server RoleBinding must bind")
+	x = fx("rolebinding-server")
+	set(x, "subjects/0/name", "rabbitmq-cluster-operator")
+	add("P8 the server rolebinding for another account", cop, "CREATE", x, "P8: the server RoleBinding must bind")
+	x = fx("rolebinding-server")
+	set(x, "subjects/0/namespace", "rabbitmq-system")
+	add("P8 the server rolebinding for an account elsewhere", cop, "CREATE", x, "P8: the server RoleBinding must bind")
+	x = fx("rolebinding-server")
+	set(x, "roleRef/kind", "ClusterRole")
+	add("P8 the server rolebinding to a clusterrole", cop, "CREATE", x, "P8: the server RoleBinding must bind")
 	add("P8 operator edits its own role", cop, "UPDATE", roleP8("rabbitmq-cluster-operator-role"), "P8: the Cluster Operator may write only")
 	add("P8 operator edits the topology operator's role", cop, "UPDATE", roleP8("messaging-topology-manager-role"), "P8: the Cluster Operator may write only")
 	add("P8 operator edits its own rolebinding", cop, "UPDATE", rbP8("rabbitmq-cluster-operator-rolebinding"), "P8: the Cluster Operator may write only")
-	add("P8 topology operator writes a role", top, "CREATE", roleP8("rabbitmq-peer-discovery"), "P8: this operator may not write this resource")
+	add("P8 topology operator writes a role", top, "CREATE", fx("role-peer-discovery"), "P8: this operator may not write this resource")
 
 	fmt.Println("== P2: Pod UPDATE (orphaning, adoption), ephemeral containers, replication controllers")
 	owned := brokerPod()
@@ -186,7 +204,7 @@ func runHardening(c *chart) {
 	fmt.Println("== P3: endPort")
 	np := func() map[string]any { return find("NetworkPolicy", "ryft-rabbitmq", "rabbitmq") }
 	add("P3 the broker's own policy keeps its endPort", argoCtl, "CREATE", np())
-	x := np()
+	x = np()
 	set(x, "spec/egress/0/to", jv(`[{"ipBlock":{"cidr":"10.0.0.0/16"}}]`))
 	add("P3 endPort next to an ipBlock peer (broker, vpc cidr)", argoCtl, "CREATE", x, "P3: endPort is allowed only")
 	x = np()
@@ -294,6 +312,56 @@ func runHardening(c *chart) {
 	add("N9 ryft-api as infra/vault updates it", admin, "UPDATE", fx("namespace-as-infra-vault"))
 	add("N9 argocd as argocd.tf creates it", admin, "CREATE", fx("namespace-as-argocd-tf"))
 	add("N9 monitoring (privileged, D51) stays outside", admin, "UPDATE", fx("namespace-as-infra-vault-monitoring"))
+
+	fmt.Println("== P6: a ClusterRole is read-only except rabbitmq.com, events and the review creates")
+	clusterRule := func(rule string) map[string]any {
+		k := cr()
+		set(k, "rules/0", jv(rule))
+		return k
+	}
+	readOnly := "P6: a ClusterRole of the operators is read-only"
+	for _, res := range []struct{ group, name string }{
+		{"", "configmaps"}, {"", "services"}, {"", "serviceaccounts"}, {"", "endpoints"},
+		{"discovery.k8s.io", "endpointslices"}, {"", "persistentvolumeclaims"}, {"apps", "statefulsets"}, {"coordination.k8s.io", "leases"},
+		{"rbac.authorization.k8s.io", "roles"},
+	} {
+		read := fmt.Sprintf(`{"apiGroups":[%q],"resources":[%q],"verbs":["get","list","watch"]}`, res.group, res.name)
+		add("P6 clusterrole reads "+res.name, argoCtl, "CREATE", clusterRule(read))
+		for _, verb := range []string{"create", "update", "patch", "delete"} {
+			write := fmt.Sprintf(`{"apiGroups":[%q],"resources":[%q],"verbs":[%q]}`, res.group, res.name, verb)
+			add("P6 clusterrole "+verb+"s "+res.name, argoCtl, "CREATE", clusterRule(write), readOnly)
+		}
+	}
+	add("P6 clusterrole creates events", argoCtl, "CREATE", clusterRule(`{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}`))
+	add("P6 clusterrole creates events.k8s.io events", argoCtl, "CREATE", clusterRule(`{"apiGroups":["events.k8s.io"],"resources":["events"],"verbs":["create","patch"]}`))
+	add("P6 clusterrole creates tokenreviews", argoCtl, "CREATE", clusterRule(`{"apiGroups":["authentication.k8s.io"],"resources":["tokenreviews"],"verbs":["create"]}`))
+	add("P6 clusterrole creates subjectaccessreviews", argoCtl, "CREATE", clusterRule(`{"apiGroups":["authorization.k8s.io"],"resources":["subjectaccessreviews"],"verbs":["create"]}`))
+	add("P6 clusterrole writes rabbitmqclusters", argoCtl, "CREATE", clusterRule(`{"apiGroups":["rabbitmq.com"],"resources":["rabbitmqclusters"],"verbs":["create","update","delete"]}`))
+	add("P6 clusterrole writes queues status", argoCtl, "CREATE", clusterRule(`{"apiGroups":["rabbitmq.com"],"resources":["queues/status"],"verbs":["patch","update"]}`))
+	add("P6 clusterrole updates bindings finalizers", argoCtl, "CREATE", clusterRule(`{"apiGroups":["rabbitmq.com"],"resources":["bindings/finalizers"],"verbs":["update"]}`))
+	add("P6 clusterrole deletes tokenreviews (not a create)", argoCtl, "CREATE", clusterRule(`{"apiGroups":["authentication.k8s.io"],"resources":["tokenreviews"],"verbs":["delete"]}`), readOnly)
+
+	fmt.Println("== P6: Roles in rabbitmq-system hold no Secrets and no pods/exec")
+	le := func() map[string]any { return find("Role", "rabbitmq-system", "rabbitmq-cluster-leader-election-role") }
+	add("P6 leader election role as released", argoCtl, "CREATE", le())
+	x = le()
+	set(x, "rules/2", jv(`{"apiGroups":[""],"resources":["secrets"],"verbs":["get"]}`))
+	add("P6 leader election role with secrets", argoCtl, "CREATE", x, "P6: a Role in rabbitmq-system")
+	x = le()
+	set(x, "rules/2", jv(`{"apiGroups":[""],"resources":["pods/exec"],"verbs":["create"]}`))
+	add("P6 leader election role with pods/exec", argoCtl, "CREATE", x, "P6: a Role")
+	x = le()
+	set(x, "metadata/name", "rabbitmq-cluster-operator-role")
+	set(x, "rules/2", jv(`{"apiGroups":[""],"resources":["pods/exec"],"verbs":["create"]}`))
+	add("P6 the operator's role name in rabbitmq-system with pods/exec", argoCtl, "CREATE", x, "P6: a Role")
+
+	fmt.Println("== P11: erlangInetConfig, secretBackend")
+	x = rcl()
+	set(x, "spec/rabbitmq/erlangInetConfig", "[{inet6, true}].")
+	add("P11 erlangInetConfig", argoCtl, "CREATE", x, "P11: the broker's plugins")
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"vault":{"role":"x"}}`))
+	add("P11 secretBackend", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
 
 	for _, t := range ts {
 		report(c, t.name, t.req, t.want)

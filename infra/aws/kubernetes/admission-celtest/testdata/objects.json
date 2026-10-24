@@ -162,8 +162,7 @@
     "kind": "Namespace",
     "metadata": {
       "generateName": "ryft-",
-      "labels": {
-      }
+      "labels": {}
     }
   },
   "vaultdynamicsecret-x": {
@@ -173,8 +172,7 @@
       "name": "x",
       "namespace": "ryft-api"
     },
-    "spec": {
-    }
+    "spec": {}
   },
   "configmap-c": {
     "apiVersion": "v1",
@@ -238,8 +236,7 @@
       "name": "s",
       "namespace": "ryft-rabbitmq"
     },
-    "spec": {
-    }
+    "spec": {}
   },
   "service-s": {
     "apiVersion": "v1",
@@ -248,8 +245,7 @@
       "name": "s",
       "namespace": "ryft-rabbitmq"
     },
-    "spec": {
-    }
+    "spec": {}
   },
   "applicationset-x": {
     "apiVersion": "argoproj.io/v1alpha1",
@@ -258,8 +254,7 @@
       "name": "x",
       "namespace": "argocd"
     },
-    "spec": {
-    }
+    "spec": {}
   },
   "clusterrole-rabbitmq-cluster-operator-role": {
     "apiVersion": "rbac.authorization.k8s.io/v1",
@@ -1011,5 +1006,57 @@
         "pod-security.kubernetes.io/audit": "privileged"
       }
     }
+  },
+  "role-peer-discovery": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "Role",
+    "metadata": {
+      "name": "rabbitmq-peer-discovery",
+      "namespace": "ryft-rabbitmq"
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "endpoints"
+        ],
+        "verbs": [
+          "get"
+        ]
+      },
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "events"
+        ],
+        "verbs": [
+          "create"
+        ]
+      }
+    ]
+  },
+  "rolebinding-server": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "rabbitmq-server",
+      "namespace": "ryft-rabbitmq"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "rabbitmq-peer-discovery"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "rabbitmq-server",
+        "namespace": "ryft-rabbitmq"
+      }
+    ]
   }
 }

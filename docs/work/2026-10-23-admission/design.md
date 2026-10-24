@@ -230,7 +230,10 @@ flowchart LR
 - Value-free messages.
 - A matchCondition skips an UPDATE when `oldObject.metadata.deletionTimestamp` is set and the spec (or
   `data`) is unchanged, so finalizer removal (VSO's, for example) passes.
-- Pod rules walk `containers` and `initContainers`, never `ephemeralContainers`.
+- Pod rules walk `containers` and `initContainers`. `ephemeralContainers` get only the image rule and a
+  token rule (no mount of a token volume, no `vault-auth-token`): P2 also matches `pods/ephemeralcontainers`
+  (UPDATE), so a debug image in a `ryft-*` namespace is refused by design. A Pod UPDATE is judged on images
+  only (command, args, probes, volumes and automount are immutable on a Pod).
 - C/U/D means CREATE/UPDATE/DELETE. DELETE is matched only where stated.
 
 **P1 `ryft-namespaces`** (C, U; D for Argo)
@@ -550,7 +553,10 @@ on every operator, argo-cd chart or EKS minor upgrade:
 - **The broker's StatefulSet `rabbitmq-server` and its Pods** carry the digest image. The commands, exec
   hooks and token are exempt only for that writer and owner, and for a `restartedAt`-only UPDATE. The
   broker's other objects stay in `ryft-rabbitmq` (P8) and carry no auth keys (P5).
-- **An operator upgrade that renames an object or adds an image** needs the chart first.
+- **An operator upgrade that renames an object or adds an image** needs the chart first. So does one that
+  adds an RBAC resource to a role (the P6 allowlist `operators.allowedResources`; a ClusterRole is read-only
+  cluster-wide except for `rabbitmq.com`, events and the review creates), and so does a change of the
+  broker's configuration (P11 `additionalPlugins`, `additionalConfigLines`).
 
 **VSO:**
 - A forbidden key from Vault is refused. The `VaultStaticSecret` goes Degraded, and the old Secret
@@ -586,7 +592,7 @@ on every operator, argo-cd chart or EKS minor upgrade:
 | T12-e | sre | **Signals:** the API-server scrape with a keep-list, KSM custom-resource-state with `rbac.extraRules` (both in `deploy/monitoring`), the alerts with promtool tests, the runbook and the query. | 3, after a |
 | T12-k | gitops-engineer | **The broker's 443 egress** narrowed to the VPC CIDR in `deploy/rabbitmq/cluster/networkpolicy.yaml`, in its own PR so it can be reverted alone; your canary afterwards (§5 commands). | any time before Step B |
 | T12-i | user | **Applies:** Step 0 (T12-f), T12-h, Phase 1 (`enabled: true`), the checklist, the T12-k canary, Steps A–D. | 4 |
-| T12-g | gitops-engineer | **Recommended:** namespace-scope **both** operators. Both hold cluster-wide `secrets` get/list (`DATA_ENCRYPTION_KEY`, database URLs, `ADMIN_API_KEY`), and admission can't see reads. Needs your D97 consent. | after consent, before Step C |
+| T12-g | gitops-engineer | **Recommended:** namespace-scope **both** operators. Both hold cluster-wide `secrets` get/list (`DATA_ENCRYPTION_KEY`, database URLs, `ADMIN_API_KEY`), and admission can't see reads. Needs your D97 consent. | after consent, **before Step A** (P6 refuses today's vendored ClusterRoles), ideally before Phase 1 ends; in Audit P6 flags those roles on every refresh: expected, not an unexplained finding. `admission.tf` refuses `operators-cluster: deny` while `scoped-rbac.yaml` is missing |
 | T12-j | infra-engineer | **PSA warn+audit, then enforce,** on the three add-on namespaces. | after Step D |
 
 **Commands for the user.** No agent runs these.
@@ -716,6 +722,6 @@ helm -n kube-system history admission-policy && helm -n kube-system rollback adm
   after a pause (rollback and `--local` are refused).
 - **Consequences:** a change to `project.yaml` reaches the cluster with the user's apply. A new
   Argo-made namespace, a new mutating webhook on RYFT pods, a Vault address change, or an operator
-  upgrade that renames an object or adds an image needs the chart first. A new service doesn't (images
-  and app paths are patterns).
+  upgrade that renames an object, adds an image or adds an RBAC resource, or a change of the broker's
+  configuration (P11), needs the chart first. A new service doesn't (images and app paths are patterns).
 ```

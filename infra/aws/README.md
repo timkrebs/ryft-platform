@@ -131,20 +131,31 @@ not exactly `deny` is applied as `Warn`+`Audit`. A rollout step is a reviewed pu
 that edits `admission-values.yaml` (see the keys' comments for the steps A–D), followed by
 your apply. Changing `enabled` to `false` later destroys the release and every policy.
 
+**Order: T12-g before Step A.** P6 refuses the release's vendored cluster-wide ClusterRoles of
+both RabbitMQ operators (Secrets, pods/exec, Pod writes), so T12-g (both operators scoped to
+`ryft-rabbitmq`, `deploy/rabbitmq/operators/*/scoped-rbac.yaml`) has to be merged and synced
+before `operators-cluster` goes to `deny`, ideally before Phase 1 ends. In Audit, P6 flags
+those two roles on every refresh: expected, not an unexplained finding. The release refuses
+`operators-cluster: deny` while T12-g's file is missing (a precondition; break-glass bypasses
+it). After Step A, reverting T12-g by git needs the break-glass.
+
 Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass` (bool),
-`admission_actions` (a one-plan override per binding) and `admission_enabled` (a plan-only
-override of the file; never apply with it set).
+`admission_actions` (a one-plan override per binding), `admission_enabled` (a plan-only
+override of the file; never apply with it set) and `admission_scoped_rbac_file` (a test knob
+for the T12-g precondition).
 
 Outputs: `admission_enabled` and `admission_binding_actions` (what each binding is given).
-Two `lifecycle.precondition`s on the release stop a plan that sets `argocd` to deny while
-`projects` is empty (P7 would refuse every AppProject write) or `netpol` to deny while
-`netpol.brokerEgressPublic` is true (the chart refuses to render both as well). `check`
+Three `lifecycle.precondition`s on the release stop a plan that sets `argocd` to deny while
+`projects` is empty (P7 would refuse every AppProject write), `netpol` to deny while
+`netpol.brokerEgressPublic` is true, or `operators-cluster` to deny before T12-g is in the tree
+(the chart refuses to render the first two as well; break-glass bypasses all three). `check`
 blocks warn on every plan about an action or binding the chart does not have, a Vault
 address that differs from the generated `vault.yaml` (or a file without exactly one), the
 variable `admission_enabled` standing in for the reviewed file, and **drift**: the cluster's
 policies and bindings are compared with the chart's own render of the same values (a
-`helm_template` data source): a binding or policy that is missing or was edited, a binding
-left in break-glass, a stale policy after an upgrade that was not applied. The drift checks
+`helm_template` data source): a binding or policy that is missing or was edited (including its
+resource rules, selectors and matchPolicy; the server's defaults are not drift), a binding left
+in break-glass, a stale policy after an upgrade that was not applied. The drift checks
 read the cluster, so they need it like any plan, and they say so on the first plan after
 enabling (nothing is there yet).
 
@@ -187,7 +198,7 @@ wrong rule shows as a diff (`UPDATE_GOLDEN=1 admission-celtest/run.sh` rewrites 
 review). A CEL error is never an acceptable refusal. It exits non-zero on any mismatch.
 Needs `helm`, `kubectl` (kustomize only), `yq` and Go (the module's `go` line follows
 `k8s.io/apiserver`, v0.36 for EKS 1.36). `CELTEST_REPO=<copy of the tree>` renders another
-tree's `deploy/` against this checkout's policies; the run is green on the manifests of
+tree's manifests against this checkout's chart and values; the run is green on the manifests of
 T12-g (Roles in `ryft-rabbitmq`) and on those before it (the release's two ClusterRoles are
 then expected to be refused by P6). **When the EKS minor changes, bump `k8s.io/*` in
 `admission-celtest/go.mod` to the same minor first** (the CEL library of the new minor is

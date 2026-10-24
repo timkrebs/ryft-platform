@@ -23,13 +23,15 @@ P10 server sync source (rollback)
 P10 server sync sources
     ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
 P11 additional plugin
-    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
 P11 additionalConfig with a new line
-    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
 P11 advancedConfig
-    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
 P11 envConfig
-    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
+P11 erlangInetConfig
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
 P11 image tag only
     ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
 P11 other registry
@@ -40,6 +42,8 @@ P11 override with containers
     ryft-broker: P11: spec.override may only set the pod-template annotations prometheus.io/path, port and scrape.
 P11 rabbitmqcluster elsewhere
     ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
+P11 secretBackend
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
 P11 service LoadBalancer
     ryft-broker: P11: the broker's Service must stay ClusterIP.
 P11 shovel
@@ -202,6 +206,7 @@ P5 secret USER_ID (a Vault key synced by VSO)
     ryft-auth-env: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
 P6 argo writes another operator role in ryft-rabbitmq
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 argo writes the peer-discovery role
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
     ryft-operators-cluster: P6: a Role must be named rabbitmq-cluster-* or messaging-topology-*.
@@ -217,13 +222,53 @@ P6 binding to another subject
 P6 binding to cluster-admin
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
 P6 clusterrole admission
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole aggregation label
     ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
 P6 clusterrole aggregationRule
     ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
 P6 clusterrole clusterrolebindings
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole creates configmaps
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates endpoints
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates endpointslices
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates leases
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates persistentvolumeclaims
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates roles
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates serviceaccounts
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates services
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole creates statefulsets
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes configmaps
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes endpoints
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes endpointslices
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes leases
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes persistentvolumeclaims
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes roles
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes serviceaccounts
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes services
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes statefulsets
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole deletes tokenreviews (not a create)
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
 P6 clusterrole escalate
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole misnamed
@@ -232,30 +277,75 @@ P6 clusterrole nodes
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole nonResourceURL
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole patchs configmaps
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs endpoints
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs endpointslices
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs leases
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs persistentvolumeclaims
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs roles
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs serviceaccounts
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs services
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole patchs statefulsets
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
 P6 clusterrole serviceaccounts/token
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole updates configmaps
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates endpoints
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates endpointslices
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates leases
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates persistentvolumeclaims
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates roles
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates serviceaccounts
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates services
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+P6 clusterrole updates statefulsets
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
 P6 clusterrole wildcard
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole with pod writes
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
 P6 clusterrole with pods/exec
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole with secrets
     ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
 P6 clusterrole: csr approval
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: nodes proxy
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: pods attach
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: pods ephemeralcontainers
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: resource without group
     ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: serviceaccounts token
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: signers approve
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: star group
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
@@ -264,11 +354,17 @@ P6 clusterrole: star proxy
 P6 clusterrole: star star
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole: star token
+    ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 crd conversion webhook
     ryft-operators-cluster: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
 P6 crd of another group
     ryft-operators-cluster: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+P6 leader election role with pods/exec
+    ryft-operators-cluster: P6: a Role in rabbitmq-system (leader election) holds no Secrets and no pods/exec; those are the broker namespace's named Role.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 leader election role with secrets
+    ryft-operators-cluster: P6: a Role in rabbitmq-system (leader election) holds no Secrets and no pods/exec; those are the broker namespace's named Role.
 P6 pods/exec in the topology role
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 role in ryft-api
@@ -311,6 +407,10 @@ P6 rolebinding to clusterrole
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
 P6 scoped role moved to ryft-api
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 the operator's role name in rabbitmq-system with pods/exec
+    ryft-operators-cluster: P6: a Role in rabbitmq-system (leader election) holds no Secrets and no pods/exec; those are the broker namespace's named Role.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 the scoped role with escalate
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 webhook on pods
@@ -393,10 +493,25 @@ P7 vault-x wrong namespace
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
 P8 operator edits its own role
     ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+    ryft-operator-reach: P8: the peer-discovery Role may hold only endpoints get and events create.
 P8 operator edits its own rolebinding
     ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+    ryft-operator-reach: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
 P8 operator edits the topology operator's role
     ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+    ryft-operator-reach: P8: the peer-discovery Role may hold only endpoints get and events create.
+P8 the peer-discovery role with a third rule
+    ryft-operator-reach: P8: the peer-discovery Role may hold only endpoints get and events create.
+P8 the peer-discovery role with more verbs
+    ryft-operator-reach: P8: the peer-discovery Role may hold only endpoints get and events create.
+P8 the server rolebinding for an account elsewhere
+    ryft-operator-reach: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
+P8 the server rolebinding for another account
+    ryft-operator-reach: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
+P8 the server rolebinding to a clusterrole
+    ryft-operator-reach: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
+P8 the server rolebinding to the operator's own role
+    ryft-operator-reach: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
 P8 topology operator writes a role
     ryft-operator-reach: P8: this operator may not write this resource.
 P9 a longer namespace sharing the prefix

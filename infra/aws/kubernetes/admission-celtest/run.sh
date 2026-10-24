@@ -8,14 +8,15 @@
 # Needs helm, kubectl (kustomize only), yq (mikefarah) and Go. Exit status is non-zero on
 # any mismatch. Everything it renders goes to a temporary directory.
 #
-# CELTEST_REPO=<dir> reads infra/aws/kubernetes and deploy/ from a copy of the tree (to try
-# a branch's manifests against this branch's policies) instead of the checkout this
-# script lives in.
+# CELTEST_REPO=<dir> reads deploy/ from a copy of the tree (to try a branch's manifests
+# against this checkout's policies); the chart and the values are always this checkout's.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="${CELTEST_REPO:-$(cd "$here/../../../.." && pwd)}"
-k8s="$repo/infra/aws/kubernetes"
+# The chart and the values are always this checkout's (the policies under test); the manifests
+# come from $repo.
+k8s="$(cd "$here/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 export GIT_ALLOW_PROTOCOL=file
