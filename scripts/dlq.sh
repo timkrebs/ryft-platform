@@ -129,15 +129,21 @@ put_back_dir() { # DIR: each *.back.json in it back into its dead-letter queue (
   [ "$left" = 0 ] || { echo "✗ dlq.sh: $left letters are in no queue, only in $1: put them back with scripts/dlq.sh put-back $1" >&2; return 1; }
 }
 cleanup() {
-  local status=$?
-  # Letters taken off and neither replayed nor put back: put back now, or keep them.
+  local status=$?; trap '' INT TERM HUP  # $? first, then nothing interrupts the way out
+  # (a second Ctrl-C, the session dropping), and a failing write to a closed terminal does
+  # not end it either.
+  set +e
+  # Letters taken off and neither replayed nor put back: put back now, or keep them. The
+  # directory is named first, so it is known even if this stops half-way.
   if [ -d "$tmp/pending" ] && compgen -G "$tmp/pending/*.back.json" >/dev/null; then
     [ "$status" != 0 ] || status=1
+    echo "! dlq.sh: putting back the letters left in $tmp/pending" >&2
     put_back_dir "$tmp/pending" || keep=1
   fi
+  # Only now: the put-back above goes through the port-forward.
   if [ -n "$pf" ]; then
-    pkill -P "$pf" 2>/dev/null || true
-    kill "$pf" 2>/dev/null || true
+    pkill -P "$pf" 2>/dev/null
+    kill "$pf" 2>/dev/null
   fi
   if [ -n "$keep" ]; then
     rm -f "$tmp/curl.conf" "$tmp/user.json" "$tmp/ca.b64"
@@ -149,6 +155,7 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -169,7 +176,7 @@ def quoted(s):
         s = s.replace(a, b)
     return '"' + s + '"'
 with open(os.path.join(d, "curl.conf"), "w") as f:
-    f.write("user = %s\nconnect-timeout = 10\nmax-time = 120\n" % quoted(user + ":" + pw))
+    f.write("user = %s\nconnect-timeout = 10\n" % quoted(user + ":" + pw))
 PY
 }
 if [ -n "${RABBITMQ_MGMT_URL:-}" ]; then
@@ -192,9 +199,9 @@ else
   mgmt=https://rabbitmq.$ns.svc:$port
   CURL_EXTRA=(--cacert "$tmp/ca.crt" --resolve "rabbitmq.$ns.svc:$port:127.0.0.1")
 fi
-api() { # METHOD PATH [BODY FILE] → the answer
-  curl -fsS -K "$tmp/curl.conf" ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} -H 'content-type: application/json' \
-    -X "$1" ${3:+--data-binary "@$3"} "$mgmt$2"
+api() { # METHOD PATH [BODY FILE] [MAX SECONDS, default 120] → the answer
+  curl -fsS -K "$tmp/curl.conf" --max-time "${4:-120}" ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} \
+    -H 'content-type: application/json' -X "$1" ${3:+--data-binary "@$3"} "$mgmt$2"
 }
 publish() { # EXCHANGE BODY-FILE: true only when the broker routed it
   local out
@@ -203,7 +210,11 @@ publish() { # EXCHANGE BODY-FILE: true only when the broker routed it
 get() { # QUEUE COUNT ACKMODE → the letters, a JSON array
   python3 -c 'import json, sys; json.dump({"count": int(sys.argv[1]), "ackmode": sys.argv[2], "encoding": "auto",
     "truncate": 50000}, open(sys.argv[3], "w"))' "$2" "$3" "$tmp/get.json"
-  api POST "/api/queues/$VHOST/$1/get" "$tmp/get.json"
+  # A take (ack_requeue_false) is removed from the queue before the answer arrives: cutting
+  # that answer short would lose the letters, so it may take half an hour, not two minutes.
+  local max=120
+  [ "$3" != ack_requeue_false ] || max=1800
+  api POST "/api/queues/$VHOST/$1/get" "$tmp/get.json" "$max"
 }
 
 case "$cmd" in

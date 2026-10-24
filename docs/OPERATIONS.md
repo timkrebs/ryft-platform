@@ -767,7 +767,12 @@ script then exits 1. Taking letters off and republishing them are separate calls
 dropped port-forward can strand letters half-way: the script puts back what is left on
 its way out, and if even that fails it keeps them in a directory it names (mode 700,
 without the credentials). Put them back with `scripts/dlq.sh put-back <dir>` once the
-cluster answers again. A letter can then be in its DLQ twice (put back after a publish
+cluster answers again. A second Ctrl-C, a TERM or a dropped session (SIGHUP) does not
+stop that way out, and it names the directory before it starts; after a dropped session
+the message may not have reached you, so look for a `dlq.*` directory in `$TMPDIR` (or
+`/tmp`) with a `pending/` in it, and put back what it holds. The take itself may run for
+half an hour (its letters are gone from the queue before the answer arrives); every other
+call gives up after two minutes. A letter can then be in its DLQ twice (put back after a publish
 whose answer was lost); handlers are idempotent (D100). Every argument is checked first,
 and without a named context the script reaches no cluster; credentials go to `curl` in a
 config file, never on its command line.

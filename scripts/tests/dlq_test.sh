@@ -27,7 +27,11 @@ case "$*" in
   *" -n ryft-rabbitmq get secret rabbitmq-default-user -o json") cat "$FAKE_DIR/user-secret.json" ;;
   *" -n ryft-rabbitmq port-forward svc/rabbitmq "*":15671")
     port=$(printf '%s\n' "$@" | sed -n 's/^\([0-9]*\):15671$/\1/p')
-    exec python3 -c 'import socket, sys, time
+    exec python3 -c 'import os, signal, socket, sys, time
+def killed(*_):  # the order of the way out: logged next to the curl calls
+    open(os.path.join(os.environ["FAKE_DIR"], "events"), "a").write("port-forward killed\n")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, killed)
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(8)
 s.settimeout(1)
 end = time.time() + 60
@@ -41,11 +45,13 @@ esac
 K
 # curl: the management API. Records each call (argv, method, path, the body from its file, the
 # curl config's mode and user) and answers /get from <queue>.json, a publish to ryft.events with
-# FAKE_ROUTED (default true), any other publish routed, compact as RabbitMQ writes it. FAKE_FAIL
-# (call numbers) and FAKE_FAIL_FROM (a call number) make calls fail as a dropped connection does.
+# FAKE_ROUTED (default true), any other publish routed (but not the call numbers in
+# FAKE_UNROUTED_DLX), compact as RabbitMQ writes it. FAKE_FAIL (call numbers) and FAKE_FAIL_FROM
+# (a call number) make calls fail as a dropped connection does; through a port-forward (the
+# --resolve to 127.0.0.1) a call fails, as the real one would, once nothing listens there.
 cat > "$t/bin/curl" <<'C'
 #!/usr/bin/env python3
-import json, os, re, stat, sys
+import json, os, re, socket, stat, sys, time
 from urllib.parse import urlsplit
 d = os.environ["FAKE_DIR"]
 counter = os.path.join(d, "curl.n")
@@ -65,15 +71,26 @@ for i, a in enumerate(args):
 rec["path"] = path = urlsplit(args[-1]).path
 with open(os.path.join(d, "curl.calls"), "a") as f:
     f.write(json.dumps(rec) + "\n")
+with open(os.path.join(d, "events"), "a") as f:
+    f.write("curl %d %s\n" % (n, path))
 if str(n) in os.environ.get("FAKE_FAIL", "").split() or n >= int(os.environ.get("FAKE_FAIL_FROM") or 10**9):
     sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
+if n >= int(os.environ.get("FAKE_SLOW_FROM") or 10**9):
+    time.sleep(1)  # a slow answer, for signals to arrive meanwhile
+for a in args:
+    m = re.fullmatch(r"rabbitmq\.ryft-rabbitmq\.svc:(\d+):127\.0\.0\.1", a)
+    if m:
+        try:
+            socket.create_connection(("127.0.0.1", int(m.group(1))), timeout=2).close()
+        except OSError:
+            sys.stderr.write("curl: (7) Failed to connect: the port-forward is gone\n"); sys.exit(7)
 if path.endswith("/get"):
     sys.stdout.write("not json" if os.environ.get("FAKE_BAD_TAKE") else "[]" if os.environ.get("FAKE_EMPTY")
                      else open(os.path.join(d, path.split("/")[-2] + ".json")).read())
 elif path.endswith("/ryft.events/publish"):
     print('{"routed":%s}' % ("false" if os.environ.get("FAKE_ROUTED") == "false" else "true"))
 elif path.endswith("/publish"):
-    print('{"routed":true}')
+    print('{"routed":%s}' % ("false" if str(n) in os.environ.get("FAKE_UNROUTED_DLX", "").split() else "true"))
 C
 chmod +x "$t/bin/kubectl" "$t/bin/curl"
 
@@ -108,7 +125,7 @@ PY
 export FAKE_PW=$PW
 
 run() { # mgmt|cluster <args>: dlq.sh with the fakes; mgmt against the fake API, cluster through the fake kubectl
-  rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n"; touch "$t/kubectl.calls" "$t/curl.calls"
+  rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n" "$t/events"; touch "$t/kubectl.calls" "$t/curl.calls" "$t/events"
   local mode=$1; shift
   if [ "$mode" = mgmt ]; then
     PATH="$t/bin:$PATH" RABBITMQ_MGMT_URL=http://dlq-test.invalid RABBITMQ_USER=dlq-user RABBITMQ_PASSWORD=$PW \
@@ -205,6 +222,9 @@ check '
 gets = [c for c in calls if c["path"].endswith("/get")]
 assert [g["path"] for g in gets] == ["/api/queues/ryft/dlq.scoring/get"], gets
 assert gets[0]["data"] == {"count": 1000, "ackmode": "ack_requeue_false", "encoding": "auto", "truncate": 50000}, gets
+# The take is gone from the queue before its answer arrives: half an hour for it, not two minutes.
+mt = lambda c: c["argv"][c["argv"].index("--max-time") + 1]
+assert mt(gets[0]) == "1800" and {mt(c) for c in calls if c is not gets[0]} == {"120"}, [mt(c) for c in calls]
 pubs = [c for c in calls if c["path"].endswith("/publish")]
 assert [p["path"].split("/")[-2] for p in pubs] == ["ryft.events"] * 3 + ["ryft.dlx"] * 2, pubs
 death = ("x-death", "x-ryft-attempt", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason",
@@ -293,6 +313,60 @@ back = [c["data"]["properties"]["message_id"] for c in calls[4:] if c["path"].en
 assert back == ["again", "odd", "forged", "unbound"], back
 ' || fail "blip (above)"
 [ -z "$(ls -A "$t/tmp")" ] || fail "the blip left $(ls -A "$t/tmp")"
+
+# A put-back counts only when the broker routed it, in the loop and on the way out. In the
+# loop: nothing is routed to ryft.events, and the first put-back answers unrouted, so that
+# letter is neither replayed nor put back and the way out puts back all five.
+rc=0; out=$(FAKE_ROUTED=false FAKE_UNROUTED_DLX=3 run mgmt replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 0, put back 0" ] || fail "an unrouted put-back in the loop: $rc $out $(cat "$t/err")"
+if ! grep -q 'neither replayed nor put back: message_id "first"' "$t/err" || ! grep -q '^put back 5 letters' "$t/err"; then
+  fail "an unrouted put-back in the loop: $(cat "$t/err")"
+fi
+check '
+back = [c["data"]["properties"]["message_id"] for c in calls if c["path"].endswith("/ryft.dlx/publish")]
+assert back == ["first", "first", "again", "odd", "forged", "unbound"], back
+' || fail "an unrouted put-back in the loop (above)"
+# On the way out: the second letter's publish and put-back fail, the way out's first put-back
+# answers unrouted, so four letters stay in the kept directory.
+rc=0; out=$(FAKE_FAIL="3 4" FAKE_UNROUTED_DLX=5 run mgmt replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] || fail "an unrouted put-back on the way out must fail (got $rc)"
+grep -q '^! dlq.sh: putting back the letters left in .*/pending$' "$t/err" || fail "the directory is not named first: $(cat "$t/err")"
+grep -q '4 letters are in no queue' "$t/err" || fail "an unrouted put-back on the way out: $(cat "$t/err")"
+kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
+case $kept in "$t/tmp/dlq."?*) rm -rf "$kept" ;; *) fail "nothing kept after an unrouted put-back: $(cat "$t/err")" ;; esac
+
+# The way out goes through the port-forward, so it is killed only after the put-back (the
+# fake curl fails once nothing listens on the forward, as the real one does).
+rc=0; out=$(FAKE_FAIL="3 4" KUBE_CONTEXT=test-ctx run cluster replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 1, put back 0" ] || fail "cluster way out: $rc $out $(cat "$t/err")"
+grep -q '^put back 4 letters into their dead-letter queue$' "$t/err" || fail "cluster way out: $(cat "$t/err")"
+python3 - "$t/events" <<'PY' || fail "the port-forward was killed before the put-back: $(cat "$t/events")"
+import sys
+ev = open(sys.argv[1]).read().splitlines()
+assert ev.count("port-forward killed") == 1, ev
+killed = ev.index("port-forward killed")
+dlx = [i for i, e in enumerate(ev) if e.endswith("/ryft.dlx/publish")]
+assert len(dlx) == 5 and killed > max(dlx) and killed == len(ev) - 1, ev  # 1 failed in the loop, 4 on the way out
+PY
+[ -z "$(ls -A "$t/tmp")" ] || fail "the cluster way out left $(ls -A "$t/tmp")"
+
+# Signals during the way out (a second Ctrl-C, a TERM, the session dropping) do not stop it:
+# every letter left is put back, the port-forward is killed and nothing stays behind. Job
+# control on, so the background run does not ignore SIGINT as non-interactive jobs do.
+rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n" "$t/events"
+set -m
+PATH="$t/bin:$PATH" KUBE_CONTEXT=test-ctx FAKE_FAIL="3 4" FAKE_SLOW_FROM=5 bash "$ROOT/scripts/dlq.sh" replay scoring > "$t/out" 2> "$t/err" &
+pid=$!
+set +m
+for _ in $(seq 1 100); do grep -q 'putting back the letters left' "$t/err" 2>/dev/null && break; sleep 0.1; done
+grep -q 'putting back the letters left' "$t/err" || fail "the way out did not start: $(cat "$t/err")"
+for sig in INT INT TERM HUP; do kill -s "$sig" "$pid" 2>/dev/null || true; sleep 0.3; done
+rc=0; wait "$pid" || rc=$?
+if [ "$rc" != 1 ] || ! grep -q '^put back 4 letters into their dead-letter queue$' "$t/err"; then
+  fail "signals stopped the way out (exit $rc): $(cat "$t/err")"
+fi
+grep -q '^port-forward killed$' "$t/events" || fail "the port-forward was not killed: $(cat "$t/events")"
+[ -z "$(ls -A "$t/tmp")" ] || fail "the interrupted way out left $(ls -A "$t/tmp")"
 
 # An answer that is not JSON is an error with the raw answer kept, not "empty"; an empty DLQ is.
 rc=0; out=$(FAKE_BAD_TAKE=1 run mgmt replay scoring 2>"$t/err") || rc=$?
