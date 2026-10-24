@@ -38,6 +38,10 @@ locals {
   # (Terraform-owned AppProjects) wires them; until then P7 has no constant.
   admission_projects = []
 
+  # T12-g's file; operators-cluster on deny is refused without it (P6 refuses the release's
+  # cluster-wide roles). The variable lets a test point elsewhere.
+  admission_scoped_rbac_file = coalesce(var.admission_scoped_rbac_file, "${path.module}/../../../deploy/rabbitmq/operators/cluster-operator/scoped-rbac.yaml")
+
   # Netpol's open broker egress rule is admitted while this is true (T12-k closes it).
   admission_broker_egress_public = try(local.admission_file.netpol.brokerEgressPublic, local.admission_defaults.netpol.brokerEgressPublic)
 
@@ -75,6 +79,31 @@ locals {
   ]
   admission_rendered_policies = { for d in local.admission_rendered : d.metadata.name => d if d.kind == "ValidatingAdmissionPolicy" }
   admission_rendered_bindings = { for d in local.admission_rendered : d.metadata.name => d if d.kind == "ValidatingAdmissionPolicyBinding" }
+
+  # The drift checks compare these. Of a match (a binding's matchResources, a policy's
+  # matchConstraints) they keep what the chart sets and what the server defaults: rules and
+  # excluded rules with group, version, resource and operation (the defaulted `scope` is
+  # dropped), the selectors (absent is {}) and matchPolicy (absent is Equivalent).
+  admission_norm = {
+    for src, objs in {
+      rendered_policies = local.admission_rendered_policies
+      rendered_bindings = local.admission_rendered_bindings
+      live_policies     = local.admission_live_policies
+      live_bindings     = local.admission_live_bindings
+      } : src => {
+      for n, o in objs : n => jsonencode({
+        rules = [for r in try(try(o.spec.matchConstraints, o.spec.matchResources).resourceRules, []) : {
+          g = try(r.apiGroups, []), v = try(r.apiVersions, []), r = try(r.resources, []), o = try(r.operations, [])
+        }]
+        excluded = [for r in try(try(o.spec.matchConstraints, o.spec.matchResources).excludeResourceRules, []) : {
+          g = try(r.apiGroups, []), v = try(r.apiVersions, []), r = try(r.resources, []), o = try(r.operations, [])
+        }]
+        namespaceSelector = jsonencode(try(try(o.spec.matchConstraints, o.spec.matchResources).namespaceSelector, {})) == "null" ? "{}" : jsonencode(try(try(o.spec.matchConstraints, o.spec.matchResources).namespaceSelector, {}))
+        objectSelector    = jsonencode(try(try(o.spec.matchConstraints, o.spec.matchResources).objectSelector, {})) == "null" ? "{}" : jsonencode(try(try(o.spec.matchConstraints, o.spec.matchResources).objectSelector, {}))
+        matchPolicy       = coalesce(try(try(o.spec.matchConstraints, o.spec.matchResources).matchPolicy, null), "Equivalent")
+      })
+    }
+  }
 
   # What the cluster holds (null objects when the list returned nothing, or under a mock).
   admission_live_policies = { for o in flatten([for t in data.kubernetes_resources.admission_policies : t.objects[*]]) : o.metadata.name => o }
@@ -122,6 +151,10 @@ resource "helm_release" "admission_policy" {
     precondition {
       condition     = !(contains(local.admission_effective["argocd"], "Deny") && length(local.admission_projects) == 0)
       error_message = "The argocd binding (P7) is set to deny, but the AppProjects it compares with are not wired (T12-b): it would refuse every AppProject write."
+    }
+    precondition {
+      condition     = !(contains(local.admission_effective["operators-cluster"], "Deny") && !fileexists(local.admission_scoped_rbac_file))
+      error_message = "The operators-cluster binding (P6) is set to deny, but deploy/rabbitmq/operators/cluster-operator/scoped-rbac.yaml (T12-g) is not in the tree: P6 refuses the vendored cluster-wide ClusterRoles, so rabbitmq-operators would stop syncing. Merge T12-g first."
     }
     precondition {
       condition     = !(contains(local.admission_effective["netpol"], "Deny") && local.admission_broker_egress_public)
@@ -179,12 +212,11 @@ check "admission_binding_drift" {
           contains(keys(local.admission_live_bindings), name) &&
           want.spec.policyName == local.admission_live_bindings[name].spec.policyName &&
           toset(want.spec.validationActions) == toset(local.admission_live_bindings[name].spec.validationActions) &&
-          jsonencode([for r in try(want.spec.matchResources.resourceRules, []) : [r.resources, r.operations]]) ==
-          jsonencode([for r in try(local.admission_live_bindings[name].spec.matchResources.resourceRules, []) : [r.resources, r.operations]])
+          local.admission_norm.rendered_bindings[name] == local.admission_norm.live_bindings[name]
         )
       ])
     )
-    error_message = "The ValidatingAdmissionPolicyBindings in the cluster differ from the chart's render of admission-values.yaml: one is missing, was patched (actions, policy, resource rules) or is left in break-glass (or nothing is applied yet, on the first plan after enabling). Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
+    error_message = "The ValidatingAdmissionPolicyBindings in the cluster differ from the chart's render of admission-values.yaml: one is missing, was patched (actions, policy, resource rules, selectors, matchPolicy) or is left in break-glass (or nothing is applied yet, on the first plan after enabling). Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
   }
 }
 
@@ -199,11 +231,11 @@ check "admission_policy_drift" {
           jsonencode([for v in want.spec.validations : v.expression]) == jsonencode([for v in local.admission_live_policies[name].spec.validations : v.expression]) &&
           jsonencode([for v in try(want.spec.matchConditions, []) : v.expression]) == jsonencode([for v in try(local.admission_live_policies[name].spec.matchConditions, []) : v.expression]) &&
           jsonencode([for v in try(want.spec.variables, []) : [v.name, v.expression]]) == jsonencode([for v in try(local.admission_live_policies[name].spec.variables, []) : [v.name, v.expression]]) &&
-          jsonencode([for r in want.spec.matchConstraints.resourceRules : [r.resources, r.operations]]) == jsonencode([for r in local.admission_live_policies[name].spec.matchConstraints.resourceRules : [r.resources, r.operations]]) &&
+          local.admission_norm.rendered_policies[name] == local.admission_norm.live_policies[name] &&
           want.spec.failurePolicy == local.admission_live_policies[name].spec.failurePolicy
         )
       ])
     )
-    error_message = "The ValidatingAdmissionPolicies in the cluster differ from the chart's render: one is missing, was edited (expressions, conditions, variables, match rules, failurePolicy), or an upgrade is not applied. Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
+    error_message = "The ValidatingAdmissionPolicies in the cluster differ from the chart's render: one is missing, was edited (expressions, conditions, variables, match rules, selectors, failurePolicy), or an upgrade is not applied. Restore with terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' (a replace uninstalls every policy for a moment)."
   }
 }

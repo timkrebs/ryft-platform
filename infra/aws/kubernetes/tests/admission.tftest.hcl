@@ -594,6 +594,7 @@ run "deny_never_meets_warn" {
       operators-cluster = "deny"
       workloads-pods    = "deny"
     }
+    admission_scoped_rbac_file = "admission-values.yaml"
   }
 
   expect_failures = [check.admission_enabled_override]
@@ -824,6 +825,108 @@ run "drift_a_binding_pointed_at_another_policy" {
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+}
+
+run "drift_a_binding_patched_with_a_namespace_selector" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_bindings
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { policyName = "ryft-operators-cluster", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-broker" }, spec = { policyName = "ryft-broker", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-templates" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["deployments"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-netpol" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchLabels = { nothing = "matches" } } } } },
+        { metadata = { name = "ryft-auth-env" }, spec = { policyName = "ryft-auth-env", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-traefik" }, spec = { policyName = "ryft-traefik", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-pods" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["pods"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+}
+
+run "server_defaults_are_not_drift" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_bindings
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { policyName = "ryft-operators-cluster", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-broker" }, spec = { policyName = "ryft-broker", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-templates" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["deployments"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-netpol" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = {}, objectSelector = {}, matchPolicy = "Equivalent" } } },
+        { metadata = { name = "ryft-auth-env" }, spec = { policyName = "ryft-auth-env", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-traefik" }, spec = { policyName = "ryft-traefik", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-pods" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["pods"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_enabled_override]
+}
+
+run "operators_cluster_deny_needs_t12g" {
+  command = plan
+
+  variables {
+    admission_enabled          = true
+    admission_actions          = { operators-cluster = "deny" }
+    admission_scoped_rbac_file = "no-such-scoped-rbac.yaml"
+  }
+
+  expect_failures = [helm_release.admission_policy, check.admission_enabled_override]
+}
+
+run "operators_cluster_deny_with_t12g_in_the_tree" {
+  command = plan
+
+  variables {
+    admission_enabled          = true
+    admission_actions          = { operators-cluster = "deny" }
+    admission_scoped_rbac_file = "admission-values.yaml"
+  }
+
+  expect_failures = [check.admission_enabled_override]
+
+  assert {
+    condition     = local.admission_effective["operators-cluster"] == ["Deny", "Audit"]
+    error_message = "with T12-g's file present the deny is honoured"
+  }
+}
+
+run "operators_cluster_deny_under_break_glass_needs_no_t12g" {
+  command = plan
+
+  variables {
+    admission_enabled          = true
+    admission_break_glass      = true
+    admission_actions          = { operators-cluster = "deny" }
+    admission_scoped_rbac_file = "no-such-scoped-rbac.yaml"
+  }
+
+  expect_failures = [check.admission_enabled_override]
 }
 
 run "drift_a_missing_policy" {

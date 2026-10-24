@@ -65,6 +65,12 @@ variable "admission_actions" {
   }
 }
 
+variable "admission_scoped_rbac_file" {
+  description = "The file whose presence lets operators-cluster go to deny: T12-g's deploy/rabbitmq/operators/cluster-operator/scoped-rbac.yaml. null uses that path; a test points it elsewhere."
+  type        = string
+  default     = null
+}
+
 variable "admission_enabled" {
   description = "Overrides `enabled` of admission-values.yaml for one plan (tests, a dry look at the release). null uses the file; the real switch is the reviewed file, so do not run an apply with this set."
   type        = bool
