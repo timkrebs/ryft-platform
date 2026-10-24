@@ -104,9 +104,14 @@ locals {
     "messaging-topology-manager-role",
     "messaging-topology-metrics-auth-role",
   ]
-  argocd_operator_roles = [ # roleRef of the two RoleBindings in rabbitmq-system
+  # Roles: the two leader-election Roles in rabbitmq-system, and (T12-g) the operators' main
+  # rules as namespaced Roles in ryft-rabbitmq. The ClusterRole names above stay until T12-g
+  # has landed; remove them (and their escalate/bind rules) then.
+  argocd_operator_roles = [
     "rabbitmq-cluster-leader-election-role",
     "messaging-topology-leader-election-role",
+    "rabbitmq-cluster-operator-role",
+    "messaging-topology-manager-role",
   ]
   argocd_operator_mutating_webhooks = [
     "cluster-operator-mutating-webhook-configuration",

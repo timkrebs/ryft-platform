@@ -331,10 +331,12 @@ run "argocd_cannot_switch_off_or_bypass_the_admission_layer" {
       toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
         r.resourceNames if contains(r.verbs, "escalate") && contains(r.resources, "roles")])) == toset([
         "rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role",
+        "rabbitmq-cluster-operator-role", "messaging-topology-manager-role",
       ]) &&
       toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
         r.resourceNames if contains(r.verbs, "bind") && contains(r.resources, "roles")])) == toset([
         "rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role",
+        "rabbitmq-cluster-operator-role", "messaging-topology-manager-role",
       ])
     )
     error_message = "escalate and bind name exactly the operators' roles (deploy/rabbitmq/operators)"
