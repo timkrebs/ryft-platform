@@ -16,13 +16,13 @@ cluster:
 # the chart owns, each with its own job label (so nothing collides with a Fleet series):
 #   1. the API servers' admission metrics (apiServer below, one target per endpoint of
 #      default/kubernetes, not the VIP), kept by an allow-list;
-#   2. kube-state-metrics' custom-resource-state series for the policy bindings (the
-#      config is under telemetryServices.kube-state-metrics).
+#   2. kube-state-metrics' series for the policy bindings (its native collector, enabled
+#      under telemetryServices.kube-state-metrics).
 # Every other source of clusterMetrics is off, or Fleet's pipelines would be duplicated.
 # The data needs a destination of the chart's own: the stack's Prometheus write endpoint
 # with the same user and token as OpenCost (ryft-secrets PROM_USERNAME, GC_TOKEN). The
-# token therefore needs the metrics:write scope; if the pods log 401/403 from remote_write,
-# add the scope to the access policy (OPERATIONS → Admission policy signals).
+# Fleet's pipelines write with the same token, so it can already write. If the pods log
+# 401/403 from remote_write, check the access policy (OPERATIONS → Admission policy signals).
 destinations:
   admission-signals:
     type: prometheus
@@ -77,7 +77,7 @@ clusterMetrics:
     metricsTuning:
       useDefaultAllowList: false
       includeMetrics:
-        - kube_customresource_admission_binding_.*
+        - kube_validatingadmissionpolicybinding_(info|validation_action)
 
 # The chart's self-report would add its own series to the new destination.
 selfReporting:
@@ -134,50 +134,43 @@ telemetryServices:
     deploy: true
   kube-state-metrics:
     deploy: true
-    # Claim (m): the policy bindings as metrics, checked in the kind e2e (T12-d). The role
-    # needs list/watch on them; the chart adds the CRD read for customResourceState itself.
-    # Metrics (kept by clusterMetrics.kube-state-metrics above):
-    #   kube_customresource_admission_binding_info{name,policy,step,key,intended_action,break_glass} 1
-    #   kube_customresource_admission_binding_action{name,action} 1 for each live validation action
-    # A label the object lacks (break_glass off break-glass) is simply not there.
-    rbac:
-      extraRules:
-        - apiGroups: [admissionregistration.k8s.io]
-          resources: [validatingadmissionpolicybindings]
-          verbs: [list, watch]
-    customResourceState:
-      enabled: true
-      config:
-        kind: CustomResourceStateMetrics
-        spec:
-          resources:
-            - groupVersionKind:
-                group: admissionregistration.k8s.io
-                version: v1
-                kind: ValidatingAdmissionPolicyBinding
-              metricNamePrefix: kube_customresource
-              labelsFromPath:
-                name: [metadata, name]
-              metrics:
-                - name: admission_binding_info
-                  help: A ValidatingAdmissionPolicyBinding of the admission-policy chart and the action it was committed with.
-                  each:
-                    type: Info
-                    info:
-                      labelsFromPath:
-                        policy: [metadata, labels, admission.ryft.dev/policy]
-                        step: [metadata, labels, admission.ryft.dev/step]
-                        key: [metadata, labels, admission.ryft.dev/key]
-                        intended_action: [metadata, labels, admission.ryft.dev/intended-action]
-                        break_glass: [metadata, labels, admission.ryft.dev/break-glass]
-                - name: admission_binding_action
-                  help: 1 for each validation action (Deny, Warn, Audit) the binding has now, 0 for the others.
-                  each:
-                    type: StateSet
-                    stateSet:
-                      labelName: action
-                      path: [spec, validationActions]
-                      list: [Deny, Warn, Audit]
+    # The policy bindings as metrics (design claim m): kube-state-metrics' own collector for
+    # them (v2.20+, Kubernetes 1.30+), not custom-resource-state, which resolves kinds from
+    # CRDs only and ignores built-in ones. The chart adds list/watch on the bindings to the
+    # ClusterRole itself. A list replaces the chart's default, so this is that default plus
+    # the last entry. Series: kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,
+    # policy_name} and _validation_action{validatingadmissionpolicybinding,action} (1 for each live
+    # action only). The committed action is not in them: ryft:admission_binding_intended.
+    collectors:
+      - certificatesigningrequests
+      - configmaps
+      - cronjobs
+      - daemonsets
+      - deployments
+      - endpointslices
+      - horizontalpodautoscalers
+      - ingresses
+      - jobs
+      - leases
+      - limitranges
+      - mutatingwebhookconfigurations
+      - namespaces
+      - networkpolicies
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - poddisruptionbudgets
+      - pods
+      - replicasets
+      - replicationcontrollers
+      - resourcequotas
+      - secrets
+      - services
+      - statefulsets
+      - storageclasses
+      - validatingwebhookconfigurations
+      - volumeattachments
+      - validatingadmissionpolicybindings
   beyla:
     deploy: true
     k8sCache:
