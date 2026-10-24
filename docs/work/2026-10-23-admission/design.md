@@ -313,7 +313,16 @@ flowchart LR
   - services in OPS, never a `url`;
   - rules on `rabbitmq.com` only.
 - **Namespaced RBAC:** only in OPS, `roleRef.kind: Role`, with RoleBinding subjects only the two
-  operator service accounts.
+  operator service accounts. With T12-g, exactly four more objects in `ryft-rabbitmq`:
+  `rabbitmq-cluster-operator-role` / `-rolebinding` and `messaging-topology-manager-role` /
+  `-rolebinding` (VAP sees the writer, not the Argo project, so the chart names them). Every
+  rule of a Role or ClusterRole is checked against an allowlist of the (group, resource) pairs
+  the vendored roles use (a `*` prefix, `*/token`, `pods/attach`, ephemeral containers, CSR
+  approval never pass; `pods/exec` only in a `rabbitmq-cluster-*` role). A ClusterRole grants
+  no Secrets, no `pods/exec` and no Pod write, so the operators' cluster-wide Secret reads
+  (S11) cannot come back through git. After Step A, reverting T12-g by git therefore needs the
+  user's break-glass. The Cluster Operator itself (P8) may write only the broker's
+  `rabbitmq-peer-discovery` Role and `rabbitmq-server` RoleBinding there.
 
 **P7 `ryft-argocd`** (C, U, D; namespace `argocd`, any writer)
 - **Carve-out:** the application controller's UPDATEs with `object.spec == oldObject.spec` (its status
@@ -390,7 +399,7 @@ flowchart LR
 | the operators project's cluster power | P6, P8; their reads: T12-g |
 | `project.yaml` read from the PR | P7 with B2: the cluster compares against the same file |
 | L1, L2 | P7's fixed map, plus CI (T12-c) |
-| L3 | Argo's project (`rabbitmq-system` only), plus P2 and P6 in OPS; CI: accepted |
+| L3 | Argo's project (`rabbitmq-system`, and `ryft-rabbitmq` for the four T12-g objects), plus P2 and P6 in OPS and in those four names; CI: accepted |
 | L4 | CI-only: a typed finding (T12-c) |
 
 **Accepted:**
@@ -512,7 +521,8 @@ on every operator, argo-cd chart or EKS minor upgrade:
    - A release left `pending-upgrade`: `helm -n kube-system history` and `rollback admission-policy`,
      then apply again.
    - Helm doesn't see a patch. `AdmissionBindingDrift` and the `check` block do; restore with
-     `-replace`.
+     `-replace='helm_release.admission_policy[0]'` (quoted for zsh; the instance key is needed
+     because of `count`). A replace uninstalls every policy for a moment.
 3. **Node debugging:** `kubectl debug node/<node> -n default` needs no break-glass, because the pod lands
    outside R.
 
@@ -560,7 +570,7 @@ on every operator, argo-cd chart or EKS minor upgrade:
 | P10 refuses or errors | only requests that start a new operation: manual syncs and the controller's auto-sync and retries. Status writes, terminate-op, pause and refresh are never matched | apps stop syncing → `ArgoAppOutOfSync` | break-glass; terminate-op still works |
 | a CEL error under `Fail` | everything that policy matches (rows above) | `AdmissionPolicyError` | break-glass; Audit and kind catch it first |
 | a new mutating webhook changes RYFT pods | as P2 `pods` | as P2 `pods` | exclude R from it, or chart first |
-| a binding patched, deleted or left in break-glass | that policy is off | `AdmissionBindingMissing` / `Drift`, the `check` block | `terraform apply -replace=helm_release.admission_policy` |
+| a binding patched, deleted or left in break-glass | that policy is off | `AdmissionBindingMissing` / `Drift`, the `check` block | `terraform apply -replace='helm_release.admission_policy[0]'` (uninstalls every policy for a moment) |
 | an EKS minor changes CEL behaviour | any | the kind e2e at the target minor | run it before the upgrade |
 
 ## 5. Work breakdown
@@ -633,7 +643,7 @@ terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 # Break-glass (you only). The fast path first:
 kubectl patch validatingadmissionpolicybinding ryft-workloads-pods --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'
 #   restore (Helm doesn't see the patch):
-terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -replace=helm_release.admission_policy
+terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'
 #   planned, through Terraform:
 terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -var='admission_break_glass=true'
 #   a release stuck in pending-upgrade:

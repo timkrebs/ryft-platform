@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: admission-celtest test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -232,6 +232,13 @@ k8s-validate:
 	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check
 
+# The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with the
+# Kubernetes CEL libraries against the renders of deploy/ and the fixtures in
+# infra/aws/kubernetes/admission-celtest/testdata. Read-only: helm template and kustomize only, no cluster.
+# Not part of CI yet (T12-d wires the job).
+admission-celtest:
+	./infra/aws/kubernetes/admission-celtest/run.sh
+
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide
 # credentials" (2026-10-20). Say so before applying anything.
@@ -247,12 +254,6 @@ k8s-check-auth:
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in
 # InvalidImageName until its deadline, 2026-10-19), no :latest, no missing tag.
 IMAGE_REF := ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[a-f0-9]{64})$$
-# The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with
-# the Kubernetes CEL libraries against the renders of deploy/ and the fixtures in celtest/testdata.
-# Read-only: helm template and kubectl kustomize only. Not part of CI yet (T12-d wires the job).
-admission-celtest:
-	./infra/aws/kubernetes/charts/admission-policy/celtest/run.sh
-
 # Every pinned ghcr.io image exists (network; not part of k8s-validate, which CI runs).
 k8s-check-registry:
 	./scripts/check_registry.sh

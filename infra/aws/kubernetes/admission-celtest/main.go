@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -31,7 +33,7 @@ type kindInfo struct{ group, version, resource string }
 
 var kinds = map[string]kindInfo{
 	"Namespace": {"", "v1", "namespaces"}, "Pod": {"", "v1", "pods"}, "ConfigMap": {"", "v1", "configmaps"},
-	"Secret": {"", "v1", "secrets"}, "Service": {"", "v1", "services"}, "ServiceAccount": {"", "v1", "serviceaccounts"},
+	"Secret": {"", "v1", "secrets"}, "ReplicationController": {"", "v1", "replicationcontrollers"}, "Service": {"", "v1", "services"}, "ServiceAccount": {"", "v1", "serviceaccounts"},
 	"Deployment": {"apps", "v1", "deployments"}, "StatefulSet": {"apps", "v1", "statefulsets"},
 	"DaemonSet": {"apps", "v1", "daemonsets"}, "ReplicaSet": {"apps", "v1", "replicasets"},
 	"Job": {"batch", "v1", "jobs"}, "CronJob": {"batch", "v1", "cronjobs"},
@@ -57,36 +59,35 @@ type compiled struct {
 	val validating.Validator
 }
 
-var env *cel.CompositionEnv
+var env *environment.EnvSet
 
 func compile(p *v1.ValidatingAdmissionPolicy) validating.Validator {
-	opt := cel.OptionalVariableDeclarations{HasParams: false, HasAuthorizer: true, StrictCost: true}
-	eopt := cel.OptionalVariableDeclarations{HasParams: false, HasAuthorizer: false, StrictCost: true}
-	fc := cel.NewCompositedCompilerFromTemplate(env)
+	opt := cel.OptionalVariableDeclarations{HasParams: false, HasAuthorizer: true}
+	eopt := cel.OptionalVariableDeclarations{HasParams: false, HasAuthorizer: false}
+	fc, err := cel.NewCompositedCompiler(env)
+	must(err)
 	vars := make([]cel.NamedExpressionAccessor, len(p.Spec.Variables))
 	for i, v := range p.Spec.Variables {
 		vars[i] = &validating.Variable{Name: v.Name, Expression: v.Expression}
 	}
-	fc.CompileAndStoreVariables(vars, opt, environment.StoredExpressions)
+	fc.CompileAndStoreVariables(vars, opt, environment.NewExpressions)
 	var matcher matchconditions.Matcher
 	if len(p.Spec.MatchConditions) > 0 {
 		acc := make([]cel.ExpressionAccessor, len(p.Spec.MatchConditions))
 		for i := range p.Spec.MatchConditions {
 			acc[i] = (*matchconditions.MatchCondition)(&p.Spec.MatchConditions[i])
 		}
-		matcher = matchconditions.NewMatcher(fc.CompileCondition(acc, opt, environment.StoredExpressions), p.Spec.FailurePolicy, "policy", "validate", p.Name)
+		matcher = matchconditions.NewMatcher(fc.CompileCondition(acc, opt, environment.NewExpressions), p.Spec.FailurePolicy, "policy", "validate", p.Name)
 	}
 	va := make([]cel.ExpressionAccessor, len(p.Spec.Validations))
-	ma := make([]cel.ExpressionAccessor, len(p.Spec.Validations))
 	for i, v := range p.Spec.Validations {
 		va[i] = &validating.ValidationCondition{Expression: v.Expression, Message: v.Message, Reason: v.Reason}
-		_ = ma
 	}
 	return validating.NewValidator(
-		fc.CompileCondition(va, opt, environment.StoredExpressions), matcher,
-		fc.CompileCondition(nil, opt, environment.StoredExpressions),
-		fc.CompileCondition(make([]cel.ExpressionAccessor, len(p.Spec.Validations)), eopt, environment.StoredExpressions),
-		p.Spec.FailurePolicy)
+		fc.CompileCondition(va, opt, environment.NewExpressions), matcher,
+		fc.CompileCondition(nil, opt, environment.NewExpressions),
+		fc.CompileCondition(make([]cel.ExpressionAccessor, len(p.Spec.Validations)), eopt, environment.NewExpressions),
+		p.Spec.FailurePolicy, nil)
 }
 
 type chart struct {
@@ -100,7 +101,10 @@ func decodeDocs(b []byte) []map[string]any {
 	for {
 		var m map[string]any
 		if err := d.Decode(&m); err != nil {
-			break
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			must(err)
 		}
 		if m != nil {
 			out = append(out, m)
@@ -135,14 +139,27 @@ func must(err error) {
 	}
 }
 
+// ruleMatches follows the apiserver's matching of a rule: "*" matches every resource but no
+// subresource, "*/*" every subresource, "pods/*" and "*/status" the obvious; apiVersions are
+// honoured ("*" matches any).
 func ruleMatches(rules []v1.NamedRuleWithOperations, info kindInfo, sub string, op string) bool {
-	res := info.resource
-	if sub != "" {
-		res += "/" + sub
-	}
-	in := func(list []string, v string) bool {
+	has := func(list []string, v string) bool {
 		for _, x := range list {
 			if x == v || x == "*" {
+				return true
+			}
+		}
+		return false
+	}
+	resOK := func(list []string) bool {
+		for _, x := range list {
+			if sub == "" {
+				if x == info.resource || x == "*" {
+					return true
+				}
+				continue
+			}
+			if x == info.resource+"/"+sub || x == info.resource+"/*" || x == "*/"+sub || x == "*/*" {
 				return true
 			}
 		}
@@ -153,10 +170,7 @@ func ruleMatches(rules []v1.NamedRuleWithOperations, info kindInfo, sub string, 
 		for i, o := range r.Operations {
 			ops[i] = string(o)
 		}
-		if in(ops, op) && in(r.APIGroups, info.group) && in(r.Resources, res) {
-			if sub == "" && false {
-				continue
-			}
+		if has(ops, op) && has(r.APIGroups, info.group) && has(r.APIVersions, info.version) && resOK(r.Resources) {
 			return true
 		}
 	}
@@ -179,12 +193,11 @@ type Result struct {
 }
 
 func (c *chart) eval(r Req) []Result {
-	kind := ""
 	src := r.Obj
 	if src == nil {
 		src = r.Old
 	}
-	kind, _ = src["kind"].(string)
+	kind, _ := src["kind"].(string)
 	info, ok := kinds[kind]
 	if !ok {
 		panic("unknown kind " + kind)
@@ -214,8 +227,6 @@ func (c *chart) eval(r Req) []Result {
 		}
 		gvk := schema.GroupVersionKind{Group: info.group, Version: info.version, Kind: kind}
 		gvr := schema.GroupVersionResource{Group: info.group, Version: info.version, Resource: info.resource}
-		var o, oo = (interface{})(nil), (interface{})(nil)
-		_, _ = o, oo
 		var attrs admission.Attributes
 		ui := &user.DefaultInfo{Name: r.User}
 		switch {
@@ -376,21 +387,29 @@ func podOf(d map[string]any, extraOwner map[string]any) map[string]any {
 	return map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": pmd, "spec": deepCopy(tpl["spec"].(map[string]any))}
 }
 
-type tc struct {
-	name   string
-	req    Req
-	want   string // "" = admitted; else substring "P7" that must be among denying messages
-	wantOk bool
-}
-
 var failures int
 
+// results maps each case to the messages it was refused with ("" cases are absent); it is
+// compared with testdata/messages.golden, so a negative that is refused by the wrong rule
+// (or for a new reason) shows up as a diff. UPDATE_GOLDEN=1 rewrites the file.
+var results = map[string][]string{}
+
 func report(c *chart, name string, r Req, want []string) {
+	if _, dup := results[name]; dup {
+		panic("duplicate case name: " + name)
+	}
 	res := c.eval(r)
-	var msgs []string
+	var msgs, plain []string
+	errored := false
 	for _, x := range res {
 		msgs = append(msgs, x.Action+":"+x.Messages[0])
+		plain = append(plain, x.Binding+": "+x.Messages[0])
+		if x.Action == "error" {
+			errored = true
+		}
 	}
+	sort.Strings(plain)
+	results[name] = plain
 	ok := false
 	if len(want) == 0 {
 		ok = len(res) == 0
@@ -406,12 +425,69 @@ func report(c *chart, name string, r Req, want []string) {
 			ok = ok && found
 		}
 	}
+	if errored {
+		ok = false // a CEL error is never an acceptable refusal
+	}
 	status := "ok  "
 	if !ok {
 		status = "FAIL"
 		failures++
 	}
 	fmt.Printf("%s %-62s want=%v got=%v\n", status, name, want, trim(msgs))
+}
+
+// checkGolden compares the refusals of this run with testdata/messages.golden.
+func checkGolden() {
+	var names []string
+	for n, m := range results {
+		// cases of the release's own ClusterRoles exist only in a render from before T12-g; they
+		// are asserted by their wanted message, not pinned here, so the run is green on both
+		if len(m) > 0 && !strings.Contains(n, "(before T12-g)") {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(n + "\n")
+		for _, m := range results[n] {
+			b.WriteString("    " + m + "\n")
+		}
+	}
+	path := "testdata/messages.golden"
+	if os.Getenv("UPDATE_GOLDEN") != "" {
+		must(os.WriteFile(path, []byte(b.String()), 0o644))
+		fmt.Println("golden rewritten:", path)
+		return
+	}
+	want, err := os.ReadFile(path)
+	must(err)
+	if string(want) != b.String() {
+		fmt.Println("FAIL the refusals differ from", path, "(UPDATE_GOLDEN=1 rewrites it after a review):")
+		wl, gl := strings.Split(string(want), "\n"), strings.Split(b.String(), "\n")
+		seen := map[string]bool{}
+		for _, l := range wl {
+			seen[l] = true
+		}
+		shown := 0
+		for _, l := range gl {
+			if !seen[l] && shown < 20 {
+				fmt.Println("  + " + l)
+				shown++
+			}
+		}
+		got := map[string]bool{}
+		for _, l := range gl {
+			got[l] = true
+		}
+		for _, l := range wl {
+			if !got[l] && shown < 40 {
+				fmt.Println("  - " + l)
+				shown++
+			}
+		}
+		failures++
+	}
 }
 
 func trim(m []string) []string {
@@ -435,20 +511,32 @@ const (
 )
 
 func main() {
-	var err error
-	env, err = cel.NewCompositionEnv(cel.VariablesTypeName, environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion(), true))
-	must(err)
+	env = environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())
 	c := loadChart(os.Args[1])
 	for _, f := range os.Args[2:] {
 		load(f)
 	}
 	runPositive(c)
+	printUnmodelled()
 	runNegative(c)
-	runMore(c)
-	fmt.Println("failures:", failures)
+	runArgo(c)
+	runHardening(c)
+	checkGolden()
+	fmt.Println("cases:", len(results), "failures:", failures)
 	if failures > 0 {
 		os.Exit(1)
 	}
+}
+
+var unmodelled = map[string]int{}
+
+func printUnmodelled() {
+	var ks []string
+	for k, n := range unmodelled {
+		ks = append(ks, fmt.Sprintf("%s(%d)", k, n))
+	}
+	sort.Strings(ks)
+	fmt.Println("== kinds of the renders that no policy can match, not evaluated:", strings.Join(ks, " "))
 }
 
 func runPositive(c *chart) {
@@ -457,13 +545,19 @@ func runPositive(c *chart) {
 		d = defaults(deepCopy(d))
 		kind := d["kind"].(string)
 		if _, ok := kinds[kind]; !ok {
+			unmodelled[kind]++
 			continue
 		}
 		md := d["metadata"].(map[string]any)
 		user := argoCtl
 		label := fmt.Sprintf("%s %v/%v", kind, md["namespace"], md["name"])
-		report(c, "create "+label, Req{User: user, Op: "CREATE", Obj: d}, nil)
-		report(c, "update "+label, Req{User: user, Op: "UPDATE", Obj: d, Old: d}, nil)
+		var want []string
+		if kind == "ClusterRole" && grantsWhatT12gRemoved(d) {
+			want = []string{"P6: a ClusterRole of the operators must not grant Secrets"} // the release's roles, before T12-g
+			label += " (before T12-g)"
+		}
+		report(c, "create "+label, Req{User: user, Op: "CREATE", Obj: d}, want)
+		report(c, "update "+label, Req{User: user, Op: "UPDATE", Obj: d, Old: d}, want)
 		switch kind {
 		case "Deployment", "StatefulSet", "Job", "CronJob", "DaemonSet":
 			p := podOf(d, nil)
@@ -498,7 +592,7 @@ func runNegative(c *chart) {
 	plain := brokerPod()
 	delete(plain["metadata"].(map[string]any), "ownerReferences")
 	forgedUpdate := brokerPod()
-	report(c, "ownerRef added to a plain pod by an update", Req{User: admin, Op: "UPDATE", Obj: forgedUpdate, Old: plain}, []string{"P2"})
+	report(c, "ownerRef added to a plain pod by an update (judged on images only)", Req{User: admin, Op: "UPDATE", Obj: forgedUpdate, Old: plain}, nil)
 	report(c, "update of the owned pod that keeps the ownerRef", Req{User: cop, Op: "UPDATE", Obj: brokerPod(), Old: brokerPod()}, nil)
 	// restartedAt-only update by any writer
 	oldS := brokerSts()
@@ -654,7 +748,7 @@ func runNegative(c *chart) {
 	ig := func() map[string]any { return find("Ingress", "ryft-api", "api") }
 	add("P9 ingress cross-namespace middleware", argoCtl, "CREATE", set(ig(), "metadata/annotations/traefik.ingress.kubernetes.io~router.middlewares", "ryft-ingest-ratelimit@kubernetescrd"), "P9")
 	add("P9 ingress file middleware", argoCtl, "CREATE", set(ig(), "metadata/annotations/traefik.ingress.kubernetes.io~router.middlewares", "ryft-api-ratelimit@file"), "P9")
-	add("P9 ingress two own middlewares", argoCtl, "CREATE", set(ig(), "metadata/annotations/traefik.ingress.kubernetes.io~router.middlewares", "ryft-api-ratelimit@kubernetescrd, ryft-api-x@kubernetescrd"))
+	add("P9 ingress two own middlewares", argoCtl, "CREATE", set(ig(), "metadata/annotations/traefik.ingress.kubernetes.io~router.middlewares", "ryft-api-ratelimit@kubernetescrd, ryft-api-hsts@kubernetescrd"))
 
 	rc := func() map[string]any { return find("RabbitmqCluster", "ryft-rabbitmq", "rabbitmq") }
 	add("P11 image tag only", argoCtl, "CREATE", set(rc(), "spec/image", "docker.io/library/rabbitmq:4.3.6-management"), "P11")
@@ -670,7 +764,13 @@ func runNegative(c *chart) {
 	}
 
 	fmt.Println("== P6 negatives")
-	cr := func() map[string]any { return find("ClusterRole", "", "rabbitmq-cluster-operator-role") }
+	// A clean ClusterRole of the operators (T12-g left reads of rabbitmqclusters and the
+	// tokenreview roles); the mutations below each add one forbidden thing.
+	cr := func() map[string]any {
+		o := fx("clusterrole-rabbitmq-cluster-operator-role")
+		o["rules"] = jv(`[{"apiGroups":["rabbitmq.com"],"resources":["rabbitmqclusters"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["endpoints"],"verbs":["get","list","watch"]}]`)
+		return o
+	}
 	var ops6 []n
 	add6 := func(name string, obj map[string]any, want ...string) {
 		ops6 = append(ops6, n{name, Req{User: argoCtl, Op: "CREATE", Obj: obj}, want})
@@ -686,7 +786,7 @@ func runNegative(c *chart) {
 	add6("P6 clusterrole metrics URL is fine", set(cr(), "rules/0", jv(`{"nonResourceURLs":["/metrics"],"verbs":["get"]}`)))
 	add6("P6 clusterrole aggregation label", set(cr(), "metadata/labels/rbac.authorization.k8s.io~aggregate-to-admin", "true"), "P6")
 	add6("P6 clusterrole aggregationRule", set(cr(), "aggregationRule", jv(`{"clusterRoleSelectors":[]}`)), "P6")
-	crb := func() map[string]any { return find("ClusterRoleBinding", "", "rabbitmq-cluster-operator-rolebinding") }
+	crb := func() map[string]any { return fx("clusterrolebinding-rabbitmq-cluster-operator-rolebinding") }
 	add6("P6 binding to cluster-admin", set(crb(), "roleRef/name", "cluster-admin"), "P6")
 	add6("P6 binding to another subject", set(crb(), "subjects/0/name", "default"), "P6")
 	add6("P6 binding subject outside rabbitmq-system", set(crb(), "subjects/0/namespace", "argocd"), "P6")

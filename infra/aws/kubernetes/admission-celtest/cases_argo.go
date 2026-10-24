@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func runMore(c *chart) {
+func runArgo(c *chart) {
 	fmt.Println("== P7, P10, carve-outs and cost")
 	app := func(name string) map[string]any { return find("Application", "argocd", name) }
 	proj := func(name string) map[string]any { return find("AppProject", "argocd", name) }
@@ -57,7 +57,8 @@ func runMore(c *chart) {
 	del7("P7 delete ryft by argocd-server", argoSrv, proj("ryft"), "P7")
 	del7("P7 delete ryft by the controller", argoCtl, proj("ryft"), "P7")
 	del7("P7 delete ryft by an admin", admin, proj("ryft"))
-	del7("P7 delete an application", argoSrv, app("vault-api"))
+	del7("P7 delete an application (argocd-server)", argoSrv, app("vault-api"), "P7")
+	del7("P7 delete an application (controller)", argoCtl, app("vault-api"))
 	// controller carve-out: status and operation writes with an unchanged spec
 	bad := set(app("vault-api"), "spec/destination/namespace", "kube-system")
 	upd("P7 controller status write with an unchanged (bad) spec is not judged", argoCtl, bad)
@@ -125,7 +126,7 @@ func runMore(c *chart) {
 	updTo("carve-out: a spec change on a deleting object is judged", vsonly, vsNew2, vsOld, "P4")
 	vsNew3 := deepCopy(vsOld)
 	set(vsNew3, "metadata/labels/x", "y")
-	updTo("carve-out: only a label change on a deleting object passes", vsonly, vsNew3, vsOld)
+	updTo("carve-out: a label change on a deleting object is judged", vsonly, vsNew3, vsOld, "P4")
 	vsLive := deepCopy(vsOld)
 	delete(vsLive["metadata"].(map[string]any), "deletionTimestamp")
 	vsLiveNew := deepCopy(vsLive)

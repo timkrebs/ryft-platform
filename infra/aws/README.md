@@ -136,10 +136,21 @@ Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass
 override of the file; never apply with it set).
 
 Outputs: `admission_enabled` and `admission_binding_actions` (what each binding is given).
-`check` blocks warn on every plan about an action or binding the chart does not have, a
-Vault address that differs from the generated `vault.yaml`, a P7 on `deny` without its
-AppProjects (T12-b), and **drift**: a binding that is missing, was patched, or was left in
-break-glass (it reads the bindings from the cluster, so it needs the cluster like any plan).
+Two `lifecycle.precondition`s on the release stop a plan that sets `argocd` to deny while
+`projects` is empty (P7 would refuse every AppProject write) or `netpol` to deny while
+`netpol.brokerEgressPublic` is true (the chart refuses to render both as well). `check`
+blocks warn on every plan about an action or binding the chart does not have, a Vault
+address that differs from the generated `vault.yaml` (or a file without exactly one), the
+variable `admission_enabled` standing in for the reviewed file, and **drift**: the cluster's
+policies and bindings are compared with the chart's own render of the same values (a
+`helm_template` data source): a binding or policy that is missing or was edited, a binding
+left in break-glass, a stale policy after an upgrade that was not applied. The drift checks
+read the cluster, so they need it like any plan, and they say so on the first plan after
+enabling (nothing is there yet).
+
+The bindings carry `admission.ryft.dev/intended-action` (the committed `audit` or `deny`),
+`admission.ryft.dev/key`, and `admission.ryft.dev/break-glass: "true"` while Terraform's
+break-glass is on, so T12-e can alert on a break-glass that was left set.
 
 Chart values worth knowing (`charts/admission-policy/values.yaml`):
 
@@ -160,18 +171,27 @@ helm template admission-policy infra/aws/kubernetes/charts/admission-policy \
   -f infra/aws/kubernetes/admission-values.yaml --set breakGlass=true,actions.vso=deny  # still Warn+Audit
 ```
 
-**Offline CEL test.** `make admission-celtest` (`charts/admission-policy/celtest/`, its own Go
-module) renders the chart with the committed values and the decoded `project.yaml`,
+**Offline CEL test.** `make admission-celtest` (`admission-celtest/`, its own Go module
+outside the chart, so nothing of it can enter the Helm release) renders the chart with the committed values and the decoded `project.yaml`,
 renders `deploy/` (`helm template`, `kubectl kustomize`; read-only, no cluster), and
 evaluates every policy with the Kubernetes CEL libraries (the apiserver's compiler,
 validator and cost budget) against:
 
 - every object of those renders, on create and update, which must all be admitted;
-- the hand-written fixtures in `celtest/testdata/objects.json` and the mutations in the Go
-  files, one or more refused fixture per rule, plus the exemptions and carve-outs that must
-  pass (the broker, finalizer removal, the controller's status writes, P10's operations).
+- the hand-written fixtures in `admission-celtest/testdata/objects.json` and the mutations in
+  the Go files, one or more refused fixture per rule, plus the exemptions and carve-outs that
+  must pass (the broker, finalizer removal, the controller's status writes, P10's operations).
 
-It exits non-zero on any mismatch. Needs `helm`, `kubectl` (kustomize only), `yq` and Go.
+Each refusal's message is pinned in `testdata/messages.golden`, so a case refused by the
+wrong rule shows as a diff (`UPDATE_GOLDEN=1 admission-celtest/run.sh` rewrites it after a
+review). A CEL error is never an acceptable refusal. It exits non-zero on any mismatch.
+Needs `helm`, `kubectl` (kustomize only), `yq` and Go (the module's `go` line follows
+`k8s.io/apiserver`, v0.36 for EKS 1.36). `CELTEST_REPO=<copy of the tree>` renders another
+tree's `deploy/` against this checkout's policies; the run is green on the manifests of
+T12-g (Roles in `ryft-rabbitmq`) and on those before it (the release's two ClusterRoles are
+then expected to be refused by P6). **When the EKS minor changes, bump `k8s.io/*` in
+`admission-celtest/go.mod` to the same minor first** (the CEL library of the new minor is
+what the new API server runs), then run the target.
 It proves the expressions compile, evaluate and decide as intended on those objects. It
 does **not** involve an API server: `status.typeChecking`, CRD defaulting, admission
 ordering and the apiserver-dependent claims (a–d, f–m of the design) are T12-d's kind job.
@@ -184,8 +204,11 @@ Helm provider does not upgrade the release.
 `kubectl patch validatingadmissionpolicybinding <name> --type=merge -p
 '{"spec":{"validationActions":["Warn","Audit"]}}'` (or delete the binding). Restore, or plan
 it ahead, with the release: `terraform apply -target=helm_release.admission_policy
-[-var='admission_break_glass=true']`; a patch is invisible to Helm, so restore a patched
-binding with `-replace=helm_release.admission_policy`. A release stuck in `pending-upgrade`:
+[-var='admission_break_glass=true']` (after the break-glass, remove the variable and apply
+again: the `break-glass` label is how a forgotten one is found); a patch is invisible to Helm, so restore a patched
+binding with `-replace='helm_release.admission_policy[0]'` (quoted, because zsh globs the
+brackets; the release has `count`, so the instance key is needed, and a replace uninstalls
+every policy for a moment). A release stuck in `pending-upgrade`:
 `helm -n kube-system history admission-policy`, then `helm -n kube-system rollback
 admission-policy <last deployed revision>`. The full runbook comes with the later tickets.
 

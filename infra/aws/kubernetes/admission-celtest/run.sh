@@ -2,18 +2,23 @@
 # Runs the CEL harness end to end, offline and read-only:
 #   1. helm template of the chart with the committed values (admission-values.yaml) and,
 #      for P7, the decoded deploy/argocd/project.yaml as `projects`;
-#   2. the renders of the repository (kubectl kustomize, local only; the cluster is never
+#   2. the renders of the repository (kustomize, local only; the cluster is never
 #      contacted) and the generated VSO objects and Argo CD manifests;
 #   3. the Go harness evaluates the policies against all of them (go run .).
 # Needs helm, kubectl (kustomize only), yq (mikefarah) and Go. Exit status is non-zero on
 # any mismatch. Everything it renders goes to a temporary directory.
+#
+# CELTEST_REPO=<dir> reads infra/aws/kubernetes and deploy/ from a copy of the tree (to try
+# a branch's manifests against this branch's policies) instead of the checkout this
+# script lives in.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$here/../../../../../.." && pwd)"
+repo="${CELTEST_REPO:-$(cd "$here/../../../.." && pwd)}"
 k8s="$repo/infra/aws/kubernetes"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
+export GIT_ALLOW_PROTOCOL=file
 
 # The committed values, plus P7's constant exactly as T12-b will pass it.
 yq eval-all '[select(di >= 0)] | {"projects": .}' "$repo/deploy/argocd/project.yaml" > "$out/projects-values.yaml"

@@ -1,0 +1,489 @@
+P1 argo creates another namespace
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P1 argocd namespace privileged
+    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+P1 enforce baseline
+    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+P1 generateName ryft- without labels
+    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+P1 label missing
+    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+P1 version label pinned
+    ryft-namespaces: P1: Pod Security version labels must be absent or latest.
+P10 admin sync manifests
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 create with manifests
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 server sync manifests (--local)
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 server sync other revision
+    ryft-argocd-operation: P10: a sync started through the API server must use the target revision or the revision the Application is synced to.
+P10 server sync source (rollback)
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 server sync sources
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P11 additional plugin
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+P11 additionalConfig with a new line
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+P11 advancedConfig
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+P11 envConfig
+    ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused.
+P11 image tag only
+    ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
+P11 other registry
+    ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
+P11 override service
+    ryft-broker: P11: spec.override may only set the pod-template annotations prometheus.io/path, port and scrape.
+P11 override with containers
+    ryft-broker: P11: spec.override may only set the pod-template annotations prometheus.io/path, port and scrape.
+P11 rabbitmqcluster elsewhere
+    ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
+P11 service LoadBalancer
+    ryft-broker: P11: the broker's Service must stay ClusterIP.
+P11 shovel
+    ryft-broker: P11: Shovels, Federations and SchemaReplications are not allowed.
+P2 a pod update that swaps the image
+    ryft-workloads-pods: P2: a container image is not the one this namespace may run.
+P2 args
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+P2 command
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+P2 cronjob with another image
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 ephemeral container in the broker with another image
+    ryft-workloads-pods: P2: a container image is not the one this namespace may run.
+P2 ephemeral container mounting a projected token under another name
+    ryft-workloads-pods: P2: an ephemeral container in a RYFT namespace must not mount a service account token or use Secret vault-auth-token.
+P2 ephemeral container mounting the token volume
+    ryft-workloads-pods: P2: an ephemeral container in a RYFT namespace must not mount a service account token or use Secret vault-auth-token.
+P2 ephemeral container mounting vault-auth-token
+    ryft-workloads-pods: P2: an ephemeral container in a RYFT namespace must not mount a service account token or use Secret vault-auth-token.
+P2 ephemeral container with a debug image
+    ryft-workloads-pods: P2: a container image is not the one this namespace may run.
+P2 ephemeral container with envFrom vault-auth-token
+    ryft-workloads-pods: P2: an ephemeral container in a RYFT namespace must not mount a service account token or use Secret vault-auth-token.
+P2 exec preStop
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+P2 exec probe
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+P2 image from another registry
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 image tag latest
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 image volume
+    ryft-workloads-templates: P2: image volumes are not allowed.
+P2 init container command
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+P2 init container with another image
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 migrate with args smoke
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+P2 operator image tag moved to :latest
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 operator with another image
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 operator with other command
+    ryft-workloads-templates: P2: an operator container must run exactly /manager.
+P2 other image
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 pod short sha
+    ryft-workloads-pods: P2: a container image is not the one this namespace may run.
+P2 pod with kube-api-access
+    ryft-workloads-pods: P2: a RYFT Pod must not carry a kube-api-access volume.
+    ryft-workloads-pods: P2: a RYFT workload must not project a service account token.
+P2 projected token
+    ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
+P2 replicationcontroller with a foreign image
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+P2 smoke with other args
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+P2 token automount absent
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+P2 token automount true
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+P2 vault-auth-token env
+    ryft-workloads-templates: P2: a RYFT workload must not use Secret vault-auth-token.
+P2 vault-auth-token envFrom
+    ryft-workloads-templates: P2: a RYFT workload must not use Secret vault-auth-token.
+P2 vault-auth-token volume
+    ryft-workloads-templates: P2: a RYFT workload must not use Secret vault-auth-token.
+P3 allow-all ingress rule
+    ryft-netpol: P3: every NetworkPolicy rule needs ports (each with a port) and a peer.
+P3 another range in the broker
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 default-deny narrowed
+    ryft-netpol: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+P3 default-deny with a rule
+    ryft-netpol: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+P3 default-deny with only Ingress
+    ryft-netpol: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+P3 egress world on 22
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+P3 egress world with 4 excepts
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+P3 egress world without except
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+P3 empty namespaceSelector
+    ryft-netpol: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
+P3 endPort in an ingress rule with an ipBlock peer
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 endPort next to a namespaceSelector peer
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 endPort next to an ipBlock peer (broker, vpc cidr)
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 endPort next to the public-egress ipBlock
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 endPort outside the broker
+    ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+P3 ingress ipBlock vpc other port
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+P3 ingress ipBlock world
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+P3 named port ok
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+P3 namespaceSelector expressions
+    ryft-netpol: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
+P3 port entry without port
+    ryft-netpol: P3: every NetworkPolicy rule needs ports (each with a port) and a peer.
+P3 rule without ports
+    ryft-netpol: P3: every NetworkPolicy rule needs ports (each with a port) and a peer.
+P4 allowedNamespaces
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+P4 caCertPath
+    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+P4 cross-namespace vaultAuthRef
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys.
+P4 destination to another secret
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+P4 excludeRaw false
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+P4 method jwt
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+P4 other audience
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+P4 other connection
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+P4 other kind
+    ryft-vso: P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed.
+P4 other vault address
+    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+P4 skipTLSVerify
+    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+P4 transformation templates
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+P4 vault namespace outside admin/ryft/
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+P4 vault namespace override
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys.
+P5 binaryData API_KEY
+    ryft-auth-env: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
+P5 binaryData AUTH_MODE
+    ryft-auth-env: P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase.
+P5 configmap API_KEY
+    ryft-auth-env: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
+P5 configmap AUTH_MODE apikey
+    ryft-auth-env: P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase.
+P5 env API_KEY
+    ryft-auth-env: P5: a container must not set API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID, and AUTH_MODE only as the literal supabase.
+P5 env AUTH_MODE apikey
+    ryft-auth-env: P5: a container must not set API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID, and AUTH_MODE only as the literal supabase.
+P5 env AUTH_MODE valueFrom
+    ryft-auth-env: P5: a container must not set API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID, and AUTH_MODE only as the literal supabase.
+P5 envFrom prefix
+    ryft-auth-env: P5: envFrom must not use a prefix.
+P5 secret AUTH_MODE
+    ryft-auth-env: P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase.
+P5 secret USER_ID (a Vault key synced by VSO)
+    ryft-auth-env: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
+P6 argo writes another operator role in ryft-rabbitmq
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 argo writes the peer-discovery role
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role must be named rabbitmq-cluster-* or messaging-topology-*.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 argo writes the server rolebinding
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 binding subject outside rabbitmq-system
+    ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 binding to a group
+    ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 binding to another subject
+    ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 binding to cluster-admin
+    ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 clusterrole admission
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole aggregation label
+    ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
+P6 clusterrole aggregationRule
+    ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
+P6 clusterrole clusterrolebindings
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole escalate
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole misnamed
+    ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
+P6 clusterrole nodes
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole nonResourceURL
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole serviceaccounts/token
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole wildcard
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole with pod writes
+    ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
+P6 clusterrole with pods/exec
+    ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
+P6 clusterrole with secrets
+    ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
+P6 clusterrole: csr approval
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: nodes proxy
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: pods attach
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: pods ephemeralcontainers
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: resource without group
+    ryft-operators-cluster: P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g).
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: serviceaccounts token
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: signers approve
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: star group
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: star proxy
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: star star
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 clusterrole: star token
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 crd conversion webhook
+    ryft-operators-cluster: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+P6 crd of another group
+    ryft-operators-cluster: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+P6 pods/exec in the topology role
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-api
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 role in ryft-rabbitmq: csr approval
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: nodes proxy
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: pods attach
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: pods ephemeralcontainers
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: resource without group
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: serviceaccounts token
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: signers approve
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: star group
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: star proxy
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: star star
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 role in ryft-rabbitmq: star token
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 rolebinding for a subject in ryft-rabbitmq
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding for another subject
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding in ryft-api
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding other subject
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding to a clusterrole
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding to another role
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 rolebinding to clusterrole
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 scoped role moved to ryft-api
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 the scoped role with escalate
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
+P6 webhook on pods
+    ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
+P6 webhook other name
+    ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
+P6 webhook service elsewhere
+    ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
+P6 webhook url
+    ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
+P7 app destination name
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app destination namespace
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 app destination server
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app directory
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app extra spec key
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app helm
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app kustomize image
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app other path
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 app other project
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 app other repo
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app path traversal
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 app plugin
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app sourceHydrator
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app sources
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app targetRevision
+    ryft-argocd: P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name.
+P7 app unknown name
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 appset
+    ryft-argocd: P7: ApplicationSets are not allowed.
+P7 argocd-server unchanged bad spec is judged
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 controller spec change is judged
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 default project loosened
+    ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
+P7 delete an application (argocd-server)
+    ryft-argocd: P7: argocd-server must not delete Applications.
+P7 delete default (admin)
+    ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+P7 delete ryft by argocd-server
+    ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+P7 delete ryft by the controller
+    ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+P7 project unknown
+    ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
+P7 project widened
+    ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
+P7 root app moved
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 server adds status.sync
+    ryft-argocd: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
+P7 server creates an Application with a status.sync
+    ryft-argocd: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
+P7 server deletes a cluster secret
+    ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+P7 server deletes an Application
+    ryft-argocd: P7: argocd-server must not delete Applications.
+P7 server rewrites status.sync.revision
+    ryft-argocd: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
+P7 server writes a repository secret
+    ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+P7 vault-.. invalid
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 vault-x wrong namespace
+    ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P8 operator edits its own role
+    ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+P8 operator edits its own rolebinding
+    ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+P8 operator edits the topology operator's role
+    ryft-operator-reach: P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles.
+P8 topology operator writes a role
+    ryft-operator-reach: P8: this operator may not write this resource.
+P9 a longer namespace sharing the prefix
+    ryft-traefik: P9: an Ingress may name only middlewares of its own namespace.
+P9 ingress cross-namespace middleware
+    ryft-traefik: P9: an Ingress may name only middlewares of its own namespace.
+P9 ingress file middleware
+    ryft-traefik: P9: an Ingress may name only middlewares of its own namespace.
+P9 middleware forwardAuth
+    ryft-traefik: P9: a Middleware may only be a rateLimit, redirectRegex or headers.
+P9 middleware plugin
+    ryft-traefik: P9: a Middleware may only be a rateLimit, redirectRegex or headers.
+P9 own namespace but a name outside the list
+    ryft-traefik: P9: an Ingress may name only middlewares of its own namespace.
+P9 serverstransport insecure
+    ryft-traefik: P9: a ServersTransport may only set rootCAs and serverName (never insecureSkipVerify).
+broker env from vault-auth-token
+    ryft-workloads-templates: P2: a RYFT workload must not use Secret vault-auth-token.
+broker image without digest
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+broker pod with a forged ownerRef, created by an admin
+    ryft-workloads-pods: P2: a RYFT Pod must not carry a kube-api-access volume.
+    ryft-workloads-pods: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-pods: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-pods: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-pods: P2: a RYFT workload must set automountServiceAccountToken: false.
+broker pod with a forged ownerRef, created by the cluster operator
+    ryft-operator-reach: P8: this operator may not write this resource.
+    ryft-workloads-pods: P2: a RYFT Pod must not carry a kube-api-access volume.
+    ryft-workloads-pods: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-pods: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-pods: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-pods: P2: a RYFT workload must set automountServiceAccountToken: false.
+broker pod without the owner (commands, token)
+    ryft-workloads-pods: P2: a RYFT Pod must not carry a kube-api-access volume.
+    ryft-workloads-pods: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-pods: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-pods: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-pods: P2: a RYFT workload must set automountServiceAccountToken: false.
+broker statefulset by someone else (commands, token)
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+carve-out: P1 PSA label lowered on a deleting Namespace
+    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+carve-out: P6 aggregate label added to a deleting ClusterRole
+    ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
+carve-out: P7 secret-type label added to a deleting Secret
+    ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+carve-out: a label change on a deleting object is judged
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+carve-out: a live object with the same bad spec is judged
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+carve-out: a spec change on a deleting object is judged
+    ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
+cluster operator creates a pod
+    ryft-operator-reach: P8: this operator may not write this resource.
+    ryft-workloads-pods: P2: a RYFT Pod must not carry a kube-api-access volume.
+    ryft-workloads-pods: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-pods: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-pods: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-pods: P2: a RYFT workload must set automountServiceAccountToken: false.
+cluster operator execs into a pod elsewhere
+    ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+cluster operator writes a secret in kube-system
+    ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+cluster operator writes a secret in ryft-api
+    ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+restartedAt plus a command by an admin
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+restartedAt plus another annotation by an admin
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+restartedAt plus replicas change by an admin
+    ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
+    ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
+    ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
+    ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
+topology operator execs
+    ryft-operator-reach: P8: this operator may not write this resource.
+topology operator writes a secret in ryft-api
+    ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+topology operator writes a service
+    ryft-operator-reach: P8: this operator may not write this resource.
