@@ -36,6 +36,12 @@ CloudWatch instead (D52). The collector can read every container's log file
 exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore that
 `{namespace=~"ryft-.*"}` returns nothing.
 
+Two scrapes are the chart's own, not Fleet's (T12-e, D120; **Admission** below): the API
+servers' admission metrics (job `ryft/kube-apiserver-admission`) and kube-state-metrics'
+series for the admission bindings (job `ryft/admission-bindings`). They write through a
+destination of their own with `PROM_USERNAME` and `GC_TOKEN`, so the token needs the
+`metrics:write` scope.
+
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
 
@@ -128,6 +134,11 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
 | `argocd_app_info` | gauge | `name`, `sync_status`, `health_status`, `autosync_enabled`, … | Argo CD (controller, :8082) | One series per application, value 1; the alerts below read `sync_status` (`Synced`, `OutOfSync`, `Unknown` when manifests do not render) and `health_status` (`Healthy`, `Progressing`, `Degraded`, `Missing`). |
 | `argocd_app_sync_total` | counter | `name`, `phase` | Argo CD | Sync operations by outcome: `Succeeded`, `Failed`, `Error` (a PreSync migration, a refused apply, the PostSync smoke), `Running`, `Terminating`. |
+| `apiserver_validating_admission_policy_check_total` | counter | `policy`, `policy_binding`, `enforcement_action`, `error_type` | EKS API servers (one scrape per endpoint) | Policy checks by binding. A violation counts once per action of the binding (`warn` and `audit` in Warn+Audit, `deny` and `audit` in Deny+Audit); `error_type` is `no_error` unless the expression could not be evaluated. Whether clean passes are counted is unverified (design claim e), nothing relies on it. A child is created at 1 by its first event, which `increase()` cannot see: the rules add series that are new (see Admission). |
+| `apiserver_validating_admission_policy_check_duration_seconds_sum`, `_count` | counter | as above | EKS API servers | Check latency as a mean only: the buckets are dropped to save series. |
+| `pod_security_evaluations_total` | counter | `decision`, `mode`, `resource`, `policy_level`, `request_operation`, … | EKS API servers | Pod Security Admission decisions. Only `decision="deny"` is kept (the relabel drops `allow` and `exempt`). `mode` is `enforce` (refused), `warn` or `audit`. |
+| `kube_customresource_admission_binding_info` | gauge | `name`, `policy`, `step`, `key`, `intended_action`, `break_glass` | kube-state-metrics (custom-resource-state) | One series per `ValidatingAdmissionPolicyBinding` of the admission-policy chart, value 1: its P-id, rollout step, key, the committed action (`audit` or `deny`) and `break_glass="true"` while break-glass is on (the label is absent otherwise). 12 once the chart is enabled, none before. |
+| `kube_customresource_admission_binding_action` | gauge | `name`, `action` | kube-state-metrics | State set of the binding's live `validationActions`: 1 for each of `Deny`, `Warn`, `Audit` it has, 0 for the others (36 series). |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -288,7 +299,47 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
+| AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
+| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request (not a Pod) in the last 10 min | `argocd app get`, the audit annotation; fix the object in Git |
+| AdmissionPodDenied | critical | a Pod was refused by `ryft-workloads-pods` or Pod Security's enforce mode in the last 10 min | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
+| AdmissionPolicyError | critical | a policy's CEL could not be evaluated (`error_type` not `no_error`) in the last 10 min | the expression meets an unexpected object shape; break-glass, then fix the chart |
+| AdmissionBindingMissing | critical | fewer than 12 bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, `terraform plan -target=helm_release.admission_policy` |
+| AdmissionBindingDrift | warning | live `validationActions` differ from the effective ones (committed action, or Warn+Audit under break-glass) for 2 h | the `-replace` apply, or find who edited the binding |
+| AdmissionBreakGlass | warning | bindings labelled break-glass for 4 h | end it with `admission_break_glass=false` |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
+
+### Admission
+
+The seven `Admission*` alerts (group `ryft-admission` in `ryft.yaml`) read the admission
+metrics above. Three properties are deliberate:
+
+- **Gated on the bindings.** Each expression ends in `and on () (count(last_over_time(
+  kube_customresource_admission_binding_info[1h])) > 0)`. While the chart is disabled
+  (Phase 0) there are no bindings and none of them fires; the one-hour look-back keeps a
+  restart of kube-state-metrics from blinding the denial alerts. `AdmissionBindingMissing`
+  looks back a day instead, so a chart that was switched off on purpose raises it for up to
+  a day (silence it), and one that never ran does not.
+- **The first-event gap.** A counter child is created at 1 by its first event, so
+  `increase()` is empty for the first violation, denial or error of a policy and binding.
+  Two recording rules (`ryft:apiserver_admission_policy_check:fresh10m`,
+  `ryft:pod_security_evaluations:fresh10m`) add the series that have no sample in the hour
+  before the last 10 minutes (`unless last_over_time(... [1h] offset 10m)`), but only on an
+  endpoint whose scrape is over 12 minutes old (`up offset 12m`), so turning the scrape on
+  does not make every old counter look new. A single event therefore fires for 10 minutes
+  and resolves. A new API server endpoint (EKS replaces control-plane instances) is blind
+  for its first 12 minutes.
+- **Drift compares the effective actions.** A binding committed as `deny` must be
+  Deny+Audit; any other, or any labelled `break_glass="true"`, must be Warn+Audit. The
+  labelled break-glass is `AdmissionBreakGlass`'s, not drift.
+
+Series budget (free tier, 10k active series): the three API-server families are about 200
+series at most (12 bindings x 3 or 4 action and error children x 2 API servers, the latency
+as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 36 + 12 + 2, and
+`up` plus `scrape_samples_scraped` for each target; under 300 in total. Deny and error
+children appear only after their first event.
+
+To confirm in the kind e2e before Phase 1: the `enforcement_action` and `error_type` label
+values on EKS's Kubernetes minor, and a state set over the `validationActions` list.
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
