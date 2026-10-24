@@ -187,8 +187,9 @@ HRV sample, a range replayed out of order). So when scoring a day writes a new r
 changes what later days are computed from (`store.historyInputs`), scoring re-scores
 the next 30 scored days after it in the same pass, oldest first, never past today,
 each day once (`Engine.ComputeDays`); a re-score that changes nothing stops there,
-except on a retried event, whose earlier attempt may have written the change and
-failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
+except on a retried, redelivered or replayed event (a dead letter put back with
+`scripts/dlq.sh replay`, marked `x-ryft-replayed`), whose earlier attempt may have
+written the change and failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
 about 50 days a pass (the days their re-score reaches included) whose `baseline_days`
 (or one of its two counts, `baseline_hrv_days` / `baseline_rhr_days`) is below what
 their stored history now holds, or whose baseline is missing although the history has

@@ -2155,7 +2155,7 @@ sent, and whether a second account shares its phone.
   to scoring itself could interleave with the user's next events. A duplicate changes nothing
   and stops (D100); a retry or broker redelivery (`events.Redelivered`) re-scores the 30 days
   after its days, so a cascade interrupted half-way is finished. A DLQ replay arrives as a first
-  delivery: follow it with `POST /v1/recompute` (open: a marker in `dlq.sh`).
+  delivery: follow it with `POST /v1/recompute` (until D119: `dlq.sh` marks a replay since then).
 - **Safety net:** the 15-minute pass re-scores about 50 days a pass, round robin, whose stored
   counts are below the nights their window holds or whose baselines are missing. It compares
   counts, not values.
@@ -2284,6 +2284,37 @@ sent, and whether a second account shares its phone.
   text up to 1 KiB (pgx's encode error can quote an argument, D114); `client_request_id` accepts
   what httpx accepts (the contract); the broker and panic lines, auth, httpx and several handler
   lines have no allowlist test yet (STATUS).
+
+## D119 — A replayed dead letter is a redelivery; operator scripts name their cluster (amends D99, D112)
+
+- **Why (2026-10-23):** `dlq.sh replay` stripped every header that said a letter had been handled
+  before, so scoring took it as a first delivery and a re-score left half-done by the failed attempts
+  stayed so (D112's open item). And while building the fix, an agent ran `dlq.sh` to read its usage:
+  the script set up its cluster access before parsing the command, and kubectl's current context was
+  production — two Secrets read, a port-forward opened, nothing written (reported to the user).
+- **The marker:** `x-ryft-replayed`, boolean `true`, set by `dlq.sh` on every replayed letter;
+  `amqpbus` marks the ctx with `events.WithRedelivery`. Not a faked `x-ryft-attempt` (the retry count:
+  a replay would start in a later tier or dead-letter on its first failure). Strict: only the exact
+  name with a boolean `true` counts; anything else is ignored and logged with its type, never its
+  value. A replay gets all six attempts again and counts in the redeliveries metric.
+- **What may be replayed:** per dead-letter queue only the keys its consumer is bound for (scoring:
+  `ingested|session.completed`; notify: `scored|session.scored|refresh`), and only a letter whose
+  type equals its key; anything else goes back unchanged and is named. A delivery from `ryft.events`
+  is handled and filed by its routing key (topic permissions constrain it); a type that is neither
+  empty nor that key is a bad event. So a forged type can't be laundered past the permissions by
+  the operator's replay, nor reach another handler.
+- **No letter lost:** each taken letter is written to its own files, put back on any failure or
+  signal (an uninterruptible way out), or kept with its path printed (`dlq.sh put-back <dir>`);
+  credentials sit in a mode-600 curl config, never in argv; bodies go from files.
+- **Operator scripts name their cluster:** `dlq.sh`, `rescore_all.sh`, `trace.sh` and every Makefile
+  target that reaches a cluster require `KUBE_CONTEXT` (checked against the kubeconfig, announced,
+  passed as `--context` on every call; `scripts/lib/kube.sh`, `kube.mk` with `override`s and the
+  guard in each call's own shell line, so `make -e`/`-i` can't skip it). `k8s-apply-local`,
+  `k8s-delete-local` and a non-production `k8s-rabbitmq` refuse any context that reaches EKS (name,
+  cluster ARN, server, token exec). Arguments are checked before any cluster access.
+- **Consequences:** no `POST /v1/recompute` after a replay once scoring runs an image with this
+  (OPERATIONS says so for the window before). Plain `kubectl` lines in the runbooks still use the
+  current context: the user's kubeconfig default should not be production (STATUS).
 
 ## D120 — Admission: Pod Security labels plus ValidatingAdmissionPolicy, owned by Terraform (amends D95)
 

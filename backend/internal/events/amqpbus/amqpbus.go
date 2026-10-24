@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -32,6 +33,13 @@ import (
 
 // HeaderAttempt counts a message's failed handlings (0 or absent: the first try).
 const HeaderAttempt = "x-ryft-attempt"
+
+// HeaderReplayed marks a dead letter that scripts/dlq.sh put back on ryft.events. Its
+// handler takes it as a redelivery (events.Redelivered): the attempts before the dead
+// letter may have done part of the work. Only the boolean true counts; it is apart from
+// HeaderAttempt, so a replayed letter gets all its attempts again, and every copy into a
+// delay tier or the dead-letter queue keeps it.
+const HeaderReplayed = "x-ryft-replayed"
 
 // ErrUnroutable: the broker had no queue for the event's routing key (a topology
 // that lacks a binding), so nothing would ever handle it.
@@ -398,13 +406,23 @@ func (b *Bus) ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(conte
 	})
 }
 
-// keyOf is a delivery's event key: its type, which every copy keeps (a retry
-// arrives with its tier's routing key, a requeue with the queue's name).
+// keyOf is the event key a delivery is handled as. From ryft.events it is the routing
+// key: that is what the publisher's topic permission limits (D99). A retry tier's copy
+// comes back through ryft.requeue with the queue's name as routing key and keeps the
+// type its first delivery was checked with (typeMatches), so there it is the type.
 func keyOf(d amqp.Delivery) string {
-	if d.Type != "" {
-		return d.Type
+	if d.Exchange == ExchangeEvents || d.Type == "" {
+		return d.RoutingKey
 	}
-	return d.RoutingKey
+	return d.Type
+}
+
+// typeMatches: a delivery from ryft.events carries no type or its routing key. A
+// publisher sets the type freely, so ingest, which may publish only `ingested`, must not
+// get a session handled by calling its message session.completed: such a delivery is a
+// bad event, dead-lettered under its routing key.
+func typeMatches(d amqp.Delivery) bool {
+	return d.Exchange != ExchangeEvents || d.Type == "" || d.Type == d.RoutingKey
 }
 
 // handler decodes and handles a delivery, setting the metric reason once decoded; a
@@ -485,15 +503,26 @@ func (b *Bus) subscribe(ctx context.Context, log *slog.Logger, conn *amqp.Connec
 // handle runs the handler for one delivery and settles it: ack; a copy into a delay
 // tier and ack; a copy into the dead-letter queue and ack; or, when even that publish
 // fails, a reject with requeue, which the broker counts against the queue's delivery
-// limit (and then dead-letters itself).
+// limit (and then dead-letters itself). A retry tier's copy, the broker's redelivery and
+// a replayed dead letter (HeaderReplayed) reach the handler as a redelivery.
 func (b *Bus) handle(ctx context.Context, log *slog.Logger, queue string, d amqp.Delivery, h handler) {
 	attempt := attemptOf(d)
-	if attempt > 0 || d.Redelivered {
+	replayed, malformed := replayOf(d)
+	if malformed {
+		log.Warn("amqp: ignoring "+HeaderReplayed+", it is not the boolean true", "queue", queue, "key", keyOf(d),
+			"type", fmt.Sprintf("%T", d.Headers[HeaderReplayed]))
+	}
+	if attempt > 0 || d.Redelivered || replayed {
 		metrics.Redeliveries.WithLabelValues(queue).Inc()
 		ctx = events.WithRedelivery(ctx)
 	}
 	reason := "unknown"
-	err := events.Guarded(log, keyOf(d), func() error { return h(ctx, d, &reason) })
+	var err error
+	if typeMatches(d) {
+		err = events.Guarded(log, keyOf(d), func() error { return h(ctx, d, &reason) })
+	} else {
+		err = badEvent{fmt.Errorf("its type %.64q is not its routing key %q", d.Type, d.RoutingKey)}
+	}
 	var bad badEvent
 	settle := func(what string, perr error) {
 		if perr != nil {
@@ -553,21 +582,54 @@ func (b *Bus) deadLetter(ctx context.Context, log *slog.Logger, queue string, d 
 	for k, v := range d.Headers {
 		h[k] = v
 	}
-	h[events.HeaderSubject] = keyOf(d)
+	subject := subjectOf(queue, d)
+	h[events.HeaderSubject] = subject
 	h[events.HeaderConsumer] = queue
 	h[events.HeaderDeliveries] = strconv.Itoa(attempts)
 	h[events.HeaderError] = reason
 	err := b.publish(ctx, ExchangeDLX, queue, copyOf(d, h))
-	metrics.EventsDLQ.WithLabelValues(keyOf(d), metrics.Result(err)).Inc()
+	metrics.EventsDLQ.WithLabelValues(subject, metrics.Result(err)).Inc()
 	if err == nil {
-		log.Warn("event dead-lettered", "queue", queue, "dlq", DLQ(queue), "key", keyOf(d), "attempts", attempts, "err", cause)
+		log.Warn("event dead-lettered", "queue", queue, "dlq", DLQ(queue), "key", subject, "attempts", attempts, "err", cause)
 	}
 	return err
 }
 
+// subjectOf is the key a dead letter is filed under (Ryft-Subject, the key scripts/dlq.sh
+// replays it with, and the DLQ metric's label): its event key (keyOf) when the type
+// matches (typeMatches) and queue's consumer is bound for that key, else its routing
+// key. A publisher may write only its own routing keys (topic permissions, D99) but sets
+// the type freely, so a type that does not match is not trusted: it goes into neither
+// the DLQ's subject nor a metric label.
+func subjectOf(queue string, d amqp.Delivery) string {
+	if key := keyOf(d); typeMatches(d) && slices.Contains(consumerKeys[queue], key) {
+		return key
+	}
+	return d.RoutingKey
+}
+
+// copyOf keeps d's type (a dead letter keeps a forged one as evidence; dlq.sh does not
+// replay a letter whose type is not its key) and gives an untyped delivery its key.
 func copyOf(d amqp.Delivery, h amqp.Table) amqp.Publishing {
+	typ := d.Type
+	if typ == "" {
+		typ = keyOf(d)
+	}
 	return amqp.Publishing{Headers: h, ContentType: d.ContentType, DeliveryMode: amqp.Persistent, MessageId: d.MessageId,
-		Type: keyOf(d), Timestamp: d.Timestamp, Body: d.Body}
+		Type: typ, Timestamp: d.Timestamp, Body: d.Body}
+}
+
+// replayOf reads HeaderReplayed strictly: replayed only for the boolean true under exactly
+// that name. Any other value there (a string typed into the management UI, a number,
+// false) is malformed and does not count.
+func replayOf(d amqp.Delivery) (replayed, malformed bool) {
+	v, ok := d.Headers[HeaderReplayed]
+	if !ok {
+		return false, false
+	}
+	b, isBool := v.(bool)
+	replayed = isBool && b
+	return replayed, !replayed
 }
 
 // attemptOf reads HeaderAttempt, whatever integer type it arrived as.

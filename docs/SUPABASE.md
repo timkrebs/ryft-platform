@@ -223,7 +223,7 @@ it holds only test data. A project cannot change region, so this means a new pro
    `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY` to the new values. Then
    `terraform plan`: expect updated `kv/config` secrets in every namespace, since the
    pooler user names carry the project ref. Apply.
-3. **Deploy:** `make k8s-apply-eks`. The operator syncs the new Secrets, the migrate job
+3. **Deploy:** `make k8s-apply-eks KUBE_CONTEXT=<context>`. The operator syncs the new Secrets, the migrate job
    builds the empty schema in the new project and sets the role passwords, and the
    services start against it.
 4. **App:** switch the Supabase URL and publishable key in the Release config. Accounts

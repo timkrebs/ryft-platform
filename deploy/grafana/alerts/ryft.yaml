@@ -63,7 +63,7 @@ groups:
         # An event could not be handled and was dead-lettered (OPERATIONS.md → RabbitMQ).
         expr: sum by (subject) (increase(ryft_events_dlq_total{result="ok"}[1h])) > 0
         labels: { severity: warning }
-        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (scripts/dlq.sh list)" }
+        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (KUBE_CONTEXT=<context> scripts/dlq.sh list)" }
       - alert: DeadLetterPublishFailing
         # Not even the dead-letter publish worked: the message was rejected, and the
         # broker's delivery limit dead-letters it once it is out of attempts.
@@ -77,11 +77,11 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "RabbitMQ {{ $labels.queue }}: over 100 events waiting for 15 minutes" }
       - alert: RabbitMQDeadLetters
-        # Something waits in a dead-letter queue (scripts/dlq.sh list; OPERATIONS → RabbitMQ).
+        # Something waits in a dead-letter queue (KUBE_CONTEXT=<context> scripts/dlq.sh list; OPERATIONS → RabbitMQ).
         expr: max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"}) > 0
         for: 5m
         labels: { severity: warning }
-        annotations: { summary: "RabbitMQ {{ $labels.queue }} holds dead letters (scripts/dlq.sh list)" }
+        annotations: { summary: "RabbitMQ {{ $labels.queue }} holds dead letters (KUBE_CONTEXT=<context> scripts/dlq.sh list)" }
       - alert: RabbitMQAlarm
         # A node's memory or disk alarm: the broker blocks every publisher until it clears.
         expr: max(rabbitmq_alarms_memory_used_watermark) > 0 or max(rabbitmq_alarms_free_disk_space_watermark) > 0

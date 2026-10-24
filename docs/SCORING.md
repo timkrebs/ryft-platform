@@ -453,7 +453,7 @@ with a changelog entry whose `affects` lists the metrics it moves, and the commi
 message says why. A refactor that keeps every number does not. After the deploy:
 
 ```bash
-scripts/rescore_all.sh        # every user with consent, 400 days; the last line names the version
+KUBE_CONTEXT=<context> scripts/rescore_all.sh   # every user with consent, 400 days; the last line names the version
 ```
 
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
@@ -463,7 +463,8 @@ refuses entries out of order, an unknown metric or an unsorted `affects`.
 last 30 scored days), sleep debt and need, consistency and yesterday's strain come from
 the stored days before it. When late data changes one of those on a stored day,
 scoring re-scores the next 30 scored days with the same model, oldest first, never past
-today (a retried event does so even when its own day is already up to date); the
+today (a retried event, or a dead letter replayed with `scripts/dlq.sh`, does so even
+when its own day is already up to date); the
 15-minute pass re-scores days whose `baseline_days` (or one of its two counts) is
 behind their history or whose baseline is missing although the history has the nights. `model_version` stays; a
 re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;
@@ -485,6 +486,6 @@ readings per night that are averaged (or the latest one is taken), so a second s
 moves the value slightly but never doubles it.
 
 Changing these rules changes stored scores, so it bumps the model version (above).
-After a deploy, rescore history with `scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
+After a deploy, rescore history with `KUBE_CONTEXT=<context> scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
 which runs `scoring rescore` for every user with consent; a single user can still use
 `POST /v1/recompute`.

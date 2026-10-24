@@ -49,14 +49,19 @@ Supabase setup: [`docs/SUPABASE.md`](docs/SUPABASE.md).
 One namespace per workload (`ryft-ingest`, `ryft-scoring`, `ryft-api`, `ryft-notify`,
 `ryft-rabbitmq`, `ryft-migrate`, `ryft-smoke`), each with only its own credentials:
 
+Every target and script that talks to a cluster needs it named, `KUBE_CONTEXT=<context>`
+(`kubectl config get-contexts -o name`); kubectl's current context is never used
+(`scripts/lib/kube.sh`), and the local targets refuse an EKS context.
+
 ```bash
-# EKS + Supabase + Vault (infra/aws, infra/aws/kubernetes and infra/vault applied; images on ghcr)
-make k8s-validate && make k8s-apply-eks
-kubectl -n ryft-api port-forward svc/api 8082:80 &  kubectl -n ryft-ingest port-forward svc/ingest 8081:80 &
+# EKS + Supabase + Vault (infra/aws, infra/aws/kubernetes and infra/vault applied; images on ghcr).
+# Break-glass only: Argo CD deploys from git (docs/OPERATIONS.md → Deploy and roll back).
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=<context>
+kubectl --context <context> -n ryft-api port-forward svc/api 8082:80 &  kubectl --context <context> -n ryft-ingest port-forward svc/ingest 8081:80 &
 make smoke-supabase              # with SUPABASE_URL/ANON_KEY + a dedicated test user; writes synthetic days
 
-# Self-hosted (in-cluster Postgres, API key, generated per-namespace secrets)
-make k8s-apply-local
+# Self-hosted (in-cluster Postgres, API key, generated per-namespace secrets); never EKS
+make k8s-apply-local KUBE_CONTEXT=<context>
 ```
 
 Runbook, namespaces, network policy, scaling, backups and restore:
