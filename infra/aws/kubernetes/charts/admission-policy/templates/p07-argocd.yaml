@@ -1,0 +1,119 @@
+{{- /*
+P7 ryft-argocd (C, U, D; namespace argocd, any writer). Argo CD's own objects.
+ - Carve-out (matchCondition): the application controller's UPDATEs of an Application or
+   AppProject whose spec is unchanged (its status and operation writes) are not judged.
+ - AppProjects: the whole spec equals the decoded deploy/argocd/project.yaml (values:
+   `projects`, passed by T12-b; claim g, fallback one equality per top-level key). DELETE of
+   `default` is refused from every writer, DELETE of the others from any argocd service
+   account.
+ - Applications: an allowlist of spec keys; a fixed map from name to project, path and
+   destination (vault-<x> by pattern); our repository, targetRevision main, one source;
+   no sources, sourceHydrator, destination.name, kustomize, helm, plugin or directory;
+   syncPolicy is free. No ApplicationSet.
+ - Secrets: argocd-server may not write Secrets labelled argocd.argoproj.io/secret-type.
+*/ -}}
+{{- $fixed := dict -}}
+{{- range $name, $app := .Values.argocd.applications -}}
+{{- $_ := set $fixed $name (list $app.project $app.path $app.namespace) -}}
+{{- end -}}
+{{- $byName := dict -}}
+{{- range .Values.projects -}}
+{{- $_ := set $byName .metadata.name .spec -}}
+{{- end -}}
+{{- $projects := include "admission.cel.literal" $byName -}}
+{{- $vault := .Values.argocd.vaultApplications -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-argocd" "id" "P7" "summary" "Argo CD's AppProjects, Applications and credentials Secrets") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["appprojects", "applications", "applicationsets"]
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: argocd-namespace
+      expression: request.namespace == {{ .Values.argocd.namespace | toJson }}
+    - name: not-the-controllers-status-write
+      expression: |-
+        !(request.userInfo.username == {{ include "admission.user.argoController" . | toJson }} && request.operation == 'UPDATE' &&
+          request.kind.kind in ['Application', 'AppProject'] && dyn(object).spec == dyn(oldObject).spec)
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: o
+      expression: |-
+        dyn(request.operation == 'DELETE' ? oldObject : object)
+    - name: spec
+      expression: variables.o.spec
+    - name: appName
+      expression: variables.o.metadata.name
+    - name: projects
+      expression: |-
+        {{ $projects }}
+    - name: fixedApps
+      expression: |-
+        {{ $fixed | toJson }}
+    - name: expected
+      expression: |-
+        variables.appName in variables.fixedApps ? variables.fixedApps[variables.appName] :
+        (variables.appName.startsWith('vault-') && variables.appName.substring(6).matches('^[a-z0-9-]+$') ?
+          [{{ $vault.project | toJson }}, {{ $vault.pathPrefix | toJson }} + '/' + variables.appName.substring(6), {{ $vault.namespacePrefix | toJson }} + variables.appName.substring(6)] : [])
+  validations:
+    - expression: request.operation == 'DELETE' || variables.reqKind != 'ApplicationSet'
+      message: "P7: ApplicationSets are not allowed."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'AppProject' || request.operation == 'DELETE' ||
+        (variables.appName in variables.projects && variables.spec == variables.projects[variables.appName])
+      message: "P7: an AppProject must equal its entry in deploy/argocd/project.yaml."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'AppProject' || request.operation != 'DELETE' ||
+        (variables.appName != 'default' && !request.userInfo.username.startsWith({{ printf "system:serviceaccount:%s:" .Values.argocd.namespace | toJson }}))
+      message: "P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation == 'DELETE' ||
+        (variables.spec.all(k, k in {{ .Values.argocd.applicationSpecKeys | toJson }}) &&
+         has(variables.spec.source) && !has(variables.spec.sources) && !has(variables.spec.sourceHydrator) &&
+         variables.spec.source.all(k, k in ['repoURL', 'targetRevision', 'path']) &&
+         has(variables.spec.source.repoURL) && variables.spec.source.repoURL == {{ .Values.argocd.repoURL | toJson }} &&
+         has(variables.spec.source.targetRevision) && variables.spec.source.targetRevision == {{ .Values.argocd.targetRevision | toJson }} &&
+         has(variables.spec.destination) && variables.spec.destination.all(k, k in ['server', 'namespace']) &&
+         has(variables.spec.destination.server) && variables.spec.destination.server == {{ .Values.argocd.server | toJson }})
+      message: "P7: an Application must use only the allowed spec keys, our repository at main, one plain source and no destination name."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation == 'DELETE' ||
+        (size(variables.expected) == 3 &&
+         has(variables.spec.project) && variables.spec.project == variables.expected[0] &&
+         has(variables.spec.source.path) && variables.spec.source.path == variables.expected[1] &&
+         has(variables.spec.destination.namespace) && variables.spec.destination.namespace == variables.expected[2])
+      message: "P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation != 'DELETE' ||
+        request.userInfo.username != {{ include "admission.user.argoServer" . | toJson }}
+      message: "P7: argocd-server must not delete Applications."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation == 'DELETE' ||
+        request.userInfo.username != {{ include "admission.user.argoServer" . | toJson }} ||
+        (has(variables.o.status) && has(variables.o.status.sync) ? variables.o.status.sync : {}) ==
+          (request.operation == 'UPDATE' && has(dyn(oldObject).status) && has(dyn(oldObject).status.sync) ? dyn(oldObject).status.sync : {})
+      message: "P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Secret' ||
+        request.userInfo.username != {{ include "admission.user.argoServer" . | toJson }} ||
+        !has(variables.o.metadata.labels) || !('argocd.argoproj.io/secret-type' in variables.o.metadata.labels)
+      message: "P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "argocd" "policy" "ryft-argocd" "id" "P7" "step" "D") }}

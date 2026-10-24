@@ -6,3 +6,9 @@ acme_email = "you@example.com"
 # cluster_name = "ryft-prod-euc1"
 # domain       = "ryftapp.de"
 # region       = "eu-central-1"
+
+# Admission policies (D120). The switch and the per-binding actions are the committed
+# admission-values.yaml, changed by a reviewed PR; none of these is needed in normal use.
+# admission_break_glass = false   # true: every binding Warn+Audit (planned break-glass)
+# admission_actions     = {}      # e.g. { argocd = "audit" } for one plan only
+# admission_enabled     = null    # plan-only override of `enabled`; never apply with it set
