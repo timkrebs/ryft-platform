@@ -127,7 +127,7 @@ commands, NetworkPolicies, VSO or Argo objects.
 | e | `apiserver_validating_admission_policy_check_total` counts clean passes | doubtful. Not used for liveness; claim m instead | – |
 | f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | plausible | kind |
 | g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | plausible. Fallback: one equality per top-level key | kind |
-| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | plausible | kind |
+| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | plausible for the operators' roles. **But it does not stop the controller from being handed VAP/VAPB write**: three ClusterRoles (`rabbitmq-cluster-operator-role`, `messaging-topology-manager-role`, `messaging-topology-metrics-auth-role`) are in both the `escalate` and the `bind` list, so the controller can add VAP/VAPB write (or `*/*/*`) to one of them and bind it to its own service account. Only P6 and P7 in Deny close that. | kind, with a negative test (§3, Kind e2e) |
 | i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | plausible | kind |
 | j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5) | `terraform validate` |
 | k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | unknown | kind |
@@ -200,6 +200,20 @@ commands, NetworkPolicies, VSO or Argo objects.
   - ApplicationSet is off.
 - The workloads hold no token (P2).
 - The operators' roles can't grant `admissionregistration.k8s.io` (P6).
+- **Limit of T12-f (claim h).** T12-f alone does not stop the controller identity from being
+  handed VAP/VAPB write:
+  - Three ClusterRoles are in both its `escalate` and its `bind` list. With `update` on
+    clusterroles plus `escalate` on that name it can add VAP/VAPB write to the role; with `bind`
+    on the same name it can bind the role to its own service account.
+  - A compromised controller pod, or a bad commit to `deploy/rabbitmq/operators`, can therefore
+    still switch the layer off until P6 (role contents) and P7 are in Deny.
+  - Until then the operators path is as trusted as cluster-admin. The layer is fully
+    RBAC-protected only once P6 and P7 deny.
+  - argocd-server cannot do this: it has no write on RBAC kinds, so the aggregation route is
+    blocked at bind.
+- **Structural option (future D97/D120 decision, for you; not implemented).** Move the operators'
+  ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons. Argo
+  CD then needs no `escalate` and no `bind` at all, and the hole above does not exist.
 
 ```mermaid
 flowchart LR
@@ -501,7 +515,13 @@ on every operator, argo-cd chart or EKS minor upgrade:
 - the argo-cd chart with T12-f's RBAC;
 - the operators and the broker on three workers;
 - a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart` and a node drain;
-- verification of claims a–d and f–m.
+- verification of claims a–d and f–m;
+- a **negative test** that pins the sequencing: with T12-f's RBAC and no policies, the controller
+  token's `escalate`-update of `rabbitmq-cluster-operator-role` (adding VAP/VAPB write) plus a
+  self-bind *succeeds*. It must flip to denied once P6 and P7 are in Deny;
+- the `admission` CI job also renders the argo-cd chart (10.10.5) with these values and checks the
+  rendered ClusterRoles (no `*`, no `secrets`, no `pods/exec`, no VAP/VAPB, nothing on
+  `admissionregistration.k8s.io` for the server), so chart drift is caught.
 
 ### Break-glass (you only, the cluster admin)
 
