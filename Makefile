@@ -74,21 +74,10 @@ smoke-prod:
 check-swift:
 	./scripts/check_swift.sh
 
-# The cluster every target below talks to is named: KUBE_CONTEXT=<context>, as
-# `kubectl config get-contexts -o name` lists it. kubectl's current context is never used
-# (scripts/lib/kube.sh; on 2026-10-23 it was production while a script was being tried).
-# Every kubectl and helm call carries it, a target stops before its first call without it,
-# the guard checks it is listed, and the local targets refuse any EKS context.
-KUBE_MISSING = KUBE_CONTEXT is not set: name the cluster, e.g. make $(MAKECMDGOALS) KUBE_CONTEXT=<context> (kubectl config get-contexts -o name); kubectl's current context is never used (scripts/lib/kube.sh)
-KUBE_CTX = $(or $(KUBE_CONTEXT),$(error $(KUBE_MISSING)))
-KUBECTL = kubectl --context '$(KUBE_CTX)'
-HELM = helm --kube-context '$(KUBE_CTX)'
-
-k8s-context:
-	@. ./scripts/lib/kube.sh && kube_context '$(KUBE_CTX)'
-
-k8s-context-local:
-	@. ./scripts/lib/kube.sh && kube_context --local '$(KUBE_CTX)'
+# The cluster every target below talks to is named: KUBE_CONTEXT=<context>. Every kubectl
+# and helm call goes through $(KUBECTL), $(KUBECTL_LOCAL) or $(HELM), which run the guard
+# right before it (scripts/lib/kube.mk); the local targets refuse any EKS context.
+include scripts/lib/kube.mk
 
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
 NAMESPACES := migrate ingest scoring api notify smoke
@@ -174,25 +163,28 @@ tf-migrate-hcp:
 k8s-apply-local: k8s-context-local
 	./scripts/local-secrets.sh 2>/dev/null || [ -d $(LOCAL_SECRETS) ]
 	helm template ryft-issuers infra/aws/kubernetes/charts/cluster-issuers --namespace cert-manager \
-	  --show-only templates/internal-ca.yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
-	$(KUBECTL) -n ryft-migrate delete job migrate --ignore-not-found
+	  --show-only templates/internal-ca.yaml | { $(KUBECTL_LOCAL) apply -f -; }
+	$(KUBECTL_LOCAL) -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
+	$(KUBECTL_LOCAL) -n ryft-migrate delete job migrate --ignore-not-found
 	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres
 
 # The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ) (the broker,
 # its topology; for local-postgres everything), then wait for the broker. Server-side
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
-k8s-rabbitmq: k8s-context
-	$(KUBECTL) apply --server-side --force-conflicts -k deploy/rabbitmq/operators
-	for d in rabbitmq-cluster-operator messaging-topology-operator; do $(KUBECTL) -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
-	$(KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ)
-	$(KUBECTL) -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
+# deploy/rabbitmq is the EKS broker; anything else (local-postgres) uses the local guard.
+override RABBITMQ_EKS = $(filter deploy/rabbitmq,$(RABBITMQ:%/=%))
+override RABBITMQ_KUBECTL = $(if $(RABBITMQ),,$(error RABBITMQ is not set: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(RABBITMQ_EKS),$(KUBECTL),$(KUBECTL_LOCAL))
+k8s-rabbitmq: $(if $(RABBITMQ_EKS),k8s-context,k8s-context-local)
+	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k deploy/rabbitmq/operators
+	for d in rabbitmq-cluster-operator messaging-topology-operator; do $(RABBITMQ_KUBECTL) -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
+	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ)
+	$(RABBITMQ_KUBECTL) -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
 
 # On EKS this would delete the service namespaces and the broker's volumes: the local guard
-# refuses any EKS context.
+# refuses any EKS context, in the same shell line as the call.
 k8s-delete-local: k8s-context-local
-	$(KUBECTL) delete -k deploy/k8s/overlays/local-postgres
+	$(KUBECTL_LOCAL) delete -k deploy/k8s/overlays/local-postgres
 
 # Render every overlay offline and validate it (no cluster needed): each service's
 # namespace, EKS, local-postgres (with throwaway secrets if none exist), the
@@ -254,12 +246,12 @@ k8s-validate:
 # make every call fail with "the server has asked for the client to provide
 # credentials" (2026-10-20). Say so before applying anything.
 k8s-check-auth: k8s-context
-	@if ! $(KUBECTL) auth whoami >/dev/null 2>&1; then \
-	  echo "✗ kubectl's login to $(KUBE_CTX) is missing or expired."; \
+	@if ! { $(KUBECTL) auth whoami; } >/dev/null 2>&1; then \
+	  echo "✗ kubectl's login to $$KUBE_CONTEXT is missing or expired."; \
 	  aws sts get-caller-identity --query Arn --output text 2>&1 | sed '/^$$/d; s/^/  aws sts: /' | head -2; \
 	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \
 	  exit 1; fi
-	@echo "✓ kubectl's login to $(KUBE_CTX) works, as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
+	@echo "$(KUBE_REQUIRED)✓ kubectl's login to $$KUBE_CONTEXT works, as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
 
 # Every image the EKS overlay deploys must be a well-formed reference with a pinned
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in

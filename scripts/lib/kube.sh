@@ -8,12 +8,14 @@
 #   KUBE_CONTEXT=<name>            the context, exactly as `kubectl config get-contexts -o name` lists it
 #
 #   kube_context [--local] [name]  name (default $KUBE_CONTEXT) must be set, a plain context name and
-#                                  listed; then KUBE_CONTEXT is it and "→ <name>" goes to stderr.
-#                                  --local also refuses a context that reaches EKS (kube_refuse_eks).
-#                                  Returns 2 otherwise, before any kubectl call when no name is set.
+#                                  listed; then KUBE_CONTEXT is it and "→ <name>" goes to stderr
+#                                  (not with KUBE_QUIET set). --local also refuses a context that
+#                                  reaches EKS (kube_refuse_eks). Returns 2 otherwise, before any
+#                                  kubectl call when no name is set.
 #   k <kubectl args>               kubectl --context "$KUBE_CONTEXT" <args>, only after kube_context
 #   kube_refuse_eks <name>         returns 1 (and says why) when the context reaches EKS, or when its
-#                                  entry in the kubeconfig cannot be read (fails closed)
+#                                  entry in the kubeconfig cannot be read or has no cluster entry
+#                                  or server (fails closed)
 
 kube_context() {
   _kube_local=
@@ -31,7 +33,8 @@ kube_context() {
       echo "✗ KUBE_CONTEXT \"$_kube_name\" is not a context name" >&2
       return 2 ;;
   esac
-  if ! kubectl config get-contexts -o name 2>/dev/null | grep -Fqx -- "$_kube_name"; then
+  # grep reads to the end (not -q): under pipefail an early exit could fail kubectl with SIGPIPE.
+  if ! kubectl config get-contexts -o name 2>/dev/null | grep -Fx -- "$_kube_name" >/dev/null; then
     echo "✗ KUBE_CONTEXT $_kube_name: no such context in the kubeconfig (kubectl config get-contexts -o name)" >&2
     return 2
   fi
@@ -40,7 +43,7 @@ kube_context() {
   fi
   KUBE_CONTEXT=$_kube_name
   _kube_checked=$_kube_name
-  echo "→ $_kube_name" >&2
+  [ -n "${KUBE_QUIET:-}" ] || echo "→ $_kube_name" >&2
 }
 
 k() {
@@ -70,7 +73,8 @@ ctx = entry("contexts", name)
 if ctx is None:
     sys.exit(2)
 cluster = ctx.get("cluster") or ""
-host = (urlsplit((entry("clusters", cluster) or {}).get("server") or "").hostname or "").lower()
+cl = entry("clusters", cluster)
+host = (urlsplit((cl or {}).get("server") or "").hostname or "").lower()
 ex = (entry("users", ctx.get("user") or "") or {}).get("exec") or {}
 argv = [os.path.basename(ex.get("command") or "")] + [str(a) for a in ex.get("args") or []]
 why = []
@@ -83,7 +87,10 @@ if host.endswith((".eks.amazonaws.com", ".eks.amazonaws.com.cn")):
 if argv[0] == "aws-iam-authenticator" or ("eks" in argv and "get-token" in argv):
     why.append("an EKS token")
 print(", ".join(why))
-sys.exit(1 if why else 0)
+if why:
+    sys.exit(1)
+if cl is None or not host:
+    sys.exit(3)  # no cluster entry or no server: nothing to judge it by
 ')
   case $? in
     0) return 0 ;;
