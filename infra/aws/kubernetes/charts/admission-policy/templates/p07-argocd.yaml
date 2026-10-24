@@ -75,7 +75,7 @@ spec:
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'AppProject' || request.operation != 'DELETE' ||
-        (variables.appName != 'default' && !request.userInfo.username.startsWith('system:serviceaccount:{{ .Values.argocd.namespace }}:'))
+        (variables.appName != 'default' && !request.userInfo.username.startsWith({{ printf "system:serviceaccount:%s:" .Values.argocd.namespace | toJson }}))
       message: "P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject."
       reason: Forbidden
     - expression: |-
@@ -96,6 +96,18 @@ spec:
          has(variables.spec.source.path) && variables.spec.source.path == variables.expected[1] &&
          has(variables.spec.destination.namespace) && variables.spec.destination.namespace == variables.expected[2])
       message: "P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation != 'DELETE' ||
+        request.userInfo.username != {{ include "admission.user.argoServer" . | toJson }}
+      message: "P7: argocd-server must not delete Applications."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Application' || request.operation == 'DELETE' ||
+        request.userInfo.username != {{ include "admission.user.argoServer" . | toJson }} ||
+        (has(variables.o.status) && has(variables.o.status.sync) ? variables.o.status.sync : {}) ==
+          (request.operation == 'UPDATE' && has(dyn(oldObject).status) && has(dyn(oldObject).status.sync) ? dyn(oldObject).status.sync : {})
+      message: "P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision)."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'Secret' ||

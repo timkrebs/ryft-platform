@@ -37,10 +37,11 @@ spec:
          has(variables.spec.method) && variables.spec.method == 'kubernetes' &&
          has(variables.spec.mount) && variables.spec.mount == {{ .Values.vso.authMount | toJson }} &&
          has(variables.spec.vaultConnectionRef) && variables.spec.vaultConnectionRef == {{ .Values.vso.connectionName | toJson }} &&
+         (!has(variables.spec.namespace) || variables.spec.namespace.startsWith({{ .Values.vso.vaultNamespacePrefix | toJson }})) &&
          has(variables.spec.kubernetes) &&
          variables.spec.kubernetes.all(k, k in ['role', 'serviceAccount', 'audiences', 'tokenExpirationSeconds']) &&
          has(variables.spec.kubernetes.audiences) && variables.spec.kubernetes.audiences == [{{ .Values.vso.audience | toJson }}])
-      message: "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, and no allowedNamespaces."
+      message: "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultStaticSecret' ||

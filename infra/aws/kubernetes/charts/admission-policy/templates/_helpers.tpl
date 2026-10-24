@@ -18,6 +18,13 @@ spliced in with toJson, which gives CEL string, list and map literals.
 {{- range .Values.projects -}}
 {{- if not (and .metadata .metadata.name .spec) -}}{{- fail "projects must be AppProject documents with metadata.name and spec" -}}{{- end -}}
 {{- end -}}
+{{- /* Hard guards: a deny that would refuse every request of its kind, or an object the cluster has today. */ -}}
+{{- if and (eq (include "admission.mode" (dict "root" . "key" "argocd")) "deny") (not .Values.projects) -}}
+{{- fail "actions.argocd is deny but projects is empty: P7 would refuse every AppProject write (T12-b wires projects)" -}}
+{{- end -}}
+{{- if and (eq (include "admission.mode" (dict "root" . "key" "netpol")) "deny") .Values.netpol.brokerEgressPublic -}}
+{{- fail "actions.netpol is deny while netpol.brokerEgressPublic is true: ryft-rabbitmq's open 443 egress rule would be refused (T12-k narrows it first)" -}}
+{{- end -}}
 {{- end -}}
 
 {{- /* The effective mode of a binding: break-glass forces audit. args: root, key */ -}}
@@ -28,8 +35,10 @@ spliced in with toJson, which gives CEL string, list and map literals.
 {{- /*
 The binding. args: root, key, policy, id, step, suffix and rules (both optional: a name
 suffix, and a YAML list of resourceRules that narrows the policy's matchConstraints).
-The intended-action label is what Terraform asks for, break-glass included; the drift
-alert and the Terraform check compare the live validationActions with it, and key.
+The intended-action label is the committed action (audit or deny), whatever break-glass
+does to validationActions; break-glass adds the label break-glass: "true", which T12-e
+alerts on when Terraform's break-glass is left on. The drift alert and the Terraform check
+compare the live validationActions with the effective ones (by key).
 */ -}}
 {{- define "admission.binding" -}}
 {{- $mode := include "admission.mode" . -}}
@@ -43,7 +52,10 @@ metadata:
     admission.ryft.dev/policy: {{ .id | quote }}
     admission.ryft.dev/step: {{ .step | quote }}
     admission.ryft.dev/key: {{ .key | quote }}
-    admission.ryft.dev/intended-action: {{ $mode | quote }}
+    admission.ryft.dev/intended-action: {{ index .root.Values.actions .key | quote }}
+    {{- if .root.Values.breakGlass }}
+    admission.ryft.dev/break-glass: "true"
+    {{- end }}
 spec:
   policyName: {{ .policy }}
   validationActions:
@@ -119,16 +131,20 @@ strings is an error), so every map value and list element goes through dyn().
 
 {{- /*
 A matchCondition for every policy that judges objects: an UPDATE of an object that is
-being deleted and changes nothing but metadata and status (a finalizer removal, VSO's for
+being deleted and changes nothing but finalizers and status (a finalizer removal, VSO's for
 example) is not judged. object[k] == oldObject[k] compares whole values, so a changed
-spec, data, rules or webhooks is judged as usual.
+spec, data, rules or webhooks is judged as usual, and so is a changed label, annotation or
+owner reference (those carry policy: a PSA label, an aggregate-to label, secret-type).
 */ -}}
 {{- define "admission.cond.finalizerRemoval" -}}
 - name: not-a-finalizer-removal
   expression: |-
     !(request.operation == 'UPDATE' && has(oldObject.metadata.deletionTimestamp) &&
       dyn(object).all(k, k == 'metadata' || k == 'status' || (k in dyn(oldObject) && dyn(object)[k] == dyn(oldObject)[k])) &&
-      dyn(oldObject).all(k, k == 'metadata' || k == 'status' || k in dyn(object)))
+      dyn(oldObject).all(k, k == 'metadata' || k == 'status' || k in dyn(object)) &&
+      (has(dyn(object).metadata.labels) ? dyn(object).metadata.labels : {}) == (has(dyn(oldObject).metadata.labels) ? dyn(oldObject).metadata.labels : {}) &&
+      (has(dyn(object).metadata.annotations) ? dyn(object).metadata.annotations : {}) == (has(dyn(oldObject).metadata.annotations) ? dyn(oldObject).metadata.annotations : {}) &&
+      (has(dyn(object).metadata.ownerReferences) ? dyn(object).metadata.ownerReferences : []) == (has(dyn(oldObject).metadata.ownerReferences) ? dyn(oldObject).metadata.ownerReferences : []))
 {{- end -}}
 
 {{- /*
@@ -166,11 +182,20 @@ or any other pod template owner, and the containers and volumes with absent list
   apiVersions: ["*"]
   operations: {{ .ops | toJson }}
   resources: ["jobs", "cronjobs"]
+- apiGroups: [""]
+  apiVersions: ["*"]
+  operations: {{ .ops | toJson }}
+  resources: ["replicationcontrollers"]
 {{- end -}}
 
+{{- /* Pods, and the ephemeralcontainers subresource (an UPDATE only: it adds containers to a running Pod). */ -}}
 {{- define "admission.rules.pods" -}}
 - apiGroups: [""]
   apiVersions: ["*"]
   operations: {{ .ops | toJson }}
   resources: ["pods"]
+- apiGroups: [""]
+  apiVersions: ["*"]
+  operations: ["UPDATE"]
+  resources: ["pods/ephemeralcontainers"]
 {{- end -}}

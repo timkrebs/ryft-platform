@@ -30,19 +30,22 @@ spec:
     - name: stringData
       expression: |-
         has(variables.o.stringData) ? variables.o.stringData : {}
+    - name: binaryData
+      expression: |-
+        has(variables.o.binaryData) ? variables.o.binaryData : {}
     - name: forbidden
       expression: "['API_KEY', 'ALLOW_INSECURE_APIKEY_AUTH', 'USER_ID']"
   validations:
     - expression: |-
         !variables.isData ||
-        variables.forbidden.all(k, !(k in variables.data) && !(k in variables.stringData))
+        variables.forbidden.all(k, !(k in variables.data) && !(k in variables.stringData) && !(k in variables.binaryData))
       message: "P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID."
       reason: Forbidden
     - expression: |-
         !variables.isData ||
         (variables.reqKind == 'Secret' ?
-          (!('AUTH_MODE' in variables.data) && !('AUTH_MODE' in variables.stringData)) :
-          (!('AUTH_MODE' in variables.data) || variables.data['AUTH_MODE'] == 'supabase'))
+          (!('AUTH_MODE' in variables.data) && !('AUTH_MODE' in variables.stringData) && !('AUTH_MODE' in variables.binaryData)) :
+          (!('AUTH_MODE' in variables.binaryData) && (!('AUTH_MODE' in variables.data) || variables.data['AUTH_MODE'] == 'supabase')))
       message: "P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase."
       reason: Forbidden
     - expression: |-

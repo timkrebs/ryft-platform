@@ -4,7 +4,8 @@ Ingresses. Key allowlists (no Traefik CRD in use defaults a key):
  - Middleware spec: only rateLimit, redirectRegex or headers;
  - ServersTransport: only rootCAs and serverName, never insecureSkipVerify;
  - an Ingress's traefik.ingress.kubernetes.io/router.middlewares names only middlewares of
-   its own namespace (<namespace>-<name>@kubernetescrd).
+   its own namespace, exactly <namespace>-<name>@kubernetescrd with a name from
+   traefik.middlewareNames (a prefix test could not tell ryft-api's "x-y" from ryft-api-x's "y").
 */ -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-traefik" "id" "P9" "summary" "Traefik Middleware, ServersTransport and the Ingress middleware annotation") }}
 spec:
@@ -43,7 +44,7 @@ spec:
         variables.reqKind != 'Ingress' || !has(variables.o.metadata.annotations) ||
         !('traefik.ingress.kubernetes.io/router.middlewares' in variables.o.metadata.annotations) ||
         variables.o.metadata.annotations['traefik.ingress.kubernetes.io/router.middlewares'].split(',').all(m,
-          m.trim().startsWith(request.namespace + '-') && m.trim().endsWith('@kubernetescrd'))
+          {{ .Values.traefik.middlewareNames | toJson }}.exists(n, m.trim() == request.namespace + '-' + n + '@kubernetescrd'))
       message: "P9: an Ingress may name only middlewares of its own namespace."
       reason: Forbidden
 ---

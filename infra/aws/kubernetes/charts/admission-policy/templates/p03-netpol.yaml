@@ -5,7 +5,7 @@ is terminating. Every other rule has ports (each with a port) and a peer; a
 namespaceSelector is matchLabels with the one key kubernetes.io/metadata.name; ipBlock has
 two shapes (the VPC CIDR for ingress on 9090/15692 and for ryft-rabbitmq's egress on 443,
 and 0.0.0.0/0 with the five private ranges excepted for egress on 443/5432); endPort only
-in ryft-rabbitmq. rabbitmq-system has no NetworkPolicy and is outside (a follow-up).
+for 35672-35682 on the podSelector rules of ryft-rabbitmq (never next to an ipBlock). rabbitmq-system has no NetworkPolicy and is outside (a follow-up).
 */ -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-netpol" "id" "P3" "summary" "NetworkPolicy shapes in RYFT namespaces") }}
 spec:
@@ -81,10 +81,14 @@ spec:
       message: "P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule."
       reason: Forbidden
     - expression: |-
-        request.operation == 'DELETE' || variables.broker ||
-        (variables.ingress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort))) &&
-         variables.egress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort))))
-      message: "P3: endPort is allowed only in ryft-rabbitmq."
+        request.operation == 'DELETE' ||
+        (variables.ingress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort) ||
+            (variables.broker && p.port == {{ .Values.netpol.brokerPortRange.port }} && p.endPort == {{ .Values.netpol.brokerPortRange.endPort }} &&
+             has(r.from) && r.from.all(q, has(q.podSelector) && !has(q.ipBlock) && !has(q.namespaceSelector))))) &&
+         variables.egress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort) ||
+            (variables.broker && p.port == {{ .Values.netpol.brokerPortRange.port }} && p.endPort == {{ .Values.netpol.brokerPortRange.endPort }} &&
+             has(r.to) && r.to.all(q, has(q.podSelector) && !has(q.ipBlock) && !has(q.namespaceSelector))))))
+      message: "P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors."
       reason: Forbidden
 ---
 {{ include "admission.binding" (dict "root" . "key" "netpol" "policy" "ryft-netpol" "id" "P3" "step" "B") }}
