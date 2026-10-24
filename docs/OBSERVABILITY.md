@@ -9,7 +9,7 @@ on stdout and shipped to CloudWatch; see **Logs** below.
 
 Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
 `k8s-monitoring` chart (`deploy/monitoring/k8s-monitoring.yaml`, `make
-monitoring-apply`) in namespace `monitoring`: two Alloy collectors named as the
+monitoring-apply KUBE_CONTEXT=<context>`) in namespace `monitoring`: two Alloy collectors named as the
 onboarding names them, `alloy-daemonset` (one per node, host network) and
 `alloy-deployment` (one replica, cluster-wide work and the OTLP receiver), plus
 node-exporter, kube-state-metrics, Beyla, Kepler (energy), OpenCost (cost) and

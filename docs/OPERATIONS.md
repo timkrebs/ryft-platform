@@ -56,14 +56,17 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows six |
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha> services`) |
 | 8. App | Argo CD from step 4; `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml` | **Deploy and roll back** → Cutover to Argo CD |
-| 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
+| 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply KUBE_CONTEXT=<context>` | see **Monitoring** below |
 
 Every Terraform root keeps its state in its HCP Terraform workspace (execution mode
 Local): `terraform init` in a fresh checkout connects to it after `terraform login`.
 
 Argo CD deploys the app (step 8; **Deploy and roll back**). Its waves keep the order
-the break-glass `make k8s-apply-eks` enforces by hand, which runs these steps, waiting
-at each one:
+the break-glass `make k8s-apply-eks KUBE_CONTEXT=<context>` enforces by hand, which runs
+these steps, waiting at each one. Every Makefile target and operator script that talks to
+a cluster needs it named (`KUBE_CONTEXT=<context>`, one of `kubectl config get-contexts -o
+name`) and refuses to start without it; kubectl's current context is never used
+(`scripts/lib/kube.sh`), and the self-hosted targets refuse an EKS context.
 
 0. It checks that kubectl is logged in (`k8s-check-auth`): kubectl takes its EKS
    token from `aws eks get-token`, so expired AWS credentials fail every call with
@@ -72,7 +75,7 @@ at each one:
 1. It applies the operator objects for every namespace and waits until each
    `ryft-secrets` (and in `ryft-rabbitmq` each `amqp-user-<service>`) exists; it stops
    at the first one that fails.
-2. RabbitMQ (`make k8s-rabbitmq`): the operators, then `deploy/rabbitmq`, and waits until
+2. RabbitMQ (`make k8s-rabbitmq KUBE_CONTEXT=<context>`): the operators, then `deploy/rabbitmq`, and waits until
    all three nodes are ready.
 3. It deletes the finished migrate Job, since a Job's pod template is immutable, applies
    the first stage, the migrate Job (label `ryft.dev/stage=first`), and waits for it.
@@ -101,7 +104,7 @@ database and RabbitMQ with backoff (5 s doubling to 60 s, jittered) instead of e
 and wait up to 10 minutes (startup probe).
 
 ```bash
-make k8s-validate && make k8s-apply-eks
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=<context>
 kubectl -n ryft-migrate logs job/migrate                     # "role password set" ×4, "schema current"
 for s in ingest scoring api notify migrate; do kubectl -n ryft-$s get vaultstaticsecret,secret ryft-secrets; done
 kubectl -n ryft-rabbitmq get vaultstaticsecret,secret,rabbitmqcluster          # amqp-user-*, ALLREPLICASREADY
@@ -142,10 +145,11 @@ The email-confirmation link itself is tested by hand from the app. Don't run pla
 `make smoke` against the public host: it is for apikey mode.
 
 **Rescoring** after a scoring rule or constant changed (`SCORING.md`):
-`scripts/rescore_all.sh [days]` (default 400) runs `scoring rescore` inside the scoring
-pod. Each user's last *days* days are rescored, oldest first, with scoring's own role;
-the log shows `user rescored … n of N`, then `rescore done`. Locally:
-`RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
+`KUBE_CONTEXT=<context> scripts/rescore_all.sh [days]` (1 to 400, default 400; or
+`--context <context>`) runs `scoring rescore` inside the scoring pod of the cluster it
+names; without a context it runs nothing. Each user's last *days* days are rescored,
+oldest first, with scoring's own role; the log shows `user rescored … n of N`, then
+`rescore done`. Locally: `RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
 
 Days scored before their history (a backfill newest first, a late sample) need no
 rescore by hand: scoring re-scores the days after a changed day itself, a retried
@@ -469,7 +473,7 @@ the rollback PR rolls nothing: web shares the `ryft-platform` application with m
 Follow "Lockouts" first. A broken manifest change is reverted like code.
 
 **Break-glass** (Argo CD itself is down): pause it if it is half up, then `make
-k8s-apply-eks` (prints a warning; applies the Vault objects, RabbitMQ, migrate, then the
+k8s-apply-eks KUBE_CONTEXT=<context>` (prints a warning; applies the Vault objects, RabbitMQ, migrate, then the
 services, without the PostSync smoke; checks the registry first). Afterwards make git
 hold exactly what you applied, and resume.
 
@@ -810,7 +814,7 @@ Operator upgrade rolls every cluster).
 
 **Backups:** none beyond git. Messages are triggers, the topology and users are in git
 and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
-CD; then `scripts/rescore_all.sh 3` covers what was in flight.
+CD; then `KUBE_CONTEXT=<context> scripts/rescore_all.sh 3` covers what was in flight.
 
 **Credentials:** a user's password: `terraform -chdir=infra/vault apply
 -replace='random_password.amqp["api"]'`, restart the Vault Secrets Operator; it rewrites
@@ -830,7 +834,7 @@ next (the record of each: `STATUS.md`):
 | R1 | `infra/vault` (namespace `ryft-rabbitmq`, users), `infra/aws/kubernetes` (Argo CD's RabbitMQ health checks, the internal CA), `project.yaml` applied; then the merge adds the applications `vault-rabbitmq`, `rabbitmq-operators`, `broker-rabbitmq` | healthy as above; three voters per queue; no alarms |
 | R2 | scoring and notify consume both brokers (`EVENTS_CONSUME=nats,amqp`); publishers still on NATS | `ryft_amqp_connected` 1 in both, `make smoke-prod`, nothing waiting in the queues |
 | R3 | ingest, api and scoring publish to RabbitMQ (`EVENTS_BACKEND=amqp`) | a day: `ryft_sync_to_score_seconds` p95 as before, queue depths, dead letters 0, the outbox empty |
-| R4 | NATS goes: once stream `RYFT` has 0 pending for both consumers and `RYFT_DLQ` was looked at | `make smoke-prod`; then `infra/vault` without NATS, `scripts/rescore_all.sh 3` |
+| R4 | NATS goes: once stream `RYFT` has 0 pending for both consumers and `RYFT_DLQ` was looked at | `make smoke-prod`; then `infra/vault` without NATS, `KUBE_CONTEXT=<context> scripts/rescore_all.sh 3` |
 
 Before R4, on NATS, with the R3 images (R4's have no NATS client): `kubectl -n
 ryft-scoring exec deploy/scoring -- /app dlq` (re-drive or delete each letter), and the
@@ -849,10 +853,13 @@ accounts. `scripts/local-secrets.sh` writes one env file per namespace with rand
 passwords (git-ignored, refuses to overwrite; a directory from the NATS days only gets
 the RabbitMQ users added). Needs cert-manager; `make k8s-apply-local` puts in the
 internal CA (`helm template` of the same chart as on EKS) and the RabbitMQ operators
-first.
+first. It and `make k8s-delete-local` need the cluster named and refuse any EKS context
+(by its name, `ryft-prod-*` or an EKS ARN; its cluster's ARN; an `*.eks.amazonaws.com`
+server; or an EKS token in its user), since on EKS they would change or delete the
+service namespaces and the broker's volumes.
 
 ```bash
-make k8s-apply-local          # the secrets once, the CA, the operators, then everything
+make k8s-apply-local KUBE_CONTEXT=<context>   # the secrets once, the CA, the operators, then everything
 kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 grep API_KEY deploy/k8s/overlays/local-postgres/secrets/api.env   # the bearer
 ```
@@ -1055,7 +1062,7 @@ defaults to production.
 **Tracing a request** a tester reports by its id:
 
 ```bash
-scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4        # also with a lost hyphen, as the app once showed it
+KUBE_CONTEXT=<context> scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4   # also with a lost hyphen, as the app once showed it
 ```
 
 It reads every pod of api, ingest, scoring and notify (`--tail=-1`, `--since 48h`), prints
@@ -1128,7 +1135,7 @@ the days still queued and how long scoring takes now (`expected_within_sec`, the
 the last 6 hours). The operator sees the same and more:
 
 ```bash
-scripts/trace.sh <request id>        # the sync: status, code, gate; then scoring's lines for the same id
+KUBE_CONTEXT=<context> scripts/trace.sh <request id>   # the sync: status, code, gate; then scoring's lines for the same id
 scripts/user.sh <id>                 # devices, what the last sync carried and ignored, days, duplicates
 ```
 
@@ -1228,7 +1235,7 @@ restarts both collectors when it changes. It is never passed on a command line:
 3. `terraform plan` and `apply` in `infra/vault`. This creates the Vault namespace, its
    auth role, `kv/config {GC_TOKEN}`, the namespace `monitoring` (Pod Security
    privileged) and `deploy/k8s/overlays/vault-namespaces/monitoring`.
-4. `make monitoring-apply`: it applies the operator objects, waits for
+4. `make monitoring-apply KUBE_CONTEXT=<context>`: it applies the operator objects, waits for
    `monitoring/ryft-secrets`, then runs
    `helm upgrade --install grafana-cloud grafana/k8s-monitoring --version 4.5.3`.
 5. **In Grafana Cloud:**
@@ -1667,7 +1674,7 @@ kubectl -n ryft-postgres exec pg-restore -- sh -c 'psql "$DATABASE_URL" -v ON_ER
 
 # 4. clean up; re-run migrate (grants and role passwords), restart; the HPAs take api/ingest back to 2
 kubectl -n ryft-postgres delete pod pg-restore
-make k8s-apply-local
+make k8s-apply-local KUBE_CONTEXT=<context>
 for s in api ingest scoring; do kubectl -n ryft-$s scale deploy/$s --replicas=1; done
 ```
 

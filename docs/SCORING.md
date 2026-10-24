@@ -453,7 +453,7 @@ with a changelog entry whose `affects` lists the metrics it moves, and the commi
 message says why. A refactor that keeps every number does not. After the deploy:
 
 ```bash
-scripts/rescore_all.sh        # every user with consent, 400 days; the last line names the version
+KUBE_CONTEXT=<context> scripts/rescore_all.sh   # every user with consent, 400 days; the last line names the version
 ```
 
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
@@ -486,6 +486,6 @@ readings per night that are averaged (or the latest one is taken), so a second s
 moves the value slightly but never doubles it.
 
 Changing these rules changes stored scores, so it bumps the model version (above).
-After a deploy, rescore history with `scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
+After a deploy, rescore history with `KUBE_CONTEXT=<context> scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
 which runs `scoring rescore` for every user with consent; a single user can still use
 `POST /v1/recompute`.
