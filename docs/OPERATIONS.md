@@ -821,11 +821,53 @@ about 130 MiB idle); the disk alarm
 at 1 GB free of 10 GiB. Either blocks every publisher until it clears
 (`RabbitMQAlarm`); first look at the queue depths (a consumer that stopped consuming).
 
+**The operators' reach** (T12-g, D97): both operators run in `rabbitmq-system` but watch
+and write `ryft-rabbitmq` only (`OPERATOR_SCOPE_NAMESPACE=ryft-rabbitmq` on both
+Deployments), and neither holds a cluster-wide `secrets` or `pods` right. Their former
+ClusterRoles are replaced by Roles in `ryft-rabbitmq` (`scoped-rbac.yaml` beside each
+vendored file; kustomize deletes the release's ClusterRole and binding, the vendored files
+stay byte for byte). What they touch there: the Cluster Operator the RabbitmqCluster's
+StatefulSet, Services, ConfigMaps, Secrets, ServiceAccount, PVCs, the peer-discovery Role
+and RoleBinding, pods (update, `pods/exec`); the Topology Operator the Vhost, Exchange,
+Queue, Binding, Policy, User, Permission and TopicPermission objects and the Secrets of
+the users. Left cluster-wide on purpose: the CRDs, the webhooks (they must see the
+objects before the operator does), the metrics token-review roles, the Cluster
+Operator's service-binding role (RabbitmqCluster read for the service binding
+controller). The leader election stays in `rabbitmq-system`. The Argo CD project
+`ryft-operators` therefore also has `ryft-rabbitmq` as a destination (`project.yaml`,
+applied by hand). A RabbitMQ object in another namespace is no longer reconciled.
+
+**Before the sync, a baseline:** save both operators' logs
+(`kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator > before-cro.log`, the same for
+`deploy/messaging-topology-operator`) and count `forbidden` in them. A `forbidden` line that is
+already there (a stray reconcile of something else) is not a reason to revert.
+
+**After an operator sync:** `kubectl -n rabbitmq-system get pods` (both Running, one
+restart from the sync), `kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator`
+and `deploy/messaging-topology-operator` (a line about limiting the watch to one namespace
+and no NEW `forbidden` against the baseline), `kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq` (the two
+columns as under Healthy), the topology objects Ready, and
+`kubectl auth can-i list secrets -A --as=system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator`
+answering no. A new `forbidden` in an operator log means a verb the Role lacks: revert.
+
 **Upgrades:** RabbitMQ: change the image digest in
 `deploy/rabbitmq/cluster/rabbitmqcluster.yaml`; the operator replaces the nodes one at a
 time. The operators: vendor the new release files byte for byte into
 `deploy/rabbitmq/operators/`, update `SHA256SUMS`, read the release notes (a Cluster
-Operator upgrade rolls every cluster).
+Operator upgrade rolls every cluster). Re-check the scope: the new release's ClusterRole
+(cluster operator `rabbitmq-cluster-operator-role`, topology operator
+`messaging-topology-manager-role`) against `scoped-rbac.yaml` (a new resource or verb goes
+into the Role, or the operator logs `forbidden`); the patches' targets (Deployment, container,
+ClusterRole and ClusterRoleBinding names). Kustomize does NOT fail on a target that matches
+nothing: a renamed ClusterRole would render with its cluster-wide rules intact. That is what
+`scripts/check_operators_scope.sh` (part of `make k8s-validate`) catches: no ClusterRole with
+`secrets`, `pods`, `pods/exec` or `*`, the only ClusterRoleBinding the topology operator's
+metrics one, both Roles and RoleBindings in `ryft-rabbitmq`, and `OPERATOR_SCOPE_NAMESPACE`
+on the containers `operator` and `manager`. Also check that `OPERATOR_SCOPE_NAMESPACE` is still
+the setting: it is read in `cmd/main.go` of `rabbitmq/cluster-operator` at `v2.23.1` and of
+`rabbitmq/messaging-topology-operator` at `v1.20.4`; and any new cluster-wide read.
+`make k8s-rabbitmq` (break-glass) creates `ryft-rabbitmq` with its Pod Security labels first,
+because the Roles live there.
 
 **Backups:** none beyond git. Messages are triggers, the topology and users are in git
 and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
