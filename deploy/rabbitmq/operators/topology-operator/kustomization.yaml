@@ -14,10 +14,19 @@ resources:
   - scoped-rbac.yaml
 patches:
   - target: { kind: Deployment, name: messaging-topology-operator }
+    # Strategic merge by container name: the env list is merged, not replaced.
+    # scripts/check_operators_scope.sh (make k8s-validate) asserts the result.
     patch: |-
-      - op: add
-        path: /spec/template/spec/containers/0/env
-        value: [{ name: OPERATOR_SCOPE_NAMESPACE, value: ryft-rabbitmq }]
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: { name: messaging-topology-operator }
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                env:
+                  - { name: OPERATOR_SCOPE_NAMESPACE, value: ryft-rabbitmq }
   - target: { kind: ClusterRole, name: messaging-topology-manager-role }
     patch: |-
       $patch: delete

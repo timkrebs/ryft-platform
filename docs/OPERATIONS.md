@@ -837,13 +837,18 @@ controller). The leader election stays in `rabbitmq-system`. The Argo CD project
 `ryft-operators` therefore also has `ryft-rabbitmq` as a destination (`project.yaml`,
 applied by hand). A RabbitMQ object in another namespace is no longer reconciled.
 
+**Before the sync, a baseline:** save both operators' logs
+(`kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator > before-cro.log`, the same for
+`deploy/messaging-topology-operator`) and count `forbidden` in them. A `forbidden` line that is
+already there (a stray reconcile of something else) is not a reason to revert.
+
 **After an operator sync:** `kubectl -n rabbitmq-system get pods` (both Running, one
 restart from the sync), `kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator`
 and `deploy/messaging-topology-operator` (a line about limiting the watch to one namespace
-and no `forbidden`), `kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq` (the two
+and no NEW `forbidden` against the baseline), `kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq` (the two
 columns as under Healthy), the topology objects Ready, and
 `kubectl auth can-i list secrets -A --as=system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator`
-answering no. A `forbidden` in an operator log means a verb the Role lacks: revert.
+answering no. A new `forbidden` in an operator log means a verb the Role lacks: revert.
 
 **Upgrades:** RabbitMQ: change the image digest in
 `deploy/rabbitmq/cluster/rabbitmqcluster.yaml`; the operator replaces the nodes one at a
@@ -852,10 +857,17 @@ time. The operators: vendor the new release files byte for byte into
 Operator upgrade rolls every cluster). Re-check the scope: the new release's ClusterRole
 (cluster operator `rabbitmq-cluster-operator-role`, topology operator
 `messaging-topology-manager-role`) against `scoped-rbac.yaml` (a new resource or verb goes
-into the Role, or the operator logs `forbidden`); the patches' targets (Deployment, ClusterRole
-and ClusterRoleBinding names; a renamed one makes kustomize fail, not silently skip);
-that `OPERATOR_SCOPE_NAMESPACE` is still the setting (it is in the operators' `main`:
-Cluster Operator 2.23.1, Topology Operator 1.20.4); and any new cluster-wide read.
+into the Role, or the operator logs `forbidden`); the patches' targets (Deployment, container,
+ClusterRole and ClusterRoleBinding names). Kustomize does NOT fail on a target that matches
+nothing: a renamed ClusterRole would render with its cluster-wide rules intact. That is what
+`scripts/check_operators_scope.sh` (part of `make k8s-validate`) catches: no ClusterRole with
+`secrets`, `pods`, `pods/exec` or `*`, the only ClusterRoleBinding the topology operator's
+metrics one, both Roles and RoleBindings in `ryft-rabbitmq`, and `OPERATOR_SCOPE_NAMESPACE`
+on the containers `operator` and `manager`. Also check that `OPERATOR_SCOPE_NAMESPACE` is still
+the setting: it is read in `cmd/main.go` of `rabbitmq/cluster-operator` at `v2.23.1` and of
+`rabbitmq/messaging-topology-operator` at `v1.20.4`; and any new cluster-wide read.
+`make k8s-rabbitmq` (break-glass) creates `ryft-rabbitmq` with its Pod Security labels first,
+because the Roles live there.
 
 **Backups:** none beyond git. Messages are triggers, the topology and users are in git
 and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
