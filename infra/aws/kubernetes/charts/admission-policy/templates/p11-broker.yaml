@@ -50,10 +50,15 @@ spec:
         variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.rabbitmq) ||
         ((!has(variables.spec.rabbitmq.additionalPlugins) || variables.spec.rabbitmq.additionalPlugins.all(x, x in {{ .Values.broker.additionalPlugins | toJson }})) &&
          !has(variables.spec.rabbitmq.advancedConfig) && !has(variables.spec.rabbitmq.envConfig) &&
+         !has(variables.spec.rabbitmq.erlangInetConfig) &&
          (!has(variables.spec.rabbitmq.additionalConfig) ||
           variables.spec.rabbitmq.additionalConfig.split('\n').all(l,
             l.trim() == '' || l.trim().startsWith('#') || l.trim() in {{ .Values.broker.additionalConfigLines | toJson }})))
-      message: "P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig and envConfig are refused."
+      message: "P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.secretBackend)
+      message: "P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.service) ||

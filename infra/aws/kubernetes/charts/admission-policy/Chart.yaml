@@ -2,4 +2,4 @@ apiVersion: v2
 name: admission-policy
 description: ValidatingAdmissionPolicies P1-P11 and their bindings for ryft-prod-euc1 (D120)
 type: application
-version: 0.2.0  # bump on every template change (T12-d's CI job will check it), or the Helm provider does not upgrade it
+version: 0.2.1  # bump on every template change (T12-d's CI job will check it), or the Helm provider does not upgrade it

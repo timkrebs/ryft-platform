@@ -88,9 +88,22 @@ operators:
   # are written by the Cluster Operator and limited by P8.
   scopedRoles: [rabbitmq-cluster-operator-role, messaging-topology-manager-role]
   scopedRoleBindings: [rabbitmq-cluster-operator-rolebinding, messaging-topology-manager-rolebinding]
-  # pods/exec is the Cluster Operator's (rabbitmqctl upgrade checks), nobody else's.
+  # pods/exec is the Cluster Operator's (rabbitmqctl upgrade checks): only that one Role, in
+  # the broker's namespace, may carry it (and Secrets). No Role in rabbitmq-system, no ClusterRole.
   execResource: pods/exec
-  execRoleNamePrefix: rabbitmq-cluster-
+  execRoleName: rabbitmq-cluster-operator-role
+  # What a ClusterRole Argo writes may do beyond get/list/watch: the rabbitmq.com groups (with
+  # status and finalizers), events, and the tokenreview / subjectaccessreview creates of the
+  # metrics auth. Anything else cluster-wide (configmaps, services, serviceaccounts, endpoints,
+  # endpointslices, ...) is read-only: a cluster-wide ConfigMap write reaches kube-system/aws-auth
+  # (authentication mode API_AND_CONFIG_MAP) and an EndpointSlice write hijacks any Service.
+  clusterRoleWriteGroups: [rabbitmq.com]
+  clusterRoleWrites:
+    "": [events]
+    events.k8s.io: [events]
+  clusterRoleCreates:
+    authentication.k8s.io: [tokenreviews]
+    authorization.k8s.io: [subjectaccessreviews]
   webhookConfigurations:
     - cluster-operator-mutating-webhook-configuration
     - cluster-operator-validating-webhook-configuration
@@ -106,6 +119,7 @@ broker:
   # and <cluster>-server. It may write no other Role or RoleBinding in broker.namespace.
   peerDiscoveryRole: rabbitmq-peer-discovery
   serverRoleBinding: rabbitmq-server
+  serverServiceAccount: rabbitmq-server
   # the only pod-template annotations RabbitmqCluster.spec.override may set (P11)
   overrideAnnotations: [prometheus.io/path, prometheus.io/port, prometheus.io/scrape]
   # P11: today's plugins (none beyond the image's defaults) and the lines of
