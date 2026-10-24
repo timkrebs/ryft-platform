@@ -388,6 +388,9 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
   lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
 - **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
   APNs refusals log a status code and a bare code only (D117).
+- **`dlq.sh` replay** marks a replay as a redelivery (no recompute needed once scoring runs it),
+  replays only bound keys, loses no letter; every operator script and cluster Makefile target
+  needs `KUBE_CONTEXT`, the local targets refuse EKS (D119).
 
 **Open (2026-10-23)**
 
@@ -402,6 +405,10 @@ Yours:
 - **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
   `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
   ConfigMap in `envFrom` and would override the version in force.
+- **kubectl's default context is production** on your machine (it made the 2026-10-23 incident
+  possible, D119): point the default at something harmless, or keep production in its own
+  `KUBECONFIG` file. The RabbitMQ default user's rotation is not required by that incident (the
+  security review); check the EKS audit log query in the PR if you want certainty.
 - **Postgres version:** confirm the hosted major version once (`select version();` in the
   Supabase SQL editor); the repo targets 17 (SUPABASE.md → Postgres version).
 - **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
@@ -425,8 +432,9 @@ Technical:
   images; the services' `images` still use the GHA cache.
 - **scoring** runs two consumers for 10–30 s during a rollout surge: confirm its timer is
   safe, or `maxSurge: 0` for scoring.
-- **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
-  half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
+- **The rest of D119's guard:** plain `kubectl` lines in the OPERATIONS runbooks and `CLAUDE.md`'s
+  `make k8s-apply-eks` example still use the current context; the guard covers the scripts and the
+  Makefile targets.
 - **ingest/api**: a NUL byte in a text field gives 500 instead of 422.
 - **Log tests, the rest** (D117): an allowlist test for the broker's retry and dead-letter lines
   and the events panic line (needs RabbitMQ in the test), for auth, httpx and the account,
