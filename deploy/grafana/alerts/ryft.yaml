@@ -263,3 +263,148 @@ groups:
         annotations:
           summary: "No Synthetic Monitoring results for {{ $labels.job }} for 25 minutes"
           runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
+
+  # ---- admission policies (T12-e, D120) ---------------------------------------------------
+  # The API servers' ValidatingAdmissionPolicy and Pod Security counters (one scrape per
+  # endpoint of default/kubernetes, job ryft/kube-apiserver-admission) and kube-state-metrics'
+  # series for the 12 bindings of the admission-policy chart (job ryft/admission-bindings;
+  # deploy/monitoring/k8s-monitoring.yaml). Runbook for all:
+  # OPERATIONS.md → Admission policy signals. Every alert is gated on the bindings: while the
+  # chart is disabled (Phase 0) there are none, and nothing here fires. The gate looks back
+  # an hour, so a restart of kube-state-metrics does not blind the denial alerts.
+  # The first-event gap: a counter child is created at 1 when its first event happens, so
+  # increase() has nothing to subtract and stays silent for the first violation, denial or
+  # error of a policy. The recording rules therefore add the series that had no sample in
+  # the hour before the last 10 minutes (last_over_time(...[1h] offset 10m)); a series that
+  # is new counts as an event, unless that endpoint's scrape itself is younger than 12
+  # minutes (turning the scrape on must not make every old counter look new). Steady
+  # counters stay quiet, and after 10 minutes a single event resolves.
+  - name: ryft-admission
+    rules:
+      - record: ryft:apiserver_admission_policy_check:fresh10m
+        expr: |
+          (sum by (policy, policy_binding, enforcement_action, error_type) (increase(apiserver_validating_admission_policy_check_total[10m])) > 0)
+            or
+          sum by (policy, policy_binding, enforcement_action, error_type) (
+            (apiserver_validating_admission_policy_check_total
+              unless last_over_time(apiserver_validating_admission_policy_check_total[1h] offset 10m))
+              and on (instance) (up{job="ryft/kube-apiserver-admission"} offset 12m))
+      - record: ryft:pod_security_evaluations:fresh10m
+        expr: |
+          (sum by (decision, mode, resource, policy_level) (increase(pod_security_evaluations_total[10m])) > 0)
+            or
+          sum by (decision, mode, resource, policy_level) (
+            (pod_security_evaluations_total
+              unless last_over_time(pod_security_evaluations_total[1h] offset 10m))
+              and on (instance) (up{job="ryft/kube-apiserver-admission"} offset 12m))
+      - alert: AdmissionPolicyViolation
+        # A binding in Warn+Audit flagged a request (or Pod Security's warn or audit mode
+        # did): it was admitted. Expected in Phase 1; read the findings daily (OPERATIONS →
+        # Admission policy signals). A binding that denies is AdmissionPolicyDenied's.
+        # PSA's series are renamed to the policy label set so both can share one alert.
+        expr: |
+          (
+            (
+              max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action=~"warn|audit"})
+                unless on (policy, policy_binding)
+              max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny"})
+            )
+              or
+            label_replace(label_replace(
+              max by (mode) (ryft:pod_security_evaluations:fresh10m{decision="deny", mode=~"warn|audit"}),
+              "policy", "pod-security", "mode", ".*"), "policy_binding", "pod-security-$1", "mode", "(.*)")
+          )
+            and on () (count(last_over_time(kube_customresource_admission_binding_info[1h])) > 0)
+        labels: { severity: info }
+        annotations:
+          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) flagged a request that was admitted"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionPolicyDenied
+        # A binding in Deny+Audit refused a request (an Argo CD sync of a changed manifest,
+        # a kubectl apply). Pods are AdmissionPodDenied's. With server-side diff the app also
+        # turns OutOfSync (ArgoAppOutOfSync); this one names the policy within minutes.
+        expr: |
+          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding!="ryft-workloads-pods"})
+            and on () (count(last_over_time(kube_customresource_admission_binding_info[1h])) > 0)
+        labels: { severity: warning }
+        annotations:
+          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) refused a request"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionPodDenied
+        # A Pod was refused, by P2's pods binding or by Pod Security's enforce mode. A
+        # re-create after a node loss or a rollout can be refused the same way: critical.
+        expr: |
+          (
+            label_replace(
+              max by (policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding="ryft-workloads-pods"}),
+              "source", "ValidatingAdmissionPolicy", "policy_binding", ".*")
+              or
+            label_replace(
+              max by (policy_level) (ryft:pod_security_evaluations:fresh10m{decision="deny", mode="enforce", resource="pod"}),
+              "source", "Pod Security", "policy_level", ".*")
+          )
+            and on () (count(last_over_time(kube_customresource_admission_binding_info[1h])) > 0)
+        labels: { severity: critical }
+        annotations:
+          summary: "A Pod was refused by admission ({{ $labels.source }}); a re-create can be refused too"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionPolicyError
+        # A policy's CEL expression could not be evaluated (error_type is anything but
+        # no_error) and failurePolicy Fail turned that into a refusal.
+        expr: |
+          max by (policy, policy_binding, error_type) (ryft:apiserver_admission_policy_check:fresh10m{error_type!~"no_error|"})
+            and on () (count(last_over_time(kube_customresource_admission_binding_info[1h])) > 0)
+        labels: { severity: critical }
+        annotations:
+          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }})"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionBindingMissing
+        # Fewer than the chart's 12 bindings exist (a binding deleted by hand, a release that
+        # lost objects, or kube-state-metrics blind), once bindings have existed in the last
+        # day. A chart that was never enabled stays quiet; a deliberate rollback to Phase 0
+        # raises this for up to a day: silence it.
+        expr: |
+          (count(count by (name) (kube_customresource_admission_binding_info)) or vector(0)) < 12
+            and on () (count(last_over_time(kube_customresource_admission_binding_info[1d])) > 0)
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} of 12 admission policy bindings exist"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionBindingDrift
+        # A binding's live validationActions differ from the effective ones: its committed
+        # action (label intended-action), or Warn+Audit while break-glass is labelled. The
+        # fast-path break-glass patch (no label) and a hand edit show up here; the labelled
+        # break-glass itself is AdmissionBreakGlass's. A binding committed as deny must be
+        # Deny+Audit; any other (or a labelled break-glass) must be Warn+Audit.
+        expr: |
+          (
+            (kube_customresource_admission_binding_info{intended_action="deny", break_glass!="true"}
+              unless on (name) (kube_customresource_admission_binding_action{action="Deny"} == 1))
+            or
+            (kube_customresource_admission_binding_info{intended_action="deny", break_glass!="true"}
+              unless on (name) (kube_customresource_admission_binding_action{action="Audit"} == 1))
+            or
+            ((kube_customresource_admission_binding_info{intended_action!="deny"} or kube_customresource_admission_binding_info{break_glass="true"})
+              and on (name) (kube_customresource_admission_binding_action{action="Deny"} == 1))
+            or
+            ((kube_customresource_admission_binding_info{intended_action!="deny"} or kube_customresource_admission_binding_info{break_glass="true"})
+              unless on (name) (kube_customresource_admission_binding_action{action="Warn"} == 1))
+            or
+            ((kube_customresource_admission_binding_info{intended_action!="deny"} or kube_customresource_admission_binding_info{break_glass="true"})
+              unless on (name) (kube_customresource_admission_binding_action{action="Audit"} == 1))
+          )
+        for: 2h
+        labels: { severity: warning }
+        annotations:
+          summary: "Binding {{ $labels.name }} ({{ $labels.policy }}) does not carry the actions it was committed with ({{ $labels.intended_action }})"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
+      - alert: AdmissionBreakGlass
+        # The chart's break-glass is on (bindings labelled break-glass=true, every action
+        # Warn+Audit): the cluster is unprotected. 4 hours is long for an incident's fix.
+        expr: count(kube_customresource_admission_binding_info{break_glass="true"}) > 0
+        for: 4h
+        labels: { severity: warning }
+        annotations:
+          summary: "Admission break-glass has been on for 4 hours ({{ $value }} bindings are Warn+Audit only)"
+          runbook: "docs/OPERATIONS.md → Admission policy signals"
