@@ -1327,37 +1327,49 @@ shows the backend address and the access tokens.
 ## Admission policy signals
 
 The admission policies (D120, `docs/work/2026-10-23-admission/design.md`) write what they
-decide into two places: the API servers' counters and the audit log. Seven alerts watch
-them (OBSERVABILITY → Admission). The data path is `deploy/monitoring/k8s-monitoring.yaml`:
-Alloy scrapes each API server endpoint (job `ryft/kube-apiserver-admission`; three metric
-families, Pod Security refusals only), and kube-state-metrics exports the chart's bindings
-(job `ryft/admission-bindings`).
+decide into two places: the API servers' counters and the audit log. Alerts watch them
+(OBSERVABILITY → Admission). The data path is `deploy/monitoring/k8s-monitoring.yaml`: Alloy
+scrapes each API server endpoint (job `ryft/kube-apiserver-admission`; three metric
+families, Pod Security refusals only), and kube-state-metrics' own collector exports the
+chart's bindings (job `ryft/admission-bindings`). What each binding was committed as
+comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
+`infra/aws/kubernetes/admission-values.yaml`.
 
 **Turn it on (once, before Phase 1; yours, nothing here is applied by Git):**
 
 ```bash
-make monitoring-apply      # helm upgrade of grafana-cloud; both Alloy collectors and kube-state-metrics roll
-make alerts-apply          # the ryft-admission group (GRAFANA_PROM_URL, _USER, GRAFANA_RULES_TOKEN)
+make monitoring-apply      # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
+make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
 ```
 
-Then check in Grafana Explore (the Prometheus data source):
+Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMissing` fires
+(that is its job). Then check in Grafana Explore (the Prometheus data source):
 
 - `up{job=~"ryft/kube-apiserver-admission|ryft/admission-bindings"}` is 1: one series for
   each API server endpoint (EKS runs at least two) and one for kube-state-metrics. If the
   API server targets are missing, the collector pod's log says why (`kubectl -n monitoring
   logs deploy/grafana-cloud-alloy-deployment | grep -i apiserver`).
-- If remote_write answers 401 or 403, the `GC_TOKEN` of `ryft-secrets` lacks `metrics:write`
-  (OpenCost only reads with it): add the scope to the access policy in Grafana Cloud, no
-  new token is needed. The Fleet pipelines are unaffected.
-- `apiserver_validating_admission_policy_check_total` has series once a binding has judged a
-  request, `pod_security_evaluations_total{decision="deny"}` only after a refusal.
-  `kube_customresource_admission_binding_info` has 12 series once the chart is enabled,
-  `kube_customresource_admission_binding_action` 36 (3 actions each, 1 for the live ones).
-  Until then the alerts are quiet by design: each is gated on the bindings existing.
+- If remote_write answers 401 or 403: check that the access policy of `GC_TOKEN` has
+  `metrics:write`. The Fleet pipelines write with the same token, so a token that cannot
+  write breaks them too; do not widen a shared token for this.
+- `pod_security_evaluations_total{decision="deny"}` and
+  `apiserver_validating_admission_policy_check_total` have series only after the first
+  refusal or finding: absent is normal, there is no series for a clean pass.
+  `kube_validatingadmissionpolicybinding_info` has 12 `ryft-*` series once the chart is enabled,
+  `kube_validatingadmissionpolicybinding_validation_action` one per live action, and
+  `ryft:admission_binding_intended` 12 whether or not the chart is enabled.
+- The binding alerts are quiet until bindings exist; the counter alerts are quiet until a
+  `ryft-*` policy finds something.
+
+**A step change** (a reviewed PR edits `actions:` in `admission-values.yaml`): regenerate
+`scripts/admission_intended.sh` in the same PR (`make alerts-check` fails otherwise). After the
+merge, do the Terraform apply and `make alerts-apply` within ten minutes of each other, in
+either order: in between, the live actions and the committed ones disagree, and
+`AdmissionBindingNotDenying` fires after ten minutes.
 
 **Reading a finding.** Every alert names a `policy` (the policy object, e.g.
 `ryft-workloads`) and a `policy_binding` (e.g. `ryft-workloads-pods`); P-numbers and steps
-are on the bindings:
+are labels on the bindings:
 
 ```bash
 kubectl get validatingadmissionpolicybindings \
@@ -1382,10 +1394,15 @@ aws logs get-query-results --region eu-central-1 --query-id <queryId>
 ```
 
 `evaluations` counts audit events (a controller that retries counts every try); `objects`
-is the number of different objects, the one to read. The annotation
-`validation.policy.admission.k8s.io/validation_failure` holds the policy, binding, message
-and action for each failure. Add `| display ...` of `@message` for one object when you need
-the whole message.
+is the number of different objects, the one to read. For one object's message, keep the two
+`filter` lines and end the query with plain named fields instead of `stats`:
+
+```
+fields @timestamp, user.username, verb, objectRef.resource, objectRef.namespace, objectRef.name, requestURI, `annotations.validation.policy.admission.k8s.io/validation_failure`
+| sort @timestamp desc | limit 20
+```
+
+Do not display `@message`: an audit event can carry the request body (a Secret's data).
 
 **AdmissionPolicyViolation** (info). A binding in Warn+Audit flagged a request that was
 admitted, or Pod Security's warn or audit mode did. In Phase 1 this is the whole point:
@@ -1393,8 +1410,7 @@ read the day's query, and for each `user.username` and `objectRef` decide whethe
 object or the policy is wrong. Findings that repeat on every Argo CD refresh (P6 on the two
 vendored operator ClusterRoles until T12-g has synced) keep it firing; that is expected, not
 an incident. A binding's findings must be gone before it goes to Deny. Once a binding
-denies, its refusals are AdmissionPolicyDenied's and this alert leaves that binding
-alone.
+denies, its refusals are AdmissionPolicyDenied's and this alert leaves that binding alone.
 
 **AdmissionPolicyDenied** (warning). A Deny+Audit binding refused a request: an Argo CD
 sync of a changed manifest, or a `kubectl`. The requester got the policy's message.
@@ -1404,70 +1420,128 @@ kubectl -n argocd get application <name> -o jsonpath='{.status.conditions}'
 ```
 Fix the object in Git (the usual case: the message says what the policy wants). If the
 policy is wrong, either set that binding back to audit through `admission-values.yaml`
-(a reviewed PR, then your `terraform apply`), or, when a deploy is blocked now, the
-fast path under **Break-glass** below. With server-side diff the app also turns
-OutOfSync (`ArgoAppOutOfSync`); this alert names the policy minutes earlier.
+(a reviewed PR, the regenerated rules, then your `terraform apply`), or, when a deploy is
+blocked now, the fast path under **Break-glass** below. With server-side diff the app also
+turns OutOfSync (`ArgoAppOutOfSync`); this alert names the policy minutes earlier.
 
-**AdmissionPodDenied** (critical). A Pod was refused, by P2's `ryft-workloads-pods`
-binding or by Pod Security's enforce mode. A pod that is refused now means a node loss,
-a rollout or a scale-up cannot re-create it: treat as an outage in waiting.
+**AdmissionPodDenied** (critical). A Pod, or what looks like one, was refused: by
+`ryft-workloads-pods` (P2), `ryft-operator-reach` (P8) or `ryft-auth-env` (P5), the design's
+step C class plus P5, or by Pod Security's enforce mode (live today, with or without the
+chart). The check counter has no resource label, so a P5 or P8 refusal of a Secret or a Role
+pages too. A Pod refused now means a node loss, a rollout or a scale-up cannot re-create it:
+treat it as an outage in waiting.
 ```bash
 kubectl get events -A --field-selector reason=FailedCreate --sort-by=.lastTimestamp | tail -20
-kubectl get validatingadmissionpolicybinding ryft-workloads-pods -o jsonpath='{.spec.validationActions}'
+kubectl get validatingadmissionpolicybindings -o custom-columns='NAME:.metadata.name,ACTIONS:.spec.validationActions'
 ```
-The ReplicaSet's or StatefulSet's `FailedCreate` event carries the message. If workloads
-are down and the cause is not a quick fix in Git, drop the binding to Warn+Audit first
-(Break-glass, fast path), then fix. Pod Security refusals (`source: Pod Security`) name a
-namespace in the same event: a manifest that no longer meets the namespace's level.
+The ReplicaSet's or StatefulSet's `FailedCreate` event carries the message; a Pod Security
+refusal (`source: Pod Security`) names the namespace's level. If workloads are down and the
+cause is not a quick fix in Git, drop the binding to Warn+Audit first (Break-glass, fast
+path), then fix.
 
-**AdmissionPolicyError** (critical). A policy's CEL could not be evaluated and the
-failure policy (`Fail`) refused the request. `error_type` says which kind. The cause is
-the policy's expression meeting an object shape it did not expect (a missing field), so
-the fix is the chart, not the object: bring the binding to audit through the Break-glass
-fast path to restore writes, then correct the expression (`admission-celtest` reproduces
-it) and apply.
+**AdmissionPolicyError** (critical when the binding refuses, warning under Warn+Audit). A
+policy's CEL could not be evaluated (`error_type` is `compile_error`, `invalid_error` or
+`out_of_budget`). Under a Deny binding with `failurePolicy: Fail` the request was refused;
+under Warn+Audit it was admitted and the policy judged nothing. The cause is the
+expression meeting an object shape it did not expect, so the fix is the chart, not the
+object: for the critical one bring the binding to audit through the Break-glass fast path to
+restore writes, then correct the expression (`admission-celtest` reproduces it) and apply.
 
-**AdmissionBindingMissing** (critical). Fewer than 12 bindings exist for 10 minutes while
-bindings existed within the last day. A binding that is gone means its policy judges
-nothing (silently open). Compare with the chart:
+**AdmissionBindingMissing** (critical). Fewer than 12 `ryft-*` bindings exist for 10 minutes
+while bindings existed within the last day. A binding that is gone means its policy judges
+nothing (silently open). Compare with what is live, and check that the metric is not the
+blind one:
 ```bash
 kubectl get validatingadmissionpolicybindings -o name | sort
-kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics   # or the metric is blind, not the binding gone
-terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy
+kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics
 ```
-A plan that wants to recreate bindings confirms it; apply it (`-target=helm_release.admission_policy`).
-All 12 gone with the chart switched off on purpose (back to Phase 0) raises this for up to
-a day: silence it in Grafana Alerting.
+Helm does not see out-of-band changes (a deleted binding is not a diff to it), so a plain
+apply restores nothing. The restore is the replace under **Restore** below. All 12 gone with
+the chart switched off on purpose (back to Phase 0) raises this for up to a day: silence it
+in Grafana Alerting.
 
-**AdmissionBindingDrift** (warning, after 2 hours). A binding's live `validationActions` are
-not the effective ones: Deny+Audit for a committed `deny`, Warn+Audit for `audit` or while
-break-glass is labelled. Helm does not see a patch, so this and the Terraform `check`
-block are what finds a fast-path patch that was never undone, or a hand edit.
+**AdmissionBindingNotDenying** (warning, after 10 minutes). A binding committed as deny has
+no `Deny` while other bindings still do: a fast-path patch that was never undone, or a hand
+edit. That binding is not protecting anything.
 ```bash
 kubectl get validatingadmissionpolicybindings \
-  -o custom-columns='NAME:.metadata.name,ACTIONS:.spec.validationActions,INTENDED:.metadata.labels.admission\.ryft\.dev/intended-action,BREAKGLASS:.metadata.labels.admission\.ryft\.dev/break-glass'
-terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -replace=helm_release.admission_policy
+  -o custom-columns='NAME:.metadata.name,ACTIONS:.spec.validationActions'
 ```
-The `-replace` apply puts every binding back to what the values file says.
+Restore (below). If the rules were loaded before a step's Terraform apply (or the other way
+round), it fires until both have happened.
 
-**AdmissionBreakGlass** (warning, after 4 hours). The chart's break-glass is on
-(`admission_break_glass=true`, bindings labelled `admission.ryft.dev/break-glass`): every
-action is Warn+Audit and nothing is refused. Planned maintenance ends with the same
+**AdmissionBindingDrift** (warning, after 2 hours). The other mismatches between the live
+actions and the committed ones: a deny binding without Audit, an audit binding with Deny
+or without Warn or Audit. Same look, same restore.
+
+**AdmissionBreakGlass** (warning, after 4 hours). No `ryft-*` binding has `Deny` while at
+least one is committed as deny: the chart's break-glass (`admission_break_glass=true`) is on,
+or every binding was patched. Nothing is refused. Planned maintenance ends with the same
 apply and `admission_break_glass=false`:
 ```bash
 terraform -chdir=infra/aws/kubernetes plan -out=admission.tfplan -var='admission_break_glass=false'
 terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 ```
-The labelled break-glass is not drift (the actions match what break-glass means); the
-patch without the label is, after 2 hours.
+
+**AdmissionSignalsMissing / AdmissionScrapeDown** (warning). The API-server scrape or the
+bindings scrape reports nothing for 15 minutes, or `up` is 0. The alerts above are blind
+meanwhile. Not gated, so they also fire before the monitoring values are applied.
+```bash
+kubectl -n monitoring get pods
+kubectl -n monitoring logs deploy/grafana-cloud-alloy-deployment --tail=100 | grep -i -E "apiserver|admission|remote_write"
+```
 
 **Break-glass** (fast path, yours only; the design's section 3 has the rest). Per
-binding, takes effect at once, and pause Argo CD first for an Argo-synced object:
+binding, takes effect at once; pause Argo CD first for an Argo-synced object:
 ```bash
 kubectl patch validatingadmissionpolicybinding <binding> --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'
 ```
-Undo it with the `-replace` apply under AdmissionBindingDrift, and expect that alert
-after 2 hours if you forget.
+Expect `AdmissionBindingNotDenying` after 10 minutes if you forget; when every binding is
+patched, `AdmissionBreakGlass` after 4 hours.
+
+**Restore** (undo a patch, recreate a lost binding). Helm does not see out-of-band changes,
+so a plain apply changes nothing; replace the release:
+```bash
+terraform -chdir=infra/aws/kubernetes plan -replace='helm_release.admission_policy[0]' -out=admission.tfplan
+terraform -chdir=infra/aws/kubernetes apply admission.tfplan
+```
+A replace uninstalls the release and installs it again: every policy and binding is gone for
+a moment, so the cluster is unprotected (and with `Fail` policies and no bindings, nothing is
+refused) until the install finishes. Do it in a quiet minute, not mid-incident. A release stuck
+in `pending-upgrade`: `helm -n kube-system history admission-policy`, then `rollback`.
+
+**Not built: who writes the admission objects.** The signals above say what the policies
+decide; none says who changed a policy or binding (they are exempt from admission, RBAC
+guards them). A CloudWatch metric filter and alarm on the audit stream would, in
+`infra/aws` (your Terraform and your apply; this is a design note, not code in the repo).
+Config to start from, with the principal a placeholder to fill from one audit event of
+your own apply:
+```hcl
+resource "aws_cloudwatch_log_metric_filter" "admission_writes" {
+  name           = "ryft-admission-object-writes"
+  log_group_name = "/aws/eks/ryft-prod-euc1/cluster"
+  pattern        = "{ $.objectRef.apiGroup = \"admissionregistration.k8s.io\" && ($.verb = \"create\" || $.verb = \"update\" || $.verb = \"patch\" || $.verb = \"delete\") && $.user.username != \"<the IAM role your Terraform and Helm run as>\" }"
+  metric_transformation {
+    name      = "AdmissionObjectWrites"
+    namespace = "RYFT/Admission"
+    value     = "1"
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "admission_writes" {
+  alarm_name          = "ryft-admission-object-writes"
+  namespace           = "RYFT/Admission"
+  metric_name         = "AdmissionObjectWrites"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn] # the topic your other alarms use
+}
+```
+Restrict to the audit stream if the filter matches too much (the group also holds the
+API server and authenticator logs, which are not JSON audit events and never match).
 
 ## Terraform state
 

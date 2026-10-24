@@ -39,8 +39,8 @@ exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore 
 Two scrapes are the chart's own, not Fleet's (T12-e, D120; **Admission** below): the API
 servers' admission metrics (job `ryft/kube-apiserver-admission`) and kube-state-metrics'
 series for the admission bindings (job `ryft/admission-bindings`). They write through a
-destination of their own with `PROM_USERNAME` and `GC_TOKEN`, so the token needs the
-`metrics:write` scope.
+destination of their own with the `PROM_USERNAME` and `GC_TOKEN` of `ryft-secrets`, the
+token the Fleet pipelines write with.
 
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
@@ -134,11 +134,12 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
 | `argocd_app_info` | gauge | `name`, `sync_status`, `health_status`, `autosync_enabled`, … | Argo CD (controller, :8082) | One series per application, value 1; the alerts below read `sync_status` (`Synced`, `OutOfSync`, `Unknown` when manifests do not render) and `health_status` (`Healthy`, `Progressing`, `Degraded`, `Missing`). |
 | `argocd_app_sync_total` | counter | `name`, `phase` | Argo CD | Sync operations by outcome: `Succeeded`, `Failed`, `Error` (a PreSync migration, a refused apply, the PostSync smoke), `Running`, `Terminating`. |
-| `apiserver_validating_admission_policy_check_total` | counter | `policy`, `policy_binding`, `enforcement_action`, `error_type` | EKS API servers (one scrape per endpoint) | Policy checks by binding. A violation counts once per action of the binding (`warn` and `audit` in Warn+Audit, `deny` and `audit` in Deny+Audit); `error_type` is `no_error` unless the expression could not be evaluated. Whether clean passes are counted is unverified (design claim e), nothing relies on it. A child is created at 1 by its first event, which `increase()` cannot see: the rules add series that are new (see Admission). |
-| `apiserver_validating_admission_policy_check_duration_seconds_sum`, `_count` | counter | as above | EKS API servers | Check latency as a mean only: the buckets are dropped to save series. |
-| `pod_security_evaluations_total` | counter | `decision`, `mode`, `resource`, `policy_level`, `request_operation`, … | EKS API servers | Pod Security Admission decisions. Only `decision="deny"` is kept (the relabel drops `allow` and `exempt`). `mode` is `enforce` (refused), `warn` or `audit`. |
-| `kube_customresource_admission_binding_info` | gauge | `name`, `policy`, `step`, `key`, `intended_action`, `break_glass` | kube-state-metrics (custom-resource-state) | One series per `ValidatingAdmissionPolicyBinding` of the admission-policy chart, value 1: its P-id, rollout step, key, the committed action (`audit` or `deny`) and `break_glass="true"` while break-glass is on (the label is absent otherwise). 12 once the chart is enabled, none before. |
-| `kube_customresource_admission_binding_action` | gauge | `name`, `action` | kube-state-metrics | State set of the binding's live `validationActions`: 1 for each of `Deny`, `Warn`, `Audit` it has, 0 for the others (36 series). |
+| `apiserver_validating_admission_policy_check_total` | counter | `policy`, `policy_binding`, `enforcement_action`, `error_type` | EKS API servers (one scrape per endpoint, job `ryft/kube-apiserver-admission`) | Policy checks that found something, by binding: a violation counts once per action of the binding (`warn` and `audit` in Warn+Audit, `deny` and `audit` in Deny+Audit); `error_type` is `no_error` unless the expression could not be evaluated (`compile_error`, `invalid_error`, `out_of_budget`). **Clean passes are not counted** (design claim e was wrong): a policy that is never violated has no series, so the series is absent, not zero, and never a liveness signal. A child is created at 1 by its first event, which `increase()` cannot see: the rules add series that are new (see Admission). Only `policy=~"ryft-.*"` is used by the alerts. |
+| `apiserver_validating_admission_policy_check_duration_seconds_sum`, `_count` | counter | as above | EKS API servers | Check latency as a mean only: the buckets are dropped to save series. Nothing alerts on it (kept for the dashboard; it can go if the budget tightens). |
+| `pod_security_evaluations_total` | counter | `decision`, `mode`, `resource`, `policy_level`, `request_operation`, … | EKS API servers | Pod Security Admission decisions. Only `decision="deny"` is kept (the relabel drops `allow` and `exempt`). `mode` is `enforce` (refused), `warn` or `audit`. Enforce is live today, so `AdmissionPodDenied` watches it without any binding. |
+| `kube_validatingadmissionpolicybinding_info` | gauge | `validatingadmissionpolicybinding`, `policy_name` (+ `param_*`, empty) | kube-state-metrics, native collector `validatingadmissionpolicybindings` (job `ryft/admission-bindings`) | One series per binding, value 1. 12 `ryft-*` bindings once the chart is enabled, none before. kube-state-metrics v2.20 does not export a binding's labels, so the committed action is not here (see `ryft:admission_binding_intended`). Custom-resource-state cannot be used: it resolves kinds from CRDs only and skips built-in ones (design claim m was wrong). |
+| `kube_validatingadmissionpolicybinding_validation_action` | gauge | `validatingadmissionpolicybinding`, `action` | kube-state-metrics | One series, value 1, for each of the binding's live `validationActions` (`Deny`, `Warn`, `Audit`); an action it lacks has no series. |
+| `ryft:admission_binding_intended` | recording rule | `validatingadmissionpolicybinding`, `intended_action` | Grafana ruler (`deploy/grafana/alerts/admission-intended.yaml`) | 1 per binding, `audit` or `deny`, generated from `actions:` in `infra/aws/kubernetes/admission-values.yaml` by `scripts/admission_intended.sh`. `make alerts-check` fails when the file and the values differ. It exists whether or not the chart is enabled. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -299,47 +300,61 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
-| AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
-| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request (not a Pod) in the last 10 min | `argocd app get`, the audit annotation; fix the object in Git |
-| AdmissionPodDenied | critical | a Pod was refused by `ryft-workloads-pods` or Pod Security's enforce mode in the last 10 min | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
-| AdmissionPolicyError | critical | a policy's CEL could not be evaluated (`error_type` not `no_error`) in the last 10 min | the expression meets an unexpected object shape; break-glass, then fix the chart |
-| AdmissionBindingMissing | critical | fewer than 12 bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, `terraform plan -target=helm_release.admission_policy` |
-| AdmissionBindingDrift | warning | live `validationActions` differ from the effective ones (committed action, or Warn+Audit under break-glass) for 2 h | the `-replace` apply, or find who edited the binding |
-| AdmissionBreakGlass | warning | bindings labelled break-glass for 4 h | end it with `admission_break_glass=false` |
+| AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny. Info, not warning: findings that repeat on every Argo CD refresh would page all day | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
+| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
+| AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`: step C and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
+| AdmissionPolicyError | critical / warning | a policy's CEL could not be evaluated in the last 10 min (`error_type` not `no_error`): critical when the binding refuses (the request fails under `Fail`), warning under Warn+Audit | the expression meets an unexpected object shape; break-glass, then fix the chart |
+| AdmissionBindingMissing | critical | fewer than 12 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
+| AdmissionBindingNotDenying | warning | a binding committed as deny has no `Deny` while other bindings do, 10 min | a fast-path patch left in place; the `[0]` replace apply |
+| AdmissionBindingDrift | warning | the other mismatches with the committed action (deny without Audit; audit with Deny or without Warn or Audit), 2 h | the same |
+| AdmissionBreakGlass | warning | no `ryft-*` binding has `Deny` while at least one is committed as deny, 4 h | end it with `admission_break_glass=false` |
+| AdmissionSignalsMissing | warning | no `up` for the API-server scrape or the bindings scrape for 15 min (also before the monitoring values are applied) | `kubectl -n monitoring get pods`, the collector log |
+| AdmissionScrapeDown | warning | `up == 0` for an admission target, 15 min | the same; remote_write errors in the collector log |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
 
 ### Admission
 
-The seven `Admission*` alerts (group `ryft-admission` in `ryft.yaml`) read the admission
-metrics above. Three properties are deliberate:
+The `Admission*` alerts (group `ryft-admission` in `ryft.yaml`) read the metrics above. Every
+selector is pinned by `job`. Properties that are deliberate:
 
-- **Gated on the bindings.** Each expression ends in `and on () (count(last_over_time(
-  kube_customresource_admission_binding_info[1h])) > 0)`. While the chart is disabled
-  (Phase 0) there are no bindings and none of them fires; the one-hour look-back keeps a
-  restart of kube-state-metrics from blinding the denial alerts. `AdmissionBindingMissing`
-  looks back a day instead, so a chart that was switched off on purpose raises it for up to
-  a day (silence it), and one that never ran does not.
+- **Counter alerts need no gate on the bindings.** They match `policy=~"ryft-.*"`, which only
+  exists once the chart is enabled, and Pod Security's enforce mode is live today, so its
+  refusals page now. The binding alerts (Missing, NotDenying, Drift, BreakGlass) are quiet in
+  Phase 0 because they join on bindings that do not exist. `AdmissionBindingMissing` looks back
+  a day, so a chart switched off on purpose raises it for up to a day (silence it), and one that
+  never ran does not.
 - **The first-event gap.** A counter child is created at 1 by its first event, so
   `increase()` is empty for the first violation, denial or error of a policy and binding.
   Two recording rules (`ryft:apiserver_admission_policy_check:fresh10m`,
   `ryft:pod_security_evaluations:fresh10m`) add the series that have no sample in the hour
   before the last 10 minutes (`unless last_over_time(... [1h] offset 10m)`), but only on an
-  endpoint whose scrape is over 12 minutes old (`up offset 12m`), so turning the scrape on
-  does not make every old counter look new. A single event therefore fires for 10 minutes
-  and resolves. A new API server endpoint (EKS replaces control-plane instances) is blind
-  for its first 12 minutes.
-- **Drift compares the effective actions.** A binding committed as `deny` must be
-  Deny+Audit; any other, or any labelled `break_glass="true"`, must be Warn+Audit. The
-  labelled break-glass is `AdmissionBreakGlass`'s, not drift.
+  endpoint whose scrape was up 12 minutes ago (`up offset 12m == 1`), so turning the scrape
+  on, or recovering it after an outage, does not make every old counter look new. A single
+  event fires for 10 minutes and resolves. A new API-server endpoint (EKS replaces
+  control-plane instances) is blind for its first 12 minutes.
+- **The committed action is a recording rule.** kube-state-metrics cannot export a binding's
+  labels, so `deploy/grafana/alerts/admission-intended.yaml` (namespace `ryft-admission` in the
+  ruler) holds `ryft:admission_binding_intended` per binding, generated from
+  `infra/aws/kubernetes/admission-values.yaml`. When a step changes `actions:`, regenerate it
+  (`scripts/admission_intended.sh`) in the same PR; `make alerts-check` fails otherwise. Load
+  the rules and run the Terraform apply within ten minutes of each other, or `NotDenying` fires.
+- **Break-glass is seen from the live actions.** A binding committed as deny without `Deny`
+  while others deny is `AdmissionBindingNotDenying` (10 min); when no binding denies it is
+  `AdmissionBreakGlass` (4 h) instead. `AdmissionBindingDrift` covers the rest, after 2 h.
+- **Liveness is not gated.** `AdmissionSignalsMissing` and `AdmissionScrapeDown` fire when a
+  scrape is gone or failing; the clean-pass counter is not a liveness signal (it does not
+  exist).
 
 Series budget (free tier, 10k active series): the three API-server families are about 200
 series at most (12 bindings x 3 or 4 action and error children x 2 API servers, the latency
-as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 36 + 12 + 2, and
-`up` plus `scrape_samples_scraped` for each target; under 300 in total. Deny and error
-children appear only after their first event.
+as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 12 (`info`) + at most
+24 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 12 recorded
+intended series, and `up` plus `scrape_samples_scraped` per target; about 300 in total. Deny
+and error children appear only after their first event.
 
 To confirm in the kind e2e before Phase 1: the `enforcement_action` and `error_type` label
-values on EKS's Kubernetes minor, and a state set over the `validationActions` list.
+values on EKS's Kubernetes minor (which of them an evaluation error carries), that
+`policy_binding` is the binding's name, and that Pod refusals carry `resource="pod"`.
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
