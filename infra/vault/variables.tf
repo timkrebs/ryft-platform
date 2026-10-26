@@ -103,6 +103,7 @@ variable "services" {
       workload_kind  = "DaemonSet", workload_name = "grafana-cloud-alloy-daemonset",
       extra_restarts = [{ kind = "Deployment", name = "grafana-cloud-alloy-deployment" }]
     }
+    whoop-import = { secret_keys = ["client_id", "client_secret", "refresh_token"], workload_kind = "" }
   }
 
   validation {

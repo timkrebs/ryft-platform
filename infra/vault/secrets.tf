@@ -96,6 +96,27 @@ resource "vault_policy" "service" {
   HCL
 }
 
+resource "vault_kv_secret_v2" "whoop_import" {
+  for_each = local.services_with_secrets
+
+  namespace           = vault_namespace.service[each.key].path_fq
+  mount               = vault_mount.kv[each.key].path
+  name                = "whoop-import"
+  delete_all_versions = true
+  data_json           = jsonencode(local.service_kv[each.key])
+  lifecycle {
+    ignore_changes = [data_json]
+  }
+}
+
+check "whoop_import_has_its_keys" {
+  assert {
+    condition = !contains(keys(local.services), "whoop-import") || alltrue([for k in ["client_id", "client_secret", "refresh_token"] :
+    contains(local.private_keys["whoop-import"], k)])
+    error_message = "service_secrets.whoop-import needs client_id, client_secret and refresh_token."
+  }
+}
+
 # Account deletion needs the Supabase secret key in the api namespace; without it
 # DELETE /v1/me erases the data but not the Supabase login (a warning, not an error).
 check "api_has_apple_keys" {
