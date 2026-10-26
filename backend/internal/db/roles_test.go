@@ -80,7 +80,7 @@ var grants = map[string]map[string][]string{
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"consents": crud, "beta_invite_codes": crud, "user_sources": crud, "feedback": crud,
-		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
+		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -219,6 +219,31 @@ func TestServiceRoleGrants(t *testing.T) {
 			}
 		}
 	}
+	// 0028: the api queues the days of an import, in full; notify reads the origin of a session
+	// and nothing the import adds; only the api writes the new columns.
+	for _, c := range []struct {
+		role, table, col, priv string
+		want                   bool
+	}{
+		{"ryft_api", "score_queue", "scored_at", "UPDATE", true}, {"ryft_api", "score_queue", "queued_at", "UPDATE", true},
+		{"ryft_notify", "sessions", "origin", "SELECT", true}, {"ryft_notify", "sessions", "import_source", "SELECT", false},
+		{"ryft_notify", "sessions", "origin", "UPDATE", false}, {"ryft_notify", "session_sets", "assist_kg", "SELECT", false},
+		{"ryft_scoring", "sessions", "origin", "SELECT", true}, {"ryft_scoring", "sessions", "origin", "UPDATE", false},
+		{"ryft_scoring", "sessions", "import_source", "UPDATE", false}, {"ryft_scoring", "session_sets", "assist_kg", "SELECT", true},
+		{"ryft_scoring", "session_sets", "assist_kg", "UPDATE", false},
+		{"ryft_scoring", "users", "import_lease_until", "UPDATE", false}, {"ryft_scoring", "users", "import_lease_until", "SELECT", true},
+		{"ryft_notify", "users", "import_lease_until", "SELECT", false}, {"ryft_ingest", "users", "import_lease_until", "UPDATE", true},
+		{"ryft_api", "sessions", "origin", "INSERT", true}, {"ryft_api", "session_sets", "assist_kg", "UPDATE", true},
+		{"ryft_api", "users", "import_lease_until", "UPDATE", true},
+	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
 	// scoring writes the learned sleep baseline (0013), nothing else of a user.
 	for col, want := range map[string]bool{"sleep_base_min": true, "sleep_base_source": true, "sleep_base_learned_min": true,
 		"sleep_base_learned_at": true, "sleep_base_manual": false, "tz": false, "max_hr": false, "email": false} {
@@ -326,6 +351,28 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	if _, err := api.Exec(ctx, `INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
 		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err == nil {
 		t.Fatal("api must not write raw data")
+	}
+	// 0028: the api queues the days of an import and holds the user's import lease, through RLS;
+	// scoring marks them scored but cannot queue them; notify reads a session's origin only.
+	if _, err := api.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+		VALUES ($1, '2026-10-18', now(), NULL) ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, id); err != nil {
+		t.Fatalf("api queues days: %v", err)
+	}
+	if _, err := api.Exec(ctx, `UPDATE users SET import_lease_until = now() + interval '2 minutes' WHERE id=$1 AND import_lease_until IS NULL`, id); err != nil {
+		t.Fatalf("api takes the import lease: %v", err)
+	}
+	if _, err := scoring.Exec(ctx, `INSERT INTO score_queue (user_id, day) VALUES ($1, '2026-10-19')`, id); err == nil {
+		t.Fatal("scoring must not queue days")
+	}
+	if _, err := api.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, status, origin, import_source)
+		VALUES ($1, gen_random_uuid(), now(), 'completed', 'import', 'alpha_progression')`, id); err != nil {
+		t.Fatalf("api stores an imported session: %v", err)
+	}
+	if err := notify.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1 AND origin = 'import'`, id).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("notify reads a session's origin through RLS: n=%d err=%v", n, err)
+	}
+	if _, err := notify.Exec(ctx, `SELECT import_source FROM sessions`); err == nil {
+		t.Fatal("notify must not read import_source")
 	}
 	if _, err := asRoleErr(dsn, "ryft_api", "wrong-password"); err == nil {
 		t.Fatal("a wrong password must fail")
