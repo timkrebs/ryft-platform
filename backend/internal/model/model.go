@@ -695,6 +695,9 @@ type AdminSource struct {
 const (
 	CodeInviteRequired  = "invite_required"
 	CodeConsentRequired = "consent_required"
+	// CodeImportInProgress: POST /v1/train/import while another import of the account
+	// runs (429, Retry-After: 10; D129).
+	CodeImportInProgress = "import_in_progress"
 )
 
 type UserPatch struct {
@@ -966,6 +969,14 @@ type RecomputeRequest struct {
 	From string `json:"from"` // YYYY-MM-DD
 	To   string `json:"to"`
 }
+
+// IngestedEvent reasons that scoring and notify branch on (the others: "recompute",
+// "merge", "session"). Both are an explicit list of days, and both end in the silent
+// refresh push once scored; an import never carries a session id (D125, D128).
+const (
+	ReasonSync   = "sync"
+	ReasonImport = "import"
+)
 
 // IngestedEvent is published (routing key ingested) after a successful sync.
 type IngestedEvent struct {
@@ -1278,6 +1289,19 @@ type Enrollment struct {
 	CurrentWeek     int       `json:"current_week"`      // 1-based
 	CurrentDayIndex int       `json:"current_day_index"` // 0-based
 	Status          string    `json:"status"`
+}
+
+// EnrollPost is the optional body of POST /v1/plans/{id}/enroll (T8): where the
+// enrolment starts or is moved to. A nil field takes its default.
+type EnrollPost struct {
+	StartedAt       *time.Time `json:"started_at"`
+	CurrentWeek     *int       `json:"current_week"`
+	CurrentDayIndex *int       `json:"current_day_index"`
+}
+
+// Set says whether any field is given (none: the enrolment as before T8).
+func (e EnrollPost) Set() bool {
+	return e.StartedAt != nil || e.CurrentWeek != nil || e.CurrentDayIndex != nil
 }
 
 type PlansOverview struct {
