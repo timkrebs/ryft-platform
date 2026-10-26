@@ -212,7 +212,7 @@ ordering and the apiserver-dependent claims are the kind run's job (next section
 (kind, at EKS's minor, the node image pinned by digest), in two modes:
 
 - `--mode ci`, CI's required job `admission` (about 5 minutes; on changes to `deploy/**`,
-  `infra/aws/kubernetes/**`, `ci.yml` and the scripts of the job; skipped for a promote PR):
+  `infra/aws/kubernetes/**`, `ci.yml`, the Makefile and the scripts of the job; skipped for a promote PR and for its merge to main; on a pull request it also fails when the chart's templates or values changed and `Chart.yaml`'s version did not go up):
   the CRDs of VSO 1.6.0, cert-manager, Traefik, RabbitMQ and Argo CD; the namespaces with
   infra/vault's labels; Argo CD's chart rendered with `argocd.tf`'s values (Terraform evaluates
   `local.argocd_values` offline, `scripts/lib/tf_values.sh`) and its rendered ClusterRoles
@@ -238,7 +238,7 @@ asks (`as:`), which binding must refuse and with which message; in Audit the sam
 must pass with that message as a warning. See OPERATIONS → "Admission policies: the kind run"
 for how to run it against a PR's tree and what a failure means.
 
-Bump `version` in `charts/admission-policy/Chart.yaml` with every template change, or the
+Bump `version` in `charts/admission-policy/Chart.yaml` with every template or values change (CI's `admission` job fails a pull request that does not), or the
 Helm provider does not upgrade the release.
 
 **Break-glass (you only).** Bindings are exempt from admission, so this always works:

@@ -524,7 +524,7 @@ adm_full_terminate_op() {
   # compared with, not "" and not main; P10 lets it through because that SHA is the synced revision.
   synced=$(kc -n argocd get application ryft-platform -o jsonpath='{.status.sync.revision}' 2>/dev/null)
   if [[ $rev =~ ^[0-9a-f]{40}$ ]] && [ "$rev" = "$synced" ]; then
-    rec "claim-k" PASS "argocd-server wrote operation.sync.revision = the full commit SHA ${rev:0:12}... (the revision ryft-platform is synced to), not main: P10's third alternative (the synced revision) is what admits a manual sync, and 'sync --revision <other sha>' is refused"
+    rec "claim-k" PASS "argocd-server wrote operation.sync.revision = the full commit SHA ${rev:0:12}... (the revision ryft-platform is synced to), not main: P10's third alternative (the synced revision) is what admits a manual sync, and the fixture 'P10 a sync of another revision through the API server' (manual/argo-cd.yaml) shows another SHA refused"
   else
     rec "claim-k" INFO "what argocd-server wrote as operation.sync.revision for a plain 'argocd app sync --async': '${rev:-not seen}' (synced revision '${synced:-?}'; P10 allows \"\", main and the synced revision); D122 says it is the full SHA, which this run did not see"
   fi
