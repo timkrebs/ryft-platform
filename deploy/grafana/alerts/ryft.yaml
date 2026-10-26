@@ -379,8 +379,11 @@ groups:
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionPolicyError
         # The same under Warn+Audit: the requests are admitted, but the policy judges nothing.
+        # A Deny+Audit binding counts its audit child too; that one is the critical rule's.
         expr: |
           max by (policy, policy_binding, error_type) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action=~"warn|audit", error_type!~"no_error|"})
+            unless on (policy, policy_binding)
+          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny"})
         labels: { severity: warning }
         annotations:
           summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }}); requests are admitted"

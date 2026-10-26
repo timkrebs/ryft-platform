@@ -1378,10 +1378,14 @@ Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMi
   `ryft-*` policy finds something.
 
 **A step change** (a reviewed PR edits `actions:` in `admission-values.yaml`): regenerate
-`scripts/admission_intended.sh` in the same PR (`make alerts-check` fails otherwise). After the
-merge, do the Terraform apply and `make alerts-apply` within ten minutes of each other, in
-either order: in between, the live actions and the committed ones disagree, and
-`AdmissionBindingNotDenying` fires after ten minutes.
+`scripts/admission_intended.sh` in the same PR (`make alerts-check` fails otherwise; the
+generator also fails when the keys of `actions:` differ from the chart's). After the merge,
+do the Terraform apply first, then `make alerts-apply`. In between, the live actions are
+ahead of the committed ones, which shows as `AdmissionBindingDrift` with its two-hour wait
+(a deny that went live) and clears when the rules load; the other order would raise
+`AdmissionBindingNotDenying` after ten minutes. A one-plan `-var` override of
+`admission_actions` is not mirrored in the rules: expect Drift or NotDenying for it until it
+is committed in the values file.
 
 **Reading a finding.** Every alert names a `policy` (the policy object, e.g.
 `ryft-workloads`) and a `policy_binding` (e.g. `ryft-workloads-pods`); P-numbers and steps
@@ -1495,7 +1499,7 @@ least one is committed as deny: the chart's break-glass (`admission_break_glass=
 or every binding was patched. Nothing is refused. Planned maintenance ends with the same
 apply and `admission_break_glass=false`:
 ```bash
-terraform -chdir=infra/aws/kubernetes plan -out=admission.tfplan -var='admission_break_glass=false'
+terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -out=admission.tfplan -var='admission_break_glass=false'
 terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 ```
 
@@ -1518,7 +1522,7 @@ patched, `AdmissionBreakGlass` after 4 hours.
 **Restore** (undo a patch, recreate a lost binding). Helm does not see out-of-band changes,
 so a plain apply changes nothing; replace the release:
 ```bash
-terraform -chdir=infra/aws/kubernetes plan -replace='helm_release.admission_policy[0]' -out=admission.tfplan
+terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' -out=admission.tfplan
 terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 ```
 A replace uninstalls the release and installs it again: every policy and binding is gone for

@@ -358,7 +358,8 @@ selector is pinned by `job`. Properties that are deliberate:
   ruler) holds `ryft:admission_binding_intended` per binding, generated from
   `infra/aws/kubernetes/admission-values.yaml`. When a step changes `actions:`, regenerate it
   (`scripts/admission_intended.sh`) in the same PR; `make alerts-check` fails otherwise. Load
-  the rules and run the Terraform apply within ten minutes of each other, or `NotDenying` fires.
+  the rules after the Terraform apply (the other order raises `NotDenying`; this one a
+  Drift that waits two hours and clears when the rules load).
 - **Break-glass is seen from the live actions.** A binding committed as deny without `Deny`
   while others deny is `AdmissionBindingNotDenying` (10 min); when no binding denies it is
   `AdmissionBreakGlass` (4 h) instead. `AdmissionBindingDrift` covers the rest, after 2 h.

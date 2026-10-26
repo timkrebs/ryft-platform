@@ -111,6 +111,11 @@ jobs:
               - 'scripts/synthetics.sh'
               - 'scripts/synthetics_re2.go'
               - 'scripts/tests/synthetics_test.sh'
+              # the committed actions of the admission bindings (a step-change PR edits only the values)
+              - 'infra/aws/kubernetes/admission-values.yaml'
+              - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
+              - 'scripts/admission_intended.sh'
+              - 'scripts/tests/admission_intended_test.sh'
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
@@ -371,6 +376,7 @@ jobs:
       - run: make alerts-check CONTAINER=docker
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
+      - run: bash scripts/tests/admission_intended_test.sh
 
   # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift

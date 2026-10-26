@@ -377,6 +377,7 @@ tests:
 
 
 
+
   # ---- admission policies (T12-e) --------------------------------------------------------
   # Counters: the first event of a new child (created at 1, nothing to subtract), steady and
   # growing series, the scrape's own start and a recovered scrape, Pod Security without any
@@ -570,6 +571,8 @@ tests:
       - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="deny",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-broker",policy_binding="ryft-broker",enforcement_action="deny",error_type="out_of_budget",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="audit",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-broker",policy_binding="ryft-broker",enforcement_action="audit",error_type="out_of_budget",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-traefik",policy_binding="ryft-traefik",enforcement_action="warn",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }

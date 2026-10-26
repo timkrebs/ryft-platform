@@ -14,7 +14,28 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 values=${ADMISSION_VALUES:-$root/infra/aws/kubernetes/admission-values.yaml}
 out=${ADMISSION_INTENDED_OUT:-$root/deploy/grafana/alerts/admission-intended.yaml}
-want_bindings=12   # the 12 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml)
+chart_values=${ADMISSION_CHART_VALUES:-$root/infra/aws/kubernetes/charts/admission-policy/values.yaml}
+want_bindings=12  # the 12 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml)
+
+action_keys() { # the keys under `actions:`, one per line, duplicates kept
+  awk '
+    /^actions:/ { inb = 1; next }
+    inb && /^[^ #]/ { inb = 0 }
+    inb && /^  [a-z0-9-]+:/ { k = $1; sub(/:$/, "", k); print k }
+  ' "$1"
+}
+
+# The values file must name exactly the chart's bindings: a duplicate or a missing key fails.
+check_keys() {
+  local mine chart
+  mine=$(action_keys "$values" | sort)
+  chart=$(action_keys "$chart_values" | sort)
+  if [ "$mine" != "$chart" ]; then
+    echo "admission_intended: the actions keys of $values differ from the chart's ($chart_values)" >&2
+    diff <(echo "$chart") <(echo "$mine") >&2 || true
+    exit 1
+  fi
+}
 
 render() {
   awk '
@@ -48,6 +69,7 @@ EOF
   }
 }
 
+check_keys
 case "${1:-}" in
   "")
     tmp=$(mktemp)
