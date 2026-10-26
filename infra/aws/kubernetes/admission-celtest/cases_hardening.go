@@ -362,6 +362,15 @@ func runHardening(c *chart) {
 	x = rcl()
 	set(x, "spec/secretBackend", jv(`{"vault":{"role":"x"}}`))
 	add("P11 secretBackend", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
+	// The Cluster Operator's defaulting webhook writes this into every RabbitmqCluster (seen in the
+	// kind run, T12-d); it is no backend.
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"externalSecret":{"name":""}}`))
+	add("P11 secretBackend defaulted by the operator's webhook", argoCtl, "CREATE", x)
+	add("P11 secretBackend defaulted, written by the Cluster Operator", "system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator", "UPDATE", x)
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"externalSecret":{"name":"x"}}`))
+	add("P11 secretBackend externalSecret named", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
 
 	for _, t := range ts {
 		report(c, t.name, t.req, t.want)

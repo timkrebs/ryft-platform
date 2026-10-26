@@ -36,8 +36,12 @@ spec:
         oldObject != null && has(dyn(oldObject).status) && has(dyn(oldObject).status.sync) && has(dyn(oldObject).status.sync.revision) ?
           dyn(oldObject).status.sync.revision : ''
   validations:
+    # The controller's own automated sync carries a copy of the Application's source (found by the
+    # kind run, T12-d): a source equal to spec.source / spec.sources is not a source of its own.
     - expression: |-
-        !has(variables.sync.manifests) && !has(variables.sync.source) && !has(variables.sync.sources)
+        !has(variables.sync.manifests) &&
+        (!has(variables.sync.source) || (has(dyn(object).spec.source) && variables.sync.source == dyn(object).spec.source)) &&
+        (!has(variables.sync.sources) || (has(dyn(object).spec.sources) && variables.sync.sources == dyn(object).spec.sources))
       message: "P10: a sync operation must not carry local manifests or a source of its own."
       reason: Forbidden
     - expression: |-
