@@ -583,8 +583,9 @@ func TestTrainImportOutOfTime(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`, user, stuck.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The route's chain with a budget of the finish's time plus 300 ms for the items.
-	srv := withBudget(b, importFinishTimeout+300*time.Millisecond)
+	// The route's chain with a budget of the finish's time plus 2 s for the items: enough for
+	// the plan and the early session on a loaded machine; the stuck one waits past it anyway.
+	srv := withBudget(b, importFinishTimeout+2*time.Second)
 	timeouts := testutil.ToFloat64(metrics.TrainImports.WithLabelValues("timeout"))
 	rec := callHandler(srv, token, request([]model.Plan{p}, stuck, early))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" ||

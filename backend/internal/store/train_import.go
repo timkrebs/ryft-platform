@@ -96,6 +96,9 @@ type ImportOutcome struct {
 	// Exercises are the exercise ids of the stored version and, for an update, of the
 	// replaced one (deduplicated): the records to recompute.
 	Exercises []uuid.UUID
+	// Replaced is the stored version an update replaced (nil otherwise): its exercises,
+	// start and body weight mattered to later sessions too (scoring.ScopeOf, D135).
+	Replaced *model.Session
 }
 
 // importReject aborts an item's transaction with a rejection: nothing of the item stays.
@@ -281,7 +284,7 @@ func (s *Store) ImportSession(ctx context.Context, userID uuid.UUID, source stri
 		out.Status = ImportCreated
 		var days []string
 		if stored != nil {
-			out.Status = ImportUpdated
+			out.Status, out.Replaced = ImportUpdated, stored
 			if prev := localDay(stored.StartedAt, loc); prev != day {
 				out.PreviousDay = prev
 				days = append(days, prev)
@@ -434,28 +437,44 @@ func (s *Store) PendingAmong(ctx context.Context, userID uuid.UUID, days []strin
 	return append(out, got...), err
 }
 
+// DependentScope is scoring.DependentScope's fields (D135; the store cannot import scoring):
+// which other sessions' stored load the changed sessions can move.
+type DependentScope struct {
+	Since           time.Time   // the oldest changed session's start: nothing before it depends on them
+	Exercises       []uuid.UUID // the changed sessions' exercises
+	Through         time.Time   // the newest changed session's history end + the e1RM window
+	BodyweightSince *time.Time  // the oldest changed session with a body weight; nil: none has one
+}
+
 // DependentDays returns the local days, sorted and inside w, of the user's completed sessions that
-// started after since and have one of the exercises ex: their load is measured against the e1RM
-// history as of their end, which an import before them changed (D128).
-func (s *Store) DependentDays(ctx context.Context, userID uuid.UUID, since time.Time, ex []uuid.UUID, w DayWindow, loc *time.Location) ([]string, error) {
+// started after q.Since and either share one of q.Exercises and started before q.Through (their
+// e1RM window holds a changed set), or have no body weight of their own, hold a bodyweight
+// exercise and started after q.BodyweightSince (their body weight is the last one logged before
+// them, which a changed session may now be): the rule of scoring.DependentScope.Covers (D128, D135).
+// The changed sessions' own days may be among them; the caller has those anyway.
+func (s *Store) DependentDays(ctx context.Context, userID uuid.UUID, q DependentScope, w DayWindow, loc *time.Location) ([]string, error) {
 	out := []string{}
-	if len(ex) == 0 || w.To == "" {
+	if (len(q.Exercises) == 0 && q.BodyweightSince == nil) || w.To == "" {
 		return out, nil
 	}
 	from, err := w.start(loc)
 	if err != nil {
 		return nil, fmt.Errorf("day window: %w", err)
 	}
-	if since.After(from) {
-		from = since
+	if q.Since.After(from) {
+		from = q.Since
 	}
-	// The range on started_at is the sessions_user_started index; the exercise is the EXISTS.
-	// Strictly after since: the oldest imported session itself is queued by its own item.
+	// The range on started_at is the sessions_user_started index; the exercise and the
+	// bodyweight exercise are EXISTS on session_exercises_exercise / the exercise's key.
+	// Strictly after Since: the oldest changed session itself is queued by its own item.
 	rows, err := s.pool.Query(ctx, `SELECT s.started_at FROM sessions s
 		WHERE s.user_id = $1 AND s.status = 'completed' AND s.started_at > $2
-		  AND EXISTS (SELECT 1 FROM session_exercises e
-		              WHERE e.user_id = s.user_id AND e.session_id = s.id AND e.exercise_id = ANY($3))`,
-		userID, from, ex)
+		  AND ((s.started_at < $4 AND EXISTS (SELECT 1 FROM session_exercises e
+		              WHERE e.user_id = s.user_id AND e.session_id = s.id AND e.exercise_id = ANY($3)))
+		    OR ($5::timestamptz IS NOT NULL AND s.bodyweight_kg IS NULL AND s.started_at > $5
+		        AND EXISTS (SELECT 1 FROM session_exercises e JOIN exercises x ON x.id = e.exercise_id
+		                    WHERE e.user_id = s.user_id AND e.session_id = s.id AND x.load_type = 'bodyweight')))`,
+		userID, from, q.Exercises, q.Through, q.BodyweightSince)
 	if err != nil {
 		return nil, err
 	}

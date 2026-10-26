@@ -129,7 +129,8 @@ func TestImportSessionCreatedUnchangedUpdated(t *testing.T) {
 	x := imported(squat, t0, 100, 105)
 
 	out := importSess(t, st, a, x)
-	if out.Status != ImportCreated || out.Day != "2026-10-18" || !out.Queued || !slices.Equal(out.Exercises, []uuid.UUID{squat}) {
+	if out.Status != ImportCreated || out.Day != "2026-10-18" || !out.Queued || !slices.Equal(out.Exercises, []uuid.UUID{squat}) ||
+		out.Replaced != nil {
 		t.Fatalf("create: %+v", out)
 	}
 	got, err := st.Session(ctx, a, x.ID)
@@ -164,8 +165,9 @@ func TestImportSessionCreatedUnchangedUpdated(t *testing.T) {
 	y.Exercises = []model.SessionExercise{x.Exercises[0]}
 	y.Exercises[0].Sets = []model.Set{x.Exercises[0].Sets[0]}
 	y.Exercises[0].Sets[0].Reps = ptr(8)
-	if out := importSess(t, st, a, y); out.Status != ImportUpdated || !out.Queued || out.PreviousDay != "" {
-		t.Fatalf("update: %+v", out)
+	if out := importSess(t, st, a, y); out.Status != ImportUpdated || !out.Queued || out.PreviousDay != "" ||
+		out.Replaced == nil || len(out.Replaced.Exercises[0].Sets) != 2 {
+		t.Fatalf("update, with the replaced version (two sets): %+v", out)
 	}
 	got, _ = st.Session(ctx, a, x.ID)
 	if len(got.Exercises[0].Sets) != 1 || *got.Exercises[0].Sets[0].Reps != 8 || got.Origin != model.OriginImport {
@@ -488,23 +490,33 @@ func TestImportDays(t *testing.T) {
 	if _, err := st.SaveSession(ctx, a, prog); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.DependentDays(ctx, a, d(-9), []uuid.UUID{squat}, importWindow, time.UTC)
+	// The shared-exercise clause (Through far ahead; the 90-day bound and the body-weight
+	// clause are compared with scoring.DependentScope.Covers in cmd/api).
+	scope := func(since time.Time, ex ...uuid.UUID) DependentScope {
+		return DependentScope{Since: since, Exercises: ex, Through: d(400)}
+	}
+	got, err := st.DependentDays(ctx, a, scope(d(-9), squat), importWindow, time.UTC)
 	if err != nil || !slices.Equal(got, []string{"2026-10-13"}) {
 		t.Fatalf("after day -9 with squat: %v %v", got, err)
 	}
-	got, _ = st.DependentDays(ctx, a, d(-20), []uuid.UUID{squat, bench}, importWindow, time.UTC)
+	got, _ = st.DependentDays(ctx, a, scope(d(-20), squat, bench), importWindow, time.UTC)
 	if !slices.Equal(got, []string{"2026-10-08", "2026-10-10", "2026-10-13"}) {
 		t.Fatalf("both exercises: %v (the 2024 session is outside the window)", got)
 	}
-	got, _ = st.DependentDays(ctx, a, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), []uuid.UUID{squat}, importWindow, time.UTC)
+	got, _ = st.DependentDays(ctx, a, scope(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), squat), importWindow, time.UTC)
 	if slices.Contains(got, "2024-01-05") {
 		t.Fatalf("the window cuts: %v", got)
 	}
-	if got, _ = st.DependentDays(ctx, a, d(-9), nil, importWindow, time.UTC); len(got) != 0 {
+	if got, _ = st.DependentDays(ctx, a, scope(d(-9)), importWindow, time.UTC); len(got) != 0 {
 		t.Fatalf("no exercises: %v", got)
 	}
-	if got, _ = st.DependentDays(ctx, a, d(-5), []uuid.UUID{squat}, importWindow, time.UTC); len(got) != 0 {
+	if got, _ = st.DependentDays(ctx, a, scope(d(-5), squat), importWindow, time.UTC); len(got) != 0 {
 		t.Fatalf("strictly after since: %v", got)
+	}
+	bounded := scope(d(-20), squat, bench)
+	bounded.Through = d(-6)
+	if got, _ = st.DependentDays(ctx, a, bounded, importWindow, time.UTC); !slices.Equal(got, []string{"2026-10-08", "2026-10-10"}) {
+		t.Fatalf("Through bounds the shared exercise: %v", got)
 	}
 
 	// PendingAmong: queued and unscored only.

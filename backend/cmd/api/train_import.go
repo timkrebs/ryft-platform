@@ -25,6 +25,7 @@ import (
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
 	"github.com/timkrebs/ryft/internal/train"
 )
@@ -247,25 +248,15 @@ func invalid(err error) store.ImportOutcome {
 // queued with the request's one ingested event (reason import) in one transaction. The days
 // are those of the created and updated sessions (and the days an update moved them from),
 // those of unchanged sessions that an earlier attempt queued and scoring has not finished,
-// and the days of the user's other sessions after the oldest of them that share an exercise
-// (their load is measured against the history the import changed); all inside the window.
+// and the days of the user's other sessions whose load the changed ones can move
+// (scoring.ScopeOf over the changed sessions and the versions they replaced, D135: a shared
+// exercise within the e1RM window after the newest of them, or no body weight of their own
+// after the oldest with one); all inside the window.
 func (h *handler) finishImport(ctx context.Context, r *http.Request, run *importRun) ([]string, error) {
-	var records, depEx []uuid.UUID
-	var since time.Time
+	var records []uuid.UUID
+	var scope []model.Session
 	changed := map[string]bool{}
 	var unchanged []string
-	depend := func(i int, o store.ImportOutcome) {
-		depEx = append(depEx, o.Exercises...)
-		start := run.bodies[i].StartedAt
-		if o.PreviousDay != "" {
-			if prev, err := time.ParseInLocation(time.DateOnly, o.PreviousDay, run.loc); err == nil && prev.Before(start) {
-				start = prev
-			}
-		}
-		if since.IsZero() || start.Before(since) {
-			since = start
-		}
-	}
 	for i, o := range run.sessions {
 		switch o.Status {
 		case store.ImportCreated, store.ImportUpdated:
@@ -274,7 +265,10 @@ func (h *handler) finishImport(ctx context.Context, r *http.Request, run *import
 					changed[d] = true
 				}
 			}
-			depend(i, o)
+			scope = append(scope, run.bodies[i])
+			if o.Replaced != nil {
+				scope = append(scope, *o.Replaced)
+			}
 		case store.ImportUnchanged:
 			if run.window.Contains(o.Day) {
 				unchanged = append(unchanged, o.Day)
@@ -291,16 +285,17 @@ func (h *handler) finishImport(ctx context.Context, r *http.Request, run *import
 	for i, o := range run.sessions {
 		if o.Status == store.ImportUnchanged && slices.Contains(pending, o.Day) {
 			changed[o.Day] = true
-			depend(i, o) // its first attempt never got as far as the dependent days
+			scope = append(scope, run.bodies[i]) // its first attempt never got as far as the dependent days
 		}
 	}
-	if len(depEx) > 0 {
-		deps, err := h.st.DependentDays(ctx, run.user, since, uniqueIDs(depEx), run.window, run.loc)
+	if d, ok := scoring.ScopeOf(scope); ok {
+		deps, err := h.st.DependentDays(ctx, run.user, store.DependentScope{Since: d.Since, Exercises: d.Exercises,
+			Through: d.Through, BodyweightSince: d.BodyweightSince}, run.window, run.loc)
 		if err != nil {
 			return nil, err
 		}
-		for _, d := range deps {
-			changed[d] = true
+		for _, day := range deps {
+			changed[day] = true
 		}
 	}
 	if len(records) > 0 {

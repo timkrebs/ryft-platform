@@ -2706,9 +2706,10 @@ sent, and whether a second account shares its phone.
 - **A resumed request finds the dependent days too.** Design §7 takes `DependentDays` from the created and
   updated sessions only. After an interrupted attempt the retry's items are all `unchanged`, so the days
   of the user's later sessions (whose load depends on the imported e1RM history) would never be queued.
-  An `unchanged` session whose day is still pending (`PendingAmong`) counts like a changed one for
-  `since` and the exercises. Cost: a few more days rescored when a sync's pending day happens to be an
-  imported session's; harmless.
+  An `unchanged` session whose day is still pending (`PendingAmong`) counts like a changed one: it
+  joins the sessions `scoring.ScopeOf` gets (D135: the created and updated ones and the versions
+  they replaced, `ImportOutcome.Replaced`). Cost: a few more days rescored when a sync's pending day
+  happens to be an imported session's; harmless.
 - **Smaller calls.** A plan or a session without an id is that item's `invalid`, not a whole-request
   `422`; the duplicate check skips the nil id. `train.Problem` gets no `Code`: the store's rejections
   carry their codes (`importReject`, D131) and every `Problem` from `internal/train` is `invalid`.
