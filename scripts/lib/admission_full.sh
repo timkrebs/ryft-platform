@@ -4,20 +4,21 @@
 # cert-manager and the internal CA, Argo CD from argocd.tf's values (T12-f's RBAC when the tree has
 # it), the tree served to Argo CD from inside the cluster, the RabbitMQ operators and the broker synced
 # by Argo CD, the policies first in Audit and then in Deny, with a manual sync of every app, the hooks,
-# terminate-op, the broker restart of D98, the operators' reach, claims i and m.
+# terminate-op, the broker restart of D98, the operators' reach, claims i, k and m.
 #
 # What is stubbed (and nothing else):
 #   - Vault and the Vault Secrets Operator: the VSO CRDs are there, a loop in this script marks every
 #     VaultStaticSecret SecretSynced and writes the Secret it names with dummy keys (the amqp-user-*
 #     ones with a username and a password). P4 judges the real objects; no secret is real.
 #   - The service images: ghcr.io/timkrebs/ryft/<name>:<the overlay's tag> are busybox images built here
-#     and loaded into kind under exactly those names (the policies judge the names): an HTTP server on
-#     8080 for the services and the site, a 15 second sleep for migrate (the PreSync hook and, with the
-#     argument smoke, the PostSync hook). The real images need a database. The Job specs are the real
-#     ones; what they run is not.
-#   - The tree is served to Argo CD from inside the cluster (a dumb-HTTP git repository in gitsrv)
-#     under the URL it names (git's url.<>.insteadOf in the repo-server): the Applications are the
-#     committed ones.
+#     as localhost/ryft-stub/<name>:<tag>, loaded into kind and tagged inside the node under exactly the
+#     ghcr.io names (the policies judge the names; no such tag exists in the local image store): an HTTP
+#     server on 8080 for the services and the site, a 15 second sleep for migrate (the PreSync hook and,
+#     with the argument smoke, the PostSync hook). The real images need a database. The Job specs are
+#     the real ones; what they run is not.
+#   - The tree (the copy of its tracked files) is served to Argo CD from inside the cluster (a smart-HTTP
+#     git server, gitsrv.go, in the namespace gitsrv). The Applications and the project of the served
+#     copy name that URL instead of GitHub's, and P7's constant follows; everything else is the tree's.
 #   - Ingress status (no load balancer in kind) is patched so Argo CD's health check passes.
 #   - The broker runs one replica on the default StorageClass and 2Gi (the tree's three replicas on
 #     gp3 do not fit a runner): a copy of rabbitmqcluster.yaml in the served repository is patched.
@@ -339,12 +340,13 @@ adm_full_explained() {
 
 # adm_full_findings <label> <since-timestamp> [explained shapes]: the validation failures the API server
 # logged since then (the audit log, grepped on the node), by policy/binding, requester, resource, dry-run
-# and message. A line that matches none of the explained shapes (adm_full_explained) is a finding.
+# and message. A line that matches none of the explained shapes (adm_full_explained) is a finding. The
+# requests for the canary object zz-canary (adm_wait_enforced, which expects a refusal) are not looked at.
 adm_full_findings() {
   local label=$1 since=$2 explained=${3:-} log all unexplained="" line rest cnt v u r d m shape explained_n=0 rc=0 s_v s_u s_r s_m
   log=$(adm_audit_grep validation_failure) || rc=$?
   if [ "$rc" != 0 ]; then adm_audit_unreadable "$label" "no log on the node of ${KIND_CLUSTER}"; return; fi
-  all=$(printf '%s\n' "$log" | jq -r --arg since "$since" 'select(.requestReceivedTimestamp >= $since and (.annotations // {} | has("validation.policy.admission.k8s.io/validation_failure"))) | (.annotations["validation.policy.admission.k8s.io/validation_failure"] | fromjson | .[] | select(.policy != null)) as $f | [($f.policy + "/" + $f.binding + ":" + ($f.validationActions | join("+"))), .user.username, (.objectRef.resource // "-"), ((.requestURI | test("dryRun")) | tostring), ($f.message // "" | gsub("[\\t\\n]"; " ") | .[0:200])] | @tsv' 2>/dev/null | sort | uniq -c | sort -rn | sed -E 's/^ *([0-9]+) /\1\t/')
+  all=$(printf '%s\n' "$log" | jq -r --arg since "$since" 'select(.requestReceivedTimestamp >= $since and (.objectRef.name // "") != "zz-canary" and (.annotations // {} | has("validation.policy.admission.k8s.io/validation_failure"))) | (.annotations["validation.policy.admission.k8s.io/validation_failure"] | fromjson | .[] | select(.policy != null)) as $f | [($f.policy + "/" + $f.binding + ":" + ($f.validationActions | join("+"))), .user.username, (.objectRef.resource // "-"), ((.requestURI | test("dryRun")) | tostring), ($f.message // "" | gsub("[\\t\\n]"; " ") | .[0:200])] | @tsv' 2>/dev/null | sort | uniq -c | sort -rn | sed -E 's/^ *([0-9]+) /\1\t/')
   if [ -z "$all" ]; then rec "$label" PASS "no validation failure in the audit log since the stage began"; return; fi
   while IFS="$(printf '\t')" read -r cnt v u r d m; do
     [ -n "$cnt" ] || continue

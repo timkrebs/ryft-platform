@@ -377,15 +377,27 @@ adm_wait_policies() {
   adm_wait_enforced "$variant"
 }
 
-# The fixture that proves the bindings are live: P4's allowedNamespaces (a binding that stays Deny in
-# the deny variant, whatever the tree has not fixed yet).
-ADM_CANARY=ryft-vso-01-p4-allowednamespaces.yaml
-
+# The fixture that proves the bindings are live: a VaultDynamicSecret, which P4 refuses whoever asks (a
+# binding that stays Deny in the deny variant, whatever the tree has not fixed yet). It is written here and
+# run as the cluster admin (no `as:`), so it needs no RBAC of the fixture group, which the full mode removes.
 # adm_wait_enforced <audit|deny>: poll the canary fixture for 30 s until the API server answers as the
 # variant says (refused with the policy's message; or admitted with it as a warning).
 adm_wait_enforced() {
-  local variant=$1 f="$FIXTURE_DIR/generated/$ADM_CANARY" refused_by msg norm i
-  [ -f "$f" ] || { rec "enforced-$variant" FAIL "the canary fixture $ADM_CANARY is missing"; return 1; }
+  local variant=$1 f="$WORK/canary-fixture.yaml" refused_by msg norm i
+  cat > "$f" <<'EOF'
+# fixture: canary (P4 refuses a VaultDynamicSecret)
+# op: create
+# refused-by: ryft-vso
+# message: P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultDynamicSecret
+metadata: { name: zz-canary, namespace: ryft-api }
+spec:
+  vaultAuthRef: api
+  mount: database
+  path: creds/x
+  destination: { name: zz-canary, create: true }
+EOF
   refused_by=$(adm_fixture_header "$f" refused-by); msg=$(adm_fixture_header "$f" message)
   for i in $(seq 1 30); do
     adm_run_fixture "$f" "$variant"
@@ -397,7 +409,7 @@ adm_wait_enforced() {
     fi
     sleep 1
   done
-  rec "enforced-$variant" FAIL "30 s after the install the canary fixture $ADM_CANARY is still not answered as $variant says (rc=$FX_RC): $(printf '%s' "$norm" | cut -c1-300)"
+  rec "enforced-$variant" FAIL "30 s after the install the canary fixture is still not answered as $variant says (rc=$FX_RC): $(printf '%s' "$norm" | cut -c1-300)"
   return 1
 }
 
@@ -405,7 +417,7 @@ adm_wait_enforced() {
 # dry-runs of the renders
 
 # Values read from the tree under test (an Application's name and path, a Secret's labels) are checked
-# before they name a file, a flag or a label: the tree is code (D122).
+# before they name a file, a flag or a label: the tree is code (D123).
 adm_valid_name() { [[ $1 =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; }
 adm_valid_path() { [[ $1 =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] && [[ $1 != *..* ]]; }
 # A label key (optionally prefix/name) and value as Kubernetes validates them.

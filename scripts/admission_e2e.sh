@@ -9,7 +9,7 @@
 #   --mode full  (make admission-e2e; the manual workflow; about 25 minutes) the above, plus the real
 #                stack: cert-manager, Argo CD from argocd.tf's values with T12-f's RBAC, the operators
 #                and the broker synced by Argo CD from this tree, hooks, terminate-op, the broker restart
-#                of D98, the operators' reach, claims i and m. See scripts/lib/admission_full.sh.
+#                of D98, the operators' reach, claims i, k and m. See scripts/lib/admission_full.sh.
 #
 #   scripts/admission_e2e.sh [--mode ci|full] [--repo DIR] [--summary FILE] [--keep]
 #                            [--kubeconfig FILE] [--argocd-values FILE]
@@ -21,7 +21,7 @@
 #                    this checkout. THE TREE IS CODE (kustomize renders it, Terraform evaluates its
 #                    argocd.tf, Argo CD syncs it): a tree you do not trust runs in the workflow, or on a
 #                    machine without production credentials, not on a laptop that has them. The values
-#                    it supplies are checked before they reach a command line (D122), but that is a
+#                    it supplies are checked before they reach a command line (D123), but that is a
 #                    second line, not a sandbox.
 #   --kubeconfig F   use that existing kind cluster instead of creating one (it must be a kind-* context
 #                    on 127.0.0.1 that `kind get kubeconfig` agrees with; see scripts/lib/kind_guard.sh).

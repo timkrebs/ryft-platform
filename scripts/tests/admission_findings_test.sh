@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2329
+# shellcheck disable=SC1091,SC2329,SC2034
 # The audit-log findings of the admission kind run (scripts/lib/admission_full.sh, adm_full_findings and
 # adm_full_explained) on canned audit lines (make test-scripts): a validation failure is explained only
 # with the policy, requester, resource and message of what the tree has not fixed yet, and only while the
@@ -56,6 +56,13 @@ SCOPED=0
 
 line ryft-operators-cluster ryft-operators-cluster Warn+Audit "$CTRL" clusterroles /x "$P6_WILD" "$OLD" > "$AUDIT"
 run audit; expect PASS "a finding from before the stage began is not looked at"
+
+# the canary of adm_wait_enforced is refused on purpose and is not a finding; the same refusal of another object is
+jq -nc --arg t "$NEW" '{requestReceivedTimestamp: $t, requestURI: "/apis/x?dryRun=All", user: {username: "kubernetes-admin"}, objectRef: {resource: "vaultdynamicsecrets", name: "zz-canary"},
+  annotations: {"validation.policy.admission.k8s.io/validation_failure": ([{message: "P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed.", policy: "ryft-vso", binding: "ryft-vso", expressionIndex: 0, validationActions: ["Deny"]}] | tojson)}}' > "$AUDIT"
+run deny; expect PASS "the canary's own refusal"
+jq -c '.objectRef.name = "x"' "$AUDIT" > "$AUDIT.2"; mv "$AUDIT.2" "$AUDIT"
+run deny; expect FAIL "the same refusal of an object that is not the canary"
 
 line ryft-operators-cluster ryft-operators-cluster Warn+Audit "system:serviceaccount:argocd:argocd-server" clusterroles /x "$P6_WILD" "$NEW" > "$AUDIT"
 run audit; expect FAIL "the P6 shape from another requester"
