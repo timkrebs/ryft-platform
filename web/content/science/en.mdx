@@ -1,11 +1,11 @@
 ---
 title: 'How RYFT calculates its scores'
-description: 'Every formula, weight, baseline and band behind Readiness, Recovery, Strain and Sleep, for scoring model 2026.10.1.'
-model: '2026.10.1'
-checked: '2026-10-20'
+description: 'Every formula, weight, baseline and band behind Readiness, Recovery, Strain and Sleep, for scoring model 2026.10.2.'
+model: '2026.10.2'
+checked: '2026-10-26'
 ---
 
-This page describes scoring model **2026.10.1**, as documented in the RYFT platform's scoring reference on 20 October 2026. Every score RYFT stores carries the version of the model that computed it, so a number on this page and a number in the app can always be matched up.
+This page describes scoring model **2026.10.2**, as documented in the RYFT platform's scoring reference on 26 October 2026. Every score RYFT stores carries the version of the model that computed it, so a number on this page and a number in the app can always be matched up.
 
 The constants are starting points. They are pinned by tests, and the beta will tune them; each change gets a new model version (see [Model versions](#versions)).
 
@@ -96,7 +96,7 @@ The same integration counts minutes in five zones of heart-rate reserve: 50–60
 
 <Formula tex={String.raw`\text{load} = \text{reps} \cdot \left(\frac{\text{weight}}{\text{e1RM}}\right)^{2} \cdot \text{muscle factor}, \qquad \text{e1RM} = \text{weight} \cdot \left(1 + \frac{\text{reps}}{30}\right)`} />
 
-The estimated one-rep max (Epley, reps capped at 12) is your best so far, so intensity never exceeds 1. The muscle factor weighs the muscles an exercise works (quads and glutes 1.0 down to forearms 0.2) and the kind of exercise (barbell 1.0, machine 0.8, bodyweight 0.32, cardio 0.3; the Olympic lifts 1.15). Warm-up sets count a quarter. A session's muscular TRIMP is the sum of its set loads × 0.6.
+The estimated one-rep max (Epley, reps capped at 12) is your best of the 90 days before the session, its own sets included, so intensity never exceeds 1. In an assisted set (an assistance machine or a band) the effective weight is body weight minus the assistance, and such a set holds no record. The muscle factor weighs the muscles an exercise works (quads and glutes 1.0 down to forearms 0.2) and the kind of exercise (barbell 1.0, machine 0.8, bodyweight 0.32, cardio 0.3; the Olympic lifts 1.15). Warm-up sets count a quarter. A session's muscular TRIMP is the sum of its set loads × 0.6.
 
 | Reference session | Strain |
 | --- | --- |
@@ -142,7 +142,7 @@ A habit unlocks with at least **5 days with and 5 without** a scored recovery. T
 
 <h2 id="versions">Model versions: no silent changes</h2>
 
-The model has a version, year.month.n, currently **2026.10.1**. Scoring writes it on every daily score and every workout it puts a load on.
+The model has a version, year.month.n, currently **2026.10.2**. Scoring writes it on every daily score and every workout it puts a load on.
 
 - **The bump rule:** any change that moves a stored number (a formula, a constant, a source rule, a new input) gets a new version in the same change, with a changelog entry in English and German that lists the metrics it moves. A refactor that keeps every number does not.
 - After a new version, history is scored again with it, so old and new days are comparable.
