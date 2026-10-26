@@ -2345,3 +2345,14 @@ sent, and whether a second account shares its phone.
   Argo-made namespace, a new mutating webhook on RYFT pods (the SDK injector excludes `ryft-*`), a
   Vault address change, or an operator upgrade that renames an object or adds an image needs the chart
   first. A new service doesn't (images and app paths are patterns).
+- **Signals (amended 2026-10-26, T12-e):** two design claims were false — kube-state-metrics'
+  custom-resource-state reads CRD kinds only (claim m), and clean passes aren't counted (claim e).
+  So: KSM's native `validatingadmissionpolicybindings` collector (existence and live actions, no
+  labels); the committed action per binding is a recording rule generated from
+  `admission-values.yaml` (`scripts/admission_intended.sh`, an equality check in CI, keys equal to
+  the chart's); break-glass is read from the live actions; liveness is the scrape's `up`. Pod
+  Security enforce refusals alert today (ungated, critical); the Pod-capable bindings (workloads
+  pods, operator reach, auth env) page critical, violations are info (Argo's refreshes repeat
+  them); an evaluation error is critical only where it refuses. `GC_TOKEN` (the Fleet token) also
+  writes the admission series; the check-duration family keeps `_sum`/`_count` only. A step change
+  applies Terraform first, then the rules.
