@@ -2441,9 +2441,9 @@ sent, and whether a second account shares its phone.
   code already treats them alike (`EffectiveWeight`, `PersonalRecords`, the e1RM chart skips both), and a
   rewrite would make a read differ from the live path (live sets send `null`) for nothing the scoring or
   the comparison needs. So the equivalence lives in the comparison and in a test.
-- **Known limit:** a user's edit to a title or a note of an imported session (no set changed) is not seen
-  and a resend of the original import would revert it. The app skips existing ids, so only a lost answer
-  followed by an edit can do this.
+- **Known limit, closed in the review of PR #59 (D141):** an edit to a title or a note (no set changed)
+  used to go unseen, so a resend reverted it. Now every imported session and plan carries `imported_at`,
+  and any change in the app after it (`updated_at` later) is `newer_on_server`, for plans too.
 
 ## D127 — `assist_kg` instead of a negative load; scoring decides later (T4)
 
@@ -2480,9 +2480,10 @@ sent, and whether a second account shares its phone.
 
 - **Decision:** the invite gate is the api's (every route). **Consent is new on this route:** today only
   `POST /v1/sync` checks it and the Train writes do not (scoring simply refuses an unconsented user), but
-  an import is a bulk upload of health data, so it answers `403 consent_required` under the same rule and
-  `warn` mode as the sync (`X-RYFT-Gate`). Body 1 MiB, 5 plans, 50 sessions, 50 s. One token from the
-  default rate class however many items. At most **one import per user at a time across all pods**: a
+  an import is a bulk upload of health data, so it answers `403 consent_required` under the same rule as
+  the sync; **amended (D141):** on this route `warn` acts as `on`, and the flag `train.import` is checked
+  after the gates (`403 import_not_enabled`). Body 1 MiB, 5 plans, 50 sessions, 50 s. One token however
+  many items, **amended (D141):** from the import's own rate class (bursts of 5, then one every 5 s). At most **one import per user at a time across all pods**: a
   second one is `429`, `code: import_in_progress`, `Retry-After: 10`, nothing processed. `429` (not
   `409`): the app already treats `429` as "wait and send the same thing", and the request is not in
   conflict with a state, it is early. The per-pod token bucket cannot do this; a lease row in the
@@ -2536,8 +2537,8 @@ sent, and whether a second account shares its phone.
 
 - **Decision:** `AcquireImportLease` is one statement: `UPDATE users SET import_lease_until = now() +
   ttl WHERE id = $1 AND (import_lease_until IS NULL OR import_lease_until < now()) RETURNING
-  import_lease_until`. No row: busy (or `ErrNotFound` when the account does not exist). TTL 120 s
-  (`ImportLeaseTTL`). The database's clock decides, so the pods need no clock agreement; no session state
+  import_lease_until`. No row: busy (or `ErrNotFound` when the account does not exist). TTL 70 s
+  (`ImportLeaseTTL`; 120 s before the review of PR #59, D141). The database's clock decides, so the pods need no clock agreement; no session state
   is involved, so it works through Supavisor's transaction pooler where a session advisory lock does not.
 - **Release is fenced:** `UPDATE users SET import_lease_until = NULL WHERE id = $1 AND import_lease_until =
   <the value we set>`. An import that overran its lease and finishes after another took it cannot free the
@@ -2548,9 +2549,10 @@ sent, and whether a second account shares its phone.
   not indexed) so it creates no index churn; the two writes per import are negligible next to the import.
   The lease row lock contends with other updates of the same `users` row only for the statement's
   duration.
-- **Limit:** a pod that dies mid-import blocks that user's next import for up to 120 s (the client gets
-  `429 import_in_progress`, `Retry-After: 10`, and retries). The lease is not renewed: the request is
-  bounded by 50 s, so 120 s cannot run out while it works.
+- **Limit:** a pod that dies mid-import (a rollout) blocks that user's next import for up to 70 s (the
+  client gets `429 import_in_progress`, `Retry-After: 10`, and retries). The lease is not renewed: the
+  request is bounded by 50 s, the finish included, and its release has 5 s more, so 70 s cannot run out
+  while it works.
 
 ## D133 — Migration 0028 is additive, NOT VALID, and leaves one constraint unvalidated (TI-2)
 
@@ -2634,10 +2636,10 @@ sent, and whether a second account shares its phone.
 - **Consequences:** model **2026.10.2**; `scripts/rescore_all.sh` after the deploy. In the beta it
   moves only sessions with sets more than 90 days before them (none expected: the beta began on
   2026-10-20) and sessions with a set after `ended_at`. The dependent days of an import end 90
-  days after its newest session instead of reaching today. `store.DependentDays` (TI-2) covers the
-  shared exercise without the 90-day bound (a correct superset) but not the body weight; the
-  api's `pct_1rm` target still calls `BestE1RMs` and must call `E1RMsAsOf(…, now, uuid.Nil)` in
-  the same release (both: backend).
+  days after its newest session instead of reaching today. Both follow-ups ship in the same
+  release (TI-6): `store.DependentDays` takes the scope's fields (the 90-day bound and the
+  body-weight clause; a test compares it with `Covers`), and the api's `pct_1rm` target calls
+  `E1RMsAsOf(…, now, uuid.Nil)` (`null` without a set in the window).
 
 ## D136 — Imported records stay silent, also the newest one (TI-4, open point 2)
 
@@ -2692,6 +2694,8 @@ sent, and whether a second account shares its phone.
 
 ## D140 — The import handler's own calls: order, budget, a resumed request's dependent days (TI-3)
 
+(D139 is unused: D134–D139 were set aside for the scoring branch, which needed D134–D138.)
+
 - **Consent before the body.** API.md says both gates are checked "before anything in the body is
   read"; design §4 listed the decode first. The contract wins: `gate.Consent` runs first (a refused
   upload costs no 1 MiB parse, as in ingest), so a malformed body without consent is a `403`, not a `400`.
@@ -2723,3 +2727,36 @@ sent, and whether a second account shares its phone.
   against the plan's days; the day lookup (`CurrentPlanDay`) runs when `current_week` or
   `current_day_index` is given, on the resulting position, inside `Enroll`'s transaction, so a refused
   position also leaves the other plan's enrolment active.
+
+## D141 — The import's review round: the app's edits win, ids per account, the server's own checks (PR #59)
+
+- **Edits win, for sessions and plans (B1).** `sessions.imported_at` and `plans.imported_at` (migration
+  0028, not yet applied anywhere, so edited in place) are set with `updated_at` by the import's write, in the
+  same statement. `updated_at` later than `imported_at` (a `PUT` of any field, a completion, archiving a
+  plan) or no `imported_at` (a plan the app made under that id) is `newer_on_server`: a resend never
+  overwrites it (`train.ImportConflict`, `train.PlanConflict`, pure). Scoring's load write does not touch
+  `updated_at`, so being scored is no edit. Decided for plans as well: an imported plan edited or archived in
+  the app is the user's.
+- **Ids per account (B2).** Plan ids are global (session ids are per account), so the app derives every id
+  under `UUIDv5(import namespace, user id)`; the same file in two accounts gives two plans. `id_taken` keeps
+  one message whoever holds the id (a built-in, another plan, another account).
+- **The server checks what the app does (S1-S4).** Time bounds per session (≤ 24 h long, ending ≤ 24 h
+  ahead, sets within an hour of it, `updated_at` ≤ 24 h ahead) as the item's `invalid`. Its own rate class,
+  bursts of 5, then one every 5 s. Consent `warn` acts as `on` on this route: every app build that calls it
+  has the consent screen. The flag `train.import` is evaluated after the gates (`403 import_not_enabled`,
+  a new additive code; `ryft_train_imports_total{result="disabled"}`), so a kill switch does not depend on
+  the app's cached config.
+- **Set caps (N1), my call:** at most 300 sets in a session (that item's `invalid`, like the other
+  per-session limits) and 2 500 in a request (a whole-request `422`, like the counts: it is a property of
+  the batch, and the app splits it).
+- **Finish order (SF1):** the days and their event are queued first, the records after, so a slow records
+  step cannot strand stored days without a queue row; its `503` is repaired by the resend.
+- **Smaller:** lease 70 s (above the 50 s budget plus the 5 s release, so a rollout leaves no long `429`);
+  `score_queue` grants for `ryft_api` per column (`INSERT (user_id, day, queued_at, scored_at)`, `UPDATE
+  (queued_at, scored_at)`); 0028 takes `users` first, the services' order; queued days are upserted sorted;
+  no `source` in the log line (it says which other app the user trains with); `ImportKind` decodes unknown
+  kinds as `.unknown` in the Swift mirror.
+- **Not changed, documented:** `expected_within_sec` is the p95 over every `score_queue` row of the last 6
+  hours, imports included, so a large import raises the estimate for a while for everyone (one queue, one
+  scoring consumer: that is what a sync then waits for too). Keeping import rows out needs a reason column;
+  not worth a schema change now.

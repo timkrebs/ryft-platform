@@ -69,6 +69,11 @@ if let path = env["IMPORT_EXAMPLE"] {
     precondition(example.results.map(\.status) == [.created, .created, .unchanged, .updated, .rejected], "the documented statuses")
     precondition(example.results.last?.code == "unknown_exercise" && example.results.first?.code == nil, "code only on rejected")
     precondition(example.daysTouched == example.scoring.queuedDays, "queued_days equals days_touched")
+    // A result kind a later server adds decodes leniently (API.md → ImportResult.kind).
+    let later = try! decoder.decode(ImportResult.self, from: Data(#"{"kind":"exercise_group","id":"3d8c5a21-7e4f-5b96-a0d3-c18f2e6b9047","status":"created"}"#.utf8))
+    precondition(later.kind == .unknown && later.status == .created, "an unknown kind decodes as .unknown")
+    let off = try! decoder.decode(APIErrorBody.self, from: Data(#"{"error":"the training import is not enabled for this account","code":"import_not_enabled","request_id":"r"}"#.utf8))
+    precondition(off.code == .importNotEnabled, "import_not_enabled decodes")
     print("✓ TrainImportResponse ← the example in docs/API.md")
 }
 print("Swift mirror decodes every endpoint")

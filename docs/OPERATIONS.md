@@ -1191,20 +1191,24 @@ scripts/user.sh <id>                 # devices, what the last sync carried and i
 
 `POST /v1/train/import` (D124-D133, API.md) stores plans and finished sessions that the
 app parsed from another training app's export, each item in its own transaction, then
-recomputes the records, queues the days and writes one `ingested` event (`reason`
-`import`) for scoring. Imported sessions send no `SESSION_SCORED` or `PR` push and move no
-enrolment. The app's switch is the flag `train.import` (off by default, Feature flags);
-the server does not check it, so turning the feature off is the flag, not a deploy.
+queues the days with one `ingested` event (`reason` `import`) for scoring, then
+recomputes the records. Imported sessions send no `SESSION_SCORED` or `PR` push and move no
+enrolment. The switch is the flag `train.import` (dark by default: testers by the allow-list,
+Feature flags); the app hides the import while it is off, and the endpoint checks it too
+(`403 import_not_enabled`), so the kill switch does not wait for the app's cached config.
+A resend never overwrites what the user changed in the app since (`newer_on_server`, D141).
 
 `scripts/trace.sh <request id>` shows the access line and the import's one line
 (`msg="train import"`: `result`, the items sent and their statuses, the days queued;
-never a title, a value or an id list), then scoring's lines for the same id.
+never a title, a value, an id list or the source app), then scoring's lines for the same id.
 
 | Sign | Means | Do |
 | --- | --- | --- |
-| `429`, `code=import_in_progress` | another import of the account holds the lease (`users.import_lease_until`, 120 s, D132) | nothing: the app waits `Retry-After` (10 s) and resends the same request. A pod that died mid-import blocks that account for up to 120 s; the lease expires on its own, do not clear it by hand |
+| `429`, `code=import_in_progress` | another import of the account holds the lease (`users.import_lease_until`, 70 s, D132) | nothing: the app waits `Retry-After` (10 s) and resends the same request. A pod that died mid-import blocks that account for up to 70 s; the lease expires on its own, do not clear it by hand |
 | `503`, `result=timeout` or `error` | the 50 s ran out (the items stop at 40 s), or the database failed; what was stored stays stored and was finished | nothing: the app resends, the stored items come back `unchanged`. Many in a row: `ryft_db_up`, `ryft_train_import_seconds` |
-| `403`, `code=consent_required` | no consent to the current privacy policy (the import is an upload of health data, D129) | as for a sync (Beta) |
+| `403`, `code=consent_required` | no consent to the current privacy policy (the import is an upload of health data, D129); on this route `CONSENT_ENFORCE=warn` refuses too (D141) | as for a sync (Beta) |
+| `403`, `code=import_not_enabled` | the flag `train.import` is off for the account (`ryft_train_imports_total{result="disabled"}`) | intended for anyone not allow-listed; a tester: add the id to the allow-list (Feature flags) |
+| `429` without a `code` | the import's own rate budget: bursts of 5, then one every 5 s (`ryft_rate_limited_total{class="import"}`) | nothing: the app waits `Retry-After` |
 | `200` with `rejected` items | items the app must change; the `code` and `message` (ids and field names) are in the response only | the app's report; `ryft_train_import_items_total{status="rejected"}` |
 | `days_touched` stay pending | scoring is behind | as for a sync (above) |
 | sessions older than 400 days without strain | by design: stored for history and records, never scored (D128) | nothing |
