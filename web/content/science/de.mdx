@@ -1,11 +1,11 @@
 ---
 title: 'So berechnet RYFT seine Werte'
-description: 'Jede Formel, jedes Gewicht, jeder Ausgangswert und jeder Bereich hinter Bereitschaft, Erholung, Belastung und Schlaf – für das Bewertungsmodell 2026.10.1.'
-model: '2026.10.1'
-checked: '2026-10-20'
+description: 'Jede Formel, jedes Gewicht, jeder Ausgangswert und jeder Bereich hinter Bereitschaft, Erholung, Belastung und Schlaf – für das Bewertungsmodell 2026.10.2.'
+model: '2026.10.2'
+checked: '2026-10-26'
 ---
 
-Diese Seite beschreibt das Bewertungsmodell **2026.10.1**, so wie es die Bewertungsreferenz der RYFT-Plattform am 20. Oktober 2026 dokumentiert. Jeder Wert, den RYFT speichert, trägt die Version des Modells, das ihn berechnet hat – eine Zahl auf dieser Seite und eine Zahl in der App lassen sich also immer einander zuordnen.
+Diese Seite beschreibt das Bewertungsmodell **2026.10.2**, so wie es die Bewertungsreferenz der RYFT-Plattform am 26. Oktober 2026 dokumentiert. Jeder Wert, den RYFT speichert, trägt die Version des Modells, das ihn berechnet hat – eine Zahl auf dieser Seite und eine Zahl in der App lassen sich also immer einander zuordnen.
 
 Die Konstanten sind Startwerte. Tests halten sie fest, und in der Beta werden sie nachgeschärft; jede Änderung bekommt eine neue Modellversion (siehe [Modellversionen](#versions)).
 
@@ -96,7 +96,7 @@ Die **maximale Herzfrequenz** ist 190, bis RYFT mehr weiß. Trägst du dein Gebu
 
 <Formula tex={String.raw`\text{Last} = \text{Wdh.} \cdot \left(\frac{\text{Gewicht}}{\text{e1RM}}\right)^{2} \cdot \text{Muskelfaktor}, \qquad \text{e1RM} = \text{Gewicht} \cdot \left(1 + \frac{\text{Wdh.}}{30}\right)`} />
 
-Das geschätzte Einerwiederholungsmaximum (Epley, Wiederholungen bis höchstens 12) ist dein bisher bestes, die Intensität übersteigt also nie 1. Der Muskelfaktor gewichtet die Muskeln, die eine Übung beansprucht (Quadrizeps und Gesäß 1,0 bis Unterarme 0,2), und die Art der Übung (Langhantel 1,0, Maschine 0,8, Körpergewicht 0,32, Cardio 0,3; olympische Hebungen 1,15). Aufwärmsätze zählen ein Viertel. Der muskuläre TRIMP einer Einheit ist die Summe ihrer Satzlasten × 0,6.
+Das geschätzte Einerwiederholungsmaximum (Epley, Wiederholungen bis höchstens 12) ist dein bestes aus den 90 Tagen vor der Einheit, ihre eigenen Sätze eingeschlossen, die Intensität übersteigt also nie 1. Bei einem unterstützten Satz (Assistenzmaschine oder Band) ist das wirksame Gewicht das Körpergewicht minus die Unterstützung, und ein solcher Satz hält keinen Rekord. Der Muskelfaktor gewichtet die Muskeln, die eine Übung beansprucht (Quadrizeps und Gesäß 1,0 bis Unterarme 0,2), und die Art der Übung (Langhantel 1,0, Maschine 0,8, Körpergewicht 0,32, Cardio 0,3; olympische Hebungen 1,15). Aufwärmsätze zählen ein Viertel. Der muskuläre TRIMP einer Einheit ist die Summe ihrer Satzlasten × 0,6.
 
 | Referenzeinheit | Belastung |
 | --- | --- |
@@ -142,7 +142,7 @@ Eine Gewohnheit wird freigeschaltet ab **5 Tagen damit und 5 ohne** mit bewertet
 
 <h2 id="versions">Modellversionen: keine stillen Änderungen</h2>
 
-Das Modell hat eine Version, Jahr.Monat.n, derzeit **2026.10.1**. Die Bewertung schreibt sie an jeden Tageswert und an jedes Training, dem sie eine Last zuordnet.
+Das Modell hat eine Version, Jahr.Monat.n, derzeit **2026.10.2**. Die Bewertung schreibt sie an jeden Tageswert und an jedes Training, dem sie eine Last zuordnet.
 
 - **Die Regel:** Jede Änderung, die eine gespeicherte Zahl bewegt (eine Formel, eine Konstante, eine Quellenregel, eine neue Eingabe), bekommt in derselben Änderung eine neue Version, mit einem Eintrag im Änderungsprotokoll auf Deutsch und Englisch, der die betroffenen Kennzahlen nennt. Ein Umbau, der jede Zahl gleich lässt, nicht.
 - Nach einer neuen Version wird der Verlauf damit neu bewertet, damit alte und neue Tage vergleichbar bleiben.
