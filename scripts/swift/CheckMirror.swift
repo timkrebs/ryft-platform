@@ -63,4 +63,12 @@ precondition(String(data: patch, encoding: .utf8) == #"{"quiet_hours":null}"#, "
 await decode(APIErrorBody.self, "/v1/trends?metric=nope", status: 422)
 let notFound = await decode(APIErrorBody.self, "/v1/nope", status: 404)
 precondition(notFound.requestId != nil, "error bodies must carry request_id")
+// POST /v1/train/import: the example in docs/API.md (no stack involved).
+if let path = env["IMPORT_EXAMPLE"] {
+    let example = try! decoder.decode(TrainImportResponse.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+    precondition(example.results.map(\.status) == [.created, .created, .unchanged, .updated, .rejected], "the documented statuses")
+    precondition(example.results.last?.code == "unknown_exercise" && example.results.first?.code == nil, "code only on rejected")
+    precondition(example.daysTouched == example.scoring.queuedDays, "queued_days equals days_touched")
+    print("✓ TrainImportResponse ← the example in docs/API.md")
+}
 print("Swift mirror decodes every endpoint")

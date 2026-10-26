@@ -2385,3 +2385,121 @@ sent, and whether a second account shares its phone.
 - **Consequences:** an Argo CD upgrade that changes the library set or gopher-lua is a harness change
   (bump the module and `oslib_safe.go`). A new health check is covered only once it has cases: the
   harness fails on a script without them.
+
+## D124 — The training import is one batch endpoint with per-item results (TI-1)
+
+- **Why (2026-10-26):** the app imports another app's CSV export: up to years of history, 5 plans,
+  sessions in batches. One call per session (`PUT` + `…/complete`) would complete each session with its
+  own event, push and rescore, and a lost answer would have no safe retry.
+- **Decision:** `POST /v1/train/import` takes `{source, plans ≤ 5, sessions ≤ 50}` (1 MiB) and answers
+  `200` with one result per item (`created` / `unchanged` / `updated` / `rejected` + `code`), so a bad
+  item never fails the batch. Whole-request failures are only structural (`400` unknown field, `413`,
+  `422` unknown `source` / over the counts / duplicate ids, the gates, `429`, `503`). Every item is its
+  own unit of work (a transaction per item; savepoints inside one outer transaction are the same
+  semantics, the database engineer's call), plans first, sessions oldest first. A database failure stops
+  the request with `503`: the app resends everything, and stored items come back `unchanged`.
+  `ImportResult.kind` also lists `exercise`, reserved for a later `exercises` array; the app creates
+  custom exercises with `POST /v1/exercises` first.
+- **Not chosen:** all-or-nothing (one odd session in a 50-session file would block the user's whole
+  history); a result per set (the unit the app can act on is a session); `207` (clients treat any 2xx as
+  "read the body").
+- **Consequences:** `results` is the app's source of truth, always one entry per item in request order.
+  The server never decides to drop a reference: an unknown `plan_day_id` rejects the session (as the
+  `422` of `PUT` does) and the app resends it without.
+
+## D125 — Origin belongs to the endpoint; imports are silent (T1, T6)
+
+- **Decision:** `sessions` gain `origin` (`app` | `import`, default `app`) and `import_source`
+  (nullable, set exactly when `origin` is `import`). The import endpoint writes both from `source`;
+  its request type has neither field, so a request that carries one is `400` (unknown field);
+  `PUT /v1/sessions/{id}` accepts and ignores them. An import never publishes `session.completed`:
+  it writes one `ingested` event with `reason: "import"` and no `session_id`. Scoring publishes
+  `session.scored` only for an event with a session id, so no `SESSION_SCORED` and no `PR` push can
+  follow; notify additionally refuses a session whose origin is `import` (a `POST …/complete` on an
+  imported session would carry an id), counted as result `import`.
+  The silent refresh push, sent after a `sync` event's days, is also sent after `import`.
+- **Records** of imported history are recomputed with the existing `ReplacePRs` and stay silent:
+  `PRsSince` (the insight cards) skips records of imported sessions. Whether the newest may surface once
+  as an info card is open for the scoring-scientist.
+- **Enrolment:** `AdvanceEnrollment` runs only in `POST …/complete`; the import does not call it.
+- **Not chosen:** a per-session `origin` in the request (a client could label an import as live);
+  `session.completed` with a flag (one more field every consumer must honour, and scoring would rescore
+  per session).
+
+## D126 — Idempotency: compare what the request determines; the app's later edits win (T3, T10)
+
+- **Decision:** a stored id is compared with the request after the same clamping and defaults, over every
+  field the request sets and nothing the server computes. Set `updated_at` and `completed_at` are content
+  (the app derives them from the file, so a resend is identical); a set without `updated_at` takes its
+  `completed_at`, not `now()`. `weight_kg` and `assist_kg` `null` equal `0`. `import_source` is content.
+  Equal → `unchanged`, nothing written, nothing rescored. Different → `updated`, the item replaced whole
+  (as a completed session or a plan is by `PUT`). Only a session with `origin: import` can be replaced; a
+  session logged in the app is `id_taken`. A stored imported session whose set has a later `updated_at`
+  than the request's, or that was discarded, is `rejected` / `newer_on_server` (the rule of `train.Merge`),
+  so a resend after a lost answer never undoes the user's edit.
+- **T3, differing from the user's proposal:** the user proposed normalising `null` → `0` on write. The
+  code already treats them alike (`EffectiveWeight`, `PersonalRecords`, the e1RM chart skips both), and a
+  rewrite would make a read differ from the live path (live sets send `null`) for nothing the scoring or
+  the comparison needs. So the equivalence lives in the comparison and in a test.
+- **Known limit:** a user's edit to a title or a note of an imported session (no set changed) is not seen
+  and a resend of the original import would revert it. The app skips existing ids, so only a lost answer
+  followed by an edit can do this.
+
+## D127 — `assist_kg` instead of a negative load; scoring decides later (T4)
+
+- **Decision:** `Set.assist_kg` (number?, clamped 0–200, bodyweight exercises only, not together with a
+  `weight_kg` above 0; `422` / `invalid` otherwise) is stored in `session_sets.assist_kg` and returned.
+  `weight_kg` keeps its 0–500 meaning. **It changes no number yet:** scoring, volume, records and the e1RM
+  chart ignore it until `SCORING.md` defines the effective load (proposal: `max(0, bodyweight_kg ×
+  bodyweight_factor − assist_kg)`). That is a scoring change (model version, rescore), the scoring-scientist's.
+- **Why not a negative `weight_kg`:** it would widen a range every consumer clamps and compares at 0, and
+  "added load" would mean two opposite things.
+- **Consequences:** until then an assisted set counts like an unassisted bodyweight set (overstated), as
+  a reps-only import does today.
+
+## D128 — One rescore per request, over explicit days; imports older than 400 days are stored, not scored (T7)
+
+- **Decision:** after the last item the request (a) recomputes records once per affected exercise,
+  (b) queues the days in `score_queue` (so `GET /v1/me/sync` → `pending_days` shows them) and (c) writes
+  **one** outbox `ingested` event, `reason: "import"`, `days` = the explicit sorted list (not the
+  recompute range form: a file spanning two years has 50 sessions, not 400 days to score). Each item's
+  own transaction already queues its day, so a request that dies after some items leaves those days
+  pending, and the retry (its items `unchanged`) puts the pending ones into the answer and the event.
+  `days_touched` also holds the days of the user's other completed sessions after the oldest imported one
+  that share an exercise (their load is measured against the e1RM history as of their end, which the
+  import changed). Only days in the 400 local days ending today are queued, as a sync's window;
+  older sessions keep `muscular_trimp` / `strain` / `volume_kg` / `workout_id` `null`.
+  The api computes no load for an imported session; scoring fills it when it scores the day.
+  `expected_within_sec` = the sync estimate + 2 s per queued day, at most 300.
+- **Consequences:** `ryft_api` needs INSERT and UPDATE on `score_queue`. Imported days show up on the
+  Strain screen like any logged session (a `ryft-session` workout). A day with a session and no sleep or
+  HRV is what a day with a logged session already is; what such a history does to baselines and the
+  strain average is for the scoring-scientist to confirm.
+
+## D129 — The import's gates, limits and concurrency (T9)
+
+- **Decision:** the invite gate is the api's (every route). **Consent is new on this route:** today only
+  `POST /v1/sync` checks it and the Train writes do not (scoring simply refuses an unconsented user), but
+  an import is a bulk upload of health data, so it answers `403 consent_required` under the same rule and
+  `warn` mode as the sync (`X-RYFT-Gate`). Body 1 MiB, 5 plans, 50 sessions, 50 s. One token from the
+  default rate class however many items. At most **one import per user at a time across all pods**: a
+  second one is `429`, `code: import_in_progress`, `Retry-After: 10`, nothing processed. `429` (not
+  `409`): the app already treats `429` as "wait and send the same thing", and the request is not in
+  conflict with a state, it is early. The per-pod token bucket cannot do this; a lease row in the
+  database does, and works through a transaction pooler (a session advisory lock would not). New closed
+  `code` `import_in_progress`.
+- **Privacy:** no bodies, titles, notes or values in logs, metrics or `message`s (D114). The import is
+  health data the user already holds, stored under the existing consent and processors; no new
+  processor. A line in the privacy text that training data from other apps can be imported is the user's
+  call (a text change moves `PRIVACY_POLICY_VERSION` in the same PR).
+
+## D130 — Small answers that change behaviour (T8, T11, T12)
+
+- **T8:** `POST /v1/plans/{id}/enroll` takes an optional `{started_at?, current_week?, current_day_index?}`.
+  With a field set, an active or paused enrolment of that plan is moved in place (`200`); a new one starts
+  at the position (`201`). The target day must exist (`422` otherwise); no body is today's behaviour.
+- **T11:** a `bodyweight` plan target's `target_value` is `null` or an added load of 0–500 kg. The server
+  stores it as sent and never uses it (`target_kg` stays `null`); the doc said `null` only. The 0–500
+  range is checked now (it was not), as for `kg`.
+- **T12:** `POST /v1/exercises` with an archived custom exercise's id un-archives it. That is what the
+  code does (the update writes `archived = false`); documented and pinned with a test.
