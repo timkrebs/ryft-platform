@@ -24,6 +24,16 @@ output "argocd_url" {
   value       = "https://${local.argocd_host}"
 }
 
+output "admission_enabled" {
+  description = "Whether the admission-policy release is installed (admission-values.yaml, D120)"
+  value       = local.admission_enabled
+}
+
+output "admission_binding_actions" {
+  description = "validationActions each ValidatingAdmissionPolicyBinding is given (binding => actions); Warn+Audit everywhere under break-glass"
+  value       = local.admission_effective
+}
+
 output "argocd_ui_command" {
   description = "Reaches the Argo CD UI and API on http://localhost:8080 without the Ingress"
   value       = "kubectl -n argocd port-forward svc/argocd-server 8080:80"
