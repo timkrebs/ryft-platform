@@ -59,6 +59,32 @@ setup policy-shape
 sed -i.bak -E 's/PRIVACY_POLICY_VERSION=[0-9-]+\]/PRIVACY_POLICY_VERSION=draft]/' "$OVERLAY"; rm -f "$OVERLAY.bak"; git commit -qam "policy"
 no "a policy version that is no date"
 
+# Not promote's: a pin that is only added or only removed (a pin replaces a pin), the same for a policy literal.
+delete_first() { awk -v pat="$1" 'done == 0 && $0 ~ pat { done = 1; next } { print }' "$OVERLAY" > "$OVERLAY.new" && mv "$OVERLAY.new" "$OVERLAY"; }
+setup pin-removed
+delete_first 'newTag: "[0-9a-f]+"'; git commit -qam "pin removed"
+no "a pin only removed"
+setup pin-added
+insert_before 'images:' '    newTag: "1234567"'; git commit -qam "pin added"
+no "a pin only added"
+setup policy-removed
+delete_first 'PRIVACY_POLICY_VERSION=[0-9-]+'; git commit -qam "literal removed"
+no "a policy literal only removed"
+
+# Not promote's: a hold line promote would not write: a tab as the blank, a non-ASCII reason, a carriage return.
+setup hold-tab
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold:	web 2026-10-23 reason"; git commit -qam "tab hold"
+no "a hold with a tab"
+setup hold-accent
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 caf$(printf '\303\251')"; git commit -qam "accent hold"
+no "a hold with a non-ASCII reason"
+setup hold-cr
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 reason$(printf '\r')"; git commit -qam "cr hold"
+no "a hold ending in a carriage return"
+setup hold-ok
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 bad migration, fix in #99"; git commit -qam "good hold"
+yes "a hold line of the shape hold.sh writes"
+
 # Not promote's: any other file, with or without pins; nothing changed at all.
 setup otherfile
 commit_file backend/main.go v2 "backend: change"; base=$(git rev-parse HEAD); pin services "$(short)"

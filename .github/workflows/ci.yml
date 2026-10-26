@@ -121,9 +121,16 @@ jobs:
               - 'infra/aws/kubernetes/**'
               - 'scripts/admission_e2e.sh'
               - 'scripts/install_kind.sh'
+              - 'scripts/install_yq.sh'
+              - 'scripts/install_kubectl.sh'
+              - 'scripts/install_helm.sh'
+              - 'scripts/check_chart_bump.sh'
               - 'scripts/lib/kind_guard.sh'
+              - 'scripts/lib/tracked_copy.sh'
               - 'scripts/lib/admission_*.sh'
               - 'scripts/lib/tf_values.sh'
+              - 'scripts/lib/gitsrv.go'
+              - 'Makefile'
               - '.github/workflows/ci.yml'
             # The alert rules and the synthetic checks; the checks' body markers are read from
             # the site's own sources (the policy text and the AASA).
@@ -144,19 +151,22 @@ jobs:
           persist-credentials: false
       # Is the change only what promote writes? (A deploy PR, and its merge on main.) The predicate
       # is the base's copy when the base has one, so a PR cannot widen what it skips by editing it.
-      # Fails closed: any doubt is "not promote only", and the `admission` job runs.
+      # Fails closed: any doubt is "not promote only", and the `admission` job runs. When the base has no
+      # copy of the script (the PR that introduces it, a base that cannot be read) the answer is "no": the
+      # PR's own copy is never the judge of its own diff.
       - if: github.event_name != 'workflow_dispatch'
         id: promote
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          script=scripts/promote_only.sh
-          if git cat-file -e "$BASE:scripts/promote_only.sh" 2>/dev/null; then
-            git show "$BASE:scripts/promote_only.sh" > "$RUNNER_TEMP/promote_only.sh"
-            script="$RUNNER_TEMP/promote_only.sh"
+          only=false
+          if git show "$BASE:scripts/promote_only.sh" > "$RUNNER_TEMP/promote_only.sh" 2>/dev/null; then
+            if bash "$RUNNER_TEMP/promote_only.sh" "$BASE" "$HEAD"; then only=true; fi
+          else
+            echo "the base has no scripts/promote_only.sh: not promote only"
           fi
-          if bash "$script" "$BASE" "$HEAD"; then echo "only=true" >> "$GITHUB_OUTPUT"; else echo "only=false" >> "$GITHUB_OUTPUT"; fi
+          echo "only=$only" >> "$GITHUB_OUTPUT"
       - if: github.event_name != 'pull_request'
         id: targets
         env:
@@ -449,9 +459,18 @@ jobs:
       TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
       TF_IN_AUTOMATION: "true"
     steps:
+      # The whole history on a pull request: the chart-version check below diffs against the base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      # The chart's templates and values never change without a higher version in Chart.yaml: the Helm
+      # provider upgrades a release only when the version moves (the comment in Chart.yaml).
+      - name: The chart version moves with its templates
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
       # From here on every step that renders may only use git over file:// (see `manifests`). The
       # terraform step of the script, which downloads modules, lifts it for itself.
       - name: Git over file:// only, after the checkout
@@ -460,9 +479,12 @@ jobs:
         with:
           go-version-file: infra/aws/kubernetes/admission-celtest/go.mod
           cache-dependency-path: infra/aws/kubernetes/admission-celtest/go.sum
-      # yq (mikefarah) and kind pinned, checked against a sha256 (the scripts hold both).
+      # yq (mikefarah), kind, kubectl and helm pinned, each checked against a sha256 (the scripts hold
+      # both); the versions are printed in the summary of the run.
       - run: ./scripts/install_yq.sh
       - run: ./scripts/install_kind.sh
+      - run: ./scripts/install_kubectl.sh
+      - run: ./scripts/install_helm.sh
       # Terraform only to evaluate argocd.tf's values offline (scripts/lib/tf_values.sh): mock providers.
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
@@ -473,12 +495,15 @@ jobs:
         with:
           path: ${{ github.workspace }}/.terraform-plugin-cache
           key: terraform-${{ runner.os }}-${{ hashFiles('infra/aws/kubernetes/.terraform.lock.hcl') }}
-      # The policies against the repository's renders without an API server; also proves that the
-      # fixtures the kind run uses are the harness's own (the check below).
-      - run: make admission-celtest
-      - name: The fixtures are the harness's output
+      # The policies against the repository's renders without an API server, once: its cases are the
+      # first line, and the fixtures the kind run uses must be its output (the diff).
+      - name: The CEL harness, and the fixtures are its output
         run: |
-          CELTEST_EMIT="$RUNNER_TEMP/fixtures" ./infra/aws/kubernetes/admission-celtest/run.sh >/dev/null
+          if ! CELTEST_EMIT="$RUNNER_TEMP/fixtures" ./infra/aws/kubernetes/admission-celtest/run.sh > "$RUNNER_TEMP/celtest.log" 2>&1; then
+            tail -60 "$RUNNER_TEMP/celtest.log"
+            exit 1
+          fi
+          tail -2 "$RUNNER_TEMP/celtest.log"
           diff -r "$RUNNER_TEMP/fixtures" infra/aws/kubernetes/admission-e2e/fixtures/generated
       - name: kind cluster, CRDs, chart in Audit and Deny, dry-runs, fixtures, claims
         run: ./scripts/admission_e2e.sh --mode ci --summary "$RUNNER_TEMP/admission-summary.md"

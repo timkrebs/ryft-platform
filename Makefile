@@ -248,12 +248,14 @@ argocd-luatest:
 # The admission policies against a real API server in kind (T12-d, docs/OPERATIONS.md -> Admission
 # policies: the kind run): cert-manager, Argo CD with argocd.tf's values, the operators and the
 # broker synced by Argo CD from the tree REPO, the policies in Audit and then Deny, the hooks,
-# terminate-op, the broker restart, claims a-d and h-m. REPO is the tree under test (a checkout of a
-# branch such as the narrowed Argo CD RBAC or the namespace-scoped operators; deploy/ and
-# infra/aws/kubernetes/argocd.tf are read from it, the chart and the fixtures from this checkout).
+# terminate-op, the broker restart, claims a-d, g-i, k and m (f, j, l are not tried). REPO is the tree
+# under test, a git checkout of a branch such as the narrowed Argo CD RBAC or the namespace-scoped
+# operators: the files git tracks under deploy/ and infra/aws/kubernetes/ are read from it (the chart and
+# the fixtures from this checkout). THE TREE IS CODE (kustomize, Terraform and Argo CD run it): an
+# untrusted one belongs in the admission-e2e workflow, not on a machine with production credentials.
 # Local kind only: the script creates its own cluster with its own kubeconfig in a temporary directory,
-# refuses any context that is not a kind-* one on this machine, and deletes the cluster afterwards.
-# Needs kind and docker or podman, kubectl, helm, yq (mikefarah v4), jq, go and terraform.
+# refuses any context that is not a kind-* one at https://127.0.0.1, and deletes the cluster afterwards.
+# Needs kind and docker or podman, kubectl, helm, yq (mikefarah v4), jq, git, go and terraform.
 # About 25 minutes. MODE=ci runs only what CI's `admission` job runs (about 5 minutes).
 admission-e2e:
 	@test -n "$(REPO)" || { echo "usage: make admission-e2e REPO=<path to the tree under test> [MODE=ci|full]"; exit 2; }
