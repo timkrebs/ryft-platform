@@ -776,6 +776,17 @@ ryft-rabbitmq get vhosts,exchanges,queues,bindings,policies,users,permissions,to
 `RabbitMQDeadLetters`, `RabbitMQAlarm`, `RabbitMQNodeDown`, `AMQPDisconnected`,
 `EventsUnroutable`, `OutboxBacklog`, `OutboxStuck` (OBSERVABILITY → Alerts).
 
+**Argo CD's health checks** for these kinds live in `infra/aws/kubernetes/argocd.tf`
+(`argocd_rabbitmq_health`, plus the HPA, Application and VaultStaticSecret checks beside them) and
+reach Argo CD with the user's Terraform apply (`argocd-cm`). Argo CD runs them in a Lua VM
+without the `string` library, and `os` only through `require("os")` (D121): compare, do not
+pattern-match, and never rely on `useOpenLibs`. A node roll shows as Progressing
+(`AllReplicasReady: 2/3 Pods ready`), as does an object whose `observedGeneration` is behind its
+generation. Degraded is every `ReconcileSuccess=False` of the cluster and every `Ready=False` of a
+topology object, transient ones included (the sync's retry and the `ArgoAppDegraded` delay absorb
+them). `make argocd-luatest`
+evaluates every script in Argo CD's own library set; add cases there with every new check.
+
 **Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
 failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
 management API itself:

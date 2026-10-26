@@ -52,6 +52,7 @@ jobs:
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
+      run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
       # Image groups to build and pin (never on a pull request).
@@ -95,6 +96,12 @@ jobs:
               - 'web/content/legal/**'
               - 'web/scripts/check-policy-version.mjs'
               - 'web/scripts/lib/policy.mjs'
+            # Argo CD's health checks harness: its script source, itself, and the recipe.
+            argocd_luatest:
+              - 'infra/aws/kubernetes/argocd.tf'
+              - 'infra/aws/kubernetes/argocd-luatest/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
             terraform:
               - 'infra/**'
               # infra/aws/kubernetes' test compares its Vault address with these generated files
@@ -353,6 +360,27 @@ jobs:
       - run: tflint --init && tflint --format compact
       - run: terraform test
 
+  # Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) in a Lua VM with
+  # exactly Argo CD's libraries (no string library), against table-driven objects. Reads
+  # argocd.tf only: no provider, no state, no credentials.
+  argocd-luatest:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_argocd_luatest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Go modules come from the module proxy; nothing may fetch a repository over anything but file://.
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: infra/aws/kubernetes/argocd-luatest/go.mod
+          cache: false
+      - run: make argocd-luatest
+
   # Alert rules as code (promtool check and unit tests, mimirtool check) and the synthetic
   # checks of ryftapp.de (offline validation, RE2, markers against the site's sources).
   monitoring:
@@ -536,7 +564,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

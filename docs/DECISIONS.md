@@ -2345,3 +2345,43 @@ sent, and whether a second account shares its phone.
   Argo-made namespace, a new mutating webhook on RYFT pods (the SDK injector excludes `ryft-*`), a
   Vault address change, or an operator upgrade that renames an object or adds an image needs the chart
   first. A new service doesn't (images and app paths are patterns).
+
+## D121 — Argo CD's custom health checks run without the string library; a harness proves it
+
+- **Why (2026-10-26):** the kind e2e showed that the RabbitMQ health checks (D97) fail in a real Argo
+  CD as soon as a wanted condition is False with a reason (AllReplicasReady=False during a node
+  roll): `attempt to index a non-table object(nil) with key 'find'`, and the application goes to
+  ComparisonError. The script called `string.find(c.reason, "Fail")`. Argo CD v3.5.6 builds its Lua
+  state with `SkipOpenLibs` and opens only `package`, `base` and `table` (`util/lua/lua.go`,
+  `runLua`); its safe `os` registers into `table`, so `os` is reachable only through
+  `require("os")`. `string` (and with it the string metatable, so `s:find` fails too, and `math`)
+  exists only with `resource.customizations.useOpenLibs.<group_kind>: true`. Neither
+  `terraform validate`, `terraform test` nor reading the script could see it.
+- **Decision:** no pattern matching and no `useOpenLibs` (it would open the whole standard library for
+  each kind to save an equality test). Healthy: every wanted condition True (RabbitmqCluster:
+  AllReplicasReady and ReconcileSuccess; topology kinds: Ready). **Degraded: every
+  `ReconcileSuccess=False` of a RabbitmqCluster and every `Ready=False` of a topology object, whatever
+  the reason**, as Argo CD's own built-in RabbitmqCluster check does. `AllReplicasReady=False` never
+  degrades (NotAllPodsReady during a node roll, ScaledToZero): Progressing, with the condition's
+  message. While `status.observedGeneration` is behind `metadata.generation` the object is
+  Progressing too: after a spec change the old conditions stay True until the operator has
+  reconciled it, and both operators set observedGeneration on success only.
+- **Why not a list of failure reasons:** the Cluster Operator v2.23.1 writes `ReconcileSuccess=False`
+  only for a failed reconcile, and what reaches the generic `Error` (a `Build()` failure, or an
+  update that survived `RetryOnConflict`: additionalConfig parse errors, API validation and admission
+  rejections, immutable StatefulSet fields) is mostly permanent. Progressing would hold wave 1
+  forever with no alert (`controller.sync.timeout.seconds` is 0 and no alert fires on
+  Synced+Progressing). The Messaging Topology Operator v1.20.4 writes `FailedCreateOrUpdate` for
+  every `Ready=False`, **transient ones included** (a DeclareFunc error, a cluster that is scaled to
+  zero); those degrade the object too. The sync's `retry: {limit: 2}` and the `ArgoAppDegraded`
+  alert's 10-minute `for` absorb them. Source locations are in the comment in `argocd.tf`.
+- **Test:** `infra/aws/kubernetes/argocd-luatest` (`make argocd-luatest`, CI job `argocd-luatest`)
+  parses `argocd.tf`, evaluates every `resource.customizations.health.*` script in gopher-lua v1.1.2
+  (Argo CD v3.5.6's version) with exactly Argo CD's libraries (`oslib_safe.go` copied unchanged, and
+  probes that `string`, `s:find`, `math` and a global `os` fail while `require("os")` works) and checks
+  table-driven objects. It fails on the old code with the production error, and on a health key it
+  cannot evaluate statically. A `terraform test` assertion rejects `string.` and `useOpenLibs` in the
+  health keys and in `resource.customizations`.
+- **Consequences:** an Argo CD upgrade that changes the library set or gopher-lua is a harness change
+  (bump the module and `oslib_safe.go`). A new health check is covered only once it has cases: the
+  harness fails on a script without them.
