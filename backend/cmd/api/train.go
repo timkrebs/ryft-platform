@@ -324,12 +324,33 @@ func (h *handler) deletePlan(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// enroll makes the plan the active one; an optional EnrollPost places the
+// enrolment (T8): no body, an empty one and {} are the behaviour before it.
 func (h *handler) enroll(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
 	}
-	e, created, err := h.st.Enroll(r.Context(), userOf(r).ID, id)
+	var body model.EnrollPost
+	if err := httpx.ReadJSON(w, r, &body, httpx.MaxBodyDefault); err != nil && !errors.Is(err, io.EOF) {
+		httpx.WriteDecodeError(w, err)
+		return
+	}
+	ctx, user := r.Context(), userOf(r).ID
+	var pos *store.EnrollPos
+	if body.Set() {
+		p, err := h.st.Plan(ctx, user, id)
+		if err != nil {
+			failTrain(w, r, err, "plan")
+			return
+		}
+		if err := train.CheckEnroll(p, body, time.Now()); err != nil {
+			failTrain(w, r, err, "plan")
+			return
+		}
+		pos = &store.EnrollPos{StartedAt: body.StartedAt, Week: body.CurrentWeek, DayIndex: body.CurrentDayIndex}
+	}
+	e, created, err := h.st.Enroll(ctx, user, id, pos)
 	if err != nil {
 		failTrain(w, r, err, "plan")
 		return

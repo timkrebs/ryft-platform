@@ -522,7 +522,8 @@ func newCompletedSets(stored *model.Session, merged model.Session) int {
 }
 
 // checkReferences: every exercise, the plan day and the plan exercises must
-// be built-in or the user's (a train.Problem otherwise).
+// be built-in or the user's, and assist_kg only on a set of a bodyweight
+// exercise (train.CheckAssist, T4); a train.Problem otherwise.
 func checkReferences(ctx context.Context, tx pgx.Tx, userID uuid.UUID, body model.Session) error {
 	var exIDs, peIDs []uuid.UUID
 	for _, e := range body.Exercises {
@@ -538,6 +539,13 @@ func checkReferences(ctx context.Context, tx pgx.Tx, userID uuid.UUID, body mode
 	for _, id := range exIDs {
 		if _, ok := vis[id]; !ok {
 			return train.Problem{Msg: fmt.Sprintf("exercise %s is neither built-in nor yours", id)}
+		}
+	}
+	for _, e := range body.Exercises {
+		for _, st := range e.Sets {
+			if err := train.CheckAssist(vis[e.ExerciseID], st); err != nil {
+				return err
+			}
 		}
 	}
 	if body.PlanDayID != nil {
@@ -1170,34 +1178,80 @@ func (s *Store) ActiveEnrollment(ctx context.Context, userID uuid.UUID) (*model.
 // lockEnrollments serialises a user's enrolment changes.
 const lockEnrollments = `SELECT pg_advisory_xact_lock(7419004, hashtext($1::text))`
 
+// EnrollPos is where POST /v1/plans/{id}/enroll with a body puts the enrolment (T8,
+// validated with train.CheckEnroll): a nil field keeps the stored value, or takes the
+// default (now, week 1, day 0) for a new enrolment.
+type EnrollPos struct {
+	StartedAt      *time.Time
+	Week, DayIndex *int
+}
+
 // Enroll makes the plan the user's active one: an active enrolment in it is
 // returned as is, a paused one resumes, otherwise a new one starts at week 1,
 // day 0 (created). Another active enrolment is paused. ErrNotFound when the
 // plan is not visible.
-func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID) (model.Enrollment, bool, error) {
+//
+// With pos (T8) the active or the most recently paused enrolment of the plan is
+// moved to it in place (and active), or a new one starts there. A week or day
+// index the plan has no day at (store.CurrentPlanDay) is a train.Problem, and
+// nothing is changed.
+func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID, pos *EnrollPos) (model.Enrollment, bool, error) {
 	var out model.Enrollment
 	var created bool
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockEnrollments, userID); err != nil {
 			return err
 		}
-		var ok bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1))`, userID, planID).Scan(&ok); err != nil {
-			return err
-		}
-		if !ok {
-			return ErrNotFound
+		var plan model.Plan
+		if pos != nil {
+			var err error
+			if plan, err = loadPlan(ctx, tx, userID, planID); err != nil {
+				return err // ErrNotFound when it is not visible
+			}
+		} else {
+			var ok bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1))`, userID, planID).Scan(&ok); err != nil {
+				return err
+			}
+			if !ok {
+				return ErrNotFound
+			}
 		}
 		cur, err := scanEnrollment(tx.QueryRow(ctx, `SELECT `+enrollmentColumns+` FROM plan_enrollments WHERE user_id=$1 AND status='active'`, userID))
 		switch {
 		case err == nil && cur.PlanID == planID:
-			out = cur
-			return nil
+			if pos == nil {
+				out = cur
+				return nil
+			}
+			out, err = moveEnrollment(ctx, tx, plan, cur, *pos)
+			return err
 		case err == nil:
 			if _, err := tx.Exec(ctx, `UPDATE plan_enrollments SET status='paused', updated_at=now() WHERE id=$1`, cur.ID); err != nil {
 				return err
 			}
 		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+		if pos != nil {
+			paused, err := scanEnrollment(tx.QueryRow(ctx, `SELECT `+enrollmentColumns+` FROM plan_enrollments
+				WHERE user_id=$1 AND plan_id=$2 AND status='paused' ORDER BY updated_at DESC LIMIT 1`, userID, planID))
+			if err == nil {
+				out, err = moveEnrollment(ctx, tx, plan, paused, *pos)
+				return err
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			created = true
+			start := model.Enrollment{CurrentWeek: 1, CurrentDayIndex: 0}
+			if err := enrollmentAt(plan, &start, *pos); err != nil {
+				return err
+			}
+			out, err = scanEnrollment(tx.QueryRow(ctx, `INSERT INTO plan_enrollments
+				(id, user_id, plan_id, status, started_at, current_week, current_day_index)
+				VALUES ($1,$2,$3,'active',COALESCE($4, now()),$5,$6) RETURNING `+enrollmentColumns,
+				uuid.New(), userID, planID, pos.StartedAt, start.CurrentWeek, start.CurrentDayIndex))
 			return err
 		}
 		out, err = scanEnrollment(tx.QueryRow(ctx, `UPDATE plan_enrollments SET status='active', updated_at=now()
@@ -1215,6 +1269,34 @@ func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID) (model.Enr
 		return err
 	})
 	return out, created, err
+}
+
+// enrollmentAt applies pos's week and day index to e, and refuses a position the plan
+// has no day at (when pos names one).
+func enrollmentAt(p model.Plan, e *model.Enrollment, pos EnrollPos) error {
+	if pos.Week != nil {
+		e.CurrentWeek = *pos.Week
+	}
+	if pos.DayIndex != nil {
+		e.CurrentDayIndex = *pos.DayIndex
+	}
+	if pos.Week == nil && pos.DayIndex == nil {
+		return nil
+	}
+	if _, err := CurrentPlanDay(p, *e); err != nil {
+		return train.Problem{Msg: fmt.Sprintf("the plan has no day at week %d, day_index %d", e.CurrentWeek, e.CurrentDayIndex)}
+	}
+	return nil
+}
+
+// moveEnrollment moves an enrolment of p in place to pos and makes it active.
+func moveEnrollment(ctx context.Context, tx pgx.Tx, p model.Plan, e model.Enrollment, pos EnrollPos) (model.Enrollment, error) {
+	if err := enrollmentAt(p, &e, pos); err != nil {
+		return e, err
+	}
+	return scanEnrollment(tx.QueryRow(ctx, `UPDATE plan_enrollments SET status='active', started_at=COALESCE($2, started_at),
+		current_week=$3, current_day_index=$4, updated_at=now() WHERE id=$1 RETURNING `+enrollmentColumns,
+		e.ID, pos.StartedAt, e.CurrentWeek, e.CurrentDayIndex))
 }
 
 // PauseEnrollment pauses the active enrolment, if any.
