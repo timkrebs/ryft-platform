@@ -27,6 +27,7 @@ adm_init() {
   export HELM_CONFIG_HOME="$WORK/helm/config" HELM_CACHE_HOME="$WORK/helm/cache" HELM_DATA_HOME="$WORK/helm/data"
   # Git over file:// only, as the repo's other jobs (kustomize remote bases are refused).
   export GIT_ALLOW_PROTOCOL=file
+  unset KCA_GROUP
   FAILED=0
 }
 
@@ -57,7 +58,9 @@ adm_summary() {
     echo "| --- | --- | --- |"
     awk -F'\t' '{ gsub(/\|/, "\\|", $3); printf "| %s | %s | %s |\n", $1, $2, $3 }' "$RESULTS"
     echo
-    echo "tree under test: \`${REPO}\`; mode: ${MODE:-ci}; Kubernetes $(kc version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // "?"')"
+    echo "tree under test: \`${REPO_SRC:-$REPO}\` (tracked files only); mode: ${MODE:-ci}; Kubernetes $(kc version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // "?"')"
+    echo
+    echo "tools: kind $(kind version 2>/dev/null | awk '{print $2}' | head -1), kubectl $(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion // "?"'), helm $(helm version --template '{{.Version}}' 2>/dev/null), yq $(yq --version 2>/dev/null | awk '{print $NF}'), jq $(jq --version 2>/dev/null), terraform $(cd "$WORK" && terraform version 2>/dev/null | head -1 | awk '{print $NF}')"
     if [ "${MODE:-ci}" = full ]; then
       echo
       echo "Stubbed: Vault and VSO (CRDs real; a loop marks VaultStaticSecrets synced and writes dummy Secrets), the service images (busybox under the exact names; migrate sleeps 15 s), the git remote (served in the cluster, the served Applications name it), Ingress addresses, the broker's size (1 replica, standard StorageClass, 2Gi). Real: the API server, the policies, cert-manager, Argo CD, the operators, the broker, the topology, the hooks' Jobs."
@@ -186,7 +189,7 @@ adm_argo_values() {
   ARGO_VALUES=
   if [ -n "${ARGO_VALUES_FILE:-}" ]; then ARGO_VALUES=$ARGO_VALUES_FILE; return 0; fi
   if ! command -v terraform >/dev/null 2>&1; then rec "argo-values" SKIP "terraform is not installed: Argo CD's chart defaults (wildcard RBAC) stand in for argocd.tf"; return 0; fi
-  if "$ROOT/scripts/lib/tf_values.sh" "$REPO" argocd_values "$WORK/argocd-values.json" >"$WORK/log/tf_values.log" 2>&1; then
+  if "$ROOT/scripts/lib/tf_values.sh" "${REPO_SRC:-$REPO}" argocd_values "$WORK/argocd-values.json" >"$WORK/log/tf_values.log" 2>&1; then
     ARGO_VALUES="$WORK/argocd-values.json"
     rec "argo-values" PASS "local.argocd_values of $K8S_DIR_REL/argocd.tf evaluated by terraform (mock providers)"
   else
@@ -293,46 +296,121 @@ adm_deny_values() {
   } > "$f"
 }
 
-# adm_chart_install <audit|deny> [held bindings]: the committed values, P7's projects, and for deny
-# the variant above. Waits until the API server has type-checked every policy.
-adm_chart_install() {
-  local variant=$1 held=${2:-} args=(-f "$ROOT/$K8S_DIR_REL/admission-values.yaml" -f "$WORK/projects-values.yaml")
+# adm_chart_args <variant> <held>: the helm values arguments of an install, in ARGS (a global array):
+# the committed values, P7's projects, and for deny the variant above.
+adm_chart_args() {
+  local variant=$1 held=${2:-}
   adm_projects_values
+  ARGS=(-f "$ROOT/$K8S_DIR_REL/admission-values.yaml" -f "$WORK/projects-values.yaml")
   if [ "$variant" = deny ]; then
     adm_deny_values "$WORK/deny-values.yaml" "$held"
-    args+=(-f "$WORK/deny-values.yaml")
+    ARGS+=(-f "$WORK/deny-values.yaml")
   fi
-  if hc upgrade --install admission-policy "$CHART_DIR" --namespace kube-system "${args[@]}" ${CHART_EXTRA_ARGS[@]+"${CHART_EXTRA_ARGS[@]}"} >"$WORK/log/chart-$variant.out" 2>&1; then
-    rec "chart-install-$variant" PASS "admission-policy $(yq '.version' "$CHART_DIR/Chart.yaml") installed in kube-system: the API server admitted $(kc get validatingadmissionpolicies -o name | wc -l | tr -d ' ') policies and $(kc get validatingadmissionpolicybindings -o name | wc -l | tr -d ' ') bindings (claim a: nothing guards the objects that guard)$([ -n "$held" ] && echo "; held in audit: $held")"
-  else
+}
+
+# adm_chart_install <audit|deny> [held bindings]: the committed values, P7's projects, and for deny
+# the variant above. Waits until the API server holds exactly the policies and bindings the chart
+# renders with the same values, has type-checked every policy and enforces (adm_wait_policies).
+adm_chart_install() {
+  local variant=$1 held=${2:-} ARGS=() want_p want_b
+  adm_chart_args "$variant" "$held"
+  # What the chart renders with these values: the numbers and the names the API server must report.
+  if ! helm template admission-policy "$CHART_DIR" --namespace kube-system "${ARGS[@]}" ${CHART_EXTRA_ARGS[@]+"${CHART_EXTRA_ARGS[@]}"} > "$WORK/render/chart-$variant.yaml" 2>"$WORK/log/chart-template-$variant.err"; then
+    rec "chart-install-$variant" FAIL "helm template: $(head -c 300 "$WORK/log/chart-template-$variant.err")"
+    return 1
+  fi
+  yq 'select(.kind == "ValidatingAdmissionPolicy") | .metadata.name' "$WORK/render/chart-$variant.yaml" | grep -v '^---$' | sort > "$WORK/want-policies-$variant.txt"
+  yq 'select(.kind == "ValidatingAdmissionPolicyBinding") | .metadata.name' "$WORK/render/chart-$variant.yaml" | grep -v '^---$' | sort > "$WORK/want-bindings-$variant.txt"
+  want_p=$(wc -l < "$WORK/want-policies-$variant.txt" | tr -d ' '); want_b=$(wc -l < "$WORK/want-bindings-$variant.txt" | tr -d ' ')
+  if [ "$want_p" = 0 ] || [ "$want_b" = 0 ]; then
+    rec "chart-install-$variant" FAIL "the chart renders $want_p policies and $want_b bindings with these values: nothing to install"
+    return 1
+  fi
+  if ! hc upgrade --install admission-policy "$CHART_DIR" --namespace kube-system "${ARGS[@]}" ${CHART_EXTRA_ARGS[@]+"${CHART_EXTRA_ARGS[@]}"} >"$WORK/log/chart-$variant.out" 2>&1; then
     rec "chart-install-$variant" FAIL "helm: $(tail -5 "$WORK/log/chart-$variant.out")"
     return 1
   fi
-  adm_wait_policies
+  adm_wait_policies "$variant"
 }
 
-# Every policy has been looked at by the type checker (status.observedGeneration == generation and
-# status.typeChecking present); then status.typeChecking carries no warnings.
+# adm_cluster_names <kind>: the names of the objects of that kind in the cluster, sorted; fails when
+# kubectl fails (an empty answer is not a success).
+adm_cluster_names() {
+  local out
+  out=$(kc get "$1" -o json) || return 1
+  printf '%s' "$out" | jq -r '.items[].metadata.name' | grep -v '^zz-claim-' | sort
+}
+
+# adm_wait_policies <variant>: (1) the API server holds exactly the chart's policies and bindings (the
+# names of `helm template` with the same values: 11 and 12 today), asked again while kubectl fails or
+# the sets differ; (2) every policy has been looked at by the type checker (status.observedGeneration
+# == generation and status.typeChecking present) and carries no warnings; (3) the policies are enforced:
+# one known fixture is refused (deny) or warned about (audit), polled for 30 s at most.
 adm_wait_policies() {
-  local i json bad pending
+  local variant=$1 i json bad pending have_p have_b want_p want_b names_p names_b
+  want_p=$(wc -l < "$WORK/want-policies-$variant.txt" | tr -d ' '); want_b=$(wc -l < "$WORK/want-bindings-$variant.txt" | tr -d ' ')
   for i in $(seq 1 60); do
-    json=$(kc get validatingadmissionpolicies -o json)
+    names_p=$(adm_cluster_names validatingadmissionpolicies) && names_b=$(adm_cluster_names validatingadmissionpolicybindings) \
+      && [ "$names_p" = "$(cat "$WORK/want-policies-$variant.txt")" ] && [ "$names_b" = "$(cat "$WORK/want-bindings-$variant.txt")" ] && break
+    sleep 2
+  done
+  have_p=$(printf '%s' "${names_p:-}" | grep -c . || true); have_b=$(printf '%s' "${names_b:-}" | grep -c . || true)
+  if [ "$have_p" != "$want_p" ] || [ "$have_b" != "$want_b" ] || [ "${names_p:-}" != "$(cat "$WORK/want-policies-$variant.txt")" ] || [ "${names_b:-}" != "$(cat "$WORK/want-bindings-$variant.txt")" ]; then
+    rec "chart-install-$variant" FAIL "the API server reports $have_p policies and $have_b bindings, the chart renders $want_p and $want_b with the same values (or kubectl failed): $(diff <(cat "$WORK/want-policies-$variant.txt" "$WORK/want-bindings-$variant.txt") <(printf '%s\n%s\n' "${names_p:-}" "${names_b:-}") | head -6 | tr '\n' ' ')"
+    return 1
+  fi
+  rec "chart-install-$variant" PASS "admission-policy $(yq '.version' "$CHART_DIR/Chart.yaml") installed in kube-system: the API server holds the $have_p policies and $have_b bindings the chart renders (claim a: nothing guards the objects that guard)$([ -n "${held:-}" ] && echo "; held in audit: $held")"
+  pending=; json=
+  for i in $(seq 1 60); do
+    json=$(kc get validatingadmissionpolicies -o json) || { sleep 2; continue; }
     pending=$(printf '%s' "$json" | jq -r '[.items[] | select((.status.observedGeneration // 0) != .metadata.generation or (.status.typeChecking == null)) | .metadata.name] | join(" ")')
     [ -z "$pending" ] && break
     sleep 2
   done
-  if [ -n "$pending" ]; then rec "typechecking" FAIL "the API server did not report type checking within 2 minutes for: $pending"; return 1; fi
+  if [ -z "$json" ] || [ -n "$pending" ]; then rec "typechecking" FAIL "the API server did not report type checking within 2 minutes (kubectl ${json:+answered}${json:-failed}) for: ${pending:-all}"; return 1; fi
   bad=$(printf '%s' "$json" | jq -r '.items[] | select((.status.typeChecking.expressionWarnings // []) | length > 0) | .metadata.name + ": " + ([.status.typeChecking.expressionWarnings[] | (.fieldRef // "") + " " + (.warning // "" | gsub("\n"; " ") | .[0:160])] | join(" | "))')
   if [ -z "$bad" ]; then
     rec "typechecking" PASS "status.typeChecking of all $(printf '%s' "$json" | jq '.items | length') policies: no warnings"
   else
     rec "typechecking" FAIL "$bad"
   fi
-  sleep 3   # the bindings reach the admission plugin's informers
+  adm_wait_enforced "$variant"
+}
+
+# The fixture that proves the bindings are live: P4's allowedNamespaces (a binding that stays Deny in
+# the deny variant, whatever the tree has not fixed yet).
+ADM_CANARY=ryft-vso-01-p4-allowednamespaces.yaml
+
+# adm_wait_enforced <audit|deny>: poll the canary fixture for 30 s until the API server answers as the
+# variant says (refused with the policy's message; or admitted with it as a warning).
+adm_wait_enforced() {
+  local variant=$1 f="$FIXTURE_DIR/generated/$ADM_CANARY" refused_by msg norm i
+  [ -f "$f" ] || { rec "enforced-$variant" FAIL "the canary fixture $ADM_CANARY is missing"; return 1; }
+  refused_by=$(adm_fixture_header "$f" refused-by); msg=$(adm_fixture_header "$f" message)
+  for i in $(seq 1 30); do
+    adm_run_fixture "$f" "$variant"
+    norm=$(tr -s ' \n\t' '   ' < "$FX_OUT")
+    if [ "$variant" = deny ]; then
+      [ "$FX_RC" != 0 ] && printf '%s' "$norm" | grep -qF "with binding '$refused_by' denied request: $msg" && { rec "enforced-$variant" PASS "the canary fixture is answered as $variant says after $i s at most"; return 0; }
+    else
+      { [ "$FX_RC" = 0 ] || printf '%s' "$norm" | grep -qF AlreadyExists; } && printf '%s' "$norm" | grep -qF "with binding '$refused_by': $msg" && { rec "enforced-$variant" PASS "the canary fixture is answered as $variant says after $i s at most"; return 0; }
+    fi
+    sleep 1
+  done
+  rec "enforced-$variant" FAIL "30 s after the install the canary fixture $ADM_CANARY is still not answered as $variant says (rc=$FX_RC): $(printf '%s' "$norm" | cut -c1-300)"
+  return 1
 }
 
 # ---------------------------------------------------------------------------------------------
 # dry-runs of the renders
+
+# Values read from the tree under test (an Application's name and path, a Secret's labels) are checked
+# before they name a file, a flag or a label: the tree is code (D122).
+adm_valid_name() { [[ $1 =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; }
+adm_valid_path() { [[ $1 =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] && [[ $1 != *..* ]]; }
+# A label key (optionally prefix/name) and value as Kubernetes validates them.
+adm_valid_label_key() { [[ $1 =~ ^([a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$ ]]; }
+adm_valid_label_value() { [[ $1 =~ ^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$ ]]; }
 
 # adm_apps: "name<TAB>path" of every Application in deploy/argocd/apps.
 adm_apps() {
@@ -348,7 +426,7 @@ adm_dry_one() {
   if [ "$who" = - ]; then
     kc apply --server-side --dry-run=server --force-conflicts --field-manager=argocd-controller -f "$f" >/dev/null 2>"$err"
   else
-    kc apply --server-side --dry-run=server --force-conflicts --field-manager=argocd-controller --as "$who" -f "$f" >/dev/null 2>"$err"
+    kca "$who" apply --server-side --dry-run=server --force-conflicts --field-manager=argocd-controller -f "$f" >/dev/null 2>"$err"
   fi
 }
 
@@ -396,8 +474,18 @@ adm_dryrun_apps() {
   : > "$WORK/dry-all-$variant.tsv"
   while IFS="$(printf '\t')" read -r name path; do
     label="$variant-$name"
+    # Both come from the tree under test and name files below: a DNS name and a path inside the tree.
+    if ! adm_valid_name "$name" || ! adm_valid_path "$path"; then
+      rec "dryrun-$variant-app" FAIL "an Application of the tree has the name '$(printf '%s' "$name" | cut -c1-60)' and the path '$(printf '%s' "$path" | cut -c1-80)': not a DNS name and a relative path inside the tree"
+      continue
+    fi
     kubectl kustomize "$REPO/$path" > "$WORK/render/$label.yaml" 2>"$WORK/log/kustomize-$name.err" || { rec "dryrun-$variant-$name" FAIL "kustomize $path: $(head -c 200 "$WORK/log/kustomize-$name.err")"; continue; }
     adm_dryrun_render "$label" "$WORK/render/$label.yaml" "$ARGO_CTRL"
+    # An app whose render gave no object at all would pass every check below by saying nothing.
+    if [ "$(wc -l < "$WORK/dry-$label.tsv" | tr -d ' ')" -lt 1 ]; then
+      rec "dryrun-$variant-$name" FAIL "the render of $path holds no object that could be dry-run applied (an empty render, or a failure to split it)"
+      continue
+    fi
     adm_prefix "$name" "$WORK/dry-$label.tsv" >> "$WORK/dry-all-$variant.tsv"
   done <<EOF
 $(adm_apps)
@@ -409,6 +497,9 @@ EOF
   awk 'FNR == 1 { print "---" } { print }' "$REPO"/deploy/argocd/apps/*.yaml > "$WORK/render/$variant-argocd-apps.yaml"
   adm_dryrun_render "$variant-argocd-apps" "$WORK/render/$variant-argocd-apps.yaml" "$ARGO_CTRL"
   adm_prefix ryft-root "$WORK/dry-$variant-argocd-apps.tsv" >> "$WORK/dry-all-$variant.tsv"
+  for label in argocd-hand argocd-apps; do
+    [ "$(wc -l < "$WORK/dry-$variant-$label.tsv" | tr -d ' ')" -ge 1 ] || rec "dryrun-$variant-$label" FAIL "no object of $label could be dry-run applied (an empty file, or a failure to split it)"
+  done
 
   total=$(wc -l < "$WORK/dry-all-$variant.tsv" | tr -d ' ')
   refused=$(awk -F'\t' '$2 == "refused"' "$WORK/dry-all-$variant.tsv" | wc -l | tr -d ' ')
@@ -418,14 +509,19 @@ EOF
   if [ "$errors" != 0 ]; then
     rec "dryrun-$variant-errors" FAIL "$errors objects failed for a reason that is no admission decision (RBAC, schema, missing CRD or namespace): $(awk -F'\t' '$2 == "error" { printf "%s %s: %s; ", $1, $3, $5 }' "$WORK/dry-all-$variant.tsv" | cut -c1-700)"
   fi
-  # What the tree has not fixed yet is expected to be flagged, by the right policy, and only that.
-  # P6 flags the operators' vendored cluster-wide roles until T12-g; P3 the broker's open 443 egress
-  # until T12-k (and only when the variant asks for them: deny sets brokerEgressPublic false).
+  # What the tree has not fixed yet is expected to be flagged, by the right policy, with the right
+  # message, on the right object, and only that. P6 flags the two vendored cluster-wide operator
+  # ClusterRoles until T12-g (the harness pins both as "(before T12-g)" cases, with "must not grant
+  # Secrets"; the API server shows the FIRST failing validation of the policy, which differs per role:
+  # the wildcard rule for the Cluster Operator's, the read-only rule for the Topology Operator's);
+  # P3 flags the broker's open 443 egress until T12-k (deny only: the deny variant sets
+  # brokerEgressPublic false). A tree that has T12-g / T12-k explains nothing of that kind.
   unexplained=$(awk -F'\t' -v scoped="$(tree_has_scoped_operators && echo 1 || echo 0)" -v pub="$(tree_broker_egress_public && echo 1 || echo 0)" -v v="$variant" '
     ($2 == "refused" || $2 == "warned") {
-      if ($1 == "rabbitmq-operators" && $4 == "ryft-operators-cluster" && scoped == 0) next
-      if ($1 == "broker-rabbitmq" && $3 ~ /^NetworkPolicy ryft-rabbitmq\/rabbitmq$/ && $4 == "ryft-netpol" && pub == 1 && v == "deny") next
-      printf "%s %s by %s; ", $1, $3, $4
+      if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/rabbitmq-cluster-operator-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a (Role or )?ClusterRole of the operators (must not (hold a wildcard verb|grant Secrets))/) next
+      if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/messaging-topology-manager-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a ClusterRole of the operators (is read-only|must not grant Secrets)/) next
+      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432, or the broker.s 443 rule/) next
+      printf "%s %s by %s (%s); ", $1, $3, $4, substr($5, 1, 80)
     }' "$WORK/dry-all-$variant.tsv")
   if [ -n "$unexplained" ]; then
     rec "dryrun-$variant" FAIL "objects flagged that the tree does not explain: $unexplained"
@@ -451,28 +547,24 @@ adm_fixture_header() { sed -n "s/^# $2: //p" "$1" | head -1; }
 
 # adm_run_fixture <file> <variant> -> sets FX_OUT, FX_RC. op: create (default), patch, delete, exec.
 adm_run_fixture() {
-  local f=$1 op who target patch ptype sub
+  local f=$1 op who target patch ptype sub tgt=() runner=(kc) KCA_GROUP=
   op=$(adm_fixture_header "$f" op); op=${op:-create}
   who=$(adm_fixture_header "$f" as)
   target=$(adm_fixture_header "$f" target)
   patch=$(adm_fixture_header "$f" patch)
   ptype=$(adm_fixture_header "$f" patch-type); ptype=${ptype:-merge}
   sub=$(adm_fixture_header "$f" subresource)
-  local asargs=()
-  [ -z "$who" ] || asargs=(--as "$who" --as-group "$FIXTURE_GROUP")
+  # The target is split on blanks into words, never by the shell's globbing; the wrappers refuse a
+  # word that would choose another cluster or user (kind_guard.sh).
+  read -r -a tgt <<< "$target"
+  if [ -n "$who" ]; then runner=(kca "$who"); KCA_GROUP=$FIXTURE_GROUP; fi
   FX_OUT="$WORK/log/fixture.out"
   case "$op" in
-    create) kc create --dry-run=server -f "$f" -o name ${asargs[@]+"${asargs[@]}"} >"$FX_OUT" 2>&1 ;;
-    patch)
-      # shellcheck disable=SC2086
-      kc patch $target --type "$ptype" -p "$patch" --dry-run=server ${sub:+--subresource "$sub"} ${asargs[@]+"${asargs[@]}"} >"$FX_OUT" 2>&1 ;;
-    delete)
-      # shellcheck disable=SC2086
-      kc delete $target --dry-run=server ${asargs[@]+"${asargs[@]}"} >"$FX_OUT" 2>&1 ;;
-    exec)
-      # shellcheck disable=SC2086
-      kc exec $target ${asargs[@]+"${asargs[@]}"} -- true >"$FX_OUT" 2>&1 ;;
-    *) echo "unknown op $op in $f" > "$FX_OUT"; return 2 ;;
+    create) "${runner[@]}" create --dry-run=server -f "$f" -o name >"$FX_OUT" 2>&1 ;;
+    patch) "${runner[@]}" patch ${tgt[@]+"${tgt[@]}"} --type "$ptype" -p "$patch" --dry-run=server ${sub:+--subresource "$sub"} >"$FX_OUT" 2>&1 ;;
+    delete) "${runner[@]}" delete ${tgt[@]+"${tgt[@]}"} --dry-run=server >"$FX_OUT" 2>&1 ;;
+    exec) "${runner[@]}" exec ${tgt[@]+"${tgt[@]}"} -- true >"$FX_OUT" 2>&1 ;;
+    *) echo "unknown op $op in $f" > "$FX_OUT"; FX_RC=2; return 0 ;;
   esac
   FX_RC=$?
   return 0
@@ -531,14 +623,37 @@ adm_fixtures() {
 # ---------------------------------------------------------------------------------------------
 # claims that need no workload
 
-# audit annotations of the API server: the node container's audit log (kind runs the log on the node).
-adm_audit_log() { "$ENGINE" exec "${KIND_CLUSTER}-control-plane" cat /var/log/kubernetes/audit.log 2>/dev/null; }
+# The API server's audit log lives on the kind node (kind-config in admission_e2e.sh: Metadata level,
+# /var/log/kubernetes/audit.log). adm_audit_grep <fixed string> prints the log lines that hold it, grepped
+# ON THE NODE (the log is not copied whole); rc 0 (possibly no line), or 2 when the log cannot be read.
+ADM_AUDIT_LOG=/var/log/kubernetes/audit.log
+adm_audit_grep() {
+  local node="${KIND_CLUSTER}-control-plane" rc
+  "$ENGINE" exec "$node" test -r "$ADM_AUDIT_LOG" >/dev/null 2>&1 || return 2
+  "$ENGINE" exec "$node" grep -F -- "$1" "$ADM_AUDIT_LOG" 2>/dev/null
+  rc=$?
+  [ "$rc" -le 1 ] || return 2
+  return 0
+}
+
+# adm_audit_unreadable <id> <what>: a cluster this script created has the audit log (it wrote the
+# configuration), so a missing one is a FAIL; with --kubeconfig the cluster is the user's and may have
+# none, so the check is skipped and says so.
+adm_audit_unreadable() {
+  if [ "${CREATED:-0}" = 1 ]; then
+    rec "$1" FAIL "the API server's audit log ($ADM_AUDIT_LOG on the node of the cluster this run created) cannot be read: $2"
+  else
+    rec "$1" SKIP "the audit log of the cluster handed over with --kubeconfig cannot be read: $2"
+  fi
+}
 
 # Claim a: no admission policy runs on policy or binding objects. A policy written to match the
 # policy and binding kinds themselves never fires: with its binding in Deny, creating another
-# policy (and another binding) still passes.
+# policy (and another binding) still passes. To make that provable and not a matter of waiting, the
+# same policy also matches the creation of one named ConfigMap (the canary): the test starts when the
+# API server refuses the canary, i.e. when the policy and its binding are live.
 adm_claim_a() {
-  local cfgdir="$WORK/claim-a" out
+  local cfgdir="$WORK/claim-a" out i live=0
   mkdir -p "$cfgdir"
   cat > "$cfgdir/a.yaml" <<'EOF'
 apiVersion: admissionregistration.k8s.io/v1
@@ -553,9 +668,16 @@ spec:
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE", "DELETE"]
         resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: canary-only-among-configmaps
+      expression: "request.resource.resource != 'configmaps' || object.metadata.name == 'zz-claim-a-canary'"
   validations:
     - expression: "false"
-      message: "claim a: this policy must never fire"
+      message: "claim a: this policy must never fire on policy objects"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -589,14 +711,25 @@ spec:
   policyName: zz-claim-a-probe
   validationActions: ["Warn"]
 EOF
+  kc delete -f "$cfgdir/b.yaml" --ignore-not-found >/dev/null 2>&1
+  kc delete -f "$cfgdir/a.yaml" --ignore-not-found >/dev/null 2>&1
   if ! out=$(kc apply -f "$cfgdir/a.yaml" 2>&1); then rec "claim-a" FAIL "the API server did not accept a policy that matches policy objects: $out"; return; fi
-  sleep 5
-  if out=$(kc apply -f "$cfgdir/b.yaml" 2>&1) && kc delete -f "$cfgdir/b.yaml" >/dev/null 2>&1; then
-    rec "claim-a" PASS "a policy matching ValidatingAdmissionPolicy and -Binding (Deny, active) refused neither a further policy and binding nor their deletion: the objects that guard are exempt from admission, RBAC guards them"
-  else
-    rec "claim-a" FAIL "a policy written to match policy objects fired: $out"
+  # Live? The canary ConfigMap (dry-run create) is refused by the same policy once the API server has it.
+  for i in $(seq 1 30); do
+    if out=$(kc create configmap zz-claim-a-canary -n default --dry-run=server 2>&1) || ! printf '%s' "$out" | grep -qF "ValidatingAdmissionPolicy 'zz-claim-a'"; then sleep 1; else live=1; break; fi
+  done
+  if [ "$live" != 1 ]; then
+    rec "claim-a" FAIL "the policy zz-claim-a (Deny) was not enforced on its canary ConfigMap within 30 s, so the claim cannot be tested: $(printf '%s' "$out" | cut -c1-300)"
+    kc delete -f "$cfgdir/a.yaml" --ignore-not-found >/dev/null 2>&1
+    return
   fi
-  kc delete -f "$cfgdir/a.yaml" >/dev/null 2>&1 || true
+  if out=$(kc apply -f "$cfgdir/b.yaml" 2>&1) && kc delete -f "$cfgdir/b.yaml" >/dev/null 2>&1; then
+    rec "claim-a" PASS "zz-claim-a (Deny, matching ValidatingAdmissionPolicy and -Binding as well as one canary ConfigMap) refused the canary after $i s, so it was live; it refused neither a further policy and binding nor their deletion: the objects that guard are exempt from admission, RBAC guards them"
+  else
+    rec "claim-a" FAIL "a policy written to match policy objects fired although it was live: $out"
+  fi
+  kc delete -f "$cfgdir/a.yaml" --ignore-not-found >/dev/null 2>&1 || true
+  kc delete -f "$cfgdir/b.yaml" --ignore-not-found >/dev/null 2>&1 || true
 }
 
 # Claim b: webhook configurations are not exempt, so P6 sees them. In Deny the controller creating a
@@ -643,7 +776,7 @@ EOF
 # API_KEY, P5); the API server's audit log must hold the annotation on both, the dry-run one with
 # dryRun=All in the request URI.
 adm_claim_d() {
-  local cm="zz-claim-d" tmp="$WORK/claim-d.yaml" log dry real
+  local cm="zz-claim-d" tmp="$WORK/claim-d.yaml" log dry real i rc=0
   cat > "$tmp" <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -653,15 +786,20 @@ EOF
   kc create --dry-run=server -f "$tmp" >/dev/null 2>&1
   kc create -f "$tmp" >/dev/null 2>&1
   kc -n ryft-api delete configmap "$cm" >/dev/null 2>&1 || true
-  sleep 3
-  log=$(adm_audit_log) || log=
-  if [ -z "$log" ]; then rec "claim-d" SKIP "the API server's audit log is not readable from the node container"; return; fi
-  dry=$(printf '%s\n' "$log" | jq -c --arg cm "$cm" 'select(.verb == "create" and .objectRef.resource == "configmaps" and .objectRef.name == $cm and (.requestURI | test("dryRun=All")) and (.annotations | has("validation.policy.admission.k8s.io/validation_failure")))' 2>/dev/null | head -1)
-  real=$(printf '%s\n' "$log" | jq -c --arg cm "$cm" 'select(.verb == "create" and .objectRef.resource == "configmaps" and .objectRef.name == $cm and ((.requestURI | test("dryRun")) | not) and (.annotations | has("validation.policy.admission.k8s.io/validation_failure")))' 2>/dev/null | head -1)
+  # The log is read on the node (grep there), again for up to 20 s until both requests are in it.
+  dry=; real=
+  for i in $(seq 1 10); do
+    log=$(adm_audit_grep "$cm") || { rc=$?; break; }
+    dry=$(printf '%s\n' "$log" | jq -c --arg cm "$cm" 'select(.verb == "create" and .objectRef.resource == "configmaps" and .objectRef.name == $cm and (.requestURI | test("dryRun=All")) and (.annotations | has("validation.policy.admission.k8s.io/validation_failure")))' 2>/dev/null | head -1)
+    real=$(printf '%s\n' "$log" | jq -c --arg cm "$cm" 'select(.verb == "create" and .objectRef.resource == "configmaps" and .objectRef.name == $cm and ((.requestURI | test("dryRun")) | not) and (.annotations | has("validation.policy.admission.k8s.io/validation_failure")))' 2>/dev/null | head -1)
+    [ -n "$dry" ] && [ -n "$real" ] && break
+    sleep 2
+  done
+  if [ "$rc" != 0 ]; then adm_audit_unreadable "claim-d" "no log on the node of ${KIND_CLUSTER}"; return; fi
   if [ -n "$dry" ] && [ -n "$real" ]; then
     rec "claim-d" PASS "the audit log holds validation.policy.admission.k8s.io/validation_failure on the dry-run create (requestURI with dryRun=All) and on the real one, so CloudWatch's query can tell them apart"
   else
-    rec "claim-d" FAIL "annotation on the dry-run request: ${dry:+yes}${dry:-no}; on the real request: ${real:+yes}${real:-no}"
+    rec "claim-d" FAIL "annotation on the dry-run request: $([ -n "$dry" ] && echo yes || echo no); on the real request: $([ -n "$real" ] && echo yes || echo no)"
   fi
 }
 
@@ -708,9 +846,9 @@ EOF2
   kc delete -f "$tmp/binding.yaml" --ignore-not-found >/dev/null 2>&1
   kc delete -f "$tmp/role.yaml" --ignore-not-found >/dev/null 2>&1
   kc apply -f "$tmp/benign.yaml" >/dev/null 2>&1
-  out1=$(kc apply -f "$tmp/role.yaml" --as "$ARGO_CTRL" 2>&1); local rc1=$?
-  out2=$(kc apply -f "$tmp/binding.yaml" --as "$ARGO_CTRL" 2>&1); local rc2=$?
-  can=$(kc auth can-i create validatingadmissionpolicybindings --as "$ARGO_CTRL" 2>/dev/null | head -1)
+  out1=$(kca "$ARGO_CTRL" apply -f "$tmp/role.yaml" 2>&1); local rc1=$?
+  out2=$(kca "$ARGO_CTRL" apply -f "$tmp/binding.yaml" 2>&1); local rc2=$?
+  can=$(kca "$ARGO_CTRL" auth can-i create validatingadmissionpolicybindings 2>/dev/null | head -1)
   # clean up whatever was created, as the admin
   kc delete -f "$tmp/binding.yaml" --ignore-not-found >/dev/null 2>&1
   kc delete -f "$tmp/role.yaml" --ignore-not-found >/dev/null 2>&1

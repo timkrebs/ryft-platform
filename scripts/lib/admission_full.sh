@@ -76,52 +76,88 @@ adm_full_certmanager() {
 # stubs: VSO, ingress status, the images, the served repository
 
 # A background loop: every VaultStaticSecret is SecretSynced and its Secret exists; every Ingress has an address.
+# Everything it reads comes from objects of the tree under test, so every name and label is checked
+# before it reaches a command line (a label key such as --kubeconfig must not become a flag), and the
+# labels are passed as separate quoted arguments. What it refuses is listed in $WORK/stub-refused.txt,
+# which adm_full turns into a failure.
 adm_full_stub_loop() {
-  local list ns name dest gen labels
+  local list ns name dest gen labels k v
   while :; do
-    list=$(kc get vaultstaticsecrets -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.destination.name, (.metadata.generation | tostring), ((.spec.destination.labels // {}) | to_entries | map(.key + "=" + .value) | join(","))] | @tsv')
+    list=$(kc get vaultstaticsecrets -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.destination.name, (.metadata.generation | tostring), ((.spec.destination.labels // {}) | tojson)] | @tsv')
     while IFS="$(printf '\t')" read -r ns name dest gen labels; do
       [ -n "$name" ] || continue
+      if ! adm_valid_name "$ns" || ! adm_valid_name "$name" || ! [[ $dest =~ ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$ ]] || ! [[ $gen =~ ^[0-9]{1,18}$ ]]; then
+        echo "VaultStaticSecret $ns/$name: odd namespace, name, destination or generation" >> "$WORK/stub-refused.txt"
+        continue
+      fi
       if ! kc -n "$ns" get secret "$dest" >/dev/null 2>&1; then
         case "$dest" in
           amqp-user-*) kc -n "$ns" create secret generic "$dest" --from-literal=username="${dest#amqp-user-}" --from-literal=password="stub-$(date +%s)" >/dev/null 2>&1 ;;
           *) kc -n "$ns" create secret generic "$dest" --from-literal=STUB=1 >/dev/null 2>&1 ;;
         esac
       fi
-      # the labels the VaultStaticSecret puts on its Secret (the Topology Operator wants one)
-      if [ -n "$labels" ]; then kc -n "$ns" label secret "$dest" ${labels//,/ } --overwrite >/dev/null 2>&1; fi
+      # The labels the VaultStaticSecret puts on its Secret (the Topology Operator wants one): one
+      # quoted argument per label, each key and value valid as Kubernetes validates a label.
+      while IFS="$(printf '\t')" read -r k v; do
+        [ -n "$k" ] || continue
+        if adm_valid_label_key "$k" && adm_valid_label_value "$v"; then
+          kc -n "$ns" label secret "$dest" "$k=$v" --overwrite >/dev/null 2>&1
+        else
+          echo "VaultStaticSecret $ns/$name: the label '$(printf '%s' "$k" | cut -c1-60)' is not a valid label" >> "$WORK/stub-refused.txt"
+        fi
+      done <<EOF
+$(printf '%s' "$labels" | jq -r 'to_entries[] | [.key, (.value | tostring)] | @tsv' 2>/dev/null)
+EOF
       kc -n "$ns" patch vaultstaticsecret "$name" --type merge --subresource status \
         -p "{\"status\":{\"lastGeneration\":$gen,\"conditions\":[{\"type\":\"SecretSynced\",\"status\":\"True\",\"reason\":\"Stub\",\"message\":\"stubbed by admission_e2e.sh\",\"observedGeneration\":$gen,\"lastTransitionTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}}" >/dev/null 2>&1
     done <<EOF
 $list
 EOF
     for ns in $(kc get ingress -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+      adm_valid_name "${ns%%/*}" && adm_valid_name "${ns##*/}" || continue
       kc -n "${ns%%/*}" patch ingress "${ns##*/}" --type merge --subresource status -p '{"status":{"loadBalancer":{"ingress":[{"ip":"10.0.0.1"}]}}}' >/dev/null 2>&1
     done
     sleep 4
   done
 }
 
+# The service images the overlay pins (ghcr.io/timkrebs/ryft/<name>:<7 hex>) are stub images: built
+# here as localhost/ryft-stub/<name>:<tag> and loaded into kind, then tagged INSIDE the node under the
+# exact names the policies judge. No ghcr.io/timkrebs/ryft/... tag ever exists in the local image store
+# (an image a developer pulled for real is never replaced), and the stub images are removed from it
+# after the load.
 adm_full_images() {
-  local dir="$WORK/stub-images" imgs ref n=0
+  local dir="$WORK/stub-images" imgs ref n=0 local_ref node="${KIND_CLUSTER}-control-plane" built=()
   mkdir -p "$dir"
   printf 'FROM docker.io/library/busybox:1.37\nRUN mkdir -p /www && echo ok > /www/healthz && echo ok > /www/readyz\nEXPOSE 8080\nENTRYPOINT ["httpd", "-f", "-p", "8080", "-h", "/www"]\n' > "$dir/server.containerfile"
   printf 'FROM docker.io/library/busybox:1.37\nENTRYPOINT ["/bin/sh", "-c", "sleep 15"]\n' > "$dir/job.containerfile"
   imgs=$(kubectl kustomize "$REPO/deploy/k8s/overlays/eks" | sed -nE 's/^[[:space:]]+(- )?image: (ghcr\.io\/timkrebs\/ryft\/[^[:space:]]+)$/\2/p' | sort -u)
-  for ref in $imgs; do
+  [ -n "$imgs" ] || { rec "full-images" FAIL "the EKS overlay names no ghcr.io/timkrebs/ryft image"; return 1; }
+  while IFS= read -r ref; do
+    if ! [[ $ref =~ ^ghcr\.io/timkrebs/ryft/[a-z0-9-]+:[0-9a-f]{7}$ ]]; then
+      rec "full-images" FAIL "the overlay names the image '$ref', which is not ghcr.io/timkrebs/ryft/<name>:<7 hex>"; return 1
+    fi
+    local_ref="localhost/ryft-stub/${ref#ghcr.io/timkrebs/ryft/}"
     case "$ref" in
-      */migrate:*) "$ENGINE" build -q -t "$ref" -f "$dir/job.containerfile" "$dir" >/dev/null ;;
-      *) "$ENGINE" build -q -t "$ref" -f "$dir/server.containerfile" "$dir" >/dev/null ;;
-    esac || { rec "full-images" FAIL "$ENGINE build of $ref failed"; return 1; }
+      */migrate:*) "$ENGINE" build -q -t "$local_ref" -f "$dir/job.containerfile" "$dir" >/dev/null ;;
+      *) "$ENGINE" build -q -t "$local_ref" -f "$dir/server.containerfile" "$dir" >/dev/null ;;
+    esac || { rec "full-images" FAIL "$ENGINE build of $local_ref failed"; return 1; }
+    built+=("$local_ref")
     n=$((n + 1))
-  done
-  # shellcheck disable=SC2086
-  "$ENGINE" save -o "$dir/images.tar" $imgs >/dev/null 2>&1 || { rec "full-images" FAIL "$ENGINE save failed"; return 1; }
-  if kind load image-archive "$dir/images.tar" --name "$KIND_CLUSTER" >"$WORK/log/kind-load.out" 2>&1; then
-    rec "full-images" PASS "$n stub images (busybox) built and loaded into kind as $(printf '%s' "$imgs" | tr '\n' ' ')"
-  else
+  done <<< "$imgs"
+  "$ENGINE" save -o "$dir/images.tar" "${built[@]}" >/dev/null 2>&1 || { rec "full-images" FAIL "$ENGINE save failed"; return 1; }
+  if ! kind load image-archive "$dir/images.tar" --name "$KIND_CLUSTER" >"$WORK/log/kind-load.out" 2>&1; then
     rec "full-images" FAIL "kind load: $(tail -3 "$WORK/log/kind-load.out")"
+    "$ENGINE" rmi -f "${built[@]}" >/dev/null 2>&1
+    return 1
   fi
+  while IFS= read -r ref; do
+    local_ref="localhost/ryft-stub/${ref#ghcr.io/timkrebs/ryft/}"
+    "$ENGINE" exec "$node" ctr --namespace k8s.io images tag "$local_ref" "$ref" >>"$WORK/log/kind-load.out" 2>&1 \
+      || { rec "full-images" FAIL "ctr images tag $local_ref $ref in the node: $(tail -2 "$WORK/log/kind-load.out")"; "$ENGINE" rmi -f "${built[@]}" >/dev/null 2>&1; return 1; }
+  done <<< "$imgs"
+  "$ENGINE" rmi -f "${built[@]}" >/dev/null 2>&1
+  rec "full-images" PASS "$n stub images (busybox) built as localhost/ryft-stub/..., loaded into kind and tagged in the node as $(printf '%s' "$imgs" | tr '\n' ' '); none of those names exists in the local $ENGINE store"
 }
 
 # adm_full_git_publish: the staged tree (WORK/git/work) committed and made available to the cluster.
@@ -142,6 +178,8 @@ GIT_REAL_URL=https://github.com/timkrebs/ryft-platform.git
 adm_full_gitserver() {
   local g="$WORK/git" arch
   rm -rf "$g"; mkdir -p "$g/work" "$g/build"
+  # REPO is the copy of the tracked files made at the start (admission_e2e.sh, tracked_copy.sh): a
+  # git-ignored deploy/k8s/secrets.yaml of the tree under test is not in it, so it cannot be served.
   cp -R "$REPO/deploy" "$g/work/deploy"
   # The tree is served from here: its own Applications point at this server.
   grep -rl "$GIT_REAL_URL" "$g/work/deploy/argocd" | while read -r f; do sed -i.bak "s|$GIT_REAL_URL|$GIT_URL|g" "$f" && rm -f "$f.bak"; done
@@ -163,6 +201,7 @@ adm_full_gitserver() {
     || ! kind load image-archive "$g/build/gitsrv.tar" --name "$KIND_CLUSTER" >>"$WORK/log/gitsrv-image.out" 2>&1; then
     rec "full-gitserver" FAIL "the gitsrv image: $(tail -3 "$WORK/log/gitsrv-image.out")"; return 1
   fi
+  "$ENGINE" rmi -f localhost/gitsrv:e2e >/dev/null 2>&1   # it lives in the node now
   kc create namespace gitsrv >/dev/null 2>&1
   kc apply -f - >/dev/null 2>&1 <<'EOF'
 apiVersion: v1
@@ -249,6 +288,7 @@ adm_full_wait_apps() {
     # An Application whose sync ended in Error/Failed is synced once more (at most 3 times each), and
     # said so: automated sync does not retry the same commit after its own retries are spent.
     for app in $(kc -n argocd get applications -o json 2>/dev/null | jq -r '.items[] | select((.status.operationState.phase == "Error" or .status.operationState.phase == "Failed") and .operation == null) | .metadata.name'); do
+      adm_valid_name "$app" || continue
       [ "$(printf '%s' "$kicks" | grep -o "$app " | wc -l)" -lt 3 ] || continue
       kicks="$kicks$app "
       rec "full-sync-retry" INFO "$app: the sync ended $(kc -n argocd get application "$app" -o jsonpath='{.status.operationState.phase}'): $(kc -n argocd get application "$app" -o jsonpath='{.status.operationState.message}' | cut -c1-260); synced again"
@@ -279,19 +319,53 @@ adm_full_check_hooks() {
 # ---------------------------------------------------------------------------------------------
 # findings of the audit log
 
-# adm_full_findings <label> <since-timestamp> [explained-policy-regex]: validation failures the API server logged
-# since then, by policy and requester. Anything but the explained ones is a finding.
+# adm_full_explained <audit|deny> <held>: the validation failures a stage is expected to log, one shape
+# per line: "<policy/binding:actions regex>|<requester regex>|<resource regex>|<message regex>". Only
+# what the tree has not fixed yet, only with the exact requester, resource and message the harness pins:
+#   - until T12-g, P6 flags the two vendored cluster-wide operator ClusterRoles that grant Secrets;
+#   - until T12-k, in the deny stage, P3 flags the broker's open 443 egress (held in Audit).
+# A tree that has T12-g / T12-k explains nothing of that kind.
+adm_full_explained() {
+  local stage=$1 held=${2:-}
+  if ! tree_has_scoped_operators; then
+    # (every failing validation is in the annotation, not only the first: the three P6 messages the two
+    # vendored roles can carry)
+    printf '%s\t%s\t%s\t%s\n' '^ryft-operators-cluster/[^:]+:(Warn\+Audit|Audit|Warn)$' '^system:serviceaccount:argocd:argocd-application-controller$' '^clusterroles$' '^P6: a (Role or )?ClusterRole of the operators (must not (hold a wildcard verb|grant Secrets)|is read-only)'
+  fi
+  if [ "$stage" = deny ] && [ -n "$held" ] && tree_broker_egress_public; then
+    printf '%s\t%s\t%s\t%s\n' '^ryft-netpol/[^:]+:(Warn\+Audit|Audit|Warn)$' '^system:serviceaccount:argocd:argocd-application-controller$' '^networkpolicies$' '^P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432'
+  fi
+}
+
+# adm_full_findings <label> <since-timestamp> [explained shapes]: the validation failures the API server
+# logged since then (the audit log, grepped on the node), by policy/binding, requester, resource, dry-run
+# and message. A line that matches none of the explained shapes (adm_full_explained) is a finding.
 adm_full_findings() {
-  local label=$1 since=$2 log all unexplained
-  log=$(adm_audit_log) || log=
-  [ -n "$log" ] || { rec "$label" SKIP "the audit log is not readable"; return; }
-  all=$(printf '%s\n' "$log" | jq -r --arg since "$since" 'select(.requestReceivedTimestamp >= $since and (.annotations // {} | has("validation.policy.admission.k8s.io/validation_failure"))) | (.annotations["validation.policy.admission.k8s.io/validation_failure"] | fromjson | map(.policy + "/" + .binding + ":" + (.validationActions | join("+")))[]) as $v | [$v, .user.username, (.objectRef.resource // "-"), ((.requestURI | test("dryRun")) | tostring)] | @tsv' 2>/dev/null | sort | uniq -c | sort -rn)
+  local label=$1 since=$2 explained=${3:-} log all unexplained="" line rest cnt v u r d m shape explained_n=0 rc=0 s_v s_u s_r s_m
+  log=$(adm_audit_grep validation_failure) || rc=$?
+  if [ "$rc" != 0 ]; then adm_audit_unreadable "$label" "no log on the node of ${KIND_CLUSTER}"; return; fi
+  all=$(printf '%s\n' "$log" | jq -r --arg since "$since" 'select(.requestReceivedTimestamp >= $since and (.annotations // {} | has("validation.policy.admission.k8s.io/validation_failure"))) | (.annotations["validation.policy.admission.k8s.io/validation_failure"] | fromjson | .[] | select(.policy != null)) as $f | [($f.policy + "/" + $f.binding + ":" + ($f.validationActions | join("+"))), .user.username, (.objectRef.resource // "-"), ((.requestURI | test("dryRun")) | tostring), ($f.message // "" | gsub("[\\t\\n]"; " ") | .[0:200])] | @tsv' 2>/dev/null | sort | uniq -c | sort -rn | sed -E 's/^ *([0-9]+) /\1\t/')
   if [ -z "$all" ]; then rec "$label" PASS "no validation failure in the audit log since the stage began"; return; fi
-  unexplained=$(printf '%s\n' "$all" | awk -v ok="${3:-^$}" '{ if ($2 !~ ok) print }')
+  while IFS="$(printf '\t')" read -r cnt v u r d m; do
+    [ -n "$cnt" ] || continue
+    line=0
+    while IFS= read -r shape; do
+      [ -n "$shape" ] || continue
+      IFS="$(printf '\t')" read -r s_v s_u s_r s_m <<EOF
+$shape
+EOF
+      if [[ $v =~ $s_v ]] && [[ $u =~ $s_u ]] && [[ $r =~ $s_r ]] && [[ $m =~ $s_m ]]; then line=1; break; fi
+    done <<EOF
+$explained
+EOF
+    if [ "$line" = 1 ]; then explained_n=$((explained_n + cnt)); else unexplained="$unexplained [$cnt x $v by $u on $r dryrun=$d: $(printf '%s' "$m" | cut -c1-90)]"; fi
+  done <<EOF
+$all
+EOF
   if [ -z "$unexplained" ]; then
-    rec "$label" PASS "validation failures logged, all explained: $(printf '%s' "$all" | tr -s ' ' | tr '\n\t' ';,' | cut -c1-400)"
+    rec "$label" PASS "$explained_n validation failures logged since the stage began, every one a known shape of what the tree has not fixed yet"
   else
-    rec "$label" FAIL "unexplained validation failures (count policy/binding:actions, requester, resource, dry-run): $(printf '%s' "$unexplained" | tr -s ' ' | tr '\n\t' ';,' | cut -c1-900)"
+    rec "$label" FAIL "unexplained validation failures:$(printf '%s' "$unexplained" | cut -c1-900)"
   fi
 }
 
@@ -328,17 +402,32 @@ adm_full_check_topology() {
   fi
 }
 
-# No "forbidden" in the operators' logs: the scoped Roles carry every verb they need.
+# No "forbidden" in the operators' logs: the scoped Roles carry every verb they need. The logs are
+# read into files first and the exit status of kubectl is checked (a failed read is no "nothing found").
 adm_full_check_operator_logs() {
-  local label=$1 since=$2 n1 n2 sample
-  n1=$(kc -n rabbitmq-system logs deploy/rabbitmq-cluster-operator --since-time="$since" 2>&1 | grep -ci forbidden)
-  n2=$(kc -n rabbitmq-system logs deploy/messaging-topology-operator --since-time="$since" 2>&1 | grep -ci forbidden)
+  local label=$1 since=$2 n1 n2 sample dep
+  for dep in rabbitmq-cluster-operator messaging-topology-operator; do
+    if ! kc -n rabbitmq-system logs "deploy/$dep" --since-time="$since" > "$WORK/log/operator-$dep.log" 2>"$WORK/log/operator-$dep.err"; then
+      rec "$label" FAIL "kubectl logs deploy/$dep failed: $(head -c 300 "$WORK/log/operator-$dep.err")"
+      return
+    fi
+  done
+  n1=$(grep -ci forbidden "$WORK/log/operator-rabbitmq-cluster-operator.log" || true)
+  n2=$(grep -ci forbidden "$WORK/log/operator-messaging-topology-operator.log" || true)
   if [ "$n1" = 0 ] && [ "$n2" = 0 ]; then
-    rec "$label" PASS "no 'forbidden' in the logs of the Cluster Operator and the Topology Operator$(tree_has_scoped_operators && echo ' (namespace-scoped, T12-g)' || echo ' (cluster-wide roles: this tree has no T12-g)')"
+    rec "$label" PASS "no 'forbidden' in the logs of the Cluster Operator and the Topology Operator since the stage began$(tree_has_scoped_operators && echo ' (namespace-scoped, T12-g)' || echo ' (cluster-wide roles: this tree has no T12-g)')"
   else
-    sample=$( { kc -n rabbitmq-system logs deploy/rabbitmq-cluster-operator --since-time="$since" 2>&1; kc -n rabbitmq-system logs deploy/messaging-topology-operator --since-time="$since" 2>&1; } | grep -i forbidden | head -2 | cut -c1-400)
+    sample=$(grep -ih forbidden "$WORK"/log/operator-*.log | head -2 | cut -c1-400)
     rec "$label" FAIL "'forbidden' in the operators' logs (cluster operator $n1, topology operator $n2): $sample"
   fi
+}
+
+# adm_can_i <user> "<verb resource [-n ns] ...>": the first line of `kubectl auth can-i` as that user. The
+# words are constants of this file, split on blanks into an array (no globbing).
+adm_can_i() {
+  local who=$1 words=()
+  read -r -a words <<< "$2"
+  kca "$who" auth can-i "${words[@]}" 2>/dev/null | head -1
 }
 
 # kubectl auth can-i for the operators' service accounts. With T12-g (both scoped) the negatives are no;
@@ -348,19 +437,16 @@ adm_full_check_can_i() {
   for sa in rabbitmq-cluster-operator messaging-topology-operator; do
     who="system:serviceaccount:rabbitmq-system:$sa"
     for q in "list secrets -A" "get secrets -n ryft-api" "get secrets -n argocd" "create pods/exec -n ryft-api" "update pods -n ryft-api" "create secrets -n ryft-api" "create clusterroles" "update validatingadmissionpolicybindings" "create validatingwebhookconfigurations"; do
-      # shellcheck disable=SC2086
-      ans=$(kc auth can-i $q --as "$who" 2>/dev/null | head -1)
+      ans=$(adm_can_i "$who" "$q")
       [ "$ans" = no ] || fails="$fails [$sa: $q = ${ans:-?}]"
     done
     # and what they need, in the broker's namespace
     q="get secrets -n ryft-rabbitmq"
-    # shellcheck disable=SC2086
-    ans=$(kc auth can-i $q --as "$who" 2>/dev/null | head -1)
+    ans=$(adm_can_i "$who" "$q")
     [ "$ans" = yes ] || wrong="$wrong [$sa: $q = ${ans:-?}]"
     if [ "$sa" = rabbitmq-cluster-operator ]; then
       q="update statefulsets.apps -n ryft-rabbitmq"
-      # shellcheck disable=SC2086
-      ans=$(kc auth can-i $q --as "$who" 2>/dev/null | head -1)
+      ans=$(adm_can_i "$who" "$q")
       [ "$ans" = yes ] || wrong="$wrong [$sa: $q = ${ans:-?}]"
     fi
   done
@@ -381,7 +467,7 @@ adm_cond_platform_ended() { kc -n argocd get application ryft-platform -o json |
 # checks do) passes P8's CONNECT rule in Deny; the same request in any other namespace is refused (claim c).
 adm_full_check_operator_exec() {
   local label=$1 out
-  if out=$(kc -n ryft-rabbitmq exec pod/rabbitmq-server-0 -c rabbitmq --as system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator -- true 2>&1); then
+  if out=$(kca system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator -n ryft-rabbitmq exec pod/rabbitmq-server-0 -c rabbitmq -- true 2>&1); then
     rec "$label" PASS "the Cluster Operator's service account may exec into the broker's pod (P8 admits pods/exec in ryft-rabbitmq)"
   else
     rec "$label" FAIL "pods/exec by the Cluster Operator into the broker: $(printf '%s' "$out" | cut -c1-300)"
@@ -411,7 +497,7 @@ adm_full_broker_restart() {
 
 # terminate-op: a sync of ryft-platform is in PreSync (the stub migrate sleeps) and is terminated.
 adm_full_terminate_op() {
-  local label=$1 phase rev i
+  local label=$1 phase rev i synced
   ac app sync ryft-platform --async >"$WORK/log/sync-async.out" 2>&1 || { rec "$label" FAIL "argocd app sync --async: $(tail -2 "$WORK/log/sync-async.out")"; return; }
   # claim k: what argocd-server wrote as the revision of a plain sync
   rev=
@@ -432,13 +518,21 @@ adm_full_terminate_op() {
   else
     rec "$label" FAIL "argocd app terminate-op: $(tail -3 "$WORK/log/terminate.out" | cut -c1-300) (phase now: $(kc -n argocd get application ryft-platform -o jsonpath='{.status.operationState.phase}'))"
   fi
-  rec "claim-k" INFO "what argocd-server wrote as operation.sync.revision for a plain 'argocd app sync --async': '${rev:-not seen}' (P10 allows \"\", main and the synced revision)"
+  # Claim k, answered (D122): argocd-server writes the FULL commit SHA of the revision the Application was
+  # compared with, not "" and not main; P10 lets it through because that SHA is the synced revision.
+  synced=$(kc -n argocd get application ryft-platform -o jsonpath='{.status.sync.revision}' 2>/dev/null)
+  if [[ $rev =~ ^[0-9a-f]{40}$ ]] && [ "$rev" = "$synced" ]; then
+    rec "claim-k" PASS "argocd-server wrote operation.sync.revision = the full commit SHA ${rev:0:12}... (the revision ryft-platform is synced to), not main: P10's third alternative (the synced revision) is what admits a manual sync, and 'sync --revision <other sha>' is refused"
+  else
+    rec "claim-k" INFO "what argocd-server wrote as operation.sync.revision for a plain 'argocd app sync --async': '${rev:-not seen}' (synced revision '${synced:-?}'; P10 allows \"\", main and the synced revision); D122 says it is the full SHA, which this run did not see"
+  fi
 }
 
 # A manual sync of every app through argocd-server (the path P10 judges), in wave order.
 adm_full_manual_syncs() {
   local label=$1 app failed=
   for app in $(kc -n argocd get applications -o json | jq -r '.items | sort_by(.metadata.annotations["argocd.argoproj.io/sync-wave"] // "0" | tonumber) | .[].metadata.name'); do
+    adm_valid_name "$app" || { failed="$failed [an Application named '$(printf '%s' "$app" | cut -c1-40)' is no DNS name]"; continue; }
     if ! ac app sync "$app" --timeout 300 >"$WORK/log/sync-$app.out" 2>&1; then
       failed="$failed [$app: $(grep -iE 'denied|forbidden|error|failed' "$WORK/log/sync-$app.out" | head -2 | tr '\n' ' ' | cut -c1-300)]"
     fi
@@ -452,16 +546,23 @@ adm_full_manual_syncs() {
 
 # Claim i: resource.respectRBAC strict with no cluster-wide Secrets for the controller.
 adm_full_claim_i() {
-  local setting can errs
+  local since=$1 setting can errs
   setting=$(kc -n argocd get configmap argocd-cm -o jsonpath='{.data.resource\.respectRBAC}' 2>/dev/null)
-  can=$(kc auth can-i list secrets -A --as "$ARGO_CTRL" 2>/dev/null | head -1)
-  errs=$(kc -n argocd logs statefulset/argocd-application-controller --tail=4000 2>&1 | grep -ciE 'forbidden|cannot (list|watch) resource')
+  can=$(kca "$ARGO_CTRL" auth can-i list secrets -A 2>/dev/null | head -1)
   if [ "$setting" != strict ]; then
     rec "claim-i" SKIP "argocd-cm has no resource.respectRBAC: strict in this tree (T12-f)"
-  elif [ "$can" = no ] && [ "$errs" = 0 ]; then
-    rec "claim-i" PASS "with resource.respectRBAC: strict the controller (cannot list Secrets cluster-wide: can-i $can) kept every Application's tree and health current through all syncs; no 'forbidden' or 'cannot list' in its log"
+    return
+  fi
+  # The controller's log since the run began, read into a file and checked for a failed read.
+  if ! kc -n argocd logs statefulset/argocd-application-controller --since-time="$since" > "$WORK/log/argocd-controller.log" 2>"$WORK/log/argocd-controller.err"; then
+    rec "claim-i" FAIL "kubectl logs statefulset/argocd-application-controller failed: $(head -c 300 "$WORK/log/argocd-controller.err")"
+    return
+  fi
+  errs=$(grep -ciE 'forbidden|cannot (list|watch) resource' "$WORK/log/argocd-controller.log" || true)
+  if [ "$can" = no ] && [ "$errs" = 0 ]; then
+    rec "claim-i" PASS "with resource.respectRBAC: strict the controller (cannot list Secrets cluster-wide: can-i $can) kept every Application's tree and health current through all syncs; no 'forbidden' or 'cannot list' in its log since the run began"
   else
-    rec "claim-i" FAIL "respectRBAC strict: can-i list secrets -A = $can, $errs forbidden-like lines in the controller log: $(kc -n argocd logs statefulset/argocd-application-controller --tail=4000 2>&1 | grep -iE 'forbidden|cannot (list|watch) resource' | head -2 | cut -c1-300)"
+    rec "claim-i" FAIL "respectRBAC strict: can-i list secrets -A = $can, $errs forbidden-like lines in the controller log: $(grep -iE 'forbidden|cannot (list|watch) resource' "$WORK/log/argocd-controller.log" | head -2 | cut -c1-300)"
   fi
 }
 
@@ -518,7 +619,9 @@ EOF
 # ---------------------------------------------------------------------------------------------
 
 adm_full() {
-  local start held=""
+  local start held="" run_start
+  run_start=$(adm_now)
+  : > "$WORK/stub-refused.txt"
   group "full: the stack"
   adm_full_reset
   adm_full_certmanager
@@ -546,7 +649,7 @@ adm_full() {
   adm_full_check_broker "full-broker-audit"
   adm_full_check_topology "full-topology-audit"
   adm_full_check_operator_logs "full-operator-logs-audit" "$start"
-  adm_full_findings "full-findings-audit" "$start" "ryft-operators-cluster"
+  adm_full_findings "full-findings-audit" "$start" "$(adm_full_explained audit "$held")"
   endgroup
 
   group "full: Deny${held:+ (held in Audit until the tree has T12-g / T12-k: $held)}"
@@ -555,7 +658,7 @@ adm_full() {
   adm_full_manual_syncs "full-sync-deny"
   adm_full_wait_apps "full-apps-deny" 900
   adm_full_check_hooks "full-hooks-deny"
-  adm_full_findings "full-findings-deny" "$start" "ryft-operators-cluster|ryft-netpol"
+  adm_full_findings "full-findings-deny" "$start" "$(adm_full_explained deny "$held")"
   adm_full_broker_restart "full-broker-restart"
   adm_full_check_broker "full-broker-deny"
   adm_full_terminate_op "full-terminate-op"
@@ -563,7 +666,11 @@ adm_full() {
   adm_full_check_operator_logs "full-operator-logs-deny" "$start"
   adm_full_check_can_i "full-operators-can-i"
   adm_full_check_operator_exec "full-operator-exec"
-  adm_full_claim_i
+  adm_full_claim_i "$run_start"
   adm_full_claim_m
   endgroup
+  # What the stand-in for VSO refused to act on (a value of the tree that is no valid name or label).
+  if [ -s "$WORK/stub-refused.txt" ]; then
+    rec "full-stub-refused" FAIL "the VSO stand-in refused values of the tree under test: $(sort -u "$WORK/stub-refused.txt" | head -3 | tr '\n' ';' | cut -c1-400)"
+  fi
 }
