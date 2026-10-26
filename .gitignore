@@ -20,3 +20,6 @@ __pycache__/
 /backend/notify
 /backend/migrate
 /backend/rabbitmq-topology
+
+# make admission-e2e: the summary of the last kind run
+/admission-e2e-summary.md

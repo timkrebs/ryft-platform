@@ -1,0 +1,16 @@
+# Objects the manual fixtures act on, created by the admin before the policies exist
+# (scripts/lib/admission_lib.sh, adm_baseline).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny, namespace: ryft-api }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-fixture
+  namespace: argocd
+  labels: { argocd.argoproj.io/secret-type: repository }
+stringData: { url: "https://example.invalid/repo.git" }

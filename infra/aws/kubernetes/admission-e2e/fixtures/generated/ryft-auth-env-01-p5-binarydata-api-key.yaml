@@ -1,0 +1,12 @@
+# fixture: P5 binaryData API_KEY
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-auth-env
+# message: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
+apiVersion: v1
+binaryData:
+  API_KEY: eA==
+kind: ConfigMap
+metadata:
+  name: c
+  namespace: ryft-api

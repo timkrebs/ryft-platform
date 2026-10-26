@@ -1,0 +1,32 @@
+# fixture: P9 a longer namespace sharing the prefix
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-traefik
+# message: P9: an Ingress may name only middlewares of its own namespace.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: ryft-api-x-ratelimit@kubernetescrd
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  name: api
+  namespace: ryft-api
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: api.ryftapp.de
+    http:
+      paths:
+      - backend:
+          service:
+            name: api
+            port:
+              name: http
+        path: /v1
+        pathType: Prefix
+  tls:
+  - hosts:
+    - api.ryftapp.de
+    secretName: api-ryftapp-de-tls

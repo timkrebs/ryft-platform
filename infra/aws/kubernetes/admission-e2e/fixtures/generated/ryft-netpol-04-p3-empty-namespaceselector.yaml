@@ -1,0 +1,74 @@
+# fixture: P3 empty namespaceSelector
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-netpol
+# message: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api
+  namespace: ryft-api
+spec:
+  egress:
+  - ports:
+    - port: 5671
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-rabbitmq
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: rabbitmq
+  - ports:
+    - port: 443
+      protocol: TCP
+    - port: 5432
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+  ingress:
+  - from:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - port: 8080
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - port: 9090
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-smoke
+      podSelector:
+        matchLabels:
+          app: smoke
+    ports:
+    - port: 8080
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+  - Ingress
+  - Egress

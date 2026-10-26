@@ -1,0 +1,29 @@
+# Hand-written fixtures, see argo-cd.yaml for the format.
+# ----
+# fixture: P1 the application controller deletes a Namespace
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: namespace ryft-web
+# refused-by: ryft-namespaces
+# message: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+# ----
+# fixture: P1 a Pod Security version label pinned by a patch
+# op: patch
+# target: namespace ryft-web
+# patch: {"metadata":{"labels":{"pod-security.kubernetes.io/enforce-version":"v1.30"}}}
+# refused-by: ryft-namespaces
+# message: P1: Pod Security version labels must be absent or latest.
+# ----
+# fixture: P1 the enforce label lowered by a patch (any writer, infra/vault included)
+# op: patch
+# target: namespace ryft-api
+# patch: {"metadata":{"labels":{"pod-security.kubernetes.io/enforce":"baseline"}}}
+# refused-by: ryft-namespaces
+# message: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+# ----
+# fixture: P3 default-deny deleted while its namespace lives
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: networkpolicy default-deny -n ryft-api
+# refused-by: ryft-netpol
+# message: P3: default-deny can be deleted only together with its namespace.
