@@ -45,6 +45,24 @@ token the Fleet pipelines write with.
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
 
+**The SDK injector stays out of `ryft-*`.** `telemetryServices.sdkInjector` deploys a
+mutating webhook (`mpod-v1.beyla.grafana.com`, pods on CREATE, `failurePolicy: Ignore`)
+that can add an SDK init container or volume to pods of every namespace it does not
+exclude. The admission policies pin the images and commands of RYFT's pods, so an injected
+container would be refused, and the services emit their own metrics. The chart excludes
+by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
+every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
+default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
+Management log setting above are unaffected. Apply with `make monitoring-apply`, then
+check read-only:
+
+```bash
+kubectl get mutatingwebhookconfigurations \
+  -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
+```
+
+The selector of the injector's webhook must list every `ryft-*` namespace under `NotIn`.
+
 A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace
 `monitoring`.
@@ -94,6 +112,8 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
+| `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
+| `ryft_http_nul_stripped_total` | counter | `route` | ingest | Syncs accepted after the NULs were removed from their strings (`POST /v1/sync` does not refuse them: the app would never resend the page). One per request, however many NULs; never the text. A steady rate points at a source or device name the app should clean. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api, scoring | Sends to the broker (by the outbox relay, D101), `ok`/`error`, on RabbitMQ also `unroutable` (no queue bound for the key: a topology change missed): `ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), `session.completed` as `session_completed` (api), and scoring's `scored`, `session_scored`, `refresh`. An `error` here is retried by the relay; an event is lost only if its outbox row could not be written (also `error`, and the sync or completion answers `503`). |
@@ -267,6 +287,7 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | HTTP5xxRatio | critical | api or ingest answers > 2 % of requests with 5xx, 10 min | logs of that namespace, `err` on `level=ERROR` |
 | PodRestarting | critical | a `ryft-*` pod restarted > 3× in 30 min | `kubectl -n <ns> describe pod`, the previous container's log |
 | Panics | critical | a handler panicked | the `msg="panic"` line with the stack |
+| TextRefusedByDatabase | warning | Postgres refused a request's text (SQLSTATE 22021/22P05) in the last hour, per namespace and route (`ryft_http_text_refused_total{at="database"}`; a route's first refusal included) | The client got a `422` and nothing was logged (it used to be a logged `500`). Either a path the checks miss — a handler reading text without `httpx.ReadJSON`, a raw field `normalizeRaw` does not reach, a URL value outside `WithRoutes` — or a server-side bug writing bad text (a string cut inside a UTF-8 sequence). Reproduce on that route against a throwaway database (the `err` is not logged), then close the gap in `internal/httpx` with a test. |
 | AuthUnavailable | critical | JWKS unavailable or the user lookup fails, 5 min | Supabase status, `ryft_db_up` |
 | DatabaseDown | critical | a service's database ping failed for 2 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins (OPERATIONS → EKS) |
 | DatabaseFlapping | warning | > 3 failed pings in 15 min | the same, intermittently |

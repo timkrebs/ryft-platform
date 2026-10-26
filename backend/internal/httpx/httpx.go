@@ -86,8 +86,15 @@ const StatusClientClosed = 499
 // Fail answers an unexpected server-side error. The client gets a generic
 // message and the request ID; the details go to the log. A request that ran
 // out of time is a 503 (retry); one the client abandoned is no server error
-// and is logged at info as 499; anything else a 500.
+// and is logged at info as 499; text the database refused (a NUL that got past
+// ReadJSON and WithRoutes) is the client's: a 422, counted, not logged; anything
+// else a 500.
 func Fail(w http.ResponseWriter, r *http.Request, err error) {
+	if refusedText(err) {
+		countRefused(r, "database")
+		WriteError(w, http.StatusUnprocessableEntity, msgDBText)
+		return
+	}
 	status, msg := http.StatusInternalServerError, "internal error"
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded):
@@ -102,24 +109,61 @@ func Fail(w http.ResponseWriter, r *http.Request, err error) {
 	WriteError(w, status, msg)
 }
 
-// ReadJSON decodes the request body into v, rejecting unknown fields and
-// bodies over limit. Answer its error with WriteDecodeError.
+// ReadJSON decodes the request body into v, rejecting unknown fields, bodies
+// over limit and, once the JSON decoded, a "\u0000" in any of its strings
+// (ErrNUL: Postgres cannot store it); json.RawMessage fields come out
+// re-encoded (raw.go). Answer its error with WriteDecodeError.
 func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	dec := json.NewDecoder(r.Body)
+	scan := newNULScanner(r.Body)
+	dec := json.NewDecoder(scan)
 	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	// Within the value only: the decoder may have read past its end, and
+	// whatever follows it is ignored.
+	if scan.nul >= 0 && scan.nul < dec.InputOffset() {
+		countRefused(r, "body")
+		return ErrNUL
+	}
+	return normalizeRaw(v)
+}
+
+// ReadJSONStripNUL is ReadJSON for a body whose strings the client cannot
+// correct (POST /v1/sync: HealthKit's source names, the device's name): it
+// removes every "\u0000" from them, keys and values, and decodes the rest
+// instead of refusing it, so one NUL cannot stall an upload stream.
+func ReadJSONStripNUL(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	strip := &nulStripper{r: r.Body}
+	dec := json.NewDecoder(strip)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if strip.removed > 0 {
+		metrics.NULStripped.WithLabelValues(routeOf(r)).Inc()
+	}
+	return normalizeRaw(v)
 }
 
 // WriteDecodeError answers a ReadJSON failure: 413 for an oversized body,
-// 400 otherwise.
+// 422 for a NUL in a string or a raw JSON field that cannot be stored, 400
+// otherwise (raw 0x00 bytes included: not JSON).
 func WriteDecodeError(w http.ResponseWriter, err error) {
 	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
+	var raw *RawJSONError
+	switch {
+	case errors.As(err, &tooLarge):
 		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body over %d bytes", tooLarge.Limit))
-		return
+	case errors.Is(err, ErrNUL):
+		WriteError(w, http.StatusUnprocessableEntity, ErrNUL.Error())
+	case errors.As(err, &raw):
+		WriteError(w, http.StatusUnprocessableEntity, raw.Error())
+	default:
+		WriteError(w, http.StatusBadRequest, "bad json: "+err.Error())
 	}
-	WriteError(w, http.StatusBadRequest, "bad json: "+err.Error())
 }
 
 // NotFound answers unknown routes (and unknown methods on known paths) with
@@ -138,13 +182,20 @@ func Info(ctx context.Context) *RequestInfo { return logx.FieldsFrom(ctx) }
 
 // WithRoutes serves mux and records the pattern that matched in RequestInfo
 // before the handler runs (ServeMux sets r.Pattern only on the request copy it
-// was given, which outer middleware never sees).
+// was given, which outer middleware never sees). A path or query that is not
+// text Postgres can store (a NUL, %00, or bytes that are not UTF-8) is a 400
+// before any handler sees it; behind auth, so a missing token stays a 401.
 func WithRoutes(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ri := Info(r.Context()); ri != nil {
 			if _, pattern := mux.Handler(r); pattern != "" {
 				ri.Route = pattern
 			}
+		}
+		if !urlIsText(r.URL) {
+			countRefused(r, "url")
+			WriteError(w, http.StatusBadRequest, msgURLText)
+			return
 		}
 		mux.ServeHTTP(w, r)
 	})
