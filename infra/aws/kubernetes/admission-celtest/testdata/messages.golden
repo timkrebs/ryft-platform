@@ -48,7 +48,13 @@ P11 rabbitmqcluster elsewhere
     ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
 P11 secretBackend
     ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend a key the chart does not know
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
 P11 secretBackend externalSecret named
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend externalSecret with another field
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend vault next to the defaulted externalSecret
     ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
 P11 service LoadBalancer
     ryft-broker: P11: the broker's Service must stay ClusterIP.

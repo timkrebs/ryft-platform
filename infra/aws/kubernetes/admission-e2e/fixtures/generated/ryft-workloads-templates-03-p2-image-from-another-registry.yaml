@@ -38,7 +38,7 @@ spec:
             name: ryft-config-md7676f8dg
         - secretRef:
             name: ryft-secrets
-        image: docker.io/ryft/notify:7b4886f
+        image: docker.io/ryft/notify:0000000
         livenessProbe:
           httpGet:
             path: /healthz

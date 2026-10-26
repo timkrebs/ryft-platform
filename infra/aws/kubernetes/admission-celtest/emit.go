@@ -27,7 +27,8 @@ import (
 // API server whether it agrees. UPDATE, DELETE and subresource cases are not emitted (the kind
 // runner has hand-written fixtures for those, infra/aws/kubernetes/admission-e2e/fixtures/manual).
 // Regenerate with `CELTEST_EMIT=../admission-e2e/fixtures/generated go run . ...` (run.sh does it
-// when CELTEST_EMIT is set); the output is deterministic.
+// when CELTEST_EMIT is set); the output is deterministic, and independent of the overlay's pins
+// (the image tags of the services are written as 0000000).
 
 type emitCase struct {
 	name string
@@ -104,6 +105,11 @@ func opensBrokerEgress(obj map[string]any) bool {
 
 var slugRE = regexp.MustCompile(`[^a-z0-9]+`)
 
+// The renders carry the EKS overlay's pins, which every promote PR moves; a fixture that followed
+// them would make the committed copy stale at each deploy (the `admission` job diffs the two). The
+// pinned short SHA is written as a constant that still matches P2's pattern.
+var pinRE = regexp.MustCompile(`(/ryft/[a-z]+):[0-9a-f]{7}\b`)
+
 func writeFixtures() {
 	dir := os.Getenv("CELTEST_EMIT")
 	if dir == "" {
@@ -130,6 +136,7 @@ func writeFixtures() {
 		file := filepath.Join(dir, fmt.Sprintf("%s-%02d-%s.yaml", binding, count[binding], slug))
 		body, err := yaml.Marshal(e.req.Obj)
 		must(err)
+		body = pinRE.ReplaceAll(body, []byte("${1}:0000000"))
 		var b strings.Builder
 		fmt.Fprintf(&b, "# fixture: %s\n# op: create\n# as: %s\n# refused-by: %s\n# message: %s\n", e.name, e.req.User, binding, oneLine(msg))
 		b.Write(body)

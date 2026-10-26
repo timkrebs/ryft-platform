@@ -9,7 +9,8 @@
 #   as           the requester (impersonated); without it the kind admin
 #   target       what kubectl is pointed at (patch, delete: "<resource> <name> [-n ns]")
 #   patch        a JSON merge patch
-#   refused-by   the policy that must refuse it in Deny (and warn in Audit); without it:
+#   refused-by   the BINDING (its name is in the API server's message) that must refuse it in Deny and
+#                warn in Audit; without it:
 #   expect       admitted
 #   message      the refusal, as in testdata/messages.golden
 # ----

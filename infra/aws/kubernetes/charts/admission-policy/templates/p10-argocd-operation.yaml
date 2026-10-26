@@ -4,11 +4,17 @@ changes the top-level `operation`; status.operationState is never looked at. So 
 controller's status writes, argocd-server's terminate-op, pause, hard refresh and the
 controller clearing a finished operation pass unjudged (they carry the in-flight operation
 unchanged, or none).
- - From any writer: no operation.sync.manifests, .source or .sources. This refuses
-   `--local` and `argocd app rollback` (which carries the history entry's source).
+ - From any writer: no operation.sync.manifests, and no operation.sync.source(s) other than
+   a copy of the Application's own spec.source(s) (the controller's automated sync carries
+   that copy; found by the kind run, D122). This refuses `--local`. It does NOT make P10 the
+   guard of "no foreign source": a request that changes spec.source and the operation
+   together passes here with its own source. That rests on P7 (the Application's spec is
+   pinned there), so P7 must not go to break-glass on the assumption that P10 blocks `--repo`.
  - From argocd-server: operation.sync.revision must be "", the target revision, or the
-   revision the Application is synced to (claim k: what argocd-server writes for a plain
-   sync is unverified).
+   revision the Application is synced to. argocd-server writes the full commit SHA of
+   the revision the Application was compared with for a plain sync (claim k, answered in
+   D122). `argocd app rollback` (a history entry's revision) and `sync --revision <sha>` are
+   refused by this rule alone, and only when they go through argocd-server.
 */ -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-argocd-operation" "id" "P10" "summary" "a new Argo CD sync operation carries no local manifests, no foreign source and no foreign revision") }}
 spec:

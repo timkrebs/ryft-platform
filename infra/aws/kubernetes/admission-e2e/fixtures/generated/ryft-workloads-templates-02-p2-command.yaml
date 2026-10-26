@@ -40,7 +40,7 @@ spec:
             name: ryft-config-md7676f8dg
         - secretRef:
             name: ryft-secrets
-        image: ghcr.io/timkrebs/ryft/notify:2741bff
+        image: ghcr.io/timkrebs/ryft/notify:0000000
         livenessProbe:
           httpGet:
             path: /healthz

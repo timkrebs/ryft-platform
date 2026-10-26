@@ -1,5 +1,5 @@
 # Hand-written CREATE fixtures for rules whose harness case is not a valid object for the API
-# server's own validation (admission-celtest/emit.go, notValidOnTheAPIServer). Each breaks exactly
+# server's own validation (admission-celtest/emit.go, the notEmitted map). Each breaks exactly
 # one rule. Format: see argo-cd.yaml.
 # ----
 # fixture: P7 an ApplicationSet
@@ -182,3 +182,107 @@ spec:
   ingress:
     - from: [{ podSelector: { matchLabels: { app.kubernetes.io/name: rabbitmq } } }]
       ports: [{ protocol: TCP, port: 35672, endPort: 35690 }]
+# ----
+# fixture: P11 a vault block next to the operator's defaulted externalSecret
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-broker
+# message: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  name: rabbitmq
+  namespace: ryft-rabbitmq
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: rabbitmq
+        topologyKey: kubernetes.io/hostname
+  image: docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+  override:
+    statefulSet:
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/path: /metrics
+              prometheus.io/port: "15692"
+              prometheus.io/scrape: "true"
+  persistence:
+    storage: 10Gi
+    storageClassName: gp3-encrypted
+  rabbitmq:
+    additionalConfig: |
+      # Metrics stay plain on 15692 for the collectors' scrape (counters, queue names,
+      # no messages); per queue, for the backlog alerts.
+      prometheus.tcp.port = 15692
+      prometheus.return_per_object_metrics = true
+      vm_memory_high_watermark.relative = 0.6
+      disk_free_limit.absolute = 1GB
+      log.console.formatter = json
+  replicas: 3
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 1Gi
+  secretBackend:
+    vault: { role: x }
+    externalSecret: { name: "" }
+# ----
+# fixture: P11 the operator's defaulted externalSecret alone passes
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# expect: admitted
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  name: rabbitmq
+  namespace: ryft-rabbitmq
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: rabbitmq
+        topologyKey: kubernetes.io/hostname
+  image: docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+  override:
+    statefulSet:
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/path: /metrics
+              prometheus.io/port: "15692"
+              prometheus.io/scrape: "true"
+  persistence:
+    storage: 10Gi
+    storageClassName: gp3-encrypted
+  rabbitmq:
+    additionalConfig: |
+      # Metrics stay plain on 15692 for the collectors' scrape (counters, queue names,
+      # no messages); per queue, for the backlog alerts.
+      prometheus.tcp.port = 15692
+      prometheus.return_per_object_metrics = true
+      vm_memory_high_watermark.relative = 0.6
+      disk_free_limit.absolute = 1GB
+      log.console.formatter = json
+  replicas: 3
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 1Gi
+  secretBackend:
+    externalSecret: { name: "" }

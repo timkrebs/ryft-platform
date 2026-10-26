@@ -371,6 +371,21 @@ func runHardening(c *chart) {
 	x = rcl()
 	set(x, "spec/secretBackend", jv(`{"externalSecret":{"name":"x"}}`))
 	add("P11 secretBackend externalSecret named", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
+	// The defaulted shape must not carry anything else: P11 is an allowlist (secretBackend holds
+	// only externalSecret, which holds only an empty name), so a vault block next to the default,
+	// another field in it and a key a later CRD version adds are all refused.
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"vault":{"role":"x"},"externalSecret":{"name":""}}`))
+	add("P11 secretBackend vault next to the defaulted externalSecret", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"externalSecret":{"name":"","other":"x"}}`))
+	add("P11 secretBackend externalSecret with another field", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{"externalSecret":{"name":""},"awsSecretsManager":{"name":"x"}}`))
+	add("P11 secretBackend a key the chart does not know", argoCtl, "CREATE", x, "P11: the broker takes no secretBackend")
+	x = rcl()
+	set(x, "spec/secretBackend", jv(`{}`))
+	add("P11 secretBackend empty", argoCtl, "CREATE", x)
 
 	for _, t := range ts {
 		report(c, t.name, t.req, t.want)
