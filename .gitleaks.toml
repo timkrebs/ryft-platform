@@ -29,7 +29,9 @@ regexes = ['''^\s*"?routing_?[kK]ey"?\s*:\s*"[a-z0-9]+(?:\.[a-z0-9]+)*"\s*,?\s*$
 
 # Test-only values built around the sentinel 0123456789. config_test feeds a 16-char key
 # to LoadAuth. roles_test logs in to a throw-away test Postgres as ryft_api.
-# check_api.py proves that a wrong key gets a 401. Only these exact values are allowed.
+# check_api.py proves that a wrong key gets a 401. The Train handlers' test bench
+# (train_import_harness_test.go) gives the same key to an in-process API-key verifier it
+# builds itself; no server or environment ever sees it. Only these exact values are allowed.
 [[allowlists]]
 description = "Fake API keys and role passwords in tests (0123456789 sentinel)"
 targetRules = ["generic-api-key"]
@@ -37,9 +39,10 @@ condition = "AND"
 paths = [
   '''(?:^|/)backend/internal/config/config_test\.go$''',
   '''(?:^|/)backend/internal/db/roles_test\.go$''',
+  '''(?:^|/)backend/cmd/api/train_import_harness_test\.go$''',
   '''(?:^|/)scripts/check_api\.py$''',
 ]
-regexes = ['''^(?:0123456789abcdef|pw-ryft_[a-z]+-(?:rotated-)?0123(?:456789)?|wrong-key-0123456789)$''']
+regexes = ['''^(?:0123456789abcdef|pw-ryft_[a-z]+-(?:rotated-)?0123(?:456789)?|wrong-key-0123456789|train-bench-key-0123456789)$''']
 
 # The start-up tests of api and ingest run the binary with an explicit environment that
 # includes the same 16-char sentinel key, written as one "API_KEY=…" string (os/exec
