@@ -286,15 +286,29 @@ type LoggedSet struct {
 
 // LoggedSets returns the completed sets (completed_at set) of the given
 // exercises in completed sessions, plus those of session also (whatever its
-// status), that were completed no later than until; oldest first.
+// status), that were completed no later than until; oldest first. All of the
+// history: records are all-time.
 func (s *Store) LoggedSets(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
+	return s.loggedSets(ctx, userID, exerciseIDs, nil, until, also)
+}
+
+// LoggedSetsSince is LoggedSets without the sets completed at or before since,
+// except those of session also: what an e1RM reference reads (since = until −
+// scoring.E1RMWindow, D135; scoring.E1RMsAsOf applies the same window again),
+// so a session is not measured against years of imported sets it then drops.
+func (s *Store) LoggedSetsSince(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, since, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
+	return s.loggedSets(ctx, userID, exerciseIDs, &since, until, also)
+}
+
+func (s *Store) loggedSets(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, since *time.Time, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
 	rows, err := s.pool.Query(ctx, `SELECT s.id, e.exercise_id, s.started_at, s.bodyweight_kg::float8, `+setColumns+`
 		FROM session_sets st
 		JOIN session_exercises e ON e.user_id = st.user_id AND e.id = st.session_exercise_id
 		JOIN sessions s ON s.user_id = e.user_id AND s.id = e.session_id
 		WHERE st.user_id = $1 AND e.exercise_id = ANY($2) AND st.completed_at IS NOT NULL AND st.completed_at <= $3
 		  AND (s.status = 'completed' OR s.id = $4)
-		ORDER BY st.completed_at, st.id`, userID, exerciseIDs, until, also)
+		  AND ($5::timestamptz IS NULL OR st.completed_at > $5 OR s.id = $4)
+		ORDER BY st.completed_at, st.id`, userID, exerciseIDs, until, also, since)
 	if err != nil {
 		return nil, err
 	}

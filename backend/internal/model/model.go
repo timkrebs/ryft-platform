@@ -1136,7 +1136,7 @@ type Set struct {
 	SetIndex    int        `json:"set_index"`
 	Reps        *int       `json:"reps"`
 	WeightKG    *float64   `json:"weight_kg"`
-	AssistKG    *float64   `json:"assist_kg"` // bodyweight sets: the support, 0-200; changes no score yet (D127)
+	AssistKG    *float64   `json:"assist_kg"` // bodyweight sets: the support, 0-200; comes off the moved weight, no record (D134)
 	RPE         *float64   `json:"rpe"`
 	DurationSec *int       `json:"duration_sec"`
 	DistanceM   *float64   `json:"distance_m"`

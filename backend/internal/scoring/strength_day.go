@@ -89,7 +89,9 @@ func (e *Engine) loadOf(ctx context.Context, userID uuid.UUID, s model.Session, 
 		exIDs = append(exIDs, se.ExerciseID)
 	}
 	until := HistoryUntil(s)
-	sets, err := e.st.LoggedSets(ctx, userID, exIDs, until, s.ID)
+	// Only the window E1RMsAsOf reads (and the session's own sets): an imported
+	// history of years is not loaded to be dropped again.
+	sets, err := e.st.LoggedSetsSince(ctx, userID, exIDs, until.Add(-E1RMWindow), until, s.ID)
 	if err != nil {
 		return SessionLoad{}, err
 	}

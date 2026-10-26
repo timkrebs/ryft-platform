@@ -412,12 +412,14 @@ func (h *handler) planToday(w http.ResponseWriter, r *http.Request) {
 		}
 		e1rm := 0.0
 		if pe.TargetKind == model.TargetPct1RM && pe.Exercise != nil {
-			sets, err := h.st.LoggedSets(ctx, user, []uuid.UUID{pe.ExerciseID}, now, uuid.Nil)
+			// The current e1RM is the best of the last 90 days (D135): a plan never
+			// prescribes a share of a max from long ago; none in the window, no target.
+			sets, err := h.st.LoggedSetsSince(ctx, user, []uuid.UUID{pe.ExerciseID}, now.Add(-scoring.E1RMWindow), now, uuid.Nil)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
 			}
-			e1rm = scoring.BestE1RMs(sets, map[uuid.UUID]model.Exercise{pe.ExerciseID: *pe.Exercise}, fallback)[pe.ExerciseID]
+			e1rm = scoring.E1RMsAsOf(sets, map[uuid.UUID]model.Exercise{pe.ExerciseID: *pe.Exercise}, fallback, now, uuid.Nil)[pe.ExerciseID]
 		}
 		last, err := h.st.LastWorkingSets(ctx, user, pe.ExerciseID)
 		if err != nil {
