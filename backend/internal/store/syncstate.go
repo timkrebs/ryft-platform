@@ -28,9 +28,7 @@ func (s *Store) QueueDaysWith(ctx context.Context, userID uuid.UUID, days []stri
 		return nil
 	}
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
-			SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) d
-			ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, days); err != nil {
+		if err := queueDays(ctx, tx, userID, days); err != nil {
 			return err
 		}
 		if also != nil {
@@ -38,6 +36,14 @@ func (s *Store) QueueDaysWith(ctx context.Context, userID uuid.UUID, days []stri
 		}
 		return nil
 	})
+}
+
+// queueDays puts days (local "2006-01-02") into score_queue as pending, in tx.
+func queueDays(ctx context.Context, tx pgx.Tx, userID uuid.UUID, days []string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+		SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) d
+		ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, days)
+	return err
 }
 
 // MarkScored records that scoring finished day for a computation that started

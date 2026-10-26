@@ -2503,3 +2503,78 @@ sent, and whether a second account shares its phone.
   range is checked now (it was not), as for `kg`.
 - **T12:** `POST /v1/exercises` with an archived custom exercise's id un-archives it. That is what the
   code does (the update writes `archived = false`); documented and pinned with a test.
+
+## D131 — One transaction per import item, not savepoints in one (TI-2)
+
+- **Decision:** `ImportPlan` and `ImportSession` each run in their own transaction (`pgx.BeginFunc`), and
+  a deadlock or serialization failure (`40001`, `40P01`) is retried once in a fresh one. A rejection is
+  an error that rolls the item back (`importReject`), so a rejected item leaves no row, and the next item
+  is unaffected. The queue rows of an item's day are written in the item's transaction (D128).
+- **Why not savepoints in one request transaction** (same semantics, as D124 allowed): (1) the item's
+  locks (`pg_advisory_xact_lock` on the session, `FOR UPDATE` on its row and its plan) would be held until
+  the end of a request that may run 50 s, so a live save of any session in the file would wait that long;
+  (2) one open transaction pins the connection and the snapshot (vacuum cannot clean up behind it) for
+  the whole request, on a pooler that gives a small number of server connections to all pods; (3) a
+  connection that dies at item 40 would lose items 1-39, which D124 says stay stored and the retry
+  would have to redo; (4) a failed statement inside a savepoint leaves its dead tuples either way, so
+  there is no storage argument for one transaction. The cost is one commit per item (at most 50 plus
+  5 plans); measured locally a 50-session, 2 500-set request takes 1.9 s (create), 1.3 s (resend).
+  On Supabase expect about a dozen round trips per item, so a few seconds, far inside the 50 s.
+- **Idempotent by id:** `(user_id, id)` is the key, `lockSession` serialises with a live `PUT` of the same
+  id, `unchanged` writes nothing (checked with `xmin` in the tests).
+- **Rejections the store decides:** `id_taken` (another origin, or an exercise or set id of another
+  session), `unknown_exercise`, `unknown_plan_reference`, `newer_on_server`. A value Postgres refuses
+  (class 22, not-null, check) is `invalid` for that item (it fails the same way next time); anything else
+  (connection, timeout, a foreign-key violation from a concurrent delete, a deadlock after the retry) is
+  returned as an error, which the handler turns into the `503` that stops the request.
+- **The comparisons are not in the store:** `SameSession`, `SamePlan` and `ImportConflict` are
+  `internal/train`'s pure rules (design §3); the store takes them as `ImportRules`
+  (`Store.WithImportRules`) and refuses to run without them (`ErrImportRules`). Its tests use
+  stand-ins.
+
+## D132 — The import lease is a column on `users`, fenced by its own value (TI-2)
+
+- **Decision:** `AcquireImportLease` is one statement: `UPDATE users SET import_lease_until = now() +
+  ttl WHERE id = $1 AND (import_lease_until IS NULL OR import_lease_until < now()) RETURNING
+  import_lease_until`. No row: busy (or `ErrNotFound` when the account does not exist). TTL 120 s
+  (`ImportLeaseTTL`). The database's clock decides, so the pods need no clock agreement; no session state
+  is involved, so it works through Supavisor's transaction pooler where a session advisory lock does not.
+- **Release is fenced:** `UPDATE users SET import_lease_until = NULL WHERE id = $1 AND import_lease_until =
+  <the value we set>`. An import that overran its lease and finishes after another took it cannot free the
+  other's lease. The returned `release` runs on `context.WithoutCancel` with its own 5 s, because the
+  request's context is usually the thing that ended. A failed release is ignored: the lease expires.
+- **Why the column and not a `train_import_leases` table:** no new table means no new deletion, export,
+  retention and RLS surface (the column dies with the `users` row); the update is HOT (the column is
+  not indexed) so it creates no index churn; the two writes per import are negligible next to the import.
+  The lease row lock contends with other updates of the same `users` row only for the statement's
+  duration.
+- **Limit:** a pod that dies mid-import blocks that user's next import for up to 120 s (the client gets
+  `429 import_in_progress`, `Retry-After: 10`, and retries). The lease is not renewed: the request is
+  bounded by 50 s, so 120 s cannot run out while it works.
+
+## D133 — Migration 0028 is additive, NOT VALID, and leaves one constraint unvalidated (TI-2)
+
+- **Decision:** `0028_train_import.sql` adds `sessions.origin` (`NOT NULL DEFAULT 'app'`, constant default:
+  no rewrite on Postgres 11+) and `import_source`, `session_sets.assist_kg`, `users.import_lease_until`,
+  the `train.import` flag row (enabled, 0 %), and two grants: `INSERT, UPDATE` on `score_queue` to
+  `ryft_api` and `SELECT (origin)` on `sessions` to `ryft_notify`. Nothing is dropped or renamed, so the
+  images before the migration run against the new schema; rollback is re-pinning them.
+- **Locks:** the migrator runs a file in one transaction under the 5 s `lock_timeout` (D116, repeated
+  in the file as 0027 does), so the `ACCESS EXCLUSIVE` of `ADD COLUMN` is held to the commit and a
+  `VALIDATE` in the same file scans under it. Therefore every `CHECK` is added `NOT VALID` (catalog only;
+  still enforced for new and updated rows), the small `sessions` table is validated in the file (all rows
+  are `'app'`), and `session_sets_assist_kg_check` is **left `NOT VALID`**: `session_sets` is the largest
+  train table and every existing row is `NULL`, which passes. `CHECK` inline on `ADD COLUMN` would have
+  scanned it. A test proves 0028 gives up on a held `sessions` table after 5 s and leaves nothing behind.
+- **Optional, not required:** `ALTER TABLE session_sets VALIDATE CONSTRAINT session_sets_assist_kg_check;`
+  takes only `SHARE UPDATE EXCLUSIVE` (writes continue) and may be run from the SQL editor in a quiet
+  minute; it only flips `convalidated`. The planner does not use the constraint.
+- **No index:** the lookups are by `(user_id, id)`, `sessions_user_started` and
+  `session_exercises_exercise`. `EXPLAIN (ANALYZE, BUFFERS)` of the dependent-days query on a user with
+  1 500 sessions (6 years) among 37 500 sessions and 750 000 sets: 6 ms for the 400-day window (273
+  sessions, bitmap scans on `sessions_user_started` and `session_exercises_exercise`, hash semi join),
+  1.4 ms with no window cut. Nothing lists by `origin`; no index on it.
+- **Deletion, export, retention:** no new table. `DELETE /v1/me` and the merge cover the columns because
+  they live on rows both already handle (the merge copies columns generically); `delete_test` and
+  `merge_test` now hold an imported session, an assisted set, a record, an imported plan and a held lease.
+  Export is built from `GET /v1/sessions*`, which carry the new fields. No retention changes.

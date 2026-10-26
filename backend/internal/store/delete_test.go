@@ -75,7 +75,10 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1) +
 		(SELECT count(*) FROM push_tokens WHERE user_id=$1) + (SELECT count(*) FROM notifications_sent WHERE user_id=$1) +
 		(SELECT count(*) FROM user_sources WHERE user_id=$1) + (SELECT count(*) FROM feedback WHERE user_id=$1) +
-		(SELECT count(*) FROM score_queue WHERE user_id=$1) + (SELECT count(*) FROM outbox WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM score_queue WHERE user_id=$1) + (SELECT count(*) FROM outbox WHERE user_id=$1) +
+		(SELECT count(*) FROM sessions WHERE user_id=$1) + (SELECT count(*) FROM session_exercises WHERE user_id=$1) +
+		(SELECT count(*) FROM session_sets WHERE user_id=$1) + (SELECT count(*) FROM personal_records WHERE user_id=$1) +
+		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +126,36 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	}
 	if _, err := st.ClaimNotification(ctx, id, now.Format("2006-01-02"), model.NotifyMorningScore); err != nil {
 		t.Fatal(err)
+	}
+	seedImport(t, pool, id)
+}
+
+// seedImport gives the account what the training import (0028) adds: an imported session with an
+// assisted set and a record, an imported plan, and a held import lease.
+func seedImport(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	st := New(pool).WithImportRules(testImportRules())
+	pull := train2Bodyweight(t, st, id)
+	x := imported(pull, time.Now().UTC().Add(-48*time.Hour).Truncate(time.Second), 0)
+	x.Exercises[0].Sets[0].WeightKG, x.Exercises[0].Sets[0].AssistKG = nil, ptr(25.0)
+	window := DayWindow{From: localDay(x.StartedAt.AddDate(0, 0, -30), time.UTC), To: localDay(time.Now().UTC(), time.UTC)}
+	if out, err := st.ImportSession(ctx, id, "alpha_progression", x, time.UTC, window); err != nil || out.Status != ImportCreated || !out.Queued {
+		t.Fatalf("import: %+v %v", out, err)
+	}
+	if err := st.ReplacePRs(ctx, id, pull, []model.PR{{ExerciseID: pull, Kind: model.PRMaxReps, Value: 5, SetID: x.Exercises[0].Sets[0].ID,
+		SessionID: x.ID, AchievedAt: x.StartedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	p := userPlan()
+	for i := range p.Days {
+		p.Days[i].Exercises[0].ExerciseID = pull // the built-ins are not seeded here
+	}
+	if out, err := st.ImportPlan(ctx, id, p); err != nil || out.Status != ImportCreated {
+		t.Fatalf("import plan: %+v %v", out, err)
+	}
+	if _, ok, err := st.AcquireImportLease(ctx, id, ImportLeaseTTL); err != nil || !ok {
+		t.Fatalf("lease: %v %v", ok, err)
 	}
 }
 

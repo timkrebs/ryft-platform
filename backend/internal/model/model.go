@@ -1040,6 +1040,10 @@ const (
 	SessionCompleted  = "completed"
 	SessionDiscarded  = "discarded"
 
+	// Where a session came from (D125).
+	OriginApp    = "app"
+	OriginImport = "import"
+
 	EnrollmentActive    = "active"
 	EnrollmentPaused    = "paused"
 	EnrollmentCompleted = "completed"
@@ -1121,6 +1125,7 @@ type Set struct {
 	SetIndex    int        `json:"set_index"`
 	Reps        *int       `json:"reps"`
 	WeightKG    *float64   `json:"weight_kg"`
+	AssistKG    *float64   `json:"assist_kg"` // bodyweight sets: the support, 0-200; changes no score yet (D127)
 	RPE         *float64   `json:"rpe"`
 	DurationSec *int       `json:"duration_sec"`
 	DistanceM   *float64   `json:"distance_m"`
@@ -1158,6 +1163,10 @@ type Session struct {
 	Exercises     []SessionExercise `json:"exercises"`
 	PRs           []PR              `json:"prs"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	// Origin is "app" or "import"; ImportSource is set exactly for "import" (D125). Read-only:
+	// the server owns both and PUT /v1/sessions/{id} ignores them.
+	Origin       string  `json:"origin"`
+	ImportSource *string `json:"import_source"`
 }
 
 // SessionSummary is one row of GET /v1/sessions and DayStrain.sessions.
@@ -1176,6 +1185,8 @@ type SessionSummary struct {
 	MuscularTRIMP *float64   `json:"muscular_trimp"`
 	Strain        *float64   `json:"strain"`
 	PRCount       int        `json:"pr_count"`
+	Origin        string     `json:"origin"`
+	ImportSource  *string    `json:"import_source"`
 }
 
 // SessionComplete is the body of POST /v1/sessions/{id}/complete.
