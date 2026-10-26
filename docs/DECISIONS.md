@@ -2578,3 +2578,36 @@ sent, and whether a second account shares its phone.
   they live on rows both already handle (the merge copies columns generically); `delete_test` and
   `merge_test` now hold an imported session, an assisted set, a record, an imported plan and a held lease.
   Export is built from `GET /v1/sessions*`, which carry the new fields. No retention changes.
+
+## D140 — The import handler's own calls: order, budget, a resumed request's dependent days (TI-3)
+
+- **Consent before the body.** API.md says both gates are checked "before anything in the body is
+  read"; design §4 listed the decode first. The contract wins: `gate.Consent` runs first (a refused
+  upload costs no 1 MiB parse, as in ingest), so a malformed body without consent is a `403`, not a `400`.
+- **One consent rule, `internal/gate`.** Ingest's `admitted`, the api's invite gate, `GET /v1/me/sync`'s
+  `gate` and the import share `gate.Consented` / `gate.Apply` (design §4 offered `internal/beta` or
+  `httpx`; a small package keeps `httpx` free of `config` and `model`). Behaviour of the existing routes
+  is unchanged, `ryft_gate_refusals_total` included.
+- **The finish fits inside the 50 s.** The items run on a context that ends 10 s before the request's
+  deadline; the finish (records, queue, event) then has its own 10 s on `context.WithoutCancel`. So the
+  answer, `503 "request timed out"` included, goes out by 50 s, inside the server's 60 s write timeout,
+  instead of a finish that could overrun it and cut the connection.
+- **A resumed request finds the dependent days too.** Design §7 takes `DependentDays` from the created and
+  updated sessions only. After an interrupted attempt the retry's items are all `unchanged`, so the days
+  of the user's later sessions (whose load depends on the imported e1RM history) would never be queued.
+  An `unchanged` session whose day is still pending (`PendingAmong`) counts like a changed one for
+  `since` and the exercises. Cost: a few more days rescored when a sync's pending day happens to be an
+  imported session's; harmless.
+- **Smaller calls.** A plan or a session without an id is that item's `invalid`, not a whole-request
+  `422`; the duplicate check skips the nil id. `train.Problem` gets no `Code`: the store's rejections
+  carry their codes (`importReject`, D131) and every `Problem` from `internal/train` is `invalid`.
+  `ryft_train_imports_total` adds `result="invalid"` (whole-request refusals after authentication) to
+  the design's `ok`, `busy`, `timeout`, `error`; a client that went away counts as `timeout`. A database
+  failure is `503 "the database is unavailable; send the same request again"` with `Retry-After: 5`,
+  logged as httpx's `request failed`. The lease is given back before the answer is written, so the app's
+  next request does not meet its own lease. `assist_kg` on a set of an exercise that is not `bodyweight`
+  is `422` / `invalid` for any value, `0` included (API.md's wording); `null` passes.
+- **Enrolment (T8).** With only `started_at` the stored or default position is kept and not checked
+  against the plan's days; the day lookup (`CurrentPlanDay`) runs when `current_week` or
+  `current_day_index` is given, on the resulting position, inside `Enroll`'s transaction, so a refused
+  position also leaves the other plan's enrolment active.

@@ -1187,6 +1187,28 @@ scripts/user.sh <id>                 # devices, what the last sync carried and i
 | no sync for days, the phone has data | the app's background sync or its anchors | `user.sh <id> --resync-hint`: the app re-reads its window without anchors |
 | scored, but the app shows yesterday | the silent refresh did not arrive (iOS budgets them) | `ryft_push_notifications_total{category="REFRESH"}`; the app polls `GET /v1/me/sync` too |
 
+## Training import
+
+`POST /v1/train/import` (D124-D133, API.md) stores plans and finished sessions that the
+app parsed from another training app's export, each item in its own transaction, then
+recomputes the records, queues the days and writes one `ingested` event (`reason`
+`import`) for scoring. Imported sessions send no `SESSION_SCORED` or `PR` push and move no
+enrolment. The app's switch is the flag `train.import` (off by default, Feature flags);
+the server does not check it, so turning the feature off is the flag, not a deploy.
+
+`scripts/trace.sh <request id>` shows the access line and the import's one line
+(`msg="train import"`: `result`, the items sent and their statuses, the days queued;
+never a title, a value or an id list), then scoring's lines for the same id.
+
+| Sign | Means | Do |
+| --- | --- | --- |
+| `429`, `code=import_in_progress` | another import of the account holds the lease (`users.import_lease_until`, 120 s, D132) | nothing: the app waits `Retry-After` (10 s) and resends the same request. A pod that died mid-import blocks that account for up to 120 s; the lease expires on its own, do not clear it by hand |
+| `503`, `result=timeout` or `error` | the 50 s ran out (the items stop at 40 s), or the database failed; what was stored stays stored and was finished | nothing: the app resends, the stored items come back `unchanged`. Many in a row: `ryft_db_up`, `ryft_train_import_seconds` |
+| `403`, `code=consent_required` | no consent to the current privacy policy (the import is an upload of health data, D129) | as for a sync (Beta) |
+| `200` with `rejected` items | items the app must change; the `code` and `message` (ids and field names) are in the response only | the app's report; `ryft_train_import_items_total{status="rejected"}` |
+| `days_touched` stay pending | scoring is behind | as for a sync (above) |
+| sessions older than 400 days without strain | by design: stored for history and records, never scored (D128) | nothing |
+
 ## Feature flags
 
 `GET /v1/config` serves the flags in table `feature_flags` (D69). Change them with the
@@ -1570,7 +1592,8 @@ scripts/seed_demo.py`.
 
 - **What is logged:** one access line per request (method, path, status, bytes,
   duration, route, request id, user id) and what the services decide: a sync's counts
-  and device id, which day was scored by which model (`scored day`: `day`,
+  and device id, a training import's counts (`train import`: source, result, items per
+  status, days), which day was scored by which model (`scored day`: `day`,
   `model_version`, `inputs_changed`), a push's category and day, errors with their
   cause. Paths carry dates and resource ids (`/v1/days/2026-10-19`,
   `/v1/workouts/<uuid>`), so the lines still show when someone used the app and which
@@ -1588,8 +1611,8 @@ scripts/seed_demo.py`.
   argument. Fixing the bug needs both; read such lines as health data.
 - **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
   line's keys allowlisted), `TestSyncLogsCountsOnly` and
-  `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies` and
-  `TestErrorPathsLogNoBodies` (api), `TestSyncStripsNULBeforeTheDatabase` and
+  `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies`,
+  `TestErrorPathsLogNoBodies` and `TestTrainImportLogsCountsOnly` (api), `TestSyncStripsNULBeforeTheDatabase` and
   `TestWritesRefuseNULBeforeTheDatabase` (a NUL removed, or refused with `422`/`400`,
   logs no text), `TestDecodeErrorsQuoteNoValues` (events), `TestJSONErrorDropsTheValue`
   (logx), `TestTransportErrorsHideTheDeviceToken` (apns), `TestAdminErrorsHoldNoBody`
@@ -1605,7 +1628,7 @@ scripts/seed_demo.py`.
     the request's keys after the call site's, so a duplicate would hide one). The known
     values of each test (recovery, readiness, device tokens, the seeded samples) are
     scanned for in the raw line. `TestSyncLogKindsRejectMutations`,
-    `TestWriteLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
+    `TestWriteLogKindsRejectMutations`, `TestImportLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
     `TestNotifyLogKindsRejectMutations` feed the checker synthetic lines (a float under
     `applied`, a score under a renamed key, a non-UUID `user_id`, a duplicate key, …) and
     require a problem that names the mutated key; `TestNotifyLogsNoHealthValuesOrTokens`
