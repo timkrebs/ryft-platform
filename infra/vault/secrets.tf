@@ -96,19 +96,6 @@ resource "vault_policy" "service" {
   HCL
 }
 
-resource "vault_kv_secret_v2" "whoop_import" {
-  for_each = local.services_with_secrets
-
-  namespace           = vault_namespace.service[each.key].path_fq
-  mount               = vault_mount.kv[each.key].path
-  name                = "whoop-import"
-  delete_all_versions = true
-  data_json           = jsonencode(local.service_kv[each.key])
-  lifecycle {
-    ignore_changes = [data_json]
-  }
-}
-
 check "whoop_import_has_its_keys" {
   assert {
     condition = !contains(keys(local.services), "whoop-import") || alltrue([for k in ["client_id", "client_secret", "refresh_token"] :
