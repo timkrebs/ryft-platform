@@ -76,8 +76,9 @@ func (e *Engine) strength(ctx context.Context, userID uuid.UUID, dayStart, dayEn
 	return out, err
 }
 
-// loadOf computes one session's load: e1RMs as of its end (its own sets
-// included), its body weight or the last one logged (else 75 kg).
+// loadOf computes one session's load: e1RMs over the E1RMWindow up to its
+// history's end, its own sets included (E1RMsAsOf, HistoryUntil), its body
+// weight or the last one logged (else 75 kg).
 func (e *Engine) loadOf(ctx context.Context, userID uuid.UUID, s model.Session, exercises map[uuid.UUID]model.Exercise) (SessionLoad, error) {
 	bw, err := e.bodyweight(ctx, userID, s)
 	if err != nil {
@@ -87,11 +88,12 @@ func (e *Engine) loadOf(ctx context.Context, userID uuid.UUID, s model.Session, 
 	for _, se := range s.Exercises {
 		exIDs = append(exIDs, se.ExerciseID)
 	}
-	sets, err := e.st.LoggedSets(ctx, userID, exIDs, SessionEnd(s), s.ID)
+	until := HistoryUntil(s)
+	sets, err := e.st.LoggedSets(ctx, userID, exIDs, until, s.ID)
 	if err != nil {
 		return SessionLoad{}, err
 	}
-	return LoadOfSession(s, exercises, BestE1RMs(sets, exercises, bw), bw), nil
+	return LoadOfSession(s, exercises, E1RMsAsOf(sets, exercises, bw, until, s.ID), bw), nil
 }
 
 // SessionLoadNow is LoadOfSession with the store lookups the api needs to
