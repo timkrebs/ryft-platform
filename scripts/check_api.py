@@ -837,153 +837,168 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey" and ADMIN:
 
     I, J = str(uuid.uuid4()), str(uuid.uuid4())
     KEY_I, KEY_J = f"{KEY}:{I}", f"{KEY}:{J}"
-    empty = jbody({"source": "alpha_progression", "plans": [], "sessions": []})
-    status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
-    check(status == 403 and body.get("code") == "consent_required", f"an import without consent: {status} {body}")
-    consent(KEY_I)
-    consent(KEY_J)
-    status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
-    check(status == 403 and body.get("code") == "import_not_enabled" and body.get("request_id"),
-          f"an import while train.import is off for the account: {status} {body}")
-    status, _, f = raw("PUT", "/v1/admin/flags/train.import",
-                       jbody({"enabled": True, "rollout_pct": 0, "allow_user_ids": [I, J]}), key=ADMIN)
-    check(status == 200 and sorted(f["allow_user_ids"]) == sorted([I, J]), f"allow-list the import: {status} {f}")
-    check(get("/v1/config", key=KEY_I)["flags"]["train.import"] is True, "GET /v1/config says the import is on")
-    tz_i = ZoneInfo(get("/v1/me", key=KEY_I)["tz"])
-    lib_i = {e["slug"]: e["id"] for e in get("/v1/exercises", key=KEY_I)}
-    sq, bp, pu = lib_i["back-squat"], lib_i["bench-press"], lib_i["pull-up"]
-    NS_I = uuid.UUID("5f0c2a9e-7d41-4b8e-9c3a-1e6d2b7f4a10")  # the app derives ids from the file's content
+    # train.import as it is before the checks, restored exactly afterwards (None: no such flag).
+    status, _, listed = raw("GET", "/v1/admin/flags", key=ADMIN)
+    check(status == 200, f"GET /v1/admin/flags: {status}")
+    flag0 = next((x for x in listed if x["key"] == "train.import"), None)
+    try:
+        empty = jbody({"source": "alpha_progression", "plans": [], "sessions": []})
+        status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
+        check(status == 403 and body.get("code") == "consent_required", f"an import without consent: {status} {body}")
+        consent(KEY_I)
+        consent(KEY_J)
+        status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
+        check(status == 403 and body.get("code") == "import_not_enabled" and body.get("request_id"),
+              f"an import while train.import is off for the account: {status} {body}")
+        status, _, f = raw("PUT", "/v1/admin/flags/train.import",
+                           jbody({"enabled": True, "rollout_pct": 0, "allow_user_ids": [I, J]}), key=ADMIN)
+        check(status == 200 and sorted(f["allow_user_ids"]) == sorted([I, J]), f"allow-list the import: {status} {f}")
+        check(get("/v1/config", key=KEY_I)["flags"]["train.import"] is True, "GET /v1/config says the import is on")
+        tz_i = ZoneInfo(get("/v1/me", key=KEY_I)["tz"])
+        lib_i = {e["slug"]: e["id"] for e in get("/v1/exercises", key=KEY_I)}
+        sq, bp, pu = lib_i["back-squat"], lib_i["bench-press"], lib_i["pull-up"]
+        NS_I = uuid.UUID("5f0c2a9e-7d41-4b8e-9c3a-1e6d2b7f4a10")  # the app derives ids from the file's content
 
-    def cid(*parts):
-        return str(uuid.uuid5(NS_I, ":".join([I, *map(str, parts)])))
+        def cid(*parts):
+            return str(uuid.uuid5(NS_I, ":".join([I, *map(str, parts)])))
 
-    def isession(name, back, exercises, plan_day=None):
-        """A finished session `back` days ago at 18:00 local; exercises: [(exercise, [(reps, kg, assist), …])]."""
-        d_i = date.fromisoformat(TODAY) - timedelta(days=back)
-        t_i = datetime(d_i.year, d_i.month, d_i.day, 18, 0, tzinfo=tz_i).astimezone(timezone.utc)
-        exs = []
-        for pos, (ex, sets) in enumerate(exercises):
-            rows = []
-            for k, (reps, kg, assist) in enumerate(sets):
-                at = iso(t_i + timedelta(minutes=5 + 20 * pos + 3 * k))
-                rows.append({"id": cid(name, pos, "set", k), "set_index": k, "reps": reps, "weight_kg": kg, "assist_kg": assist,
-                             "rpe": None, "duration_sec": None, "distance_m": None, "is_warmup": False,
-                             "completed_at": at, "updated_at": at})
-            exs.append({"id": cid(name, pos), "exercise_id": ex, "plan_exercise_id": None, "position": pos, "notes": "", "sets": rows})
-        return {"id": cid(name), "title": f"Imported {name}", "started_at": iso(t_i), "ended_at": iso(t_i + timedelta(hours=1)),
-                "status": "completed", "plan_day_id": plan_day, "notes": "", "bodyweight_kg": 80, "device_id": None,
-                "exercises": exs}, d_i.isoformat()
+        def isession(name, back, exercises, plan_day=None):
+            """A finished session `back` days ago at 18:00 local; exercises: [(exercise, [(reps, kg, assist), …])]."""
+            d_i = date.fromisoformat(TODAY) - timedelta(days=back)
+            t_i = datetime(d_i.year, d_i.month, d_i.day, 18, 0, tzinfo=tz_i).astimezone(timezone.utc)
+            exs = []
+            for pos, (ex, sets) in enumerate(exercises):
+                rows = []
+                for k, (reps, kg, assist) in enumerate(sets):
+                    at = iso(t_i + timedelta(minutes=5 + 20 * pos + 3 * k))
+                    rows.append({"id": cid(name, pos, "set", k), "set_index": k, "reps": reps, "weight_kg": kg, "assist_kg": assist,
+                                 "rpe": None, "duration_sec": None, "distance_m": None, "is_warmup": False,
+                                 "completed_at": at, "updated_at": at})
+                exs.append({"id": cid(name, pos), "exercise_id": ex, "plan_exercise_id": None, "position": pos, "notes": "", "sets": rows})
+            return {"id": cid(name), "title": f"Imported {name}", "started_at": iso(t_i), "ended_at": iso(t_i + timedelta(hours=1)),
+                    "status": "completed", "plan_day_id": plan_day, "notes": "", "bodyweight_kg": 80, "device_id": None,
+                    "exercises": exs}, d_i.isoformat()
 
-    def imp(plans, sessions):
-        status, _, res = raw("POST", "/v1/train/import", jbody({"source": "alpha_progression", "plans": plans, "sessions": sessions}), key=KEY_I)
-        check(status == 200 and set(res) == {"results", "days_touched", "scoring"} and res["scoring"]["queued_days"] == res["days_touched"]
-              and 1 <= res["scoring"]["expected_within_sec"] <= 300, f"POST /v1/train/import: {status} {res}")
-        return res, [(x["kind"], x["status"], x.get("code")) for x in res["results"]]
+        def imp(plans, sessions):
+            status, _, res = raw("POST", "/v1/train/import", jbody({"source": "alpha_progression", "plans": plans, "sessions": sessions}), key=KEY_I)
+            check(status == 200 and set(res) == {"results", "days_touched", "scoring"} and res["scoring"]["queued_days"] == res["days_touched"]
+                  and 1 <= res["scoring"]["expected_within_sec"] <= 300, f"POST /v1/train/import: {status} {res}")
+            return res, [(x["kind"], x["status"], x.get("code")) for x in res["results"]]
 
-    def scored_all(within=90):
-        for _ in range(within):
-            if not get("/v1/me/sync", key=KEY_I)["pending_days"]:
-                return
-            time.sleep(1)
-        fail(f"the import's days were not scored within {within} s: {get('/v1/me/sync', key=KEY_I)['pending_days']}")
+        def scored_all(within=90):
+            for _ in range(within):
+                if not get("/v1/me/sync", key=KEY_I)["pending_days"]:
+                    return
+                time.sleep(1)
+            fail(f"the import's days were not scored within {within} s: {get('/v1/me/sync', key=KEY_I)['pending_days']}")
 
-    announced0 = metric_sum(['ryft_push_notifications_total{category="SESSION_SCORED",', 'ryft_push_notifications_total{category="PR",'])
-    refreshed0 = metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}'])
-    plan_i = {"id": cid("plan"), "name": "Imported upper / lower", "goal": "general", "weeks": None, "days_per_week": 2,
-              "description": "", "archived": False, "progression": None,
-              "days": [{"id": cid("plan", "day", k), "week": None, "day_index": k, "name": f"Day {k + 1}",
-                        "exercises": [{"id": cid("plan", "pe", k), "exercise_id": sq, "position": 0, "sets": 3, "reps_min": 5,
-                                       "reps_max": 8, "target_kind": "kg", "target_value": 100, "rest_sec": 120,
-                                       "superset_group": None, "notes": ""}]} for k in range(2)]}
-    s1, d1 = isession("a", 6, [(sq, [(5, 100, None)] * 3)], plan_day=plan_i["days"][0]["id"])
-    s1["exercises"][0]["plan_exercise_id"] = plan_i["days"][0]["exercises"][0]["id"]
-    s2, d2 = isession("b", 4, [(sq, [(5, 105, None)] * 3), (pu, [(6, None, 20)] * 2)])  # an assisted pull-up (T4)
+        announced0 = metric_sum(['ryft_push_notifications_total{category="SESSION_SCORED",', 'ryft_push_notifications_total{category="PR",'])
+        refreshed0 = metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}'])
+        plan_i = {"id": cid("plan"), "name": "Imported upper / lower", "goal": "general", "weeks": None, "days_per_week": 2,
+                  "description": "", "archived": False, "progression": None,
+                  "days": [{"id": cid("plan", "day", k), "week": None, "day_index": k, "name": f"Day {k + 1}",
+                            "exercises": [{"id": cid("plan", "pe", k), "exercise_id": sq, "position": 0, "sets": 3, "reps_min": 5,
+                                           "reps_max": 8, "target_kind": "kg", "target_value": 100, "rest_sec": 120,
+                                           "superset_group": None, "notes": ""}]} for k in range(2)]}
+        s1, d1 = isession("a", 6, [(sq, [(5, 100, None)] * 3)], plan_day=plan_i["days"][0]["id"])
+        s1["exercises"][0]["plan_exercise_id"] = plan_i["days"][0]["exercises"][0]["id"]
+        s2, d2 = isession("b", 4, [(sq, [(5, 105, None)] * 3), (pu, [(6, None, 20)] * 2)])  # an assisted pull-up (T4)
 
-    r1, st1 = imp([plan_i], [s2, s1])
-    check(st1 == [("plan", "created", None), ("session", "created", None), ("session", "created", None)]
-          and r1["days_touched"] == sorted([d1, d2]), f"first import: {st1} {r1['days_touched']}")
-    check(set(get("/v1/me/sync", key=KEY_I)["pending_days"]) <= set(r1["days_touched"]), "GET /v1/me/sync pending holds the import's days")
-    scored_all()
-    back = get(f"/v1/sessions/{s1['id']}", key=KEY_I)
-    check(back["origin"] == "import" and back["import_source"] == "alpha_progression" and (back["muscular_trimp"] or 0) > 0
-          and back["workout_id"] and back["plan_day_id"] == plan_i["days"][0]["id"], f"the imported session after scoring: {back}")
-    check(get(f"/v1/sessions/{s2['id']}", key=KEY_I)["exercises"][1]["sets"][0]["assist_kg"] == 20, "assist_kg is stored")
-    for d_i, sid_i in ((d1, s1["id"]), (d2, s2["id"])):
-        sc_i = get(f"/v1/days/{d_i}", key=KEY_I)["score"]
-        wk_i = [w for w in get(f"/v1/workouts?from={d_i}&to={d_i}", key=KEY_I) if w.get("session_id") == sid_i]
-        check((sc_i["strength_min"] or 0) >= 60 and sc_i["strain"] is not None and len(wk_i) == 1,
-              f"{d_i} scored with the imported session: {sc_i}, workouts {wk_i}")
-    summ_i = get(f"/v1/sessions?from={d1}&to={d2}", key=KEY_I)
-    check(len(summ_i) == 2 and all(x["origin"] == "import" for x in summ_i), f"GET /v1/sessions: {summ_i}")
-    get("/v1/plans/today", expect=204, key=KEY_I)  # importing enrols in nothing (T6)
+        r1, st1 = imp([plan_i], [s2, s1])
+        check(st1 == [("plan", "created", None), ("session", "created", None), ("session", "created", None)]
+              and r1["days_touched"] == sorted([d1, d2]), f"first import: {st1} {r1['days_touched']}")
+        check(set(get("/v1/me/sync", key=KEY_I)["pending_days"]) <= set(r1["days_touched"]), "GET /v1/me/sync pending holds the import's days")
+        scored_all()
+        back = get(f"/v1/sessions/{s1['id']}", key=KEY_I)
+        check(back["origin"] == "import" and back["import_source"] == "alpha_progression" and (back["muscular_trimp"] or 0) > 0
+              and back["workout_id"] and back["plan_day_id"] == plan_i["days"][0]["id"], f"the imported session after scoring: {back}")
+        check(get(f"/v1/sessions/{s2['id']}", key=KEY_I)["exercises"][1]["sets"][0]["assist_kg"] == 20, "assist_kg is stored")
+        for d_i, sid_i in ((d1, s1["id"]), (d2, s2["id"])):
+            sc_i = get(f"/v1/days/{d_i}", key=KEY_I)["score"]
+            wk_i = [w for w in get(f"/v1/workouts?from={d_i}&to={d_i}", key=KEY_I) if w.get("session_id") == sid_i]
+            check((sc_i["strength_min"] or 0) >= 60 and sc_i["strain"] is not None and len(wk_i) == 1,
+                  f"{d_i} scored with the imported session: {sc_i}, workouts {wk_i}")
+        summ_i = get(f"/v1/sessions?from={d1}&to={d2}", key=KEY_I)
+        check(len(summ_i) == 2 and all(x["origin"] == "import" for x in summ_i), f"GET /v1/sessions: {summ_i}")
+        get("/v1/plans/today", expect=204, key=KEY_I)  # importing enrols in nothing (T6)
 
-    r2, st2 = imp([plan_i], [s2, s1])
-    check(st2 == [("plan", "unchanged", None), ("session", "unchanged", None), ("session", "unchanged", None)]
-          and r2["days_touched"] == [], f"the same again: {st2} {r2['days_touched']}")
-    s2e = json.loads(json.dumps(s2))
-    s2e["exercises"][0]["sets"][2]["reps"] = 4
-    r3, st3 = imp([plan_i], [s2e, s1])
-    check(st3 == [("plan", "unchanged", None), ("session", "updated", None), ("session", "unchanged", None)]
-          and r3["days_touched"] == [d2], f"an edited session: {st3} {r3['days_touched']}")
-    check(get(f"/v1/sessions/{s2['id']}", key=KEY_I)["exercises"][0]["sets"][2]["reps"] == 4, "the update is stored")
-    ok(f"training import: 403 consent_required, then 403 import_not_enabled until allow-listed; plan + 2 sessions created, "
-       f"scored ({', '.join(r1['days_touched'])}), resend unchanged, edit updated")
+        r2, st2 = imp([plan_i], [s2, s1])
+        check(st2 == [("plan", "unchanged", None), ("session", "unchanged", None), ("session", "unchanged", None)]
+              and r2["days_touched"] == [], f"the same again: {st2} {r2['days_touched']}")
+        s2e = json.loads(json.dumps(s2))
+        s2e["exercises"][0]["sets"][2]["reps"] = 4
+        r3, st3 = imp([plan_i], [s2e, s1])
+        check(st3 == [("plan", "unchanged", None), ("session", "updated", None), ("session", "unchanged", None)]
+              and r3["days_touched"] == [d2], f"an edited session: {st3} {r3['days_touched']}")
+        check(get(f"/v1/sessions/{s2['id']}", key=KEY_I)["exercises"][0]["sets"][2]["reps"] == 4, "the update is stored")
+        ok(f"training import: 403 consent_required, then 403 import_not_enabled until allow-listed; plan + 2 sessions created, "
+           f"scored ({', '.join(r1['days_touched'])}), resend unchanged, edit updated")
 
-    s3, d3 = isession("c", 8, [(bp, [(8, 60, None)] * 2)])
-    s4, _ = isession("d", 9, [(str(uuid.uuid4()), [(5, 50, None)])])
-    s5, _ = isession("e", 10, [(sq, [(5, 90, None)])])
-    s5["exercises"][0]["sets"][0]["completed_at"] = None
-    r4, st4 = imp([], [s3, s4, s5])
-    check(st4 == [("session", "created", None), ("session", "rejected", "unknown_exercise"), ("session", "rejected", "invalid")]
-          and all(x.get("message") for x in r4["results"][1:]) and r4["days_touched"] == [d3], f"partial: {st4} {r4}")
-    get(f"/v1/sessions/{s3['id']}", key=KEY_I)
-    get(f"/v1/sessions/{s4['id']}", expect=404, key=KEY_I)
-    ok("training import: a rejected item does not undo the others (unknown_exercise, invalid)")
+        s3, d3 = isession("c", 8, [(bp, [(8, 60, None)] * 2)])
+        s4, _ = isession("d", 9, [(str(uuid.uuid4()), [(5, 50, None)])])
+        s5, _ = isession("e", 10, [(sq, [(5, 90, None)])])
+        s5["exercises"][0]["sets"][0]["completed_at"] = None
+        r4, st4 = imp([], [s3, s4, s5])
+        check(st4 == [("session", "created", None), ("session", "rejected", "unknown_exercise"), ("session", "rejected", "invalid")]
+              and all(x.get("message") for x in r4["results"][1:]) and r4["days_touched"] == [d3], f"partial: {st4} {r4}")
+        get(f"/v1/sessions/{s3['id']}", key=KEY_I)
+        get(f"/v1/sessions/{s4['id']}", expect=404, key=KEY_I)
+        ok("training import: a rejected item does not undo the others (unknown_exercise, invalid)")
 
-    # Four identical large imports at once: one runs, the others wait their turn (429).
-    big = jbody({"source": "alpha_progression", "plans": [],
-                 "sessions": [isession(f"x{k}", 100 + k, [(sq, [(5, 80 + k % 10, None)] * 10)])[0] for k in range(50)]})
-    start_all, answers = threading.Barrier(4), []
+        # Four identical large imports at once: one runs, the others wait their turn (429).
+        big = jbody({"source": "alpha_progression", "plans": [],
+                     "sessions": [isession(f"x{k}", 100 + k, [(sq, [(5, 80 + k % 10, None)] * 10)])[0] for k in range(50)]})
+        start_all, answers = threading.Barrier(4), []
 
-    def fire():  # on J: its import budget is untouched (bursts of 5)
-        start_all.wait()
-        answers.append(once("POST", "/v1/train/import", big, KEY_J))
+        def fire():  # on J: its import budget is untouched (bursts of 5)
+            start_all.wait()
+            answers.append(once("POST", "/v1/train/import", big, KEY_J))
 
-    threads = [threading.Thread(target=fire) for _ in range(4)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
-    codes = sorted(a[0] for a in answers)
-    busy = [json.loads(a[2]) for a in answers if a[0] == 429]
-    check(200 in codes and busy and set(codes) <= {200, 429}
-          and all(a[1].get("Retry-After") == "10" for a in answers if a[0] == 429)
-          and all(b.get("code") == "import_in_progress" and b.get("request_id") for b in busy),
-          f"concurrent imports: {codes} {busy}")
-    ok(f"training import: concurrent requests {codes} (429 import_in_progress, Retry-After 10)")
+        threads = [threading.Thread(target=fire) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        codes = sorted(a[0] for a in answers)
+        busy = [json.loads(a[2]) for a in answers if a[0] == 429]
+        check(200 in codes and busy and set(codes) <= {200, 429}
+              and all(a[1].get("Retry-After") == "10" for a in answers if a[0] == 429)
+              and all(b.get("code") == "import_in_progress" and b.get("request_id") for b in busy),
+              f"concurrent imports: {codes} {busy}")
+        ok(f"training import: concurrent requests {codes} (429 import_in_progress, Retry-After 10)")
 
-    for _ in range(90):  # J's 50 days, and I's
-        if not get("/v1/me/sync", key=KEY_J)["pending_days"]:
-            break
-        time.sleep(1)
-    scored_all()
-    if METRICS:
-        check(metric_sum(['ryft_push_notifications_total{category="SESSION_SCORED",', 'ryft_push_notifications_total{category="PR",'])
-              == announced0, "an import was announced (SESSION_SCORED or PR counted by notify)")
-        for _ in range(30):  # the silent refresh for the import's days, as for a sync (D92)
-            if metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}']) > refreshed0:
+        for _ in range(90):  # J's 50 days, and I's
+            if not get("/v1/me/sync", key=KEY_J)["pending_days"]:
                 break
             time.sleep(1)
-        check(metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}']) > refreshed0,
-              "notify never handled the import's refresh")
-        ok("training import: no SESSION_SCORED or PR push, the silent refresh only")
-    else:
-        print("- import pushes not checked (needs NOTIFY_METRICS_URL)")
-    status, _, f = raw("PUT", "/v1/admin/flags/train.import", jbody({"enabled": True, "rollout_pct": 0}), key=ADMIN)
-    check(status == 200 and f["allow_user_ids"] == [], f"train.import back to dark: {status} {f}")
-    for key_x in (KEY_I, KEY_J):
-        status, _, body = raw("DELETE", "/v1/me", key=key_x)
-        check(status == 200 and body["status"] == "deleted", f"DELETE /v1/me after the import: {status} {body}")
+        scored_all()
+        if METRICS:
+            check(metric_sum(['ryft_push_notifications_total{category="SESSION_SCORED",', 'ryft_push_notifications_total{category="PR",'])
+                  == announced0, "an import was announced (SESSION_SCORED or PR counted by notify)")
+            for _ in range(30):  # the silent refresh for the import's days, as for a sync (D92)
+                if metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}']) > refreshed0:
+                    break
+                time.sleep(1)
+            check(metric_sum(['ryft_events_handled_total{reason="refresh",result="ok"}']) > refreshed0,
+                  "notify never handled the import's refresh")
+            ok("training import: no SESSION_SCORED or PR push, the silent refresh only")
+        else:
+            print("- import pushes not checked (needs NOTIFY_METRICS_URL)")
+    finally:
+        # Also after a failed check (fail() exits through here): the flag as it was, the accounts gone.
+        if flag0 is None:
+            st_f, _, _ = raw("DELETE", "/v1/admin/flags/train.import", key=ADMIN)
+            restored = st_f in (204, 404)
+        else:
+            st_f, _, f_now = raw("PUT", "/v1/admin/flags/train.import", jbody({"enabled": flag0["enabled"],
+                                 "rollout_pct": flag0["rollout_pct"], "allow_user_ids": flag0["allow_user_ids"]}), key=ADMIN)
+            restored = (st_f == 200 and f_now["enabled"] == flag0["enabled"] and f_now["rollout_pct"] == flag0["rollout_pct"]
+                        and sorted(f_now["allow_user_ids"] or []) == sorted(flag0["allow_user_ids"] or []))
+        gone = [raw("DELETE", "/v1/me", key=key_x)[0] for key_x in (KEY_I, KEY_J)]
+        if not restored or gone != [200, 200]:
+            fail(f"after the import checks: train.import restored {restored}, throwaway accounts deleted {gone}")
+    was = "absent" if flag0 is None else f"enabled {flag0['enabled']}, {flag0['rollout_pct']} %"
+    ok(f"training import: train.import restored as it was ({was}), the two throwaway accounts deleted")
 else:
     print("- training import not checked (apikey mode and ADMIN_API_KEY: throwaway accounts, the flag's allow-list)")
 

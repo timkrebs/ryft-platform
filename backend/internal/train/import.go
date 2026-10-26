@@ -247,7 +247,7 @@ func SameSession(stored, body model.Session) bool {
 
 // ImportConflict says whether the app changed the stored imported session after the
 // import: the session was saved or completed in the app after the import last wrote it
-// (updated_at later than imported_at, or no imported_at), a set on both sides has a stored
+// (updated_at differs from imported_at, or no imported_at), a set on both sides has a stored
 // updated_at later than the request's (train.Merge's rule), or the stored status is not
 // completed (the user discarded it). The import then leaves it alone: newer_on_server
 // (D126). Any edit counts, a title or a note as much as a set.
@@ -272,14 +272,17 @@ func ImportConflict(stored, body model.Session) bool {
 }
 
 // PlanConflict says whether the app changed the stored plan after the import last wrote it
-// (PUT /v1/plans/{id}: edited or archived; updated_at later than imported_at), or made it
+// (PUT /v1/plans/{id}: edited or archived; updated_at differs from imported_at), or made it
 // (no imported_at). The import then leaves it alone: newer_on_server (D126).
 func PlanConflict(stored model.Plan) bool { return edited(stored.UpdatedAt, stored.ImportedAt) }
 
-// edited: changed after the import wrote it, or never written by it. Both times are the
-// database's, from the same statement for the import's write, so equal means untouched.
+// edited: written by anything but the import since the import wrote it, or never written by
+// it. The import sets updated_at and imported_at from the same now(), so they are equal only
+// while its write is the last one. Not "later": a PUT whose transaction began just before
+// the import's commits an earlier now() after it, and would look untouched (D141). Any save
+// counts, even one back to the imported content.
 func edited(updated time.Time, imported *time.Time) bool {
-	return imported == nil || micros(updated) > micros(*imported)
+	return imported == nil || micros(updated) != micros(*imported)
 }
 
 type (

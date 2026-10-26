@@ -1165,6 +1165,13 @@ Merging the account with more scored days into the smaller one is refused (`409`
 way the kept account uses; if both identities should open it, they link Apple to the
 email account in the app (Supabase **manual linking**, `SUPABASE.md`).
 
+**Imported training history and a merge.** The app derives the training import's ids from the
+account's id (API.md → `POST /v1/train/import` → For the app). The merge moves imported
+sessions and plans with the ids they have; an import of the same file into the kept account
+would derive other ids and store that history a second time. So after a merge the person must
+not import the same file again: tell them when you merge. A server-held import namespace that
+the merge carries over is an open point (D141).
+
 ## When a tester's scores do not appear
 
 What the app sees is `GET /v1/me/sync` (D91): which gate it is behind, the last sync and

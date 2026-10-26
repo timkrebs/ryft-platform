@@ -204,7 +204,8 @@ var (
 	TrainImports = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_train_imports_total",
 		Help: "POST /v1/train/import requests past authentication, by result: ok (200, also when every item was rejected), " +
-			"invalid (400/413/422 or 403 consent_required: nothing processed), busy (429 import_in_progress), " +
+			"invalid (400/413/422 or 403 consent_required: nothing processed), disabled (403 import_not_enabled: the flag " +
+			"train.import is off for the account), busy (429 import_in_progress), " +
 			"timeout (503 after the 50 s budget), error (503: the database failed; what was stored stays).",
 	}, []string{"result"})
 	TrainImportItems = promauto.NewCounterVec(prometheus.CounterOpts{

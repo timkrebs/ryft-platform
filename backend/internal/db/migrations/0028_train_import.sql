@@ -18,8 +18,10 @@ SET LOCAL lock_timeout = '5s';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS import_lease_until timestamptz;
 
 -- sessions: where a session came from (D125). Existing rows are 'app'. imported_at is when the import
--- last wrote it: a later updated_at (a PUT or a completion in the app) means the app changed it since,
--- and a resend of the import never overwrites it (newer_on_server, D126). NULL for the app's sessions.
+-- last wrote it, set with updated_at from the same now(): an updated_at that differs (a PUT or a
+-- completion in the app, also one whose transaction began before the import's) means the app changed it
+-- since, and a resend of the import never overwrites it (newer_on_server, D126, D141). NULL for the app's
+-- sessions.
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS origin        text NOT NULL DEFAULT 'app',
     ADD COLUMN IF NOT EXISTS import_source text,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -112,6 +113,71 @@ func TestTrainImportKeepsTheAppsPlanEdits(t *testing.T) {
 	b.want(b.call(token, http.MethodPut, "/v1/plans/"+own.ID.String(), own), http.StatusCreated, nil)
 	if got := statuses(b.imports(token, request([]model.Plan{own}))); !slices.Equal(got, []string{"plan rejected newer_on_server"}) {
 		t.Fatalf("a plan made in the app: %v", got)
+	}
+}
+
+// The edit race (D141): a save in the app whose transaction began before the import's write
+// commits after it with an earlier now() (updated_at before imported_at). The resend still
+// sees the edit: newer_on_server, and the edit stays. The same for a plan.
+func TestTrainImportSeesAnEditThatBeganBeforeIt(t *testing.T) {
+	b := newBench(t, defaultBeta())
+	user, token := b.user("UTC", true)
+	ctx := context.Background()
+	s, p := done(daysAgo(6), squatID, 100, 105), twoDayPlan()
+	b.imports(token, request([]model.Plan{p}, s))
+
+	// The PUTs begin: their now() is fixed here ...
+	saves := make([]pgx.Tx, 2)
+	for k := range saves {
+		tx, err := b.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SELECT now()`); err != nil {
+			t.Fatal(err)
+		}
+		saves[k] = tx
+	}
+	time.Sleep(5 * time.Millisecond)
+	// ... the import writes a changed version of both and commits ...
+	s2, p2 := s, p
+	s2.Title, p2.Name = "Changed in the file", "Changed in the file"
+	if got := statuses(b.imports(token, request([]model.Plan{p2}, s2))); !slices.Equal(got, []string{"plan updated", "session updated"}) {
+		t.Fatalf("the import's write: %v", got)
+	}
+	// ... then the saves take their locks and commit, as writeSession and writePlan do.
+	for _, q := range []struct {
+		tx   pgx.Tx
+		lock string
+		sql  string
+		id   uuid.UUID
+	}{
+		{saves[0], `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`,
+			`UPDATE sessions SET title = 'Edited in the app', updated_at = now() WHERE user_id = $1 AND id = $2`, s.ID},
+		{saves[1], `SELECT 1 FROM plans WHERE user_id = $1 AND id = $2 FOR UPDATE`,
+			`UPDATE plans SET name = 'Edited in the app', updated_at = now() WHERE user_id = $1 AND id = $2`, p.ID},
+	} {
+		for _, stmt := range []string{q.lock, q.sql} {
+			if _, err := q.tx.Exec(ctx, stmt, user, q.id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := q.tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := b.count(`SELECT count(*) FROM sessions WHERE user_id = $1 AND id = $2 AND updated_at < imported_at`, user, s.ID) +
+		b.count(`SELECT count(*) FROM plans WHERE user_id = $1 AND id = $2 AND updated_at < imported_at`, user, p.ID); n != 2 {
+		t.Fatalf("the probe needs updated_at before imported_at on both: %d", n)
+	}
+	res := b.imports(token, request([]model.Plan{p2}, s2))
+	if got := statuses(res); !slices.Equal(got, []string{"plan rejected newer_on_server", "session rejected newer_on_server"}) {
+		t.Fatalf("resend after the late save: %v", got)
+	}
+	if n := b.count(`SELECT count(*) FROM sessions WHERE id = $1 AND title = 'Edited in the app'`, s.ID) +
+		b.count(`SELECT count(*) FROM plans WHERE id = $1 AND name = 'Edited in the app'`, p.ID); n != 2 {
+		t.Fatal("the late saves were overwritten")
 	}
 }
 

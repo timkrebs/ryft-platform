@@ -2732,9 +2732,12 @@ sent, and whether a second account shares its phone.
 
 - **Edits win, for sessions and plans (B1).** `sessions.imported_at` and `plans.imported_at` (migration
   0028, not yet applied anywhere, so edited in place) are set with `updated_at` by the import's write, in the
-  same statement. `updated_at` later than `imported_at` (a `PUT` of any field, a completion, archiving a
-  plan) or no `imported_at` (a plan the app made under that id) is `newer_on_server`: a resend never
-  overwrites it (`train.ImportConflict`, `train.PlanConflict`, pure). Scoring's load write does not touch
+  same statement. `updated_at` **different from** `imported_at` (a `PUT` of any field, a completion,
+  archiving a plan) or no `imported_at` (a plan the app made under that id) is `newer_on_server`: a
+  resend never overwrites it. Not "later": a `PUT` whose transaction began just before the import's
+  commits an earlier `now()` after it, which "later" would read as untouched (the final review's
+  probe pins that ordering). Any save counts, even one back to the imported content
+  (`train.ImportConflict`, `train.PlanConflict`, pure). Scoring's load write does not touch
   `updated_at`, so being scored is no edit. Decided for plans as well: an imported plan edited or archived in
   the app is the user's.
 - **Ids per account (B2).** Plan ids are global (session ids are per account), so the app derives every id
@@ -2760,3 +2763,13 @@ sent, and whether a second account shares its phone.
   hours, imports included, so a large import raises the estimate for a while for everyone (one queue, one
   scoring consumer: that is what a sync then waits for too). Keeping import rows out needs a reason column;
   not worth a schema change now.
+- **Open points** (follow-ups, not in PR #59):
+  - *A merge and a re-import duplicate history.* The app derives import ids from the account id, so after
+    an operator's merge (D90) an import of the same file into the kept account stores it again under
+    other ids. Documented for the app (API.md) and the operator (OPERATIONS → Two accounts). The fix is a
+    server-held `import_namespace` on `GET /v1/me` that the app derives from and a merge carries over to
+    the kept account.
+  - A sweeper for `score_queue` rows left pending by an item whose request died before its finish (no
+    event names those days until the app resends; `GET /v1/me/sync` shows them pending meanwhile); the
+    api's shutdown drain (10 s) against an import's 50 s budget, which a rollout can cut (the lease then
+    expires after 70 s); a per-account secret namespace instead of the account id.

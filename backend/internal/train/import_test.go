@@ -196,6 +196,9 @@ func TestImportConflict(t *testing.T) {
 			s.UpdatedAt = s.ImportedAt.Add(time.Second)
 		}, true},
 		{"saved a microsecond later", func(s, _ *model.Session) { s.UpdatedAt = s.ImportedAt.Add(time.Microsecond) }, true},
+		{"saved by a transaction that began before the import's (an earlier now())", func(s, _ *model.Session) {
+			s.UpdatedAt = s.ImportedAt.Add(-time.Second)
+		}, true},
 		{"never written by the import", func(s, _ *model.Session) { s.ImportedAt = nil }, true},
 		{"written by the import in the same statement", func(s, _ *model.Session) {
 			s.UpdatedAt = s.ImportedAt.Add(300 * time.Nanosecond) // the same microsecond: untouched
@@ -223,6 +226,7 @@ func TestPlanConflict(t *testing.T) {
 	}{
 		{"as the import left it", at, &at, false},
 		{"edited or archived in the app since", at.Add(time.Minute), &at, true},
+		{"saved by a transaction that began before the import's", at.Add(-time.Millisecond), &at, true},
 		{"made in the app", at, nil, true},
 	} {
 		p := plan()

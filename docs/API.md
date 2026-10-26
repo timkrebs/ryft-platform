@@ -1413,7 +1413,7 @@ Response `200 TrainImportResponse`, whenever the request was understood, even wh
 | `unknown_exercise` | plan, session | An `exercise_id` is neither built-in nor the user's. |
 | `unknown_plan_reference` | session | `plan_day_id` or `plan_exercise_id` is not a built-in plan's, the user's, or one stored by this request. A session whose plan was `rejected` in the same request lands here; resend it without the references ([T5](#t5)). |
 | `id_taken` | plan, session | Plan (the `message` is the same whoever holds the id): the id (or a day or exercise id in it) belongs to a built-in plan, another account's plan, or another of the user's plans. Session: the id, or one of its exercise or set ids, belongs to a session that is not this import's (logged in the app, or another of the user's sessions). |
-| `newer_on_server` | plan, session | The stored copy was changed in the app after the import last wrote it, or made there: a session saved (`PUT`, any field: a title or a note too) or completed in the app, a set with a later `updated_at` than the request's, a discarded session; a plan saved with `PUT /v1/plans/{id}` (edited or archived), or one the app made under that id. The import left it as it is, and a resend never overwrites it. |
+| `newer_on_server` | plan, session | The stored copy was changed in the app after the import last wrote it, or made there: a session saved (`PUT`, any field: a title or a note too) or completed in the app, a set with a later `updated_at` than the request's, a discarded session; a plan saved with `PUT /v1/plans/{id}` (edited or archived), or one the app made under that id. Any save of an imported session or plan counts as an edit, even one back to the imported content. The import left it as it is, and a resend never overwrites it. |
 
 **Idempotency and "identical"** ([T10](#t10)). An id that is not stored is `created`. For a stored
 one the server compares the stored item with the request's **after the same clamping and
@@ -1499,9 +1499,13 @@ metric label; only counts per status and the request id are.
 userID.lowercased), content)`, never from the file alone. Leave `origin` and `import_source` out
 of the request. Create custom exercises with `POST /v1/exercises` first. Strip U+0000 from titles
 and notes. Keep sets within an hour of their session and sessions within a day. On `429`
-`import_in_progress` wait `Retry-After` and resend unchanged; on `413` halve; on `403`
+`import_in_progress` wait `Retry-After` and resend unchanged; on `413`, and on the `422` "at most
+2500 sets per request", split the batch (halve it) and send the halves; on `403`
 `import_not_enabled` hide the import. Treat `rejected` + `newer_on_server` as "already there,
-changed by the user since": nothing to do.
+changed by the user since": nothing to do. **After two accounts are merged** (an operator's
+merge, `GET /v1/me` → `account_hint`), do not import the same file again: its ids derive from
+the account's id, so the kept account would get the merged-away account's imported history a
+second time, under other ids.
 
 **Export and deletion.** `origin`, `import_source` and `assist_kg` are part of `GET /v1/sessions`
 and `GET /v1/sessions/{id}`, so an export built from them includes them; account deletion
@@ -1524,7 +1528,7 @@ against the platform as it is. **Changed** marks an answer that differs from the
 | <a id="t7"></a>**T7** | Yes. `days_touched` and `scoring.expected_within_sec` as in `SyncResponse` (estimate grows 2 s per queued day, max 300). The days stay in `GET /v1/me/sync` → `pending_days` until scored, and the silent refresh push follows once (`day` = the newest of `days_touched`; at most one per 5 minutes per account, so keep polling as the fallback). `days_touched` may also hold days of the user's other sessions whose load depends on the imported history. |
 | <a id="t8"></a>**T8** | Yes: `POST /v1/plans/{id}/enroll` takes an optional `EnrollPost` `{started_at?, current_week?, current_day_index?}` (defaults: now, 1, 0). **Changed:** with a field set, an enrolment of that plan that is already active or paused is moved in place (`200`) instead of returned or resumed as it was. Ranges and `422`s: under the endpoint. |
 | <a id="t9"></a>**T9** | In **Conventions**: body 1 MiB (`413`), ≤ 5 plans and ≤ 50 sessions (`422`), 50 s, one token per request from the import's own budget (bursts of 5, then one every 5 s). A second import while one runs: `429` + `Retry-After: 10` + `code` `import_in_progress` (new in the closed `code` list); nothing of that request was processed. |
-| <a id="t10"></a>**T10** | Server fields are left out (`updated_at` of the session, scoring, `workout_id`, `prs`); **everything else the request sets is compared**, including each set's `updated_at` and `completed_at`, which the app derives deterministically, and `import_source`. `null` = `0` for `weight_kg` and `assist_kg`. Equal → `unchanged`. A re-sent import never overwrites a later edit, of a session (any field) or a plan (edited or archived): `newer_on_server`. Details: under the endpoint. |
+| <a id="t10"></a>**T10** | Server fields are left out (`updated_at` of the session, scoring, `workout_id`, `prs`); **everything else the request sets is compared**, including each set's `updated_at` and `completed_at`, which the app derives deterministically, and `import_source`. `null` = `0` for `weight_kg` and `assist_kg`. Equal → `unchanged`. A re-sent import never overwrites a later edit, of a session (any field) or a plan (edited or archived): `newer_on_server`; any save of an imported item in the app counts as an edit, even one back to the imported content. Details: under the endpoint. |
 | <a id="t11"></a>**T11** | The documentation was wrong, not the builder: the server stores a `bodyweight` plan target's `target_value` as sent and has never used it. Now documented: `null`, or the added load in kg (0–500). **Changed:** 0–500 is validated (`422` / `invalid`; it was unchecked). `PlanTarget.target_kg` stays `null` for `bodyweight`. The import may send `null`. |
 | <a id="t12"></a>**T12** | Yes, today and now documented: `POST /v1/exercises` with an existing custom exercise's id replaces all of its fields, `archived` included, so it is `false` afterwards (`200`). `PATCH` with `archived: false` does the same without resending the rest. |
 

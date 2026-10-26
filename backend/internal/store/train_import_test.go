@@ -47,7 +47,7 @@ func testImportRules() ImportRules {
 		return string(b)
 	}
 	// edited: saved in the app after the import wrote it (train.ImportConflict, PlanConflict).
-	edited := func(updated time.Time, imported *time.Time) bool { return imported == nil || updated.After(*imported) }
+	edited := func(updated time.Time, imported *time.Time) bool { return imported == nil || !updated.Equal(*imported) }
 	return ImportRules{
 		PlanConflict: func(stored model.Plan) bool { return edited(stored.UpdatedAt, stored.ImportedAt) },
 		SameSession: func(stored, body model.Session) bool {
