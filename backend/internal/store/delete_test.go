@@ -140,7 +140,7 @@ func seedImport(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
 	x := imported(pull, time.Now().UTC().Add(-48*time.Hour).Truncate(time.Second), 0)
 	x.Exercises[0].Sets[0].WeightKG, x.Exercises[0].Sets[0].AssistKG = nil, ptr(25.0)
 	window := DayWindow{From: localDay(x.StartedAt.AddDate(0, 0, -30), time.UTC), To: localDay(time.Now().UTC(), time.UTC)}
-	if out, err := st.ImportSession(ctx, id, "alpha_progression", x, time.UTC, window); err != nil || out.Status != ImportCreated || !out.Queued {
+	if out, err := st.ImportSession(ctx, id, "alpha_progression", x, time.UTC, window); err != nil || out.Status != ImportCreated {
 		t.Fatalf("import: %+v %v", out, err)
 	}
 	if err := st.ReplacePRs(ctx, id, pull, []model.PR{{ExerciseID: pull, Kind: model.PRMaxReps, Value: 5, SetID: x.Exercises[0].Sets[0].ID,

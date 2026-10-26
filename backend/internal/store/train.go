@@ -333,12 +333,12 @@ func (s *Store) LastBodyweight(ctx context.Context, userID uuid.UUID, before tim
 // ---- sessions ----------------------------------------------------------------------
 
 const sessionColumns = `id, title, started_at, ended_at, status, plan_day_id, workout_id, notes, bodyweight_kg::float8,
-	muscular_trimp::float8, strain::float8, volume_kg::float8, device_id, updated_at, origin, import_source`
+	muscular_trimp::float8, strain::float8, volume_kg::float8, device_id, updated_at, origin, import_source, imported_at`
 
 func scanSession(r pgx.Row) (model.Session, error) {
 	var x model.Session
 	err := r.Scan(&x.ID, &x.Title, &x.StartedAt, &x.EndedAt, &x.Status, &x.PlanDayID, &x.WorkoutID, &x.Notes,
-		&x.BodyweightKG, &x.MuscularTRIMP, &x.Strain, &x.VolumeKG, &x.DeviceID, &x.UpdatedAt, &x.Origin, &x.ImportSource)
+		&x.BodyweightKG, &x.MuscularTRIMP, &x.Strain, &x.VolumeKG, &x.DeviceID, &x.UpdatedAt, &x.Origin, &x.ImportSource, &x.ImportedAt)
 	x.Exercises, x.PRs = []model.SessionExercise{}, []model.PR{}
 	return x, err
 }
@@ -616,11 +616,11 @@ func writeSessionAs(ctx context.Context, tx pgx.Tx, userID uuid.UUID, x model.Se
 	} else {
 		// muscular_trimp, strain, volume_kg and workout_id stay as they are: scoring owns them.
 		b.Queue(`INSERT INTO sessions (user_id, id, title, started_at, ended_at, status, plan_day_id, notes, bodyweight_kg, device_id,
-			  origin, import_source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'import',$11)
+			  origin, import_source, updated_at, imported_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'import',$11,now(),now())
 			ON CONFLICT (user_id, id) DO UPDATE SET title=EXCLUDED.title, started_at=EXCLUDED.started_at, ended_at=EXCLUDED.ended_at,
 			  status=EXCLUDED.status, plan_day_id=EXCLUDED.plan_day_id, notes=EXCLUDED.notes, bodyweight_kg=EXCLUDED.bodyweight_kg,
-			  device_id=EXCLUDED.device_id, import_source=EXCLUDED.import_source, updated_at=now()
+			  device_id=EXCLUDED.device_id, import_source=EXCLUDED.import_source, updated_at=now(), imported_at=now()
 			WHERE sessions.origin = 'import'`,
 			userID, x.ID, x.Title, x.StartedAt, x.EndedAt, x.Status, x.PlanDayID, x.Notes, x.BodyweightKG, x.DeviceID, importSource)
 	}
@@ -952,11 +952,13 @@ func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, da
 
 // ---- plans ----------------------------------------------------------------------------
 
-const planColumns = `id, slug, name, goal, weeks, days_per_week, description, progression, user_id IS NULL, archived`
+const planColumns = `id, slug, name, goal, weeks, days_per_week, description, progression, user_id IS NULL, archived,
+	updated_at, imported_at`
 
 func scanPlanHead(r pgx.Row, p *model.Plan) error {
 	var prog []byte
-	if err := r.Scan(&p.ID, &p.Slug, &p.Name, &p.Goal, &p.Weeks, &p.DaysPerWeek, &p.Description, &prog, &p.IsBuiltin, &p.Archived); err != nil {
+	if err := r.Scan(&p.ID, &p.Slug, &p.Name, &p.Goal, &p.Weeks, &p.DaysPerWeek, &p.Description, &prog, &p.IsBuiltin, &p.Archived,
+		&p.UpdatedAt, &p.ImportedAt); err != nil {
 		return err
 	}
 	if len(prog) > 0 && string(prog) != "null" {
@@ -1082,14 +1084,15 @@ func (s *Store) SavePlan(ctx context.Context, userID uuid.UUID, p model.Plan) (b
 			return ErrTaken
 		}
 		created = !exists
-		return writePlan(ctx, tx, userID, p)
+		return writePlan(ctx, tx, userID, p, false)
 	})
 	return created, err
 }
 
 // writePlan replaces the plan whole in the caller's transaction, after the
-// caller has checked the ownership (owner, FOR UPDATE).
-func writePlan(ctx context.Context, tx pgx.Tx, userID uuid.UUID, p model.Plan) error {
+// caller has checked the ownership (owner, FOR UPDATE). imported (the training
+// import) marks imported_at with updated_at; PUT leaves it as it is (D126).
+func writePlan(ctx context.Context, tx pgx.Tx, userID uuid.UUID, p model.Plan, imported bool) error {
 	var exIDs []uuid.UUID
 	for _, d := range p.Days {
 		for _, e := range d.Exercises {
@@ -1110,12 +1113,13 @@ func writePlan(ctx context.Context, tx pgx.Tx, userID uuid.UUID, p model.Plan) e
 		return err
 	}
 	b := &pgx.Batch{}
-	b.Queue(`INSERT INTO plans (id, user_id, name, goal, weeks, days_per_week, description, progression, archived)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	b.Queue(`INSERT INTO plans (id, user_id, name, goal, weeks, days_per_week, description, progression, archived, updated_at, imported_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),CASE WHEN $10 THEN now() END)
 		ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, goal=EXCLUDED.goal, weeks=EXCLUDED.weeks,
 		  days_per_week=EXCLUDED.days_per_week, description=EXCLUDED.description, progression=EXCLUDED.progression,
-		  archived=EXCLUDED.archived, updated_at=now() WHERE plans.user_id = EXCLUDED.user_id`,
-		p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, prog, p.Archived)
+		  archived=EXCLUDED.archived, updated_at=now(), imported_at=CASE WHEN $10 THEN now() ELSE plans.imported_at END
+		WHERE plans.user_id = EXCLUDED.user_id`,
+		p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, prog, p.Archived, imported)
 	var dayIDs, peIDs []uuid.UUID
 	for _, d := range p.Days {
 		dayIDs = append(dayIDs, d.ID)

@@ -21,6 +21,15 @@ import (
 const (
 	MaxImportPlans    = 5
 	MaxImportSessions = 50
+	// MaxImportSessionSets bounds one session's sets (an item's invalid) and MaxImportSets a
+	// request's (a whole-request 422): 50 exercises × 50 sets is the live limit, far more than
+	// any logged session, and the request's total keeps one import's work bounded (N1).
+	MaxImportSessionSets = 300
+	MaxImportSets        = 2500
+	// The import's time bounds (S1): a session lasts at most a day, a set is done within an
+	// hour of it, nothing is stamped more than a day ahead.
+	maxSessionLength = 24 * time.Hour
+	setSlack         = time.Hour
 	// ImportWindowDays: only days in the 400 local days ending today are queued for
 	// scoring (D128), a sync's window. It is scoring.MaxRangeDays (pinned by a test in
 	// cmd/api; this package cannot import scoring).
@@ -59,22 +68,30 @@ func CheckImportRequest(req model.TrainImportRequest) error {
 		}
 		plans[p.ID] = true
 	}
-	sessions := map[uuid.UUID]bool{}
+	sessions, sets := map[uuid.UUID]bool{}, 0
 	for _, s := range req.Sessions {
 		if s.ID != uuid.Nil && sessions[s.ID] {
 			return problem("session %s is in the request twice", s.ID)
 		}
 		sessions[s.ID] = true
+		for _, e := range s.Exercises {
+			sets += len(e.Sets)
+		}
+	}
+	if sets > MaxImportSets {
+		return problem("at most %d sets per request", MaxImportSets)
 	}
 	return nil
 }
 
 // CheckImportSession validates one session of an import and normalises it in place:
 // CheckSession's rules and clamping, plus status completed, ended_at set, started_at
-// between 2000-01-01 and 24 h from now, every set completed (T2), and assist_kg only where
-// CheckAssist allows it (for the exercises in exercises; an unknown one is the store's
-// unknown_exercise). A set without updated_at takes its completed_at, not now, so a resend
-// is identical (D126).
+// between 2000-01-01 and 24 h from now, ended_at at most 24 h after started_at and at most
+// 24 h from now, at most MaxImportSessionSets sets, every set completed (T2) within an hour
+// of the session ([started_at − 1 h, ended_at + 1 h]) and updated at most 24 h from now, and
+// assist_kg only where CheckAssist allows it (for the exercises in exercises; an unknown
+// one is the store's unknown_exercise). A set without updated_at takes its completed_at,
+// not now, so a resend is identical (D126).
 func CheckImportSession(s *model.Session, now time.Time, exercises map[uuid.UUID]model.Exercise) error {
 	for i := range s.Exercises {
 		for k := range s.Exercises[i].Sets {
@@ -95,11 +112,31 @@ func CheckImportSession(s *model.Session, now time.Time, exercises map[uuid.UUID
 	if !inStartRange(s.StartedAt, now) {
 		return problem("started_at must be between 2000-01-01 and 24 h from now")
 	}
+	if s.EndedAt.Sub(s.StartedAt) > maxSessionLength {
+		return problem("ended_at must be at most 24 h after started_at")
+	}
+	if s.EndedAt.After(now.Add(futureSlack)) {
+		return problem("ended_at must be at most 24 h from now")
+	}
+	n := 0
+	for _, e := range s.Exercises {
+		n += len(e.Sets)
+	}
+	if n > MaxImportSessionSets {
+		return problem("at most %d sets per imported session", MaxImportSessionSets)
+	}
+	from, to := s.StartedAt.Add(-setSlack), s.EndedAt.Add(setSlack)
 	for _, e := range s.Exercises {
 		ex, known := exercises[e.ExerciseID]
 		for _, st := range e.Sets {
 			if st.CompletedAt == nil {
 				return problem("set %s: completed_at is required (an import sends only sets that were done)", st.ID)
+			}
+			if st.CompletedAt.Before(from) || st.CompletedAt.After(to) {
+				return problem("set %s: completed_at must be between an hour before started_at and an hour after ended_at", st.ID)
+			}
+			if st.UpdatedAt.After(now.Add(futureSlack)) {
+				return problem("set %s: updated_at must be at most 24 h from now", st.ID)
 			}
 			if known {
 				if err := CheckAssist(ex, st); err != nil {
@@ -209,11 +246,13 @@ func SameSession(stored, body model.Session) bool {
 }
 
 // ImportConflict says whether the app changed the stored imported session after the
-// import (train.Merge's rule for the import): a set on both sides whose stored updated_at
-// is later than the request's, or a stored status other than completed (the user
-// discarded it). The import then leaves it alone: newer_on_server.
+// import: the session was saved or completed in the app after the import last wrote it
+// (updated_at later than imported_at, or no imported_at), a set on both sides has a stored
+// updated_at later than the request's (train.Merge's rule), or the stored status is not
+// completed (the user discarded it). The import then leaves it alone: newer_on_server
+// (D126). Any edit counts, a title or a note as much as a set.
 func ImportConflict(stored, body model.Session) bool {
-	if stored.Status != model.SessionCompleted {
+	if stored.Status != model.SessionCompleted || edited(stored.UpdatedAt, stored.ImportedAt) {
 		return true
 	}
 	had := map[uuid.UUID]int64{}
@@ -230,6 +269,17 @@ func ImportConflict(stored, body model.Session) bool {
 		}
 	}
 	return false
+}
+
+// PlanConflict says whether the app changed the stored plan after the import last wrote it
+// (PUT /v1/plans/{id}: edited or archived; updated_at later than imported_at), or made it
+// (no imported_at). The import then leaves it alone: newer_on_server (D126).
+func PlanConflict(stored model.Plan) bool { return edited(stored.UpdatedAt, stored.ImportedAt) }
+
+// edited: changed after the import wrote it, or never written by it. Both times are the
+// database's, from the same statement for the import's write, so equal means untouched.
+func edited(updated time.Time, imported *time.Time) bool {
+	return imported == nil || micros(updated) > micros(*imported)
 }
 
 type (

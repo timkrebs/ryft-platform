@@ -46,13 +46,16 @@ func testImportRules() ImportRules {
 		b, _ := json.Marshal(x)
 		return string(b)
 	}
+	// edited: saved in the app after the import wrote it (train.ImportConflict, PlanConflict).
+	edited := func(updated time.Time, imported *time.Time) bool { return imported == nil || updated.After(*imported) }
 	return ImportRules{
+		PlanConflict: func(stored model.Plan) bool { return edited(stored.UpdatedAt, stored.ImportedAt) },
 		SameSession: func(stored, body model.Session) bool {
 			body.Origin = ""
 			return norm(stored) == norm(body)
 		},
 		Conflict: func(stored, body model.Session) bool {
-			if stored.Status != model.SessionCompleted {
+			if stored.Status != model.SessionCompleted || edited(stored.UpdatedAt, stored.ImportedAt) {
 				return true
 			}
 			had := map[uuid.UUID]time.Time{}
@@ -129,7 +132,7 @@ func TestImportSessionCreatedUnchangedUpdated(t *testing.T) {
 	x := imported(squat, t0, 100, 105)
 
 	out := importSess(t, st, a, x)
-	if out.Status != ImportCreated || out.Day != "2026-10-18" || !out.Queued || !slices.Equal(out.Exercises, []uuid.UUID{squat}) ||
+	if out.Status != ImportCreated || out.Day != "2026-10-18" || !slices.Equal(out.Exercises, []uuid.UUID{squat}) ||
 		out.Replaced != nil {
 		t.Fatalf("create: %+v", out)
 	}
@@ -153,7 +156,7 @@ func TestImportSessionCreatedUnchangedUpdated(t *testing.T) {
 	}
 	before := xminOf()
 	time.Sleep(20 * time.Millisecond)
-	if out := importSess(t, st, a, x); out.Status != ImportUnchanged || out.Queued || out.Day != "2026-10-18" {
+	if out := importSess(t, st, a, x); out.Status != ImportUnchanged || out.Day != "2026-10-18" {
 		t.Fatalf("resend: %+v", out)
 	}
 	if after := xminOf(); after != before {
@@ -165,7 +168,7 @@ func TestImportSessionCreatedUnchangedUpdated(t *testing.T) {
 	y.Exercises = []model.SessionExercise{x.Exercises[0]}
 	y.Exercises[0].Sets = []model.Set{x.Exercises[0].Sets[0]}
 	y.Exercises[0].Sets[0].Reps = ptr(8)
-	if out := importSess(t, st, a, y); out.Status != ImportUpdated || !out.Queued || out.PreviousDay != "" ||
+	if out := importSess(t, st, a, y); out.Status != ImportUpdated || out.PreviousDay != "" ||
 		out.Replaced == nil || len(out.Replaced.Exercises[0].Sets) != 2 {
 		t.Fatalf("update, with the replaced version (two sets): %+v", out)
 	}
@@ -314,7 +317,7 @@ func TestImportSessionWindowAndMove(t *testing.T) {
 	ctx := context.Background()
 	// Older than the window: stored, not queued.
 	old := imported(squat, time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC), 80)
-	if out := importSess(t, st, a, old); out.Status != ImportCreated || out.Queued || out.Day != "2024-03-01" {
+	if out := importSess(t, st, a, old); out.Status != ImportCreated || out.Day != "2024-03-01" {
 		t.Fatalf("old: %+v", out)
 	}
 	if pending, _ := st.PendingDays(ctx, a); len(pending) != 0 {
@@ -331,7 +334,7 @@ func TestImportSessionWindowAndMove(t *testing.T) {
 	end := moved.StartedAt.Add(time.Hour)
 	moved.EndedAt = &end
 	out := importSess(t, st, a, moved)
-	if out.Status != ImportUpdated || out.Day != "2026-10-16" || out.PreviousDay != "2026-10-18" || !out.Queued {
+	if out.Status != ImportUpdated || out.Day != "2026-10-16" || out.PreviousDay != "2026-10-18" {
 		t.Fatalf("move: %+v", out)
 	}
 	if pending, _ := st.PendingDays(ctx, a); !slices.Equal(pending, []string{"2026-10-16", "2026-10-18"}) {
@@ -753,12 +756,24 @@ func TestImportSessionWaitsForALiveSave(t *testing.T) {
 	st, pool, a, _ := importStore(t)
 	ctx := context.Background()
 	x := imported(squat, t0, 100)
+	if out := importSess(t, st, a, x); out.Status != ImportCreated {
+		t.Fatalf("import: %+v", out)
+	}
+	// A live save of the imported session (an edit in the app) holds its lock and writes a set
+	// with a later updated_at, as PUT /v1/sessions/{id} does.
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, lockSession, a, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE session_sets SET reps = 6, updated_at = updated_at + interval '1 minute' WHERE user_id=$1 AND id=$2`,
+		a, x.Exercises[0].Sets[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET updated_at = now() WHERE user_id=$1 AND id=$2`, a, x.ID); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan ImportOutcome, 1)
@@ -774,7 +789,10 @@ func TestImportSessionWaitsForALiveSave(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if out := <-done; out.Status != ImportCreated {
-		t.Fatalf("after the lock: %+v", out)
+	if out := <-done; out.Status != ImportRejected || out.Code != ImportNewerOnServer {
+		t.Fatalf("after the save, the resend leaves the edit alone: %+v", out)
+	}
+	if got, _ := st.Session(ctx, a, x.ID); *got.Exercises[0].Sets[0].Reps != 6 {
+		t.Fatalf("the edit stays: %+v", got.Exercises[0].Sets[0])
 	}
 }

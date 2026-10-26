@@ -44,7 +44,8 @@ func importedSession() model.Session {
 	return model.Session{ID: uuid.New(), Title: "Lower", StartedAt: t0, EndedAt: &end, Status: model.SessionCompleted,
 		Notes: "", BodyweightKG: f(82), Origin: model.OriginImport, ImportSource: &src,
 		MuscularTRIMP: f(55.3), Strain: f(10.6), VolumeKG: f(1000), WorkoutID: ptrTo(uuid.New()), UpdatedAt: t0.Add(2 * time.Hour),
-		PRs: []model.PR{{ExerciseID: uuid.New(), Kind: model.PRE1RM, Value: 116}},
+		ImportedAt: ptrTo(t0.Add(2 * time.Hour)), // as the import left it
+		PRs:        []model.PR{{ExerciseID: uuid.New(), Kind: model.PRE1RM, Value: 116}},
 		Exercises: []model.SessionExercise{
 			{ID: uuid.New(), ExerciseID: uuid.New(), Position: 0, Sets: []model.Set{a, b}},
 			{ID: uuid.New(), ExerciseID: uuid.New(), Position: 1, PlanExerciseID: ptrTo(uuid.New()), Sets: []model.Set{c}},
@@ -63,6 +64,7 @@ func TestSameSession(t *testing.T) {
 		{"identical", func(*model.Session) {}, true},
 		{"the server's fields differ", func(s *model.Session) {
 			s.MuscularTRIMP, s.Strain, s.VolumeKG, s.WorkoutID, s.PRs, s.UpdatedAt, s.Origin = nil, nil, nil, nil, nil, time.Time{}, ""
+			s.ImportedAt = nil
 		}, true},
 		{"status is not content", func(s *model.Session) { s.Status = model.SessionInProgress }, true},
 		{"exercises reordered", func(s *model.Session) { s.Exercises[0], s.Exercises[1] = s.Exercises[1], s.Exercises[0] }, true},
@@ -190,12 +192,43 @@ func TestImportConflict(t *testing.T) {
 			s.Exercises[0].Sets[1].UpdatedAt = s.Exercises[0].Sets[1].UpdatedAt.Add(time.Hour)
 		}, false},
 		{"discarded in the app", func(s, _ *model.Session) { s.Status = model.SessionDiscarded }, true},
+		{"saved in the app after the import (a title, a note)", func(s, _ *model.Session) {
+			s.UpdatedAt = s.ImportedAt.Add(time.Second)
+		}, true},
+		{"saved a microsecond later", func(s, _ *model.Session) { s.UpdatedAt = s.ImportedAt.Add(time.Microsecond) }, true},
+		{"never written by the import", func(s, _ *model.Session) { s.ImportedAt = nil }, true},
+		{"written by the import in the same statement", func(s, _ *model.Session) {
+			s.UpdatedAt = s.ImportedAt.Add(300 * time.Nanosecond) // the same microsecond: untouched
+		}, false},
 		{"reopened", func(s, _ *model.Session) { s.Status = model.SessionInProgress }, true},
 	} {
 		s, b := clone(t, stored), clone(t, stored)
+		s.ImportedAt = stored.ImportedAt // server-only: not in the JSON clone
 		tc.mut(&s, &b)
 		if got := ImportConflict(s, b); got != tc.conflict {
 			t.Errorf("%s: ImportConflict = %v, want %v", tc.name, got, tc.conflict)
+		}
+	}
+}
+
+// An imported plan the app changed since the import wrote it (a PUT: edited, archived), or
+// one the app made itself, is never overwritten by a resend (D126).
+func TestPlanConflict(t *testing.T) {
+	at := t0.Add(time.Hour)
+	for _, tc := range []struct {
+		name     string
+		updated  time.Time
+		imported *time.Time
+		conflict bool
+	}{
+		{"as the import left it", at, &at, false},
+		{"edited or archived in the app since", at.Add(time.Minute), &at, true},
+		{"made in the app", at, nil, true},
+	} {
+		p := plan()
+		p.UpdatedAt, p.ImportedAt = tc.updated, tc.imported
+		if got := PlanConflict(p); got != tc.conflict {
+			t.Errorf("%s: PlanConflict = %v, want %v", tc.name, got, tc.conflict)
 		}
 	}
 }
@@ -334,6 +367,39 @@ func TestCheckImportSession(t *testing.T) {
 			s.Exercises[0].Sets = append(s.Exercises[0].Sets, x)
 		}},
 		{"CheckSession: title", "title: at most", func(s *model.Session) { s.Title = strings.Repeat("x", 121) }},
+		{"longer than a day", "at most 24 h after started_at", func(s *model.Session) {
+			e := s.StartedAt.Add(24*time.Hour + time.Second)
+			s.EndedAt = &e
+		}},
+		{"ending over a day ahead", "ended_at must be at most 24 h from now", func(s *model.Session) {
+			s.StartedAt = now.Add(20 * time.Hour)
+			e := s.StartedAt.Add(5 * time.Hour)
+			s.EndedAt = &e
+			for i := range s.Exercises {
+				c := s.StartedAt.Add(time.Minute)
+				s.Exercises[i].Sets[0].CompletedAt, s.Exercises[i].Sets[0].UpdatedAt = &c, c
+			}
+		}},
+		{"a set long before the session", "completed_at must be between", func(s *model.Session) {
+			c := s.StartedAt.Add(-time.Hour - time.Second)
+			s.Exercises[0].Sets[0].CompletedAt = &c
+		}},
+		{"a set long after the session", "completed_at must be between", func(s *model.Session) {
+			c := s.EndedAt.Add(time.Hour + time.Second)
+			s.Exercises[1].Sets[0].CompletedAt = &c
+		}},
+		{"an updated_at over a day ahead", "updated_at must be at most 24 h from now", func(s *model.Session) {
+			s.Exercises[0].Sets[0].UpdatedAt = now.Add(25 * time.Hour)
+		}},
+		{"over 300 sets", "at most 300 sets per imported session", func(s *model.Session) {
+			for k := 0; k < 7; k++ {
+				e := model.SessionExercise{ID: uuid.New(), ExerciseID: weight.ID, Position: 2 + k}
+				for j := 0; j < 43; j++ {
+					e.Sets = append(e.Sets, set(j, 5, 60, t0.Add(time.Duration(j)*time.Minute)))
+				}
+				s.Exercises = append(s.Exercises, e)
+			}
+		}},
 	} {
 		s := valid()
 		tc.mut(&s)
@@ -343,18 +409,40 @@ func TestCheckImportSession(t *testing.T) {
 			t.Errorf("%s: want a Problem with %q, got %v", tc.name, tc.msg, err)
 		}
 	}
+	// The edges: sets an hour around the session, a session of exactly a day.
+	s = valid()
+	early, late := s.StartedAt.Add(-time.Hour), s.EndedAt.Add(time.Hour)
+	s.Exercises[0].Sets[0].CompletedAt, s.Exercises[0].Sets[0].UpdatedAt = &early, early
+	s.Exercises[1].Sets[0].CompletedAt, s.Exercises[1].Sets[0].UpdatedAt = &late, late
+	if err := CheckImportSession(&s, now, exercises); err != nil {
+		t.Errorf("sets an hour before and after: %v", err)
+	}
+	s = valid()
+	day := s.StartedAt.Add(24 * time.Hour)
+	s.EndedAt = &day
+	if err := CheckImportSession(&s, now, exercises); err != nil {
+		t.Errorf("a day long: %v", err)
+	}
 	// The edge: 24 h ahead is allowed, 2000-01-01 too.
 	s = valid()
-	s.StartedAt = now.Add(24 * time.Hour)
-	e := s.StartedAt.Add(time.Hour)
+	s.StartedAt = now.Add(23 * time.Hour)
+	e := now.Add(24 * time.Hour)
 	s.EndedAt = &e
+	for i := range s.Exercises {
+		c := s.StartedAt.Add(10 * time.Minute)
+		s.Exercises[i].Sets[0].CompletedAt, s.Exercises[i].Sets[0].UpdatedAt = &c, c
+	}
 	if err := CheckImportSession(&s, now, exercises); err != nil {
-		t.Errorf("24 h ahead: %v", err)
+		t.Errorf("ending 24 h ahead: %v", err)
 	}
 	s = valid()
 	s.StartedAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	e = s.StartedAt.Add(time.Hour)
 	s.EndedAt = &e
+	for i := range s.Exercises {
+		c := s.StartedAt.Add(10 * time.Minute)
+		s.Exercises[i].Sets[0].CompletedAt, s.Exercises[i].Sets[0].UpdatedAt = &c, c
+	}
 	if err := CheckImportSession(&s, now, exercises); err != nil {
 		t.Errorf("2000-01-01: %v", err)
 	}
@@ -443,6 +531,7 @@ func TestCheckImportRequest(t *testing.T) {
 		{"51 sessions", model.TrainImportRequest{Source: ok.Source, Sessions: make([]model.ImportSession, 51)}, "at most 50 sessions"},
 		{"a plan twice", model.TrainImportRequest{Source: ok.Source, Plans: []model.Plan{{ID: id}, {ID: uuid.New()}, {ID: id}}}, "plan " + id.String()},
 		{"a session twice", model.TrainImportRequest{Source: ok.Source, Sessions: []model.ImportSession{{ID: id}, {ID: id}}}, "session " + id.String()},
+		{"over 2500 sets", model.TrainImportRequest{Source: ok.Source, Sessions: withSets(sessions(9), 280)}, "at most 2500 sets per request"},
 	} {
 		err := CheckImportRequest(tc.req)
 		var p Problem
@@ -459,9 +548,17 @@ func TestCheckImportRequest(t *testing.T) {
 		t.Fatalf("nil ids: %v", err)
 	}
 	// The limits themselves are fine.
-	if err := CheckImportRequest(model.TrainImportRequest{Source: ok.Source, Plans: plans(5), Sessions: sessions(50)}); err != nil {
-		t.Fatalf("5 plans, 50 sessions: %v", err)
+	if err := CheckImportRequest(model.TrainImportRequest{Source: ok.Source, Plans: plans(5), Sessions: withSets(sessions(50), 50)}); err != nil {
+		t.Fatalf("5 plans, 50 sessions, 2500 sets: %v", err)
 	}
+}
+
+// withSets gives every session one exercise with n sets.
+func withSets(ss []model.ImportSession, n int) []model.ImportSession {
+	for k := range ss {
+		ss[k].Exercises = []model.SessionExercise{{ID: uuid.New(), Sets: make([]model.Set, n)}}
+	}
+	return ss
 }
 
 func plans(n int) []model.Plan {

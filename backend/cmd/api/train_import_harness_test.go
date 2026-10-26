@@ -104,6 +104,9 @@ func newBench(t *testing.T, beta config.Beta) *bench {
 	slog.SetDefault(log) // httpx.Fail logs through the default logger, as in main
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	b.st = store.New(pool).WithImportRules(importRules())
+	// The import ships dark (0 %); the bench imports for every account (TestTrainImportFlag
+	// turns it off again).
+	b.flag(true, 100)
 	b.h = &handler{st: b.st, bus: b.bus, log: log, cache: newInsightCache(), engine: scoring.NewEngine(b.st, log), beta: beta}
 	h := b.h
 	api := http.NewServeMux()
@@ -133,6 +136,15 @@ func newBench(t *testing.T, beta config.Beta) *bench {
 	mux.Handle("POST /v1/train/import", importRoute(o, beta.Gate, h.trainImport))
 	b.srv = httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))
 	return b
+}
+
+// flag sets train.import: enabled, rollout_pct and an allow-list.
+func (b *bench) flag(enabled bool, pct int, allow ...uuid.UUID) {
+	b.t.Helper()
+	if _, _, err := b.st.PutFlag(context.Background(), model.FeatureFlag{Key: model.FlagTrainImport, Enabled: enabled,
+		RolloutPct: pct, AllowUserIDs: allow}); err != nil {
+		b.t.Fatal(err)
+	}
 }
 
 // user is a new account in tz, with consent to the current policy unless consent is false.

@@ -47,11 +47,14 @@ var ErrImportRules = errors.New("store: import rules not set (WithImportRules)")
 type ImportRules struct {
 	// SameSession: the stored session equals the request's after the same clamping and defaults.
 	SameSession func(stored, body model.Session) bool
-	// Conflict: the app changed the stored session after the import (a set with a later
-	// updated_at than the body's, or the stored status is not completed): leave it alone.
+	// Conflict: the app changed the stored session after the import (edited since the import
+	// wrote it, a set with a later updated_at than the body's, or the stored status is not
+	// completed): leave it alone.
 	Conflict func(stored, body model.Session) bool
 	// SamePlan: the stored plan equals the request's.
 	SamePlan func(stored, body model.Plan) bool
+	// PlanConflict: the app changed the stored plan after the import (or made it): leave it alone.
+	PlanConflict func(stored model.Plan) bool
 }
 
 // WithImportRules sets the comparisons ImportSession and ImportPlan use and returns s.
@@ -62,7 +65,7 @@ func (s *Store) WithImportRules(r ImportRules) *Store {
 
 func (s *Store) importRules() (ImportRules, error) {
 	r := s.rules
-	if r.SameSession == nil || r.Conflict == nil || r.SamePlan == nil {
+	if r.SameSession == nil || r.Conflict == nil || r.SamePlan == nil || r.PlanConflict == nil {
 		return r, ErrImportRules
 	}
 	return r, nil
@@ -90,9 +93,6 @@ type ImportOutcome struct {
 	// when an update moved the session to another day: that day lost a session too, so the
 	// caller adds it to the days it rescores. "" otherwise.
 	Day, PreviousDay string
-	// Queued says that this item put its day (and PreviousDay) into score_queue, in its own
-	// transaction. False for unchanged, rejected and days outside the window.
-	Queued bool
 	// Exercises are the exercise ids of the stored version and, for an update, of the
 	// replaced one (deduplicated): the records to recompute.
 	Exercises []uuid.UUID
@@ -100,6 +100,9 @@ type ImportOutcome struct {
 	// start and body weight mattered to later sessions too (scoring.ScopeOf, D135).
 	Replaced *model.Session
 }
+
+// msgPlanIDTaken is id_taken's message for a plan, whoever holds the id.
+const msgPlanIDTaken = "the plan id, or the id of one of its days or exercises, is already in use"
 
 // importReject aborts an item's transaction with a rejection: nothing of the item stays.
 type importReject struct{ code, msg string }
@@ -147,7 +150,10 @@ func rejected(err error) (ImportOutcome, bool) {
 	case errors.As(err, &rj):
 		return ImportOutcome{Status: ImportRejected, Code: rj.code, Message: rj.msg}, true
 	case errors.Is(err, ErrForbidden), errors.Is(err, ErrTaken):
-		return ImportOutcome{Status: ImportRejected, Code: ImportIDTaken, Message: "the id belongs to a built-in or to another plan or account"}, true
+		// The same words whoever holds the id (a built-in, another of the user's plans, another
+		// account): nothing about another account (plan ids are global; the app derives them
+		// with the account, API.md).
+		return ImportOutcome{Status: ImportRejected, Code: ImportIDTaken, Message: msgPlanIDTaken}, true
 	case rejectable(err):
 		return ImportOutcome{Status: ImportRejected, Code: ImportInvalid, Message: "a value is outside what can be stored"}, true
 	}
@@ -158,7 +164,8 @@ func rejected(err error) (ImportOutcome, bool) {
 
 // ImportPlan stores one plan of an import: created, unchanged (SamePlan: nothing written),
 // updated (replaced whole, as PUT /v1/plans/{id}), or rejected (id_taken for a built-in's,
-// another account's, or another plan's id or day or exercise id; unknown_exercise).
+// another account's, or another plan's id or day or exercise id; unknown_exercise;
+// newer_on_server for a plan the app changed since the import wrote it, or made itself).
 // The caller has run train.CheckPlan. A returned error is a database failure.
 func (s *Store) ImportPlan(ctx context.Context, userID uuid.UUID, p model.Plan) (ImportOutcome, error) {
 	rules, err := s.importRules()
@@ -182,6 +189,9 @@ func (s *Store) ImportPlan(ctx context.Context, userID uuid.UUID, p model.Plan) 
 			if err != nil {
 				return err
 			}
+			if rules.PlanConflict(stored) {
+				return importReject{ImportNewerOnServer, "the plan was changed in the app after the import; it is left as it is"}
+			}
 			if rules.SamePlan(stored, p) {
 				out.Status = ImportUnchanged
 				return nil
@@ -202,7 +212,7 @@ func (s *Store) ImportPlan(ctx context.Context, userID uuid.UUID, p model.Plan) 
 				return importReject{ImportUnknownExercise, fmt.Sprintf("exercise %s is neither built-in nor yours", id)}
 			}
 		}
-		if err := writePlan(ctx, tx, userID, p); err != nil {
+		if err := writePlan(ctx, tx, userID, p, true); err != nil {
 			return err
 		}
 		out.Status = ImportUpdated
@@ -296,7 +306,6 @@ func (s *Store) ImportSession(ctx context.Context, userID uuid.UUID, source stri
 			if err := queueDays(ctx, tx, userID, days); err != nil {
 				return err
 			}
-			out.Queued = true
 		}
 		return nil
 	})
@@ -378,9 +387,10 @@ func importReferences(ctx context.Context, tx pgx.Tx, userID uuid.UUID, body mod
 
 // ---- the lease ----------------------------------------------------------------------------
 
-// ImportLeaseTTL is how long a lease lasts without being released: the request's 50 s, the
-// finishing steps, and slack. A pod that dies mid-import blocks that user's next import this long.
-const ImportLeaseTTL = 120 * time.Second
+// ImportLeaseTTL is how long a lease lasts without being released: above the request's 50 s
+// budget (the finish included) plus the release's own 5 s, so a working import never loses it.
+// A pod that dies mid-import (a rollout) blocks that user's next import this long, at most.
+const ImportLeaseTTL = 70 * time.Second
 
 // AcquireImportLease takes the user's import lease for ttl (D132): at most one import per user
 // at a time across every api pod. ok false when another import holds a lease that has not

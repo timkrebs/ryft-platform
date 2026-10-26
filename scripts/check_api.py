@@ -805,9 +805,11 @@ check({p["bpm"] for p in wk["hr"]} == {150}, f"the band's samples leaked into th
 ok(f"workout across midnight: {sum(wk['zone_min'])} zone minutes of 80, strain {wk['strain']}; overlapping source ignored")
 
 # ---- training import (POST /v1/train/import, D124-D133) -------------------------
-# A fresh account imports a plan and two sessions "from another app": created, the same
-# again unchanged, an edited one updated; a bad item is rejected without undoing the
-# others; a second import while one runs gets 429; the days are scored; no SESSION_SCORED
+# A fresh account imports a plan and two sessions "from another app": refused without
+# consent and while the flag is off for it (the import ships dark), then, allow-listed,
+# created, the same again unchanged, an edited one updated; a bad item is rejected without
+# undoing the others; a second import while one runs gets 429 (on a second account: the
+# import's own rate budget is 5, then one every 5 s); the days are scored; no SESSION_SCORED
 # or PR push follows (notify's counters), only the silent refresh. Before the Train checks
 # below, so that no completed session's push lands in the window.
 def metric_sum(prefixes):
@@ -830,14 +832,23 @@ def once(method, path, body, key):
         return e.code, e.headers, e.read()
 
 
-if os.environ.get("AUTH_MODE", "apikey") == "apikey":
+if os.environ.get("AUTH_MODE", "apikey") == "apikey" and ADMIN:
     import threading
 
-    I = str(uuid.uuid4())
-    KEY_I = f"{KEY}:{I}"
-    status, _, body = raw("POST", "/v1/train/import", jbody({"source": "alpha_progression", "plans": [], "sessions": []}), key=KEY_I)
+    I, J = str(uuid.uuid4()), str(uuid.uuid4())
+    KEY_I, KEY_J = f"{KEY}:{I}", f"{KEY}:{J}"
+    empty = jbody({"source": "alpha_progression", "plans": [], "sessions": []})
+    status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
     check(status == 403 and body.get("code") == "consent_required", f"an import without consent: {status} {body}")
     consent(KEY_I)
+    consent(KEY_J)
+    status, _, body = raw("POST", "/v1/train/import", empty, key=KEY_I)
+    check(status == 403 and body.get("code") == "import_not_enabled" and body.get("request_id"),
+          f"an import while train.import is off for the account: {status} {body}")
+    status, _, f = raw("PUT", "/v1/admin/flags/train.import",
+                       jbody({"enabled": True, "rollout_pct": 0, "allow_user_ids": [I, J]}), key=ADMIN)
+    check(status == 200 and sorted(f["allow_user_ids"]) == sorted([I, J]), f"allow-list the import: {status} {f}")
+    check(get("/v1/config", key=KEY_I)["flags"]["train.import"] is True, "GET /v1/config says the import is on")
     tz_i = ZoneInfo(get("/v1/me", key=KEY_I)["tz"])
     lib_i = {e["slug"]: e["id"] for e in get("/v1/exercises", key=KEY_I)}
     sq, bp, pu = lib_i["back-squat"], lib_i["bench-press"], lib_i["pull-up"]
@@ -915,7 +926,8 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     check(st3 == [("plan", "unchanged", None), ("session", "updated", None), ("session", "unchanged", None)]
           and r3["days_touched"] == [d2], f"an edited session: {st3} {r3['days_touched']}")
     check(get(f"/v1/sessions/{s2['id']}", key=KEY_I)["exercises"][0]["sets"][2]["reps"] == 4, "the update is stored")
-    ok(f"training import: plan + 2 sessions created, scored ({', '.join(r1['days_touched'])}), resend unchanged, edit updated")
+    ok(f"training import: 403 consent_required, then 403 import_not_enabled until allow-listed; plan + 2 sessions created, "
+       f"scored ({', '.join(r1['days_touched'])}), resend unchanged, edit updated")
 
     s3, d3 = isession("c", 8, [(bp, [(8, 60, None)] * 2)])
     s4, _ = isession("d", 9, [(str(uuid.uuid4()), [(5, 50, None)])])
@@ -933,9 +945,9 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
                  "sessions": [isession(f"x{k}", 100 + k, [(sq, [(5, 80 + k % 10, None)] * 10)])[0] for k in range(50)]})
     start_all, answers = threading.Barrier(4), []
 
-    def fire():
+    def fire():  # on J: its import budget is untouched (bursts of 5)
         start_all.wait()
-        answers.append(once("POST", "/v1/train/import", big, KEY_I))
+        answers.append(once("POST", "/v1/train/import", big, KEY_J))
 
     threads = [threading.Thread(target=fire) for _ in range(4)]
     for th in threads:
@@ -950,6 +962,10 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
           f"concurrent imports: {codes} {busy}")
     ok(f"training import: concurrent requests {codes} (429 import_in_progress, Retry-After 10)")
 
+    for _ in range(90):  # J's 50 days, and I's
+        if not get("/v1/me/sync", key=KEY_J)["pending_days"]:
+            break
+        time.sleep(1)
     scored_all()
     if METRICS:
         check(metric_sum(['ryft_push_notifications_total{category="SESSION_SCORED",', 'ryft_push_notifications_total{category="PR",'])
@@ -963,10 +979,13 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
         ok("training import: no SESSION_SCORED or PR push, the silent refresh only")
     else:
         print("- import pushes not checked (needs NOTIFY_METRICS_URL)")
-    status, _, body = raw("DELETE", "/v1/me", key=KEY_I)
-    check(status == 200 and body["status"] == "deleted", f"DELETE /v1/me after the import: {status} {body}")
+    status, _, f = raw("PUT", "/v1/admin/flags/train.import", jbody({"enabled": True, "rollout_pct": 0}), key=ADMIN)
+    check(status == 200 and f["allow_user_ids"] == [], f"train.import back to dark: {status} {f}")
+    for key_x in (KEY_I, KEY_J):
+        status, _, body = raw("DELETE", "/v1/me", key=key_x)
+        check(status == 200 and body["status"] == "deleted", f"DELETE /v1/me after the import: {status} {body}")
 else:
-    print("- training import not checked (apikey mode: a throwaway account)")
+    print("- training import not checked (apikey mode and ADMIN_API_KEY: throwaway accounts, the flag's allow-list)")
 
 # ---- Train: exercises, plans, sessions (M3b) -----------------------------------
 def call(method, path, body=None, expect=200, key=None, headers=None):

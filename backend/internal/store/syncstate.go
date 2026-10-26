@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 
 	"time"
 
@@ -39,10 +40,14 @@ func (s *Store) QueueDaysWith(ctx context.Context, userID uuid.UUID, days []stri
 }
 
 // queueDays puts days (local "2006-01-02") into score_queue as pending, in tx.
+// The rows are upserted in day order, distinct: two transactions queueing
+// overlapping days (a sync and an import's item) lock them in the same order and
+// cannot deadlock on them.
 func queueDays(ctx context.Context, tx pgx.Tx, userID uuid.UUID, days []string) error {
+	sorted := slices.Compact(slices.Sorted(slices.Values(days)))
 	_, err := tx.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
-		SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) d
-		ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, days)
+		SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n
+		ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, userID, sorted)
 	return err
 }
 

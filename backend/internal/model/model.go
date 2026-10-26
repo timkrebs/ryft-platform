@@ -698,7 +698,14 @@ const (
 	// CodeImportInProgress: POST /v1/train/import while another import of the account
 	// runs (429, Retry-After: 10; D129).
 	CodeImportInProgress = "import_in_progress"
+	// CodeImportNotEnabled: POST /v1/train/import for an account the flag train.import is off
+	// for (403, S4). The app hides the import then; the server enforces it as well.
+	CodeImportNotEnabled = "import_not_enabled"
 )
+
+// FlagTrainImport is the training import's feature flag (GET /v1/config), which POST
+// /v1/train/import checks itself too.
+const FlagTrainImport = "train.import"
 
 type UserPatch struct {
 	TZ    *string `json:"tz,omitempty"`
@@ -1178,6 +1185,9 @@ type Session struct {
 	// the server owns both and PUT /v1/sessions/{id} ignores them.
 	Origin       string  `json:"origin"`
 	ImportSource *string `json:"import_source"`
+	// ImportedAt is when the training import last wrote the session (nil for the app's): an
+	// UpdatedAt after it means the app changed it since (D126). Server-only, never serialised.
+	ImportedAt *time.Time `json:"-"`
 }
 
 // SessionSummary is one row of GET /v1/sessions and DayStrain.sessions.
@@ -1266,6 +1276,10 @@ type Plan struct {
 	IsBuiltin   bool         `json:"is_builtin"`
 	Archived    bool         `json:"archived"`
 	Days        []PlanDay    `json:"days"`
+	// UpdatedAt and ImportedAt (nil unless the training import wrote it) say whether the app
+	// changed an imported plan since (D126). Server-only, never serialised.
+	UpdatedAt  time.Time  `json:"-"`
+	ImportedAt *time.Time `json:"-"`
 }
 
 type PlanSummary struct {

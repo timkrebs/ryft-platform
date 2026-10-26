@@ -80,7 +80,7 @@ var grants = map[string]map[string][]string{
 		"feature_flags": crud, "push_tokens": crud, "notifications_sent": {"SELECT", "DELETE"},
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"consents": crud, "beta_invite_codes": crud, "user_sources": crud, "feedback": crud,
-		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
+		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -226,6 +226,10 @@ func TestServiceRoleGrants(t *testing.T) {
 		want                   bool
 	}{
 		{"ryft_api", "score_queue", "scored_at", "UPDATE", true}, {"ryft_api", "score_queue", "queued_at", "UPDATE", true},
+		{"ryft_api", "score_queue", "user_id", "UPDATE", false}, {"ryft_api", "score_queue", "day", "UPDATE", false},
+		{"ryft_api", "score_queue", "user_id", "INSERT", true}, {"ryft_api", "score_queue", "day", "INSERT", true},
+		{"ryft_api", "sessions", "imported_at", "UPDATE", true}, {"ryft_api", "plans", "imported_at", "UPDATE", true},
+		{"ryft_scoring", "sessions", "imported_at", "UPDATE", false}, {"ryft_notify", "sessions", "imported_at", "SELECT", false},
 		{"ryft_notify", "sessions", "origin", "SELECT", true}, {"ryft_notify", "sessions", "import_source", "SELECT", false},
 		{"ryft_notify", "sessions", "origin", "UPDATE", false}, {"ryft_notify", "session_sets", "assist_kg", "SELECT", false},
 		{"ryft_scoring", "sessions", "origin", "SELECT", true}, {"ryft_scoring", "sessions", "origin", "UPDATE", false},
@@ -363,6 +367,13 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	}
 	if _, err := scoring.Exec(ctx, `INSERT INTO score_queue (user_id, day) VALUES ($1, '2026-10-19')`, id); err == nil {
 		t.Fatal("scoring must not queue days")
+	}
+	// The api re-queues a day; it cannot move a queue row to another user or day.
+	if _, err := api.Exec(ctx, `UPDATE score_queue SET user_id = user_id WHERE user_id = $1`, id); err == nil {
+		t.Fatal("api must not update score_queue.user_id")
+	}
+	if _, err := api.Exec(ctx, `UPDATE score_queue SET day = day + 1 WHERE user_id = $1`, id); err == nil {
+		t.Fatal("api must not update score_queue.day")
 	}
 	if _, err := api.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, status, origin, import_source)
 		VALUES ($1, gen_random_uuid(), now(), 'completed', 'import', 'alpha_progression')`, id); err != nil {

@@ -231,6 +231,9 @@ type handler struct {
 	accounts *accounts
 	engine   *scoring.Engine // pure scoring with store lookups, for session completion
 	beta     config.Beta
+	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
+	// shorten it to make a slow finish fail fast).
+	importFinish time.Duration
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

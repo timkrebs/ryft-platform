@@ -19,6 +19,7 @@ func TestMigrateTrainImport(t *testing.T) {
 	}
 	user, sess, ex, set := "dddddddd-0000-0000-0000-000000000028", "dddddddd-0000-0000-0000-0000000000a1",
 		"dddddddd-0000-0000-0000-0000000000b1", "dddddddd-0000-0000-0000-0000000000c1"
+	plan := "dddddddd-0000-0000-0000-0000000000d1"
 	for _, q := range []string{
 		`INSERT INTO users (id) VALUES ('` + user + `')`,
 		`INSERT INTO sessions (user_id, id, started_at, status) VALUES ('` + user + `', '` + sess + `', now(), 'completed')`,
@@ -26,6 +27,7 @@ func TestMigrateTrainImport(t *testing.T) {
 		   VALUES ('` + ex + `', 'x-28', 'X', 'X', 'bodyweight', '{chest}', 'bodyweight')`,
 		`INSERT INTO session_exercises (user_id, id, session_id, exercise_id, position) VALUES ('` + user + `', '` + ex + `', '` + sess + `', '` + ex + `', 0)`,
 		`INSERT INTO session_sets (user_id, id, session_exercise_id, set_index, updated_at) VALUES ('` + user + `', '` + set + `', '` + ex + `', 0, now())`,
+		`INSERT INTO plans (id, user_id, name, goal, days_per_week) VALUES ('` + plan + `', '` + user + `', 'P', 'general', 2)`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -36,8 +38,10 @@ func TestMigrateTrainImport(t *testing.T) {
 	}
 	if !scalar[bool](t, pool, `SELECT origin = 'app' AND import_source IS NULL FROM sessions WHERE id = $1`, sess) ||
 		!scalar[bool](t, pool, `SELECT assist_kg IS NULL FROM session_sets WHERE id = $1`, set) ||
-		!scalar[bool](t, pool, `SELECT import_lease_until IS NULL FROM users WHERE id = $1`, user) {
-		t.Fatal("rows from before 0028: origin app, no import source, no assist, no lease")
+		!scalar[bool](t, pool, `SELECT import_lease_until IS NULL FROM users WHERE id = $1`, user) ||
+		!scalar[bool](t, pool, `SELECT imported_at IS NULL FROM sessions WHERE id = $1`, sess) ||
+		!scalar[bool](t, pool, `SELECT imported_at IS NULL FROM plans WHERE id = $1`, plan) {
+		t.Fatal("rows from before 0028: origin app, no import source, no assist, no lease, never imported")
 	}
 	// The sessions constraints are validated; the session_sets one is left NOT VALID, and enforced.
 	for name, want := range map[string]bool{"sessions_origin_check": true, "sessions_import_source_check": true, "session_sets_assist_kg_check": false} {

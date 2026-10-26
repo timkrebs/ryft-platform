@@ -93,7 +93,7 @@ func scoringStore(t *testing.T) (*store.Store, *scoring.Engine, uuid.UUID) {
 		t.Fatal(err)
 	}
 	st := store.New(pool).WithImportRules(store.ImportRules{SameSession: train.SameSession, Conflict: train.ImportConflict,
-		SamePlan: train.SamePlan})
+		SamePlan: train.SamePlan, PlanConflict: train.PlanConflict})
 	user := uuid.New()
 	if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestImportEventIsScoredLikeASync(t *testing.T) {
 				CompletedAt: &at, UpdatedAt: at})
 		}
 		out, err := st.ImportSession(ctx, user, model.ImportSourceAlphaProgression, s, time.UTC, window)
-		if err != nil || out.Status != store.ImportCreated || !out.Queued {
+		if err != nil || out.Status != store.ImportCreated {
 			t.Fatalf("import: %+v %v", out, err)
 		}
 		days, ids = append(days, out.Day), append(ids, s.ID)

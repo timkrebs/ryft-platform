@@ -7,6 +7,7 @@ package main
 // order of the steps, the finish and the answer.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/flags"
 	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -46,12 +48,13 @@ const (
 // importRules are internal/train's comparisons, which the store needs for the import
 // (D131); main wires them in.
 func importRules() store.ImportRules {
-	return store.ImportRules{SameSession: train.SameSession, Conflict: train.ImportConflict, SamePlan: train.SamePlan}
+	return store.ImportRules{SameSession: train.SameSession, Conflict: train.ImportConflict, SamePlan: train.SamePlan,
+		PlanConflict: train.PlanConflict}
 }
 
 // importRoute is POST /v1/train/import's chain: its own mux, so that its budget replaces
-// readTimeout, behind the same authentication, rate limit (one token from the default
-// class) and invite gate as every other route.
+// readTimeout, behind the same authentication and invite gate as every other route; the
+// rate limit takes one token from the import's own class (ratelimit, S2).
 func importRoute(o auth.Options, mode config.Mode, fn http.HandlerFunc) http.Handler {
 	imp := http.NewServeMux()
 	imp.HandleFunc("POST /v1/train/import", fn)
@@ -73,8 +76,25 @@ func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
 	result := "invalid"
 	defer func() { metrics.TrainImports.WithLabelValues(result).Inc() }()
 	u := userOf(r)
-	// Before the body: a refused upload costs no parse (D129).
-	if !gate.Consent(w, r, h.beta, u, "api") {
+	// Before the body: a refused upload costs no parse (D129). On this route warn is on: no
+	// app build that cannot ask for consent calls it, so nothing is served without (S3).
+	consent := h.beta
+	if consent.Consent == config.ModeWarn {
+		consent.Consent = config.ModeOn
+	}
+	if !gate.Consent(w, r, consent, u, "api") {
+		return
+	}
+	// The app's switch, enforced here too (S4): an account the flag is off for imports nothing.
+	all, err := h.st.Flags(r.Context())
+	if err != nil {
+		result = importResult(r.Context(), err)
+		importUnavailable(w, r, err, result)
+		return
+	}
+	if !flags.Enabled(all, model.FlagTrainImport, u.ID) {
+		result = "disabled"
+		httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeImportNotEnabled, "the training import is not enabled for this account")
 		return
 	}
 	var req model.TrainImportRequest
@@ -124,16 +144,17 @@ func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
 		plans: make([]store.ImportOutcome, len(req.Plans)), sessions: make([]store.ImportOutcome, len(req.Sessions)),
 		bodies: make([]model.Session, len(req.Sessions))}
 	// The items stop before the budget ends, so that the finish has its time inside it.
+	finish := cmp.Or(h.importFinish, importFinishTimeout)
 	itemsCtx := ctx
 	if dl, ok := ctx.Deadline(); ok {
 		var cancel context.CancelFunc
-		itemsCtx, cancel = context.WithDeadline(ctx, dl.Add(-importFinishTimeout))
+		itemsCtx, cancel = context.WithDeadline(ctx, dl.Add(-finish))
 		defer cancel()
 	}
 	stopped := h.importItems(itemsCtx, run, req)
-	// Once, also after a failure or when the client has gone: what is stored gets its
-	// records, its days queued and its one event (D128).
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importFinishTimeout)
+	// Once, also after a failure or when the client has gone: what is stored gets its days
+	// queued with its one event, then its records (D128).
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finish)
 	defer cancel()
 	days, finished := h.finishImport(fctx, r, run)
 	base, _ := h.st.ExpectedScoreSec(fctx)
@@ -243,9 +264,11 @@ func invalid(err error) store.ImportOutcome {
 	return store.ImportOutcome{Status: store.ImportRejected, Code: store.ImportInvalid, Message: msg}
 }
 
-// finishImport runs once after the items (D128): the records of every exercise a stored
-// item has (unchanged ones too: a cheap repair after an interrupted attempt), then the days
-// queued with the request's one ingested event (reason import) in one transaction. The days
+// finishImport runs once after the items (D128): the days queued with the request's one
+// ingested event (reason import) in one transaction, then the records of every exercise a
+// stored item has (unchanged ones too: a cheap repair after an interrupted attempt). In that
+// order, so that a slow or failing records step never strands days that are stored but not
+// queued: the 503 it causes leaves them pending, and the resend repairs the records. The days
 // are those of the created and updated sessions (and the days an update moved them from),
 // those of unchanged sessions that an earlier attempt queued and scoring has not finished,
 // and the days of the user's other sessions whose load the changed ones can move
@@ -298,11 +321,6 @@ func (h *handler) finishImport(ctx context.Context, r *http.Request, run *import
 			changed[day] = true
 		}
 	}
-	if len(records) > 0 {
-		if err := h.recordsFor(ctx, run.user, uniqueIDs(records)); err != nil {
-			return nil, err
-		}
-	}
 	days := make([]string, 0, len(changed))
 	for d := range changed {
 		days = append(days, d)
@@ -319,6 +337,11 @@ func (h *handler) finishImport(ctx context.Context, r *http.Request, run *import
 		h.outbox.Kick()
 	}
 	h.cache.forget(run.user)
+	if len(records) > 0 {
+		if err := h.recordsFor(ctx, run.user, uniqueIDs(records)); err != nil {
+			return nil, err
+		}
+	}
 	return days, nil
 }
 
@@ -353,9 +376,9 @@ func (run *importRun) results(req model.TrainImportRequest) []model.ImportResult
 	return out
 }
 
-// logImport counts the items and writes the request's one line: the source, counts per
-// status, the days, the duration; never a title, a note, a value or a list of ids (D114,
-// D117).
+// logImport counts the items and writes the request's one line: counts per status, the
+// days, the duration; never a title, a note, a value or a list of ids (D114, D117), and not
+// the source, which says which other app the user trains with (N6).
 func (h *handler) logImport(r *http.Request, run *importRun, days []string, start time.Time, result string) {
 	n := map[string]int{}
 	for _, x := range []struct {
@@ -369,7 +392,7 @@ func (h *handler) logImport(r *http.Request, run *importRun, days []string, star
 			}
 		}
 	}
-	h.log.InfoContext(r.Context(), "train import", "source", run.source, "result", result,
+	h.log.InfoContext(r.Context(), "train import", "result", result,
 		"plans", len(run.plans), "sessions", len(run.sessions), "created", n[store.ImportCreated],
 		"unchanged", n[store.ImportUnchanged], "updated", n[store.ImportUpdated], "rejected", n[store.ImportRejected],
 		"days", len(days), "duration_ms", time.Since(start).Milliseconds())

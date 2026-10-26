@@ -37,7 +37,9 @@ func TestImportSessionMirrorsSession(t *testing.T) {
 		rt := reflect.TypeOf(v)
 		for k := 0; k < rt.NumField(); k++ {
 			name, _, _ := strings.Cut(rt.Field(k).Tag.Get("json"), ",")
-			out = append(out, name)
+			if name != "-" { // server-only (imported_at): in neither JSON shape
+				out = append(out, name)
+			}
 		}
 		slices.Sort(out)
 		return out
@@ -100,8 +102,13 @@ func TestImportRouteBudgetAndGates(t *testing.T) {
 	if left := deadline.Sub(start); left < importTimeout-time.Second || left > importTimeout+time.Second {
 		t.Fatalf("the import's budget is %v, got %v", importTimeout, left)
 	}
-	if importTimeout <= readTimeout || importTimeout+importFinishTimeout > 60*time.Second {
-		t.Fatal("the budget must exceed readTimeout and the finish fit the server's 60 s")
+	// The finish runs inside the budget (the items stop importFinishTimeout before it); the
+	// lease's release has its own 5 s after it: all within the server's 60 s write timeout.
+	if importTimeout <= readTimeout || importTimeout+5*time.Second >= 60*time.Second || importFinishTimeout >= importTimeout {
+		t.Fatal("the budget must exceed readTimeout, and it and the release fit the server's 60 s")
+	}
+	if store.ImportLeaseTTL <= importTimeout+5*time.Second {
+		t.Fatalf("the lease (%v) must outlast the budget and the release", store.ImportLeaseTTL)
 	}
 	if tokens != 1 {
 		t.Fatalf("one rate-limit token per request, took %d", tokens)
@@ -327,6 +334,12 @@ func TestTrainImportUpdates(t *testing.T) {
 	moved.StartedAt = moved.StartedAt.AddDate(0, 0, 2)
 	end := moved.StartedAt.Add(time.Hour)
 	moved.EndedAt = &end
+	moved.Exercises = []model.SessionExercise{edited.Exercises[0]}
+	moved.Exercises[0].Sets = slices.Clone(edited.Exercises[0].Sets)
+	for k := range moved.Exercises[0].Sets { // the sets move with it (they stay within an hour of it)
+		at := moved.Exercises[0].Sets[k].CompletedAt.AddDate(0, 0, 2)
+		moved.Exercises[0].Sets[k].CompletedAt, moved.Exercises[0].Sets[k].UpdatedAt = &at, at
+	}
 	res = b.imports(token, request(nil, moved))
 	if got := statuses(res); !slices.Equal(got, []string{"session updated"}) ||
 		!slices.Equal(res.DaysTouched, []string{day(daysAgo(12)), day(daysAgo(10))}) {
@@ -404,6 +417,18 @@ func TestTrainImportRefusals(t *testing.T) {
 		}
 		return out
 	}
+	// heavy is n sessions of k sets each (N1: at most 300 a session, 2500 a request).
+	heavy := func(n, k int) []model.ImportSession {
+		out := make([]model.ImportSession, n)
+		for i := range out {
+			kgs := make([]float64, k)
+			for j := range kgs {
+				kgs[j] = 60
+			}
+			out[i] = done(daysAgo(30+i), squatID, kgs...)
+		}
+		return out
+	}
 	plans := make([]model.Plan, 6)
 	for k := range plans {
 		plans[k] = twoDayPlan()
@@ -428,6 +453,7 @@ func TestTrainImportRefusals(t *testing.T) {
 		{"a plan twice", request([]model.Plan{dup, dup}), http.StatusUnprocessableEntity, "in the request twice"},
 		{"a session twice", request(nil, s, s), http.StatusUnprocessableEntity, "in the request twice"},
 		{"a NUL", strings.Replace(string(raw), `"title":"Lower"`, `"title":"Lo\u0000wer"`, 1), http.StatusUnprocessableEntity, "NUL"},
+		{"over 2500 sets", request(nil, heavy(9, 280)...), http.StatusUnprocessableEntity, "at most 2500 sets per request"},
 	} {
 		rec := b.call(token, http.MethodPost, "/v1/train/import", tc.body)
 		if rec.Code != tc.status || !strings.Contains(rec.Body.String(), tc.msg) || !strings.Contains(rec.Body.String(), `"request_id"`) {
@@ -463,8 +489,9 @@ func TestTrainImportGates(t *testing.T) {
 		header  string
 	}{
 		{"consent on", defaultBeta(), false, http.StatusForbidden, model.CodeConsentRequired, ""},
-		{"consent warn", config.Beta{Gate: config.ModeOff, Consent: config.ModeWarn, PrivacyPolicyVersion: benchPolicy}, false,
-			http.StatusOK, "", model.CodeConsentRequired},
+		// On this route warn is on (S3): no app build without the consent screen calls it.
+		{"consent warn acts as on", config.Beta{Gate: config.ModeOff, Consent: config.ModeWarn, PrivacyPolicyVersion: benchPolicy}, false,
+			http.StatusForbidden, model.CodeConsentRequired, ""},
 		{"consent off", config.Beta{Gate: config.ModeOff, Consent: config.ModeOff, PrivacyPolicyVersion: benchPolicy}, false, http.StatusOK, "", ""},
 		{"invite on", config.Beta{Gate: config.ModeOn, Consent: config.ModeOn, PrivacyPolicyVersion: benchPolicy}, true,
 			http.StatusForbidden, model.CodeInviteRequired, ""},
@@ -474,7 +501,11 @@ func TestTrainImportGates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newBench(t, tc.beta)
 			user, token := b.user("UTC", tc.consent)
-			refused := testutil.ToFloat64(metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(tc.beta.Consent), "api"))
+			mode := tc.beta.Consent
+			if mode == config.ModeWarn {
+				mode = config.ModeOn
+			}
+			refused := testutil.ToFloat64(metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(mode), "api"))
 			rec := b.call(token, http.MethodPost, "/v1/train/import", body)
 			if rec.Code != tc.status || rec.Header().Get("X-RYFT-Gate") != tc.header {
 				t.Fatalf("%d %q %s", rec.Code, rec.Header().Get("X-RYFT-Gate"), rec.Body)
@@ -486,10 +517,11 @@ func TestTrainImportGates(t *testing.T) {
 					t.Fatalf("refused with %v, nothing stored", e)
 				}
 			}
-			after := testutil.ToFloat64(metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(tc.beta.Consent), "api"))
+			after := testutil.ToFloat64(metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(mode), "api"))
 			if consentGate := !tc.consent && tc.beta.Consent != config.ModeOff; (after-refused == 1) != consentGate {
 				t.Fatalf("consent refusals counted %v", after-refused)
 			}
+			checkImportLog(t, b.logs.String(), []string{"Lower"}, nil) // the 403s' lines too (N5)
 		})
 	}
 	// A refused import never reads the body: a malformed one is still the 403.
@@ -565,6 +597,13 @@ func TestTrainImportOneAtATime(t *testing.T) {
 	if res := b.imports(token, request(nil, second)); !slices.Equal(statuses(res), []string{"session created"}) {
 		t.Fatalf("after the first: %+v", res)
 	}
+	// The 429's access line carries its code; no line holds a title (N5).
+	lines := checkImportLog(t, b.logs.String(), []string{"Lower"}, nil)
+	if !slices.ContainsFunc(lines["http"], func(l map[string]any) bool {
+		return l["status"] == 429.0 && l["code"] == model.CodeImportInProgress
+	}) {
+		t.Fatalf("no 429 line with its code: %v", lines["http"])
+	}
 }
 
 // Out of time: the items stop before the budget ends, what was stored stays stored and is
@@ -583,9 +622,9 @@ func TestTrainImportOutOfTime(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`, user, stuck.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The route's chain with a budget of the finish's time plus 2 s for the items: enough for
+	// The route's chain with a budget of the finish's time plus 5 s for the items: enough for
 	// the plan and the early session on a loaded machine; the stuck one waits past it anyway.
-	srv := withBudget(b, importFinishTimeout+2*time.Second)
+	srv := withBudget(b, importFinishTimeout+5*time.Second)
 	timeouts := testutil.ToFloat64(metrics.TrainImports.WithLabelValues("timeout"))
 	rec := callHandler(srv, token, request([]model.Plan{p}, stuck, early))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" ||
@@ -604,6 +643,11 @@ func TestTrainImportOutOfTime(t *testing.T) {
 	}
 	if n := b.count(`SELECT count(*) FROM users WHERE id=$1 AND import_lease_until IS NOT NULL`, user); n != 0 {
 		t.Fatal("the lease is given back")
+	}
+	// The timeout's lines: request failed 503, train import result timeout, no title (N5).
+	lines := checkImportLog(t, b.logs.String(), []string{"Lower", "Upper / Lower"}, nil)
+	if imp := lines["train import"]; len(imp) != 1 || imp[0]["result"] != "timeout" || len(lines["request failed"]) != 1 {
+		t.Fatalf("lines: %v", lines)
 	}
 }
 
@@ -705,7 +749,7 @@ func TestTrainImportLogsCountsOnly(t *testing.T) {
 	lines := checkImportLog(t, b.logs.String(), []string{"Anna", "whiteboard", "knee", "other_app", s.ID.String(), bad.ID.String()},
 		[]float64{123.25, 61.75})
 	imp := lines["train import"]
-	if len(imp) != 1 || imp[0]["source"] != "alpha_progression" || imp[0]["result"] != "ok" || imp[0]["plans"] != 1.0 ||
+	if len(imp) != 1 || imp[0]["source"] != nil || imp[0]["result"] != "ok" || imp[0]["plans"] != 1.0 ||
 		imp[0]["sessions"] != 2.0 || imp[0]["created"] != 2.0 || imp[0]["rejected"] != 1.0 || imp[0]["days"] != 1.0 {
 		t.Fatalf("one line with the counts: %v", imp)
 	}
