@@ -39,6 +39,24 @@ exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore 
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
 
+**The SDK injector stays out of `ryft-*`.** `telemetryServices.sdkInjector` deploys a
+mutating webhook (`mpod-v1.beyla.grafana.com`, pods on CREATE, `failurePolicy: Ignore`)
+that can add an SDK init container or volume to pods of every namespace it does not
+exclude. The admission policies pin the images and commands of RYFT's pods, so an injected
+container would be refused, and the services emit their own metrics. The chart excludes
+by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
+every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
+default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
+Management log setting above are unaffected. Apply with `make monitoring-apply`, then
+check read-only:
+
+```bash
+kubectl get mutatingwebhookconfigurations \
+  -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
+```
+
+The selector of the injector's webhook must list every `ryft-*` namespace under `NotIn`.
+
 A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace
 `monitoring`.
