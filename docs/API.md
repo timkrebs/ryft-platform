@@ -1155,7 +1155,7 @@ day moves the enrolment to the next day (and week); after the last day of a plan
 | --- | --- | --- |
 | `day` | `PlanDay` | The enrolment's current day. |
 | `targets` | `[PlanTarget]` | One per plan exercise of that day, in `position` order. |
-| `PlanTarget.target_kg` | number? | The weight to use, rounded to 2.5 kg: `pct_1rm` from the current e1RM, `kg` with the plan's progression applied to the history of this plan exercise. `null` for `rpe` and `bodyweight` targets, and for `pct_1rm` without any logged sets yet. |
+| `PlanTarget.target_kg` | number? | The weight to use, rounded to 2.5 kg: `pct_1rm` from the current e1RM, the best of the exercise's completed working sets in the **last 90 days** (imported sessions included; model 2026.10.2), `kg` with the plan's progression applied to the history of this plan exercise. `null` for `rpe` and `bodyweight` targets, and for `pct_1rm` without a completed set of the exercise in the last 90 days (an older best is history, not a target). |
 | `PlanTarget.last_time` | `[Set]` | The working sets of the most recent completed session with this exercise (imported sessions count, by `started_at`); `[]` when none. |
 
 #### `PUT /v1/sessions/{id}` — save a session (after every set)
@@ -1236,7 +1236,7 @@ Rules:
 | `set_index` | int | 0-based. |
 | `reps` | int? | |
 | `weight_kg` | number? | For `bodyweight` exercises: added load (a belt, a vest); `null` and `0` mean the same there ([T3](#t3)). |
-| `assist_kg` | number? | `bodyweight` exercises only: the support that makes the movement lighter (an assisted pull-up machine, a band), in kg, 0–200. `null` = none. Instead of a negative `weight_kg` ([T4](#t4)). Stored and returned; it changes **no** score, record or load until `SCORING.md` defines how (open). |
+| `assist_kg` | number? | `bodyweight` exercises only: the support that makes the movement lighter (an assisted pull-up machine, a band), in kg, 0–200. `null` = none. Instead of a negative `weight_kg` ([T4](#t4)). The support comes off the moved weight: the set counts `max(0, body weight × bodyweight_factor + weight_kg − assist_kg)` for volume and muscular load, holds **no** personal record and gives no e1RM chart point (model 2026.10.2, `SCORING.md` → Assisted sets). `null` and `0` are a plain bodyweight set. |
 | `rpe` | number? | 1–10, halves allowed. |
 | `duration_sec` | int? | For `time` exercises. |
 | `distance_m` | number? | For `distance` exercises. |
@@ -1432,8 +1432,9 @@ since (`newer_on_server`) is left alone.
   the request's `source`. They feed history (`GET /v1/sessions`, exercise history and the e1RM
   chart), personal records and `last_time` / `target_kg` in `GET /v1/plans/today`, by `started_at`.
 - **Records** are recomputed once per affected exercise after the batch. They are recorded
-  **silently**: no `PR` push, and none for an imported session in the insight cards (open point
-  below).
+  **silently**: no `PR` push and no `pr` insight card for a record an imported session holds,
+  however recent; everywhere else (exercise history, `Session.prs`, `pr_count`) they are records
+  like any other. An assisted set holds none ([T4](#t4)).
 - **No `SESSION_SCORED` and no `PR` push**, for any imported session, however recent. The one
   notification an import may cause is the silent refresh push once its days are scored.
 - **No enrolment moves**, even for a session with the active plan's `plan_day_id`
@@ -1444,9 +1445,13 @@ since (`newer_on_server`) is left alone.
   carry the sessions' strain (the Strain screen lists each as a workout with source `ryft-session`).
   `days_touched` holds: the local day of every session that was `created` or `updated`; the days of
   `unchanged` sessions that an earlier, interrupted attempt queued and scoring has not finished;
-  and the days of the user's other completed sessions that start after the oldest imported session
-  and share an exercise with it (their load is measured against the e1RM history, which the import
-  changed). Only days in the **400 days ending today** are queued (like a sync's window): an older
+  and the days of the user's other completed sessions whose load the import can move: those that
+  start after the oldest imported session, share an exercise with an imported one and start
+  **within 90 days after the newest imported session ends** (a set's load is measured against the
+  best e1RM of the 90 days before its session), and those without their own `bodyweight_kg` that
+  hold a `bodyweight` exercise and start after the oldest imported session with a body weight (they
+  take the last body weight logged before them). An updated session counts with the version it
+  replaced. Only days in the **400 days ending today** are queued (like a sync's window): an older
   session is stored and counts for history and records, but it is not scored, so its
   `muscular_trimp`, `strain`, `volume_kg` and `workout_id` stay `null`.
 - Deleting works as for any session (`DELETE /v1/sessions/{id}`, and the day is rescored);
@@ -1491,7 +1496,7 @@ against the platform as it is. **Changed** marks an answer that differs from the
 | <a id="t1"></a>**T1** | Yes. The endpoint sets `origin: import` and `import_source` = `source` on every session; a per-session `origin` or `import_source` in the request is `400` (unknown field). `Session` and `SessionSummary` gain `origin` (`app` \| `import`, closed, default `app`) and `import_source` (string?, open). `PUT /v1/sessions/{id}` ignores both on input, so an app that echoes a `Session` back is not refused there, and cannot turn an imported session into an app one. **The app must leave both out of its import request** (encode them as absent). |
 | <a id="t2"></a>**T2** | Yes, no `skipped`. A set that is sent was done. In a live session `completed_at: null` still means "planned, not done" and such a set counts for nothing; in an import it is refused (`invalid`), so a skipped set is never stored by accident. |
 | <a id="t3"></a>**T3** | Convention confirmed: `load_type: bodyweight` → `weight_kg` is the added load and `Session.bodyweight_kg` the body weight. `null` and `0` mean the same for a bodyweight set: the effective weight, the records and the e1RM chart already treat them alike. **Changed:** not normalised on write. The value is stored as sent (live sets send `null`, and a read must show what was written), and the T10 comparison treats `null` and `0` as equal for `weight_kg` and `assist_kg`. |
-| <a id="t4"></a>**T4** | `assist_kg` (number? on `Set`, 0–200, bodyweight sets only, not with a `weight_kg` above 0) instead of a negative `weight_kg`, which stays clamped to 0–500. Effective load will be body weight × factor − `assist_kg` (floored at 0); **until `SCORING.md` defines it, the field is stored and returned and changes no number**: assisted sets count as unassisted bodyweight sets, as reps-only imports do today. The same field is accepted by `PUT /v1/sessions/{id}`. Open: below. |
+| <a id="t4"></a>**T4** | `assist_kg` (number? on `Set`, 0–200, bodyweight sets only, not with a `weight_kg` above 0) instead of a negative `weight_kg`, which stays clamped to 0–500. The moved weight is body weight × factor + added load − `assist_kg`, floored at 0 (model 2026.10.2, `SCORING.md` → Assisted sets): the support lowers the set's volume and load, and an assisted set holds no record and gives no e1RM chart point; `null` and `0` are a plain bodyweight set. The same field is accepted by `PUT /v1/sessions/{id}`. |
 | <a id="t5"></a>**T5** | Plans first, then sessions (oldest first); `plan_day_id` / `plan_exercise_id` may point into the request. They are validated. **Changed:** an unknown reference is not `422` for the request but a `rejected` item with `code` `unknown_plan_reference`, because the other items are still good. A session whose plan was rejected needs resending without the references. |
 | <a id="t6"></a>**T6** | Confirmed. Enrolment moves only when a session is completed with `POST /v1/sessions/{id}/complete`, which the import never uses. No `SESSION_SCORED` or `PR` push for `origin: import`: the rescoring event carries no session, and notify refuses imported sessions as well. |
 | <a id="t7"></a>**T7** | Yes. `days_touched` and `scoring.expected_within_sec` as in `SyncResponse` (estimate grows 2 s per queued day, max 300). The days stay in `GET /v1/me/sync` → `pending_days` until scored, and the silent refresh push follows once (`day` = the newest of `days_touched`; at most one per 5 minutes per account, so keep polling as the fallback). `days_touched` may also hold days of the user's other sessions whose load depends on the imported history. |
@@ -1501,14 +1506,14 @@ against the platform as it is. **Changed** marks an answer that differs from the
 | <a id="t11"></a>**T11** | The documentation was wrong, not the builder: the server stores a `bodyweight` plan target's `target_value` as sent and has never used it. Now documented: `null`, or the added load in kg (0–500). **Changed:** 0–500 is validated (`422` / `invalid`; it was unchecked). `PlanTarget.target_kg` stays `null` for `bodyweight`. The import may send `null`. |
 | <a id="t12"></a>**T12** | Yes, today and now documented: `POST /v1/exercises` with an existing custom exercise's id replaces all of its fields, `archived` included, so it is `false` afterwards (`200`). `PATCH` with `archived: false` does the same without resending the rest. |
 
-**Open points** (not decided here, and the contract does not depend on them):
+**Decided since the answers** (model 2026.10.2, `docs/SCORING.md`; no shape changed):
 
-1. *Scoring of assisted sets* (`SCORING.md`, scoring-scientist): effective weight, volume,
-   muscular load and whether an assisted set may produce an e1RM or a `max_*` record. Until then
-   `assist_kg` changes nothing. When it does, a scoring change moves stored numbers: model version
-   bump and a rescore, announced in the changelog.
-2. *The newest imported record as an info card* (scoring-scientist): until decided, imported
-   records never produce a `pr` insight card or a push.
+1. *Scoring of assisted sets*: the support comes off the moved weight, `max(0, body weight ×
+   factor + added − assist_kg)`, for volume and muscular load; an assisted set holds no record and
+   gives no e1RM chart point ([T4](#t4)). Stored numbers moved with the model version
+   (`GET /v1/model`, rescored after the deploy).
+2. *Imported records*: they stay silent, the newest one too: no `pr` insight card and no push for
+   a record an imported session holds; they are records everywhere else.
 
 ### Journal — behaviors and their impact
 
@@ -2423,7 +2428,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-10-26 | **Training import** (answers the app's T1–T12, [Training import: answers to T1–T12](#training-import-answers)): `POST /v1/train/import` (`source` `alpha_progression`; ≤ 5 plans and ≤ 50 sessions in a 1 MiB body; partial success, idempotent by id: per item `created` / `unchanged` / `updated` / `rejected` with a `code`; `days_touched` and `scoring` as in `SyncResponse`). `Session` and `SessionSummary` gain `origin` (`app` \| `import`, closed) and `import_source` (string?); `Set` gains `assist_kg` (number?, 0–200, bodyweight sets); `POST /v1/plans/{id}/enroll` takes an optional `EnrollPost` (`started_at`, `current_week`, `current_day_index`); error `code` `import_in_progress` (`429`, `Retry-After: 10`); feature flag `train.import` (off by default). **Behaviour:** imported sessions are completed sessions at their original times and feed history, e1RM, records and `last_time`; they send no `SESSION_SCORED` or `PR` push, move no enrolment, and are rescored once per request (silent refresh push afterwards); the import needs the consent gate (`403 consent_required`) like a sync; sessions older than 400 days are stored but not scored; `assist_kg` changes no score until `SCORING.md` says how; a `bodyweight` plan target's `target_value` is validated 0–500 (it was unchecked); `POST /v1/exercises` with an archived custom exercise's id un-archives it (documented, unchanged); `PUT /v1/sessions/{id}` ignores `origin` and `import_source`. Old clients ignore every new response field. Swift: `SessionOrigin`, `Session.origin` / `importSource`, `SessionSummary.origin` / `importSource`, `SessionSet.assistKg`, `EnrollPost`, `TrainImportSource`, `TrainImportRequest`, `ImportKind`, `ImportStatus`, `ImportResult`, `TrainImportResponse`, `APIErrorCode.importInProgress`. |
+| 2026-10-26 | **Training import** (answers the app's T1–T12, [Training import: answers to T1–T12](#training-import-answers)): `POST /v1/train/import` (`source` `alpha_progression`; ≤ 5 plans and ≤ 50 sessions in a 1 MiB body; partial success, idempotent by id: per item `created` / `unchanged` / `updated` / `rejected` with a `code`; `days_touched` and `scoring` as in `SyncResponse`). `Session` and `SessionSummary` gain `origin` (`app` \| `import`, closed) and `import_source` (string?); `Set` gains `assist_kg` (number?, 0–200, bodyweight sets); `POST /v1/plans/{id}/enroll` takes an optional `EnrollPost` (`started_at`, `current_week`, `current_day_index`); error `code` `import_in_progress` (`429`, `Retry-After: 10`); feature flag `train.import` (off by default). **Behaviour:** imported sessions are completed sessions at their original times and feed history, e1RM, records and `last_time`; they send no `SESSION_SCORED` or `PR` push, move no enrolment, and are rescored once per request (silent refresh push afterwards); the import needs the consent gate (`403 consent_required`) like a sync; sessions older than 400 days are stored but not scored; model 2026.10.2 (`GET /v1/model`): `assist_kg` comes off a bodyweight set's moved weight (`max(0, body weight × factor + added − assist_kg)`) and an assisted set holds no record and gives no e1RM chart point, a set's load and a `pct_1rm` target use the best e1RM of the last 90 days (a `pct_1rm` target is `null` without a set in them), imported records give no insight card or push, and an import's dependent days end 90 days after its newest session and include later sessions without a body weight that hold a bodyweight exercise; a `bodyweight` plan target's `target_value` is validated 0–500 (it was unchecked); `POST /v1/exercises` with an archived custom exercise's id un-archives it (documented, unchanged); `PUT /v1/sessions/{id}` ignores `origin` and `import_source`. Old clients ignore every new response field. Swift: `SessionOrigin`, `Session.origin` / `importSource`, `SessionSummary.origin` / `importSource`, `SessionSet.assistKg`, `EnrollPost`, `TrainImportSource`, `TrainImportRequest`, `ImportKind`, `ImportStatus`, `ImportResult`, `TrainImportResponse`, `APIErrorCode.importInProgress`. |
 | 2026-10-23 | Errors → NUL: a NUL (U+0000, `\u0000` in JSON) in a string of a request body, value or object key, is `422` with the error shape and no `code`; nothing is stored. It was a `500` where the text reached the database: `POST /v1/feedback` (`message`, the version and device fields, `request_ids`, `diagnostics`), Train names and notes (`PUT /v1/sessions/{id}`, `PUT /v1/plans/{id}`, `POST /v1/exercises`, `PATCH /v1/exercises/{id}`), `POST /v1/behaviors` (`name`, `name_de`) and `POST /v1/me/consent` (`app_version`); fields checked before (`tz`, notification categories, the push `token`, invite codes, `policy_version`, journal times) were and stay `422`. **`POST /v1/sync`** (was `500`) removes the NULs from its strings and accepts the page instead. `%00` or bytes that are not UTF-8 in the path or query are `400` (`GET /v1/exercises?q=` was `500`; an enum parameter such as `kind=%00` was `422`). A raw 0x00 byte in a body stays `400` (not JSON), a NUL in a header the HTTP server's plain-text `400`. Feedback `diagnostics` with bytes that are not UTF-8 or a lone surrogate is stored with U+FFFD in their place, and with a number beyond double precision is `422` (all three were `500`). **Behaviour:** a NUL in push `locale`, which was normalised away (`204`), is now `422`; `diagnostics` numbers are stored as double precision. No shape change; Swift: none. |
 | 2026-10-22 | `DailyScore.calibrating_reason` (`short_history` \| `no_hrv` \| `no_rhr` \| null, closed enum), `baseline_hrv_days` and `baseline_rhr_days` (int?, the two N's behind `baseline_days = min(...)`) added. **Behaviour:** none for existing fields; the new ones are `null` on rows scored before they existed until rescored, and `calibrating_reason` is `null` exactly when `calibrating` is `false` (rule: `DailyScore` > `calibrating_reason`). Old clients ignore them. Swift: `DailyScore.baselineHrvDays` / `baselineRhrDays` / `calibratingReason`, `CalibratingReason`. |
 | 2026-10-21 | `GET /readyz` of ingest no longer answers `503` while the event broker is unreachable (a sync's events wait in the outbox, so syncs keep being accepted). No shape change. |
