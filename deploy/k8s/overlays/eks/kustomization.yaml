@@ -57,15 +57,15 @@ patches:
 # PR to release it: that merge deploys main's head for the group (docs/OPERATIONS.md).
 images:
   - name: ghcr.io/timkrebs/ryft/ingest
-    newTag: "2741bff"
+    newTag: "e41e467"
   - name: ghcr.io/timkrebs/ryft/scoring
-    newTag: "2741bff"
+    newTag: "e41e467"
   - name: ghcr.io/timkrebs/ryft/api
-    newTag: "2741bff"
+    newTag: "e41e467"
   - name: ghcr.io/timkrebs/ryft/migrate
-    newTag: "2741bff"
+    newTag: "e41e467"
   - name: ghcr.io/timkrebs/ryft/notify
-    newTag: "2741bff"
+    newTag: "e41e467"
   # web: this repository's SHA, like the others (D107): the site is built from web/ by the
   # same CI and promoted in the same "deploy: images" PR, but only when web/ differs from
   # this pin (scripts/deploy_targets.sh). A rollback may pin an older ryft-web SHA such as
