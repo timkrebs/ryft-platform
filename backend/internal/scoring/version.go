@@ -15,7 +15,7 @@ import (
 // entry to changelog.json in the same commit, and rescore everyone after the
 // deploy (docs/SCORING.md → Model version, D80). Scoring writes it on every
 // daily_scores row and workout.
-const ModelVersion = "2026.10.1"
+const ModelVersion = "2026.10.2"
 
 //go:embed changelog.json
 var changelogJSON []byte

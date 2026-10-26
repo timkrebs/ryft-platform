@@ -1,5 +1,12 @@
 [
   {
+    "version": "2026.10.2",
+    "date": "2026-10-26",
+    "summary_en": "Strength sessions. A set's intensity is now measured against your best estimated one-rep max of the 90 days before the session, its own sets always included; it was your best ever, so a peak from long ago, for example in history imported from another app, made today's sessions count as light. A bodyweight set with assistance (a machine or a band) counts with the assistance taken off the weight you moved, and it sets no records. A set logged after the session's end time still counts for that session.",
+    "summary_de": "Krafteinheiten. Die Intensität eines Satzes wird jetzt an deinem besten geschätzten 1RM der 90 Tage vor der Einheit gemessen, die Sätze der Einheit selbst immer eingeschlossen; bisher war es dein Bestwert überhaupt, sodass ein lange zurückliegender Höchstwert, etwa aus einer aus einer anderen App importierten Historie, heutige Einheiten als leicht zählen ließ. Ein Körpergewichtssatz mit Unterstützung (Maschine oder Band) zählt mit dem bewegten Gewicht abzüglich der Unterstützung und stellt keine Rekorde auf. Ein Satz, der nach dem Ende der Einheit eingetragen ist, zählt trotzdem für diese Einheit.",
+    "affects": ["readiness", "recovery", "sleep", "sleep_quality", "strain", "volume_kg"]
+  },
+  {
     "version": "2026.10.1",
     "date": "2026-10-20",
     "summary_en": "The model at the start of the beta. Recovery compares last night's HRV, resting heart rate and breathing with your own last 30 days, plus sleep. Strain is heart-rate load on a 0–21 scale, with logged strength sessions added as muscular load. Sleep need is your baseline (learned weekly) plus strain and debt, minus naps; sleep quality weighs performance, efficiency and deep + REM sleep. Overlapping sources count once.",

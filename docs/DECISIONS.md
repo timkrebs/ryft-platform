@@ -2579,6 +2579,117 @@ sent, and whether a second account shares its phone.
   `merge_test` now hold an imported session, an assisted set, a record, an imported plan and a held lease.
   Export is built from `GET /v1/sessions*`, which carry the new fields. No retention changes.
 
+## D134 — Assisted sets: the support comes off the moved weight; they hold no record (TI-4, open point 1)
+
+- **Why (2026-10-26):** D127 stored `assist_kg` and left its meaning to scoring; until now an
+  assisted pull-up counted as an unassisted one, overstating its volume and, worse, giving its
+  reps the `max_reps` record. The import makes these sets common (assistance machines and bands
+  are a standard entry in training apps).
+- **Decision:** a `bodyweight` set's weight is `max(0, body weight × bodyweight_factor + added −
+  assist_kg)`: the support acts on the moving body, so it comes off kilogram for kilogram. Volume
+  and muscular load follow with no special case (`reps × (weight / e1RM)²` is relative to the
+  athlete). An assisted set counts towards the e1RM reference with that weight (a user who only
+  does assisted pull-ups needs one; an unassisted set outweighs it), gives no e1RM chart point
+  (as every unloaded bodyweight set) and **holds no record**. `assist_kg` null or 0 is exactly
+  the old model; a weight exercise's `assist_kg` (refused by validation) is ignored. Calibration
+  in `SCORING.md` → Assisted sets (3 × 8 with 30 kg: TRIMP 3.9 alone, 1.8 a week after 5
+  unassisted reps; volume 1200 instead of 1920 kg).
+- **Not chosen:** `(body weight − assist) × factor` (the support does not act on the part of the
+  body that stays put); a `min_assist` record (a new kind in a closed enum, for one exercise
+  family); leaving assisted sets out of the e1RM reference (an assisted-only exercise would have
+  no load at all).
+- **Consequences:** model **2026.10.2** with D135 and D138. Nothing stored before migration 0028
+  has an `assist_kg`, so D134 alone moves no stored number; the bump is D135's. The built-in
+  `assisted-dip` is a `weight` machine exercise whose number the machine shows as support, so a
+  higher number there is *less* work: the app maps an imported assisted dip or pull-up to `dip` /
+  `pull-up` with `assist_kg`. Re-modelling `assisted-dip` itself (load type, a data migration of
+  its logged sets) is a separate change with the app.
+
+## D135 — The e1RM reference is the last 90 days; an import moves the days that depend on it (TI-4, open point 4)
+
+- **Why (2026-10-26):** D59 measured every set against the best e1RM ever logged. With RYFT's own
+  few weeks of history that was the recent best. An import brings years: a lifter whose squat
+  peaked two years ago would see every later squat session's load drop by about half (5 × 5 at
+  100 kg: strain 6.9 → 3.9) until the old peak is beaten. Strength fades within weeks to months
+  without training (Mujika & Padilla 2000; Bosquet et al. 2013), so an old best is not today's
+  capacity. Open point 4 asked whether queueing later sessions' days (D128) is right and enough.
+- **Decision:**
+  - The reference is the best e1RM over the completed working sets in the **90 days** before the
+    session's history ends, its own sets always included (`E1RMWindow`, `E1RMsAsOf`). The history
+    ends at `ended_at` or at the session's last completed set, whichever is later
+    (`HistoryUntil`; D138). Records stay all-time. `pct_1rm` targets use the same 90-day e1RM (none
+    without a set in the window), so a plan never prescribes 80 % of a max from long ago.
+  - Queueing the dependent days is right: a stored load must equal the rule applied to the stored
+    history, or it moves later at an unexplained time (a rescore, an edit). "Stored load is final"
+    would make the number depend on the order data arrived in. It was **not enough**: a later
+    session without its own `bodyweight_kg` takes the last one logged before it, which an imported
+    session can now be. The scope is `scoring.DependentScope` (`ScopeOf` the created and updated
+    sessions plus the versions they replaced; `Covers`): later sessions sharing an exercise that
+    start before the newest changed session's end + 90 days, or later sessions without a body
+    weight that hold a bodyweight exercise, after the oldest changed session with one. The store's
+    query may return a superset.
+- **Not chosen:** a decay (a weighted best: opaque, one more constant to fit, no published curve to
+  take it from); 180 or 365 days (an old peak still halves loads for that long); a window on the
+  records (they are records); "stored load is final once scored".
+- **Consequences:** model **2026.10.2**; `scripts/rescore_all.sh` after the deploy. In the beta it
+  moves only sessions with sets more than 90 days before them (none expected: the beta began on
+  2026-10-20) and sessions with a set after `ended_at`. The dependent days of an import end 90
+  days after its newest session instead of reaching today. `store.DependentDays` (TI-2) covers the
+  shared exercise without the 90-day bound (a correct superset) but not the body weight; the
+  api's `pct_1rm` target still calls `BestE1RMs` and must call `E1RMsAsOf(…, now, uuid.Nil)` in
+  the same release (both: backend).
+
+## D136 — Imported records stay silent, also the newest one (TI-4, open point 2)
+
+- **Decision:** no `pr` card and no push for a record held by an imported session, however recent;
+  no "newest imported record" card. `store.PRsSince` leaves them out (TI-2), so the rule needs no
+  column and no state. They remain records everywhere else.
+- **Why:** an imported record is history the user already saw in the other app, not news; and an
+  import arrives in batches (≤ 50 sessions), so a record shown after one batch can move to an
+  older session in the next, which is a card that contradicts itself within a minute. A "once"
+  card needs a stored "shown" mark, for a summary the app's import screen can give from the file
+  it parsed.
+- **Consequences:** an import can take a record (and its card) away from a session logged in
+  RYFT; that is correct. Pushes are already impossible (no `session.scored` for an import, D125).
+
+## D137 — Days with only imported sessions are logged-session days; nothing more feeds on them (TI-4, open point 3)
+
+- **Decision:** such a day is scored like a day with only a logged session: strain from the muscular
+  load alone (a floor), `strength_min`, `volume_kg`, a `ryft-session` workout, no recovery, no
+  readiness, state `calibrating`. Imported strain feeds what a logged session's feeds: the next
+  day's sleep need and readiness penalty, `strength_week`, the learned sleep baseline's qualifier,
+  and `calibrating_reason`'s `W`. There is no strain baseline or rolling strain load in the model
+  to feed; HRV, resting-HR and breathing baselines cannot be crowded (one row per day; imported
+  days are days without a night). Sessions older than the 400-day window stay stored, not scored.
+- **Why:** they are the user's training, and the inputs that read strain are about training, not
+  about the sensor. Treating them differently would make a day's numbers depend on which app the
+  set was typed into.
+- **Not chosen:** keeping import-only days out of `W` (it needs a per-day origin in `daily_scores`
+  for a reason that is then true of the account anyway: the first synced day after a long import
+  can say `no_hrv`, and a first night with HRV is still `short_history`); de-duplicating a
+  session logged both in RYFT and in the file (both count today, strain 11 twice is 16): the app's
+  import skips a file workout that overlaps a RYFT session and says so; a scoring rule follows
+  only if the beta shows such pairs.
+- **Consequences:** the walk after an import crosses every stored row from the oldest imported day
+  on (≤ 400 days and the dependent days, seconds to a minute per request). A future rolling strain
+  load (acute/chronic) must decide how days without heart rate count before it uses them.
+
+## D138 — An assumed duration needs no contract flag; the load no longer reads `ended_at` (TI-4, open point 5)
+
+- **Decision:** no flag now. Strain, muscular load, volume, e1RM and records do not depend on a
+  session's duration: a set's load comes from its reps and weight, and the history a session is
+  measured against ends at its last set when that is after `ended_at` (`HistoryUntil`, part of
+  model 2026.10.2; before, a top set stamped after an assumed end was cut off its own session's
+  e1RM: 30.2 instead of 28.1 in the calibration). The assumed 60 minutes show only as minutes
+  (`strength_min` and its trend, `strength_week.minutes`, `duration_min`) and in the session's
+  workout window (matching a HealthKit workout by half an overlap; the created workout's span).
+- **Why:** a flag would buy a `null` instead of 60 in a display total and its trend; that is worth
+  a contract field only if many files lack durations, which only the app can measure.
+- **Consequences:** the app derives `ended_at` from the last set's time when the file has set times,
+  keeps sets within `[started_at, ended_at]`, and reports how often it assumes. If it is most
+  imports, an optional `duration_assumed` on the import's session lets scoring leave those minutes
+  out.
+
 ## D140 — The import handler's own calls: order, budget, a resumed request's dependent days (TI-3)
 
 - **Consent before the body.** API.md says both gates are checked "before anything in the body is

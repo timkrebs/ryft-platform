@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,60 +11,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/model"
-	"github.com/timkrebs/ryft/internal/scoring"
-	"github.com/timkrebs/ryft/internal/store"
 )
 
 // The training import's changes to the routes beside it (design §9, §10, T3, T4, T8, T11, T12).
-
-// ---- pure: assist_kg changes no number yet (D127), null and 0 alike for bodyweight (T3) --
-
-// Until SCORING.md defines the load of an assisted set (open point 1, the scoring
-// branch), assist_kg changes no score, record or e1RM: an assisted set scores exactly
-// like the same set without it. The scoring change that gives it a meaning replaces this
-// test together with the contract line it pins.
-func TestAssistKGChangesNoScoreYet(t *testing.T) {
-	pullUp := model.Exercise{ID: uuid.New(), Kind: model.KindBodyweight, LoadType: model.LoadBodyweight, BodyweightFactor: 1,
-		LoadFactor: 0.32, PrimaryMuscles: []string{"lats"}}
-	at := time.Date(2026, 6, 8, 17, 20, 0, 0, time.UTC)
-	set := func(weight, assist *float64) model.Set {
-		reps := 6
-		return model.Set{ID: uuid.MustParse("c3b7e194-5a08-5d2f-b1c6-8f4a0d9e2b57"), Reps: &reps, WeightKG: weight, AssistKG: assist,
-			CompletedAt: &at, UpdatedAt: at}
-	}
-	session := func(st model.Set) model.Session {
-		return model.Session{ID: uuid.New(), StartedAt: at.Add(-20 * time.Minute), Status: model.SessionCompleted,
-			Exercises: []model.SessionExercise{{ID: uuid.New(), ExerciseID: pullUp.ID, Sets: []model.Set{st}}}}
-	}
-	exs := map[uuid.UUID]model.Exercise{pullUp.ID: pullUp}
-	logged := func(st model.Set) []store.LoggedSet {
-		return []store.LoggedSet{{SessionID: uuid.Nil, ExerciseID: pullUp.ID, SessionStart: at, Set: st}}
-	}
-	plain := set(nil, nil)
-	for name, other := range map[string]model.Set{
-		"assisted (assist_kg 20)":     set(nil, ptrTo(20.0)),
-		"assist_kg 0":                 set(nil, ptrTo(0.0)),
-		"weight_kg 0 instead of null": set(ptrTo(0.0), nil), // T3: null and 0 are the same added load
-	} {
-		if a, b := scoring.LoadOfSession(session(plain), exs, nil, 80), scoring.LoadOfSession(session(other), exs, nil, 80); !reflect.DeepEqual(a, b) {
-			t.Errorf("%s: load %+v, without %+v", name, b, a)
-		}
-		if a, b := scoring.SetLoad(plain, 0, pullUp, 80), scoring.SetLoad(other, 0, pullUp, 80); a != b {
-			t.Errorf("%s: set load %v, without %v", name, b, a)
-		}
-		wa, oka := scoring.EffectiveWeight(pullUp, plain, 80)
-		wb, okb := scoring.EffectiveWeight(pullUp, other, 80)
-		if wa != wb || oka != okb {
-			t.Errorf("%s: effective weight %v/%v, without %v/%v", name, wb, okb, wa, oka)
-		}
-		if a, b := scoring.PersonalRecords(logged(plain), pullUp), scoring.PersonalRecords(logged(other), pullUp); !reflect.DeepEqual(a, b) {
-			t.Errorf("%s: records %+v, without %+v", name, b, a)
-		}
-		if a, b := scoring.BestE1RMs(logged(plain), exs, 80), scoring.BestE1RMs(logged(other), exs, 80); !reflect.DeepEqual(a, b) {
-			t.Errorf("%s: e1RM %+v, without %+v", name, b, a)
-		}
-	}
-}
 
 // ---- PUT /v1/sessions/{id}: assist_kg and origin (§9) -------------------------------------
 
