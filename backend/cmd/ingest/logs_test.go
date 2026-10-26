@@ -195,9 +195,9 @@ func testPool(t *testing.T) *pgxpool.Pool {
 }
 
 // A sync stored in Postgres logs its counts and the device id; a sync that
-// fails at its samples, its night or its run (a NUL in the source, which
-// Postgres refuses) logs which step failed and the database's reason, never
-// the source or a value.
+// fails at its samples, its night or its run (a source Postgres refuses: a
+// check this test adds, since a NUL is a 422 before the database) logs which
+// step failed and the database's reason, never the source or a value.
 func TestSyncLogsCountsOnly(t *testing.T) {
 	pool := testPool(t)
 	st := store.New(pool)
@@ -219,9 +219,15 @@ func TestSyncLogsCountsOnly(t *testing.T) {
 	if err := json.Unmarshal(post(t, srv, body, http.StatusOK), &answer); err != nil || len(answer.Days) == 0 {
 		t.Fatalf("the sync names the days it touched: %v %v", answer, err)
 	}
-	nul := `Tims Apple Watch\u0000`
+	refused := "Tims Apple Watch (refused)"
+	for _, table := range []string{"samples", "sleep_segments", "workouts"} {
+		if _, err := pool.Exec(context.Background(),
+			`ALTER TABLE `+table+` ADD CONSTRAINT test_refused CHECK (source <> '`+refused+`')`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, part := range []string{"samples", "sleep", "workouts"} {
-		post(t, srv, syncBody(part, nul, false), http.StatusInternalServerError)
+		post(t, srv, syncBody(part, refused, false), http.StatusInternalServerError)
 	}
 
 	lines := checkSyncLog(t, buf.String(), syncTexts, syncNumbers)

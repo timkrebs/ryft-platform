@@ -180,7 +180,9 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req model.SyncRequest
-	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodySync); err != nil {
+	// NULs removed, not refused: the app does not retry a 422, and its strings come
+	// from HealthKit and the device, so one NUL would stall that stream for good.
+	if err := httpx.ReadJSONStripNUL(w, r, &req, httpx.MaxBodySync); err != nil {
 		httpx.WriteDecodeError(w, err)
 		return
 	}
