@@ -31,16 +31,41 @@ no HRV source; days are re-scored when their history changes (#29); `DailyScore`
 the logs hold no health values any more (#35).
 The **training import** (2026-10-26, PR #59, D124–D141, `docs/work/2026-10-26-train-import/`):
 `POST /v1/train/import` with scoring model 2026.10.2 and migration 0028, reviewed, **not yet
-deployed**. Your steps, in order:
-1. Before the merge, the read-only T11 check on production must return 0:
+deployed**. Your steps, in order (cluster: `--context ryft-prod-euc1`, which is the current context on
+this machine; check with `kubectl config current-context`):
+1. **T11 check, read-only, before the merge.** As the database owner in the Supabase SQL editor:
    `SELECT count(*) FROM plan_exercises WHERE target_kind = 'bodyweight' AND (target_value < 0 OR target_value > 500);`
-2. Merge #59 and its promote PR; migrate applies 0028 in the PreSync hook.
-3. Run `scripts/rescore_all.sh` (model 2026.10.2).
-4. Leave the flag `train.import` off until the app ships the import, then `PUT /v1/admin/flags/train.import`.
-5. With that app release, publish the privacy text 2026-10-26 (PR #61, draft: flip both pages to
-   `status: published`, then merge). Every account consents again.
-Open (D141): a server-held import namespace for merged accounts, a `score_queue` sweeper, the
-api's shutdown drain against the import's 50 s budget.
+   Worked = `0`. Anything else: stop; those plans would fail the new validation on their next save.
+2. **Merge #59** (`gh pr checks 59` green first). CI builds the images and opens a promote PR
+   (`deploy/<7 hex>`) that pins `overlays/eks`; it merges itself once its checks pass
+   (`gh pr list --state open --search 'head:deploy/'`; open over 2 h: the daily deploy watch reports it,
+   merge it by hand).
+3. **Argo CD syncs** (2–6 min after the pin merges, about 15 min for the release):
+   `kubectl --context ryft-prod-euc1 -n argocd get applications` until all are Synced and Healthy.
+   The migrate PreSync hook applies `0028_train_import.sql` (additive; a failed migration fails the sync
+   and nothing rolls: `argocd app get ryft-platform` names the step; the PostSync smoke runs last).
+   Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
+   (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
+   (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
+4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
+   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+   no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
+5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
+   allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
+   Feature flags). Kill switch: `{"enabled": false, "rollout_pct": 100}`.
+6. **Privacy text with the app release, not before** (PR #61, draft): flip both pages to
+   `status: published`, then merge. A draft version on `main` blocks every deploy PR. Every account
+   consents again (`consent_required` rises; expected).
+7. **The vault PR (`infra/vault-import-service`, an import service of the wearable data) does not depend
+   on #59**: land it before or after. Its Terraform is already applied; the merge deploys nothing (its
+   namespace is not an Argo app). Run `cd infra/vault && terraform plan` first: expect no change.
+
+Rollback of 2–4: re-pin the previous images (OPERATIONS → Deploy and roll back); 0028 is additive and stays.
+
+Open (D141, not built): a server-held import namespace for merged accounts (until then the app must not
+import the same file again after a merge); a `score_queue` sweeper (days that stay queued if a request
+dies between queueing and the rescore); the api's shutdown drain against the import's 50 s budget (a
+rolling update can cut an import in flight; the app resends and the stored items come back `unchanged`).
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
