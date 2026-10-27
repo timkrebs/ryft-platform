@@ -57,21 +57,21 @@ patches:
 # PR to release it: that merge deploys main's head for the group (docs/OPERATIONS.md).
 images:
   - name: ghcr.io/timkrebs/ryft/ingest
-    newTag: "e41e467"
+    newTag: "b94ca6a"
   - name: ghcr.io/timkrebs/ryft/scoring
-    newTag: "e41e467"
+    newTag: "b94ca6a"
   - name: ghcr.io/timkrebs/ryft/api
-    newTag: "e41e467"
+    newTag: "b94ca6a"
   - name: ghcr.io/timkrebs/ryft/migrate
-    newTag: "e41e467"
+    newTag: "b94ca6a"
   - name: ghcr.io/timkrebs/ryft/notify
-    newTag: "e41e467"
+    newTag: "b94ca6a"
   # web: this repository's SHA, like the others (D107): the site is built from web/ by the
   # same CI and promoted in the same "deploy: images" PR, but only when web/ differs from
   # this pin (scripts/deploy_targets.sh). A rollback may pin an older ryft-web SHA such as
   # f437747 (the last image built in the archived ryft-web repository); it is not a commit here.
   - name: ghcr.io/timkrebs/ryft/web
-    newTag: "7b4886f"
+    newTag: "b94ca6a"
 
 # The privacy policy version in force on EKS (D78, F1): the base's version
 # (deploy/k8s/base/{api,ingest}/config.env) once the web image that carries its page is
