@@ -29,6 +29,18 @@ every file, kustomization and Argo CD app (#31, #38). The app's **calibrating re
 no HRV source; days are re-scored when their history changes (#29); `DailyScore` carries
 `calibrating_reason` and per-signal counts (#30, migration 0027, last 30 days rescored);
 the logs hold no health values any more (#35).
+The **training import** (2026-10-26, PR #59, D124–D141, `docs/work/2026-10-26-train-import/`):
+`POST /v1/train/import` with scoring model 2026.10.2 and migration 0028, reviewed, **not yet
+deployed**. Your steps, in order:
+1. Before the merge, the read-only T11 check on production must return 0:
+   `SELECT count(*) FROM plan_exercises WHERE target_kind = 'bodyweight' AND (target_value < 0 OR target_value > 500);`
+2. Merge #59 and its promote PR; migrate applies 0028 in the PreSync hook.
+3. Run `scripts/rescore_all.sh` (model 2026.10.2).
+4. Leave the flag `train.import` off until the app ships the import, then `PUT /v1/admin/flags/train.import`.
+5. With that app release, publish the privacy text 2026-10-26 (PR #61, draft: flip both pages to
+   `status: published`, then merge). Every account consents again.
+Open (D141): a server-held import namespace for merged accounts, a `score_queue` sweeper, the
+api's shutdown drain against the import's 50 s budget.
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -224,6 +236,7 @@ per node) and R1 waits for a bigger node group.
 | Merge | `POST /v1/admin/users/{from}/merge-into/{to}` with `dry_run`: one transaction, the kept account's rows win, per-table moved/dropped, consent and access copied if missing, rescored over the moved days, then `from` deleted like `DELETE /v1/me`; `409` if from has more history (`force`) | migration 0024, `store/merge.go`, D90 |
 | Sync state | `X-RYFT-Device-ID` and `User.account_hint` (another account on this device); `GET /v1/me/sync`; `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring` (queued days, `expected_within_sec`); unknown types and out-of-window records ignored and counted instead of `422`; identical re-sends not counted | migration 0025 (`score_queue`), `cmd/api/syncstatus.go`, D91 |
 | Sync to score | `ryft_sync_to_score_seconds` per queued day, alert `SyncToScoreSlow` (p95 > 2 min, 15 min) and a dashboard panel; a silent refresh push (`ryft.refresh`) after every sync's scored days, one per account every 5 minutes, collapsed per day; event handlers recover from a panic (`ryft_event_handler_panics_total`) | `cmd/scoring`, `internal/notify`, D92 |
+| Training import | `POST /v1/train/import`: plans and sessions from another app's export, per-item results, idempotent by per-account ids, the app's edits win (`newer_on_server`), one rescore per request, no pushes, silent records; flag `train.import` (off), its own rate class and a lease per user; model 2026.10.2 (e1RM reference over 90 days, assisted sets) | `cmd/api/train_import.go`, `internal/train/import.go`, migration 0028 |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
