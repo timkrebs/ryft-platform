@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -29,17 +30,9 @@ func betaGate(mode config.Mode, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if userOf(r).BetaAccess || gateOpen[r.Method+" "+r.URL.Path] {
+		if gateOpen[r.Method+" "+r.URL.Path] || gate.Invite(w, r, mode, userOf(r), "api") {
 			next.ServeHTTP(w, r)
-			return
 		}
-		metrics.GateRefusals.WithLabelValues(model.CodeInviteRequired, string(mode), "api").Inc()
-		if mode == config.ModeWarn {
-			w.Header().Add(httpx.GateHeader, model.CodeInviteRequired)
-			next.ServeHTTP(w, r)
-			return
-		}
-		httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeInviteRequired, "this beta needs an invite code")
 	})
 }
 

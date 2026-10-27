@@ -198,6 +198,7 @@ type SessionNotice struct {
 	EndedAt       *time.Time
 	Strain        *float64
 	MuscularTRIMP *float64
+	Origin        string // "app" or "import": notify sends nothing for an imported session (D125)
 	PRs           []PRNotice
 }
 
@@ -211,8 +212,8 @@ type PRNotice struct {
 // SessionNotice loads a session for its notification; ErrNotFound when it is gone.
 func (s *Store) SessionNotice(ctx context.Context, userID, sessionID uuid.UUID) (SessionNotice, error) {
 	var n SessionNotice
-	err := s.pool.QueryRow(ctx, `SELECT title, status, ended_at, strain, muscular_trimp FROM sessions
-		WHERE user_id=$1 AND id=$2`, userID, sessionID).Scan(&n.Title, &n.Status, &n.EndedAt, &n.Strain, &n.MuscularTRIMP)
+	err := s.pool.QueryRow(ctx, `SELECT title, status, ended_at, strain, muscular_trimp, origin FROM sessions
+		WHERE user_id=$1 AND id=$2`, userID, sessionID).Scan(&n.Title, &n.Status, &n.EndedAt, &n.Strain, &n.MuscularTRIMP, &n.Origin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return n, ErrNotFound
 	}

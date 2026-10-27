@@ -20,7 +20,10 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool  *pgxpool.Pool
+	rules ImportRules // the import's comparisons (WithImportRules)
+}
 
 // ErrNotFound is returned by single-row reads when the row does not exist.
 var ErrNotFound = errors.New("not found")

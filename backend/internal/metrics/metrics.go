@@ -111,7 +111,7 @@ var (
 	// Push (notify).
 	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_push_notifications_total",
-		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), stale, no_token, unconfigured (no APNs key).",
+		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key).",
 	}, []string{"category", "result"})
 	APNsResponses = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_apns_responses_total",
@@ -125,7 +125,7 @@ var (
 	// Beta (api, ingest).
 	GateRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_gate_refusals_total",
-		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (sync without consent); mode on = refused with 403, warn = served with X-RYFT-Gate.",
+		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (a sync or a training import without consent; in scoring a day); mode on = refused with 403, warn = served with X-RYFT-Gate.",
 	}, []string{"code", "mode", "service"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
@@ -200,6 +200,23 @@ var (
 		Name: "ryft_train_prs_total",
 		Help: "Personal records set by a completed session, by kind (e1rm, max_weight, max_reps, max_volume).",
 	}, []string{"kind"})
+	// The training import (api, POST /v1/train/import, D124).
+	TrainImports = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_imports_total",
+		Help: "POST /v1/train/import requests past authentication, by result: ok (200, also when every item was rejected), " +
+			"invalid (400/413/422 or 403 consent_required: nothing processed), disabled (403 import_not_enabled: the flag " +
+			"train.import is off for the account), busy (429 import_in_progress), " +
+			"timeout (503 after the 50 s budget), error (503: the database failed; what was stored stays).",
+	}, []string{"result"})
+	TrainImportItems = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_import_items_total",
+		Help: "Items of the training import, by kind (plan, session) and status (created, unchanged, updated, rejected).",
+	}, []string{"kind", "status"})
+	TrainImportSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ryft_train_import_seconds",
+		Help:    "Duration of a POST /v1/train/import that took the lease: the items, the records and the queueing (its budget is 50 s).",
+		Buckets: []float64{.1, .25, .5, 1, 2, 5, 10, 20, 30, 50},
+	})
 )
 
 // Handler serves the default registry (these metrics plus go_* and process_*).

@@ -87,3 +87,23 @@ func TestEvaluateAndKeys(t *testing.T) {
 		}
 	}
 }
+
+// Enabled is On for the flag with that key; a flag that does not exist is off (an operator
+// who deletes train.import turns the import off, not on).
+func TestEnabled(t *testing.T) {
+	tester, other := uuid.New(), uuid.New()
+	all := []model.FeatureFlag{
+		{Key: "train.import", Enabled: true, RolloutPct: 0, AllowUserIDs: []uuid.UUID{tester}},
+		{Key: "push.enabled", Enabled: true, RolloutPct: 100},
+	}
+	if !Enabled(all, "train.import", tester) || Enabled(all, "train.import", other) {
+		t.Fatal("the allow-list decides at 0 %")
+	}
+	if Enabled(all, "coach.enabled", tester) || Enabled(nil, "train.import", tester) {
+		t.Fatal("a missing flag is off")
+	}
+	all[0].Enabled = false
+	if Enabled(all, "train.import", tester) {
+		t.Fatal("disabled is off, the allow-list too")
+	}
+}

@@ -158,6 +158,71 @@ func TestEngineScoresStrengthSessions(t *testing.T) {
 	}
 }
 
+// D135 and D138 through the day pass: a session is scored against the best
+// e1RM of the 90 days before it, so a peak 200 days earlier (an imported one,
+// say) leaves it alone, and its own sets count even when stamped after
+// ended_at. The numbers are strength_import_test.go's: 32.0 (not 16.3) and
+// 28.1 (not 30.2). A day with nothing but the session has a strain, no
+// recovery and no readiness (D137).
+func TestEngineScoresAgainstTheE1RMWindow(t *testing.T) {
+	st, engine, user := engineStore(t)
+	ctx := context.Background()
+	lib := library(t)
+	sq := lib["back-squat"]
+	at := func(days int) *sessionBuilder {
+		b := newBuilder()
+		b.s.StartedAt = start.AddDate(0, 0, days)
+		b.clock = b.s.StartedAt
+		return b
+	}
+	save := func(b *sessionBuilder, end time.Time) {
+		t.Helper()
+		s := b.s
+		s.Status = model.SessionInProgress
+		if _, err := st.SaveSession(ctx, user, s); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CompleteSession(ctx, user, s.ID, store.Completion{EndedAt: end}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peak := at(-200).add(sq, 1, 5, kg(140))
+	save(peak, peak.clock.Add(time.Minute))
+	cur := at(0).add(sq, 5, 5, kg(100))
+	save(cur, start.Add(60*time.Minute))
+	if err := engine.ComputeDay(ctx, user, "2026-10-18"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Session(ctx, user, cur.s.ID)
+	if err != nil || got.MuscularTRIMP == nil || *got.MuscularTRIMP != 32.0 || *got.Strain != 6.9 {
+		t.Fatalf("scored against the 90-day best, not the old peak: %+v %v", got, err)
+	}
+	day, _ := st.DailyScores(ctx, user, "2026-10-18", "2026-10-18")
+	if len(day) != 1 || day[0].Strain == nil || *day[0].Strain != 6.9 || day[0].Recovery != nil || day[0].Readiness != nil ||
+		day[0].State != model.StateCalibrating {
+		t.Fatalf("a session-only day: %+v", day)
+	}
+
+	// Two days later: 4 × 5 at 100 kg, then a top set of 3 at 110 kg at +70 min,
+	// in a session that says it ended at +60 (an assumed hour).
+	late := at(2).add(sq, 4, 5, kg(100))
+	top := late.s.StartedAt.Add(70 * time.Minute)
+	three := 3
+	late.s.Exercises[0].Sets = append(late.s.Exercises[0].Sets,
+		model.Set{ID: uuid.New(), SetIndex: 4, Reps: &three, WeightKG: kg(110), CompletedAt: &top, UpdatedAt: top})
+	save(late, late.s.StartedAt.Add(60*time.Minute))
+	if err := engine.ComputeDay(ctx, user, "2026-10-20"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.Session(ctx, user, late.s.ID)
+	if got.MuscularTRIMP == nil || *got.MuscularTRIMP != 28.1 {
+		t.Fatalf("the top set after ended_at is part of the session's e1RM: %v", got.MuscularTRIMP)
+	}
+	if day, _ := st.DailyScores(ctx, user, "2026-10-20", "2026-10-20"); len(day) != 1 || day[0].StrengthMin == nil || *day[0].StrengthMin != 60 {
+		t.Fatalf("minutes still come from ended_at: %+v", day)
+	}
+}
+
 // D78: after a withdrawal nothing is scored, neither one day nor a range.
 func TestEngineSkipsWithoutConsent(t *testing.T) {
 	st, engine, user := engineStore(t)

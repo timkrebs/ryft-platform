@@ -695,7 +695,17 @@ type AdminSource struct {
 const (
 	CodeInviteRequired  = "invite_required"
 	CodeConsentRequired = "consent_required"
+	// CodeImportInProgress: POST /v1/train/import while another import of the account
+	// runs (429, Retry-After: 10; D129).
+	CodeImportInProgress = "import_in_progress"
+	// CodeImportNotEnabled: POST /v1/train/import for an account the flag train.import is off
+	// for (403, S4). The app hides the import then; the server enforces it as well.
+	CodeImportNotEnabled = "import_not_enabled"
 )
+
+// FlagTrainImport is the training import's feature flag (GET /v1/config), which POST
+// /v1/train/import checks itself too.
+const FlagTrainImport = "train.import"
 
 type UserPatch struct {
 	TZ    *string `json:"tz,omitempty"`
@@ -967,6 +977,14 @@ type RecomputeRequest struct {
 	To   string `json:"to"`
 }
 
+// IngestedEvent reasons that scoring and notify branch on (the others: "recompute",
+// "merge", "session"). Both are an explicit list of days, and both end in the silent
+// refresh push once scored; an import never carries a session id (D125, D128).
+const (
+	ReasonSync   = "sync"
+	ReasonImport = "import"
+)
+
 // IngestedEvent is published (routing key ingested) after a successful sync.
 type IngestedEvent struct {
 	UserID uuid.UUID `json:"user_id"` // the event is always scoped to one user
@@ -1039,6 +1057,10 @@ const (
 	SessionInProgress = "in_progress"
 	SessionCompleted  = "completed"
 	SessionDiscarded  = "discarded"
+
+	// Where a session came from (D125).
+	OriginApp    = "app"
+	OriginImport = "import"
 
 	EnrollmentActive    = "active"
 	EnrollmentPaused    = "paused"
@@ -1121,6 +1143,7 @@ type Set struct {
 	SetIndex    int        `json:"set_index"`
 	Reps        *int       `json:"reps"`
 	WeightKG    *float64   `json:"weight_kg"`
+	AssistKG    *float64   `json:"assist_kg"` // bodyweight sets: the support, 0-200; comes off the moved weight, no record (D134)
 	RPE         *float64   `json:"rpe"`
 	DurationSec *int       `json:"duration_sec"`
 	DistanceM   *float64   `json:"distance_m"`
@@ -1158,6 +1181,13 @@ type Session struct {
 	Exercises     []SessionExercise `json:"exercises"`
 	PRs           []PR              `json:"prs"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	// Origin is "app" or "import"; ImportSource is set exactly for "import" (D125). Read-only:
+	// the server owns both and PUT /v1/sessions/{id} ignores them.
+	Origin       string  `json:"origin"`
+	ImportSource *string `json:"import_source"`
+	// ImportedAt is when the training import last wrote the session (nil for the app's): an
+	// UpdatedAt after it means the app changed it since (D126). Server-only, never serialised.
+	ImportedAt *time.Time `json:"-"`
 }
 
 // SessionSummary is one row of GET /v1/sessions and DayStrain.sessions.
@@ -1176,6 +1206,8 @@ type SessionSummary struct {
 	MuscularTRIMP *float64   `json:"muscular_trimp"`
 	Strain        *float64   `json:"strain"`
 	PRCount       int        `json:"pr_count"`
+	Origin        string     `json:"origin"`
+	ImportSource  *string    `json:"import_source"`
 }
 
 // SessionComplete is the body of POST /v1/sessions/{id}/complete.
@@ -1244,6 +1276,10 @@ type Plan struct {
 	IsBuiltin   bool         `json:"is_builtin"`
 	Archived    bool         `json:"archived"`
 	Days        []PlanDay    `json:"days"`
+	// UpdatedAt and ImportedAt (nil unless the training import wrote it) say whether the app
+	// changed an imported plan since (D126). Server-only, never serialised.
+	UpdatedAt  time.Time  `json:"-"`
+	ImportedAt *time.Time `json:"-"`
 }
 
 type PlanSummary struct {
@@ -1267,6 +1303,19 @@ type Enrollment struct {
 	CurrentWeek     int       `json:"current_week"`      // 1-based
 	CurrentDayIndex int       `json:"current_day_index"` // 0-based
 	Status          string    `json:"status"`
+}
+
+// EnrollPost is the optional body of POST /v1/plans/{id}/enroll (T8): where the
+// enrolment starts or is moved to. A nil field takes its default.
+type EnrollPost struct {
+	StartedAt       *time.Time `json:"started_at"`
+	CurrentWeek     *int       `json:"current_week"`
+	CurrentDayIndex *int       `json:"current_day_index"`
+}
+
+// Set says whether any field is given (none: the enrolment as before T8).
+func (e EnrollPost) Set() bool {
+	return e.StartedAt != nil || e.CurrentWeek != nil || e.CurrentDayIndex != nil
 }
 
 type PlansOverview struct {
