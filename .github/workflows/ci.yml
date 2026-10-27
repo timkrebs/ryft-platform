@@ -55,6 +55,10 @@ jobs:
       run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
+      # The admission policies against a kind cluster (D120): what the diff touches, minus a promote
+      # PR (and its merge on main), whose diff is only pins, holds and policy-version literals
+      # (scripts/promote_only.sh). A manual run always runs it.
+      run_admission: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'pull_request' || steps.filter.outputs.admission == 'true') && steps.promote.outputs.only != 'true') }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -111,6 +115,23 @@ jobs:
               - 'web/**'
               - 'docs/SCORING.md'
               - '.github/workflows/ci.yml'
+            # The admission policies, the manifests they judge and the scripts of the kind run.
+            admission:
+              - 'deploy/**'
+              - 'infra/aws/kubernetes/**'
+              - 'scripts/admission_e2e.sh'
+              - 'scripts/install_kind.sh'
+              - 'scripts/install_yq.sh'
+              - 'scripts/install_kubectl.sh'
+              - 'scripts/install_helm.sh'
+              - 'scripts/check_chart_bump.sh'
+              - 'scripts/lib/kind_guard.sh'
+              - 'scripts/lib/tracked_copy.sh'
+              - 'scripts/lib/admission_*.sh'
+              - 'scripts/lib/tf_values.sh'
+              - 'scripts/lib/gitsrv.go'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
             # The alert rules and the synthetic checks; the checks' body markers are read from
             # the site's own sources (the policy text and the AASA).
             monitoring:
@@ -122,11 +143,30 @@ jobs:
               - 'web/public/.well-known/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
-      - if: github.event_name != 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The whole history: deploy_targets.sh compares with the running pin; the promote check below
+      # diffs the change. On a pull request this is the merge of the PR (the default ref).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Is the change only what promote writes? (A deploy PR, and its merge on main.) The predicate
+      # is the base's copy when the base has one, so a PR cannot widen what it skips by editing it.
+      # Fails closed: any doubt is "not promote only", and the `admission` job runs. When the base has no
+      # copy of the script (the PR that introduces it, a base that cannot be read) the answer is "no": the
+      # PR's own copy is never the judge of its own diff.
+      - if: github.event_name != 'workflow_dispatch'
+        id: promote
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          only=false
+          if git show "$BASE:scripts/promote_only.sh" > "$RUNNER_TEMP/promote_only.sh" 2>/dev/null; then
+            if bash "$RUNNER_TEMP/promote_only.sh" "$BASE" "$HEAD"; then only=true; fi
+          else
+            echo "the base has no scripts/promote_only.sh: not promote only"
+          fi
+          echo "only=$only" >> "$GITHUB_OUTPUT"
       - if: github.event_name != 'pull_request'
         id: targets
         env:
@@ -400,6 +440,74 @@ jobs:
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
 
+  # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
+  # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the
+  # add-ons and of Argo CD (argo-cd chart 10.10.5, T12-f's RBAC when argocd.tf has it), the namespaces
+  # with infra/vault's labels, the chart installed in Audit (the committed values) and in Deny (every
+  # binding): every Application's render server-side dry-run applied as Argo CD's controller, one
+  # refused fixture per rule, status.typeChecking of every policy, claims a, b, c, d and h.
+  # scripts/admission_e2e.sh holds the steps (make admission-e2e runs the longer local variant, the
+  # same script with --mode full). Required in `ci-ok` when it ran; skipped for a promote PR.
+  admission:
+    needs: [changes]
+    if: needs.changes.outputs.run_admission == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+      TF_IN_AUTOMATION: "true"
+    steps:
+      # The whole history on a pull request: the chart-version check below diffs against the base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The chart's templates and values never change without a higher version in Chart.yaml: the Helm
+      # provider upgrades a release only when the version moves (the comment in Chart.yaml).
+      - name: The chart version moves with its templates
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+      # From here on every step that renders may only use git over file:// (see `manifests`). The
+      # terraform step of the script, which downloads modules, lifts it for itself.
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: infra/aws/kubernetes/admission-celtest/go.mod
+          cache-dependency-path: infra/aws/kubernetes/admission-celtest/go.sum
+      # yq (mikefarah), kind, kubectl and helm pinned, each checked against a sha256 (the scripts hold
+      # both); the versions are printed in the summary of the run.
+      - run: ./scripts/install_yq.sh
+      - run: ./scripts/install_kind.sh
+      - run: ./scripts/install_kubectl.sh
+      - run: ./scripts/install_helm.sh
+      # Terraform only to evaluate argocd.tf's values offline (scripts/lib/tf_values.sh): mock providers.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.terraform-plugin-cache
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/aws/kubernetes/.terraform.lock.hcl') }}
+      # The policies against the repository's renders without an API server, once: its cases are the
+      # first line, and the fixtures the kind run uses must be its output (the diff).
+      - name: The CEL harness, and the fixtures are its output
+        run: |
+          if ! CELTEST_EMIT="$RUNNER_TEMP/fixtures" ./infra/aws/kubernetes/admission-celtest/run.sh > "$RUNNER_TEMP/celtest.log" 2>&1; then
+            tail -60 "$RUNNER_TEMP/celtest.log"
+            exit 1
+          fi
+          tail -2 "$RUNNER_TEMP/celtest.log"
+          diff -r "$RUNNER_TEMP/fixtures" infra/aws/kubernetes/admission-e2e/fixtures/generated
+      - name: kind cluster, CRDs, chart in Audit and Deny, dry-runs, fixtures, claims
+        run: ./scripts/admission_e2e.sh --mode ci --summary "$RUNNER_TEMP/admission-summary.md"
+
   # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
   # licences, routes, legal drafts, model version).
@@ -564,7 +672,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

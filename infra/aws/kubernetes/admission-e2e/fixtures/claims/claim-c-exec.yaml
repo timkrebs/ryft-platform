@@ -1,0 +1,6 @@
+# fixture: claim c: pods/exec (CONNECT) by the Cluster Operator outside ryft-rabbitmq
+# op: exec
+# as: system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator
+# target: -n claim-c pod/probe
+# refused-by: ryft-operator-reach
+# message: P8: the operators write only in ryft-rabbitmq.

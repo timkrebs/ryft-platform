@@ -1,0 +1,13 @@
+# fixture: P9 middleware forwardAuth
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-traefik
+# message: P9: a Middleware may only be a rateLimit, redirectRegex or headers.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+  namespace: ryft-api
+spec:
+  forwardAuth:
+    address: http://x

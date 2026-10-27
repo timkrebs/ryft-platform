@@ -399,6 +399,7 @@ func report(c *chart, name string, r Req, want []string) {
 		panic("duplicate case name: " + name)
 	}
 	res := c.eval(r)
+	maybeEmit(name, r, res)
 	var msgs, plain []string
 	errored := false
 	for _, x := range res {
@@ -543,6 +544,7 @@ func main() {
 	runArgo(c)
 	runHardening(c)
 	checkGolden()
+	writeFixtures()
 	fmt.Println("cases:", len(results), "failures:", failures)
 	if failures > 0 {
 		os.Exit(1)

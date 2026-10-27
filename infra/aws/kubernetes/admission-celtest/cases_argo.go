@@ -99,6 +99,20 @@ func runArgo(c *chart) {
 	updTo("P10 admin sync manifests", admin, withOp(`{"sync":{"manifests":["{}"]}}`), synced(), "P10")
 	updTo("P10 admin other revision is not judged", admin, withOp(`{"sync":{"revision":"deadbeef"}}`), synced())
 	updTo("P10 controller automated sync with the commit", argoCtl, withOp(`{"initiatedBy":{"automated":true},"sync":{"revision":"cafe1234"}}`), synced())
+	// The controller's automated sync carries a copy of the Application's source (seen on a real
+	// Argo CD 3.5 in the kind run, T12-d); a source of its own is still refused.
+	withSource := func(revision string, change func(src map[string]any)) map[string]any {
+		a := withOp(fmt.Sprintf(`{"initiatedBy":{"automated":true},"sync":{"revision":%q}}`, revision))
+		src := deepCopy(a["spec"].(map[string]any)["source"].(map[string]any))
+		if change != nil {
+			change(src)
+		}
+		a["operation"].(map[string]any)["sync"].(map[string]any)["source"] = src
+		return a
+	}
+	updTo("P10 controller automated sync carries a copy of the app's source", argoCtl, withSource("cafe1234", nil), synced())
+	updTo("P10 controller sync with a source that is not the app's", argoCtl, withSource("cafe1234", func(s map[string]any) { s["path"] = "deploy" }), synced(), "P10: a sync operation must not carry")
+	updTo("P10 server sync with the app's source and another revision (rollback)", argoSrv, withSource("deadbeef", nil), synced(), "P10: a sync started through the API server")
 	inflight := withOp(`{"sync":{"manifests":["{}"]}}`)
 	updTo("P10 controller status write carries the unchanged operation", argoCtl, inflight, deepCopy(inflight))
 	terminate := synced()

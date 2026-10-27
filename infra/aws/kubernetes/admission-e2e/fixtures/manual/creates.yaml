@@ -1,0 +1,288 @@
+# Hand-written CREATE fixtures for rules whose harness case is not a valid object for the API
+# server's own validation (admission-celtest/emit.go, the notEmitted map). Each breaks exactly
+# one rule. Format: see argo-cd.yaml.
+# ----
+# fixture: P7 an ApplicationSet
+# op: create
+# as: system:serviceaccount:argocd:argocd-server
+# refused-by: ryft-argocd
+# message: P7: ApplicationSets are not allowed.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata: { name: x, namespace: argocd }
+spec:
+  generators:
+    - list: { elements: [{ name: a }] }
+  template:
+    metadata: { name: "{{name}}" }
+    spec:
+      project: ryft
+      source: { repoURL: "https://github.com/timkrebs/ryft-platform.git", path: deploy/rabbitmq, targetRevision: main }
+      destination: { server: "https://kubernetes.default.svc", namespace: ryft-rabbitmq }
+# ----
+# fixture: P11 a Shovel
+# op: create
+# refused-by: ryft-broker
+# message: P11: Shovels, Federations and SchemaReplications are not allowed.
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata: { name: s, namespace: ryft-rabbitmq }
+spec:
+  name: s
+  uriSecret: { name: shovel-uri }
+  srcQueue: a
+  destQueue: b
+  rabbitmqClusterReference: { name: rabbitmq }
+# ----
+# fixture: P4 another VSO kind (VaultDynamicSecret)
+# op: create
+# refused-by: ryft-vso
+# message: P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultDynamicSecret
+metadata: { name: x, namespace: ryft-api }
+spec:
+  vaultAuthRef: api
+  mount: database
+  path: creds/x
+  destination: { name: x, create: true }
+# ----
+# fixture: P3 an endPort on a rule with an ipBlock peer
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-netpol
+# message: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: x, namespace: ryft-api }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 10.0.0.0/16 } }]
+      ports: [{ protocol: TCP, port: 9090, endPort: 9090 }]
+# ----
+# fixture: P6 a CRD of rabbitmq.com with a conversion webhook
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-operators-cluster
+# message: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata: { name: foos.rabbitmq.com }
+spec:
+  group: rabbitmq.com
+  names: { kind: Foo, plural: foos, singular: foo, listKind: FooList }
+  scope: Namespaced
+  conversion:
+    strategy: Webhook
+    webhook:
+      conversionReviewVersions: ["v1"]
+      clientConfig: { service: { name: foo, namespace: rabbitmq-system, path: /convert } }
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema: { openAPIV3Schema: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+# ----
+# fixture: P2 a CronJob that runs another image
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-workloads-templates
+# message: P2: a container image is not the one this namespace may run.
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: c, namespace: ryft-api }
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - { name: c, image: "docker.io/library/busybox:1.37" }
+# ----
+# fixture: P2 an image volume
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-workloads-templates
+# message: P2: image volumes are not allowed.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: x, namespace: ryft-api }
+spec:
+  selector: { matchLabels: { app: x } }
+  template:
+    metadata: { labels: { app: x } }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: x
+          image: "ghcr.io/timkrebs/ryft/api:2741bff"
+          volumeMounts: [{ name: img, mountPath: /img }]
+      volumes:
+        - name: img
+          image: { reference: "docker.io/library/busybox:1.37" }
+# ----
+# fixture: P2 a projected service account token
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-workloads-templates
+# message: P2: a RYFT workload must not project a service account token.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: x, namespace: ryft-api }
+spec:
+  selector: { matchLabels: { app: x } }
+  template:
+    metadata: { labels: { app: x } }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: x
+          image: "ghcr.io/timkrebs/ryft/api:2741bff"
+          volumeMounts: [{ name: tok, mountPath: /var/run/tok }]
+      volumes:
+        - name: tok
+          projected:
+            sources:
+              - serviceAccountToken: { path: token, audience: x, expirationSeconds: 600 }
+# ----
+# fixture: P6 a CRD of another group
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-operators-cluster
+# message: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata: { name: foos.example.com }
+spec:
+  group: example.com
+  names: { kind: Foo, plural: foos, singular: foo, listKind: FooList }
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema: { openAPIV3Schema: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+# ----
+# fixture: P3 another port range in the broker's NetworkPolicy
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-netpol
+# message: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: rabbitmq, namespace: ryft-rabbitmq }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: rabbitmq } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app.kubernetes.io/name: rabbitmq } } }]
+      ports: [{ protocol: TCP, port: 35672, endPort: 35690 }]
+# ----
+# fixture: P11 a vault block next to the operator's defaulted externalSecret
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-broker
+# message: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  name: rabbitmq
+  namespace: ryft-rabbitmq
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: rabbitmq
+        topologyKey: kubernetes.io/hostname
+  image: docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+  override:
+    statefulSet:
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/path: /metrics
+              prometheus.io/port: "15692"
+              prometheus.io/scrape: "true"
+  persistence:
+    storage: 10Gi
+    storageClassName: gp3-encrypted
+  rabbitmq:
+    additionalConfig: |
+      # Metrics stay plain on 15692 for the collectors' scrape (counters, queue names,
+      # no messages); per queue, for the backlog alerts.
+      prometheus.tcp.port = 15692
+      prometheus.return_per_object_metrics = true
+      vm_memory_high_watermark.relative = 0.6
+      disk_free_limit.absolute = 1GB
+      log.console.formatter = json
+  replicas: 3
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 1Gi
+  secretBackend:
+    vault: { role: x }
+    externalSecret: { name: "" }
+# ----
+# fixture: P11 the operator's defaulted externalSecret alone passes
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# expect: admitted
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  name: rabbitmq
+  namespace: ryft-rabbitmq
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: rabbitmq
+        topologyKey: kubernetes.io/hostname
+  image: docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
+  override:
+    statefulSet:
+      spec:
+        template:
+          metadata:
+            annotations:
+              prometheus.io/path: /metrics
+              prometheus.io/port: "15692"
+              prometheus.io/scrape: "true"
+  persistence:
+    storage: 10Gi
+    storageClassName: gp3-encrypted
+  rabbitmq:
+    additionalConfig: |
+      # Metrics stay plain on 15692 for the collectors' scrape (counters, queue names,
+      # no messages); per queue, for the backlog alerts.
+      prometheus.tcp.port = 15692
+      prometheus.return_per_object_metrics = true
+      vm_memory_high_watermark.relative = 0.6
+      disk_free_limit.absolute = 1GB
+      log.console.formatter = json
+  replicas: 3
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 1Gi
+  secretBackend:
+    externalSecret: { name: "" }

@@ -2346,6 +2346,11 @@ sent, and whether a second account shares its phone.
   Vault address change, or an operator upgrade that renames an object or adds an image needs the chart
   first. A new service doesn't (images and app paths are patterns).
 
+> **Note (D122, 2026-10-26):** the kind run (T12-d) answered claim k, so the "Accepted" risk above that
+> `argocd app sync --revision <sha>` passes until k is verified is closed: argocd-server writes the full
+> SHA of the synced revision, and P10 refuses any other revision from it. The design's claims table and
+> §2 P10 say so; the rest of D120 stands.
+
 ## D121 — Argo CD's custom health checks run without the string library; a harness proves it
 
 - **Why (2026-10-26):** the kind e2e showed that the RabbitMQ health checks (D97) fail in a real Argo
@@ -2385,3 +2390,64 @@ sent, and whether a second account shares its phone.
 - **Consequences:** an Argo CD upgrade that changes the library set or gopher-lua is a harness change
   (bump the module and `oslib_safe.go`). A new health check is covered only once it has cases: the
   harness fails on a script without them.
+
+## D122 — The kind run of the admission policies: what it found and what was decided (T12-d; amends D120 by a note)
+
+- **Why (2026-10-26):** the policies were only ever evaluated offline (D120's CEL harness). The kind run
+  (`scripts/admission_e2e.sh`, CI job `admission`, workflow `admission-e2e`) put them in front of a real
+  API server, a real Argo CD and the real operators, and found things the harness could not.
+- **P10 changed intent (chart 0.2.2).** The controller's automated sync carries a copy of the
+  Application's `spec.source`, so "no `operation.sync.source`" refused Argo CD's own auto-sync. P10 now
+  admits a source equal to the Application's own `spec.source`/`spec.sources`. Consequences: `argocd app
+  rollback` is refused **only for argocd-server, through the revision rule** (a history entry's
+  revision is not the synced one); "no foreign source" rests on **P7**, which pins the whole `spec`.
+  **P7 must not go to break-glass on the assumption that P10 blocks `--repo`, `--path` or a changed
+  source.** The header comment of the template and design §2 say so; D120 is amended by the note above,
+  not rewritten.
+- **P11 is an allowlist (chart 0.2.3).** The Cluster Operator's defaulting webhook writes
+  `secretBackend.externalSecret.name: ""` into every RabbitmqCluster; 0.2.2 exempted the empty name by
+  matching on `vault` and a non-empty name. Now `secretBackend` may hold only `externalSecret`, and that
+  only with an empty (or absent) name and no other field, so a Vault block next to the default, a named
+  secret and any key a later CRD version adds are refused. The harness pins each shape.
+- **Claim k, answered.** argocd-server writes `operation.sync.revision` = the full commit SHA of the
+  revision the Application was compared with (`status.sync.revision`), not `""` and not `main`. P10's
+  third alternative is what admits a manual sync, so D120's `--revision <sha>` risk is closed.
+- **Claim i needs one more rule.** With `resource.respectRBAC: strict` the controller must also get,
+  list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its
+  children for ever. #47 (`infra/argocd-rbac`) lacks it; add `{ apiGroups = ["argoproj.io"], resources =
+  ["applications"], verbs = ["get", "list", "watch"] }` to `argocd_controller_rules` before Step 0.
+- **Claim m disproved.** kube-state-metrics' custom-resource-state exports CustomResourceDefinitions
+  only ("no matching CRD found for configured GVK"), so it cannot export the bindings. T12-e needs
+  another binding-state signal (the manifest tail with the bindings in its object list and a log alert,
+  or an exporter of its own); the `claim-m` line of the kind run stays INFO until a version can.
+- **`admission` is skipped on a promote merge to main too** (the design said "every push to main"): the
+  diff is the pins the PR carried, which `scripts/promote_only.sh` (the base branch's copy; a base
+  without one means "no") recognises line by line; any doubt runs the job. The generated fixtures no
+  longer contain the overlay's pins (`0000000`), otherwise every release made them stale.
+- **Not done (and said so in the docs):** a node drain, three workers (the broker runs one replica on the
+  default StorageClass), claims f (SSD comparison error), j (`take_ownership`) and l (the VPC). The
+  large-Pod CEL-cost fixture is harness-only.
+- **Stubbed in the full mode:** Vault and VSO (the CRDs are real, a loop writes dummy Secrets and marks
+  them synced), the service images (busybox, tagged inside the node under the exact names, none left in
+  the local image store), the git remote (a smart-HTTP server in the cluster, the Applications rewritten
+  to it), Ingress status.
+
+## D123 — The tree under test is code (T12-d)
+
+- **Decision:** the kind run reads a tree (`--repo`, the workflow's `ref`) that kustomize renders,
+  Terraform evaluates and Argo CD syncs, so the scripts treat it as code: only files git tracks are
+  copied (no tfplan, tfvars, `.terraform` or git-ignored `secrets.yaml`; a tracked symbolic link is
+  refused); Terraform runs under `env -i` with no cloud, HCP Terraform or Kubernetes credential and
+  refuses a module with a provisioner, `data "external"`, `data "http"` or a `*.tf.json`, or a lock file
+  naming other providers; every name, path, image reference and label taken from the tree is validated
+  before it reaches a command line; `kc`, `kca` and `hc` refuse arguments that would choose another
+  cluster or user; the guard accepts only `https://127.0.0.1:<port>` (or `[::1]`) with one `kind-*`
+  context, no proxy, no plugin user, not in `~/.kube` (links resolved), and with `--kubeconfig` the file
+  must equal `kind get kubeconfig`.
+- **Not a sandbox.** An untrusted tree runs in the `admission-e2e` workflow or on a machine without
+  production credentials, never on the laptop whose kubectl points at production. The workflow with a
+  `ref` must be dispatched from the branch under test (not the default branch), refuses `refs/pull/*` and
+  commits on no branch of the repository, and has no cache.
+- **Pinned:** kind, kubectl (the EKS minor), helm and yq by version and sha256 in `scripts/install_*.sh`;
+  their versions are printed in the summary. The chart's `version:` must go up when its templates or values
+  change (`scripts/check_chart_bump.sh`, a pull request).

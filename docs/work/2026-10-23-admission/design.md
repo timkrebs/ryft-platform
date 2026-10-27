@@ -120,19 +120,19 @@ commands, NetworkPolicies, VSO or Argo objects.
 
 | # | Claim | Status | Checked in |
 | --- | --- | --- | --- |
-| a | the API server runs no admission policy on policy or binding objects (no lockout; no self-protection) | verified (source) | kind fixture: a policy written to match bindings never fires |
-| b | webhook configurations are not exempt, so P6 sees them | plausible | kind |
-| c | CONNECT on `pods/exec` can be matched (P8) | plausible | kind |
-| d | dry-run requests carry the `validation_failure` audit annotation | plausible | kind |
+| a | the API server runs no admission policy on policy or binding objects (no lockout; no self-protection) | **verified** in kind 1.36.4 (T12-d): a Deny policy matching both kinds, proven live by refusing a canary ConfigMap, refused neither a further policy and binding nor their deletion | kind fixture: a policy written to match bindings never fires |
+| b | webhook configurations are not exempt, so P6 sees them | **verified** (kind): P6 refused a webhook configuration written as Argo's controller | kind |
+| c | CONNECT on `pods/exec` can be matched (P8) | **verified** (kind): refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it | kind |
+| d | dry-run requests carry the `validation_failure` audit annotation | **verified** (kind, audit level Metadata): on the dry-run and on the real request, told apart by `dryRun=All` in `requestURI` | kind |
 | e | `apiserver_validating_admission_policy_check_total` counts clean passes | doubtful. Not used for liveness; claim m instead | – |
-| f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | plausible | kind |
-| g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | plausible. Fallback: one equality per top-level key | kind |
-| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | plausible | kind |
-| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | plausible | kind |
-| j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5) | `terraform validate` |
-| k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | unknown | kind |
-| l | the broker's 443 egress only reaches the API server inside the VPC | plausible | production: T12-k's canary |
-| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | plausible | kind |
+| f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | not tried (D122) | kind |
+| g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | **verified** (kind): `status.typeChecking` empty, the committed project passes, a widened one is refused | kind |
+| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind), including the negative test: without the policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it; with P6 in Deny both steps are refused | kind |
+| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | **verified, after one added rule** (D122): the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for its children for ever. #47 lacks the rule | kind |
+| j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5). Not tried (D122) | `terraform validate` |
+| k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | **answered** (kind, argo-cd chart 10.10.5): the full commit SHA of the revision the Application was compared with, which is `status.sync.revision`; P10's third alternative admits it, and `--revision <another sha>` is refused (D122) | kind |
+| l | the broker's 443 egress only reaches the API server inside the VPC | plausible. Not tried (D122) | production: T12-k's canary |
+| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | **disproved** (kube-state-metrics 8.6.0, v2.20.0): custom-resource-state exports CustomResourceDefinitions only ("no matching CRD found for configured GVK"). T12-e needs another binding-state signal (D122) | kind |
 
 ### Ownership
 
@@ -376,16 +376,32 @@ flowchart LR
   - pause and hard-refresh;
   - the controller clearing a finished operation.
 - **Rules for a new or changed operation:**
-  - from any writer, no `operation.sync.manifests`, `.source` or `.sources`. This refuses `--local` and
-    `argocd app rollback`, which carries the history entry's source;
+  - from any writer, no `operation.sync.manifests`, and no `.source` or `.sources` other than a copy of
+    the Application's own `spec.source` / `spec.sources`. The controller's automated sync carries
+    exactly that copy (found by the kind run, chart 0.2.2, D122), so the original rule, any `source`,
+    refused Argo CD's own auto-sync. This still refuses `--local`. It no longer refuses
+    `argocd app rollback` by itself: a history entry whose source equals the spec's passes this rule,
+    and the revision rule below is what refuses the rollback, **for argocd-server only**;
   - from argocd-server, `operation.sync.revision` must be `""`, `main` or
-    `oldObject.status.sync.revision` (claim k).
-- **Open until k is verified:** `argocd app sync --revision <sha>` after a pause. While auto-sync is on,
-  Argo itself refuses other revisions. RYFT rolls back by revert and hold (D95, D107).
+    `oldObject.status.sync.revision`. Claim k, answered: a plain sync writes the full SHA of the
+    revision the Application was compared with, i.e. `status.sync.revision`, so the third alternative is
+    the one that admits it.
+- **"No foreign source" rests on P7, not on P10.** A request that changes `spec.source` and the
+  operation together carries a source equal to its own new spec, which this rule admits. P7 pins the
+  Application's whole `spec` (our repository, `main`, the fixed path), so the guard is P7. P7 must
+  therefore not go to break-glass on the assumption that P10 blocks `--repo`, `--path` or a changed
+  source (P7 refuses `--repo` and `--path` itself; see Operations below).
+- **Closed by claim k:** `argocd app sync --revision <sha>` after a pause is refused for any SHA other
+  than the synced one, through argocd-server. While auto-sync is on, Argo itself refuses other
+  revisions. RYFT rolls back by revert and hold (D95, D107).
 
 **P11 `ryft-broker`** (C, U)
 - **RabbitmqCluster in `ryft-rabbitmq`:** `spec.image` matches the broker pattern, and `override` holds
   only today's pod-template annotations.
+- **`spec.secretBackend` is an allowlist** (chart 0.2.3, D122): the only key is `externalSecret`, and
+  that only as the Cluster Operator's defaulting webhook writes it into every RabbitmqCluster
+  (`{"externalSecret": {"name": ""}}`, found by the kind run). A Vault block next to it, a named
+  external secret, another field and any key a later CRD version adds are refused.
 - **Shovel, Federation and SchemaReplication are refused cluster-wide** (recommended), from every writer:
   they move messages off the cluster.
 
@@ -488,32 +504,43 @@ T12-k (the broker's egress) lands before Step B.
 ### Testing: a CI job and a repeatable kind run
 
 **CI job `admission`, required in `ci-ok` when it runs.**
-- **When it runs:** on PRs touching `deploy/**`, the chart or the values file, and on push to main. It
-  skips a promote PR whose diff is limited to what promote writes (`newTag`, the
-  `PRIVACY_POLICY_VERSION` literals, hold lines).
+- **When it runs:** on PRs touching `deploy/**`, the chart or the values file, the scripts of the job
+  and the Makefile, and on push to main. It skips a promote PR whose diff is limited to what promote
+  writes (`newTag`, the `PRIVACY_POLICY_VERSION` literals, hold lines), **and the push to main that
+  merges one**. That last part is a deviation from "every push to main" (D122): the diff of a promote
+  merge is the same pins the PR carried, which cannot change what the cluster admits, and a kind run
+  per release would cost minutes of each one. A manual run (`workflow_dispatch`) always runs it.
 - **Steps:**
-  1. Start a kind node at 1.36, pinned by digest, with checksummed binaries.
+  1. Start a kind node at 1.36, pinned by digest, with checksummed binaries (kind, kubectl, helm, yq:
+     `scripts/install_*.sh`).
   2. Install the CRDs:
      - VSO, cert-manager and Traefik, at the pinned chart versions;
      - **Argo CD's** (Application, AppProject, ApplicationSet, from argo-cd chart 10.10.5), without
        which the root render and the projects can't be dry-run and P7 and P10 would go untested;
      - the vendored RabbitMQ CRDs.
   3. Create the namespaces with `infra/vault`'s labels, plus `ryft-web`, `rabbitmq-system` and `argocd`.
-  4. Install the chart with the committed values, in Deny.
+  4. Install the chart with the committed values (Audit), then in Deny (every binding), each time waiting
+     until the API server holds exactly the policies and bindings `helm template` renders and enforces
+     a canary fixture.
   5. Run every render with `--dry-run=server` as Argo's controller service account (bound to
      cluster-admin in kind).
   6. Run the projects and `root.yaml` through the same decode the Terraform code uses.
 - **Fixtures:**
-  - one negative fixture per rule, P10's terminate-op and status-write passes included;
-  - a large-Pod fixture for CEL cost.
-- **Checks:** `status.typeChecking` is empty, and `Chart.yaml` is bumped whenever a template changes.
+  - one negative fixture per rule, P10's terminate-op and status-write passes included (generated from
+    the CEL harness's cases, plus hand-written ones for UPDATE, DELETE and the objects the CRDs
+    would reject);
+  - a large-Pod fixture for CEL cost: **harness-only** (`cost:` cases of `admission-celtest`, which
+    evaluate the policies with the API server's cost budget); the kind run has none.
+- **Checks:** `status.typeChecking` is empty, and `Chart.yaml`'s version goes up whenever a template or
+  the chart's `values.yaml` changes (a pull request; `scripts/check_chart_bump.sh`).
 
-**Kind e2e** (`scripts/admission_e2e.sh` plus a manual `workflow_dispatch`). It runs before Step 0 and
-on every operator, argo-cd chart or EKS minor upgrade:
+**Kind e2e** (`scripts/admission_e2e.sh --mode full` plus a manual `workflow_dispatch`). It runs before
+Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 - the argo-cd chart with T12-f's RBAC;
-- the operators and the broker on three workers;
-- a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart` and a node drain;
-- verification of claims a–d and f–m.
+- the operators and the broker (**one node, one replica**, not three workers: D122);
+- a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart`;
+  **not** a node drain (D122);
+- verification of claims a–d, g–i, k and m; **not** f, j, l (D122).
 
 ### Break-glass (you only, the cluster admin)
 
@@ -544,7 +571,7 @@ on every operator, argo-cd chart or EKS minor upgrade:
   - `terminate-op`, pause (`--sync-policy none`), resume and hard-refresh keep working: P10 doesn't match
     them, and P7 leaves `syncPolicy` free.
   - P7 refuses `--kustomize-image`, `--repo` and `--path`.
-  - P10 refuses `--local` and `rollback`, and `--revision` once claim k is verified.
+  - P10 refuses `--local`; through argocd-server's revision rule it also refuses `rollback` and `--revision <other sha>` (claim k, answered: D122).
 - **Prune:** removing `default-deny` or the `ryft-web` Namespace from git fails the sync instead of
   deleting them.
 

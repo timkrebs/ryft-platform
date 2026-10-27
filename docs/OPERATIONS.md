@@ -700,6 +700,175 @@ binary from `scripts/install_yq.sh` (version and sha256 in that file; `manifests
 `scripts/tests/check_kustomize_refs_test.sh` in the same PR as its first use; a new path-carrying key
 is a `Path(kind)` there, so its references are followed automatically.
 
+### Admission policies: the kind run (D120, D122, D123, T12-d)
+
+The policies of `infra/aws/kubernetes/charts/admission-policy` are tried against a real API server
+in kind before they reach `ryft-prod-euc1`: in CI on every change, and by hand before an apply and on
+every upgrade. `make admission-celtest` (offline CEL) stays the first line; the kind run answers what
+only an API server can: that the policies compile (`status.typeChecking`), what the real components
+send (Argo CD's controller, the operators, their webhooks), and the design's claims (table below).
+
+**CI: the `admission` job** (required in `ci-ok` when it ran). It runs on a change to `deploy/**`,
+`infra/aws/kubernetes/**`, `ci.yml`, the Makefile or the scripts of the job, on a push to main, and by
+hand. It is skipped for a promote PR **and for its merge to main** (D122: `changes` asks
+`scripts/promote_only.sh`, the base branch's copy, whether the diff is only the EKS overlay's pins,
+holds and privacy-version literals; any doubt, and a base without the script, runs the job). It is
+`scripts/admission_e2e.sh --mode ci`, about 5 minutes:
+
+1. On a pull request: `scripts/check_chart_bump.sh` fails when the chart's `templates/` or
+   `values.yaml` changed and the `version:` in `Chart.yaml` did not go up (the Helm provider upgrades a
+   release only when the version moves).
+2. The CEL harness, once, with `CELTEST_EMIT`: its cases must pass and the fixtures it writes must equal
+   `admission-e2e/fixtures/generated` (regenerate and commit after a policy change). The fixtures do not
+   depend on the overlay's pins (the short SHA of an image is written as `0000000`), so a deploy PR does
+   not make them stale.
+3. kind 1.36 (the node image pinned by digest in the script) and kind, kubectl, helm and yq pinned by
+   sha256 (`scripts/install_*.sh`; the versions are in the summary), the CRDs of VSO 1.6.0, cert-manager,
+   Traefik, RabbitMQ and Argo CD (argo-cd chart 10.10.5, the versions of `infra/aws/kubernetes/main.tf`),
+   the namespaces with infra/vault's and `argocd.tf`'s labels.
+4. Argo CD's chart rendered with `argocd.tf`'s values (Terraform evaluates `local.argocd_values`
+   offline), its two ClusterRoles compared with the rules of the values and checked against T12-f's list.
+5. The chart in Audit (the committed values) and in Deny (every binding, `brokerEgressPublic: false`).
+   After each install the API server must hold exactly the policies and bindings `helm template`
+   renders with the same values (11 and 12 today; nothing is accepted on an empty answer), every policy
+   must be type-checked without warnings, and a canary fixture must be answered as the variant says
+   (polled for 30 s). Then every Application's render (and the projects and the root) dry-run applied
+   server-side as Argo CD's controller (every app must give at least one object); one refused fixture
+   per rule (Deny), the same fixtures passing with the rule's message as a warning (Audit); claims a, b, c,
+   d and the negative test of claim h.
+
+**By hand: `make admission-e2e REPO=<path>`** (or Actions -> `admission-e2e` -> Run workflow, with the
+branch or commit as `ref`, dispatched from that branch). About 25 minutes, 6 GB of memory. It creates its
+own kind cluster, runs the CI part, then the real stack (below), and deletes the cluster. Run it:
+
+- before Step 0 (applying T12-f) on the combined tree of the Argo CD RBAC and the namespace-scoped
+  operators (a throwaway merge of both branches, checked out beside this repository);
+- on every operator, argo-cd chart, Traefik/VSO/cert-manager chart or EKS minor upgrade, on the tree
+  that carries it.
+
+```bash
+git fetch origin infra/argocd-rbac deploy/operators-namespace-scoped
+git worktree add /tmp/tree-rbac origin/infra/argocd-rbac            # a PR's tree: a git checkout
+make admission-e2e REPO=/tmp/tree-rbac                              # ~25 min; summary in admission-e2e-summary.md
+make admission-e2e REPO=/tmp/tree-rbac MODE=ci                      # only what CI runs
+```
+
+**The tree under test is code, not data.** `REPO` is rendered by kustomize, its `argocd.tf` is evaluated
+by Terraform, and Argo CD in the cluster syncs it. So: an untrusted tree is run in the workflow (a runner
+with no credential of yours and read-only contents) or on a machine without production credentials, not
+on a laptop whose kubectl points at production. What the scripts do to limit the damage (a second line,
+not a sandbox):
+
+- only files git tracks under `deploy/` and `infra/aws/kubernetes/` are read (`scripts/lib/tracked_copy.sh`
+  copies them to a temporary directory; `REPO` must be a git checkout): a git-ignored `tfplan`, `.tfvars`,
+  `.terraform` or `deploy/k8s/secrets.yaml` is never rendered, evaluated or served to the cluster; a
+  tracked symbolic link is refused;
+- Terraform runs under `env -i` with a throwaway `HOME` and no AWS, HCP Terraform or Kubernetes
+  credential, with this checkout's mock providers; a module with a `provisioner`, `data "external"`,
+  `data "http"` or a `*.tf.json` (also in the modules `terraform init` downloads) is refused, as is a
+  lock file naming a provider other than aws, helm, kubernetes and random;
+- every value the tree supplies (an Application's name and path, a Secret's labels, an image name) is
+  checked before it reaches a command line, and `kc`, `kca` and `hc` refuse any argument that would
+  choose another cluster or user (`--kubeconfig`, `--context`, `--server`, `--token`, `--as`, `--kube-*`,
+  ...);
+- the guard (`scripts/lib/kind_guard.sh`, tested by `scripts/tests/kind_guard_test.sh`) refuses anything
+  but a kubeconfig whose server is exactly `https://127.0.0.1:<port>` (or `[::1]`), with the one context
+  `kind-*`, no `proxy-url`, no exec or auth-provider user, not in `~/.kube` (links resolved, the file
+  included); with `--kubeconfig` it also compares the file with `kind get kubeconfig`; `HELM_KUBE*`
+  variables are unset.
+
+It needs `kind` and Docker or Podman, `kubectl`, `helm`, `yq` (mikefarah v4), `jq`, `git`, `go` and
+`terraform` (the provider plugins are downloaded or come from `TF_PLUGIN_CACHE_DIR`; `TF_PLUGIN_DIR=<dir>`
+installs them from a directory). It installs nothing, and if kind cannot start it stops with a message.
+The script makes a kind cluster with `--kubeconfig <temp>/kind.kubeconfig`, exports `KUBECONFIG` to that
+file and passes `--kubeconfig` and `--context` on every `kubectl` and `helm` call; it never reads or
+writes `~/.kube/config`. `--keep` keeps the cluster and prints its kubeconfig; `--kubeconfig <file>`
+reuses a kind cluster of yours (the release and the claim-a objects are removed first). After a failure,
+a timeout or an interruption the temporary directory with every step's log (`log/`) is kept and its path
+printed; the cluster is deleted in every case.
+
+The full mode, after the CI part: cert-manager and the internal CA; Argo CD from `argocd.tf`'s values;
+the tree served to Argo CD from inside the cluster; the policies in Audit; the first sync of every
+app (waves: Vault secrets, operators, broker, services; hooks); the policies in Deny (a binding stays
+in Audit while the tree lacks what it needs: `operators-cluster` without T12-g, `netpol` without T12-k)
+and a manual `argocd app sync` of every app through argocd-server; the hooks again; the broker's
+`rollout restart` (D98); `argocd app sync --async` then `terminate-op` (and what argocd-server writes
+as the sync's revision, claim k); the operators' logs (no `forbidden`, since the stage began), the
+topology Ready, `kubectl auth can-i` for both operator service accounts; claim i (`respectRBAC: strict`
+with no cluster-wide Secrets) and claim m (kube-state-metrics, disproved). Validation failures the API
+server logged during each stage (the audit log of the kind node, grepped there) are listed; one is
+explained only if it has the policy, requester, resource and message of what the tree has not fixed yet
+(the two vendored operator ClusterRoles until T12-g; the broker's open 443 egress until T12-k), and only
+while the tree lacks that. Anything else is a failure. A cluster this run created always has the audit
+log: its absence is a failure (with `--kubeconfig` the check is skipped, and says so).
+
+**Stubbed** (the summary says so as well): Vault and VSO (the CRDs are real, a loop marks the
+`VaultStaticSecret`s synced and writes dummy Secrets), the service images (busybox images built as
+`localhost/ryft-stub/...`, loaded into kind and tagged inside the node as
+`ghcr.io/timkrebs/ryft/<name>:<pin>`, because the policies judge names; no `ghcr.io/timkrebs/ryft` tag is
+ever created in your local image store; the Job specs of the hooks are the real ones, the migrate job just
+sleeps 15 s so `terminate-op` has something to terminate), the git remote (Argo CD reads the tree from
+`git.gitsrv.svc` and the served Applications and project name that URL; P7's `argocd.repoURL` follows),
+Ingress addresses, and the broker's size (1 replica, default StorageClass). **Not tried:** a node drain,
+three workers, Traefik, the Vault auth, the real images, claims f, j and l (D122).
+
+**What a failure means**
+
+- `crds-*`, `argo-render`, `argo-values`: a pinned chart or Helm repository changed or is unreachable;
+  `argocd.tf` no longer evaluates offline (read `tf_values` in the log), or the module holds something
+  `tf_values.sh` refuses.
+- `argo-rbac-drift-*`: the chart renders other rules than `argocd.tf` gives it (an argo-cd bump changed
+  `clusterRoleRules`): fix `argocd.tf`. `argo-rbac-invariants`: a rule T12-f forbids is back.
+- `claim-h-open` fails: with the narrowed RBAC and no policies the controller can no longer rewrite
+  `rabbitmq-cluster-operator-role` and bind itself (escalate/bind by `resourceNames` do not do what
+  #47 assumes, or the hole is closed): re-read T12-f. `claim-h-guarded` fails: P6 does not stop the
+  escalation; **do not set P6 or P7 to Deny** until it does.
+- `claim-a` fails: the API server runs admission on policy objects (or the canary policy never became
+  live); the break-glass is not safe, stop. `claim-b` / `claim-c`: P6 does not see webhook
+  configurations / P8 does not see `pods/exec`; the design leaned on both. `claim-d`: the audit
+  annotation is not on dry runs, so §5's CloudWatch query cannot split them.
+- `chart-install-*`: the API server refused a policy or binding (a CEL compile error, often an EKS minor),
+  or reports other policies and bindings than the chart renders, or none. `typechecking`: a policy has
+  type-check warnings; a warning is a rule that may never fire or may error under `failurePolicy: Fail`.
+  `enforced-*`: the bindings are not answering within 30 s of the install.
+- `dryrun-*`: a render of this tree is refused or flagged, or an app renders nothing. Fix the manifest; if
+  the manifest is right the chart is wrong (that is how P10 and P11 were found wrong). `errors` are no
+  admission decisions: Argo CD's RBAC lacks a kind (T12-f), a CRD or namespace is missing.
+- `fixtures-*`: the API server and the harness disagree, or a policy changed without
+  `CELTEST_EMIT=<dir> admission-celtest/run.sh` (copy the output to
+  `admission-e2e/fixtures/generated`; CI diffs it). The message shows which rule answered instead.
+- `full-*`: `full-sync-*` an app did not reach Synced/Healthy (the summary names the failing
+  operation: a refusal by a policy reads "denied request" in it; with `respectRBAC: strict` an Application
+  that waits for ever on its children means the controller lacks `applications.argoproj.io` get, list and
+  watch); `full-findings-*` a validation failure that no stage explains: a policy refuses something
+  production does (fix the chart before Deny); `full-broker-restart` P2's exemption of the D98 restart does
+  not hold; `full-terminate-op` P10 or P7 blocks the operations of OPERATIONS -> Deploy;
+  `full-operator-logs-*` / `full-operators-can-i` a scoped Role lacks a verb (T12-g) or the operators still
+  read Secrets elsewhere; `full-stub-refused` the tree has a Secret label or name that is not valid.
+
+**The design's claims, as the kind run answers them** (kind 1.36.4, argo-cd chart 10.10.5; the run says so
+again each time; the table is in the design too):
+
+| Claim | Result |
+| --- | --- |
+| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 11 policies and 12 bindings |
+| b: P6 sees webhook configurations | holds |
+| c: P8 matches CONNECT on `pods/exec` | holds (refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it) |
+| d: dry runs carry `validation_failure` | holds (audit level Metadata; `requestURI` has `dryRun=All`) |
+| g: P7's whole-`spec` equality type-checks | holds (`status.typeChecking` empty; the project as committed passes, a widened one is refused) |
+| h: escalate/bind by `resourceNames` | the negative test: without policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it, then may write the bindings; with P6 in Deny both steps are refused. Positive: the narrowed role syncs the operators' ClusterRoles, Roles, bindings and webhooks |
+| i: `respectRBAC: strict` without cluster-wide Secrets | holds, **after** one added rule: the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its children for ever (#47 lacks it) |
+| k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D122) |
+| m: kube-state-metrics exports the bindings | **no**: custom-resource-state exports CustomResourceDefinitions only (v2.20.0); T12-e needs another binding-state signal (D122) |
+| f, j, l | not tried here (f: a refusal under server-side diff; j: `terraform validate`; l: the VPC) |
+
+**Upgrading it.** The EKS minor: change the node image (tag and index digest) in
+`scripts/admission_e2e.sh`, `scripts/install_kubectl.sh` (the same minor) and `k8s.io/*` in
+`admission-celtest/go.mod` together, run the target, then the kind run on the tree. kind, kubectl, helm,
+yq: `scripts/install_kind.sh`, `install_kubectl.sh`, `install_helm.sh`, `install_yq.sh` (version and
+sha256 in each). An operator or argo-cd upgrade: the kind run on its tree first, the chart before the
+operator (OPERATIONS -> RabbitMQ).
+
 ### Adding a service
 
 An entry in `infra/vault` `services` (namespace, Vault namespace, credentials), apply,

@@ -205,10 +205,40 @@ then expected to be refused by P6). **When the EKS minor changes, bump `k8s.io/*
 what the new API server runs), then run the target.
 It proves the expressions compile, evaluate and decide as intended on those objects. It
 does **not** involve an API server: `status.typeChecking`, CRD defaulting, admission
-ordering and the apiserver-dependent claims (a–d, f–m of the design) are T12-d's kind job.
-It is not in CI yet.
+ordering and the apiserver-dependent claims are the kind run's job (next section). CI's
+`admission` job runs this target first.
 
-Bump `version` in `charts/admission-policy/Chart.yaml` with every template change, or the
+**Kind run (T12-d).** `scripts/admission_e2e.sh` runs the policies against a real API server
+(kind, at EKS's minor, the node image pinned by digest), in two modes:
+
+- `--mode ci`, CI's required job `admission` (about 5 minutes; on changes to `deploy/**`,
+  `infra/aws/kubernetes/**`, `ci.yml`, the Makefile and the scripts of the job; skipped for a promote PR and for its merge to main; on a pull request it also fails when the chart's templates or values changed and `Chart.yaml`'s version did not go up):
+  the CRDs of VSO 1.6.0, cert-manager, Traefik, RabbitMQ and Argo CD; the namespaces with
+  infra/vault's labels; Argo CD's chart rendered with `argocd.tf`'s values (Terraform evaluates
+  `local.argocd_values` offline, `scripts/lib/tf_values.sh`) and its rendered ClusterRoles
+  compared with the rules in the values (chart drift) and checked for what T12-f forbids; the
+  chart installed twice, in Audit with the committed values and in Deny with every binding
+  (and `brokerEgressPublic: false`, the chart's guards); every Application's render
+  `kubectl apply --server-side --dry-run=server` as Argo CD's controller (its real ClusterRole
+  when the tree has T12-f's, the chart's wildcard role otherwise: the summary says which);
+  `status.typeChecking` of every policy; the fixtures; claims a, b, c, d and h.
+- `--mode full` (`make admission-e2e REPO=<path>`, the manual workflow `admission-e2e`, about
+  25 minutes): the CI part, then cert-manager, Argo CD itself and the RabbitMQ operators and
+  broker synced by it from the tree, the policies first in Audit, then in Deny with a manual
+  sync of every app, the hooks, `terminate-op`, the broker's `rollout restart` (D98), the
+  operators' logs and `kubectl auth can-i`, claims i, k and m.
+
+The fixtures (`admission-e2e/fixtures`): `generated/` is **the harness's own output** (one
+refused CREATE per distinct refusal of `admission-celtest`, written by `CELTEST_EMIT=<dir>
+admission-celtest/run.sh`; CI fails when it differs from the committed files, so regenerate
+and commit after a policy change), `manual/` holds the writes that are no CREATE (DELETEs,
+patches) and the requests that must pass (the controller's status write, `terminate-op`, a
+plain sync, pause, hard refresh), `claims/` and `baseline/` the rest. Each fixture says who
+asks (`as:`), which binding must refuse and with which message; in Audit the same fixture
+must pass with that message as a warning. See OPERATIONS → "Admission policies: the kind run"
+for how to run it against a PR's tree and what a failure means.
+
+Bump `version` in `charts/admission-policy/Chart.yaml` with every template or values change (CI's `admission` job fails a pull request that does not), or the
 Helm provider does not upgrade the release.
 
 **Break-glass (you only).** Bindings are exempt from admission, so this always works:

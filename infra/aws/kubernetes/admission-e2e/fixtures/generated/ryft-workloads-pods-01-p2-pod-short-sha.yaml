@@ -1,0 +1,76 @@
+# fixture: P2 pod short sha
+# op: create
+# as: system:serviceaccount:kube-system:replicaset-controller
+# refused-by: ryft-workloads-pods
+# message: P2: a container image is not the one this namespace may run.
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: notify
+    part-of: ryft
+  name: notify-abc12
+  namespace: ryft-notify
+spec:
+  automountServiceAccountToken: false
+  containers:
+  - env:
+    - name: EVENTS_BACKEND
+      value: amqp
+    - name: EVENTS_CONSUME
+      value: amqp
+    envFrom:
+    - configMapRef:
+        name: ryft-config-md7676f8dg
+    - secretRef:
+        name: ryft-secrets
+    image: ghcr.io/timkrebs/ryft/notify:abc
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 20
+    name: notify
+    ports:
+    - containerPort: 8080
+      name: http
+    - containerPort: 9090
+      name: metrics
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: http
+      periodSeconds: 10
+    resources:
+      limits:
+        memory: 128Mi
+      requests:
+        cpu: 20m
+        memory: 48Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+    startupProbe:
+      failureThreshold: 126
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 5
+    volumeMounts:
+    - mountPath: /etc/ryft/amqp
+      name: amqp-client
+      readOnly: true
+  securityContext:
+    runAsGroup: 65532
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: notify
+  volumes:
+  - name: amqp-client
+    secret:
+      secretName: amqp-client

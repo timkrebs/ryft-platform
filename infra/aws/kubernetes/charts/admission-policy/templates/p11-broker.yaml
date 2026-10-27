@@ -56,8 +56,16 @@ spec:
             l.trim() == '' || l.trim().startsWith('#') || l.trim() in {{ .Values.broker.additionalConfigLines | toJson }})))
       message: "P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused."
       reason: Forbidden
+    # An allowlist: the only key spec.secretBackend may hold is externalSecret, and only as the
+    # Cluster Operator's defaulting webhook writes it into every RabbitmqCluster (found by the kind
+    # run, D122): {"externalSecret":{"name":""}}. Vault, a named external secret and any key a later
+    # CRD version adds are refused.
     - expression: |-
-        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.secretBackend)
+        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.secretBackend) ||
+        (variables.spec.secretBackend.all(k, k == 'externalSecret') &&
+         (!has(variables.spec.secretBackend.externalSecret) ||
+          (variables.spec.secretBackend.externalSecret.all(k, k == 'name') &&
+           (!has(variables.spec.secretBackend.externalSecret.name) || variables.spec.secretBackend.externalSecret.name == ''))))
       message: "P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes."
       reason: Forbidden
     - expression: |-
