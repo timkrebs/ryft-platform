@@ -2783,7 +2783,7 @@ sent, and whether a second account shares its phone.
 - **Records in `infra/aws/dns`**, next to the CAA records: MX `1 smtp.google.com`; the apex TXT as **two
   values** (the `google-site-verification=…` string and `v=spf1 include:_spf.google.com ~all`; the hand-made
   record had both inside one quoted string, which resolvers read as one broken value); DKIM TXT at
-  `google._domainkey`, split into quoted strings of at most 255 characters (Route 53's limit) by the record;
+  `google._domainkey`, split into strings of at most 255 characters (Route 53's limit) by the record, joined as `chunk1" "chunk2` with **no outer quotes** (the AWS provider adds them; wrapping the value too failed the first apply with `InvalidCharacterString`);
   `_dmarc` TXT. The records were created by hand first, so they are **imported**, not recreated.
 - **The DKIM value is a variable without a default** (`dkim_record`): the selector's key is the user's
   to rotate, and a default I could not read from the live record would plan a change to a working key.
