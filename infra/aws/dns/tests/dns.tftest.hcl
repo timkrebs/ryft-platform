@@ -1,6 +1,11 @@
 # Plan-only (the zone has prevent_destroy); the AWS provider is mocked.
 mock_provider "aws" {}
 
+# A 2048-bit key is ~400 characters: longer than one Route 53 string (255).
+variables {
+  dkim_record = "v=DKIM1; k=rsa; p=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+
 run "zone_and_caa_for_the_domain" {
   command = plan
 
@@ -18,6 +23,52 @@ run "zone_and_caa_for_the_domain" {
     condition     = aws_route53_record.caa_wildcard.name == "*.ryftapp.de" && aws_route53_record.caa_wildcard.records == toset(["0 issuewild \"letsencrypt.org\""])
     error_message = "wildcard issuance must be limited to Let's Encrypt"
   }
+}
+
+run "google_workspace_mail_records" {
+  command = plan
+
+  assert {
+    condition     = aws_route53_record.mx.name == "ryftapp.de" && aws_route53_record.mx.records == toset(["1 smtp.google.com"])
+    error_message = "MX must point at Google Workspace"
+  }
+
+  assert {
+    condition = aws_route53_record.apex_txt.records == toset([
+      "google-site-verification=eUj_Gi_u5TMp0qhySZvarTISldu_UzkiJkRoIJBmfR8",
+      "v=spf1 include:_spf.google.com ~all",
+    ])
+    error_message = "the apex TXT must hold verification and SPF as two separate values, without quotes"
+  }
+
+  assert {
+    condition     = aws_route53_record.dkim.name == "google._domainkey.ryftapp.de"
+    error_message = "DKIM sits at the selector under _domainkey"
+  }
+
+  assert {
+    condition = (
+      length(one(aws_route53_record.dkim.records)) > 400 &&
+      alltrue([for s in regexall("\"([^\"]*)\"", one(aws_route53_record.dkim.records)) : length(s[0]) <= 255]) &&
+      join("", [for s in regexall("\"([^\"]*)\"", one(aws_route53_record.dkim.records)) : s[0]]) == var.dkim_record
+    )
+    error_message = "the DKIM value must be quoted strings of at most 255 characters that join back to the key"
+  }
+
+  assert {
+    condition     = aws_route53_record.dmarc.name == "_dmarc.ryftapp.de" && aws_route53_record.dmarc.records == toset(["v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s"])
+    error_message = "DMARC starts at p=none with strict alignment and reports to support@"
+  }
+}
+
+run "rejects_a_dkim_value_that_is_not_dkim" {
+  command = plan
+
+  variables {
+    dkim_record = "v=spf1 -all"
+  }
+
+  expect_failures = [var.dkim_record]
 }
 
 run "rejects_invalid_domain" {

@@ -358,6 +358,17 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 
 ## Not done / not verified
 
+**Mail for ryftapp.de on Google Workspace: your steps, in this order** (2026-10-28, D142; PR
+`infra/dns-google-mail`). Done: the records are in `infra/aws/dns` (MX, the apex TXT as two
+values, DKIM split for Route 53, `_dmarc` at `p=none`), tested in `tests/dns.tftest.hcl`
+(not run locally: no terraform allowed here; CI's terraform job runs it); OPERATIONS →
+"Mail for ryftapp.de". Open, yours: (1) merge the PR; (2) import, plan, apply with the
+commands in OPERATIONS (`terraform import` ×3, then `plan`: expect the apex TXT to change
+to two values, `_dmarc` created, nothing else; then `apply`); (3) send a test mail both
+ways and read SPF/DKIM/DMARC in the headers; (4) after 2–4 weeks of clean DMARC reports set
+`dmarc` to `p=quarantine`. The privacy texts' Google line is in PR #66 (2026-10-20) and #61
+(2026-10-26); the Impressum still has the phone and USt-IdNr/§ 36 VSBG `TODO(user)`s.
+
 **Web in this repository: your steps, in this order** (D107; PR bodies have the details).
 All done (2026-10-22): the docs PR (#10); ryft-web archived with the README pointer (its
 ruleset was off for that one push, then back on unchanged) and the description "Moved to
