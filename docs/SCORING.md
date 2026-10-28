@@ -1,7 +1,8 @@
 # RYFT — scoring inputs
 
 How scoring treats the raw HealthKit data before any formula runs, how logged
-strength sessions become load (**Strength**, below), how a night becomes need,
+strength sessions become load (**Strength**, below), what an imported training history
+changes (**Imported history**, below), how a night becomes need,
 quality, consistency and naps (**Sleep**, below), and why a day is calibrating
 (**Calibrating and its reason**, below). The other formulas
 (recovery, readiness, strain, sleep need) are described in
@@ -67,7 +68,7 @@ Logged strength sessions (`PUT /v1/sessions/{id}`, completed with `…/complete`
 **muscular load** on the TRIMP scale. It joins the day's heart-rate TRIMP *before* the
 strain compression, so a day with only a logged session has a strain, and a day with
 both gets more than either alone. Code: `internal/scoring/strength.go` (pure, tested) and
-`strength_day.go` (the day pass). Decisions: D58–D63.
+`strength_day.go` (the day pass). Decisions: D58–D63, D134–D138 (model 2026.10.2).
 
 **Per set** (completed sets only, `completed_at` set):
 
@@ -78,12 +79,16 @@ both gets more than either alone. Code: `internal/scoring/strength.go` (pure, te
 | `distance` | `distance_m / 100 × 0.4 × muscleFactor` |
 
 - **Weight** is the bar for `weight` exercises; for `bodyweight` ones body weight ×
-  `bodyweight_factor` plus any added load (a belt). Body weight is the session's
-  `bodyweight_kg`, else the last one logged on an earlier session, else **75 kg**.
+  `bodyweight_factor` plus any added load (a belt), minus any assistance (`assist_kg`,
+  below), never below 0. Body weight is the session's `bodyweight_kg`, else the last one
+  logged on an earlier session, else **75 kg**.
 - **e1RM** is Epley, `weight × (1 + reps/30)`, with reps capped at **12**: the athlete's
-  best over all completed working sets of that exercise up to the session's end, the
-  session's own sets included (so intensity never exceeds 1, and a first session is
-  scored against itself).
+  best over the completed working sets of that exercise in the **90 days** before the
+  session's history ends, the session's own sets always included (so intensity never
+  exceeds 1, and a first session, or the first after 90 days without the lift, is scored
+  against itself). The history ends at the session's `ended_at`, or at its last
+  completed set when that is later (`HistoryUntil`): a set stamped after `ended_at` is
+  still the session's own. Why 90 days and not the best ever: below.
 - **Unilateral** exercises log reps per side: × 2. **Warm-up** sets count × 0.25 and
   never set records.
 - **muscleFactor** = (Σ primary muscle mass + ½ Σ secondary) × the exercise's
@@ -135,20 +140,25 @@ day and, for each one:
 
 Sessions are recomputed whenever their day is: after `…/complete`
 (`ryft.session.completed`), after an edit or delete of a completed session
-(`ryft.ingested`, reason `session`), and by `scoring rescore`. So a change to these
-constants takes effect for history with `scripts/rescore_all.sh`.
+(`ryft.ingested`, reason `session`), after an import (`ryft.ingested`, reason `import`,
+scored like a sync's days), and by `scoring rescore`. So a change to these constants takes
+effect for history with `scripts/rescore_all.sh`.
 
 **Records** (`PersonalRecords`), recomputed from all completed working sets of an exercise
-whenever a session with it is completed, edited or deleted: `e1rm` (Epley as above),
-`max_weight`, `max_reps` and `max_volume` (reps × kg in one set) for `weight` exercises;
-`max_reps` (and `max_weight` of added load) for `bodyweight` ones; none for `time` and
-`distance`. The first set to reach a value keeps the record. The insight `pr` reports one
-set today or yesterday.
+whenever a session with it is completed, edited, deleted or imported: `e1rm` (Epley as
+above), `max_weight`, `max_reps` and `max_volume` (reps × kg in one set) for `weight`
+exercises; `max_reps` (and `max_weight` of added load) for `bodyweight` ones; none for
+`time` and `distance`. Records are all-time: the 90-day window is only the reference for
+intensity. An assisted set holds no record. The first set to reach a value keeps the
+record. The insight `pr` reports one set today or yesterday, of a session logged in RYFT
+(imported records are silent, **Imported history** below).
 
 **Progression** (`NextTargetKG`, the `target_kg` of `GET /v1/plans/today`), rounded to
 2.5 kg:
 
-- `pct_1rm`: `target_value` % of the current e1RM; none without logged sets.
+- `pct_1rm`: `target_value` % of the current e1RM, the best of the last 90 days (as
+  above); none without a logged set of the exercise in that window, so a plan never
+  prescribes a share of a max from long ago.
 - `kg`: `target_value`, moved by a linear progression replayed over the history of that
   plan exercise (oldest first): after an attempt with at least the prescribed number of
   completed working sets at the top of the rep range (`reps_max`) and at least the
@@ -159,6 +169,149 @@ set today or yesterday.
 An attempt is a completed session whose exercise names the plan exercise
 (`plan_exercise_id`), or — when it names none — the same exercise on a session started
 from that plan day.
+
+**Assisted sets** (model 2026.10.2, D134). `Set.assist_kg` is the support a `bodyweight`
+set had: an assistance machine's counterweight or a band, in kg (validation keeps it to
+bodyweight exercises, 0–200, and never together with an added load; API.md → `Set`).
+
+| | Rule | Why |
+| --- | --- | --- |
+| Weight | `max(0, body weight × bodyweight_factor + added − assist)` | The support acts on the moving body (the knee pad, the band under the foot), so it comes off the moved load kilogram for kilogram; the factor is the share of the body that moves, which the support does not change. At or above that share nothing is lifted. |
+| Volume | reps × that weight | As for every set. |
+| Muscular load | `reps × (weight / e1RM)² × muscleFactor`, unchanged | Intensity is relative to what the athlete can do, so the formula needs no special case. |
+| e1RM reference | counts, with its weight | A user who only does assisted pull-ups needs a reference; an unassisted set (more weight) outweighs it anyway. |
+| e1RM chart | no point | As for every unloaded bodyweight set (the chart shows `weight` and loaded `bodyweight` sets only). |
+| Records | none | Twelve reps with 30 kg of support are not more than eight without, and there is no record kind for "least support". |
+
+`assist_kg` null and 0 mean no support: every number is what model 2026.10.1 gave
+(`TestAssistNilOrZeroChangesNothing`: 500 random sets and the three anchors). Calibration
+(`strength_import_test.go`): pull-up (factor 1.0, muscleFactor 0.44), 80 kg athlete, 3 × 8
+with 30 kg of support:
+
+| Case | Weight | e1RM | Muscular TRIMP | Strain | Volume | Records | 2026.10.1 (support ignored) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Nothing else in the window | 50 kg | 63.3 | 3.9 | 1.0 | 1200 kg | none | 3.9, 1.0, 1920 kg, max_reps 8 |
+| A week after 5 unassisted reps | 50 kg | 93.3 | 1.8 | 0.5 | 1200 kg | max_reps 5 (the unassisted set) | 3.9, 1.0, 1920 kg, max_reps 8 |
+| 80 kg of support or more | 0 | none | 0 | 0 | 0 | none | as unassisted |
+
+On its own, an assisted session loads like the same reps unassisted, because both are
+measured against the athlete's own sets; next to harder sets it weighs what it is, less. The
+built-in `assisted-dip` is a `weight` machine exercise whose number the machine shows as
+support, so there a higher number means *less* work. The app maps an imported assisted dip
+or pull-up to `dip` / `pull-up` with `assist_kg`, not to `assisted-dip` (D134).
+
+**Why the e1RM reference is the last 90 days** (model 2026.10.2, D135). Model 2026.10.1 took
+the best over every set ever logged. With RYFT's own history (the beta began on 2026-10-20)
+that was the recent best. An import brings years: a lifter whose squat peaked two years ago
+at 140 × 5 (e1RM 163.3) and now squats 5 × 5 at 100 kg (e1RM 116.7) would see that session
+fall from strain 6.9 to 3.9, and every later squat session with it, until the old peak is
+beaten. For the reference session (5 × 5 squat, bench and row at 80 %) next to peaks 25 % higher
+two years earlier: 11.0 with the window, 7.9 against the best ever. A best from before a long
+break does not describe what the athlete can lift now: maximal strength declines measurably
+after a few weeks to months without training (Mujika & Padilla 2000; Bosquet et al. 2013).
+Ninety days holds a training block and a rotation of lifts (a back-squat block, a
+front-squat block, back squats again), and it bounds the days an import can move (below). It
+is a window, not a decay: one constant, the same answer on every rescore (it is anchored at
+the session's end, not at today), and a first session after a break is scored against
+itself, as a first session always was. Sources: I. Mujika, S. Padilla, "Detraining: loss of
+training-induced physiological and performance adaptations. Part II: long term insufficient
+training stimulus", *Sports Med* 30(3), 2000, 145–154; L. Bosquet et al., "Effect of
+training cessation on muscular performance: a meta-analysis", *Scand J Med Sci Sports*
+23(3), 2013, e140–e149. They support the direction (strength fades over weeks to months),
+not the exact 90: that is a judgement, pinned by the tests and open to the beta's data.
+
+| Calibration (`TestE1RMWindow`, `TestHistoryUntilAndAssumedDurations`, `TestEngineScoresAgainstTheE1RMWindow`) | 2026.10.2 | 2026.10.1 |
+| --- | --- | --- |
+| 5 × 5 squat at 100 kg, a 140 × 5 two years (engine: 200 days) before | TRIMP 32.0, strain 6.9 | 16.3, 3.9 |
+| Reference session; peaks 25 % higher two years before, its anchors a week before | strain 11.0 | 7.9 |
+| A set exactly 90 days before the session's end / a minute inside | out / in | in / in |
+| 4 × 5 at 100 kg and a 110 × 3 at +70 min, `ended_at` +45, +60 or +120 min | TRIMP 28.1 each | 30.2, 30.2, 28.1 |
+| The three anchors (11.0, 8.0, 5.1) | unchanged | |
+
+## Imported history (TI-1)
+
+`POST /v1/train/import` (API.md, D124–D130) stores another app's history as completed
+sessions with `origin = import`. Scoring treats them as logged sessions. This section says
+what that means, with the decisions behind it (D134–D138).
+
+**History changes once.** An import is a change to the past: records, e1RM references, the
+next mornings' sleep need. It happens at the import and is then as stable as any other
+history. The request queues the days whose stored numbers can move and sends one `ingested`
+event (reason `import`), which scoring handles like a sync's days (`ComputeDays` over the
+explicit list, then the stored days after a change; D100):
+
+1. the local day of every created or updated session;
+2. the days of `unchanged` sessions that an interrupted attempt queued and scoring has not
+   finished;
+3. the **dependent days** (`scoring.DependentScope`, D135): the user's other completed
+   sessions started after the oldest changed one that
+   - share an exercise with the changed sessions and start before the newest changed
+     session's end + 90 days (later than that, no imported set is in their e1RM window), or
+   - have no `bodyweight_kg` of their own, hold a bodyweight exercise and start after the
+     oldest changed session with a body weight (their body weight is the last one logged
+     before them, which may now be an imported one).
+
+   The replaced version of an updated session counts as changed too. The store's query may
+   return more days, never fewer: scoring an unaffected day again changes nothing. Days
+   before the oldest changed session never depend on it, because every input looks back.
+
+Only days in the 400 days ending today are scored (`MaxRangeDays`, as in a sync's window).
+Older sessions are stored and count for records and the e1RM chart (and, within 90 days,
+for the reference of later sessions); their `muscular_trimp`, `strain`, `volume_kg` and
+`workout_id` stay `null`. Records are recomputed once per affected exercise.
+
+**Why the dependent days are rescored, not left as scored.** A session's load is a pure
+function of the stored history before it. A stored number that disagreed with that function
+would move at the next edit of its day, a recompute or `scripts/rescore_all.sh`, at a time
+nobody could explain. Rescoring at the import moves it once, when the user did something,
+and `days_touched` names the days. The 90-day window keeps the reach to 90 days after the
+imported sessions; with the best-ever reference it was everything after them, for good.
+
+**Days that hold only imported sessions** (D137) are what a day with only a logged session
+already is: a strain from the muscular load alone (a floor: without heart rate there is no
+cardio or everyday movement in it), `strength_min` and `volume_kg`, a created `ryft-session`
+workout, no recovery, no readiness, state `calibrating`. They feed what a logged session
+feeds, and nothing more, because there is nothing more: the model has no strain baseline.
+
+| Input of later days | From imported days | |
+| --- | --- | --- |
+| Yesterday's strain → sleep need (3 min per point, at most 60) and the readiness penalty | yes | the user trained that day |
+| `details.strength_week` (7 days: minutes, sessions, volume per muscle) | yes | |
+| The learned sleep baseline's qualifier (a strain under 10 the day before) | yes | |
+| The HRV, resting-HR and breathing baselines | no | the days have none of them |
+| `calibrating_reason`'s `W` (days with data) | yes: a logged session's strain is data | after a long import it can name `no_hrv` / `no_rhr` from the first synced day, which is then true of that account; a first night with HRV is still `short_history` |
+| Sleep debt | no | it counts nights with sleep only |
+
+A day gets a row when it is scored, at most one per day, so imported days cannot crowd the
+30-row baseline window of the days that have nights: they are either days without a row
+(before the account's first data, or a gap) or days that already have one. Scoring an
+import walks on from each changed day through the next 30 stored rows (`walk`, capped at
+`MaxRangeDays`); a new row's strain moves the next day's need, so the walk crosses every
+stored row from the oldest imported day on. For 50 sessions that is at most the 400-day
+window and the 90 dependent days, seconds to a minute of scoring per request.
+
+**Imported records are silent** (D136): no `PR` push and no `pr` card, however recent
+(`store.PRsSince` leaves out records held by an imported session). They are history the
+user already saw in the other app, and an import arrives in batches: a record on a card
+after the first batch may belong to an older session in the next one. They are records
+everywhere else (`GET /v1/exercises/{id}/history`, `Session.prs`, `pr_count`). An import can
+take a record away from a session logged in RYFT (an older set with a higher value, or the
+same value first); that record's card then goes too, which is right.
+
+**Assumed durations** (D138). When the file has no duration, the app sends `ended_at` =
+`started_at` + 60 min. Strain, muscular load, volume, e1RM and records do not read the
+duration: a set's load comes from its reps and weight, and the history ends at the last set
+when that is later than `ended_at`. The assumption shows in minutes only: `strength_min` (a
+trend metric), `strength_week.minutes`, `SessionSummary.duration_min`, and the session's
+workout window (which HealthKit workout it joins, by at least half an overlap, and the
+span of the created one). No contract flag for now. If the app finds that most imported
+sessions lack a duration, an optional flag on the import's session lets scoring leave their
+minutes out (`null`) instead of counting 60.
+
+**Not de-duplicated:** a workout logged in RYFT and also in the imported file becomes two
+sessions, and both add their load to the day (a strain-11 session twice is 16). The app's
+import skips a file workout that overlaps a session logged in RYFT (it has them from
+`GET /v1/sessions`) and says so; scoring adds a rule only if the beta shows such pairs (D137).
 
 ## Sleep (M4)
 
@@ -440,7 +593,7 @@ the Today screen has the reason within a pass of the deploy. Older days keep `nu
 
 ## Model version
 
-`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.1"`
+`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.2"`
 (year.month.n). Scoring writes it on every `daily_scores` row and every workout it puts
 a load on (`model_version`, migration 0018); rows scored before 2026-10-20 have `null`
 until they are rescored. `GET /v1/model` serves it with the changelog
@@ -458,6 +611,25 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
 refuses entries out of order, an unknown metric or an unsorted `affects`.
+
+| Version | Date | What moved | Decisions |
+| --- | --- | --- | --- |
+| 2026.10.2 | 2026-10-26 | Strength: the e1RM reference is the best of the 90 days before a session's end, its own sets always included; the history ends at the session's last set when that is after `ended_at`; assisted bodyweight sets count with the support taken off and hold no record; `pct_1rm` targets use the same 90-day e1RM. `affects`: `strain` and `volume_kg` directly; `sleep`, `sleep_quality`, `recovery` and `readiness` through the next night's need (3 min per strain point) and the readiness penalty. | D134, D135, D138 |
+| 2026.10.1 | 2026-10-20 | The model at the start of the beta. | D80 |
+
+**2026.10.2, before and after.** The new rules differ from 2026.10.1 only for: a set with
+`assist_kg` above 0 (the column is new with the import, migration 0028: no stored set had
+one); a session with a set of the same exercise more than 90 days before its end and a
+higher e1RM there than in the window; and a session with a completed set stamped after its
+`ended_at`. `scripts/synth.py` generates no strength sessions, and the changed functions
+read nothing but sessions and their sets, so a synthetic run cannot differ (not re-run for
+this change). The calibration tables
+above are the before/after of each rule; the three anchors (11.0, 8.0, 5.1) and every
+2026.10.1 test pass unchanged. Production was not read for this change. **Rescore** after the
+deploy: `scripts/rescore_all.sh` (400 days, every user with consent), so every stored row
+carries 2026.10.2 and the app does not show two models side by side; until then only rows
+scored again (today and yesterday by the 15-minute pass, imported and dependent days) carry
+it.
 
 **Numbers of past days can change without a new version.** A day's baselines (the
 last 30 scored days), sleep debt and need, consistency and yesterday's strain come from

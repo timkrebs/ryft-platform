@@ -24,6 +24,7 @@ import (
 	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/outbox"
+	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -153,25 +154,9 @@ type handler struct {
 // admitted says whether user may upload: beta access (BETA_GATE) and a consent
 // to the current privacy policy (CONSENT_ENFORCE; GDPR Art. 9(2)(a), D78). A
 // gate in warn mode lets the sync through with the code in X-RYFT-Gate (D87).
-// The user row, consent included, is read fresh for every request, so a
-// withdrawal counts at once.
+// The consent rule is the api's import's as well (internal/gate, D129).
 func (h *handler) admitted(w http.ResponseWriter, r *http.Request, user model.User) bool {
-	check := func(mode config.Mode, failed bool, code, msg string) bool {
-		if mode == config.ModeOff || !failed {
-			return true
-		}
-		metrics.GateRefusals.WithLabelValues(code, string(mode), "ingest").Inc()
-		if mode == config.ModeWarn {
-			w.Header().Add(httpx.GateHeader, code)
-			return true
-		}
-		httpx.WriteCodedError(w, r, http.StatusForbidden, code, msg)
-		return false
-	}
-	return check(h.beta.Gate, !user.BetaAccess, model.CodeInviteRequired, "this beta needs an invite code") &&
-		check(h.beta.Consent, user.Consent == nil || user.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion,
-			model.CodeConsentRequired,
-			"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
+	return gate.Invite(w, r, h.beta.Gate, user, "ingest") && gate.Consent(w, r, h.beta, user, "ingest")
 }
 
 func (h *handler) sync(w http.ResponseWriter, r *http.Request) {

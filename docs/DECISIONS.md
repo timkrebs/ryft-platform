@@ -2385,3 +2385,391 @@ sent, and whether a second account shares its phone.
 - **Consequences:** an Argo CD upgrade that changes the library set or gopher-lua is a harness change
   (bump the module and `oslib_safe.go`). A new health check is covered only once it has cases: the
   harness fails on a script without them.
+
+## D124 — The training import is one batch endpoint with per-item results (TI-1)
+
+- **Why (2026-10-26):** the app imports another app's CSV export: up to years of history, 5 plans,
+  sessions in batches. One call per session (`PUT` + `…/complete`) would complete each session with its
+  own event, push and rescore, and a lost answer would have no safe retry.
+- **Decision:** `POST /v1/train/import` takes `{source, plans ≤ 5, sessions ≤ 50}` (1 MiB) and answers
+  `200` with one result per item (`created` / `unchanged` / `updated` / `rejected` + `code`), so a bad
+  item never fails the batch. Whole-request failures are only structural (`400` unknown field, `413`,
+  `422` unknown `source` / over the counts / duplicate ids, the gates, `429`, `503`). Every item is its
+  own unit of work (a transaction per item; savepoints inside one outer transaction are the same
+  semantics, the database engineer's call), plans first, sessions oldest first. A database failure stops
+  the request with `503`: the app resends everything, and stored items come back `unchanged`.
+  `ImportResult.kind` also lists `exercise`, reserved for a later `exercises` array; the app creates
+  custom exercises with `POST /v1/exercises` first.
+- **Not chosen:** all-or-nothing (one odd session in a 50-session file would block the user's whole
+  history); a result per set (the unit the app can act on is a session); `207` (clients treat any 2xx as
+  "read the body").
+- **Consequences:** `results` is the app's source of truth, always one entry per item in request order.
+  The server never decides to drop a reference: an unknown `plan_day_id` rejects the session (as the
+  `422` of `PUT` does) and the app resends it without.
+
+## D125 — Origin belongs to the endpoint; imports are silent (T1, T6)
+
+- **Decision:** `sessions` gain `origin` (`app` | `import`, default `app`) and `import_source`
+  (nullable, set exactly when `origin` is `import`). The import endpoint writes both from `source`;
+  its request type has neither field, so a request that carries one is `400` (unknown field);
+  `PUT /v1/sessions/{id}` accepts and ignores them. An import never publishes `session.completed`:
+  it writes one `ingested` event with `reason: "import"` and no `session_id`. Scoring publishes
+  `session.scored` only for an event with a session id, so no `SESSION_SCORED` and no `PR` push can
+  follow; notify additionally refuses a session whose origin is `import` (a `POST …/complete` on an
+  imported session would carry an id), counted as result `import`.
+  The silent refresh push, sent after a `sync` event's days, is also sent after `import`.
+- **Records** of imported history are recomputed with the existing `ReplacePRs` and stay silent:
+  `PRsSince` (the insight cards) skips records of imported sessions. Whether the newest may surface once
+  as an info card is open for the scoring-scientist.
+- **Enrolment:** `AdvanceEnrollment` runs only in `POST …/complete`; the import does not call it.
+- **Not chosen:** a per-session `origin` in the request (a client could label an import as live);
+  `session.completed` with a flag (one more field every consumer must honour, and scoring would rescore
+  per session).
+
+## D126 — Idempotency: compare what the request determines; the app's later edits win (T3, T10)
+
+- **Decision:** a stored id is compared with the request after the same clamping and defaults, over every
+  field the request sets and nothing the server computes. Set `updated_at` and `completed_at` are content
+  (the app derives them from the file, so a resend is identical); a set without `updated_at` takes its
+  `completed_at`, not `now()`. `weight_kg` and `assist_kg` `null` equal `0`. `import_source` is content.
+  Equal → `unchanged`, nothing written, nothing rescored. Different → `updated`, the item replaced whole
+  (as a completed session or a plan is by `PUT`). Only a session with `origin: import` can be replaced; a
+  session logged in the app is `id_taken`. A stored imported session whose set has a later `updated_at`
+  than the request's, or that was discarded, is `rejected` / `newer_on_server` (the rule of `train.Merge`),
+  so a resend after a lost answer never undoes the user's edit.
+- **T3, differing from the user's proposal:** the user proposed normalising `null` → `0` on write. The
+  code already treats them alike (`EffectiveWeight`, `PersonalRecords`, the e1RM chart skips both), and a
+  rewrite would make a read differ from the live path (live sets send `null`) for nothing the scoring or
+  the comparison needs. So the equivalence lives in the comparison and in a test.
+- **Known limit, closed in the review of PR #59 (D141):** an edit to a title or a note (no set changed)
+  used to go unseen, so a resend reverted it. Now every imported session and plan carries `imported_at`,
+  and any change in the app after it (`updated_at` later) is `newer_on_server`, for plans too.
+
+## D127 — `assist_kg` instead of a negative load; scoring decides later (T4)
+
+- **Decision:** `Set.assist_kg` (number?, clamped 0–200, bodyweight exercises only, not together with a
+  `weight_kg` above 0; `422` / `invalid` otherwise) is stored in `session_sets.assist_kg` and returned.
+  `weight_kg` keeps its 0–500 meaning. **It changes no number yet:** scoring, volume, records and the e1RM
+  chart ignore it until `SCORING.md` defines the effective load (proposal: `max(0, bodyweight_kg ×
+  bodyweight_factor − assist_kg)`). That is a scoring change (model version, rescore), the scoring-scientist's.
+- **Why not a negative `weight_kg`:** it would widen a range every consumer clamps and compares at 0, and
+  "added load" would mean two opposite things.
+- **Consequences:** until then an assisted set counts like an unassisted bodyweight set (overstated), as
+  a reps-only import does today.
+
+## D128 — One rescore per request, over explicit days; imports older than 400 days are stored, not scored (T7)
+
+- **Decision:** after the last item the request (a) recomputes records once per affected exercise,
+  (b) queues the days in `score_queue` (so `GET /v1/me/sync` → `pending_days` shows them) and (c) writes
+  **one** outbox `ingested` event, `reason: "import"`, `days` = the explicit sorted list (not the
+  recompute range form: a file spanning two years has 50 sessions, not 400 days to score). Each item's
+  own transaction already queues its day, so a request that dies after some items leaves those days
+  pending, and the retry (its items `unchanged`) puts the pending ones into the answer and the event.
+  `days_touched` also holds the days of the user's other completed sessions after the oldest imported one
+  that share an exercise (their load is measured against the e1RM history as of their end, which the
+  import changed). Only days in the 400 local days ending today are queued, as a sync's window;
+  older sessions keep `muscular_trimp` / `strain` / `volume_kg` / `workout_id` `null`.
+  The api computes no load for an imported session; scoring fills it when it scores the day.
+  `expected_within_sec` = the sync estimate + 2 s per queued day, at most 300.
+- **Consequences:** `ryft_api` needs INSERT and UPDATE on `score_queue`. Imported days show up on the
+  Strain screen like any logged session (a `ryft-session` workout). A day with a session and no sleep or
+  HRV is what a day with a logged session already is; what such a history does to baselines and the
+  strain average is for the scoring-scientist to confirm.
+
+## D129 — The import's gates, limits and concurrency (T9)
+
+- **Decision:** the invite gate is the api's (every route). **Consent is new on this route:** today only
+  `POST /v1/sync` checks it and the Train writes do not (scoring simply refuses an unconsented user), but
+  an import is a bulk upload of health data, so it answers `403 consent_required` under the same rule as
+  the sync; **amended (D141):** on this route `warn` acts as `on`, and the flag `train.import` is checked
+  after the gates (`403 import_not_enabled`). Body 1 MiB, 5 plans, 50 sessions, 50 s. One token however
+  many items, **amended (D141):** from the import's own rate class (bursts of 5, then one every 5 s). At most **one import per user at a time across all pods**: a
+  second one is `429`, `code: import_in_progress`, `Retry-After: 10`, nothing processed. `429` (not
+  `409`): the app already treats `429` as "wait and send the same thing", and the request is not in
+  conflict with a state, it is early. The per-pod token bucket cannot do this; a lease row in the
+  database does, and works through a transaction pooler (a session advisory lock would not). New closed
+  `code` `import_in_progress`.
+- **Privacy:** no bodies, titles, notes or values in logs, metrics or `message`s (D114). The import is
+  health data the user already holds, stored under the existing consent and processors; no new
+  processor. A line in the privacy text that training data from other apps can be imported is the user's
+  call (a text change moves `PRIVACY_POLICY_VERSION` in the same PR).
+
+## D130 — Small answers that change behaviour (T8, T11, T12)
+
+- **T8:** `POST /v1/plans/{id}/enroll` takes an optional `{started_at?, current_week?, current_day_index?}`.
+  With a field set, an active or paused enrolment of that plan is moved in place (`200`); a new one starts
+  at the position (`201`). The target day must exist (`422` otherwise); no body is today's behaviour.
+- **T11:** a `bodyweight` plan target's `target_value` is `null` or an added load of 0–500 kg. The server
+  stores it as sent and never uses it (`target_kg` stays `null`); the doc said `null` only. The 0–500
+  range is checked now (it was not), as for `kg`.
+- **T12:** `POST /v1/exercises` with an archived custom exercise's id un-archives it. That is what the
+  code does (the update writes `archived = false`); documented and pinned with a test.
+
+## D131 — One transaction per import item, not savepoints in one (TI-2)
+
+- **Decision:** `ImportPlan` and `ImportSession` each run in their own transaction (`pgx.BeginFunc`), and
+  a deadlock or serialization failure (`40001`, `40P01`) is retried once in a fresh one. A rejection is
+  an error that rolls the item back (`importReject`), so a rejected item leaves no row, and the next item
+  is unaffected. The queue rows of an item's day are written in the item's transaction (D128).
+- **Why not savepoints in one request transaction** (same semantics, as D124 allowed): (1) the item's
+  locks (`pg_advisory_xact_lock` on the session, `FOR UPDATE` on its row and its plan) would be held until
+  the end of a request that may run 50 s, so a live save of any session in the file would wait that long;
+  (2) one open transaction pins the connection and the snapshot (vacuum cannot clean up behind it) for
+  the whole request, on a pooler that gives a small number of server connections to all pods; (3) a
+  connection that dies at item 40 would lose items 1-39, which D124 says stay stored and the retry
+  would have to redo; (4) a failed statement inside a savepoint leaves its dead tuples either way, so
+  there is no storage argument for one transaction. The cost is one commit per item (at most 50 plus
+  5 plans); measured locally a 50-session, 2 500-set request takes 1.9 s (create), 1.3 s (resend).
+  On Supabase expect about a dozen round trips per item, so a few seconds, far inside the 50 s.
+- **Idempotent by id:** `(user_id, id)` is the key, `lockSession` serialises with a live `PUT` of the same
+  id, `unchanged` writes nothing (checked with `xmin` in the tests).
+- **Rejections the store decides:** `id_taken` (another origin, or an exercise or set id of another
+  session), `unknown_exercise`, `unknown_plan_reference`, `newer_on_server`. A value Postgres refuses
+  (class 22, not-null, check) is `invalid` for that item (it fails the same way next time); anything else
+  (connection, timeout, a foreign-key violation from a concurrent delete, a deadlock after the retry) is
+  returned as an error, which the handler turns into the `503` that stops the request.
+- **The comparisons are not in the store:** `SameSession`, `SamePlan` and `ImportConflict` are
+  `internal/train`'s pure rules (design §3); the store takes them as `ImportRules`
+  (`Store.WithImportRules`) and refuses to run without them (`ErrImportRules`). Its tests use
+  stand-ins.
+
+## D132 — The import lease is a column on `users`, fenced by its own value (TI-2)
+
+- **Decision:** `AcquireImportLease` is one statement: `UPDATE users SET import_lease_until = now() +
+  ttl WHERE id = $1 AND (import_lease_until IS NULL OR import_lease_until < now()) RETURNING
+  import_lease_until`. No row: busy (or `ErrNotFound` when the account does not exist). TTL 70 s
+  (`ImportLeaseTTL`; 120 s before the review of PR #59, D141). The database's clock decides, so the pods need no clock agreement; no session state
+  is involved, so it works through Supavisor's transaction pooler where a session advisory lock does not.
+- **Release is fenced:** `UPDATE users SET import_lease_until = NULL WHERE id = $1 AND import_lease_until =
+  <the value we set>`. An import that overran its lease and finishes after another took it cannot free the
+  other's lease. The returned `release` runs on `context.WithoutCancel` with its own 5 s, because the
+  request's context is usually the thing that ended. A failed release is ignored: the lease expires.
+- **Why the column and not a `train_import_leases` table:** no new table means no new deletion, export,
+  retention and RLS surface (the column dies with the `users` row); the update is HOT (the column is
+  not indexed) so it creates no index churn; the two writes per import are negligible next to the import.
+  The lease row lock contends with other updates of the same `users` row only for the statement's
+  duration.
+- **Limit:** a pod that dies mid-import (a rollout) blocks that user's next import for up to 70 s (the
+  client gets `429 import_in_progress`, `Retry-After: 10`, and retries). The lease is not renewed: the
+  request is bounded by 50 s, the finish included, and its release has 5 s more, so 70 s cannot run out
+  while it works.
+
+## D133 — Migration 0028 is additive, NOT VALID, and leaves one constraint unvalidated (TI-2)
+
+- **Decision:** `0028_train_import.sql` adds `sessions.origin` (`NOT NULL DEFAULT 'app'`, constant default:
+  no rewrite on Postgres 11+) and `import_source`, `session_sets.assist_kg`, `users.import_lease_until`,
+  the `train.import` flag row (enabled, 0 %), and two grants: `INSERT, UPDATE` on `score_queue` to
+  `ryft_api` and `SELECT (origin)` on `sessions` to `ryft_notify`. Nothing is dropped or renamed, so the
+  images before the migration run against the new schema; rollback is re-pinning them.
+- **Locks:** the migrator runs a file in one transaction under the 5 s `lock_timeout` (D116, repeated
+  in the file as 0027 does), so the `ACCESS EXCLUSIVE` of `ADD COLUMN` is held to the commit and a
+  `VALIDATE` in the same file scans under it. Therefore every `CHECK` is added `NOT VALID` (catalog only;
+  still enforced for new and updated rows), the small `sessions` table is validated in the file (all rows
+  are `'app'`), and `session_sets_assist_kg_check` is **left `NOT VALID`**: `session_sets` is the largest
+  train table and every existing row is `NULL`, which passes. `CHECK` inline on `ADD COLUMN` would have
+  scanned it. A test proves 0028 gives up on a held `sessions` table after 5 s and leaves nothing behind.
+- **Optional, not required:** `ALTER TABLE session_sets VALIDATE CONSTRAINT session_sets_assist_kg_check;`
+  takes only `SHARE UPDATE EXCLUSIVE` (writes continue) and may be run from the SQL editor in a quiet
+  minute; it only flips `convalidated`. The planner does not use the constraint.
+- **No index:** the lookups are by `(user_id, id)`, `sessions_user_started` and
+  `session_exercises_exercise`. `EXPLAIN (ANALYZE, BUFFERS)` of the dependent-days query on a user with
+  1 500 sessions (6 years) among 37 500 sessions and 750 000 sets: 6 ms for the 400-day window (273
+  sessions, bitmap scans on `sessions_user_started` and `session_exercises_exercise`, hash semi join),
+  1.4 ms with no window cut. Nothing lists by `origin`; no index on it.
+- **Deletion, export, retention:** no new table. `DELETE /v1/me` and the merge cover the columns because
+  they live on rows both already handle (the merge copies columns generically); `delete_test` and
+  `merge_test` now hold an imported session, an assisted set, a record, an imported plan and a held lease.
+  Export is built from `GET /v1/sessions*`, which carry the new fields. No retention changes.
+
+## D134 — Assisted sets: the support comes off the moved weight; they hold no record (TI-4, open point 1)
+
+- **Why (2026-10-26):** D127 stored `assist_kg` and left its meaning to scoring; until now an
+  assisted pull-up counted as an unassisted one, overstating its volume and, worse, giving its
+  reps the `max_reps` record. The import makes these sets common (assistance machines and bands
+  are a standard entry in training apps).
+- **Decision:** a `bodyweight` set's weight is `max(0, body weight × bodyweight_factor + added −
+  assist_kg)`: the support acts on the moving body, so it comes off kilogram for kilogram. Volume
+  and muscular load follow with no special case (`reps × (weight / e1RM)²` is relative to the
+  athlete). An assisted set counts towards the e1RM reference with that weight (a user who only
+  does assisted pull-ups needs one; an unassisted set outweighs it), gives no e1RM chart point
+  (as every unloaded bodyweight set) and **holds no record**. `assist_kg` null or 0 is exactly
+  the old model; a weight exercise's `assist_kg` (refused by validation) is ignored. Calibration
+  in `SCORING.md` → Assisted sets (3 × 8 with 30 kg: TRIMP 3.9 alone, 1.8 a week after 5
+  unassisted reps; volume 1200 instead of 1920 kg).
+- **Not chosen:** `(body weight − assist) × factor` (the support does not act on the part of the
+  body that stays put); a `min_assist` record (a new kind in a closed enum, for one exercise
+  family); leaving assisted sets out of the e1RM reference (an assisted-only exercise would have
+  no load at all).
+- **Consequences:** model **2026.10.2** with D135 and D138. Nothing stored before migration 0028
+  has an `assist_kg`, so D134 alone moves no stored number; the bump is D135's. The built-in
+  `assisted-dip` is a `weight` machine exercise whose number the machine shows as support, so a
+  higher number there is *less* work: the app maps an imported assisted dip or pull-up to `dip` /
+  `pull-up` with `assist_kg`. Re-modelling `assisted-dip` itself (load type, a data migration of
+  its logged sets) is a separate change with the app.
+
+## D135 — The e1RM reference is the last 90 days; an import moves the days that depend on it (TI-4, open point 4)
+
+- **Why (2026-10-26):** D59 measured every set against the best e1RM ever logged. With RYFT's own
+  few weeks of history that was the recent best. An import brings years: a lifter whose squat
+  peaked two years ago would see every later squat session's load drop by about half (5 × 5 at
+  100 kg: strain 6.9 → 3.9) until the old peak is beaten. Strength fades within weeks to months
+  without training (Mujika & Padilla 2000; Bosquet et al. 2013), so an old best is not today's
+  capacity. Open point 4 asked whether queueing later sessions' days (D128) is right and enough.
+- **Decision:**
+  - The reference is the best e1RM over the completed working sets in the **90 days** before the
+    session's history ends, its own sets always included (`E1RMWindow`, `E1RMsAsOf`). The history
+    ends at `ended_at` or at the session's last completed set, whichever is later
+    (`HistoryUntil`; D138). Records stay all-time. `pct_1rm` targets use the same 90-day e1RM (none
+    without a set in the window), so a plan never prescribes 80 % of a max from long ago.
+  - Queueing the dependent days is right: a stored load must equal the rule applied to the stored
+    history, or it moves later at an unexplained time (a rescore, an edit). "Stored load is final"
+    would make the number depend on the order data arrived in. It was **not enough**: a later
+    session without its own `bodyweight_kg` takes the last one logged before it, which an imported
+    session can now be. The scope is `scoring.DependentScope` (`ScopeOf` the created and updated
+    sessions plus the versions they replaced; `Covers`): later sessions sharing an exercise that
+    start before the newest changed session's end + 90 days, or later sessions without a body
+    weight that hold a bodyweight exercise, after the oldest changed session with one. The store's
+    query may return a superset.
+- **Not chosen:** a decay (a weighted best: opaque, one more constant to fit, no published curve to
+  take it from); 180 or 365 days (an old peak still halves loads for that long); a window on the
+  records (they are records); "stored load is final once scored".
+- **Consequences:** model **2026.10.2**; `scripts/rescore_all.sh` after the deploy. In the beta it
+  moves only sessions with sets more than 90 days before them (none expected: the beta began on
+  2026-10-20) and sessions with a set after `ended_at`. The dependent days of an import end 90
+  days after its newest session instead of reaching today. Both follow-ups ship in the same
+  release (TI-6): `store.DependentDays` takes the scope's fields (the 90-day bound and the
+  body-weight clause; a test compares it with `Covers`), and the api's `pct_1rm` target calls
+  `E1RMsAsOf(…, now, uuid.Nil)` (`null` without a set in the window).
+
+## D136 — Imported records stay silent, also the newest one (TI-4, open point 2)
+
+- **Decision:** no `pr` card and no push for a record held by an imported session, however recent;
+  no "newest imported record" card. `store.PRsSince` leaves them out (TI-2), so the rule needs no
+  column and no state. They remain records everywhere else.
+- **Why:** an imported record is history the user already saw in the other app, not news; and an
+  import arrives in batches (≤ 50 sessions), so a record shown after one batch can move to an
+  older session in the next, which is a card that contradicts itself within a minute. A "once"
+  card needs a stored "shown" mark, for a summary the app's import screen can give from the file
+  it parsed.
+- **Consequences:** an import can take a record (and its card) away from a session logged in
+  RYFT; that is correct. Pushes are already impossible (no `session.scored` for an import, D125).
+
+## D137 — Days with only imported sessions are logged-session days; nothing more feeds on them (TI-4, open point 3)
+
+- **Decision:** such a day is scored like a day with only a logged session: strain from the muscular
+  load alone (a floor), `strength_min`, `volume_kg`, a `ryft-session` workout, no recovery, no
+  readiness, state `calibrating`. Imported strain feeds what a logged session's feeds: the next
+  day's sleep need and readiness penalty, `strength_week`, the learned sleep baseline's qualifier,
+  and `calibrating_reason`'s `W`. There is no strain baseline or rolling strain load in the model
+  to feed; HRV, resting-HR and breathing baselines cannot be crowded (one row per day; imported
+  days are days without a night). Sessions older than the 400-day window stay stored, not scored.
+- **Why:** they are the user's training, and the inputs that read strain are about training, not
+  about the sensor. Treating them differently would make a day's numbers depend on which app the
+  set was typed into.
+- **Not chosen:** keeping import-only days out of `W` (it needs a per-day origin in `daily_scores`
+  for a reason that is then true of the account anyway: the first synced day after a long import
+  can say `no_hrv`, and a first night with HRV is still `short_history`); de-duplicating a
+  session logged both in RYFT and in the file (both count today, strain 11 twice is 16): the app's
+  import skips a file workout that overlaps a RYFT session and says so; a scoring rule follows
+  only if the beta shows such pairs.
+- **Consequences:** the walk after an import crosses every stored row from the oldest imported day
+  on (≤ 400 days and the dependent days, seconds to a minute per request). A future rolling strain
+  load (acute/chronic) must decide how days without heart rate count before it uses them.
+
+## D138 — An assumed duration needs no contract flag; the load no longer reads `ended_at` (TI-4, open point 5)
+
+- **Decision:** no flag now. Strain, muscular load, volume, e1RM and records do not depend on a
+  session's duration: a set's load comes from its reps and weight, and the history a session is
+  measured against ends at its last set when that is after `ended_at` (`HistoryUntil`, part of
+  model 2026.10.2; before, a top set stamped after an assumed end was cut off its own session's
+  e1RM: 30.2 instead of 28.1 in the calibration). The assumed 60 minutes show only as minutes
+  (`strength_min` and its trend, `strength_week.minutes`, `duration_min`) and in the session's
+  workout window (matching a HealthKit workout by half an overlap; the created workout's span).
+- **Why:** a flag would buy a `null` instead of 60 in a display total and its trend; that is worth
+  a contract field only if many files lack durations, which only the app can measure.
+- **Consequences:** the app derives `ended_at` from the last set's time when the file has set times,
+  keeps sets within `[started_at, ended_at]`, and reports how often it assumes. If it is most
+  imports, an optional `duration_assumed` on the import's session lets scoring leave those minutes
+  out.
+
+## D140 — The import handler's own calls: order, budget, a resumed request's dependent days (TI-3)
+
+(D139 is unused: D134–D139 were set aside for the scoring branch, which needed D134–D138.)
+
+- **Consent before the body.** API.md says both gates are checked "before anything in the body is
+  read"; design §4 listed the decode first. The contract wins: `gate.Consent` runs first (a refused
+  upload costs no 1 MiB parse, as in ingest), so a malformed body without consent is a `403`, not a `400`.
+- **One consent rule, `internal/gate`.** Ingest's `admitted`, the api's invite gate, `GET /v1/me/sync`'s
+  `gate` and the import share `gate.Consented` / `gate.Apply` (design §4 offered `internal/beta` or
+  `httpx`; a small package keeps `httpx` free of `config` and `model`). Behaviour of the existing routes
+  is unchanged, `ryft_gate_refusals_total` included.
+- **The finish fits inside the 50 s.** The items run on a context that ends 10 s before the request's
+  deadline; the finish (records, queue, event) then has its own 10 s on `context.WithoutCancel`. So the
+  answer, `503 "request timed out"` included, goes out by 50 s, inside the server's 60 s write timeout,
+  instead of a finish that could overrun it and cut the connection.
+- **A resumed request finds the dependent days too.** Design §7 takes `DependentDays` from the created and
+  updated sessions only. After an interrupted attempt the retry's items are all `unchanged`, so the days
+  of the user's later sessions (whose load depends on the imported e1RM history) would never be queued.
+  An `unchanged` session whose day is still pending (`PendingAmong`) counts like a changed one: it
+  joins the sessions `scoring.ScopeOf` gets (D135: the created and updated ones and the versions
+  they replaced, `ImportOutcome.Replaced`). Cost: a few more days rescored when a sync's pending day
+  happens to be an imported session's; harmless.
+- **Smaller calls.** A plan or a session without an id is that item's `invalid`, not a whole-request
+  `422`; the duplicate check skips the nil id. `train.Problem` gets no `Code`: the store's rejections
+  carry their codes (`importReject`, D131) and every `Problem` from `internal/train` is `invalid`.
+  `ryft_train_imports_total` adds `result="invalid"` (whole-request refusals after authentication) to
+  the design's `ok`, `busy`, `timeout`, `error`; a client that went away counts as `timeout`. A database
+  failure is `503 "the database is unavailable; send the same request again"` with `Retry-After: 5`,
+  logged as httpx's `request failed`. The lease is given back before the answer is written, so the app's
+  next request does not meet its own lease. `assist_kg` on a set of an exercise that is not `bodyweight`
+  is `422` / `invalid` for any value, `0` included (API.md's wording); `null` passes.
+- **Enrolment (T8).** With only `started_at` the stored or default position is kept and not checked
+  against the plan's days; the day lookup (`CurrentPlanDay`) runs when `current_week` or
+  `current_day_index` is given, on the resulting position, inside `Enroll`'s transaction, so a refused
+  position also leaves the other plan's enrolment active.
+
+## D141 — The import's review round: the app's edits win, ids per account, the server's own checks (PR #59)
+
+- **Edits win, for sessions and plans (B1).** `sessions.imported_at` and `plans.imported_at` (migration
+  0028, not yet applied anywhere, so edited in place) are set with `updated_at` by the import's write, in the
+  same statement. `updated_at` **different from** `imported_at` (a `PUT` of any field, a completion,
+  archiving a plan) or no `imported_at` (a plan the app made under that id) is `newer_on_server`: a
+  resend never overwrites it. Not "later": a `PUT` whose transaction began just before the import's
+  commits an earlier `now()` after it, which "later" would read as untouched (the final review's
+  probe pins that ordering). Any save counts, even one back to the imported content
+  (`train.ImportConflict`, `train.PlanConflict`, pure). Scoring's load write does not touch
+  `updated_at`, so being scored is no edit. Decided for plans as well: an imported plan edited or archived in
+  the app is the user's.
+- **Ids per account (B2).** Plan ids are global (session ids are per account), so the app derives every id
+  under `UUIDv5(import namespace, user id)`; the same file in two accounts gives two plans. `id_taken` keeps
+  one message whoever holds the id (a built-in, another plan, another account).
+- **The server checks what the app does (S1-S4).** Time bounds per session (≤ 24 h long, ending ≤ 24 h
+  ahead, sets within an hour of it, `updated_at` ≤ 24 h ahead) as the item's `invalid`. Its own rate class,
+  bursts of 5, then one every 5 s. Consent `warn` acts as `on` on this route: every app build that calls it
+  has the consent screen. The flag `train.import` is evaluated after the gates (`403 import_not_enabled`,
+  a new additive code; `ryft_train_imports_total{result="disabled"}`), so a kill switch does not depend on
+  the app's cached config.
+- **Set caps (N1), my call:** at most 300 sets in a session (that item's `invalid`, like the other
+  per-session limits) and 2 500 in a request (a whole-request `422`, like the counts: it is a property of
+  the batch, and the app splits it).
+- **Finish order (SF1):** the days and their event are queued first, the records after, so a slow records
+  step cannot strand stored days without a queue row; its `503` is repaired by the resend.
+- **Smaller:** lease 70 s (above the 50 s budget plus the 5 s release, so a rollout leaves no long `429`);
+  `score_queue` grants for `ryft_api` per column (`INSERT (user_id, day, queued_at, scored_at)`, `UPDATE
+  (queued_at, scored_at)`); 0028 takes `users` first, the services' order; queued days are upserted sorted;
+  no `source` in the log line (it says which other app the user trains with); `ImportKind` decodes unknown
+  kinds as `.unknown` in the Swift mirror.
+- **Not changed, documented:** `expected_within_sec` is the p95 over every `score_queue` row of the last 6
+  hours, imports included, so a large import raises the estimate for a while for everyone (one queue, one
+  scoring consumer: that is what a sync then waits for too). Keeping import rows out needs a reason column;
+  not worth a schema change now.
+- **Open points** (follow-ups, not in PR #59):
+  - *A merge and a re-import duplicate history.* The app derives import ids from the account id, so after
+    an operator's merge (D90) an import of the same file into the kept account stores it again under
+    other ids. Documented for the app (API.md) and the operator (OPERATIONS → Two accounts). The fix is a
+    server-held `import_namespace` on `GET /v1/me` that the app derives from and a merge carries over to
+    the kept account.
+  - A sweeper for `score_queue` rows left pending by an item whose request died before its finish (no
+    event names those days until the app resends; `GET /v1/me/sync` shows them pending meanwhile); the
+    api's shutdown drain (10 s) against an import's 50 s budget, which a rollout can cut (the lease then
+    expires after 70 s); a per-account secret namespace instead of the account id.

@@ -139,7 +139,8 @@ func (s *Service) morning(ctx context.Context, ev model.ScoredEvent) error {
 }
 
 // session: SESSION_SCORED, or PR when the user wants records but not session
-// summaries. Quiet hours drop it (it would be stale by morning).
+// summaries. Quiet hours drop it (it would be stale by morning); an imported
+// session never gets one.
 func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) error {
 	r, ok, err := s.recipient(ctx, ev.UserID, model.NotifySessionScored)
 	if !ok {
@@ -154,6 +155,12 @@ func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) erro
 	}
 	if err != nil {
 		return err
+	}
+	if n.Origin == model.OriginImport {
+		// Imported history is silent (D125): scoring sends no session.scored for an
+		// import, and a re-complete of an imported session is not announced either.
+		count(model.NotifySessionScored, "import")
+		return nil
 	}
 	category := ""
 	switch {

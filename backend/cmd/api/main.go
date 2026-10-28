@@ -64,7 +64,8 @@ func main() {
 	}
 	defer pool.Close()
 	go db.Watch(ctx, pool, "api", log)
-	st := store.New(pool)
+	// The import's comparisons are internal/train's pure rules (D131).
+	st := store.New(pool).WithImportRules(importRules())
 
 	// RabbitMQ (D97), retried at start-up.
 	bus, err := eventbus.Open(ctx, cfg, "api", log)
@@ -174,6 +175,8 @@ func main() {
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
 	authOpts.OnAuth = auth.LoadUser(ensureUser(st))
 	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(beta.Gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
+	// The training import gets 50 s instead of readTimeout, like a sync (D129).
+	mux.Handle("POST /v1/train/import", importRoute(authOpts, beta.Gate, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY instead of a user token; absent
 	// without a key.
 	if adminKey != "" {
@@ -228,6 +231,9 @@ type handler struct {
 	accounts *accounts
 	engine   *scoring.Engine // pure scoring with store lookups, for session completion
 	beta     config.Beta
+	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
+	// shorten it to make a slow finish fail fast).
+	importFinish time.Duration
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

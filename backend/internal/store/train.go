@@ -236,11 +236,14 @@ type PRNote struct {
 	Exercise string // English name
 }
 
-// PRsSince lists records achieved at or after since, newest first.
+// PRsSince lists records achieved at or after since, newest first, for the insight
+// cards. A record whose session was imported is left out: imported history is silent
+// (D125). A record is still a record in every other list (ExercisePRs, SessionPRs).
 func (s *Store) PRsSince(ctx context.Context, userID uuid.UUID, since time.Time) ([]PRNote, error) {
 	rows, err := s.pool.Query(ctx, `SELECT p.exercise_id, p.kind, p.value::float8, p.set_id, p.session_id, p.achieved_at, e.name_en
 		FROM personal_records p JOIN exercises e ON e.id = p.exercise_id
-		WHERE p.user_id=$1 AND p.achieved_at >= $2 ORDER BY p.achieved_at DESC`, userID, since)
+		LEFT JOIN sessions s ON s.user_id = p.user_id AND s.id = p.session_id
+		WHERE p.user_id=$1 AND p.achieved_at >= $2 AND COALESCE(s.origin, 'app') <> 'import' ORDER BY p.achieved_at DESC`, userID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -283,15 +286,29 @@ type LoggedSet struct {
 
 // LoggedSets returns the completed sets (completed_at set) of the given
 // exercises in completed sessions, plus those of session also (whatever its
-// status), that were completed no later than until; oldest first.
+// status), that were completed no later than until; oldest first. All of the
+// history: records are all-time.
 func (s *Store) LoggedSets(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
+	return s.loggedSets(ctx, userID, exerciseIDs, nil, until, also)
+}
+
+// LoggedSetsSince is LoggedSets without the sets completed at or before since,
+// except those of session also: what an e1RM reference reads (since = until −
+// scoring.E1RMWindow, D135; scoring.E1RMsAsOf applies the same window again),
+// so a session is not measured against years of imported sets it then drops.
+func (s *Store) LoggedSetsSince(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, since, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
+	return s.loggedSets(ctx, userID, exerciseIDs, &since, until, also)
+}
+
+func (s *Store) loggedSets(ctx context.Context, userID uuid.UUID, exerciseIDs []uuid.UUID, since *time.Time, until time.Time, also uuid.UUID) ([]LoggedSet, error) {
 	rows, err := s.pool.Query(ctx, `SELECT s.id, e.exercise_id, s.started_at, s.bodyweight_kg::float8, `+setColumns+`
 		FROM session_sets st
 		JOIN session_exercises e ON e.user_id = st.user_id AND e.id = st.session_exercise_id
 		JOIN sessions s ON s.user_id = e.user_id AND s.id = e.session_id
 		WHERE st.user_id = $1 AND e.exercise_id = ANY($2) AND st.completed_at IS NOT NULL AND st.completed_at <= $3
 		  AND (s.status = 'completed' OR s.id = $4)
-		ORDER BY st.completed_at, st.id`, userID, exerciseIDs, until, also)
+		  AND ($5::timestamptz IS NULL OR st.completed_at > $5 OR s.id = $4)
+		ORDER BY st.completed_at, st.id`, userID, exerciseIDs, until, also, since)
 	if err != nil {
 		return nil, err
 	}
@@ -316,21 +333,21 @@ func (s *Store) LastBodyweight(ctx context.Context, userID uuid.UUID, before tim
 // ---- sessions ----------------------------------------------------------------------
 
 const sessionColumns = `id, title, started_at, ended_at, status, plan_day_id, workout_id, notes, bodyweight_kg::float8,
-	muscular_trimp::float8, strain::float8, volume_kg::float8, device_id, updated_at`
+	muscular_trimp::float8, strain::float8, volume_kg::float8, device_id, updated_at, origin, import_source, imported_at`
 
 func scanSession(r pgx.Row) (model.Session, error) {
 	var x model.Session
 	err := r.Scan(&x.ID, &x.Title, &x.StartedAt, &x.EndedAt, &x.Status, &x.PlanDayID, &x.WorkoutID, &x.Notes,
-		&x.BodyweightKG, &x.MuscularTRIMP, &x.Strain, &x.VolumeKG, &x.DeviceID, &x.UpdatedAt)
+		&x.BodyweightKG, &x.MuscularTRIMP, &x.Strain, &x.VolumeKG, &x.DeviceID, &x.UpdatedAt, &x.Origin, &x.ImportSource, &x.ImportedAt)
 	x.Exercises, x.PRs = []model.SessionExercise{}, []model.PR{}
 	return x, err
 }
 
-const setColumns = `st.id, st.set_index, st.reps, st.weight_kg::float8, st.rpe::float8, st.duration_sec, st.distance_m::float8,
+const setColumns = `st.id, st.set_index, st.reps, st.weight_kg::float8, st.assist_kg::float8, st.rpe::float8, st.duration_sec, st.distance_m::float8,
 	st.is_warmup, st.completed_at, st.updated_at`
 
 func setFields(x *model.Set) []any {
-	return []any{&x.ID, &x.SetIndex, &x.Reps, &x.WeightKG, &x.RPE, &x.DurationSec, &x.DistanceM, &x.IsWarmup, &x.CompletedAt, &x.UpdatedAt}
+	return []any{&x.ID, &x.SetIndex, &x.Reps, &x.WeightKG, &x.AssistKG, &x.RPE, &x.DurationSec, &x.DistanceM, &x.IsWarmup, &x.CompletedAt, &x.UpdatedAt}
 }
 
 // fillSessions loads the exercises and sets of the given sessions.
@@ -519,7 +536,8 @@ func newCompletedSets(stored *model.Session, merged model.Session) int {
 }
 
 // checkReferences: every exercise, the plan day and the plan exercises must
-// be built-in or the user's (a train.Problem otherwise).
+// be built-in or the user's, and assist_kg only on a set of a bodyweight
+// exercise (train.CheckAssist, T4); a train.Problem otherwise.
 func checkReferences(ctx context.Context, tx pgx.Tx, userID uuid.UUID, body model.Session) error {
 	var exIDs, peIDs []uuid.UUID
 	for _, e := range body.Exercises {
@@ -535,6 +553,13 @@ func checkReferences(ctx context.Context, tx pgx.Tx, userID uuid.UUID, body mode
 	for _, id := range exIDs {
 		if _, ok := vis[id]; !ok {
 			return train.Problem{Msg: fmt.Sprintf("exercise %s is neither built-in nor yours", id)}
+		}
+	}
+	for _, e := range body.Exercises {
+		for _, st := range e.Sets {
+			if err := train.CheckAssist(vis[e.ExerciseID], st); err != nil {
+				return err
+			}
 		}
 	}
 	if body.PlanDayID != nil {
@@ -569,15 +594,36 @@ func uniq(ids []uuid.UUID) map[uuid.UUID]bool {
 }
 
 // writeSession upserts the merged document. replace deletes exercises and sets
-// the document no longer has (a completed session is replaced whole).
+// the document no longer has (a completed session is replaced whole). It never
+// writes origin or import_source: a session saved here is the app's, and an
+// imported one keeps its origin whatever the body says (D125).
 func writeSession(ctx context.Context, tx pgx.Tx, userID uuid.UUID, x model.Session, replace bool) error {
+	return writeSessionAs(ctx, tx, userID, x, replace, "")
+}
+
+// writeSessionAs is writeSession for the import when importSource is not empty:
+// the row is inserted (or, if it exists, updated only while it is an imported
+// one) with origin 'import' and that source.
+func writeSessionAs(ctx context.Context, tx pgx.Tx, userID uuid.UUID, x model.Session, replace bool, importSource string) error {
 	b := &pgx.Batch{}
-	b.Queue(`INSERT INTO sessions (user_id, id, title, started_at, ended_at, status, plan_day_id, notes, bodyweight_kg, device_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (user_id, id) DO UPDATE SET title=EXCLUDED.title, started_at=EXCLUDED.started_at, ended_at=EXCLUDED.ended_at,
-		  status=EXCLUDED.status, plan_day_id=EXCLUDED.plan_day_id, notes=EXCLUDED.notes, bodyweight_kg=EXCLUDED.bodyweight_kg,
-		  device_id=EXCLUDED.device_id, updated_at=now()`,
-		userID, x.ID, x.Title, x.StartedAt, x.EndedAt, x.Status, x.PlanDayID, x.Notes, x.BodyweightKG, x.DeviceID)
+	if importSource == "" {
+		b.Queue(`INSERT INTO sessions (user_id, id, title, started_at, ended_at, status, plan_day_id, notes, bodyweight_kg, device_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (user_id, id) DO UPDATE SET title=EXCLUDED.title, started_at=EXCLUDED.started_at, ended_at=EXCLUDED.ended_at,
+			  status=EXCLUDED.status, plan_day_id=EXCLUDED.plan_day_id, notes=EXCLUDED.notes, bodyweight_kg=EXCLUDED.bodyweight_kg,
+			  device_id=EXCLUDED.device_id, updated_at=now()`,
+			userID, x.ID, x.Title, x.StartedAt, x.EndedAt, x.Status, x.PlanDayID, x.Notes, x.BodyweightKG, x.DeviceID)
+	} else {
+		// muscular_trimp, strain, volume_kg and workout_id stay as they are: scoring owns them.
+		b.Queue(`INSERT INTO sessions (user_id, id, title, started_at, ended_at, status, plan_day_id, notes, bodyweight_kg, device_id,
+			  origin, import_source, updated_at, imported_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'import',$11,now(),now())
+			ON CONFLICT (user_id, id) DO UPDATE SET title=EXCLUDED.title, started_at=EXCLUDED.started_at, ended_at=EXCLUDED.ended_at,
+			  status=EXCLUDED.status, plan_day_id=EXCLUDED.plan_day_id, notes=EXCLUDED.notes, bodyweight_kg=EXCLUDED.bodyweight_kg,
+			  device_id=EXCLUDED.device_id, import_source=EXCLUDED.import_source, updated_at=now(), imported_at=now()
+			WHERE sessions.origin = 'import'`,
+			userID, x.ID, x.Title, x.StartedAt, x.EndedAt, x.Status, x.PlanDayID, x.Notes, x.BodyweightKG, x.DeviceID, importSource)
+	}
 	var exIDs, setIDs []uuid.UUID
 	for _, e := range x.Exercises {
 		exIDs = append(exIDs, e.ID)
@@ -593,15 +639,15 @@ func writeSession(ctx context.Context, tx pgx.Tx, userID uuid.UUID, x model.Sess
 		for _, st := range e.Sets {
 			setIDs = append(setIDs, st.ID)
 			b.Queue(`INSERT INTO session_sets (user_id, id, session_exercise_id, set_index, reps, weight_kg, rpe, duration_sec,
-				distance_m, is_warmup, completed_at, updated_at)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+				distance_m, is_warmup, completed_at, updated_at, assist_kg)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$14)
 				ON CONFLICT (user_id, id) DO UPDATE SET session_exercise_id=EXCLUDED.session_exercise_id, set_index=EXCLUDED.set_index,
 				  reps=EXCLUDED.reps, weight_kg=EXCLUDED.weight_kg, rpe=EXCLUDED.rpe, duration_sec=EXCLUDED.duration_sec,
 				  distance_m=EXCLUDED.distance_m, is_warmup=EXCLUDED.is_warmup, completed_at=EXCLUDED.completed_at,
-				  updated_at=EXCLUDED.updated_at
+				  updated_at=EXCLUDED.updated_at, assist_kg=EXCLUDED.assist_kg
 				WHERE session_sets.session_exercise_id IN (SELECT id FROM session_exercises WHERE user_id=$1 AND session_id=$13)`,
 				userID, st.ID, e.ID, st.SetIndex, st.Reps, st.WeightKG, st.RPE, st.DurationSec, st.DistanceM, st.IsWarmup,
-				st.CompletedAt, st.UpdatedAt, x.ID)
+				st.CompletedAt, st.UpdatedAt, x.ID, st.AssistKG)
 		}
 	}
 	if replace {
@@ -714,7 +760,8 @@ func (s *Store) SessionSummaries(ctx context.Context, userID uuid.UUID, from, to
 		  (SELECT count(*) FROM session_sets st JOIN session_exercises e ON e.user_id = st.user_id AND e.id = st.session_exercise_id
 		     WHERE e.user_id = s.user_id AND e.session_id = s.id AND st.completed_at IS NOT NULL AND NOT st.is_warmup),
 		  s.volume_kg::float8, s.muscular_trimp::float8, s.strain::float8,
-		  (SELECT count(*) FROM personal_records p WHERE p.user_id = s.user_id AND p.session_id = s.id)
+		  (SELECT count(*) FROM personal_records p WHERE p.user_id = s.user_id AND p.session_id = s.id),
+		  s.origin, s.import_source
 		FROM sessions s WHERE s.user_id=$1 AND s.started_at >= $2 AND s.started_at < $3 AND ($4 = '' OR s.status = $4)
 		ORDER BY s.started_at `+order+`, s.id`, userID, from, to, status)
 	if err != nil {
@@ -723,7 +770,7 @@ func (s *Store) SessionSummaries(ctx context.Context, userID uuid.UUID, from, to
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.SessionSummary, error) {
 		var x model.SessionSummary
 		err := r.Scan(&x.ID, &x.Title, &x.StartedAt, &x.EndedAt, &x.Status, &x.PlanDayID, &x.WorkoutID, &x.DurationMin,
-			&x.ExerciseCount, &x.SetCount, &x.VolumeKG, &x.MuscularTRIMP, &x.Strain, &x.PRCount)
+			&x.ExerciseCount, &x.SetCount, &x.VolumeKG, &x.MuscularTRIMP, &x.Strain, &x.PRCount, &x.Origin, &x.ImportSource)
 		return x, err
 	})
 }
@@ -905,11 +952,13 @@ func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, da
 
 // ---- plans ----------------------------------------------------------------------------
 
-const planColumns = `id, slug, name, goal, weeks, days_per_week, description, progression, user_id IS NULL, archived`
+const planColumns = `id, slug, name, goal, weeks, days_per_week, description, progression, user_id IS NULL, archived,
+	updated_at, imported_at`
 
 func scanPlanHead(r pgx.Row, p *model.Plan) error {
 	var prog []byte
-	if err := r.Scan(&p.ID, &p.Slug, &p.Name, &p.Goal, &p.Weeks, &p.DaysPerWeek, &p.Description, &prog, &p.IsBuiltin, &p.Archived); err != nil {
+	if err := r.Scan(&p.ID, &p.Slug, &p.Name, &p.Goal, &p.Weeks, &p.DaysPerWeek, &p.Description, &prog, &p.IsBuiltin, &p.Archived,
+		&p.UpdatedAt, &p.ImportedAt); err != nil {
 		return err
 	}
 	if len(prog) > 0 && string(prog) != "null" {
@@ -951,15 +1000,20 @@ func (s *Store) PlanSummaries(ctx context.Context, userID uuid.UUID) (builtin, m
 
 // Plan is a whole plan the user can see, its exercises resolved; ErrNotFound.
 func (s *Store) Plan(ctx context.Context, userID, id uuid.UUID) (model.Plan, error) {
+	return loadPlan(ctx, s.pool, userID, id)
+}
+
+// loadPlan is Plan on a pool or a transaction.
+func loadPlan(ctx context.Context, q querier, userID, id uuid.UUID) (model.Plan, error) {
 	var p model.Plan
-	err := scanPlanHead(s.pool.QueryRow(ctx, `SELECT `+planColumns+` FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1)`, userID, id), &p)
+	err := scanPlanHead(q.QueryRow(ctx, `SELECT `+planColumns+` FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1)`, userID, id), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
 	}
 	if err != nil {
 		return p, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, week, day_index, name FROM plan_days WHERE plan_id=$1
+	rows, err := q.Query(ctx, `SELECT id, week, day_index, name FROM plan_days WHERE plan_id=$1
 		ORDER BY week NULLS FIRST, day_index`, id)
 	if err != nil {
 		return p, err
@@ -973,7 +1027,7 @@ func (s *Store) Plan(ctx context.Context, userID, id uuid.UUID) (model.Plan, err
 	if err != nil {
 		return p, err
 	}
-	rows, err = s.pool.Query(ctx, `SELECT e.plan_day_id, e.id, e.exercise_id, e.position, e.sets, e.reps_min, e.reps_max,
+	rows, err = q.Query(ctx, `SELECT e.plan_day_id, e.id, e.exercise_id, e.position, e.sets, e.reps_min, e.reps_max,
 		  e.target_kind, e.target_value::float8, e.rest_sec, e.superset_group, e.notes
 		FROM plan_exercises e JOIN plan_days d ON d.id = e.plan_day_id WHERE d.plan_id=$1 ORDER BY e.plan_day_id, e.position`, id)
 	if err != nil {
@@ -996,7 +1050,7 @@ func (s *Store) Plan(ctx context.Context, userID, id uuid.UUID) (model.Plan, err
 	for _, x := range exs {
 		ids = append(ids, x.ExerciseID)
 	}
-	resolved, err := s.VisibleExercises(ctx, userID, ids)
+	resolved, err := visibleExercises(ctx, q, userID, ids)
 	if err != nil {
 		return p, err
 	}
@@ -1030,69 +1084,77 @@ func (s *Store) SavePlan(ctx context.Context, userID uuid.UUID, p model.Plan) (b
 			return ErrTaken
 		}
 		created = !exists
-		var exIDs []uuid.UUID
-		for _, d := range p.Days {
-			for _, e := range d.Exercises {
-				exIDs = append(exIDs, e.ExerciseID)
-			}
-		}
-		vis, err := visibleExercises(ctx, tx, userID, exIDs)
-		if err != nil {
-			return err
-		}
-		for _, id := range exIDs {
-			if _, ok := vis[id]; !ok {
-				return train.Problem{Msg: fmt.Sprintf("exercise %s is neither built-in nor yours", id)}
-			}
-		}
-		prog, err := json.Marshal(p.Progression)
-		if err != nil {
-			return err
-		}
-		b := &pgx.Batch{}
-		b.Queue(`INSERT INTO plans (id, user_id, name, goal, weeks, days_per_week, description, progression, archived)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-			ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, goal=EXCLUDED.goal, weeks=EXCLUDED.weeks,
-			  days_per_week=EXCLUDED.days_per_week, description=EXCLUDED.description, progression=EXCLUDED.progression,
-			  archived=EXCLUDED.archived, updated_at=now() WHERE plans.user_id = EXCLUDED.user_id`,
-			p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, prog, p.Archived)
-		var dayIDs, peIDs []uuid.UUID
-		for _, d := range p.Days {
-			dayIDs = append(dayIDs, d.ID)
-			b.Queue(`INSERT INTO plan_days (id, plan_id, user_id, week, day_index, name) VALUES ($1,$2,$3,$4,$5,$6)
-				ON CONFLICT (id) DO UPDATE SET week=EXCLUDED.week, day_index=EXCLUDED.day_index, name=EXCLUDED.name, updated_at=now()
-				WHERE plan_days.plan_id = EXCLUDED.plan_id`, d.ID, p.ID, userID, d.Week, d.DayIndex, d.Name)
-			for _, e := range d.Exercises {
-				peIDs = append(peIDs, e.ID)
-				b.Queue(`INSERT INTO plan_exercises (id, plan_day_id, user_id, exercise_id, position, sets, reps_min, reps_max,
-					target_kind, target_value, rest_sec, superset_group, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-					ON CONFLICT (id) DO UPDATE SET plan_day_id=EXCLUDED.plan_day_id, exercise_id=EXCLUDED.exercise_id,
-					  position=EXCLUDED.position, sets=EXCLUDED.sets, reps_min=EXCLUDED.reps_min, reps_max=EXCLUDED.reps_max,
-					  target_kind=EXCLUDED.target_kind, target_value=EXCLUDED.target_value, rest_sec=EXCLUDED.rest_sec,
-					  superset_group=EXCLUDED.superset_group, notes=EXCLUDED.notes, updated_at=now()
-					WHERE plan_exercises.user_id = EXCLUDED.user_id
-					  AND plan_exercises.plan_day_id IN (SELECT id FROM plan_days WHERE plan_id=$14)`,
-					e.ID, d.ID, userID, e.ExerciseID, e.Position, e.Sets, e.RepsMin, e.RepsMax, e.TargetKind, e.TargetValue,
-					e.RestSec, e.SupersetGroup, e.Notes, p.ID)
-			}
-		}
-		n := b.Len()
-		b.Queue(`DELETE FROM plan_exercises WHERE plan_day_id IN (SELECT id FROM plan_days WHERE plan_id=$1) AND NOT (id = ANY($2))`, p.ID, peIDs)
-		b.Queue(`DELETE FROM plan_days WHERE plan_id=$1 AND NOT (id = ANY($2))`, p.ID, dayIDs)
-		res := tx.SendBatch(ctx, b)
-		defer res.Close()
-		for k := 0; k < b.Len(); k++ {
-			tag, err := res.Exec()
-			if err != nil {
-				return err
-			}
-			if k < n && tag.RowsAffected() == 0 {
-				return ErrTaken // a day or exercise id that belongs to another plan
-			}
-		}
-		return res.Close()
+		return writePlan(ctx, tx, userID, p, false)
 	})
 	return created, err
+}
+
+// writePlan replaces the plan whole in the caller's transaction, after the
+// caller has checked the ownership (owner, FOR UPDATE). imported (the training
+// import) marks imported_at with updated_at; PUT leaves it as it is (D126).
+func writePlan(ctx context.Context, tx pgx.Tx, userID uuid.UUID, p model.Plan, imported bool) error {
+	var exIDs []uuid.UUID
+	for _, d := range p.Days {
+		for _, e := range d.Exercises {
+			exIDs = append(exIDs, e.ExerciseID)
+		}
+	}
+	vis, err := visibleExercises(ctx, tx, userID, exIDs)
+	if err != nil {
+		return err
+	}
+	for _, id := range exIDs {
+		if _, ok := vis[id]; !ok {
+			return train.Problem{Msg: fmt.Sprintf("exercise %s is neither built-in nor yours", id)}
+		}
+	}
+	prog, err := json.Marshal(p.Progression)
+	if err != nil {
+		return err
+	}
+	b := &pgx.Batch{}
+	b.Queue(`INSERT INTO plans (id, user_id, name, goal, weeks, days_per_week, description, progression, archived, updated_at, imported_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),CASE WHEN $10 THEN now() END)
+		ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, goal=EXCLUDED.goal, weeks=EXCLUDED.weeks,
+		  days_per_week=EXCLUDED.days_per_week, description=EXCLUDED.description, progression=EXCLUDED.progression,
+		  archived=EXCLUDED.archived, updated_at=now(), imported_at=CASE WHEN $10 THEN now() ELSE plans.imported_at END
+		WHERE plans.user_id = EXCLUDED.user_id`,
+		p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, prog, p.Archived, imported)
+	var dayIDs, peIDs []uuid.UUID
+	for _, d := range p.Days {
+		dayIDs = append(dayIDs, d.ID)
+		b.Queue(`INSERT INTO plan_days (id, plan_id, user_id, week, day_index, name) VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (id) DO UPDATE SET week=EXCLUDED.week, day_index=EXCLUDED.day_index, name=EXCLUDED.name, updated_at=now()
+			WHERE plan_days.plan_id = EXCLUDED.plan_id`, d.ID, p.ID, userID, d.Week, d.DayIndex, d.Name)
+		for _, e := range d.Exercises {
+			peIDs = append(peIDs, e.ID)
+			b.Queue(`INSERT INTO plan_exercises (id, plan_day_id, user_id, exercise_id, position, sets, reps_min, reps_max,
+				target_kind, target_value, rest_sec, superset_group, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+				ON CONFLICT (id) DO UPDATE SET plan_day_id=EXCLUDED.plan_day_id, exercise_id=EXCLUDED.exercise_id,
+				  position=EXCLUDED.position, sets=EXCLUDED.sets, reps_min=EXCLUDED.reps_min, reps_max=EXCLUDED.reps_max,
+				  target_kind=EXCLUDED.target_kind, target_value=EXCLUDED.target_value, rest_sec=EXCLUDED.rest_sec,
+				  superset_group=EXCLUDED.superset_group, notes=EXCLUDED.notes, updated_at=now()
+				WHERE plan_exercises.user_id = EXCLUDED.user_id
+				  AND plan_exercises.plan_day_id IN (SELECT id FROM plan_days WHERE plan_id=$14)`,
+				e.ID, d.ID, userID, e.ExerciseID, e.Position, e.Sets, e.RepsMin, e.RepsMax, e.TargetKind, e.TargetValue,
+				e.RestSec, e.SupersetGroup, e.Notes, p.ID)
+		}
+	}
+	n := b.Len()
+	b.Queue(`DELETE FROM plan_exercises WHERE plan_day_id IN (SELECT id FROM plan_days WHERE plan_id=$1) AND NOT (id = ANY($2))`, p.ID, peIDs)
+	b.Queue(`DELETE FROM plan_days WHERE plan_id=$1 AND NOT (id = ANY($2))`, p.ID, dayIDs)
+	res := tx.SendBatch(ctx, b)
+	defer res.Close()
+	for k := 0; k < b.Len(); k++ {
+		tag, err := res.Exec()
+		if err != nil {
+			return err
+		}
+		if k < n && tag.RowsAffected() == 0 {
+			return ErrTaken // a day or exercise id that belongs to another plan
+		}
+	}
+	return res.Close()
 }
 
 // DeletePlan removes the user's plan with its days, exercises and enrolments.
@@ -1134,34 +1196,80 @@ func (s *Store) ActiveEnrollment(ctx context.Context, userID uuid.UUID) (*model.
 // lockEnrollments serialises a user's enrolment changes.
 const lockEnrollments = `SELECT pg_advisory_xact_lock(7419004, hashtext($1::text))`
 
+// EnrollPos is where POST /v1/plans/{id}/enroll with a body puts the enrolment (T8,
+// validated with train.CheckEnroll): a nil field keeps the stored value, or takes the
+// default (now, week 1, day 0) for a new enrolment.
+type EnrollPos struct {
+	StartedAt      *time.Time
+	Week, DayIndex *int
+}
+
 // Enroll makes the plan the user's active one: an active enrolment in it is
 // returned as is, a paused one resumes, otherwise a new one starts at week 1,
 // day 0 (created). Another active enrolment is paused. ErrNotFound when the
 // plan is not visible.
-func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID) (model.Enrollment, bool, error) {
+//
+// With pos (T8) the active or the most recently paused enrolment of the plan is
+// moved to it in place (and active), or a new one starts there. A week or day
+// index the plan has no day at (store.CurrentPlanDay) is a train.Problem, and
+// nothing is changed.
+func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID, pos *EnrollPos) (model.Enrollment, bool, error) {
 	var out model.Enrollment
 	var created bool
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockEnrollments, userID); err != nil {
 			return err
 		}
-		var ok bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1))`, userID, planID).Scan(&ok); err != nil {
-			return err
-		}
-		if !ok {
-			return ErrNotFound
+		var plan model.Plan
+		if pos != nil {
+			var err error
+			if plan, err = loadPlan(ctx, tx, userID, planID); err != nil {
+				return err // ErrNotFound when it is not visible
+			}
+		} else {
+			var ok bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plans WHERE id=$2 AND (user_id IS NULL OR user_id=$1))`, userID, planID).Scan(&ok); err != nil {
+				return err
+			}
+			if !ok {
+				return ErrNotFound
+			}
 		}
 		cur, err := scanEnrollment(tx.QueryRow(ctx, `SELECT `+enrollmentColumns+` FROM plan_enrollments WHERE user_id=$1 AND status='active'`, userID))
 		switch {
 		case err == nil && cur.PlanID == planID:
-			out = cur
-			return nil
+			if pos == nil {
+				out = cur
+				return nil
+			}
+			out, err = moveEnrollment(ctx, tx, plan, cur, *pos)
+			return err
 		case err == nil:
 			if _, err := tx.Exec(ctx, `UPDATE plan_enrollments SET status='paused', updated_at=now() WHERE id=$1`, cur.ID); err != nil {
 				return err
 			}
 		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+		if pos != nil {
+			paused, err := scanEnrollment(tx.QueryRow(ctx, `SELECT `+enrollmentColumns+` FROM plan_enrollments
+				WHERE user_id=$1 AND plan_id=$2 AND status='paused' ORDER BY updated_at DESC LIMIT 1`, userID, planID))
+			if err == nil {
+				out, err = moveEnrollment(ctx, tx, plan, paused, *pos)
+				return err
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			created = true
+			start := model.Enrollment{CurrentWeek: 1, CurrentDayIndex: 0}
+			if err := enrollmentAt(plan, &start, *pos); err != nil {
+				return err
+			}
+			out, err = scanEnrollment(tx.QueryRow(ctx, `INSERT INTO plan_enrollments
+				(id, user_id, plan_id, status, started_at, current_week, current_day_index)
+				VALUES ($1,$2,$3,'active',COALESCE($4, now()),$5,$6) RETURNING `+enrollmentColumns,
+				uuid.New(), userID, planID, pos.StartedAt, start.CurrentWeek, start.CurrentDayIndex))
 			return err
 		}
 		out, err = scanEnrollment(tx.QueryRow(ctx, `UPDATE plan_enrollments SET status='active', updated_at=now()
@@ -1179,6 +1287,34 @@ func (s *Store) Enroll(ctx context.Context, userID, planID uuid.UUID) (model.Enr
 		return err
 	})
 	return out, created, err
+}
+
+// enrollmentAt applies pos's week and day index to e, and refuses a position the plan
+// has no day at (when pos names one).
+func enrollmentAt(p model.Plan, e *model.Enrollment, pos EnrollPos) error {
+	if pos.Week != nil {
+		e.CurrentWeek = *pos.Week
+	}
+	if pos.DayIndex != nil {
+		e.CurrentDayIndex = *pos.DayIndex
+	}
+	if pos.Week == nil && pos.DayIndex == nil {
+		return nil
+	}
+	if _, err := CurrentPlanDay(p, *e); err != nil {
+		return train.Problem{Msg: fmt.Sprintf("the plan has no day at week %d, day_index %d", e.CurrentWeek, e.CurrentDayIndex)}
+	}
+	return nil
+}
+
+// moveEnrollment moves an enrolment of p in place to pos and makes it active.
+func moveEnrollment(ctx context.Context, tx pgx.Tx, p model.Plan, e model.Enrollment, pos EnrollPos) (model.Enrollment, error) {
+	if err := enrollmentAt(p, &e, pos); err != nil {
+		return e, err
+	}
+	return scanEnrollment(tx.QueryRow(ctx, `UPDATE plan_enrollments SET status='active', started_at=COALESCE($2, started_at),
+		current_week=$3, current_day_index=$4, updated_at=now() WHERE id=$1 RETURNING `+enrollmentColumns,
+		e.ID, pos.StartedAt, e.CurrentWeek, e.CurrentDayIndex))
 }
 
 // PauseEnrollment pauses the active enrolment, if any.

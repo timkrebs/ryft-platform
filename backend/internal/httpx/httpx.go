@@ -31,10 +31,12 @@ import (
 )
 
 // Request body limits: settings and small commands, a whole Train document
-// (a session or a plan), and a HealthKit upload (a first backfill page can be large).
+// (a session or a plan), a training import (5 plans, 50 sessions), and a
+// HealthKit upload (a first backfill page can be large).
 const (
 	MaxBodyDefault = 64 << 10
 	MaxBodyTrain   = 256 << 10
+	MaxBodyImport  = 1 << 20
 	MaxBodySync    = 32 << 20
 )
 
