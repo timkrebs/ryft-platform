@@ -71,7 +71,7 @@ images:
   # this pin (scripts/deploy_targets.sh). A rollback may pin an older ryft-web SHA such as
   # f437747 (the last image built in the archived ryft-web repository); it is not a commit here.
   - name: ghcr.io/timkrebs/ryft/web
-    newTag: "f1c210c"
+    newTag: "9ed8880"
 
 # The privacy policy version in force on EKS (D78, F1): the base's version
 # (deploy/k8s/base/{api,ingest}/config.env) once the web image that carries its page is
