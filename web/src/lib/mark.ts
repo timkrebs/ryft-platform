@@ -64,7 +64,7 @@ export function markGeometry(side = BOX, showsInnerRing?: boolean): MarkGeometry
   const air = AIR_FACTOR * Math.sqrt(STROKE * m.stroke);
   const halfGap = (r: number) => {
     const chord = m.dotRadius + m.stroke / 2 + air;
-    return ((2 * Math.asin(Math.min(1, chord / (2 * r)))) * 180) / Math.PI;
+    return (2 * Math.asin(Math.min(1, chord / (2 * r))) * 180) / Math.PI;
   };
 
   const arcs: string[] = [];

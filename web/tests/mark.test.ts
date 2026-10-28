@@ -100,7 +100,9 @@ describe('drift against the app’s design/ryft-mark.svg', () => {
     const svg = readFileSync(master, 'utf8');
     const g = markGeometry();
     const appArcs = [...svg.matchAll(/<path d="([^"]+)"/g)].map((m) => nums(m[1]));
-    const appDots = [...svg.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)" r="6"/g)].map((m) => nums(`${m[1]} ${m[2]}`));
+    const appDots = [...svg.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)" r="6"/g)].map((m) =>
+      nums(`${m[1]} ${m[2]}`),
+    );
     expect(Number(/stroke-width="([\d.]+)"/.exec(svg)![1])).toBeCloseTo(g.stroke, 3);
     expect(appArcs).toHaveLength(g.arcs.length);
     appArcs.forEach((a, i) => {
