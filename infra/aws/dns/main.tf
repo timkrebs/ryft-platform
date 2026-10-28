@@ -58,14 +58,15 @@ resource "aws_route53_record" "apex_txt" {
   records = [var.google_site_verification, var.spf]
 }
 
-# Route 53 takes strings of at most 255 characters; a longer value is written as several
-# quoted strings inside one value, which resolvers join again.
+# Route 53 takes strings of at most 255 characters; a longer value is several strings in
+# one value, which resolvers join again. The AWS provider wraps the value in quotes itself,
+# so only the joints carry quotes: chunk1" "chunk2, no outer quotes (the state holds it so).
 resource "aws_route53_record" "dkim" {
   zone_id = aws_route53_zone.this.zone_id
   name    = "${var.dkim_selector}._domainkey.${var.domain}"
   type    = "TXT"
   ttl     = 3600
-  records = [join(" ", [for chunk in regexall(".{1,255}", var.dkim_record) : "\"${chunk}\""])]
+  records = [join("\" \"", regexall(".{1,255}", var.dkim_record))]
 }
 
 resource "aws_route53_record" "dmarc" {

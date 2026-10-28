@@ -1559,7 +1559,7 @@ are in `infra/aws/dns` (Terraform, the user applies), next to the CAA records:
 | --- | --- | --- |
 | MX | `ryftapp.de` | `1 smtp.google.com` |
 | TXT (two values) | `ryftapp.de` | `google-site-verification=…` and `v=spf1 include:_spf.google.com ~all` |
-| TXT | `google._domainkey.ryftapp.de` | `v=DKIM1; k=rsa; p=…` (2048-bit; quoted strings of ≤255 characters) |
+| TXT | `google._domainkey.ryftapp.de` | `v=DKIM1; k=rsa; p=…` (2048-bit; strings of ≤255 characters, written `chunk1" "chunk2` with no outer quotes: the provider adds them) |
 | TXT | `_dmarc.ryftapp.de` | `v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s` |
 
 Each TXT value is its own string: never put the verification and the SPF inside one pair

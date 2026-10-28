@@ -48,11 +48,13 @@ run "google_workspace_mail_records" {
 
   assert {
     condition = (
-      length(one(aws_route53_record.dkim.records)) > 400 &&
-      alltrue([for s in regexall("\"([^\"]*)\"", one(aws_route53_record.dkim.records)) : length(s[0]) <= 255]) &&
-      join("", [for s in regexall("\"([^\"]*)\"", one(aws_route53_record.dkim.records)) : s[0]]) == var.dkim_record
+      !startswith(one(aws_route53_record.dkim.records), "\"") &&
+      !endswith(one(aws_route53_record.dkim.records), "\"") &&
+      length(split("\" \"", one(aws_route53_record.dkim.records))) >= 2 &&
+      alltrue([for s in split("\" \"", one(aws_route53_record.dkim.records)) : length(s) <= 255 && !strcontains(s, "\"")]) &&
+      join("", split("\" \"", one(aws_route53_record.dkim.records))) == var.dkim_record
     )
-    error_message = "the DKIM value must be quoted strings of at most 255 characters that join back to the key"
+    error_message = "the DKIM value must be chunk1\" \"chunk2 with no outer quotes (the provider adds them), chunks of at most 255 characters that join back to the key"
   }
 
   assert {
