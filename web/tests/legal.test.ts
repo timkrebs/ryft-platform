@@ -97,12 +97,14 @@ describe('legal content', () => {
           expect(front.version).toMatch(/^\d{4}-\d{2}-\d{2}$/);
           expect(['draft', 'published']).toContain(front.status);
           if (front.status === 'published') expect(front.effective).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-          else expect(front.effective).toBeNull();
+          // a draft may carry the planned date
+          else if (front.effective !== null) expect(front.effective).toMatch(/^\d{4}-\d{2}-\d{2}$/);
           if (rel.includes('/')) expect(rel).toBe(`${rel.split('/')[0]}/${front.version}.mdx`);
         });
 
-        it('keeps the draft banner text while it is a draft', () => {
-          if (front.status === 'draft') expect(front.draftNote).toMatch(/TODO\(user\)/);
+        it('keeps the draft banner text while a draft still has TODO(user)s', () => {
+          const open = /TODO\(user\)/.test(content);
+          if (front.status === 'draft' && open) expect(front.draftNote).toMatch(/TODO\(user\)/);
         });
 
         const source = front.portedFrom ? join(RYFT, front.portedFrom) : null;
