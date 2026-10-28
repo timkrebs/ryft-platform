@@ -1,4 +1,7 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
+import matter from 'gray-matter';
 
 test('the language switch keeps the page', async ({ page }) => {
   await page.goto('/science');
@@ -50,11 +53,35 @@ test('the site makes no third-party requests', async ({ page }) => {
   expect(foreign).toEqual([]);
 });
 
-test('the draft banner shows on every legal draft', async ({ page }) => {
-  for (const path of ['/privacy', '/terms', '/impressum', '/support']) {
-    await page.goto(path);
-    await expect(page.getByText('Draft — not yet in force')).toBeVisible();
+// Which legal pages are drafts comes from their front matter (`status`), as the site's
+// Legal view decides it; a versioned document's root URL shows its newest version.
+const LEGAL_DIR = join(process.cwd(), 'content', 'legal'); // Playwright runs from web/
+const LEGAL_DOCS = ['privacy', 'terms', 'impressum', 'support'];
+
+function legalStatus(locale: 'en' | 'de', doc: string): 'draft' | 'published' {
+  let file = join(LEGAL_DIR, locale, `${doc}.mdx`);
+  if (!existsSync(file)) {
+    const versions = readdirSync(join(LEGAL_DIR, locale, doc)).filter((f) => f.endsWith('.mdx'));
+    file = join(LEGAL_DIR, locale, doc, versions.sort().reverse()[0]!);
   }
-  await page.goto('/de/privacy');
-  await expect(page.getByText('Entwurf – noch nicht in Kraft')).toBeVisible();
+  const status = matter(readFileSync(file, 'utf8')).data.status;
+  if (status !== 'draft' && status !== 'published') throw new Error(`${file}: bad status`);
+  return status;
+}
+
+test('the draft banner shows on every legal draft and on no published page', async ({ page }) => {
+  const banner = { en: 'Draft — not yet in force', de: 'Entwurf – noch nicht in Kraft' } as const;
+  const seen = new Set<string>();
+  for (const locale of ['en', 'de'] as const) {
+    for (const doc of LEGAL_DOCS) {
+      const status = legalStatus(locale, doc);
+      seen.add(status);
+      await page.goto(`${locale === 'de' ? '/de' : ''}/${doc}`);
+      const text = page.getByText(banner[locale]);
+      if (status === 'draft') await expect(text, `${locale}/${doc} is a draft`).toBeVisible();
+      else await expect(text, `${locale}/${doc} is published`).toHaveCount(0);
+    }
+  }
+  // Both directions stay covered as long as the site has a draft and a published page.
+  expect([...seen].sort()).toEqual(['draft', 'published']);
 });
