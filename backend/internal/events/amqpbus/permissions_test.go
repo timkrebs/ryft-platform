@@ -93,7 +93,7 @@ func TestPermissions(t *testing.T) {
 }
 
 // tryPublish publishes one message on a channel of its own with confirms; a refusal
-// closes that channel with 403.
+// closes that channel with 403 (and nacks the confirm: see the nack branch, race fix).
 func tryPublish(conn *amqp.Connection, exchange, key string) error {
 	ch, err := conn.Channel()
 	if err != nil {
@@ -119,7 +119,18 @@ func tryPublish(conn *amqp.Connection, exchange, key string) error {
 		return e
 	case <-dc.Done():
 		if !dc.Acked() {
-			return errors.New("nack")
+			// A 403 closes the channel and amqp091-go settles the pending confirm as not
+			// acked at once: both selects are ready and Go picks at random. Give the close
+			// a moment; only a nack on a channel that stays open is a real nack.
+			select {
+			case e := <-closed:
+				if e == nil {
+					return errors.New("channel closed")
+				}
+				return e
+			case <-time.After(time.Second):
+				return errors.New("nack")
+			}
 		}
 		return nil
 	case <-ctx.Done():
