@@ -281,7 +281,7 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	year := time.Now().UTC().Year()
-	if p.BirthYear != nil && (*p.BirthYear < scoring.MinBirthYear || *p.BirthYear > year-scoring.MinAge) {
+	if p.BirthYear != nil && !scoring.ValidBirthYear(*p.BirthYear, year) {
 		httpx.WriteError(w, 422, fmt.Sprintf("birth_year must be %d to %d", scoring.MinBirthYear, year-scoring.MinAge))
 		return
 	}

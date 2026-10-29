@@ -6,8 +6,15 @@ const DefaultMaxHR = 190
 // The birth years PATCH /v1/me accepts: 1920 up to this year minus MinAge.
 const (
 	MinBirthYear = 1920
-	MinAge       = 13
+	MinAge       = 16
 )
+
+// ValidBirthYear reports whether PATCH /v1/me accepts the birth year in the
+// given calendar year: MinBirthYear up to year − MinAge. Stored values outside
+// the range (set while the minimum was 13) are never re-checked.
+func ValidBirthYear(birthYear, year int) bool {
+	return birthYear >= MinBirthYear && birthYear <= year-MinAge
+}
 
 // EstimatedMaxHR is Tanaka's estimate, round(208 − 0.7 · age), with the age
 // from the birth year alone (D81). Integer tenths, so the rounding (half up)
