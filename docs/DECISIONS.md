@@ -2773,3 +2773,23 @@ sent, and whether a second account shares its phone.
     event names those days until the app resends; `GET /v1/me/sync` shows them pending meanwhile); the
     api's shutdown drain (10 s) against an import's 50 s budget, which a rollout can cut (the lease then
     expires after 70 s); a per-account secret namespace instead of the account id.
+
+## D142 — Mail for ryftapp.de is Google Workspace; its records live in Terraform
+
+- **Chosen by the user: Google Workspace.** AWS WorkMail was ruled out: closed to new customers since
+  2026-04-30, end of life 2027-03-31, and the platform role has no `workmail:*`. The data-processing and
+  transfer lines of the privacy texts (Google Workspace, Cloud Data Processing Addendum, DPF + SCCs) are the
+  user's own wording.
+- **Records in `infra/aws/dns`**, next to the CAA records: MX `1 smtp.google.com`; the apex TXT as **two
+  values** (the `google-site-verification=…` string and `v=spf1 include:_spf.google.com ~all`; the hand-made
+  record had both inside one quoted string, which resolvers read as one broken value); DKIM TXT at
+  `google._domainkey`, split into strings of at most 255 characters (Route 53's limit) by the record, joined as `chunk1" "chunk2` with **no outer quotes** (the AWS provider adds them; wrapping the value too failed the first apply with `InvalidCharacterString`);
+  `_dmarc` TXT. The records were created by hand first, so they are **imported**, not recreated.
+- **The DKIM value is a variable without a default** (`dkim_record`): the selector's key is the user's
+  to rotate, and a default I could not read from the live record would plan a change to a working key.
+- **SPF `~all` (soft fail)** as set up; tighten to `-all` with DMARC. **DMARC `adkim=s; aspf=s`** (strict):
+  the only sender is Workspace on `ryftapp.de` itself, so strict costs nothing and a spoof from a subdomain
+  fails; relax to `r` if a sub-domain sender is ever added.
+- **DMARC ramp:** `p=none` with `rua=mailto:support@ryftapp.de` now; after 2–4 weeks of clean aggregate
+  reports `p=quarantine` (the `dmarc` variable), then, if still clean, `p=reject`.
+- **TTL 3600** on all of them (as the CAA records); lower to 300 for the day of a DKIM rotation.

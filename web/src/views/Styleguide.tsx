@@ -35,7 +35,10 @@ export function StyleguidePage() {
           <div className={styles.row}>
             <Mark size={120} />
             <Mark size={48} />
+            <Mark size={32} />
+            <Mark size={24} />
             <Mark size={18} />
+            <Mark size={16} />
             <span className={styles.accent}>
               <Mark size={48} />
             </span>

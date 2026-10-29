@@ -1550,28 +1550,57 @@ for `www` with 308 where a GET gets 301 (the check accepts both).
 
 ## Mail for ryftapp.de
 
-The site prints `support@ryftapp.de` (support, the privacy contact, the Impressum), and
-the zone has **no MX record**: mail to it bounces until a mail service is set up. The
-records go into the `ryftapp.de` zone in `infra/aws/dns` (Terraform, the user applies),
-next to the CAA records, as `aws_route53_record`s:
+`support@ryftapp.de` (support, the privacy contact, the Impressum) is a **Google Workspace**
+mailbox (D142; AWS WorkMail is closed to new customers and ends 2027-03-31). Admin: the
+user (the Workspace super admin, admin.google.com); nobody else has access. The records
+are in `infra/aws/dns` (Terraform, the user applies), next to the CAA records:
 
-- **MX** at the apex, the service's mail servers with their priorities.
-- **TXT at the apex: one record set** with every value that belongs there, the SPF
-  (`v=spf1 include:<the service> -all`) and the service's verification string. Route 53
-  holds one TXT set per name; the apex has none today, and ExternalDNS keeps its ownership
-  records under prefixed names (`a-www.ryftapp.de`), so nothing collides.
-- **DKIM:** the service's selector records (`<selector>._domainkey`, CNAME or TXT, as it
-  says).
-- **DMARC:** TXT at `_dmarc`, starting with `v=DMARC1; p=none; rua=mailto:…` (a report
-  address at the service, not a private one), tightened to `quarantine` once the reports
-  are clean.
+| Record | Name | Value |
+| --- | --- | --- |
+| MX | `ryftapp.de` | `1 smtp.google.com` |
+| TXT (two values) | `ryftapp.de` | `google-site-verification=…` and `v=spf1 include:_spf.google.com ~all` |
+| TXT | `google._domainkey.ryftapp.de` | `v=DKIM1; k=rsa; p=…` (2048-bit; strings of ≤255 characters, written `chunk1" "chunk2` with no outer quotes: the provider adds them) |
+| TXT | `_dmarc.ryftapp.de` | `v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s` |
 
-How: the user picks an EU mail service with forwarding and send-as, pastes the records it
-asks for into the session, and they come back as a PR to `infra/aws/dns` (with a test in
-`tests/dns.tftest.hcl`); then `(cd infra/aws/dns && terraform plan -out=tfplan &&
-terraform apply tfplan)` and `dig +short MX ryftapp.de`. **The forwarding target, the
-user's private address, is configured in the mail service only**: it never appears in a
-DNS record, this repository or a Terraform variable.
+Each TXT value is its own string: never put the verification and the SPF inside one pair
+of quotes (that was the hand-made record's fault, and the SPF did not count). ExternalDNS
+keeps its ownership records under prefixed names (`a-www.ryftapp.de`), so nothing collides
+at the apex.
+
+**First time (the records were made by hand in the console): import, plan, apply.**
+
+```bash
+cd infra/aws/dns
+Z=Z08455293REDHBC9QW5MZ
+# the DKIM value exactly as it is live (dig joins nothing: strip the quotes between chunks)
+export TF_VAR_dkim_record="$(dig +short TXT google._domainkey.ryftapp.de | sed -e 's/" "//g' -e 's/^"//' -e 's/"$//')"
+terraform import aws_route53_record.mx "${Z}_ryftapp.de_MX"
+terraform import aws_route53_record.apex_txt "${Z}_ryftapp.de_TXT"
+terraform import aws_route53_record.dkim "${Z}_google._domainkey.ryftapp.de_TXT"
+terraform plan -out=tfplan     # expect: apex_txt changes to two values, dmarc is created, nothing else
+terraform apply tfplan
+dig +short TXT ryftapp.de; dig +short TXT _dmarc.ryftapp.de; dig +short MX ryftapp.de
+```
+
+If the plan shows a change to `mx` (TTL) or `dkim`, stop: the value or TTL in the zone
+differs from the file; fix the variable, not the live record. Then send a test mail to
+`support@ryftapp.de` and one from it to an outside address; check "Show original" for
+`SPF: PASS`, `DKIM: PASS`, `DMARC: PASS`.
+
+**DKIM rotation.** Admin console → Apps → Google Workspace → Gmail → Authenticate email →
+generate a new record (2048-bit), set the new value as `dkim_record` (and the selector as
+`dkim_selector` if it is not `google`), apply, and only then click "Start authentication".
+Lower the TTL to 300 a day before if you want a quick rollback.
+
+**DMARC ramp.** `p=none` collects aggregate reports at `support@ryftapp.de` (XML,
+attached, daily). After 2–4 weeks with only Google/Workspace sources passing, set
+`dmarc` to `v=DMARC1; p=quarantine; rua=mailto:support@ryftapp.de; adkim=s; aspf=s`, plan,
+apply; later `p=reject` and SPF `-all`. A legitimate sender that fails (a newsletter tool,
+a contact form) is added to SPF/DKIM first.
+
+**The forwarding target is not in the repository.** Any private address mail is
+forwarded to is configured in Workspace only; it never appears in a DNS record, this
+repository or a Terraform variable.
 
 ## App Review demo account
 
