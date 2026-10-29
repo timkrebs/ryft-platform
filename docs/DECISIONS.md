@@ -2793,3 +2793,13 @@ sent, and whether a second account shares its phone.
 - **DMARC ramp:** `p=none` with `rua=mailto:support@ryftapp.de` now; after 2–4 weeks of clean aggregate
   reports `p=quarantine` (the `dmarc` variable), then, if still clean, `p=reject`.
 - **TTL 3600** on all of them (as the CAA records); lower to 300 for the day of a DKIM rotation.
+
+## D143 — The minimum age is 16 (amends D81's range)
+
+- **Chosen by the user** for the public beta: `scoring.MinAge = 16` (was 13). `PATCH /v1/me` accepts
+  `birth_year` from 1920 to the current year − 16 and answers `422` otherwise. The range is one pure function,
+  `scoring.ValidBirthYear`, with a boundary test (year − 16 accepted, year − 15 rejected).
+- **Stored birth years are not touched.** No migration, no clearing: a value saved while the limit was 13 stays,
+  and so does the `max_hr` derived from it. Only a new `PATCH` is checked. The few TestFlight accounts with
+  such a value are friends and testers; rewriting a health-adjacent field silently would be the worse surprise.
+- The privacy texts (2026-10-26 on) say 16 in the same place; the API contract has a changelog entry.
