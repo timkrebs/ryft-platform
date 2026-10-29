@@ -27,6 +27,11 @@ export type LegalFrontMatter = {
   portedFrom?: string;
 };
 
+/** A page is a draft (banner, noindex) unless the user has set `status: published`. */
+export function isDraft(front: Pick<LegalFrontMatter, 'status'>): boolean {
+  return front.status !== 'published';
+}
+
 export function isVersioned(doc: LegalDoc): doc is VersionedDoc {
   return (VERSIONED as readonly string[]).includes(doc);
 }
