@@ -543,8 +543,11 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":  # a fresh account, so the
     e = patch_e({"max_hr_manual": False})
     est = tanaka(1985)
     check((e["max_hr"], e["max_hr_source"]) == (est, "estimated"), f"back to the estimate: {e}")
-    for body in ({"max_hr": 180, "max_hr_manual": False}, {"birth_year": year - 12}, {"birth_year": 1919}):
+    for body in ({"max_hr": 180, "max_hr_manual": False}, {"birth_year": year - 15}, {"birth_year": 1919}):
         check(is_error(patch_e(body, expect=422)), f"PATCH /v1/me {body} must be 422")
+    e = patch_e({"birth_year": year - 16})
+    check(e["birth_year"] == year - 16, f"year − 16 is the youngest accepted: {e}")
+    patch_e({"birth_year": 1985})
     # Two workouts on two days, 9 and 6 bpm above the estimate: the card names est + 6.
     consent(KEY_E)
     fmt = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
