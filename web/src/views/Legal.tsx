@@ -3,7 +3,7 @@ import { Prose, mdxComponents } from '@/components/prose';
 import { Screenshot } from '@/components/Screenshot';
 import { ButtonLink, Container, Label, Todo } from '@/components/ui';
 import { format, intlLocale, localePath, messages, type Locale } from '@/lib/i18n';
-import { isVersioned, loadLegal, versionsOf, type LegalDoc } from '@/lib/legal';
+import { isDraft, isVersioned, loadLegal, versionsOf, type LegalDoc } from '@/lib/legal';
 import { pageMetadata } from '@/lib/metadata';
 import { SUPPORT_EMAIL } from '@/lib/site';
 import styles from './Legal.module.css';
@@ -18,7 +18,7 @@ export async function legalMetadata(locale: Locale, doc: LegalDoc, version?: str
     path: docPath(doc, version),
     title: data.title,
     // Drafts stay out of search engines until the user publishes them.
-    noindex: data.status !== 'published',
+    noindex: isDraft(data),
   });
   // The newest version's permalink points at /<doc> as the canonical page.
   if (version && version === latest) {
@@ -48,7 +48,7 @@ export async function LegalPage({
     new Intl.DateTimeFormat(intlLocale(locale), { dateStyle: 'long', timeZone: 'UTC' }).format(
       new Date(`${iso}T00:00:00Z`),
     );
-  const draft = data.status !== 'published';
+  const draft = isDraft(data);
   const older = versions.filter((v) => v !== shown);
   return (
     <PageShell locale={locale} path={docPath(doc, version)}>
