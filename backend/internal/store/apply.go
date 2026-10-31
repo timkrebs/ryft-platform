@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -18,13 +19,19 @@ type Apply struct {
 	Deleted []model.DeletedRecord        // the request's deletions (any kind; unknown kinds are skipped)
 	Loc     *time.Location               // the user's tz, for the days of deleted rows
 	Emit    func(pgx.Tx, []string) error // runs in the transaction with the final days (the outbox insert)
+
+	// Fold, when set, folds same-source copies of the request's new workouts (D-c) after the
+	// deletions: the request's sources and its starts +-1 day.
+	Fold *FoldScope
 }
 
 // Applied is the outcome of Apply.
 type Applied struct {
-	Deleted model.SyncDeleted
-	Unknown model.SyncDeleted // distinct ids that named nothing deletable, per kind
-	Days    []string          // Apply.Days plus the days of deleted rows, sorted, distinct
+	Deleted     model.SyncDeleted
+	Unknown     model.SyncDeleted // distinct ids that named nothing deletable, per kind
+	Days        []string          // Apply.Days plus the days of deleted and folded rows, sorted, distinct
+	Folded      int               // workouts the same-source fold removed; not part of Deleted
+	FoldSkipped bool              // the fold found more than FoldMaxRows rows in scope and did nothing
 }
 
 // ApplySync deletes what the request's deletions name (after its upserts, which
@@ -123,6 +130,17 @@ func (s *Store) ApplySync(ctx context.Context, userID uuid.UUID, a Apply) (Appli
 			}
 			out.Deleted.Workouts = n
 		}
+		if a.Fold != nil {
+			groups, fdays, skipped, err := foldTx(ctx, tx, userID, *a.Fold, a.Loc, FoldMaxRows)
+			if err != nil {
+				return err
+			}
+			out.FoldSkipped = skipped
+			out.Folded = foldedCount(groups)
+			for _, d := range fdays {
+				days[d] = struct{}{}
+			}
+		}
 		out.Unknown = model.SyncDeleted{
 			Samples:  len(seen[model.DeletedSample]) - out.Deleted.Samples,
 			Sleep:    len(seen[model.DeletedSleep]) - out.Deleted.Sleep,
@@ -148,6 +166,12 @@ func (s *Store) ApplySync(ctx context.Context, userID uuid.UUID, a Apply) (Appli
 	})
 	if err != nil {
 		return Applied{}, err
+	}
+	if out.FoldSkipped {
+		metrics.WorkoutsFoldSkipped.WithLabelValues("too_many").Inc()
+	}
+	if out.Folded > 0 {
+		metrics.WorkoutsFolded.WithLabelValues("same_source").Add(float64(out.Folded))
 	}
 	return out, nil
 }

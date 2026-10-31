@@ -131,6 +131,11 @@ type Workout struct {
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 	// Read-only: the scoring model of strain (ignored on upload).
 	ModelVersion *string `json:"model_version,omitempty"`
+	// Read-only: the sources of other recordings of this workout the server hid
+	// (cross-source duplicates), distinct and sorted; omitted when none.
+	AlsoRecordedBy []string `json:"also_recorded_by,omitempty"`
+	// Read-only, only with GET /v1/workouts?include_hidden=true: the primary a hidden duplicate is hidden behind.
+	DuplicateOf *uuid.UUID `json:"duplicate_of,omitempty"`
 	// Input only, as on Sample.
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 }
@@ -146,6 +151,11 @@ type SyncRequest struct {
 	Workouts   []Workout       `json:"workouts"`
 	Deleted    []DeletedRecord `json:"deleted,omitempty"`
 }
+
+// MaxWorkouts is the most entries of SyncRequest.Workouts (422 above). The app pages 20 000
+// records of any kind (a page of only workouts would be an extreme backfill, a real account
+// has a few hundred a year), so the bound is far above real use and below a fold's cost.
+const MaxWorkouts = 5000
 
 // MaxDeleted is the most entries of SyncRequest.Deleted (422 above).
 const MaxDeleted = 2000

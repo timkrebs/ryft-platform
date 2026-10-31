@@ -732,7 +732,7 @@ func (h *handler) rescoreDays(ctx context.Context, r *http.Request, user uuid.UU
 // rule, D60): a matching HealthKit workout not held by another session, else
 // the one it creates.
 func (h *handler) previewWorkout(ctx context.Context, user uuid.UUID, s model.Session) (uuid.UUID, error) {
-	ws, err := h.st.WorkoutsBetween(ctx, user, s.StartedAt.Add(-12*time.Hour), scoring.SessionEnd(s).Add(12*time.Hour))
+	ws, err := h.st.VisibleWorkoutsBetween(ctx, user, s.StartedAt.Add(-12*time.Hour), scoring.SessionEnd(s).Add(12*time.Hour))
 	if err != nil {
 		return uuid.Nil, err
 	}

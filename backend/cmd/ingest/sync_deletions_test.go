@@ -699,8 +699,9 @@ func TestGarminRewriteThenDeleteKeepsTheRecord(t *testing.T) {
 // per-user advisory lock: no deadlock (a 30 s guard), every request a 200, every id named is
 // gone, every new and untouched row stays, and the row lock makes exactly one request the
 // winner of each overlapped id (deleted in one answer, unknown_id in the other). It does NOT
-// prove the advisory lock; that one serializes the fold of same-source workouts (D-c), which
-// is not in this PR.
+// prove the advisory lock; the fold of same-source workouts (D-c) and its convergence are in
+// workout_fold_test.go (TestFoldConcurrentSyncsConverge). Every generated workout has its own
+// source so the fold does not merge them.
 func TestConcurrentSyncsWithDeletionsDoNotDeadlockOrLoseRows(t *testing.T) {
 	e := newDelEnv(t)
 	at := base()
@@ -721,7 +722,7 @@ func TestConcurrentSyncsWithDeletionsDoNotDeadlockOrLoseRows(t *testing.T) {
 				ts := at.Add(off + time.Duration(i)*time.Minute)
 				p.samples = append(p.samples, recSample("heart_rate", ts, float64(i), "W", ptr(x.s[i])))
 				p.sleep = append(p.sleep, recSleep(ts, ts.Add(30*time.Second), "core", "W", ptr(x.sl[i])))
-				p.workouts = append(p.workouts, recWorkout(x.w[i], ts, "W"))
+				p.workouts = append(p.workouts, recWorkout(x.w[i], ts, "W-"+x.w[i].String())) // one source each: the same-source fold must not merge them
 			}
 			return p
 		}

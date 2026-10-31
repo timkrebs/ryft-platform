@@ -1,11 +1,11 @@
 ---
 title: 'How RYFT calculates its scores'
-description: 'Every formula, weight, baseline and band behind Readiness, Recovery, Strain and Sleep, for scoring model 2026.10.2.'
-model: '2026.10.2'
-checked: '2026-10-26'
+description: 'Every formula, weight, baseline and band behind Readiness, Recovery, Strain and Sleep, for scoring model 2026.10.3.'
+model: '2026.10.3'
+checked: '2026-10-31'
 ---
 
-This page describes scoring model **2026.10.2**, as documented in the RYFT platform's scoring reference on 26 October 2026. Every score RYFT stores carries the version of the model that computed it, so a number on this page and a number in the app can always be matched up.
+This page describes scoring model **2026.10.3**, as documented in the RYFT platform's scoring reference on 31 October 2026. Every score RYFT stores carries the version of the model that computed it, so a number on this page and a number in the app can always be matched up.
 
 The constants are starting points. They are pinned by tests, and the beta will tune them; each change gets a new model version (see [Model versions](#versions)).
 
@@ -19,6 +19,8 @@ A watch, a ring and the iPhone can all write the same kind of data to Apple Heal
 | Sleep | night | the one with the most minutes asleep, then the most minutes overall |
 
 Hours rather than days, because a watch charges for an hour and the phone's samples are all there is for that hour. Within an hour where both recorded, the denser source is the one that was worn. A phone that only logs time in bed always loses to a tracker that measured sleep.
+
+When a watch and a second tracker record the same workout, it is shown once, and a copy that a tracker re-wrote is merged into one.
 
 HRV, resting heart rate, respiratory rate and blood oxygen are a few readings per night that are averaged (or the latest is taken). A second source moves them slightly but never doubles them, so they are not de-duplicated.
 
@@ -142,7 +144,7 @@ A habit unlocks with at least **5 days with and 5 without** a scored recovery. T
 
 <h2 id="versions">Model versions: no silent changes</h2>
 
-The model has a version, year.month.n, currently **2026.10.2**. Scoring writes it on every daily score and every workout it puts a load on.
+The model has a version, year.month.n, currently **2026.10.3**. Scoring writes it on every daily score and every workout it puts a load on.
 
 - **The bump rule:** any change that moves a stored number (a formula, a constant, a source rule, a new input) gets a new version in the same change, with a changelog entry in English and German that lists the metrics it moves. A refactor that keeps every number does not.
 - After a new version, history is scored again with it, so old and new days are comparable.

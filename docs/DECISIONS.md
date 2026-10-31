@@ -2839,3 +2839,69 @@ sent, and whether a second account shares its phone.
   is not named in the text; for the next privacy revision.
 - **One-way door:** after an app build sends `deleted` or `id`, ingest cannot be rolled back past this change
   (OPERATIONS → Deploy and roll back).
+
+## D146 — The same-source fold lives in ingest, not scoring
+
+- **Rule:** two workouts of one user with the same `source` (the name; `workouts` stores no bundle id, so the
+  brief's bundle-id key is not available), the same `activity`, `|Δstart| ≤ 120 s` and `|Δend| ≤ 120 s`, **and an
+  overlap of at least 50 % of the shorter one** are one workout (connected components, so a chain of copies is
+  one). The overlap clause is the code review's: without it, six 45-second interval workouts a minute apart, which
+  never overlap, folded to one and five were deleted for good. Real copies overlap about 100 %. Keep the highest `created_at` (the most recent
+  upload, which the upsert never changes), ties to the higher id; delete the rest; `ryft-session` rows are never
+  folded. `session_id` is not moved: the fold deletes and queues the days, and the re-score re-attaches the session
+  to the kept workout, the same path a deletion takes. The rule is a pure function (`scoring/workoutdup`, which
+  imports only `model`, so the store and ingest use it without a cycle).
+- **Where:** in the sync's apply transaction (D145's lock, so two syncs that each insert a copy converge on one),
+  and as `ingest fold-workouts [-user <id> | -all] [-dry-run]`. Not in scoring: its RLS allows deleting only `ryft-session`
+  workouts (0011), so a scoring subcommand would have deleted nothing in production while its dry-run listed the
+  folds. Ingest is the one writer of raw rows and has `DELETE` since 0029.
+- Folded ids answer `404`, are not counted in `SyncResponse.deleted`, and a later deletion of one is `unknown_id`.
+  A fold cannot be undone by the platform. The brief's plan to save the rows to a CSV was dropped on the security
+  review: it puts health data on an operator's laptop outside the 7-day retention the privacy text promises, and
+  the dry-run's ids can differ from what a later run deletes. The real run prints what it deleted (ids and days, no
+  health values); recovery is Supabase's own 7-day backup. A folded copy overlapped the kept one and started and
+  ended within two minutes of it, so what is lost is a near-identical record.
+- **The subcommand is guarded:** unexpected positional arguments exit 2 (a mistyped `-dry-run` once meant a real
+  run over every user), the destructive run over all users needs `-all`, and users without consent are skipped, as
+  `rescore` does. It is a one-off process and serves no metrics, so only syncs' folds show on
+  `ryft_workouts_folded_total{reason="same_source"}`.
+- **Cost caps:** at most `MaxWorkouts` workouts per request (`422`), the fold is skipped above a row count in scope
+  (`ryft_workouts_fold_skipped_total`), and the clustering checks its context.
+- **Accepted risk, ties:** copies that arrive new in one request share a `created_at` (one transaction), so the
+  higher id is kept. If Health later deletes exactly that object while still holding the other, the next sync's
+  deletion removes the last row and the other copy returns with the next upload of it. This needs both copies
+  alive in Health at the same anchor, which a rewriting source does not do.
+- **Known, not changed:** a client can still upload a workout with `source: "ryft-session"`; it is the user's own
+  data, such a row is never folded, hidden or deletable through sync.
+
+## D147 — `duplicate_of` is a scoring output without a foreign key
+
+- **Rule (the user's decision):** different `source`, the same `activity` (or either is `other`), and an overlap
+  of at least 80 % of the shorter workout. The primary is the one with at least 2 heart-rate samples **from its own
+  source** inside its window (the window itself is by time over every source, so "has heart rate in its window"
+  decides nothing for overlapping workouts), then the longer, then the lower id. **Decided by the user on the
+  code review (U3b): a workout with a specific activity ranks above one recorded as `other`, before heart rate and
+  length.** `other` still matches as a duplicate but can only hide behind a specific one. Otherwise a longer Garmin
+  `other` hid the Watch's real strength workout, the one that carries the Train session.
+- **Greedy primary, not connected components (scoring-scientist's refinement, accepted):** the best-ranked workout
+  becomes the primary and hides only the workouts that overlap it directly; then the next best, and so on. There
+  are no chains. With plain components a Watch run split in two halves would hide the second half behind a Garmin
+  recording it does not overlap whenever the Garmin has no own-source heart rate.
+- **No hard deletion:** the duplicate is hidden, not deleted (`GET /v1/workouts/{id}` still answers 200 for it).
+  It is recomputed on every scoring of the day, which heals late heart rate and a deleted primary; until then a
+  primary deleted through sync shows its duplicate at once, because a duplicate is hidden only while its primary
+  exists **and is itself visible** (two days' passes can disagree around midnight, and a chain must never hide a
+  run completely). `GET /v1/workouts?include_hidden=true` returns the hidden ones with `duplicate_of`, so the
+  in-app export stays complete (privacy text §7). `ryft-session` workouts are never hidden. Day strain is unchanged: it uses the de-duplicated heart rate.
+- **No FK:** merge moves workouts by `UPDATE user_id`, and a self-reference `(user_id, duplicate_of)` would fail
+  when a primary moves and its duplicate stays. Scoring alone writes the column (`UPDATE (duplicate_of)` for
+  `ryft_scoring`, 0031). `ryft_ingest` holds table-level `UPDATE` on `workouts` (0009) and so technically could;
+  that cannot be narrowed additively, so a test fails if ingest code ever names the column.
+- **Cost and reach:** above 200 workouts near a day, scoring skips the cross-source decision for that day (it logs
+  the count only and clears the day's `duplicate_of`); one heart-rate query serves every matched workout. Scoring
+  reads from 36 h before the window, so a workout up to 48 h long that started earlier is seen whole.
+- **Model 2026.10.3 ships with this PR** (not with the coverage PR): CI promotes every merge, so the stored numbers
+  this can move (`details.workouts`, which workout carries a session's link, muscular load and strain, and the new
+  `duplicate_of`) must not change under the old version. The changelog entry has an empty `affects` (no score
+  metric moves; `GET /v1/model` documents that it may be empty). The coverage PR bumps again; one
+  `scripts/rescore_all.sh` after the last of the two deploys covers both.

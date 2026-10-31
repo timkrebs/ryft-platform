@@ -35,8 +35,10 @@ func (e *Engine) strength(ctx context.Context, userID uuid.UUID, dayStart, dayEn
 	if err != nil {
 		return out, err
 	}
-	// HealthKit workouts that could overlap a session of this day.
-	candidates, err := e.st.WorkoutsBetween(ctx, userID, dayStart.Add(-12*time.Hour), dayEnd.Add(12*time.Hour))
+	// HealthKit workouts that could overlap a session of this day, the visible
+	// ones only: a session's load on a hidden cross-source duplicate would
+	// vanish from the list. computeDay stored this day's duplicates just before.
+	candidates, err := e.st.VisibleWorkoutsBetween(ctx, userID, dayStart.Add(-dupMargin), dayEnd.Add(dupMargin))
 	if err != nil {
 		return out, err
 	}

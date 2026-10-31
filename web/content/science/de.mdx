@@ -1,11 +1,11 @@
 ---
 title: 'So berechnet RYFT seine Werte'
-description: 'Jede Formel, jedes Gewicht, jeder Ausgangswert und jeder Bereich hinter Bereitschaft, Erholung, Belastung und Schlaf – für das Bewertungsmodell 2026.10.2.'
-model: '2026.10.2'
-checked: '2026-10-26'
+description: 'Jede Formel, jedes Gewicht, jeder Ausgangswert und jeder Bereich hinter Bereitschaft, Erholung, Belastung und Schlaf – für das Bewertungsmodell 2026.10.3.'
+model: '2026.10.3'
+checked: '2026-10-31'
 ---
 
-Diese Seite beschreibt das Bewertungsmodell **2026.10.2**, so wie es die Bewertungsreferenz der RYFT-Plattform am 26. Oktober 2026 dokumentiert. Jeder Wert, den RYFT speichert, trägt die Version des Modells, das ihn berechnet hat – eine Zahl auf dieser Seite und eine Zahl in der App lassen sich also immer einander zuordnen.
+Diese Seite beschreibt das Bewertungsmodell **2026.10.3**, so wie es die Bewertungsreferenz der RYFT-Plattform am 31. Oktober 2026 dokumentiert. Jeder Wert, den RYFT speichert, trägt die Version des Modells, das ihn berechnet hat – eine Zahl auf dieser Seite und eine Zahl in der App lassen sich also immer einander zuordnen.
 
 Die Konstanten sind Startwerte. Tests halten sie fest, und in der Beta werden sie nachgeschärft; jede Änderung bekommt eine neue Modellversion (siehe [Modellversionen](#versions)).
 
@@ -19,6 +19,8 @@ Uhr, Ring und iPhone können dieselbe Art von Daten in Apple Health schreiben. R
 | Schlaf | Nacht | mit den meisten Minuten Schlaf, dann den meisten Minuten insgesamt |
 
 Stunden statt Tage, weil eine Uhr auch mal eine Stunde lädt und dann nur das iPhone Daten für diese Stunde hat. Wo beide gemessen haben, ist die dichtere Quelle die, die getragen wurde. Ein iPhone, das nur die Zeit im Bett erfasst, verliert immer gegen einen Tracker, der Schlaf gemessen hat.
+
+Zeichnen eine Uhr und ein zweiter Tracker dasselbe Training auf, siehst du es nur einmal, und eine Kopie, die ein Tracker neu geschrieben hat, wird zu einem Training zusammengeführt.
 
 HRV, Ruhepuls, Atemfrequenz und Blutsauerstoff sind wenige Messungen pro Nacht, die gemittelt werden (oder es zählt die letzte). Eine zweite Quelle verschiebt sie leicht, verdoppelt sie aber nie – sie werden deshalb nicht bereinigt.
 
@@ -142,7 +144,7 @@ Eine Gewohnheit wird freigeschaltet ab **5 Tagen damit und 5 ohne** mit bewertet
 
 <h2 id="versions">Modellversionen: keine stillen Änderungen</h2>
 
-Das Modell hat eine Version, Jahr.Monat.n, derzeit **2026.10.2**. Die Bewertung schreibt sie an jeden Tageswert und an jedes Training, dem sie eine Last zuordnet.
+Das Modell hat eine Version, Jahr.Monat.n, derzeit **2026.10.3**. Die Bewertung schreibt sie an jeden Tageswert und an jedes Training, dem sie eine Last zuordnet.
 
 - **Die Regel:** Jede Änderung, die eine gespeicherte Zahl bewegt (eine Formel, eine Konstante, eine Quellenregel, eine neue Eingabe), bekommt in derselben Änderung eine neue Version, mit einem Eintrag im Änderungsprotokoll auf Deutsch und Englisch, der die betroffenen Kennzahlen nennt. Ein Umbau, der jede Zahl gleich lässt, nicht.
 - Nach einer neuen Version wird der Verlauf damit neu bewertet, damit alte und neue Tage vergleichbar bleiben.

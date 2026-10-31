@@ -20,6 +20,8 @@ scoring never sums or mixes sources that overlap; it picks one.
 | --- | --- | --- | --- |
 | `heart_rate`, `steps`, `active_energy` | each sample type, each clock hour | the source with the most samples in that hour; tie: the name that sorts first | `DedupSources` |
 | sleep segments | one night (the night window of a day) | the source with the most asleep minutes (deep + core + REM + asleep), then the most minutes overall, then the name | `DedupSleepSources` |
+| workouts, **same source** | copies of one recording: same `source`, same `activity`, \|Δstart\| ≤ 120 s **and** \|Δend\| ≤ 120 s **and** an overlap ≥ 50 % of the shorter one, connected components | the copy uploaded last (`created_at`), tie: the higher `id`; ingest **deletes** the others | `workoutdup.SameWorkout`, `FoldClusters` |
+| workouts, **different sources** | recordings of one activity: different `source`, same `activity` (or either is `other`), overlap ≥ 80 % of the shorter one | a specific activity before `other`, then ≥ 2 heart-rate samples **from its own source** inside its window, then the longer one, then the lower `id`; scoring **hides** the others (`duplicate_of`) | `workoutdup.CrossSourceDuplicates` |
 
 Why hours and not days: the watch charges for an hour, and the phone's samples are all
 there is for that hour. A per-day rule would throw them away. Within an hour where both
@@ -35,6 +37,101 @@ Where it applies:
   day it belongs to, and its load matches its curve.
 - **Sleep totals, stages and the hypnogram** use the night's winning source.
 - **Steps and active energy** are summed per local day after de-duplication (below).
+
+### Workouts: one activity, one workout
+
+Two ways one activity reaches the server twice, two rules (D146, D147; the user's decisions U3 and U3b), model
+**2026.10.3**. Both are pure
+functions in `internal/scoring/workoutdup`, a package of its own so that ingest and the store can use them
+without importing the scoring engine (which imports the store).
+
+**Same source (fold, D146).** A source that re-writes a workout in Apple Health (Garmin Connect, on every sync)
+writes it under a new HealthKit UUID and deletes the old one; an app that did not send deletions left both. Two
+workouts of one user are copies when they have the same `source`, the same `activity`, **both** |Δstart| ≤
+120 s and |Δend| ≤ 120 s (inclusive; 121 s at either end is two workouts), **and** they overlap by at least
+**50 % of the shorter one** (inclusive, integer arithmetic: 100 of 200 s is one, 98 of 200 s is two; two
+zero-length copies at one instant are one). Copies form connected components (A~B and B~C fold A, B and C even if
+A and C are 200 s apart), and the one uploaded last stays: the highest
+`created_at` (the upsert never updates it), ties to the higher `id`. Ties only happen within one batch, which only
+holds copies Health still has, so either is right. Scoring's own `ryft-session` workouts are never copies.
+- *Why 120 s:* a re-write keeps the times to the second; 120 s leaves room for a source that rounds or trims a
+  pause.
+- *Why the overlap (D146 amendment):* the ends alone do not separate copies from short workouts that follow each
+  other. Intervals logged as six 45-s workouts 60 s apart are within 120 s of their neighbours at both ends, so
+  without it they chained into one component and five were **deleted**, which cannot be undone. They never overlap;
+  a re-write overlaps its original by ~100 %. 50 %, not the cross-source 80 %: both ends already pin a copy, the
+  overlap only has to rule out "one after the other".
+- *Cost:* sorted by start, each row is paired only with the rows starting within 120 s after it.
+  `FoldClustersCtx(ctx, ws) ([]Fold, error)` checks the context every 256 rows and returns `ctx.Err()` (the
+  whole-account `ingest fold-workouts`); `FoldClusters` is the same without a context.
+- *Where:* ingest, in the sync's apply transaction under the per-user lock, and `ingest fold-workouts` for the
+  rows stored earlier (OPERATIONS.md). The copies are **deleted**. Ingest, not scoring, because scoring's role
+  may not delete phone workouts (0011) and ingest is the one writer of raw rows. A session attached to a folded
+  copy is re-attached when the queued day is scored (`session_id` is not moved by ingest).
+- *Tests:* `TestSameWorkoutBoundary` (120 vs 121 s, start and end, both directions, 1 µs past),
+  `TestSameWorkoutOverlap` (50 vs 49 %, back to back, zero length), `TestFoldClustersKeepsBackToBackIntervals`
+  (the six 45-s intervals: nothing folded; each re-written once: six folds of one),
+  `TestFoldClustersReportersDay` (the reporter's 2026-10-20: 9 Garmin rows, 3 workouts, **6 folds**, a second
+  run folds nothing), `TestFoldClustersRules`, `TestFoldClustersCtx` (5,000 copies of one, a cancelled run).
+
+**Different sources (hide, D147).** A watch and a second tracker (Apple Watch and Garmin, a watch and a phone
+app) that both recorded one run are one workout. Nothing is deleted; scoring sets `workouts.duplicate_of` to the
+primary on every recording but the primary.
+- *Match:* different `source`, the same `activity` or either one `other` (a source that does not know the
+  sport), and an overlap of at least **80 % of the shorter one's duration** (integer arithmetic, so 80 % exactly
+  matches and 79.97 % does not). Two watches started a minute apart on a 45-min run overlap by > 95 %; a walk that
+  only touches the end of a run does not reach 80 %. `ryft-session` workouts and workouts without a positive
+  duration never match (API.md: a `ryft-session` workout is never hidden).
+- *Primary:* rank by (1) a **specific activity before `other`** (U3b): it says what was done, and a strength
+  session can only attach to a strength workout, so a Watch "strength" hour and a tracker's "other" of the same hour
+  keep the strength one even when the "other" is longer and has heart rate; `other` still matches anything, but it is
+  only ever hidden behind a specific activity, never hides one, and two `other`s rank by the rest; (2) at least
+  **2** heart-rate samples **from the recording's own `source`** inside its window [start, end], counted on the
+  raw samples (`OwnSourceHR`; after `DedupSources` both would share one window and the rule would decide
+  nothing); one sample is a spot reading, two make a curve, and `Strain` needs two points too; (3) the longer one;
+  (4) the lower `id`. The best-ranked undecided recording becomes a primary and
+  every undecided recording that matches **it directly** points at it; repeat. So every duplicate points at a
+  primary (no chains), and a recording is hidden only behind one it overlaps itself: if the Watch split a run in
+  two halves and Garmin kept one long recording, Garmin with heart rate hides both halves; Garmin without heart
+  rate is hidden behind the first half and the second half stays.
+- *When:* `computeDay`, before the strength sessions are attached. It reads every workout that overlaps the day
+  ±12 h (hidden ones too, so both days of a 23:58/00:01 pair decide alike). The store reads by start, so the read
+  starts 36 h earlier and keeps what ends inside the window: a recording up to 48 h long that began before it (a
+  24-h race) is part of the decision; a longer one stays shown. Heart rate comes in **one** query over the
+  recordings that have a match and is counted per recording in memory. Above **200** workouts near one day (a
+  broken source or a bulk import; a real day has a handful, and the pairing is quadratic) the decision is skipped:
+  the day's `duplicate_of` is cleared, everything is shown as before the rule, and only the count is logged.
+  Otherwise it writes `duplicate_of` for **the day's own workouts only**, clearing it on
+  every other workout of the day (`store.SetWorkoutDuplicates`). So each row has one writer, and late heart rate
+  or a deletion heals on the next pass of the day. A deleted primary shows its duplicate at once (readers treat a
+  `duplicate_of` without its row as visible).
+- *What it changes:* the visible list (`GET /v1/days/{day}`, `GET /v1/workouts`, with `also_recorded_by`),
+  `details.workouts` (the day's visible workouts), and which workout a strength session attaches to: the
+  candidates are the visible workouts (`store.VisibleWorkoutsBetween`), so the load never lands on a hidden copy.
+  **Unchanged:** the day's strain, TRIMP, heart-rate minutes and zones (the de-duplicated heart rate of the day,
+  whatever rows exist), and every workout's own load: each row, hidden or not, keeps its strain from its time
+  window (the same de-duplicated heart rate), and `GET /v1/workouts/{id}` still answers for a hidden one.
+- *Tests:* `TestCrossSourceMatchBoundary` (80 vs 79 %, 80 % of the shorter but not of the longer, the wildcard,
+  same source, `ryft-session`, zero length), `TestCrossSourceDuplicates` (Watch with HR vs Garmin without, both
+  with HR, equal length, 1 vs 2 samples, three sources, the split run both ways; every case also reversed),
+  `TestCrossSourceDuplicatesHealsOnRescore`, `TestOwnSourceHR`; through the engine (Postgres)
+  `TestEngineHidesCrossSourceDuplicates` (day and workout strain unchanged, late Garmin HR flips the primary, a
+  deleted primary), `TestEngineAttachesSessionsToTheVisibleWorkout`, `TestEngineKeepsTheSpecificActivityOverOther`
+  (Watch "strength" + Garmin "other", longer and with heart rate: the strength workout stays visible and keeps
+  the session), `TestEngineSeesALongWorkoutStartedEarlier` (a 30-h hike that began the day before hides a
+  phone app's hour) and `TestEngineSkipsTheDecisionAboveTheCap`. The U3b cases are in `TestCrossSourceDuplicates`
+  too (specific before `other` with and without heart rate, two `other`s, an `other` between a run and a ride).
+
+**Stored numbers either rule can move** (model **2026.10.3**; `affects` is empty because no trend metric moves;
+see Model version):
+- `daily_scores.details.workouts`: copies no longer count (fold) and hidden duplicates no longer count (hide).
+- Strength attachment: `workouts.session_id`, `workouts.muscular_load` and that workout's `strain` (which
+  includes the muscular load) move to the kept copy or to the visible primary; `sessions.workout_id` follows; a
+  `ryft-session` workout is created or removed as the match changes. The **day's** strain does not move (the
+  muscular load joins the day once, whichever workout carries it).
+- `workouts.duplicate_of` (new, cross-source only); folded rows are gone with their own strain, TRIMP and zones.
+- Outside the stored scores: the max-HR-observed card reads the peak over every workout window, hidden ones
+  included, so only a fold can move it, by the samples in at most 120 s at a copy's edges.
 
 **Golden fixtures** (`internal/scoring/testdata/sources/*.json`): what HealthKit hands
 over for four set-ups, Apple Watch + iPhone, Oura + iPhone, iPhone only (eight days, no
@@ -593,7 +690,7 @@ the Today screen has the reason within a pass of the deploy. Older days keep `nu
 
 ## Model version
 
-`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.2"`
+`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.3"`
 (year.month.n). Scoring writes it on every `daily_scores` row and every workout it puts
 a load on (`model_version`, migration 0018); rows scored before 2026-10-20 have `null`
 until they are rescored. `GET /v1/model` serves it with the changelog
@@ -610,12 +707,26 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 ```
 
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
-refuses entries out of order, an unknown metric or an unsorted `affects`.
+refuses entries out of order, an unknown metric, an unsorted or a missing `affects` (`[]` is a version that moves
+stored numbers but no trend metric).
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
+| 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |
 | 2026.10.2 | 2026-10-26 | Strength: the e1RM reference is the best of the 90 days before a session's end, its own sets always included; the history ends at the session's last set when that is after `ended_at`; assisted bodyweight sets count with the support taken off and hold no record; `pct_1rm` targets use the same 90-day e1RM. `affects`: `strain` and `volume_kg` directly; `sleep`, `sleep_quality`, `recovery` and `readiness` through the next night's need (3 min per strain point) and the readiness penalty. | D134, D135, D138 |
 | 2026.10.1 | 2026-10-20 | The model at the start of the beta. | D80 |
+
+**2026.10.3, before and after.** Only users with several recordings of one activity are affected: a source that
+re-wrote workouts without the app sending deletions (the reporter: 6 copies on 2026-10-20), or two sources recording
+one workout. For them a day's `details.workouts` drops by the copies and hidden duplicates, and a session's load moves
+to the kept or visible workout; no score, baseline or trend metric moves (the engine test asserts day strain and the
+primary's strain unchanged). `scripts/synth.py` writes at most one workout a day from one source (90 days: 45
+workouts; `--demo`: 39, all one source), so both rules find nothing there: 0 folds, 0 hidden, before = after.
+Production was not read. `changelog.json` carries an empty `affects` for the first time; `Changelog()` now accepts
+`[]` (never a missing key: the app decodes `[String]`). The data-quality bump for night coverage and the floors
+follows as its own version; **rescore** once after the last of the two deploys: `scripts/rescore_all.sh` (400 days,
+every user with consent). Until then a day shows the new count and attachment once it is scored again (a sync, a
+deletion or a fold queues it; the 15-minute pass re-scores today and yesterday).
 
 **2026.10.2, before and after.** The new rules differ from 2026.10.1 only for: a set with
 `assist_kg` above 0 (the column is new with the import, migration 0028: no stored set had
