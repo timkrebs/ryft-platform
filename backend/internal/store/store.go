@@ -90,10 +90,6 @@ type Identity struct {
 // seenEvery bounds how often an active user's row is written (last_seen_at).
 const seenEvery = 5 * time.Minute
 
-// lockUser serialises EnsureUser's writes and DeleteUser for one user, so a
-// request racing a deletion either finishes first or sees the tombstone.
-const lockUser = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
-
 // EnsureUser returns the caller's user row, creating it on the first request
 // (users come from Supabase Auth; there is no sign-up endpoint). The common
 // case is a single read; the row is only written when it is missing, its
@@ -416,6 +412,22 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 	}
 	b := &pgx.Batch{}
 	for _, x := range in {
+		if x.ID != nil {
+			// The record's id is the latest upload's (D-a): the stored row with this natural
+			// key adopts it, and the new value (a source re-writing a value under a new UUID
+			// and deleting the old one). Not when another row already holds the id.
+			b.Queue(`UPDATE samples SET hk_id=$1, value=$7
+				WHERE user_id=$2 AND type=$3 AND start_at=$4 AND end_at=$5 AND source=$6
+				  AND (hk_id, value) IS DISTINCT FROM ($1::uuid, $7::double precision)
+				  AND NOT EXISTS (SELECT 1 FROM samples x WHERE x.user_id=$2 AND x.hk_id=$1 AND x.id <> samples.id)`,
+				*x.ID, userID, x.Type, x.Start, x.End, x.Source, x.Value)
+			// No conflict target: a clash on either unique index (natural key, or the id of a
+			// renamed source) is a duplicate, never an error.
+			b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source, hk_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+				userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, *x.ID)
+			continue
+		}
 		// An identical re-send is neither rewritten nor counted (SyncResponse → ignored.duplicate).
 		b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -432,6 +444,17 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 	}
 	b := &pgx.Batch{}
 	for _, x := range in {
+		if x.ID != nil {
+			b.Queue(`UPDATE sleep_segments SET hk_id=$1
+				WHERE user_id=$2 AND start_at=$3 AND end_at=$4 AND stage=$5 AND source=$6
+				  AND hk_id IS DISTINCT FROM $1::uuid
+				  AND NOT EXISTS (SELECT 1 FROM sleep_segments x WHERE x.user_id=$2 AND x.hk_id=$1 AND x.id <> sleep_segments.id)`,
+				*x.ID, userID, x.Start, x.End, x.Stage, x.Source)
+			b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id)
+				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+				userID, x.Start, x.End, x.Stage, x.Source, *x.ID)
+			continue
+		}
 		b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source)
 			VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
 			userID, x.Start, x.End, x.Stage, x.Source)
@@ -452,8 +475,9 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source
 			WHERE (workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
 			  workouts.distance_m, workouts.source) IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at,
-			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)`,
-			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source)
+			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)
+			  AND workouts.source <> $11`,
+			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, model.SessionSource)
 	}
 	return s.runBatch(ctx, b)
 }

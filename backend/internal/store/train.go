@@ -470,9 +470,6 @@ type SaveResult struct {
 	NewSets  int            // completed sets that were not stored before
 }
 
-// lockSession serialises saves of one session, also before its row exists.
-const lockSession = `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`
-
 // SaveSession applies a PUT /v1/sessions/{id} body (validated with
 // train.CheckSession) under train.Merge, in one transaction.
 func (s *Store) SaveSession(ctx context.Context, userID uuid.UUID, body model.Session) (SaveResult, error) {
@@ -1192,9 +1189,6 @@ func (s *Store) ActiveEnrollment(ctx context.Context, userID uuid.UUID) (*model.
 	}
 	return &e, err
 }
-
-// lockEnrollments serialises a user's enrolment changes.
-const lockEnrollments = `SELECT pg_advisory_xact_lock(7419004, hashtext($1::text))`
 
 // EnrollPos is where POST /v1/plans/{id}/enroll with a body puts the enrolment (T8,
 // validated with train.CheckEnroll): a nil field keeps the stored value, or takes the

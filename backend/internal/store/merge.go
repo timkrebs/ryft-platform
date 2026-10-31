@@ -193,12 +193,30 @@ func (m merger) run(res *MergeResult) error {
 		return err
 	}
 	// Raw data: the same record from both accounts is one record.
+	// The record that is kept without a HealthKit id takes the one of the record dropped for it,
+	// when no other record of to holds that id, so a later deletion of that id still finds it.
+	if _, err := m.exec(`UPDATE samples t SET hk_id = s.hk_id FROM samples s
+		WHERE s.user_id = $1 AND t.user_id = $2 AND t.hk_id IS NULL AND s.hk_id IS NOT NULL
+		  AND t.type = s.type AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.source = s.source
+		  AND NOT EXISTS (SELECT 1 FROM samples x WHERE x.user_id = $2 AND x.hk_id = s.hk_id)`, m.from, m.to); err != nil {
+		return fmt.Errorf("samples hk_id: %w", err)
+	}
+	if _, err := m.exec(`UPDATE sleep_segments t SET hk_id = s.hk_id FROM sleep_segments s
+		WHERE s.user_id = $1 AND t.user_id = $2 AND t.hk_id IS NULL AND s.hk_id IS NOT NULL
+		  AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.stage = s.stage AND t.source = s.source
+		  AND NOT EXISTS (SELECT 1 FROM sleep_segments x WHERE x.user_id = $2 AND x.hk_id = s.hk_id)`, m.from, m.to); err != nil {
+		return fmt.Errorf("sleep hk_id: %w", err)
+	}
 	if err := add(m.move("samples", `NOT EXISTS (SELECT 1 FROM samples t WHERE t.user_id = $2 AND t.type = s.type
-		AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.source = s.source)`, "same type, start, end and source: to's kept")); err != nil {
+		AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.source = s.source)
+		AND (s.hk_id IS NULL OR NOT EXISTS (SELECT 1 FROM samples t WHERE t.user_id = $2 AND t.hk_id = s.hk_id))`,
+		"same type, start, end and source, or the same HealthKit id: to's kept")); err != nil {
 		return err
 	}
 	if err := add(m.move("sleep_segments", `NOT EXISTS (SELECT 1 FROM sleep_segments t WHERE t.user_id = $2 AND t.start_at = s.start_at
-		AND t.end_at = s.end_at AND t.stage = s.stage AND t.source = s.source)`, "same start, end, stage and source: to's kept")); err != nil {
+		AND t.end_at = s.end_at AND t.stage = s.stage AND t.source = s.source)
+		AND (s.hk_id IS NULL OR NOT EXISTS (SELECT 1 FROM sleep_segments t WHERE t.user_id = $2 AND t.hk_id = s.hk_id))`,
+		"same start, end, stage and source, or the same HealthKit id: to's kept")); err != nil {
 		return err
 	}
 	if err := add(m.move("workouts", `NOT EXISTS (SELECT 1 FROM workouts t WHERE t.user_id = $2 AND t.id = s.id)`,

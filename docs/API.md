@@ -314,7 +314,7 @@ kind in the request (a repeated pair is counted once).
   known `kind` is `unknown_id`. Only more than 2 000 entries is a `422`. A string that is not a UUID is `400` (bad JSON shape).
 - **Workouts made by RYFT.** A workout with `source` `ryft-session` (created for a Train
   session that has no matching HealthKit workout) is not deletable here: its id is
-  `unknown_id`. Delete the session instead (`DELETE /v1/sessions/{id}`).
+  `unknown_id`. Delete the session instead (`DELETE /v1/sessions/{id}`). Likewise, re-uploading a workout with a `ryft-session` workout's id changes nothing: it is a no-op, counted as `duplicate`.
 - **A workout with a Train session.** Deleting the HealthKit workout keeps the session. The
   day is rescored: the session loses its HealthKit match, scoring creates a `ryft-session`
   workout for it (`Workout.session_id` set, `source` `ryft-session`) and its muscular load
@@ -326,7 +326,8 @@ kind in the request (a repeated pair is counted once).
   like the days of stored records. A deletion changes the day's numbers and moves `scoring_state`
   to `pending` until scoring is done.
 - **Failure.** If the server cannot apply a request's deletions, the whole request answers
-  `503` with `Retry-After` and the records of the same request are stored (they are idempotent). Send the same
+  `503` with `Retry-After: 5` and the records of the same request are stored (they are idempotent). The same
+  `503` covers a conflict between two concurrent syncs of one user (a deadlock or serialization failure); nothing is half-applied and a re-send is harmless. Send the same
   request again; deletions that already happened come back as `unknown_id`. Keep a deletion until
   a `200` carried it.
 - **Logs** hold counts, never ids.
@@ -343,13 +344,13 @@ Example request (a rewritten workout and a deleted resting heart rate):
 answers (the two distinct ids; the workout was held, the sample was already gone):
 
 ```json
-{ "samples": 0, "sleep": 0, "workouts": 0, "days_touched": ["2026-10-20"],
+{ "samples": 0, "sleep": 0, "workouts": 0, "days_touched": ["2026-10-20", "2026-10-21"],
   "accepted": { "samples": 0, "sleep": 0, "workouts": 0 },
   "ignored": { "samples":  { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 1 },
                "sleep":    { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0 },
                "workouts": { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0 } },
   "deleted": { "samples": 0, "sleep": 0, "workouts": 1 },
-  "scoring": { "queued_days": ["2026-10-20"], "expected_within_sec": 20 } }
+  "scoring": { "queued_days": ["2026-10-20", "2026-10-21"], "expected_within_sec": 20 } }
 ```
 
 A sample or sleep segment with an `id`, as the app sends it from 2026-10-31:
