@@ -16,11 +16,12 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Screen | Numbers | Endpoint |
 | --- | --- | --- |
 | Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt, why a day is calibrating (`calibrating_reason`, `baseline_hrv_days`, `baseline_rhr_days`) | `GET /v1/days/{today}` → `score` |
+| Today — provisional night, "based on …", which source won | `Provisional` line while the night is incomplete, hours of heart rate and HRV readings behind the numbers, the sleep and heart-rate sources | `GET /v1/days/{today}` → `score.coverage` |
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
 | Sleep — Day | total, stage bar (hypnogram), stage minutes and %, quality | `GET /v1/days/{day}` → `sleep` |
 | Sleep — Week / Month | nightly totals and stages, consistency, bedtime / wake strip, averages | `GET /v1/sleep?range=week` / `month` |
 | Sleep — Planner | three bedtimes for a wake time, the need behind them | `GET /v1/sleep/plan?wake=07:00` |
-| Strain | day strain, zones, TRIMP, steps, active kcal, activities | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
+| Strain | day strain, zones, TRIMP, steps, active kcal, activities (a workout two sources recorded is listed once, `also_recorded_by`) | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
@@ -28,7 +29,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Onboarding — invite | redeem the beta invite code | `POST /v1/me/invite`, `User.beta_access` |
 | Onboarding — consent; Profile → Privacy | agree to (or withdraw) health-data processing for the current policy | `GET /v1/config` → `privacy_policy_*`, `POST`/`DELETE /v1/me/consent`, `User.consent` |
 | Onboarding — about you | birth year, max HR | `PATCH /v1/me` (`birth_year`, `max_hr`, `max_hr_manual`) |
-| Profile — Data sources | which apps and devices send what | `User.sources` |
+| Profile — Data sources; tracker setup | which apps and devices send what, and how much of it in the last 7 days (a source without HRV shows `hrv_sdnn: 0`) | `User.sources` (`kinds`, `samples_7d`) |
 | Profile — Report a problem | message, diagnostics, request IDs | `POST /v1/feedback` |
 | (any score) | which model computed it, and what changed | `model_version`, `GET /v1/model` |
 | Profile — Notifications | per-category toggles, quiet hours | `User.notifications`, `PATCH /v1/me/notifications` |
@@ -43,7 +44,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 | Profile — Journal | choose behaviors, add or remove custom ones | `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` |
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | Strain — Train: import | plans and workout history from another training app's export; label imported sessions; start the imported plan where the user is | `POST /v1/train/import`, `Session.origin` / `import_source`, `POST /v1/plans/{id}/enroll` (optional position) |
-| (background) | HealthKit upload | `POST /v1/sync` |
+| (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`) |
 
 ## Conventions
 
@@ -217,13 +218,15 @@ Request `SyncRequest`:
 | `os_version` | string? | e.g. `iOS 26.1`. |
 | `samples` | `[Sample]` | May be empty. |
 | `sleep` | `[SleepSegment]` | May be empty. |
-| `workouts` | `[Workout]` | May be empty. `strain` is ignored on input. |
+| `workouts` | `[Workout]` | May be empty. `strain` and `also_recorded_by` are ignored on input. |
+| `deleted` | `[DeletedRecord]?` | HealthKit objects that were deleted in Apple Health: `{"kind": "sample" \| "sleep" \| "workout", "id": uuid}`, at most **2 000** per request (`422` above; send more in the next request). Optional and may be empty; a request with only `deleted` is valid. See **Deletions** below. |
 
 `Sample`: `type` (enum below), `start`, `end` (timestamps, `end ≥ start`), `value`
 (number), `unit` (string, informational), `source` (string, HealthKit source name),
 `source_bundle_id` (string?, the HealthKit source's bundle identifier, e.g.
-`com.ouraring.oura`; `User.sources` shows it). `SleepSegment` and `Workout` take
-`source_bundle_id` too.
+`com.ouraring.oura`; `User.sources` shows it), `id` (uuid?, the HealthKit object's UUID,
+`HKObject.uuid`; see **HealthKit ids** below). `SleepSegment` and `Workout` take
+`source_bundle_id` too, `SleepSegment` takes `id` too.
 
 | `type` | Unit of `value` |
 | --- | --- |
@@ -240,16 +243,34 @@ Request `SyncRequest`:
 (HealthKit's vocabulary; `asleep` = unspecified stage), `source`.
 
 Uploads are idempotent: samples are unique on `(type, start, end, source)`, sleep
-segments on `(start, end, stage, source)`, workouts on `id`. Re-sending a page is harmless.
+segments on `(start, end, stage, source)`, workouts on `id`; a sample or sleep segment
+that carries an `id` is also unique on `(user, id)`. Re-sending a page is harmless.
+
+**HealthKit ids.** `Sample.id` and `SleepSegment.id` are optional (uuid, upper or lower
+case; stored lower case). Records without one behave exactly as before. Health objects
+are immutable, and a source that changes a value (a watch app re-writing its resting heart
+rate) writes the same `(type, start, end, source)` under a **new** UUID and deletes the old
+one. So the id is a handle for deletions, and the latest upload owns it:
+
+- A record with an `id` whose natural key (`(type, start, end, source)`, or
+  `(start, end, stage, source)`) is already stored **adopts** that row: the row takes the new
+  `id` and, for a sample, the new `value`. That counts as stored (`accepted`) when the id or
+  the value changed, else as `duplicate`. This also gives the id to rows uploaded before the
+  app sent ids.
+- A record whose `id` is already stored on a different row of the user (the source was
+  renamed) is `duplicate`; the old row stays.
+- A `SyncRequest` can therefore be re-sent with ids after it was sent without, and no row
+  doubles.
 
 Response `200 SyncResponse`:
 
 ```json
 { "samples": 1380, "sleep": 14, "workouts": 1, "days_touched": ["2026-10-17", "2026-10-18"],
   "accepted": { "samples": 1380, "sleep": 14, "workouts": 1 },
-  "ignored": { "samples":  { "duplicate": 58, "outside_window": 0, "unknown_type": 2 },
-               "sleep":    { "duplicate": 0,  "outside_window": 0, "unknown_type": 0 },
-               "workouts": { "duplicate": 0,  "outside_window": 0, "unknown_type": 0 } },
+  "ignored": { "samples":  { "duplicate": 58, "outside_window": 0, "unknown_type": 2, "unknown_id": 1 },
+               "sleep":    { "duplicate": 0,  "outside_window": 0, "unknown_type": 0, "unknown_id": 0 },
+               "workouts": { "duplicate": 0,  "outside_window": 0, "unknown_type": 0, "unknown_id": 0 } },
+  "deleted": { "samples": 3, "sleep": 0, "workouts": 6 },
   "scoring": { "queued_days": ["2026-10-17", "2026-10-18"], "expected_within_sec": 20 } }
 ```
 
@@ -261,13 +282,89 @@ record that is not counted there is in `ignored`, per reason:
 | `duplicate` | is identical to one already stored (a page sent twice, a re-sync). Harmless. |
 | `outside_window` | starts more than 24 h in the future (a wrong clock) or ended more than 400 days ago (no score reaches back that far). |
 | `unknown_type` | has a sample `type` or sleep `stage` the server does not know. Ignored instead of failing the whole sync, so an app that reads a new HealthKit type keeps syncing. |
+| `unknown_id` | is an entry of `deleted` (counted under its `kind`: `sample` → `ignored.samples`, `sleep` → `ignored.sleep`, `workout` → `ignored.workouts`) that names nothing the server can delete for this user. Not a record of `samples`/`sleep`/`workouts`. See **Deletions**. |
+
+`unknown_id` is present in every `IgnoredCounts` (0 when none) from 2026-10-31; a client
+decodes it as optional. `deleted` (`SyncDeleted`: `samples`, `sleep`, `workouts`) is present in
+every response from the same date and counts the entries of `deleted` that removed a row.
+
+#### Deletions
+
+`deleted` tells the server which HealthKit objects no longer exist. For each distinct
+`(kind, id)` of the request, for this user only:
+
+| `kind` | Removes | Counted |
+| --- | --- | --- |
+| `sample` | the sample stored with that `Sample.id` | `deleted.samples`, else `ignored.samples.unknown_id` |
+| `sleep` | the sleep segment stored with that `SleepSegment.id` | `deleted.sleep`, else `ignored.sleep.unknown_id` |
+| `workout` | the workout with that `Workout.id` | `deleted.workouts`, else `ignored.workouts.unknown_id` |
+
+For each kind, `deleted.<kind> + ignored.<kind>.unknown_id` equals the number of distinct ids of that
+kind in the request (a repeated pair is counted once).
+
+- **Order.** Deletions apply **after** the same request's `samples`, `sleep` and `workouts`
+  are stored. The Garmin pattern (a new UUID uploaded, the old one deleted) in one request
+  keeps the new record; a record uploaded and deleted in one request ends up deleted.
+- **Idempotent.** A deletion sent twice, or for an object the server never had (it was
+  deleted before the app uploaded it, or uploaded before ids existed), is `unknown_id` and `200`,
+  never an error. An id of another account is `unknown_id` too, and nothing of that account is
+  touched or revealed: the server cannot be asked whether an id exists.
+- **Tolerant.** An entry with a `kind` this version does not know is skipped and not counted
+  (a later app keeps syncing); a nil UUID (`00000000-0000-0000-0000-000000000000`) under a
+  known `kind` is `unknown_id`. Only more than 2 000 entries is a `422`. A string that is not a UUID is `400` (bad JSON shape).
+- **Workouts made by RYFT.** A workout with `source` `ryft-session` (created for a Train
+  session that has no matching HealthKit workout) is not deletable here: its id is
+  `unknown_id`. Delete the session instead (`DELETE /v1/sessions/{id}`).
+- **A workout with a Train session.** Deleting the HealthKit workout keeps the session. The
+  day is rescored: the session loses its HealthKit match, scoring creates a `ryft-session`
+  workout for it (`Workout.session_id` set, `source` `ryft-session`) and its muscular load
+  stays on the day. The workout's old id then answers `404` on `GET /v1/workouts/{id}`.
+- **Heart rate stays.** Heart-rate samples that lie in a deleted workout's window are separate
+  HealthKit objects and are only deleted by their own entries.
+- **Rescoring.** The local days of every deleted row (and of every workout folded, see
+  `Workout.also_recorded_by`) are queued: they are in `days_touched` and `scoring.queued_days`
+  like the days of stored records. A deletion changes the day's numbers and moves `scoring_state`
+  to `pending` until scoring is done.
+- **Failure.** If the server cannot apply a request's deletions, the whole request answers
+  `503` with `Retry-After` and the records of the same request are stored (they are idempotent). Send the same
+  request again; deletions that already happened come back as `unknown_id`. Keep a deletion until
+  a `200` carried it.
+- **Logs** hold counts, never ids.
+
+Example request (a rewritten workout and a deleted resting heart rate):
+
+```json
+{ "device_id": "0E6B2E54-9C6D-4F7B-8A55-4E3F3B7C1D20", "samples": [], "sleep": [], "workouts": [],
+  "deleted": [ { "kind": "workout", "id": "5C3F0B9E-52B1-4E55-AE0A-7B1C2D3E4F50" },
+               { "kind": "sample",  "id": "A41D7E02-6F1B-4C58-9B3A-0D5E8F7A6B21" },
+               { "kind": "workout", "id": "5C3F0B9E-52B1-4E55-AE0A-7B1C2D3E4F50" } ] }
+```
+
+answers (the two distinct ids; the workout was held, the sample was already gone):
+
+```json
+{ "samples": 0, "sleep": 0, "workouts": 0, "days_touched": ["2026-10-20"],
+  "accepted": { "samples": 0, "sleep": 0, "workouts": 0 },
+  "ignored": { "samples":  { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 1 },
+               "sleep":    { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0 },
+               "workouts": { "duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0 } },
+  "deleted": { "samples": 0, "sleep": 0, "workouts": 1 },
+  "scoring": { "queued_days": ["2026-10-20"], "expected_within_sec": 20 } }
+```
+
+A sample or sleep segment with an `id`, as the app sends it from 2026-10-31:
+
+```json
+{ "id": "A41D7E02-6F1B-4C58-9B3A-0D5E8F7A6B21", "type": "resting_hr", "start": "2026-10-20T00:00:00Z", "end": "2026-10-20T00:00:00Z",
+  "value": 49, "unit": "bpm", "source": "Garmin Connect", "source_bundle_id": "com.garmin.connect.mobile" }
+```
 
 `days_touched` (and `scoring.queued_days`) are the local days queued for rescoring;
 `scoring.expected_within_sec` is how long scoring has recently taken from a sync to the
 score (the 95th percentile over every account and the last 6 hours; 30 until it knows).
 `GET /v1/me/sync` says when they are done. A `\u0000` in any string is removed, not
 refused (Errors → NUL). Errors: `400` bad JSON, `422` validation
-(`device_id` missing, `end` before `start`, workout without `id`), `403` `invite_required`
+(`device_id` missing, `end` before `start`, workout without `id`, more than 2 000 entries in `deleted`), `403` `invite_required`
 / `consent_required` (Errors above): keep the HealthKit anchors and send the same pages
 again once that is resolved.
 
@@ -282,8 +379,12 @@ again once that is resolved.
   "beta_access": true,
   "consent": { "policy_version": "2026-10-20", "granted_at": "2026-10-20T09:12:44Z" },
   "birth_year": 1990, "max_hr_source": "estimated", "account_hint": null,
-  "sources": [ { "name": "Tim's Apple Watch", "bundle_id": "com.apple.health.81E2…", "kinds": ["energy", "hr", "hrv", "resp", "sleep", "spo2", "workout"], "last_seen": "2026-10-20T06:58:00Z" },
-               { "name": "Tim's iPhone", "bundle_id": "com.apple.health.3F0A…", "kinds": ["steps"], "last_seen": "2026-10-20T08:40:00Z" } ] }
+  "sources": [ { "name": "Tim's Apple Watch", "bundle_id": "com.apple.health.81E2…", "kinds": ["energy", "hr", "hrv", "resp", "sleep", "spo2", "workout"], "last_seen": "2026-10-20T06:58:00Z",
+                 "samples_7d": { "heart_rate": 9800, "hrv_sdnn": 41, "resting_hr": 7, "respiratory_rate": 212, "spo2": 160, "vo2max": 1, "active_energy": 1893, "steps": 0 } },
+               { "name": "Tim's iPhone", "bundle_id": "com.apple.health.3F0A…", "kinds": ["steps"], "last_seen": "2026-10-20T08:40:00Z",
+                 "samples_7d": { "heart_rate": 0, "hrv_sdnn": 0, "resting_hr": 0, "respiratory_rate": 0, "spo2": 0, "vo2max": 0, "active_energy": 0, "steps": 5230 } },
+               { "name": "Garmin Connect", "bundle_id": "com.garmin.connect.mobile", "kinds": ["energy", "hr", "sleep", "steps", "workout"], "last_seen": "2026-10-20T03:02:00Z",
+                 "samples_7d": { "heart_rate": 9112, "hrv_sdnn": 0, "resting_hr": 7, "respiratory_rate": 0, "spo2": 0, "vo2max": 0, "active_energy": 640, "steps": 1180 } } ] }
 ```
 
 The user is created on the first authenticated request with `tz = Europe/Berlin`,
@@ -306,9 +407,11 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `consent` | `Consent?` | The latest consent to health-data processing that was not withdrawn: `{policy_version, granted_at}`; `null` when there is none. Syncing needs `policy_version` to equal `GET /v1/config` → `privacy_policy_version`. |
 | `birth_year` | int? | For the max-HR estimate; nothing finer is stored. `PATCH /v1/me` accepts 1920 to the current year − 16. |
 | `max_hr_source` | string | `default` (190, nothing known), `estimated` (208 − 0.7 · age, Tanaka, from `birth_year`), `manual` (set with `PATCH`). Closed enum. |
-| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max), `last_seen` (the latest record's time). `[]` when nothing arrived. |
+| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max), `last_seen` (the latest record's time), `samples_7d` (see below). `[]` when nothing arrived. |
 | `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
 | `account_hint` | `AccountHint?` | Set when this account has no data yet and the device in `X-RYFT-Device-ID` synced **another** account in the last 30 days: probably the same person signed in another way (Apple vs. email). `{"kind": "other_account_on_device", "other_provider": "email", "other_last_sync": "2026-10-20T06:58:00Z"}`: `kind` closed enum (one value so far), `other_provider` string? (`apple`, `email`), `other_last_sync` timestamp. Never an id or an email. Offer "sign in with email instead" and the support contact; the operator can merge accounts. `null` otherwise. |
+
+**`UserSource.samples_7d`** (`{string: int}`) counts the **samples** (not sleep segments or workouts, which `kinds` covers) stored for that source with `start` in the last 7 × 24 hours, per sample `type`: the keys are the eight `Sample.type` values (`heart_rate`, `hrv_sdnn`, `resting_hr`, `respiratory_rate`, `spo2`, `vo2max`, `active_energy`, `steps`), **all present on every source, `0` when none arrived**. That is how the app tells a tracker that writes heart rate but no HRV (`hrv_sdnn: 0` next to `heart_rate` in the thousands) from one that writes both. The source is matched by `name`; the counts are after the sync's duplicate handling (each stored row once). The type keys are an open set (a later version may add one): ignore keys you do not know and treat a missing key as `0`. The counts are exact as of the response or taken from the last scoring pass (at most about 15 minutes old); do not compare them to a sync's `accepted`. The field is absent only from a platform that predates 2026-10-31; decode it as optional. There is no way to choose which source feeds which metric yet.
 
 **Learned baseline.** Every Sunday from 04:00 local time, scoring estimates the
 baseline from the last 30 scored days. It needs at least 14 nights of sleep, of which at
@@ -460,7 +563,7 @@ bundle ID as topic. **Until the APNs key is configured** (Apple Developer Progra
 
 | Category | Sent when | Title · body keys (arguments) | Opens (`ryft.url`) |
 | --- | --- | --- | --- |
-| `MORNING_SCORE` | Today's recovery is scored for the first time after a night with sleep (in practice the morning sync). Once a day; during quiet hours it waits until they end, the score as it is then. | `MORNING_SCORE_TITLE` (recovery `82%`) · `MORNING_SCORE_BODY_BALANCED`, `_STRAINED`, `_DEPLETED` or `_CALIBRATING` by `state` (readiness) | `https://ryftapp.de/day/<day>` |
+| `MORNING_SCORE` | Today's day is **final** (`score.coverage.status`) with a recovery and a night's sleep for the first time: not on a provisional scoring (a 03:00 sync of half a night sends nothing), but when the night is complete or at 10:00 local, whichever comes first; if sleep only arrives after the 10:00 ceiling, when it does. Once a day; during quiet hours it waits until they end, the score as it is then. | `MORNING_SCORE_TITLE` (recovery `82%`) · `MORNING_SCORE_BODY_BALANCED`, `_STRAINED`, `_DEPLETED` or `_CALIBRATING` by `state` (readiness) | `https://ryftapp.de/day/<day>` |
 | `SESSION_SCORED` | A completed strength session has its load (scoring has run), within 12 h of its end. The first one each day; not during quiet hours. | `SESSION_SCORED_TITLE` (session title) or `SESSION_SCORED_TITLE_UNTITLED` · `SESSION_SCORED_BODY` (strain), `_PR` (strain) or `_PRS` (strain, number of records) | `https://ryftapp.de/train/session/<id>` |
 | `PR` | Instead of `SESSION_SCORED` when that category is off and the session set a record. | `PR_TITLE` (exercise name) · `PR_BODY_E1RM`, `_MAX_WEIGHT`, `_MAX_REPS` or `_MAX_VOLUME` (value) | `https://ryftapp.de/train/session/<id>` |
 | `SYNC_STALE` | No heart-rate or step sample for 20 hours (users with data in the last 7 days), once a day between 09:00 and 21:00 local, not during quiet hours. | `SYNC_STALE_TITLE` · `SYNC_STALE_BODY` (hours) | — |
@@ -472,6 +575,11 @@ refresh the day: `{"aps": {"content-available": 1}, "ryft": {"kind": "refresh", 
 days** (`day`: the newest day the sync touched; collapsed per day), so the app shows the
 new scores without polling. The same silent push follows an **import** once scoring has finished its days (`day`: the newest of `days_touched`); an import sends no `SESSION_SCORED` and no `PR` alert, whatever it contains (`POST /v1/train/import`). Together at most one every 5 minutes per account: iOS
 budgets background pushes, so poll `GET /v1/me/sync` as the fallback.
+
+The silent push is **not** held back for a provisional day: every scoring of a day, also one that
+leaves it `provisional`, is followed by it, so the app can show the provisional score and then the
+final one. Only the `MORNING_SCORE` alert waits for `final` (table above); the 5-minute cap above can fold the
+final refresh into the provisional one, so refresh the day when the app opens as well.
 
 An alert's payload:
 
@@ -608,6 +716,8 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
   "hrv_ms": 58.2, "rhr": 48.9, "resp_rate": 14.6, "spo2": 96.4,
   "hrv_baseline_ms": 53.1, "rhr_baseline": 50.2, "baseline_days": 30, "baseline_hrv_days": 30, "baseline_rhr_days": 30,
   "calibrating": false, "calibrating_reason": null,
+  "coverage": { "sleep_hr_minutes": 400, "hrv_readings": 5, "sleep_source": "Garmin Connect",
+                "hr_source_hours": { "Garmin Connect": 14, "Apple Watch": 9 }, "night_complete": true, "status": "final" },
   "details": { … }, "computed_at": "2026-10-18T07:15:02.123456Z" }
 ```
 
@@ -647,6 +757,7 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `baseline_rhr_days` | int? | The same for resting HR (scored days among the 30 before `day` with a resting HR), 0-30. Same `null` rule. |
 | `calibrating_reason` | string? | Why `calibrating` is `true`: `short_history`, `no_hrv` or `no_rhr` (closed enum, rule below). `null` when `calibrating` is `false` and on a day that was never scored. Also `null` on a calibrating row scored before this field existed (until it is rescored) or written by an older scoring image after a rollback: treat that as "unknown", not as a fourth reason. |
 | `scoring_state` | string | `scored`, `pending` (data newer than the score: scoring is queued or running), `waiting_for_sleep` (today: no night uploaded yet), `stale` (today: no new data for over 20 h). Past days are `scored` or `pending`. Closed enum, as `SyncStatus.today.state`. |
+| `coverage` | `ScoreCoverage?` | What the day's night and heart rate are based on, and whether the night is complete: `status` `provisional` or `final`. `null` on a day that was never scored and on rows scored before 2026-10-31 (until rescored): read `null` as **final, nothing known**. See **Coverage and provisional scores** below. |
 | `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
 | `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
@@ -696,6 +807,51 @@ Examples (the changed fields only):
 
 The second is day one (`W = 0`, whatever empty days are stored before it). The third has 24 resting-HR nights and no HRV in the window, and the day has no `hrv_ms`; the fourth is the first morning a watch's HRV arrives (`hrv_ms` present, `H` still 0), hence `short_history`. The fifth is the same for resting HR (`R` = 0, the day has `rhr`); the sixth has `R` = 0 and no `rhr` on the day, hence `no_rhr`. The seventh has 30 days with data, neither signal in the window and neither on the day (`no_hrv` by precedence).
 
+#### Coverage and provisional scores
+
+`DailyScore.coverage` (`ScoreCoverage`) says how much data the numbers rest on:
+
+```json
+{ "sleep_hr_minutes": 170, "hrv_readings": 0, "sleep_source": "Garmin Connect",
+  "hr_source_hours": { "Garmin Connect": 3 }, "night_complete": false, "status": "provisional" }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `sleep_hr_minutes` | int | Minutes of heart-rate data (de-duplicated, from whichever source won each hour, as `details.hr_minutes`) inside the winning sleep source's window, from its first segment's start to its last segment's end. `0` without a night. |
+| `hrv_readings` | int | Number of overnight HRV readings (`hrv_sdnn` samples in the night) behind `hrv_ms`. `0` when `hrv_ms` is `null` for lack of them. |
+| `sleep_source` | string? | The `source` (HealthKit name, as `UserSource.name`) whose sleep won the night (the longest, `SCORING.md`). `null` without a night. |
+| `hr_source_hours` | `{string: int}` | Whole hours of the local day `day` (up to 24, fewer for today so far) for which each source was the one heart-rate source used, keyed by source name. `{}` without heart rate. The keys are source names, so treat them as data (they may contain underscores or spaces), not as field names. |
+| `night_complete` | bool | The night is over: **wake evidence** (a sample of any type that starts at least 30 minutes after the winning sleep source's last segment ended, from that same source; for a source that wrote nothing but sleep in the last 7 days, a `steps` sample from any source counts) **or 10:00 local time on `day` has passed** (the ceiling; every earlier day is complete). It reflects the latest computation. |
+| `status` | string | `provisional` or `final` (closed enum). `final` once `night_complete` has held, or at the 10:00 ceiling. **Sticky:** once a day is `final` it stays `final`, even if a later sleep segment makes `night_complete` `false` again; its numbers still follow later scorings. So `final` with `night_complete: false` is possible, `provisional` with `night_complete: true` is not. |
+
+`coverage` is an object that may gain fields (and `hr_source_hours` has open keys): ignore
+what you do not know. The score fields stay as they are; a `provisional` day carries a real
+score computed from what has arrived, and a rescore of it (as more of the night syncs) changes
+the numbers. After the 10:00 ceiling, or once the night is complete, a day is rescored into
+`final` by the next scoring (the scoring pass runs every 15 minutes for active users, so by about 10:15 at the latest).
+
+**Floors.** Below a floor, a component is *absent*, never a low score:
+
+| Floor | Rule |
+| --- | --- |
+| Sleep heart rate | `sleep_hr_minutes` < **120**: Recovery drops the resting-heart-rate input and is renormalised over the inputs it has (as it already does without HRV). The stored `rhr` field, `rhr_baseline`, `baseline_rhr_days` and `calibrating_reason` are **not** changed by this. |
+| Sleep | Less than **60** minutes of sleep from the winning source: `sleep_performance` is `null` (and what follows from a missing performance, as for a day without a night); `sleep_actual_min` and `SleepDetail` still report the minutes. |
+
+Both are in `SCORING.md` with the model version that introduced them. A client recognises the
+first floor by `coverage.sleep_hr_minutes < 120` (and the second by `sleep_performance` being `null`
+with `sleep_actual_min` below 60).
+
+**Morning push.** `MORNING_SCORE` is sent on the first scoring of the day with a `final`
+status, a recovery and a night's sleep, not on the first scoring (Push notifications). The silent
+refresh push still follows **every** scoring, provisional ones too, so the app can show the
+provisional number and then the final one.
+
+Examples of what a client sees for one morning: after a 03:00 Garmin sync, the `coverage` above
+(`provisional`, 170 minutes of heart rate) and no push; after the watch syncs the rest of the
+night, the same day with `"sleep_hr_minutes": 400, "hrv_readings": 5, "night_complete": true,
+"status": "final"`, the push, and a silent refresh for both.
+
 ### `GET /v1/days/{day}` — one day
 
 ```jsonc
@@ -704,7 +860,7 @@ The second is day one (`W = 0`, whatever empty days are stored before it). The t
 
 A day that has not been scored yet returns `200` with a `score` whose numbers are
 all `null`, `state: "calibrating"`, `calibrating: false`, `computed_at:
-"0001-01-01T00:00:00Z"`, and `sleep: null`, `strain: null`, `workouts: []`. `400` on a
+"0001-01-01T00:00:00Z"`, `coverage: null`, and `sleep: null`, `strain: null`, `workouts: []`. `400` on a
 malformed day. `sleep` is `null` when no sleep was recorded for the night ending on
 `day` (also for days scored before the platform upgrade until they are recomputed).
 
@@ -830,6 +986,23 @@ oldest first.
 | `muscular_load` | number? | Muscular load (TRIMP-equivalent) of the strength session attached to this workout. Omitted when none. |
 | `session_id` | uuid? | That session. Omitted when none. A workout with `source` `ryft-session` was created for a session that has no matching HealthKit workout. |
 | `model_version` | string? | The scoring model of its `strain`, as on `DailyScore`. Omitted until scored. |
+| `also_recorded_by` | `[string]?` | The `source` names of other recordings of this same workout that the server hid (a Watch and a Garmin that both recorded one run): "also recorded by Garmin Connect". Distinct, sorted. Omitted when there are none (a client treats missing and `[]` alike). Ignored on input. |
+
+**Duplicate workouts.** One activity must appear once. Two rules, both server-side:
+
+- *Same source.* Copies of one `source` with the same `activity` whose `start`s and whose `end`s each lie within
+  120 seconds of each other are one workout (Garmin Connect re-writes a workout in Apple Health under a new UUID and deletes the old one).
+  When a sync stores such a copy, the server **removes the older copies** and keeps the most recently uploaded id (the one Apple Health still has); a
+  one-off run does the same for copies stored earlier. The removed ids answer `404` on `GET /v1/workouts/{id}`, a Train session that was attached to one stays and is
+  re-attached to the kept workout when the day is rescored (`session_id`, `muscular_load`). These removals are not counted in `SyncResponse.deleted`, which counts the requested deletions only; their days are queued.
+- *Different sources.* Workouts of **different** `source`s with the same `activity` (either one `other` counts as the same) that overlap by at least **80 %** of the shorter one's duration are one workout. Nothing is deleted. The server picks a **primary** (the one with at least 2 heart-rate samples from its own source inside its window, then the longer one, then the lower `id`), lists only the primary in `GET /v1/days/{day}` → `workouts` and `GET /v1/workouts`, and puts the other sources in the primary's `also_recorded_by`. The primary's heart-rate window, zones and strain are the day's de-duplicated heart rate, so the day's strain does not change. `DayDetail.workouts` and `details.workouts` count the visible workouts.
+- A workout with `source` `ryft-session` is never hidden. The hiding is decided when the day is scored, so a copy can show until `scoring_state` leaves `pending`; if the primary is deleted its duplicate shows again at once and a later scoring picks a new primary. `GET /v1/workouts/{id}` with a hidden duplicate's id still answers `200` with that workout as stored (without `also_recorded_by`), so a link the app holds keeps working.
+
+```json
+{ "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "running", "start": "2026-10-20T16:02:00Z", "end": "2026-10-20T16:58:30Z",
+  "avg_hr": 156.2, "max_hr": 181, "distance_m": 10240, "energy_kcal": 702, "source": "Garmin Connect",
+  "strain": 12.8, "model_version": "2026.10.3", "also_recorded_by": ["Tim's Apple Watch"] }
+```
 
 ### `GET /v1/workouts/{id}` — one workout
 
@@ -1680,7 +1853,8 @@ Codable types for the iOS app, matching the shapes above with the app's decoder
 (`.convertFromSnakeCase`, RFC 3339 dates with or without fractional seconds). They
 extend `Models.swift`: `DailyScore`, `DayDetail`, `DayStrain`, `Workout`, `User`,
 `UserPatch` and the sleep types replace the existing structs (new fields only), the rest
-are new. The sync types are unchanged. A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
+are new. The sync request types are not mirrored here; on the app's `Sample` and `SleepSegment` add `id: UUID?`
+(the HealthKit object UUID) and on `SyncRequest` `deleted: [DeletedRecord]?` (below). The response types `IgnoredCounts` and `SyncResponse` gain the fields below. A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
 endpoint of a running stack with it.
 
 ```swift
@@ -1691,6 +1865,16 @@ enum CalibratingReason: String, Codable { case shortHistory = "short_history", n
 enum SleepQualityLabel: String, Codable { case good, fair, poor }
 enum SleepStageName: String, Codable { case deep, light, rem, awake, asleep }
 enum InsightSeverity: String, Codable { case warn, notice, info }
+enum ScoreStatus: String, Codable { case provisional, final }   // closed in v1
+
+struct ScoreCoverage: Codable {   // DailyScore.coverage; may gain fields, ignore unknown ones
+    let sleepHrMinutes: Int
+    let hrvReadings: Int
+    let sleepSource: String?
+    let hrSourceHours: [String: Int]   // keys are source names, open
+    let nightComplete: Bool
+    let status: ScoreStatus
+}
 
 struct DailyScore: Codable, Identifiable {
     let day: String
@@ -1727,6 +1911,7 @@ struct DailyScore: Codable, Identifiable {
     let computedAt: Date
     let modelVersion: String?
     let scoringState: ScoringState
+    let coverage: ScoreCoverage?      // null: never scored, or scored before 2026-10-31 (read as final)
     var id: String { day }
 }
 
@@ -1789,6 +1974,7 @@ struct Workout: Codable, Identifiable {
     let muscularLoad: Double?
     let sessionId: UUID?
     let modelVersion: String?
+    let alsoRecordedBy: [String]?     // omitted when none
 }
 
 struct DayDetail: Codable {
@@ -1940,6 +2126,7 @@ struct UserSource: Codable {
     let bundleId: String?
     let kinds: [SourceKind]
     let lastSeen: Date
+    let samples7D: [String: Int]?     // wire key samples_7d: .convertFromSnakeCase yields samples7D (capital D). Sample.type → count; dictionary keys are not converted
 }
 
 struct ConsentPost: Encodable {   // POST /v1/me/consent
@@ -1989,9 +2176,12 @@ struct SyncStatus: Codable {    // GET /v1/me/sync
 }
 
 struct SyncCounts: Codable { let samples: Int; let sleep: Int; let workouts: Int }
-struct IgnoredCounts: Codable { let duplicate: Int; let outsideWindow: Int; let unknownType: Int }
+struct IgnoredCounts: Codable { let duplicate: Int; let outsideWindow: Int; let unknownType: Int; let unknownId: Int? }
 struct SyncIgnored: Codable { let samples: IgnoredCounts; let sleep: IgnoredCounts; let workouts: IgnoredCounts }
 struct SyncScoring: Codable { let queuedDays: [String]; let expectedWithinSec: Int }
+enum DeletionKind: String, Codable { case sample, sleep, workout }
+struct DeletedRecord: Codable { let kind: DeletionKind; let id: UUID }   // SyncRequest.deleted, ≤ 2000
+struct SyncDeleted: Codable { let samples: Int; let sleep: Int; let workouts: Int }   // SyncResponse.deleted
 
 struct SyncResponse: Codable {  // POST /v1/sync
     let samples: Int
@@ -2000,6 +2190,7 @@ struct SyncResponse: Codable {  // POST /v1/sync
     let daysTouched: [String]
     let accepted: SyncCounts
     let ignored: SyncIgnored
+    let deleted: SyncDeleted?         // always present from 2026-10-31
     let scoring: SyncScoring
 }
 
@@ -2465,6 +2656,9 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-10-31 | **Coverage and provisional scores** (answers the app's data-quality D2 and D4, `API_REQUESTS.md` → Sync and performance): `DailyScore.coverage` (`ScoreCoverage?`: `sleep_hr_minutes`, `hrv_readings`, `sleep_source`, `hr_source_hours`, `night_complete`, `status` `provisional` \| `final`, closed); `User.sources[].samples_7d` (sample counts per `Sample.type` over the last 7 days, all eight keys on every source). `details.hr_minutes` stays. **Behaviour:** a night is complete on wake evidence or at 10:00 local; a day is `provisional` until then and `final` after, sticky; scoring gains two floors (sleep heart rate < 120 min drops the resting-HR input of Recovery, which is renormalised, `rhr` itself stays; < 60 min of sleep from the winning source makes `sleep_performance` `null`), so stored numbers change for thin nights and the model version is bumped (`GET /v1/model`; rescore history to fill `coverage` on old rows); `MORNING_SCORE` now waits for the first `final` scoring of the day with recovery and sleep, the silent refresh still follows every scoring. Old clients ignore the new fields. Swift: `ScoreStatus`, `ScoreCoverage`, `DailyScore.coverage`, `UserSource.samples7D` (wire key `samples_7d`; the app's `.convertFromSnakeCase` maps it to `samples7D`, capital D). |
+| 2026-10-31 | **Workout duplicates**: `Workout.also_recorded_by` (`[string]?`, omitted when none). **Behaviour:** workouts of one source with the same activity and start and end within 120 s of each other are folded to the most recently uploaded id (the older ids are removed, `404` afterwards, a Train session stays and is re-attached when the day is rescored); workouts of different sources with the same activity (or `other`) that overlap by at least 80 % of the shorter are listed once, as the primary with the other sources in `also_recorded_by`, in `GET /v1/days/{day}` and `GET /v1/workouts` (`GET /v1/workouts/{id}` still answers for the hidden one). Distances, counts and `muscular_load` attachment on affected days change when they are rescored. Swift: `Workout.alsoRecordedBy`. |
+| 2026-10-31 | **Deletions and HealthKit ids** (answers the app's request, `API_REQUESTS.md` → Sync and performance §2): `Sample.id` and `SleepSegment.id` (uuid?, the HealthKit object UUID); `SyncRequest.deleted` (`[{kind: sample \| sleep \| workout, id}]`, ≤ 2 000, `422` above); `SyncResponse.deleted` (`samples`, `sleep`, `workouts`); `ignored.<kind>.unknown_id` (an id the server cannot delete for this user; a re-sent deletion). **Behaviour:** deletions apply after the same request's records; a record with an `id` adopts a stored row with the same natural key (and a sample takes the new value), so a source re-writing a value under a new UUID does not double it; a record whose `id` is already stored is `duplicate`; deleted days are queued for rescoring (in `days_touched`); `ryft-session` workouts are not deletable (`unknown_id`); deleting a workout that has a Train session keeps the session; a failed deletion is a `503` the app re-sends. Request bodies reject unknown fields (`400`), so a platform from before this entry would refuse `deleted` and `id`: ship the app change only after this entry is deployed (there is no flag). Swift: `DeletionKind`, `DeletedRecord`, `SyncDeleted`, `SyncResponse.deleted`, `IgnoredCounts.unknownId`, `Sample.id` / `SleepSegment.id` / `SyncRequest.deleted` on the app's own request types. |
 | 2026-10-29 | **Minimum age 16**: `PATCH /v1/me` `birth_year`: the accepted range is 1920 to the current year − 16 (it was − 13); `422` otherwise. No field renamed or removed, no shape change. **Behaviour:** birth years stored before stay as they are, also those now outside the range (nothing re-checks or clears them; `max_hr` is unchanged); a client that sends such a value again gets `422`. Swift: none. |
 | 2026-10-27 | **UUID case** (documentation only, behaviour unchanged): Conventions → UUIDs. The server accepts ids in upper or lower case (Swift's `JSONEncoder` writes upper case) and always writes lower case, so `results[].id` of `POST /v1/train/import` is lower case whatever was sent. |
 | 2026-10-27 | **Training import, T13** (documentation only, no field, status or header changed): [Training import: answers to T1–T13](#training-import-answers) gains **T13**: `results` of `POST /v1/train/import` has one entry per submitted item whatever its status, and `X-Request-ID` is on `2xx` responses too. The anchor is unchanged. |
