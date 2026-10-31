@@ -2817,6 +2817,11 @@ sent, and whether a second account shares its phone.
   so deleting that object removes the row while the other copy exists until the next upload restores it; a second
   device uploading an old object after the rewrite flips the row back. Both heal on the next sync of the record.
 - Workouts keep the HealthKit UUID as their `id`. Merge (D90) moves a row unless the target holds its `hk_id`.
+- Merge runs as `ryft_api`, which may update `user_id` of the raw tables and nothing else (0024), so the merge
+  does not copy an `hk_id` onto the kept row. Where both accounts hold the same natural key, to's row is kept as
+  it is and the dropped row's id is lost; a later deletion of that id finds nothing (`unknown_id`) and the record
+  stays until the next sync re-uploads it under its id. The guard on the moves (the id is not already held by
+  to) is what prevents the unique violation. No grant was widened for this.
 
 ## D145 — A sync's deletions, queued days and event commit in one transaction, under a per-user lock
 

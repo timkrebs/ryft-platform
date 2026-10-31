@@ -3,13 +3,16 @@ package store
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -232,10 +235,10 @@ func TestMergeWithHKIDsDoesNotViolateTheIndex(t *testing.T) {
 	}
 }
 
-// to's row has no HealthKit id and from's row of the same natural key has one: the merged
-// row takes from's id, so a deletion of that id (what the app sends after the merge) still
-// finds its row.
-func TestMergeTakesOverTheHKIDOfTheDroppedRow(t *testing.T) {
+// The merge runs as ryft_api, which may change the owner column of the raw tables and nothing
+// else (0024): plan and real merge must work with those grants, with HealthKit ids on both
+// sides, also where the natural key is the same.
+func TestMergeAsAPIRoleWithHKIDs(t *testing.T) {
 	st, pool := testStore(t)
 	ctx := context.Background()
 	from, to := uuid.New(), uuid.New()
@@ -258,17 +261,23 @@ func TestMergeTakesOverTheHKIDOfTheDroppedRow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.MergeUsers(ctx, from, to, false); err != nil {
+	const pw = "pw-ryft_api-0123456789"
+	if err := db.SetRolePassword(ctx, pool, "ryft_api", pw); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"samples", "sleep_segments"} {
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE user_id = $1`, to).Scan(&n); err != nil || n != 1 {
-			t.Fatalf("%s: %d rows for to (%v), want the one record", table, n, err)
-		}
-		tag, err := pool.Exec(ctx, `DELETE FROM `+table+` WHERE user_id = $1 AND hk_id = $2`, to, h)
-		if err != nil || tag.RowsAffected() != 1 {
-			t.Errorf("%s: deleting from's id after the merge removed %d rows (%v), want 1", table, tag.RowsAffected(), err)
+	u, err := url.Parse(pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword("ryft_api", pw)
+	ap, err := pgxpool.New(ctx, u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ap.Close)
+	for _, dry := range []bool{true, false} {
+		if _, err := New(ap).MergeUsers(ctx, from, to, dry); err != nil {
+			t.Fatalf("merge as ryft_api (dry run %v): %v", dry, err)
 		}
 	}
 }

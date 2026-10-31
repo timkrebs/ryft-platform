@@ -101,3 +101,5 @@ Plan changes from design.md (verified against the code where marked *):
 - `ProvisionalAllMorning` is replaced by an alert on the share of nights final only at the ceiling;
   `ManyUsersStale` needs a gauge from `user_sources.last_seen`.
 - Account merge needs an `hk_id` guard and `duplicate_of` has no FK.
+
+U4 closed (2026-10-31): `samples` has about 23 000 rows (user-run estimate), so 0030 stays a plain index in its own migration.
