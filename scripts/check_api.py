@@ -480,7 +480,10 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
                                                     "unit": "mmol/L", "source": "check-d"}]}
     status, _, sr = raw("POST", "/v1/sync", jbody(again), base=INGEST, key=KEY_D)
     check(status == 200 and sr["accepted"] == {"samples": 0, "sleep": 0, "workouts": 0} and sr["samples"] == 0
-          and sr["ignored"]["samples"] == {"duplicate": 1, "outside_window": 0, "unknown_type": 1}
+          and sr["ignored"]["samples"] == {"duplicate": 1, "outside_window": 0, "unknown_type": 1, "unknown_id": 0}
+          and sr["ignored"]["sleep"] == {"duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0}
+          and sr["ignored"]["workouts"] == {"duplicate": 0, "outside_window": 0, "unknown_type": 0, "unknown_id": 0}
+          and sr["deleted"] == {"samples": 0, "sleep": 0, "workouts": 0}
           and sr["scoring"]["queued_days"] == sr["days_touched"] and sr["scoring"]["expected_within_sec"] >= 1,
           f"SyncResponse: accepted, ignored, scoring: {status} {sr}")
     # A new account on D's phone: the account hint (only with the device header).

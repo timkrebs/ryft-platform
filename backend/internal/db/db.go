@@ -90,6 +90,8 @@ func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgx
 // migrationLock serialises migrators across pods. It is a transaction-level
 // advisory lock: it disappears with the transaction even if the pod dies or a
 // pooler hands the session to someone else.
+//
+// Other advisory-lock classes (7419002 and up) are listed in internal/store/locks.go.
 const migrationLock = 7_419_001
 
 // lockTimeout bounds how long any statement of a migration waits for a lock

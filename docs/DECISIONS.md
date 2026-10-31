@@ -2803,3 +2803,39 @@ sent, and whether a second account shares its phone.
   and so does the `max_hr` derived from it. Only a new `PATCH` is checked. The few TestFlight accounts with
   such a value are friends and testers; rewriting a health-adjacent field silently would be the worse surprise.
 - The privacy texts (2026-10-26 on) say 16 in the same place; the API contract has a changelog entry.
+
+## D144 — HealthKit ids are deletion handles; the natural key stays the identity
+
+- **`hk_id` (nullable uuid) on `samples` and `sleep_segments`, unique per user where set** (partial index, its
+  own migration 0030; 0029 adds the columns). A record that arrives with an `id` first **adopts** the stored row with
+  its natural key (this backfills rows sent before the app had ids, and follows a source that re-writes a record
+  under a new UUID), then inserts target-less with `ON CONFLICT DO NOTHING`: no unique index can ever fail a sync.
+  An id already held by another row (a renamed source) is a `duplicate`.
+- **Why not the id as the identity:** Garmin re-writes a sample under a new UUID and deletes the old one. If the
+  first UUID won, that deletion would remove a record Health still has. Latest upload owns the id.
+- **Accepted risks:** two live HealthKit objects with one natural key leave one row whose id is the last uploaded,
+  so deleting that object removes the row while the other copy exists until the next upload restores it; a second
+  device uploading an old object after the rewrite flips the row back. Both heal on the next sync of the record.
+- Workouts keep the HealthKit UUID as their `id`. Merge (D90) moves a row unless the target holds its `hk_id`.
+- Merge runs as `ryft_api`, which may update `user_id` of the raw tables and nothing else (0024), so the merge
+  does not copy an `hk_id` onto the kept row. Where both accounts hold the same natural key, to's row is kept as
+  it is and the dropped row's id is lost; a later deletion of that id finds nothing (`unknown_id`) and the record
+  stays until the next sync re-uploads it under its id. The guard on the moves (the id is not already held by
+  to) is what prevents the unique violation. No grant was widened for this.
+
+## D145 — A sync's deletions, queued days and event commit in one transaction, under a per-user lock
+
+- Upserts first, then one apply transaction under `pg_advisory_xact_lock(7419005, hashtext(user))` (a class of its
+  own; 7419004 is the plan-enrolment lock): deletes, the touched days into `score_queue`, the outbox event.
+  Everything is scoped to the token's user; a foreign id and a missing id both count as `unknown_id`, so ids
+  cannot be probed. A failed apply is a `503` with `Retry-After` and a re-send is harmless (before, a queue
+  failure was swallowed).
+- **`ryft_ingest` gets `DELETE`** on `samples`, `sleep_segments` and `workouts` (0029). `ryft-session` workouts
+  are refused in the SQL and, on Supabase, by a restrictive RLS policy; the workouts upsert no longer overwrites
+  such a row. Deleting a Train session's workout is the detach: scoring re-creates the row under a new id.
+- **Accepted, security review:** a compromised ingest pod can now erase raw rows, not only overwrite them; the
+  feature needs the grant and Supabase's backups cover it. No privacy-text change (a pseudonymous technical id
+  for the existing purpose; deletions shorten retention). The device id in the `sync` log line predates this and
+  is not named in the text; for the next privacy revision.
+- **One-way door:** after an app build sends `deleted` or `id`, ingest cannot be rolled back past this change
+  (OPERATIONS → Deploy and roll back).
