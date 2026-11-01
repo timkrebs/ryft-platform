@@ -203,6 +203,12 @@ the workload on a change.
 
 ## Deploy and roll back
 
+**One-way door (2026-10-31, D144/D145).** Once an app build sends `deleted` or a record `id` (the
+changelog "Deletions and HealthKit ids"), ingest must not be re-pinned to an image from before
+that change: the older ingest rejects unknown request fields with `400`, the app does not retry a
+`400`, and uploads stall until you roll forward again. Roll forward or fix forward; for an
+unrelated incident pin only the other groups back.
+
 Git is the only way anything reaches `ryft-prod-euc1` (D94–D96). Argo CD syncs the
 applications in `deploy/argocd/apps`; CI promotes images by a PR that pins
 `deploy/k8s/overlays/eks`. Nobody runs `kubectl apply` against production, except

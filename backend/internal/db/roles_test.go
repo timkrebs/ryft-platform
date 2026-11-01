@@ -56,8 +56,8 @@ var trainTables = []string{"exercises", "plans", "plan_days", "plan_exercises", 
 var grants = map[string]map[string][]string{
 	"ryft_ingest": {
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
-		"samples": {"SELECT", "INSERT", "UPDATE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE"},
-		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
+		"samples": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE", "DELETE"}, // DELETE: 0029, the app's deletions
+		"workouts": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
 		"user_sources": {"SELECT", "INSERT", "UPDATE"}, "score_queue": {"SELECT", "INSERT", "UPDATE"},
 		"outbox": {"SELECT", "INSERT", "DELETE"}, // and UPDATE of the relay's columns only (below)
 		// deleted_users: only the id column (below), never the stored Apple token
@@ -304,8 +304,40 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err != nil {
 		t.Fatalf("ingest sample: %v", err)
 	}
-	if _, err := ingest.Exec(ctx, `DELETE FROM samples`); err == nil || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("ingest must not delete: %v", err)
+	// 0029: ingest applies the app's deletions of the three raw tables, through RLS, and cannot
+	// delete a ryft-session workout (restrictive policy; the filtered row is not an error).
+	if _, err := ingest.Exec(ctx, `UPDATE samples SET hk_id = gen_random_uuid() WHERE user_id=$1`, id); err != nil {
+		t.Fatalf("ingest sets hk_id: %v", err)
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM samples WHERE user_id=$1 AND hk_id IS NOT NULL`, id); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes a sample by hk_id: %v %v", ct, err)
+	}
+	if _, err := ingest.Exec(ctx, `INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id)
+		VALUES ($1, now(), now(), 'core', 't', gen_random_uuid())`, id); err != nil {
+		t.Fatalf("ingest sleep segment: %v", err)
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id IS NOT NULL`, id); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes a sleep segment by hk_id: %v %v", ct, err)
+	}
+	wPhone, wOwn := "aaaaaaaa-0000-0000-0000-0000000000f1", "aaaaaaaa-0000-0000-0000-0000000000f2"
+	for _, w := range [][2]string{{wPhone, "Phone"}, {wOwn, "ryft-session"}} {
+		if _, err := ingest.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source)
+			VALUES ($1, $2, 'run', now(), now(), $3)`, w[0], id, w[1]); err != nil {
+			t.Fatalf("ingest workout %s: %v", w[1], err)
+		}
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2)`, id, []string{wPhone, wOwn}); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes the phone workout only: %v %v", ct, err)
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM workouts WHERE id = $1`, wOwn); n != 1 {
+		t.Fatal("the ryft-session workout must survive ingest's delete")
+	}
+	if _, err := ingest.Exec(ctx, `INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
+		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err != nil {
+		t.Fatalf("ingest sample again: %v", err)
+	}
+	if _, err := ingest.Exec(ctx, `DELETE FROM daily_scores`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("ingest must not delete scores: %v", err)
 	}
 	if _, err := ingest.Exec(ctx, `CREATE TABLE evil (x int)`); err == nil {
 		t.Fatal("ingest must not create tables")

@@ -67,14 +67,24 @@ type Sample struct {
 	Source string    `json:"source"`
 	// The HealthKit source's bundle identifier (input only, for User.sources).
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
+	// The HealthKit object's UUID (HKObject.uuid): the handle a deletion names. Optional.
+	ID *uuid.UUID `json:"id,omitempty"`
+}
+
+// SampleSpillsToNextDay says whether a sample of this type also changes the
+// score of the day after its start (the night's HRV, respiration and SpO2 belong
+// to the morning).
+func SampleSpillsToNextDay(typ string) bool {
+	return typ == SampleHRVSDNN || typ == SampleRespiratoryRate || typ == SampleSpO2
 }
 
 type SleepSegment struct {
-	Start          time.Time `json:"start"`
-	End            time.Time `json:"end"`
-	Stage          string    `json:"stage"`
-	Source         string    `json:"source"`
-	SourceBundleID *string   `json:"source_bundle_id,omitempty"` // input only
+	Start          time.Time  `json:"start"`
+	End            time.Time  `json:"end"`
+	Stage          string     `json:"stage"`
+	Source         string     `json:"source"`
+	SourceBundleID *string    `json:"source_bundle_id,omitempty"` // input only
+	ID             *uuid.UUID `json:"id,omitempty"`               // HKObject.uuid, optional
 }
 
 // Source kinds (UserSource.kinds); closed in v1.
@@ -127,13 +137,37 @@ type Workout struct {
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
 type SyncRequest struct {
-	DeviceID   uuid.UUID      `json:"device_id"`
-	DeviceName string         `json:"device_name,omitempty"`
-	AppVersion *string        `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
-	OSVersion  *string        `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
-	Samples    []Sample       `json:"samples"`
-	Sleep      []SleepSegment `json:"sleep"`
-	Workouts   []Workout      `json:"workouts"`
+	DeviceID   uuid.UUID       `json:"device_id"`
+	DeviceName string          `json:"device_name,omitempty"`
+	AppVersion *string         `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
+	OSVersion  *string         `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
+	Samples    []Sample        `json:"samples"`
+	Sleep      []SleepSegment  `json:"sleep"`
+	Workouts   []Workout       `json:"workouts"`
+	Deleted    []DeletedRecord `json:"deleted,omitempty"`
+}
+
+// MaxDeleted is the most entries of SyncRequest.Deleted (422 above).
+const MaxDeleted = 2000
+
+// Kinds of a DeletedRecord. Others are skipped, not refused: a later app keeps syncing.
+const (
+	DeletedSample  = "sample"
+	DeletedSleep   = "sleep"
+	DeletedWorkout = "workout"
+)
+
+// DeletedRecord is a HealthKit object that no longer exists.
+type DeletedRecord struct {
+	Kind string    `json:"kind"`
+	ID   uuid.UUID `json:"id"`
+}
+
+// SyncDeleted counts the entries of SyncRequest.Deleted that removed a row.
+type SyncDeleted struct {
+	Samples  int `json:"samples"`
+	Sleep    int `json:"sleep"`
+	Workouts int `json:"workouts"`
 }
 
 type SyncResponse struct {
@@ -145,6 +179,7 @@ type SyncResponse struct {
 	Accepted SyncCounts  `json:"accepted"`
 	Ignored  SyncIgnored `json:"ignored"`
 	Scoring  SyncScoring `json:"scoring"`
+	Deleted  SyncDeleted `json:"deleted"`
 }
 
 // SyncCounts are records per kind.
@@ -159,6 +194,7 @@ type IgnoredCounts struct {
 	Duplicate     int `json:"duplicate"`      // identical to one stored
 	OutsideWindow int `json:"outside_window"` // > 24 h in the future, or ended > 400 days ago
 	UnknownType   int `json:"unknown_type"`   // a sample type or sleep stage the server does not know
+	UnknownID     int `json:"unknown_id"`     // a deletion that names nothing deletable for this user
 }
 
 // SyncIgnored is IgnoredCounts per kind.

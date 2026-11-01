@@ -74,3 +74,33 @@ echo "→ API contract checks"
 ADMIN_API_KEY="${ADMIN_API_KEY-$( [ "$AUTH_MODE" = apikey ] && echo dev-admin-key-change-me-0123456789abcdef)}" \
 NOTIFY_METRICS_URL="${NOTIFY_METRICS_URL-$( [ "$AUTH_MODE" = apikey ] && echo http://localhost:9093/metrics)}" \
 NAP="$NAP" AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"
+
+echo "→ deletions: upload a sample with a HealthKit id, delete it, send the deletion again"
+INGEST_URL="$INGEST_URL" API_KEY="$API_KEY" python3 - <<'PY'
+import json, os, sys, urllib.request, uuid
+from datetime import datetime, timedelta, timezone
+
+def post(body):
+    req = urllib.request.Request(os.environ["INGEST_URL"] + "/v1/sync", data=json.dumps(body).encode(), method="POST",
+                                headers={"Authorization": "Bearer " + os.environ["API_KEY"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+def fail(msg, got):
+    print("✗ deletions: " + msg + ": " + json.dumps(got)); sys.exit(1)
+
+at = (datetime.now(timezone.utc) - timedelta(days=2)).replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+hk, device = str(uuid.uuid4()), "5eed0000-0000-4000-8000-00000000de1e"  # fixed: no new device row per run
+sample = {"type": "steps", "start": at, "end": at, "value": 1, "unit": "count", "source": "smoke-deletion", "id": hk.upper()}
+up = post({"device_id": device, "samples": [sample], "sleep": [], "workouts": []})
+if up["accepted"]["samples"] != 1:
+    fail("the sample with an id is accepted", up)
+deletion = {"device_id": device, "samples": [], "sleep": [], "workouts": [], "deleted": [{"kind": "sample", "id": hk}]}
+first = post(deletion)
+if first["deleted"]["samples"] != 1 or first["ignored"]["samples"]["unknown_id"] != 0 or not first["days_touched"]:
+    fail("the first deletion removes the sample and touches its day", first)
+again = post(deletion)
+if again["deleted"]["samples"] != 0 or again["ignored"]["samples"]["unknown_id"] != 1:
+    fail("the re-sent deletion is unknown_id", again)
+print("  ok: deleted 1, re-sent is unknown_id 1")
+PY

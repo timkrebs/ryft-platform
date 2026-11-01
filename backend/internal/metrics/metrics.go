@@ -42,6 +42,15 @@ var (
 		Name: "ryft_samples_ingested_total",
 		Help: "Records accepted by POST /v1/sync. kind=sample (type = sample type), sleep (type = stage) or workout.",
 	}, []string{"kind", "type"})
+	SyncDeleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_deleted_total",
+		Help: "Rows removed by the deletions of POST /v1/sync, by kind (sample, sleep, workout).",
+	}, []string{"kind"})
+	SyncIgnored = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_ignored_total",
+		Help: "Records and deletions of POST /v1/sync not applied, by kind (sample, sleep, workout) and reason " +
+			"(duplicate, outside_window, unknown_type, unknown_id).",
+	}, []string{"kind", "reason"})
 	LastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_last_sync_timestamp_seconds",
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
