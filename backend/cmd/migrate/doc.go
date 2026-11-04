@@ -1,10 +1,12 @@
 // migrate applies the migrations as the schema owner, loads the built-in
 // exercises and plans, and sets the service roles' passwords where they changed.
 //
-// It runs once per deploy, before the services (Argo CD PreSync, D95; a one-shot
-// compose service locally). It must not run as a service role, which cannot run
-// DDL, and nobody runs it against production by hand. It reads its own
-// environment and does not use internal/config:
+// It runs on every Argo CD sync of ryft-platform, self-heal syncs included, before
+// the services (PreSync, D95; a one-shot compose service locally), so it must be
+// idempotent. It must not run as a service role, which cannot run DDL. Outside a
+// sync the operator re-runs the job by hand only to rotate a role's password
+// (docs/OPERATIONS.md). It reads its own environment and does not use
+// internal/config:
 //
 //	DATABASE_URL          the owner (postgres on Supabase)
 //	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING, _API and _NOTIFY

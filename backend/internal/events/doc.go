@@ -1,5 +1,8 @@
 // Package events owns the five trigger events the services exchange, their
-// encoding, and what a handler's error means (Permanent, Defer, Redelivered).
+// encoding, and what a handler's error means.
+//
+// That is Permanent and Defer; the Redelivered flag on a handler's context is
+// how a transport says a message came before.
 //
 // It must not know a transport or a table: it imports no amqpbus, store or db,
 // and the outbox and the broker client both meet it through Sender and Bus.

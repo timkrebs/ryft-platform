@@ -6,8 +6,8 @@
 //
 // The output is committed, and make k8s-validate fails on drift, so the topology
 // is edited in Go and never in the YAML. The dev definitions carry dev passwords
-// ("dev-<user>-amqp-password"); it must not hold a production password: on the
-// cluster every user's password comes from Vault (Secret amqp-user-<user>).
+// ("dev-<user>-amqp-password"); the command must not hold a production password:
+// on the cluster, Vault supplies every user's password (Secret amqp-user-<user>).
 //
 // See docs/MESSAGING_DESIGN.md; D97, D99.
 package main

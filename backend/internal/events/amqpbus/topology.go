@@ -145,9 +145,10 @@ func ResourceRegex(names []string) string {
 // Exchange is a declared exchange; Type is "topic" or "direct".
 type Exchange struct{ Name, Type string }
 
-// Queue is a declared quorum queue. It has no arguments on purpose: limits, TTLs and
-// dead-lettering come from a Policy, since the Topology Operator cannot change a
-// queue's arguments once it exists (D99).
+// Queue is a declared quorum queue. It carries no arguments of its own (the dev
+// definitions add only x-queue-type: quorum): limits, TTLs and dead-lettering come
+// from a Policy, since the Topology Operator cannot change a queue's arguments once
+// it exists (D99).
 type Queue struct{ Name string }
 
 // Binding routes Key from the Source exchange to the Destination queue.

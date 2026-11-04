@@ -886,8 +886,8 @@ func inputColumns(inputs []string) []string {
 	return cols
 }
 
-// UpsertDailyScore writes everything scoring computed for one day in a single
-// statement, so a reader never sees half a day, and reports in ScoreWrite whether it
+// UpsertDailyScore writes the day's row, with every score and sleep column, in a
+// single statement (a workout's own load is stored apart, by SetWorkoutLoad), and reports in ScoreWrite whether it
 // was the day's first recovery (the morning push) and whether an input of a later
 // day's history changed (a re-score of the days after follows, D112).
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
@@ -1031,7 +1031,9 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 
 // DailyScores returns the stored days in [from,to] (local days, YYYY-MM-DD), oldest
 // first, with the model version each was scored under. It reads what scoring stored;
-// it computes nothing.
+// the one thing it rewrites is the calibration fields: a row whose counts and
+// reason no longer agree (an older image wrote it after a rollback) reads as
+// "unknown" until it is scored again (knownCalibration).
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
 		strength_min, volume_kg, sleep_performance, sleep_need_min,

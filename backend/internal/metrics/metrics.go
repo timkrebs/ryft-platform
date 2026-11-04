@@ -13,13 +13,13 @@ import (
 // labels mean (the Prometheus name is the contract with the dashboards and alerts,
 // so a rename is a dashboard change); a comment below adds only what Help cannot.
 var (
-	// HTTPRequests counts every HTTP answer, for all services. route is the ServeMux
-	// pattern ("GET /v1/days/{day}"), never the raw path, so cardinality stays bounded (D14).
+	// HTTPRequests counts HTTP answers; only httpx.Instrument records it, so only api
+	// and ingest emit it. route is the ServeMux pattern ("GET /v1/days/{day}"), never
+	// the raw path, so cardinality stays bounded (D14).
 	HTTPRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_requests_total",
 		Help: "HTTP requests by route pattern and status code.",
 	}, []string{"route", "code"})
-	// HTTPDuration is the latency behind HTTPRequests, by the same route pattern.
 	HTTPDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ryft_http_request_duration_seconds",
 		Help:    "HTTP request latency by route pattern.",
@@ -38,7 +38,6 @@ var (
 		Help: "Requests accepted after the NUL characters were removed from their body's strings (POST /v1/sync), by route pattern.",
 	}, []string{"route"})
 
-	// Ingested counts the records POST /v1/sync accepted (ingest), by kind and type.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_samples_ingested_total",
 		Help: "Records accepted by POST /v1/sync. kind=sample (type = sample type), sleep (type = stage) or workout.",
@@ -89,9 +88,11 @@ var (
 		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
-	// EventsPublished counts sends to the broker (ingest, api and scoring publish;
-	// scoring and notify consume). A non-ok result means the outbox keeps the row and
-	// retries, so it is a delay, not a loss (D101).
+	// EventsPublished counts sends to the broker (ingest, api and scoring publish).
+	// An error from the relay is retried from the outbox row; an error from
+	// outbox.Send means the INSERT failed, so there is no row, and the caller decides:
+	// a sync or completion answers 503, but scoring only logs it and that event is
+	// lost (OBSERVABILITY.md: lost only if its outbox row could not be written, D101).
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
 		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
@@ -109,7 +110,6 @@ var (
 		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
 	}, []string{"consumer"})
 
-	// DaysScored counts days scoring computed, by result (scoring).
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_days_scored_total",
 		Help: "Days scored, by result (ok, error, no_consent: skipped, the user withdrew consent).",
@@ -191,7 +191,6 @@ var (
 		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",
 	}, []string{"category"})
 
-	// JournalSaves counts journal days saved (api).
 	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_journal_saves_total",
 		Help: "Journal days saved (PUT /v1/journal/{day}).",
@@ -213,7 +212,6 @@ var (
 		Help: "Requests to /v1/admin, by result (ok, unauthorized, invalid, error).",
 	}, []string{"result"})
 
-	// TrainSessionsCompleted counts strength sessions completed (api).
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",
 		Help: "Strength sessions completed (POST /v1/sessions/{id}/complete, repeats included).",

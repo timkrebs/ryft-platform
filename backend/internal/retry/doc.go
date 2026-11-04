@@ -6,8 +6,8 @@
 // letting Kubernetes restart the pod would retry too, but fast and in lockstep
 // across pods. Supabase's pooler blocks a user for a while after repeated failed
 // logins (ECIRCUITBREAKER), which turned a few seconds of "password not set yet"
-// into minutes of crash loops on the first deploy. The jitter spreads the pods
-// apart so they stay under that limit.
+// into minutes of crash loops on the first deploy. The backoff keeps the number of
+// failed logins down (D93, D47); the jitter only spreads the pods apart.
 //
 // See D47.
 package retry

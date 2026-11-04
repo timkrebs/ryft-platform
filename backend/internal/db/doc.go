@@ -14,8 +14,8 @@
 //   - A role's password reaches Postgres only as a SCRAM-SHA-256 verifier, never
 //     as plaintext (D42), and EnsureRolePassword writes it only when it changed
 //     (D93).
-//   - A table's grants for each service role are in the migration that adds the
-//     table (TestServiceRoleGrants).
+//   - A table's grants for each service role belong in the migration that adds
+//     the table; TestServiceRoleGrants pins the resulting grant matrix.
 //
 // See docs/ARCHITECTURE.md → Database roles; docs/SUPABASE.md; D28, D42, D47, D93.
 package db
