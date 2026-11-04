@@ -1,0 +1,18 @@
+# fixture: P8 the server rolebinding for an account elsewhere
+# op: create
+# as: system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator
+# refused-by: ryft-operator-reach
+# message: P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-server
+  namespace: ryft-rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-peer-discovery
+subjects:
+- kind: ServiceAccount
+  name: rabbitmq-server
+  namespace: rabbitmq-system

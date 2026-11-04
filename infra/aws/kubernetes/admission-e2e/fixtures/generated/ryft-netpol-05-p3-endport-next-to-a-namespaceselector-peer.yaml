@@ -1,0 +1,107 @@
+# fixture: P3 endPort next to a namespaceSelector peer
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-netpol
+# message: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq
+  namespace: ryft-rabbitmq
+spec:
+  egress:
+  - ports:
+    - port: 4369
+      protocol: TCP
+    - port: 25672
+      protocol: TCP
+    - endPort: 35682
+      port: 35672
+      protocol: TCP
+    - port: 5671
+      protocol: TCP
+    - port: 15671
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-api
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-ingest
+      podSelector:
+        matchLabels:
+          app: ingest
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-api
+      podSelector:
+        matchLabels:
+          app: api
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-scoring
+      podSelector:
+        matchLabels:
+          app: scoring
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ryft-notify
+      podSelector:
+        matchLabels:
+          app: notify
+    ports:
+    - port: 5671
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: rabbitmq-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: messaging-topology-operator
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - port: 15671
+      protocol: TCP
+  - from:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    ports:
+    - port: 15692
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: rabbitmq
+    ports:
+    - port: 4369
+      protocol: TCP
+    - port: 25672
+      protocol: TCP
+    - endPort: 35682
+      port: 35672
+      protocol: TCP
+    - port: 5671
+      protocol: TCP
+    - port: 15671
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  policyTypes:
+  - Ingress
+  - Egress

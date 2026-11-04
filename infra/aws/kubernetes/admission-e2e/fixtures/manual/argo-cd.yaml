@@ -1,0 +1,116 @@
+# Hand-written fixtures for what the generated ones (from the CEL harness) do not cover: writes
+# that are no CREATE (DELETE, a patch) and the requests that must pass (the carve-outs and the
+# operations of OPERATIONS -> Deploy). Several fixtures to a file, separated by a line holding
+# only "# ----"; the header of each is read by scripts/lib/admission_lib.sh (adm_run_fixture).
+# They act on the baseline objects (../baseline) and on the Applications and AppProjects of
+# deploy/argocd, applied by the admin before the policies exist.
+#
+#   op           create (default; the body is the object) | patch | delete | exec
+#   as           the requester (impersonated); without it the kind admin
+#   target       what kubectl is pointed at (patch, delete: "<resource> <name> [-n ns]")
+#   patch        a JSON merge patch
+#   refused-by   the BINDING (its name is in the API server's message) that must refuse it in Deny and
+#                warn in Audit; without it:
+#   expect       admitted
+#   message      the refusal, as in testdata/messages.golden
+# ----
+# fixture: P7 the default AppProject deleted (by anyone)
+# op: delete
+# target: appproject default -n argocd
+# refused-by: ryft-argocd
+# message: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+# ----
+# fixture: P7 an AppProject deleted by the application controller
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: appproject ryft -n argocd
+# refused-by: ryft-argocd
+# message: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+# ----
+# fixture: P7 an AppProject widened to everything (by anyone)
+# op: patch
+# target: appproject ryft -n argocd
+# patch: {"spec":{"clusterResourceWhitelist":[{"group":"*","kind":"*"}]}}
+# refused-by: ryft-argocd
+# message: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
+# ----
+# fixture: P7 argocd-server deletes an Application
+# op: delete
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-api -n argocd
+# refused-by: ryft-argocd
+# message: P7: argocd-server must not delete Applications.
+# ----
+# fixture: P7 argocd-server writes status.sync (P10 trusts the synced revision)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-api -n argocd
+# patch: {"status":{"sync":{"status":"OutOfSync","revision":"deadbeef"}}}
+# refused-by: ryft-argocd
+# message: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
+# ----
+# fixture: P7 argocd-server deletes a Secret labelled argocd.argoproj.io/secret-type
+# op: delete
+# as: system:serviceaccount:argocd:argocd-server
+# target: secret repo-fixture -n argocd
+# refused-by: ryft-argocd
+# message: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+# ----
+# fixture: P7 carve-out: the controller's status write with an unchanged spec passes
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: application vault-api -n argocd
+# patch: {"status":{"health":{"status":"Healthy"}}}
+# expect: admitted
+# ----
+# fixture: P10 a sync with local manifests (argocd app sync --local)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-api -n argocd
+# patch: {"operation":{"sync":{"manifests":["{}"]}}}
+# refused-by: ryft-argocd-operation
+# message: P10: a sync operation must not carry local manifests or a source of its own.
+# ----
+# fixture: P10 a sync that carries a source of its own (argocd app rollback)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-api -n argocd
+# patch: {"operation":{"sync":{"source":{"repoURL":"https://github.com/timkrebs/ryft-platform.git","path":"deploy","targetRevision":"main"}}}}
+# refused-by: ryft-argocd-operation
+# message: P10: a sync operation must not carry local manifests or a source of its own.
+# ----
+# fixture: P10 a sync of another revision through the API server
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-api -n argocd
+# patch: {"operation":{"sync":{"revision":"deadbeef"}}}
+# refused-by: ryft-argocd-operation
+# message: P10: a sync started through the API server must use the target revision or the revision the Application is synced to.
+# ----
+# fixture: P10 a plain sync (argocd app sync) passes
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-notify -n argocd
+# patch: {"operation":{"sync":{"revision":"main"}}}
+# expect: admitted
+# ----
+# fixture: P10 terminate-op: the operation in flight is removed, no new one is set
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-smoke -n argocd
+# patch: {"operation":null}
+# expect: admitted
+# ----
+# fixture: P10 pause (syncPolicy without automated) passes
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-migrate -n argocd
+# patch: {"spec":{"syncPolicy":{"automated":null}}}
+# expect: admitted
+# ----
+# fixture: P10 hard refresh (annotation) passes
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: application vault-ingest -n argocd
+# patch: {"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}
+# expect: admitted

@@ -1,0 +1,12 @@
+# fixture: P5 binaryData AUTH_MODE
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-auth-env
+# message: P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase.
+apiVersion: v1
+binaryData:
+  AUTH_MODE: eA==
+kind: ConfigMap
+metadata:
+  name: c
+  namespace: ryft-api
