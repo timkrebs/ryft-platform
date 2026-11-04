@@ -25,7 +25,7 @@ infra/aws/
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
-    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11 + bindings (D120)
+    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P12 + bindings (D120)
     ├── admission.tf admission-values.yaml   the release (off), its committed values, the checks
     └── tests/addons.tftest.hcl tests/admission.tftest.hcl
 ```
@@ -107,12 +107,13 @@ the name at the NLB within a minute or two.
 
 ## Admission policies (D120)
 
-`infra/aws/kubernetes/admission.tf` installs eleven built-in ValidatingAdmissionPolicies
-(P1–P11) and twelve bindings (P2 has one for templates and one for Pods) from the local
+`infra/aws/kubernetes/admission.tf` installs twelve built-in ValidatingAdmissionPolicies
+(P1–P12) and thirteen bindings (P2 has one for templates and one for Pods) from the local
 chart `charts/admission-policy`, as the release `admission-policy` in `kube-system`. They
 judge what PSA cannot: images per namespace, commands and service account tokens, the
 auth-mode keys, NetworkPolicy and Traefik shapes, the Vault Secrets Operator objects, the
-RabbitMQ operators' cluster power and reach, the broker, and Argo CD's own objects. No pods
+RabbitMQ operators' cluster power and reach, the broker, Argo CD's own objects, and (P12) where
+Argo CD's service accounts may write at all. The release depends on `helm_release.argocd`. No pods
 run for them and no webhook can be down; the cost is nil (API server CPU only).
 
 **It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.

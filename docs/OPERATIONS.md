@@ -910,6 +910,65 @@ yq: `scripts/install_kind.sh`, `install_kubectl.sh`, `install_helm.sh`, `install
 sha256 in each). An operator or argo-cd upgrade: the kind run on its tree first, the chart before the
 operator (OPERATIONS -> RabbitMQ).
 
+### Admission policy P12 `ryft-argo-scope`: where Argo CD may write (D120, chart 0.3.0)
+
+P12 (`docs/work/2026-10-23-admission/p12-argo-scope.md`) matches every write of every service account of
+the `argocd` namespace (the username starts with `system:serviceaccount:argocd:`; groups, `userInfo.extra`
+and field managers are not used, so impersonation in the kind run tests the real thing) and holds it to
+where Argo CD's apps render. What the objects contain stays P1-P11's. Chart 0.3.0 has 12 policies and 13
+bindings; the binding is `ryft-argo-scope` (key `argo-scope`, step B), shipped in Warn+Audit like the others,
+and `enabled: false` in `admission-values.yaml` is unchanged: merging P12 changes nothing in production.
+
+| Requester | May write |
+| --- | --- |
+| application controller | any resource in `ryft-*` and `rabbitmq-system`; in `argocd` only Applications and events; cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs `*.rabbitmq.com` (no delete), ClusterRoles and bindings named `rabbitmq-cluster-*` / `messaging-topology-*`, the operators' four webhook configurations, and the access reviews |
+| `argocd-server` | in `argocd` only Applications and events, and **once** the first `server.secretkey` of `argocd-secret` (an UPDATE that adds that key and changes no value, label or annotation; never a change of an existing key) |
+| `argocd-redis-secret-init` | CREATE of Secret `argocd-redis` (the argo-cd chart's pre-install/pre-upgrade hook) |
+| any other `argocd` service account | nothing |
+| everybody | no subresource and no CONNECT (`pods/exec`, `deployments/scale`, `serviceaccounts/token`, ...) |
+
+No Argo CD identity writes an AppProject (Terraform's, B2). A refusal reads `denied request: P12: ...` in a
+sync (Deny), or as a comparison error of the whole app under server-side diff; in Audit it is a warning and a
+`ryft-argo-scope` line in the audit log. Under Deny each finding is an attack or a missing exemption: the
+legitimate set is small and known.
+
+**Rollout.** Merge order: #47 (Argo CD's narrowed RBAC, with its own wording fixed), the user's Step 0, then this
+PR (chart 0.3.0, disabled), then Phase 1 with P12 in Warn+Audit next to P1-P11 (same apply, same 7 days), then
+Deny at Step B. Two items join the Phase 1 exit checklist (design 3): (11) `kubectl -n argocd rollout restart
+deployment/argocd-server statefulset/argocd-application-controller` shows no `ryft-argo-scope` finding;
+(12) an apply of `helm_release.argocd` (the pre-upgrade hook) shows none. The daily query of "Admission policy
+signals" filtered on `ryft-argo-scope`: zero lines is the exit condition for P12.
+
+**Changing what Argo CD writes.** A new Argo-made namespace, a new cluster-scoped kind or name, or an argo-cd
+chart version that writes something new needs the chart first: edit `argoScope` (and `operators` for the
+ClusterRole and webhook names) in `charts/admission-policy/values.yaml`, bump the chart, a reviewed PR, your
+apply; then the manifests. Until then P12 refuses the sync (Deny) or flags it (Audit). Adding a service needs
+nothing: its namespace starts with `ryft-`. Every argo-cd chart upgrade gets the kind run
+(`make admission-e2e`), which now also covers P12. Rotating the admin password stays Terraform's
+(`-replace=random_password.argocd_admin`); the UI's password change and `argocd cert add` / `gpg add` are
+refused.
+
+**Break-glass** is the binding patch, as for every binding (it always works, claim a): `kubectl patch
+validatingadmissionpolicybinding ryft-argo-scope --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'`,
+then a chart PR and your apply; restore with the replace under "Restore". Never through Argo CD: a blocked
+Argo CD cannot change the chart and does not stand between you and the fix. If `helm_release.argocd` is refused
+at its pre-upgrade hook, `-var='admission_break_glass=true'` on the same apply works too.
+
+**Order of releases.** `helm_release.admission_policy` depends on `helm_release.argocd`, so on a fresh cluster
+Argo CD has started and written its first `server.secretkey` before any policy exists (the exemption covers a
+later recreate of the Secret). One consequence: `-target=helm_release.admission_policy` now also pulls
+`helm_release.argocd` and what it depends on into the plan if they have pending changes. Read the plan before
+applying a targeted break-glass or restore, and do not leave an Argo CD chart bump unapplied.
+
+**Rollback** is a forward change: `scripts/check_chart_bump.sh` needs a higher version, so removing P12 ships as
+0.3.1 without the template, in the same PR as the `argo-scope` key of `admission-values.yaml`, the generated
+recording rules and the binding count (back to 12). There is no data and no down-migration.
+
+**What P12 does not cover** (accepted, design "What P12 does not cover"): reads (both Argo CD Roles read Secrets in
+`argocd`); writes inside the scope beyond P2-P11's content rules; the controller's choice of revision; the
+admission objects themselves (RBAC holds them); every other identity (operators: P8, VSO: P4/P5; cert-manager,
+Traefik, ExternalDNS, the nodes: none); a merged malicious commit (review is the control, D95).
+
 ### Adding a service
 
 An entry in `infra/vault` `services` (namespace, Vault namespace, credentials), apply,
