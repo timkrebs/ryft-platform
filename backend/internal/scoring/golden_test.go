@@ -6,13 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"log/slog"
 	"maps"
 	"math"
-	"math/rand/v2"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,494 +21,74 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 	"github.com/timkrebs/ryft/internal/train"
 )
 
 // Golden files: the safety net for refactors (docs/SCORING.md → Model version).
-// Five synthetic users × 30 days go through ingest's store calls and the real
-// Engine (ComputeRange, as scripts/rescore_all.sh does), and every stored
-// daily_scores row, all columns but user_id and computed_at, must equal
-// testdata/golden/<user>.json. Nothing here is worked out by hand: the
-// calibration tests pin what a number should be, this pins that it did not
-// move. A diff means a stored number moved: either a bug, or a model change,
-// which bumps ModelVersion (version.go, changelog.json, SCORING.md) and then
-// regenerates with `make golden-update`. The update refuses while ModelVersion
-// is the one in testdata/golden/manifest.json, so the files cannot be
-// regenerated to make a silent change pass.
+// The generator's users (golden_gen_test.go) go through the store calls ingest
+// and the api make (a sync a day with its apply and fold, sessions saved and
+// completed or imported) and the real Engine (ComputeRange, as
+// scripts/rescore_all.sh does). Then everything scoring writes must equal
+// testdata/golden/<user>.json: every daily_scores column, and the workouts
+// (strain, trimp, zones, duplicate_of, the attached session and its load, the
+// ones scoring creates for sessions) and sessions (load and workout) rows, ids
+// replaced by readable labels. Nothing here is worked out by hand: the
+// calibration tests pin what a number should be, this pins that it did not move.
 //
-// Determinism: fixed dates (2026-08-03 .. 2026-09-01, all past, so the
-// engine's "never past today" bound never cuts in), a PCG stream with a fixed
-// seed per user drawn only as integers (no float or library distribution
-// whose output could change between Go versions or CPUs), ids derived by name
-// (uuid v5 of "user-a/..."), the session's time zone pinned to UTC for the
-// read, and canonical JSON (sorted keys, numbers rounded to 1e-6 and printed
-// shortest, which also absorbs last-bit differences between CPUs).
+// A diff means a stored number moved: a bug, or a model change, which bumps
+// ModelVersion (version.go, changelog.json, SCORING.md) and then regenerates
+// with `make golden-update`. The update refuses while ModelVersion is the
+// manifest's, unless the generator's inputs changed (their digest), and then
+// only for the users whose inputs changed; GOLDEN_MODE=additive accepts new
+// fields and rows and refuses any changed one.
 //
-// Opt-in like every engine test: RYFT_TEST_POSTGRES_URL. TestGoldenManifest
-// needs no database and always runs.
+// Determinism: the generator's, plus the read in UTC with Postgres's shortest
+// exact floats, and canonical JSON (sorted keys, numbers rounded to 1e-6 and
+// printed shortest, which also absorbs last-bit differences between CPUs).
+//
+// Opt-in like every engine test (RYFT_TEST_POSTGRES_URL), but never skipped in
+// CI. TestGoldenManifest needs no database and always runs.
 
 const (
 	goldenDir      = "testdata/golden"
-	goldenFirstDay = "2026-08-03" // a Monday
-	goldenDays     = 30
-	goldenSeed     = 20261104
-	goldenUpdate   = "RYFT_GOLDEN_UPDATE" // =1: rewrite the files (make golden-update)
-	goldenMaxLines = 60                   // changed fields shown per user
+	goldenUpdate   = "RYFT_GOLDEN_UPDATE" // 1: regenerate (make golden-update); additive: new fields and rows only
+	goldenMaxLines = 60                   // report lines per user
 )
 
-// goldenVolatile are the daily_scores columns left out: the row's owner (a
-// generated id) and the wall clock of the write.
-var goldenVolatile = []string{"user_id", "computed_at"}
-
-// goldenNow is the "now" of the api's session checks: the morning after the
-// last golden day. Never the wall clock.
-var goldenNow = time.Date(2026, 9, 2, 6, 0, 0, 0, time.UTC)
-
-var goldenNS = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://ryftapp.de/scoring/golden"))
-
-// goldenUser is one synthetic user: a readable name (the file name), what
-// the month exercises, and how to generate it.
-type goldenUser struct {
-	Name     string
-	Scenario string
-	TZ       string
-	MaxHR    int // 0: the default
-	build    func(g *goldenGen)
+// The tables pinned, in report order, and the columns left out of each: the
+// row's owner (a generated id) and wall-clock stamps of the write.
+var goldenTables = []struct {
+	section, table, key, order string
+	volatile                   []string
+}{
+	{"days", "daily_scores", "day", "day", []string{"user_id", "computed_at"}},
+	{"workouts", "workouts", "id", "start_at, source, id", []string{"user_id", "created_at"}},
+	{"sessions", "sessions", "id", "started_at, id", []string{"user_id", "created_at", "updated_at", "imported_at"}},
 }
 
-var goldenUsers = []goldenUser{
-	{Name: "user-a", TZ: "Europe/Berlin", build: goldenWatchUser,
-		Scenario: "Apple Watch and iPhone: runs on Tue/Thu/Sat (a long one on Saturdays), a bad night on day 11, the watch charging overnight on day 16 (the phone's time in bed only, no HRV), a sedentary day 20"},
-	{Name: "user-b", TZ: "America/New_York", build: goldenGarminUser,
-		Scenario: "Garmin only, no HRV, respiration or SpO2: sleep without stages, heart rate every 2 min, rides with an average heart rate (Mondays without samples), no data at all on day 9"},
-	{Name: "user-c", TZ: "Europe/Berlin", MaxHR: 186, build: goldenTwoSourceUser,
-		Scenario: "Apple Watch and Garmin worn together: both write heart rate, steps, resting heart rate and the night; runs recorded by both (one shown); manual max HR 186"},
-	{Name: "user-d", TZ: "UTC", build: goldenNapUser,
-		Scenario: "Apple Watch: afternoon naps every third day (one under 20 min, one over the 90-min cap), split nights every fifth day, a morning nap after an early wake on day 18"},
-	{Name: "user-e", TZ: "UTC", build: goldenStrengthUser,
-		Scenario: "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Wed without), an imported history May-July with a heavy single, and day 16's session imported instead of logged"},
+// goldenIDColumns hold ids; the files have labels in their place.
+var goldenIDColumns = []string{"id", "session_id", "duplicate_of", "workout_id", "plan_day_id", "device_id"}
+
+// goldenFile is one user's file: the rows of each table, oldest first.
+type goldenFile struct {
+	User     string           `json:"user"`
+	Scenario string           `json:"scenario"`
+	TZ       string           `json:"tz"`
+	Days     []map[string]any `json:"days"`
+	Workouts []map[string]any `json:"workouts"`
+	Sessions []map[string]any `json:"sessions"`
 }
 
-// ---- the generator -------------------------------------------------------------
-
-// goldenGen builds one user's month: HealthKit samples, sleep and workouts as
-// a sync sends them, and strength sessions as the app or the import sends them.
-type goldenGen struct {
-	user     string
-	rng      *rand.PCG
-	loc      *time.Location
-	lib      map[string]model.Exercise
-	samples  []model.Sample
-	sleep    []model.SleepSegment
-	workouts []model.Workout
-	sessions []goldenSession
-}
-
-type goldenSession struct {
-	s        model.Session
-	imported bool
-}
-
-type goldenDevice struct{ name, bundle string }
-
-func goldenMin(n int) time.Duration { return time.Duration(n) * time.Minute }
-
-// between is a whole number in [lo, hi]. Integers only: math/rand/v2's PCG
-// output is fixed by its definition, and a modulo is the same on every CPU.
-func (g *goldenGen) between(lo, hi int) int {
-	return lo + int(g.rng.Uint64()%uint64(hi-lo+1))
-}
-
-// tenths is between(lo, hi)/10: a value with one decimal, as HealthKit shows them.
-func (g *goldenGen) tenths(lo, hi int) float64 { return float64(g.between(lo, hi)) / 10 }
-
-// day is local midnight of golden day k.
-func (g *goldenGen) day(k int) time.Time {
-	d, _ := time.ParseInLocation(dayLayout, goldenFirstDay, g.loc)
-	return d.AddDate(0, 0, k)
-}
-
-func (g *goldenGen) id(parts ...string) uuid.UUID {
-	return uuid.NewSHA1(goldenNS, []byte(g.user+"/"+strings.Join(parts, "/")))
-}
-
-func (g *goldenGen) add(dev goldenDevice, typ, unit string, start, end time.Time, v float64) {
-	b := dev.bundle
-	g.samples = append(g.samples, model.Sample{Type: typ, Start: start, End: end, Value: v, Unit: unit,
-		Source: dev.name, SourceBundleID: &b})
-}
-
-// heart is a heart-rate sample every `every` in [from, to), lo..hi bpm.
-func (g *goldenGen) heart(dev goldenDevice, from, to time.Time, every time.Duration, lo, hi int) {
-	for t := from; t.Before(to); t = t.Add(every) {
-		g.add(dev, model.SampleHeartRate, "count/min", t, t, float64(g.between(lo, hi)))
+func (f *goldenFile) section(name string) *[]map[string]any {
+	switch name {
+	case "days":
+		return &f.Days
+	case "workouts":
+		return &f.Workouts
 	}
-}
-
-// activity is steps (and active energy, when kcal) in buckets of `every` from
-// wake to 22:00: idle values, the workout's inside [ws, we).
-func (g *goldenGen) activity(dev goldenDevice, from, to time.Time, every time.Duration, idleSteps int, kcal bool, ws, we time.Time) {
-	for t := from; t.Before(to); t = t.Add(every) {
-		per := every.Minutes() / 15              // the ranges below are per 15 minutes
-		lo, hi, klo, khi := 0, idleSteps, 10, 60 // tenths of kcal
-		if !ws.IsZero() && !t.Before(ws) && t.Before(we) {
-			lo, hi, klo, khi = 1300, 1700, 1100, 1500
-		}
-		g.add(dev, model.SampleSteps, "count", t, t.Add(every), float64(int(per*float64(g.between(lo, hi)))))
-		if kcal {
-			g.add(dev, model.SampleActiveEnergy, "kcal", t, t.Add(every), math.Round(per*g.tenths(klo, khi)*10)/10)
-		}
-	}
-}
-
-func (g *goldenGen) segment(dev goldenDevice, from, to time.Time, stage string) {
-	b := dev.bundle
-	g.sleep = append(g.sleep, model.SleepSegment{Start: from, End: to, Stage: stage, Source: dev.name, SourceBundleID: &b})
-}
-
-// stagedNight is a night with stages: in bed from bed to wake, asleep from a
-// few minutes later in stretches of core, deep, REM and a little awake.
-func (g *goldenGen) stagedNight(dev goldenDevice, bed, wake time.Time) {
-	g.segment(dev, bed, wake, model.SleepInBed)
-	for t := bed.Add(goldenMin(g.between(5, 20))); t.Before(wake); {
-		stage := model.SleepCore
-		switch r := g.between(0, 99); {
-		case r >= 95:
-			stage = model.SleepAwake
-		case r >= 70:
-			stage = model.SleepREM
-		case r >= 50:
-			stage = model.SleepDeep
-		}
-		end := t.Add(goldenMin(g.between(10, 50)))
-		if end.After(wake) {
-			end = wake
-		}
-		g.segment(dev, t, end, stage)
-		t = end
-	}
-}
-
-// plainNight is a night without stages: "asleep" stretches with short awake ones.
-func (g *goldenGen) plainNight(dev goldenDevice, bed, wake time.Time) {
-	g.segment(dev, bed, wake, model.SleepInBed)
-	for t := bed.Add(goldenMin(g.between(8, 25))); t.Before(wake); {
-		end := t.Add(goldenMin(g.between(40, 120)))
-		if end.After(wake) {
-			end = wake
-		}
-		g.segment(dev, t, end, model.SleepAsleep)
-		t = end.Add(goldenMin(g.between(3, 10)))
-	}
-}
-
-// overnight is the night's HRV (two readings), respiration and SpO2.
-func (g *goldenGen) overnight(dev goldenDevice, bed time.Time, hrvLo, hrvHi int) {
-	for _, h := range []time.Duration{2 * time.Hour, 4 * time.Hour} {
-		at := bed.Add(h)
-		g.add(dev, model.SampleHRVSDNN, "ms", at, at, g.tenths(hrvLo, hrvHi))
-	}
-	at := bed.Add(3 * time.Hour)
-	g.add(dev, model.SampleRespiratoryRate, "count/min", at, at, g.tenths(138, 156))
-	g.add(dev, model.SampleSpO2, "%", at, at, g.tenths(950, 985))
-}
-
-func (g *goldenGen) restingHR(dev goldenDevice, at time.Time, lo, hi int) {
-	g.add(dev, model.SampleRestingHR, "count/min", at, at, g.tenths(lo, hi))
-}
-
-func (g *goldenGen) workout(dev goldenDevice, activity string, from, to time.Time, avgHR *float64) {
-	g.workouts = append(g.workouts, model.Workout{ID: g.id("workout", dev.name, from.UTC().Format(time.RFC3339)),
-		Activity: activity, Start: from, End: to, AvgHR: avgHR, Source: dev.name, SourceBundleID: &dev.bundle})
-}
-
-// night is the usual night ending on day d's morning: to bed 22:45-23:40,
-// up 06:20-07:10.
-func (g *goldenGen) night(d time.Time) (bed, wake time.Time) {
-	return d.Add(-75*time.Minute + goldenMin(g.between(0, 55))), d.Add(6*time.Hour + 20*time.Minute + goldenMin(g.between(0, 50)))
-}
-
-// watchDay is a day of an Apple Watch worn day and night: the night with
-// stages and its physiology, a resting heart rate, heart rate every 5 min
-// (every minute in the workout window [ws, we)), steps and energy every 15 min.
-func (g *goldenGen) watchDay(watch goldenDevice, d, bed, wake, ws, we time.Time, idleSteps int) {
-	g.stagedNight(watch, bed, wake)
-	g.overnight(watch, bed, 480, 640)
-	g.heart(watch, bed, wake, 10*time.Minute, 48, 58)
-	g.restingHR(watch, wake.Add(time.Hour), 495, 545)
-	g.dayHeart(watch, wake, d.Add(22*time.Hour+30*time.Minute), ws, we, 142, 166)
-	g.activity(watch, wake, d.Add(22*time.Hour), 15*time.Minute, idleSteps, true, ws, we)
-}
-
-// dayHeart is the waking heart rate: every 5 min at 60-88, every minute in a
-// workout window at lo..hi.
-func (g *goldenGen) dayHeart(dev goldenDevice, from, to, ws, we time.Time, lo, hi int) {
-	if ws.IsZero() {
-		g.heart(dev, from, to, 5*time.Minute, 60, 88)
-		return
-	}
-	g.heart(dev, from, ws, 5*time.Minute, 60, 88)
-	g.heart(dev, ws, we, time.Minute, lo, hi)
-	g.heart(dev, we, to, 5*time.Minute, 64, 92)
-}
-
-// ---- the five users ------------------------------------------------------------
-
-func goldenWatchUser(g *goldenGen) {
-	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-a"}
-	phone := goldenDevice{"iPhone", "com.apple.health.phone-a"}
-	for k := range goldenDays {
-		d := g.day(k)
-		bed, wake := g.night(d)
-		if k == 11 { // a bad night: late to bed, the usual alarm
-			bed, wake = d.Add(time.Hour+40*time.Minute), d.Add(6*time.Hour+5*time.Minute)
-		}
-		var ws, we time.Time
-		if wd := k % 7; (wd == 1 || wd == 3 || wd == 5) && k != 20 {
-			ws = d.Add(17*time.Hour + 30*time.Minute + goldenMin(g.between(0, 20)))
-			dur := g.between(35, 60)
-			if wd == 5 {
-				dur = g.between(75, 95)
-			}
-			we = ws.Add(goldenMin(dur))
-			g.workout(watch, "running", ws, we, nil)
-		}
-		idle := 160
-		if k == 20 {
-			idle = 25 // sedentary: the couch all day
-		}
-		if k == 16 { // the watch charges overnight: the phone's time in bed, no HRV, no night heart rate
-			g.segment(phone, bed, wake, model.SleepInBed)
-			g.restingHR(watch, wake.Add(time.Hour), 495, 545)
-			g.dayHeart(watch, wake, d.Add(22*time.Hour+30*time.Minute), ws, we, 142, 166)
-			g.activity(watch, wake, d.Add(22*time.Hour), 15*time.Minute, idle, true, ws, we)
-		} else {
-			g.watchDay(watch, d, bed, wake, ws, we, idle)
-		}
-		// The phone counts steps too, hourly: fewer samples, so the watch wins each hour.
-		g.activity(phone, wake, d.Add(22*time.Hour), time.Hour, idle, false, ws, we)
-	}
-}
-
-func goldenGarminUser(g *goldenGen) {
-	garmin := goldenDevice{"Garmin Connect", "com.garmin.connect.mobile"}
-	for k := range goldenDays {
-		if k == 9 {
-			continue // the watch stayed at home and nothing synced
-		}
-		d := g.day(k)
-		bed, wake := g.night(d)
-		g.plainNight(garmin, bed, wake)
-		g.heart(garmin, bed, wake, 2*time.Minute, 47, 57)
-		g.restingHR(garmin, wake.Add(30*time.Minute), 505, 560)
-		var ws, we time.Time
-		if wd := k % 7; wd == 0 || wd == 2 || wd == 4 {
-			ws = d.Add(6*time.Hour + 45*time.Minute)
-			if ws.Before(wake.Add(10 * time.Minute)) {
-				ws = wake.Add(10 * time.Minute)
-			}
-			we = ws.Add(goldenMin(g.between(45, 70)))
-			avg := float64(g.between(128, 150))
-			g.workout(garmin, "cycling", ws, we, &avg)
-		}
-		end := d.Add(23 * time.Hour)
-		switch {
-		case ws.IsZero():
-			g.heart(garmin, wake, end, 2*time.Minute, 60, 86)
-		case k%7 == 0: // Mondays: the ride's heart rate never reached Health, only its average
-			g.heart(garmin, wake, ws, 2*time.Minute, 60, 86)
-			g.heart(garmin, we, end, 2*time.Minute, 62, 90)
-		default:
-			g.heart(garmin, wake, ws, 2*time.Minute, 60, 86)
-			g.heart(garmin, ws, we, time.Minute, 125, 152)
-			g.heart(garmin, we, end, 2*time.Minute, 62, 90)
-		}
-		g.activity(garmin, wake, d.Add(22*time.Hour), time.Hour, 140, true, time.Time{}, time.Time{})
-	}
-}
-
-func goldenTwoSourceUser(g *goldenGen) {
-	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-c"}
-	garmin := goldenDevice{"Garmin Connect", "com.garmin.connect.mobile"}
-	for k := range goldenDays {
-		d := g.day(k)
-		bed, wake := g.night(d)
-		// Both trackers record the night, a few minutes apart: one source counts.
-		g.stagedNight(watch, bed, wake)
-		g.stagedNight(garmin, bed.Add(-goldenMin(g.between(0, 6))), wake.Add(goldenMin(g.between(0, 6))))
-		g.overnight(watch, bed, 520, 700)
-		g.heart(garmin, bed, wake, 2*time.Minute, 47, 57)
-		g.heart(watch, bed, wake, 10*time.Minute, 48, 58)
-		g.restingHR(watch, wake.Add(time.Hour), 480, 530)
-		g.restingHR(garmin, d.Add(23*time.Hour+50*time.Minute), 490, 540)
-		var ws, we time.Time
-		if wd := k % 7; wd == 0 || wd == 3 || wd == 5 {
-			ws = d.Add(18*time.Hour + goldenMin(g.between(0, 15)))
-			we = ws.Add(goldenMin(g.between(40, 65)))
-			// One run, two recordings: the watch's and the Garmin's, a minute apart.
-			g.workout(watch, "running", ws, we, nil)
-			avg := float64(g.between(145, 158))
-			g.workout(garmin, "running", ws.Add(-time.Minute), we.Add(time.Minute), &avg)
-		}
-		end := d.Add(23 * time.Hour)
-		// Garmin every 2 min all day; the watch every 5 min while awake and every
-		// minute during the run, so each hour has one denser source.
-		g.heart(garmin, wake, end, 2*time.Minute, 60, 88)
-		g.dayHeart(watch, wake, end, ws, we, 144, 168)
-		g.activity(watch, wake, d.Add(22*time.Hour), 15*time.Minute, 170, true, ws, we)
-		g.activity(garmin, wake, d.Add(22*time.Hour), time.Hour, 170, true, ws, we)
-	}
-}
-
-func goldenNapUser(g *goldenGen) {
-	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-d"}
-	for k := range goldenDays {
-		d := g.day(k)
-		bed, wake := g.night(d)
-		var ws, we time.Time
-		if k%7 == 2 || k%7 == 6 {
-			ws = d.Add(18*time.Hour + 30*time.Minute)
-			we = ws.Add(goldenMin(g.between(30, 50)))
-			g.workout(watch, "running", ws, we, nil)
-		}
-		switch {
-		case k%5 == 2: // a split night: up for over an hour around 02:00, two times in bed
-			mid := bed.Add(3*time.Hour + 20*time.Minute)
-			back := mid.Add(goldenMin(g.between(70, 95)))
-			g.stagedNight(watch, bed, mid)
-			g.stagedNight(watch, back, wake)
-			g.overnight(watch, bed, 450, 620)
-			g.heart(watch, bed, wake, 10*time.Minute, 48, 60)
-			g.restingHR(watch, wake.Add(time.Hour), 500, 555)
-			g.dayHeart(watch, wake, d.Add(22*time.Hour+30*time.Minute), ws, we, 140, 162)
-			g.activity(watch, wake, d.Add(22*time.Hour), 15*time.Minute, 150, true, ws, we)
-		case k == 18: // up at 05:30, back to sleep 10:20-11:35: a morning nap
-			wake = d.Add(5*time.Hour + 30*time.Minute)
-			g.watchDay(watch, d, bed, wake, ws, we, 150)
-			g.stagedNight(watch, d.Add(10*time.Hour+20*time.Minute), d.Add(11*time.Hour+35*time.Minute))
-		default:
-			g.watchDay(watch, d, bed, wake, ws, we, 150)
-		}
-		switch {
-		case k == 5: // 15 minutes: under the 20 that count
-			g.segment(watch, d.Add(14*time.Hour), d.Add(14*time.Hour+15*time.Minute), model.SleepCore)
-		case k == 12: // 100 minutes: the credit stops at 90
-			g.segment(watch, d.Add(13*time.Hour+30*time.Minute), d.Add(15*time.Hour+10*time.Minute), model.SleepCore)
-		case k%3 == 1:
-			from := d.Add(14 * time.Hour)
-			g.segment(watch, from, from.Add(goldenMin(g.between(25, 70))), model.SleepCore)
-		}
-	}
-}
-
-// goldenLift is one exercise of a session: sets × reps at kg (0: bodyweight).
-type goldenLift struct {
-	slug       string
-	sets, reps int
-	kg         float64
-}
-
-// session is a completed strength session: sets every 2.5 minutes, ended
-// after length minutes; ids derived from the user, the key and the position.
-func (g *goldenGen) session(key string, at time.Time, length int, bw *float64, imported bool, lifts ...goldenLift) {
-	s := model.Session{ID: g.id("session", key), Title: key, StartedAt: at, BodyweightKG: bw, UpdatedAt: at}
-	clock := at
-	for p, l := range lifts {
-		ex, ok := g.lib[l.slug]
-		if !ok {
-			panic("golden: no built-in exercise " + l.slug)
-		}
-		se := model.SessionExercise{ID: g.id("session", key, strconv.Itoa(p)), ExerciseID: ex.ID, Position: p}
-		for k := range l.sets {
-			clock = clock.Add(150 * time.Second)
-			done, reps := clock, l.reps
-			set := model.Set{ID: g.id("session", key, strconv.Itoa(p), strconv.Itoa(k)), SetIndex: k, Reps: &reps,
-				CompletedAt: &done, UpdatedAt: done}
-			if l.kg > 0 {
-				w := l.kg
-				set.WeightKG = &w
-			}
-			se.Sets = append(se.Sets, set)
-		}
-		s.Exercises = append(s.Exercises, se)
-	}
-	end := at.Add(goldenMin(length))
-	s.EndedAt = &end
-	g.sessions = append(g.sessions, goldenSession{s: s, imported: imported})
-}
-
-// liftDay is session A (squat, bench, row) or B (deadlift, press, pull-ups)
-// of training week w; the weights go up 2.5 kg a week.
-func (g *goldenGen) liftDay(key string, at time.Time, a bool, w int, bw *float64, imported bool) {
-	inc := 2.5 * float64(w)
-	if a {
-		g.session(key, at, 62, bw, imported, goldenLift{"back-squat", 5, 5, 100 + inc},
-			goldenLift{"bench-press", 5, 5, 75 + inc}, goldenLift{"barbell-row", 5, 5, 70 + inc})
-		return
-	}
-	g.session(key, at, 55, bw, imported, goldenLift{"deadlift", 3, 5, 130 + inc},
-		goldenLift{"overhead-press", 5, 5, 50 + inc/2}, goldenLift{"pull-up", 4, 8, 0})
-}
-
-func goldenStrengthUser(g *goldenGen) {
-	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-e"}
-	// The imported history: Tuesdays and Thursdays from May to July, lighter,
-	// and a heavy single squat in June that stays inside August's 90-day window.
-	hist, _ := time.ParseInLocation(dayLayout, "2026-05-05", g.loc)
-	for n := 0; ; n++ {
-		d := hist.AddDate(0, 0, 7*(n/2)+2*(n%2))
-		if !d.Before(g.day(0).AddDate(0, 0, -3)) {
-			break
-		}
-		g.liftDay("import-"+d.Format(dayLayout), d.Add(18*time.Hour), n%2 == 0, n/2-12, nil, true)
-	}
-	g.session("import-2026-06-18-single", time.Date(2026, 6, 18, 19, 30, 0, 0, g.loc), 20, nil, true,
-		goldenLift{"back-squat", 1, 1, 135})
-
-	bw := 81.5
-	for k := range goldenDays {
-		d := g.day(k)
-		bed, wake := g.night(d)
-		var ws, we time.Time
-		wd := k % 7
-		lift := wd == 0 || wd == 2 || wd == 4
-		at := d.Add(18 * time.Hour)
-		if lift {
-			first := &bw
-			if k > 0 {
-				first = nil // later sessions take the last logged body weight
-			}
-			if k == 16 { // logged in the other app, imported afterwards
-				g.liftDay("import-"+d.Format(dayLayout), at.Add(10*time.Minute), (k/2)%2 == 0, k/7, nil, true)
-			} else {
-				g.liftDay("app-"+d.Format(dayLayout), at, (k/2)%2 == 0, k/7, first, false)
-			}
-			if wd != 2 { // Mondays and Fridays the watch records the session too
-				ws, we = at.Add(-3*time.Minute), at.Add(64*time.Minute)
-				g.workout(watch, "strength", ws, we, nil)
-			}
-		}
-		g.stagedNight(watch, bed, wake)
-		g.overnight(watch, bed, 500, 660)
-		g.heart(watch, bed, wake, 10*time.Minute, 47, 57)
-		g.restingHR(watch, wake.Add(time.Hour), 480, 530)
-		g.dayHeart(watch, wake, d.Add(22*time.Hour+30*time.Minute), ws, we, 100, 138)
-		g.activity(watch, wake, d.Add(22*time.Hour), 15*time.Minute, 130, true, time.Time{}, time.Time{})
-	}
-}
-
-// ---- running a user through the engine ----------------------------------------
-
-// goldenInputs counts what the generator made for a user: in the manifest, so
-// a diff caused by a changed generator says so instead of looking like a model change.
-type goldenInputs struct {
-	Samples  int `json:"samples"`
-	Sleep    int `json:"sleep_segments"`
-	Workouts int `json:"workouts"`
-	Sessions int `json:"sessions"`
+	return &f.Sessions
 }
 
 type goldenManifest struct {
@@ -522,69 +98,16 @@ type goldenManifest struct {
 	Seed         int                     `json:"seed"`
 	Users        []string                `json:"users"`
 	Inputs       map[string]goldenInputs `json:"inputs"`
-	Excluded     []string                `json:"excluded_columns"`
+	Excluded     map[string][]string     `json:"excluded_columns"`
 	Numbers      string                  `json:"numbers"`
 	Regenerate   string                  `json:"regenerate"`
 }
 
-func goldenGenerate(t *testing.T, u goldenUser, k int, lib map[string]model.Exercise) *goldenGen {
-	t.Helper()
-	loc, err := time.LoadLocation(u.TZ)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := &goldenGen{user: u.Name, rng: rand.NewPCG(goldenSeed, uint64(k)), loc: loc, lib: lib}
-	u.build(g)
-	return g
-}
+// ---- running a user ----------------------------------------------------------------
 
-func (g *goldenGen) inputs() goldenInputs {
-	return goldenInputs{Samples: len(g.samples), Sleep: len(g.sleep), Workouts: len(g.workouts), Sessions: len(g.sessions)}
-}
-
-// goldenDB is a fresh database on RYFT_TEST_POSTGRES_URL, migrated and seeded
-// (the built-in exercises), with the import's rules wired as the api wires them.
-func goldenDB(t *testing.T, admin string) (*store.Store, *pgxpool.Pool, *Engine) {
-	t.Helper()
-	ctx := context.Background()
-	root, err := db.Connect(ctx, admin, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(root.Close)
-	if err := db.EnsureServiceRoles(ctx, root); err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("ryft_goldentest_%d", rand.Uint32())
-	if _, err := root.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	u, _ := url.Parse(admin)
-	u.Path = "/" + name
-	pool, err := db.Connect(ctx, u.String(), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = root.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
-	})
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := db.Migrate(ctx, pool, quiet); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Seed(ctx, pool, quiet); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(pool).WithImportRules(store.ImportRules{SameSession: train.SameSession, Conflict: train.ImportConflict,
-		SamePlan: train.SamePlan, PlanConflict: train.PlanConflict})
-	return st, pool, NewEngine(st, quiet)
-}
-
-// goldenRun stores the user's month the way ingest and the api do (one sync a
-// day; sessions checked, saved and completed, or imported), scores the 30
-// days oldest first and returns the stored rows, canonical, oldest first.
-func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine, u goldenUser, g *goldenGen) []map[string]any {
+// goldenRun stores the user's month the way ingest and the api do and scores
+// it, returning the user's file.
+func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine, u goldenUser, g *goldenGen) goldenFile {
 	t.Helper()
 	ctx := context.Background()
 	user := uuid.NewSHA1(goldenNS, []byte(u.Name))
@@ -592,18 +115,22 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 		t.Fatal(err)
 	}
 	patch := model.UserPatch{TZ: &u.TZ}
+	var estimate *int
 	if u.MaxHR > 0 {
 		patch.MaxHR = &u.MaxHR
 	}
-	if _, err := st.UpdateUser(ctx, user, patch, nil); err != nil {
+	if u.BirthYear > 0 { // as PATCH /v1/me: the estimate for the birth year (D81)
+		e := EstimatedMaxHR(u.BirthYear, goldenNow.Year())
+		patch.BirthYear, estimate = &u.BirthYear, &e
+	}
+	if _, err := st.UpdateUser(ctx, user, patch, estimate); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.GrantConsent(ctx, user, "golden", nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// One sync per local day (by start): samples, sleep, workouts, sources.
-	byDay := func(at time.Time) string { return at.In(g.loc).Format(dayLayout) }
+	// One sync per local day (by start), then the re-sent copies in one more.
 	type sync struct {
 		samples  []model.Sample
 		sleep    []model.SleepSegment
@@ -611,7 +138,7 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 	}
 	syncs := map[string]*sync{}
 	of := func(at time.Time) *sync {
-		d := byDay(at)
+		d := at.In(g.loc).Format(dayLayout)
 		if syncs[d] == nil {
 			syncs[d] = &sync{}
 		}
@@ -626,38 +153,24 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 	for _, w := range g.workouts {
 		of(w.Start).workouts = append(of(w.Start).workouts, w)
 	}
-	for _, d := range slices.Sorted(maps.Keys(syncs)) {
-		s := syncs[d]
-		if _, err := st.UpsertSamples(ctx, user, s.samples); err != nil {
-			t.Fatalf("%s samples: %v", d, err)
-		}
-		if _, err := st.UpsertSleep(ctx, user, s.sleep); err != nil {
-			t.Fatalf("%s sleep: %v", d, err)
-		}
-		if _, err := st.UpsertWorkouts(ctx, user, s.workouts); err != nil {
-			t.Fatalf("%s workouts: %v", d, err)
-		}
-		if err := st.UpsertSources(ctx, user, store.SourcesOf(s.samples, s.sleep, s.workouts)); err != nil {
-			t.Fatalf("%s sources: %v", d, err)
-		}
+	order := slices.Sorted(maps.Keys(syncs))
+	if len(g.resends) > 0 {
+		syncs["resend"], order = &sync{workouts: g.resends}, append(order, "resend")
+	}
+	for _, d := range order {
+		goldenSync(t, st, user, g.loc, syncs[d].samples, syncs[d].sleep, syncs[d].workouts)
 	}
 
+	// Sessions: the app's saved and completed, then one import request.
 	exercises := map[uuid.UUID]model.Exercise{}
 	for _, e := range g.lib {
 		exercises[e.ID] = e
 	}
-	window := store.DayWindow{From: "2025-08-01", To: goldenNow.Format(dayLayout)}
+	var imports []model.Session
 	for _, gs := range g.sessions {
-		s := gs.s
-		if gs.imported {
-			s.Status = model.SessionCompleted
-			if err := train.CheckImportSession(&s, goldenNow, exercises); err != nil {
-				t.Fatalf("import %s: %v", s.Title, err)
-			}
-			out, err := st.ImportSession(ctx, user, model.ImportSourceAlphaProgression, s, g.loc, window)
-			if err != nil || out.Status != store.ImportCreated {
-				t.Fatalf("import %s: %+v %v", s.Title, out, err)
-			}
+		s := gs.Session
+		if gs.Imported {
+			imports = append(imports, s)
 			continue
 		}
 		end := *s.EndedAt
@@ -672,17 +185,97 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 			t.Fatalf("complete %s: %v", s.Title, err)
 		}
 	}
+	from, to := train.ImportWindow(goldenNow, g.loc)
+	for _, k := range train.ImportOrder(imports) { // oldest first, as cmd/api/train_import.go
+		s := imports[k]
+		s.Status = model.SessionCompleted
+		if err := train.CheckImportSession(&s, goldenNow, exercises); err != nil {
+			t.Fatalf("import %s: %v", s.Title, err)
+		}
+		out, err := st.ImportSession(ctx, user, model.ImportSourceAlphaProgression, s, g.loc, store.DayWindow{From: from, To: to})
+		if err != nil || out.Status != store.ImportCreated {
+			t.Fatalf("import %s: %+v %v", s.Title, out, err)
+		}
+	}
 
-	last := addDays(goldenFirstDay, goldenDays-1)
-	if err := engine.ComputeRange(ctx, user, goldenFirstDay, last); err != nil {
+	if err := engine.ComputeRange(ctx, user, goldenFirstDay, addDays(goldenFirstDay, goldenDays-1)); err != nil {
 		t.Fatal(err)
 	}
-	return goldenRows(t, pool, user)
+
+	labels := map[string]string{}
+	label := func(id uuid.UUID, l string) {
+		if old, ok := labels[id.String()]; ok && old != l {
+			t.Fatalf("golden: %s and %s share an id", old, l)
+		}
+		labels[id.String()] = l
+	}
+	for _, w := range g.workouts {
+		label(w.ID, "workout "+w.Source+" "+w.Start.In(g.loc).Format("2006-01-02T15:04"))
+	}
+	for _, w := range g.resends {
+		label(w.ID, "workout "+w.Source+" "+w.Start.In(g.loc).Format("2006-01-02T15:04")+" resent")
+	}
+	for _, gs := range g.sessions {
+		label(gs.Session.ID, "session "+gs.Session.Title)
+		label(train.SessionWorkoutID(user, gs.Session.ID), "workout created for session "+gs.Session.Title)
+	}
+	f := goldenFile{User: u.Name, Scenario: u.Scenario, TZ: u.TZ}
+	for _, tb := range goldenTables {
+		*f.section(tb.section) = goldenRows(t, pool, user, tb.table, tb.order, tb.volatile, labels)
+	}
+	return f
 }
 
-// goldenRows reads the user's daily_scores rows whole, oldest first, as
-// Postgres renders them (UTC timestamps, shortest exact floats).
-func goldenRows(t *testing.T, pool *pgxpool.Pool, user uuid.UUID) []map[string]any {
+// goldenSync is ingest's sync after validate and screen (cmd/ingest, which
+// this package cannot import; screen's window reads the wall clock): the
+// upserts, the sources, and the apply with the request's days and its
+// same-source fold (cmd/ingest/fold.go's scope: the request's sources, its
+// starts ±1 day).
+func goldenSync(t *testing.T, st *store.Store, user uuid.UUID, loc *time.Location, samples []model.Sample, sleep []model.SleepSegment, workouts []model.Workout) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.UpsertSamples(ctx, user, samples); err != nil {
+		t.Fatalf("samples: %v", err)
+	}
+	if _, err := st.UpsertSleep(ctx, user, sleep); err != nil {
+		t.Fatalf("sleep: %v", err)
+	}
+	if _, err := st.UpsertWorkouts(ctx, user, workouts); err != nil {
+		t.Fatalf("workouts: %v", err)
+	}
+	if err := st.UpsertSources(ctx, user, store.SourcesOf(samples, sleep, workouts)); err != nil {
+		t.Fatalf("sources: %v", err)
+	}
+	days := map[string]bool{}
+	for _, s := range samples {
+		days[s.Start.In(loc).Format(dayLayout)] = true
+	}
+	for _, s := range sleep {
+		days[s.End.In(loc).Format(dayLayout)] = true
+	}
+	var fold *store.FoldScope
+	for _, w := range workouts {
+		days[w.Start.In(loc).Format(dayLayout)] = true
+		if fold == nil {
+			fold = &store.FoldScope{Sources: []string{}, From: w.Start, To: w.Start}
+		}
+		if !slices.Contains(fold.Sources, w.Source) {
+			fold.Sources = append(fold.Sources, w.Source)
+		}
+		fold.From, fold.To = minTime(fold.From, w.Start), maxTime(fold.To, w.Start)
+	}
+	if fold != nil {
+		fold.From, fold.To = fold.From.Add(-24*time.Hour), fold.To.Add(24*time.Hour)
+	}
+	if _, err := st.ApplySync(ctx, user, store.Apply{Days: slices.Sorted(maps.Keys(days)), Loc: loc, Fold: fold}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+}
+
+// goldenRows reads the user's rows of a table whole but for the volatile
+// columns, as Postgres renders them (UTC timestamps, shortest exact floats),
+// ids replaced by their labels; an id without a label fails the test.
+func goldenRows(t *testing.T, pool *pgxpool.Pool, user uuid.UUID, table, order string, volatile []string, labels map[string]string) []map[string]any {
 	t.Helper()
 	ctx := context.Background()
 	var raw []string
@@ -692,8 +285,8 @@ func goldenRows(t *testing.T, pool *pgxpool.Pool, user uuid.UUID) []map[string]a
 				return err
 			}
 		}
-		rows, err := tx.Query(ctx, `SELECT (to_jsonb(d) - $2::text[])::text FROM daily_scores d WHERE user_id = $1 ORDER BY day`,
-			user, goldenVolatile)
+		rows, err := tx.Query(ctx, `SELECT (to_jsonb(x) - $2::text[])::text FROM `+table+` x WHERE user_id = $1 ORDER BY `+order,
+			user, volatile)
 		if err != nil {
 			return err
 		}
@@ -703,16 +296,29 @@ func goldenRows(t *testing.T, pool *pgxpool.Pool, user uuid.UUID) []map[string]a
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := make([]map[string]any, len(raw))
-	for k, r := range raw {
-		if err := goldenDecode([]byte(r), &out[k]); err != nil {
+	out := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		var row map[string]any
+		if err := goldenDecode([]byte(r), &row); err != nil {
 			t.Fatal(err)
 		}
+		for _, c := range goldenIDColumns {
+			id, ok := row[c].(string)
+			if !ok {
+				continue
+			}
+			l, ok := labels[id]
+			if !ok {
+				t.Fatalf("%s.%s: id %s has no label", table, c, id)
+			}
+			row[c] = l
+		}
+		out = append(out, row)
 	}
 	return out
 }
 
-// ---- canonical JSON --------------------------------------------------------------
+// ---- canonical JSON ----------------------------------------------------------------
 
 func goldenDecode(b []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
@@ -741,9 +347,7 @@ func goldenString(s string) string {
 
 func goldenScalar(v any) bool {
 	switch v.(type) {
-	case map[string]any:
-		return false
-	case []any:
+	case map[string]any, []any:
 		return false
 	}
 	return true
@@ -837,14 +441,6 @@ func goldenFlatten(prefix string, v any, out map[string]string) {
 	out[prefix] = b.String()
 }
 
-// goldenFile is one user's file.
-type goldenFile struct {
-	User     string           `json:"user"`
-	Scenario string           `json:"scenario"`
-	TZ       string           `json:"tz"`
-	Days     []map[string]any `json:"days"`
-}
-
 func goldenPath(name string) string { return filepath.Join(goldenDir, name+".json") }
 
 func readGoldenFile(name string) (goldenFile, error) {
@@ -881,175 +477,329 @@ func readGoldenManifest() (goldenManifest, error) {
 	return m, json.Unmarshal(raw, &m)
 }
 
-// ---- the diff ------------------------------------------------------------------
+// ---- the diff --------------------------------------------------------------------
 
-// goldenDiff is the readable difference of one user's rows: per day, per
-// changed field, golden -> now; at most goldenMaxLines fields, then a count.
-func goldenDiff(want, got []map[string]any) (report string, days int) {
-	index := func(rows []map[string]any) map[string]map[string]string {
-		out := map[string]map[string]string{}
-		for _, r := range rows {
-			day, _ := r["day"].(string)
-			flat := map[string]string{}
-			goldenFlatten("", r, flat)
-			out[day] = flat
-		}
-		return out
-	}
-	w, g := index(want), index(got)
-	all := slices.Sorted(maps.Keys(w))
-	for d := range g {
-		if _, ok := w[d]; !ok {
-			all = append(all, d)
-		}
-	}
-	slices.Sort(all)
-
-	type change struct{ day, field, from, to string }
-	var changes []change
-	for _, d := range all {
-		wr, wok := w[d]
-		gr, gok := g[d]
-		switch {
-		case !gok:
-			changes = append(changes, change{d, "(row)", "stored", "missing now"})
-			continue
-		case !wok:
-			changes = append(changes, change{d, "(row)", "not in the golden file", "stored now"})
-			continue
-		}
-		fields := slices.Sorted(maps.Keys(wr))
-		for f := range gr {
-			if _, ok := wr[f]; !ok {
-				fields = append(fields, f)
-			}
-		}
-		slices.Sort(fields)
-		for _, f := range fields {
-			a, aok := wr[f]
-			b, bok := gr[f]
-			if !aok {
-				a = "(absent)"
-			}
-			if !bok {
-				b = "(absent)"
-			}
-			if a != b {
-				changes = append(changes, change{d, f, a, b})
-			}
-		}
-	}
-	if len(changes) == 0 {
-		return "", 0
-	}
-	width := 0
-	for _, c := range changes[:min(len(changes), goldenMaxLines)] {
-		width = max(width, len(c.field))
-	}
-	var b strings.Builder
-	prev := ""
-	seen := map[string]bool{}
-	for k, c := range changes {
-		seen[c.day] = true
-		if k >= goldenMaxLines {
-			continue
-		}
-		day := c.day
-		if day == prev {
-			day = strings.Repeat(" ", len(day))
-		}
-		prev = c.day
-		fmt.Fprintf(&b, "  %s  %-*s  %s -> %s\n", day, width, c.field, c.from, c.to)
-	}
-	if n := len(changes) - goldenMaxLines; n > 0 {
-		fmt.Fprintf(&b, "  ... and %d more changed fields\n", n)
-	}
-	return b.String(), len(seen)
+// goldenChange is one leaf that differs: changed, added (from is absent) or
+// removed (to is absent). A whole row added or removed has field "(row)".
+type goldenChange struct {
+	section, row, field, from, to string
 }
 
-// ---- the tests -----------------------------------------------------------------
+const goldenAbsent = "(absent)"
 
-// TestGoldenScores recomputes the five users through the real Engine and diffs
-// every stored row against testdata/golden. RYFT_GOLDEN_UPDATE=1 (make
-// golden-update) rewrites the files instead, only for a new ModelVersion.
-func TestGoldenScores(t *testing.T) {
-	update := os.Getenv(goldenUpdate) == "1"
-	manifest, merr := readGoldenManifest()
-	if update && merr == nil && manifest.ModelVersion == ModelVersion {
-		t.Fatalf("refusing to regenerate the golden files: ModelVersion is still %s, the version they were made with. "+
-			"A change that moves a stored number bumps ModelVersion first (version.go, changelog.json, docs/SCORING.md); "+
-			"a change that should not move one must pass as it is", ModelVersion)
+func (c goldenChange) addition() bool { return c.from == goldenAbsent }
+
+// goldenChanges compares two files leaf by leaf, rows matched by key (the day,
+// the label). skipVersion drops the model_version leaves that moved to
+// ModelVersion: after a bump every row has one, and the report says so once.
+func goldenChanges(want, got goldenFile, skipVersion bool) []goldenChange {
+	var out []goldenChange
+	for _, tb := range goldenTables {
+		index := func(rows []map[string]any) map[string]map[string]string {
+			m := map[string]map[string]string{}
+			for _, r := range rows {
+				key, _ := r[tb.key].(string)
+				flat := map[string]string{}
+				goldenFlatten("", r, flat)
+				m[key] = flat
+			}
+			return m
+		}
+		w, g := index(*want.section(tb.section)), index(*got.section(tb.section))
+		keys := slices.Sorted(maps.Keys(w))
+		for k := range g {
+			if _, ok := w[k]; !ok {
+				keys = append(keys, k)
+			}
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			wr, wok := w[key]
+			gr, gok := g[key]
+			switch {
+			case !gok:
+				out = append(out, goldenChange{tb.section, key, "(row)", "stored", goldenAbsent})
+				continue
+			case !wok:
+				out = append(out, goldenChange{tb.section, key, "(row)", goldenAbsent, "stored"})
+				continue
+			}
+			fields := slices.Sorted(maps.Keys(wr))
+			for f := range gr {
+				if _, ok := wr[f]; !ok {
+					fields = append(fields, f)
+				}
+			}
+			slices.Sort(fields)
+			for _, f := range fields {
+				a, aok := wr[f]
+				b, bok := gr[f]
+				if !aok {
+					a = goldenAbsent
+				}
+				if !bok {
+					b = goldenAbsent
+				}
+				if a == b || (skipVersion && f == "model_version" && b == goldenString(ModelVersion)) {
+					continue
+				}
+				out = append(out, goldenChange{tb.section, key, f, a, b})
+			}
+		}
 	}
-	if update && merr != nil && !errors.Is(merr, fs.ErrNotExist) {
+	return out
+}
+
+// goldenReport reads the changes grouped by field: a field that moved the
+// same way on several rows is one line, otherwise one line per row; at most
+// goldenMaxLines lines, then a count.
+func goldenReport(changes []goldenChange) string {
+	type group struct {
+		name string
+		cs   []goldenChange
+	}
+	var groups []*group
+	byName := map[string]*group{}
+	for _, c := range changes {
+		name := c.section + "." + c.field
+		if byName[name] == nil {
+			byName[name] = &group{name: name}
+			groups = append(groups, byName[name])
+		}
+		byName[name].cs = append(byName[name].cs, c)
+	}
+	var lines []string
+	for _, g := range groups {
+		same := !slices.ContainsFunc(g.cs, func(c goldenChange) bool { return c.from != g.cs[0].from || c.to != g.cs[0].to })
+		if same {
+			rows := make([]string, len(g.cs))
+			for k, c := range g.cs {
+				rows[k] = c.row
+			}
+			where := strings.Join(rows, ", ")
+			if len(rows) > 4 {
+				where = fmt.Sprintf("%s .. %s", rows[0], rows[len(rows)-1])
+			}
+			lines = append(lines, fmt.Sprintf("  %s: %s -> %s on %d row(s): %s", g.name, g.cs[0].from, g.cs[0].to, len(rows), where))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s: %d row(s)", g.name, len(g.cs)))
+		for _, c := range g.cs {
+			lines = append(lines, fmt.Sprintf("      %s  %s -> %s", c.row, c.from, c.to))
+		}
+	}
+	var b strings.Builder
+	for k, l := range lines {
+		if k == goldenMaxLines {
+			fmt.Fprintf(&b, "  ... and %d more lines\n", len(lines)-k)
+			break
+		}
+		b.WriteString(l + "\n")
+	}
+	return b.String()
+}
+
+// goldenSummary counts what differs: days, workouts, sessions.
+func goldenSummary(changes []goldenChange) string {
+	rows := map[string]map[string]bool{}
+	for _, c := range changes {
+		if rows[c.section] == nil {
+			rows[c.section] = map[string]bool{}
+		}
+		rows[c.section][c.row] = true
+	}
+	var parts []string
+	for _, tb := range goldenTables {
+		if n := len(rows[tb.section]); n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", tb.section, n))
+		}
+	}
+	return "rows differ: " + strings.Join(parts, ", ")
+}
+
+// ---- the update guard --------------------------------------------------------------
+
+// goldenAllowUpdate says whether the files may be regenerated (mode "1") or
+// extended (mode "additive") with what the run computed; nil if so.
+func goldenAllowUpdate(mode string, m *goldenManifest, dirHasFiles bool, got map[string]goldenFile, inputs map[string]goldenInputs) error {
+	if mode != "1" && mode != "additive" {
+		return fmt.Errorf("%s=%q: use 1 or additive", goldenUpdate, mode)
+	}
+	if m == nil {
+		if dirHasFiles {
+			return errors.New("golden files without manifest.json: restore it from git rather than regenerate blind")
+		}
+		return nil // the first generation
+	}
+	onlyAdditions := func(name string) error {
+		want, err := readGoldenFile(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // a new user
+		}
+		if err != nil {
+			return err
+		}
+		for _, c := range goldenChanges(want, got[name], false) {
+			if !c.addition() {
+				return fmt.Errorf("%s: %s %s.%s moved (%s -> %s)", name, c.row, c.section, c.field, c.from, c.to)
+			}
+		}
+		return nil
+	}
+	for _, name := range m.Users {
+		if _, ok := got[name]; !ok {
+			return fmt.Errorf("%s is in the manifest but no longer generated", name)
+		}
+	}
+	if mode == "additive" {
+		for _, name := range slices.Sorted(maps.Keys(got)) {
+			if err := onlyAdditions(name); err != nil {
+				return fmt.Errorf("additive mode refuses: %w", err)
+			}
+		}
+		return nil
+	}
+	if m.ModelVersion != ModelVersion {
+		return nil
+	}
+	var generator []string
+	for name, in := range inputs {
+		if was, ok := m.Inputs[name]; !ok || was.Digest != in.Digest {
+			generator = append(generator, name)
+		}
+	}
+	if len(generator) == 0 {
+		return fmt.Errorf("ModelVersion is still %s, the version the files were made with, and the generator's inputs are unchanged. "+
+			"A change that moves a stored number bumps ModelVersion first (version.go, changelog.json, docs/SCORING.md); "+
+			"a change that should not move one must pass as it is; new fields only: GOLDEN_MODE=additive", ModelVersion)
+	}
+	for _, name := range slices.Sorted(maps.Keys(got)) {
+		if slices.Contains(generator, name) {
+			continue
+		}
+		if err := onlyAdditions(name); err != nil {
+			return fmt.Errorf("the generator changed only %v, but %w: that is a model change", generator, err)
+		}
+	}
+	return nil
+}
+
+func goldenDirHasFiles() bool {
+	files, _ := filepath.Glob(filepath.Join(goldenDir, "*.json"))
+	return len(files) > 0
+}
+
+// ---- the tests ---------------------------------------------------------------------
+
+// TestGoldenScores recomputes the users through the real Engine and diffs
+// everything scoring stored against testdata/golden. RYFT_GOLDEN_UPDATE (make
+// golden-update) rewrites the files instead, when goldenAllowUpdate lets it.
+func TestGoldenScores(t *testing.T) {
+	mode := os.Getenv(goldenUpdate)
+	update := mode != ""
+	manifest, merr := readGoldenManifest()
+	if merr != nil && !errors.Is(merr, fs.ErrNotExist) {
 		t.Fatalf("manifest: %v", merr)
+	}
+	var have *goldenManifest
+	if merr == nil {
+		have = &manifest
+	}
+	if update && have != nil && mode == "1" && manifest.ModelVersion == ModelVersion {
+		t.Logf("ModelVersion is the manifest's: regenerating only if the generator's inputs changed")
 	}
 	admin := os.Getenv("RYFT_TEST_POSTGRES_URL")
 	if admin == "" {
-		if update {
-			t.Fatal("make golden-update needs RYFT_TEST_POSTGRES_URL: a throwaway Postgres server")
+		if update || os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatal("the golden scores need RYFT_TEST_POSTGRES_URL (a throwaway Postgres server); in CI they never skip")
 		}
 		t.Skip("set RYFT_TEST_POSTGRES_URL to a throwaway Postgres server to run the golden scores")
 	}
-	if !update && merr != nil {
-		t.Fatalf("manifest: %v (generate the files with make golden-update)", merr)
+	if !update && have == nil {
+		t.Fatal("no testdata/golden/manifest.json: generate the files with make golden-update")
 	}
 
-	st, pool, engine := goldenDB(t, admin)
+	st, pool, engine := engineDB(t, admin)
+	st.WithImportRules(store.ImportRules{SameSession: train.SameSession, Conflict: train.ImportConflict,
+		SamePlan: train.SamePlan, PlanConflict: train.PlanConflict}) // as the api wires them
 	lib := library(t)
 	inputs := map[string]goldenInputs{}
-	for k, u := range goldenUsers {
+	got := map[string]goldenFile{}
+	for _, u := range goldenUsers {
 		t.Run(u.Name, func(t *testing.T) {
-			g := goldenGenerate(t, u, k, lib)
-			inputs[u.Name] = g.inputs()
-			rows := goldenRun(t, st, pool, engine, u, g)
-			if len(rows) != goldenDays {
-				t.Fatalf("%d stored rows, want %d", len(rows), goldenDays)
+			g, err := newGoldenGen(u, lib)
+			if err != nil {
+				t.Fatal(err)
 			}
+			inputs[u.Name] = g.inputs(t, u)
+			f := goldenRun(t, st, pool, engine, u, g)
+			if len(f.Days) != goldenDays {
+				t.Fatalf("%d stored days, want %d", len(f.Days), goldenDays)
+			}
+			got[u.Name] = f
 			if update {
-				writeGoldenJSON(t, goldenPath(u.Name), goldenFile{User: u.Name, Scenario: u.Scenario, TZ: u.TZ, Days: rows})
 				return
 			}
 			want, err := readGoldenFile(u.Name)
 			if err != nil {
 				t.Fatalf("golden file: %v", err)
 			}
-			report, days := goldenDiff(want.Days, rows)
-			if report == "" {
+			versionMoved := manifest.ModelVersion != ModelVersion
+			changes := goldenChanges(want, f, versionMoved)
+			var hint []string
+			if versionMoved {
+				hint = append(hint, fmt.Sprintf("ModelVersion is %s, the files are %s (model_version on every row not listed): review this diff, then make golden-update",
+					ModelVersion, manifest.ModelVersion))
+			}
+			if len(changes) == 0 {
+				if versionMoved {
+					t.Errorf("%s: nothing but model_version moved; %s", u.Name, hint[0])
+				}
 				return
 			}
-			var hint []string
-			if was, ok := manifest.Inputs[u.Name]; ok && was != g.inputs() {
-				hint = append(hint, fmt.Sprintf("the generator changed (inputs %+v, the manifest has %+v): this diff is the generator's, not necessarily the model's", g.inputs(), was))
+			if was, ok := manifest.Inputs[u.Name]; ok && was.Digest != inputs[u.Name].Digest {
+				hint = append(hint, fmt.Sprintf("the generator's inputs changed (%+v, the manifest has %+v): the diff is the generator's, not necessarily the model's; make golden-update regenerates the users whose inputs changed",
+					inputs[u.Name], was))
 			}
-			if manifest.ModelVersion != ModelVersion {
-				hint = append(hint, fmt.Sprintf("ModelVersion is %s, the files are %s: review this diff, then make golden-update", ModelVersion, manifest.ModelVersion))
-			} else {
+			switch {
+			case !slices.ContainsFunc(changes, func(c goldenChange) bool { return !c.addition() }):
+				hint = append(hint, "only new fields or rows appeared, no stored value moved: a new column? make golden-update GOLDEN_MODE=additive")
+			case !versionMoved:
 				hint = append(hint, "a stored number moved: a bug, or a model change that needs a ModelVersion bump, a changelog entry, docs/SCORING.md and then make golden-update")
 			}
-			t.Errorf("%s (%s): %d of %d days differ (golden -> now):\n%s%s", u.Name, u.Scenario, days, goldenDays, report,
-				strings.Join(hint, "\n"))
+			t.Errorf("%s (%s): %s (golden -> now):\n%s%s", u.Name, u.Scenario, goldenSummary(changes),
+				goldenReport(changes), strings.Join(hint, "\n"))
 		})
 	}
-	if update && !t.Failed() {
-		names := make([]string, len(goldenUsers))
-		for k, u := range goldenUsers {
-			names[k] = u.Name
-		}
-		writeGoldenJSON(t, filepath.Join(goldenDir, "manifest.json"), goldenManifest{
-			ModelVersion: ModelVersion, FirstDay: goldenFirstDay, Days: goldenDays, Seed: goldenSeed,
-			Users: names, Inputs: inputs, Excluded: goldenVolatile,
-			Numbers:    "rounded to 1e-6, printed shortest",
-			Regenerate: "make golden-update (refused while model_version equals ModelVersion)",
-		})
-		t.Logf("golden files regenerated for ModelVersion %s: review the diff (git diff %s) before committing", ModelVersion, goldenDir)
+	if !update || t.Failed() {
+		return
 	}
+	if err := goldenAllowUpdate(mode, have, goldenDirHasFiles(), got, inputs); err != nil {
+		t.Fatalf("refusing to regenerate the golden files: %v", err)
+	}
+	names := make([]string, len(goldenUsers))
+	for k, u := range goldenUsers {
+		names[k] = u.Name
+		writeGoldenJSON(t, goldenPath(u.Name), got[u.Name])
+	}
+	excluded := map[string][]string{}
+	for _, tb := range goldenTables {
+		excluded[tb.table] = tb.volatile
+	}
+	writeGoldenJSON(t, filepath.Join(goldenDir, "manifest.json"), goldenManifest{
+		ModelVersion: ModelVersion, FirstDay: goldenFirstDay, Days: goldenDays, Seed: goldenSeed,
+		Users: names, Inputs: inputs, Excluded: excluded,
+		Numbers:    "rounded to 1e-6, printed shortest; ids replaced by labels; digest: first 64 bits of the inputs' SHA-256",
+		Regenerate: "make golden-update: after a ModelVersion bump, or for the users whose generator inputs changed; GOLDEN_MODE=additive for new fields only",
+	})
+	t.Logf("golden files written for ModelVersion %s (%s): review git diff %s before committing", ModelVersion, mode, goldenDir)
 }
 
 // TestGoldenManifest needs no database: the files must belong to the current
 // ModelVersion (a bump without make golden-update fails here), list every
 // user of the generator, and hold 30 consecutive days each, scored by that version.
 func TestGoldenManifest(t *testing.T) {
-	if os.Getenv(goldenUpdate) == "1" {
+	if os.Getenv(goldenUpdate) != "" {
 		t.Skip("regenerating")
 	}
 	m, err := readGoldenManifest()
@@ -1086,25 +836,70 @@ func TestGoldenManifest(t *testing.T) {
 				t.Errorf("%s day %d: %v scored by %v, want %s by %s", name, k, r["day"], r["model_version"], day, m.ModelVersion)
 			}
 		}
+		for _, w := range f.Workouts {
+			if v, ok := w["model_version"].(string); ok && v != m.ModelVersion {
+				t.Errorf("%s %v: model_version %s", name, w["id"], v)
+			}
+		}
 	}
 }
 
-// TestGoldenDiffReads pins the failure message's shape on a made-up change.
+// TestGoldenDiffReads pins the failure message's shape and the update guard's
+// rules on made-up changes.
 func TestGoldenDiffReads(t *testing.T) {
-	row := func(rec, z string) map[string]any {
-		return map[string]any{"day": "2026-08-14", "recovery": json.Number(rec),
+	day := func(d, rec, z string) map[string]any {
+		return map[string]any{"day": d, "recovery": json.Number(rec), "model_version": ModelVersion,
 			"details": map[string]any{"recovery": map[string]any{"hrv_z": json.Number(z)}}, "zone_minutes": []any{json.Number("1"), json.Number("2")}}
 	}
-	report, days := goldenDiff([]map[string]any{row("64", "0.41")}, []map[string]any{row("61", "0.3800000001")})
-	want := "  2026-08-14  details.recovery.hrv_z  0.41 -> 0.38\n" +
-		"              recovery                64 -> 61\n"
-	if report != want || days != 1 {
-		t.Fatalf("diff:\n%q\nwant\n%q (%d days)", report, want, days)
+	want := goldenFile{Days: []map[string]any{day("2026-10-06", "64", "0.41"), day("2026-10-07", "50", "0.2")}}
+	got := goldenFile{Days: []map[string]any{day("2026-10-06", "61", "0.3800000001"), day("2026-10-07", "47", "0.2")}}
+	changes := goldenChanges(want, got, false)
+	report := goldenReport(changes)
+	wantReport := "  days.details.recovery.hrv_z: 0.41 -> 0.38 on 1 row(s): 2026-10-06\n" +
+		"  days.recovery: 2 row(s)\n" +
+		"      2026-10-06  64 -> 61\n" +
+		"      2026-10-07  50 -> 47\n"
+	if report != wantReport || goldenSummary(changes) != "rows differ: days 2" {
+		t.Fatalf("report:\n%s\nwant\n%s(%s)", report, wantReport, goldenSummary(changes))
 	}
-	if r, n := goldenDiff([]map[string]any{row("64", "0.41")}, []map[string]any{row("64", "0.4100000001")}); r != "" || n != 0 {
-		t.Fatalf("a difference below 1e-6 is none: %q", r)
+	if c := goldenChanges(want, want, false); len(c) != 0 {
+		t.Fatalf("no change: %v", c)
+	}
+	same := goldenFile{Days: []map[string]any{day("2026-10-06", "64", "0.4100000001"), day("2026-10-07", "50", "0.2")}}
+	if c := goldenChanges(want, same, false); len(c) != 0 {
+		t.Fatalf("a difference below 1e-6 is none: %v", c)
+	}
+	// A new column is an addition, nothing else; a bumped model_version is skipped when asked.
+	added := goldenFile{Days: []map[string]any{day("2026-10-06", "64", "0.41"), day("2026-10-07", "50", "0.2")}}
+	added.Days[0]["new_col"] = json.Number("1")
+	if c := goldenChanges(want, added, false); len(c) != 1 || !c[0].addition() {
+		t.Fatalf("an added column: %+v", c)
+	}
+	bumped := goldenFile{Days: []map[string]any{day("2026-10-06", "64", "0.41"), day("2026-10-07", "50", "0.2")}}
+	want.Days[0]["model_version"] = "2026.01.1"
+	if c := goldenChanges(want, bumped, true); len(c) != 0 {
+		t.Fatalf("model_version after a bump: %+v", c)
 	}
 	if got := goldenText(map[string]any{"b": json.Number("-0.0000001"), "a": []any{json.Number("1.50"), "x"}}); got != "{\n  \"a\": [1.5, \"x\"],\n  \"b\": 0\n}\n" {
 		t.Fatalf("canonical text %q", got)
+	}
+
+	// The guard: a missing manifest with files refuses; same version and inputs refuse.
+	if err := goldenAllowUpdate("1", nil, true, nil, nil); err == nil {
+		t.Fatal("files without a manifest must refuse")
+	}
+	if err := goldenAllowUpdate("1", nil, false, nil, nil); err != nil {
+		t.Fatalf("the first generation: %v", err)
+	}
+	m := &goldenManifest{ModelVersion: ModelVersion, Inputs: map[string]goldenInputs{"user-x": {Digest: "1"}}}
+	in := map[string]goldenInputs{"user-x": {Digest: "1"}}
+	if err := goldenAllowUpdate("1", m, true, map[string]goldenFile{"user-x": {}}, in); err == nil {
+		t.Fatal("same version, same inputs must refuse")
+	}
+	if err := goldenAllowUpdate("1", m, true, map[string]goldenFile{"user-x": {}}, map[string]goldenInputs{"user-x": {Digest: "2"}}); err != nil {
+		t.Fatalf("changed inputs: %v", err)
+	}
+	if err := goldenAllowUpdate("yes", m, true, nil, nil); err == nil {
+		t.Fatal("an unknown mode must refuse")
 	}
 }

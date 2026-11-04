@@ -1,42 +1,58 @@
 {
   "days": 30,
-  "excluded_columns": ["user_id", "computed_at"],
-  "first_day": "2026-08-03",
+  "excluded_columns": {
+    "daily_scores": ["user_id", "computed_at"],
+    "sessions": ["user_id", "created_at", "updated_at", "imported_at"],
+    "workouts": ["user_id", "created_at"]
+  },
+  "first_day": "2026-10-05",
   "inputs": {
     "user-a": {
-      "samples": 11936,
+      "digest": "5162794332242273691",
+      "samples": 12874,
       "sessions": 0,
-      "sleep_segments": 447,
-      "workouts": 13
+      "sleep_segments": 483,
+      "workouts": 14
     },
     "user-b": {
-      "samples": 21703,
+      "digest": "2778760689296509315",
+      "samples": 22715,
       "sessions": 0,
-      "sleep_segments": 194,
-      "workouts": 12
+      "sleep_segments": 185,
+      "workouts": 13
     },
     "user-c": {
-      "samples": 34098,
+      "digest": "7832885547941559062",
+      "samples": 35677,
       "sessions": 0,
-      "sleep_segments": 969,
-      "workouts": 26
+      "sleep_segments": 957,
+      "workouts": 31
     },
     "user-d": {
-      "samples": 11144,
+      "digest": "17202309175490160276",
+      "samples": 11659,
       "sessions": 0,
-      "sleep_segments": 481,
+      "sleep_segments": 495,
       "workouts": 8
     },
     "user-e": {
-      "samples": 11365,
+      "digest": "9361615324496774881",
+      "samples": 11537,
       "sessions": 40,
-      "sleep_segments": 500,
+      "sleep_segments": 481,
       "workouts": 9
+    },
+    "user-f": {
+      "digest": "13945999273126879319",
+      "samples": 9240,
+      "sessions": 0,
+      "sleep_segments": 480,
+      "workouts": 0
     }
   },
   "model_version": "2026.10.3",
-  "numbers": "rounded to 1e-6, printed shortest",
-  "regenerate": "make golden-update (refused while model_version equals ModelVersion)",
+  "numbers": "rounded to 1e-6, printed shortest; ids replaced by labels; digest: first 64 bits of the inputs' SHA-256",
+  "regenerate": "make golden-update: after a ModelVersion bump, or for the users whose generator inputs changed; GOLDEN_MODE=additive for new fields only",
   "seed": 20261104,
-  "users": ["user-a", "user-b", "user-c", "user-d", "user-e"]
+  "users": ["user-a", "user-b", "user-c", "user-d", "user-e", "user-f"]
 }

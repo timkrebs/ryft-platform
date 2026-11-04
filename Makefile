@@ -199,11 +199,12 @@ alerts-check:
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
 
 # Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
-# ModelVersion bump; the test refuses while ModelVersion equals the manifest's (docs/SCORING.md → Model version).
+# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only. The test
+# refuses anything else (docs/SCORING.md → Model version).
 .PHONY: golden-update
 golden-update:
-	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:pw@localhost:5432/postgres}"
-	cd backend && RYFT_GOLDEN_UPDATE=1 go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
+	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
+	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
 
 alerts-apply: alerts-check
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \

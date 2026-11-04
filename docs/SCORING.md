@@ -710,14 +710,22 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 refuses entries out of order, an unknown metric, an unsorted or a missing `affects` (`[]` is a version that moves
 stored numbers but no trend metric).
 
-**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`): five synthetic users × 30 days
-(2026-08-03 .. 2026-09-01; Apple Watch, Garmin without HRV, Watch + Garmin overlapping, naps and split nights,
-strength sessions with an import), fixed seed, no wall clock, scored through the real Engine; every stored
-`daily_scores` column but `user_id` and `computed_at` is pinned as canonical JSON (sorted keys, numbers rounded to
-1e-6). `go test ./internal/scoring/... -run Golden` (with `RYFT_TEST_POSTGRES_URL`) prints the changed fields per
-day; a refactor must pass it unchanged. A model change bumps the version first, then `make golden-update`
-regenerates (refused while `ModelVersion` equals the manifest's) and the reviewed diff goes into the PR;
-`TestGoldenManifest` (no database) fails when `ModelVersion` moved without it.
+**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`, generator in `golden_gen_test.go`): six
+synthetic users × 30 days (2026-10-05 .. 2026-11-03, across both autumn DST changes; Apple Watch + iPhone with a
+depleted day, Garmin without HRV, Watch + Garmin overlapping, naps, split nights and a run across midnight, strength
+sessions with an import, a tracker without resting HR), fixed seed, no wall clock, scored through the real Engine.
+Everything scoring writes is pinned as canonical JSON (sorted keys, numbers rounded to 1e-6, ids as readable
+labels): every `daily_scores` column but `user_id` and `computed_at`, the `workouts` (load, zones, `duplicate_of`,
+the attached session, the ones created for sessions) and the `sessions` (load, `workout_id`). Records go in through
+the store calls ingest makes after its checks (upserts, then `ApplySync` with the request's same-source fold) and
+sessions through `train.CheckSession`/`SaveSession`/`CompleteSession` and `train.ImportOrder`/`ImportSession`; the
+ingest handler's `validate` and `screen` live in `cmd/ingest` and `screen`'s 400-day window reads the wall clock, so
+the golden run starts after them. `go test ./internal/scoring/... -run Golden` (with `RYFT_TEST_POSTGRES_URL`;
+in CI it never skips) prints the changed fields grouped by field; a refactor must pass it unchanged. A model change
+bumps the version first, then `make golden-update` regenerates and the reviewed diff goes into the PR. Without a
+bump the update only takes users whose generator inputs changed (their digest in the manifest), and
+`GOLDEN_MODE=additive` only new fields and rows; `TestGoldenManifest` (no database) fails when `ModelVersion`
+moved without a regeneration.
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |

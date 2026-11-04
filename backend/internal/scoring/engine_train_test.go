@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -28,6 +29,25 @@ func engineStore(t *testing.T) (*store.Store, *Engine, uuid.UUID) {
 	if admin == "" {
 		t.Skip("set RYFT_TEST_POSTGRES_URL to a throwaway Postgres server to run engine tests")
 	}
+	st, _, engine := engineDB(t, admin)
+	ctx := context.Background()
+	user := uuid.New()
+	if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: ptrTo("UTC")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantConsent(ctx, user, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	return st, engine, user
+}
+
+// engineDB is a fresh database on the server admin names, migrated and seeded,
+// dropped after the test: the store, its pool and an engine on it.
+func engineDB(t *testing.T, admin string) (*store.Store, *pgxpool.Pool, *Engine) {
+	t.Helper()
 	ctx := context.Background()
 	root, err := db.Connect(ctx, admin, 2)
 	if err != nil {
@@ -60,17 +80,7 @@ func engineStore(t *testing.T) (*store.Store, *Engine, uuid.UUID) {
 		t.Fatal(err)
 	}
 	st := store.New(pool)
-	user := uuid.New()
-	if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: ptrTo("UTC")}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.GrantConsent(ctx, user, "test", nil); err != nil {
-		t.Fatal(err)
-	}
-	return st, NewEngine(st, quiet), user
+	return st, pool, NewEngine(st, quiet)
 }
 
 func ptrTo[T any](v T) *T { return &v }
