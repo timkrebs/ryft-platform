@@ -13,7 +13,7 @@ END='<!-- pkgmap:end -->'
 mod=$tmp/mod
 mkdir -p "$mod/internal/leaf" "$mod/internal/user" "$mod/internal/low" "$mod/internal/emptydir" "$mod/cmd/app"
 printf 'module example.test/m\n\ngo 1.21\n' > "$mod/go.mod"
-printf '// Package leaf owns the | pipe, which a table cell must escape. More text follows.\npackage leaf\n' > "$mod/internal/leaf/doc.go"
+printf '// Package leaf owns the | pipe, a \\| escape and an <!-- opener, which a table cell must survive. More text follows.\npackage leaf\n' > "$mod/internal/leaf/doc.go"
 printf 'package leaf\n\nfunc F() int { return 1 }\n' > "$mod/internal/leaf/leaf.go"
 printf 'package leaf\n\nimport "testing"\n\nfunc TestF(t *testing.T) { _ = F() }\n' > "$mod/internal/leaf/leaf_test.go"
 printf '// Package low is imported by a test only.\npackage low\n' > "$mod/internal/low/doc.go"
@@ -31,7 +31,7 @@ rc() { local c=0; run "$@" || c=$?; echo "$c"; }
 [ "$(rc)" = 0 ] || fail "write: $(cat "$tmp/err")"
 for want in \
   '| `cmd/app` | app runs it. | user | 1 file (Postgres) |' \
-  '| `internal/leaf` | owns the \| pipe, which a table cell must escape. | none | 1 file |' \
+  '| `internal/leaf` | owns the &#124; pipe, a \&#124; escape and an &lt;!-- opener, which a table cell must survive. | none | 1 file |' \
   '| `internal/low` | is imported by a test only. | none | via user |' \
   '| `internal/user` | uses leaf. | leaf | 1 file |'; do
   grep -qxF -- "$want" "$doc" || fail "row missing: $want
@@ -69,6 +69,10 @@ grep -qxF '| `internal/leaf` | owns something else. | none | 2 files |' "$doc" |
 
 # It cannot work: 2, never 0 or 1.
 good=$(cat "$doc")
+mkdir "$tmp/fakebin"; printf '#!/bin/sh\nexit 2\n' > "$tmp/fakebin/diff"; chmod +x "$tmp/fakebin/diff"
+sed 's/| user |/| nothing |/' "$tmp/written.md" > "$doc"
+c=0; PATH="$tmp/fakebin:$PATH" run --check || c=$?
+[ "$c" = 2 ] || fail "a diff that fails (exit 2) must not read as stale (1): $c"
 printf 'no markers here\n' > "$doc"
 [ "$(rc --check)" = 2 ] || fail "no markers"
 [ "$(rc)" = 2 ] || fail "no markers (write)"

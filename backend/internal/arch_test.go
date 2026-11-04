@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -75,7 +74,7 @@ var internalAll = []string{"internal/..."}
 
 var denyRules = []denyRule{
 	{
-		ID: "R1", Why: "the wire types are the contract and import nothing of ours (docs/API.md, D21)",
+		ID: "R1", Why: "the wire types are the contract and import nothing of ours (docs/API.md; internal/model/doc.go)",
 		From: []string{"internal/model"}, Deny: internalAll,
 	},
 	{
@@ -90,14 +89,14 @@ var denyRules = []denyRule{
 		Except: []string{"internal/scoring/workoutdup"},
 	},
 	{
-		ID: "R4", Why: "every rule is a pure function: no network, file, database, broker or metrics code, and no internal package but model and train (CLAUDE.md; D61, D69, D74, D82, D146)",
+		ID: "R4", Why: "every rule is a pure function: no network, file, database, broker or metrics code, and no internal package but model and train (CLAUDE.md: every rule is a pure function; D146 for workoutdup)",
 		From: []string{
 			"internal/model", "internal/flags", "internal/insights", "internal/behavior", "internal/train",
 			"internal/scoring/workoutdup",
 		},
 		Deny: []string{
-			"net", "net/...", "os", "os/...", "database/...", "github.com/jackc/...",
-			"github.com/rabbitmq/...", "github.com/prometheus/...", "internal/...",
+			"net", "net/...", "os", "os/...", "io/fs", "syscall", "embed", "log", "log/...", "database/...",
+			"github.com/jackc/...", "github.com/rabbitmq/...", "github.com/prometheus/...", "internal/...",
 		},
 		Except: []string{"internal/model", "internal/train"},
 	},
@@ -107,12 +106,12 @@ var denyRules = []denyRule{
 		Deny: []string{"internal/events/amqpbus", "internal/eventbus", "internal/store", "internal/db"},
 	},
 	{
-		ID: "R8", Why: "the edge stays storage-free; the user row arrives through OnAuth (docs/ARCHITECTURE.md Request path; D19, D29)",
+		ID: "R8", Why: "the edge stays storage-free; the user row arrives through OnAuth (docs/ARCHITECTURE.md Request path; internal/httpx/doc.go)",
 		From: []string{"internal/auth", "internal/httpx", "internal/gate"},
 		Deny: []string{"internal/store", "internal/db", "internal/events/..."},
 	},
 	{
-		ID: "R9", Why: "leaf packages import nothing of ours, so cycles stay impossible (D14, D114)",
+		ID: "R9", Why: "leaf packages import nothing of ours, so cycles stay impossible (each one's doc.go)",
 		From: []string{
 			"internal/config", "internal/logx", "internal/logx/logcheck", "internal/metrics", "internal/retry",
 			"internal/ratelimit", "internal/sealed", "internal/testsupport",
@@ -136,14 +135,14 @@ var onlyRules = []onlyRule{
 		Importers: []allowed{{Pkg: "internal/events/amqpbus"}},
 	},
 	{
-		ID: "R7", Why: "SQL lives in store, db and the outbox, so pools stay behind them (D42)",
+		ID: "R7", Why: "SQL lives in store, db and the outbox, so pools stay behind them (docs/ARCHITECTURE.md Data model; internal/store/doc.go)",
 		Target: []string{"github.com/jackc/pgx/v5/pgxpool"},
 		Importers: []allowed{
 			{Pkg: "internal/db"}, {Pkg: "internal/store"}, {Pkg: "internal/events/outbox"},
 		},
 	},
 	{
-		ID: "R7", Why: "SQL lives in store, db and the outbox (D42); a driver type elsewhere needs a reason",
+		ID: "R7", Why: "SQL lives in store, db and the outbox (docs/ARCHITECTURE.md Data model); a driver type elsewhere needs a reason",
 		Target: []string{"github.com/jackc/..."},
 		Importers: []allowed{
 			{Pkg: "internal/db"}, {Pkg: "internal/store"}, {Pkg: "internal/events/outbox"},
@@ -202,17 +201,26 @@ func checkImports(g graph, denies []denyRule, onlys []onlyRule) []string {
 	return out
 }
 
-// staleRules names the packages a rule lists that no longer exist, so a rename
-// cannot leave a rule that checks nothing.
+// staleRules names the patterns of a rule that match nothing any more, so a
+// rename or a major-version bump (internal/events, pgx/v6, amqp091-go/v2) cannot
+// leave a rule that checks nothing. A pattern into this module or a dependency
+// (anything but the standard library) must match a package of the module or
+// something a package of the module imports.
 func staleRules(g graph, denies []denyRule, onlys []onlyRule) []string {
+	var known []string
+	for p, n := range g {
+		known = append(known, p)
+		known = append(known, n.Imports...)
+	}
 	var out []string
 	check := func(id string, pats []string) {
 		for _, pat := range pats {
-			if strings.HasSuffix(pat, "/...") || !strings.HasPrefix(pat, "internal/") && !strings.HasPrefix(pat, "cmd/") {
-				continue
+			first, _, _ := strings.Cut(pat, "/")
+			if first != "internal" && first != "cmd" && !strings.Contains(first, ".") {
+				continue // the standard library cannot be renamed
 			}
-			if _, ok := g[pat]; !ok {
-				out = append(out, fmt.Sprintf("%s names %s, which is not a package of the module (renamed or removed?)", id, pat))
+			if !slices.ContainsFunc(known, func(p string) bool { return match(pat, p) }) {
+				out = append(out, fmt.Sprintf("%s names %s, which matches no package of the module and nothing it imports (renamed, bumped or removed?)", id, pat))
 			}
 		}
 	}
@@ -266,7 +274,11 @@ func loadGraph(t *testing.T) graph {
 
 func goList() (graph, error) {
 	goBin := "go" // go test puts the toolchain that runs it first on PATH
-	gomod, err := exec.Command(goBin, "env", "GOMOD").Output()
+	// A developer's go.work or GOFLAGS (-tags) must not change the file sets.
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	envCmd := exec.Command(goBin, "env", "GOMOD")
+	envCmd.Env = env
+	gomod, err := envCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go env GOMOD: %w", err)
 	}
@@ -274,7 +286,7 @@ func goList() (graph, error) {
 
 	cmd := exec.Command(goBin, "list", "-json=ImportPath,Dir,Imports,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,Module", "./...")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -322,12 +334,35 @@ func TestImportRules(t *testing.T) {
 	}
 }
 
-// nolintRE finds the linters a //nolint directive names.
-var nolintRE = regexp.MustCompile(`//\s*nolint:([A-Za-z0-9_,-]+)`)
+// nolintProblem says what is wrong with a comment if it is a //nolint directive
+// that could silence revive (it names revive, names all, or names nothing, which
+// silences every linter); "" otherwise. golangci's nolintlint (require-specific)
+// refuses the bare form too; this keeps the check independent of that setting.
+func nolintProblem(text string) string {
+	rest, ok := strings.CutPrefix(strings.TrimLeft(strings.TrimPrefix(text, "//"), " \t"), "nolint")
+	if !ok || !strings.HasPrefix(text, "//") {
+		return ""
+	}
+	switch {
+	case rest == "" || rest[0] == ' ' || rest[0] == '\t':
+		return "a bare //nolint silences revive with everything else"
+	case rest[0] != ':':
+		return "" // a word that only starts with nolint
+	}
+	list, _, _ := strings.Cut(rest[1:], " ")
+	for _, l := range strings.Split(list, ",") {
+		if l == "revive" || l == "all" {
+			return "//nolint:" + l + " silences revive"
+		}
+	}
+	return ""
+}
 
 // docProblems checks the documentation shape of one package: exactly one doc.go,
-// holding the only package comment and no declaration, with a first sentence of
-// at most maxSynopsis characters; and no //nolint:revive anywhere in it.
+// holding the only package comment and no declaration, whose first paragraph is
+// one sentence of at most maxSynopsis characters; and no //nolint that could
+// silence revive anywhere in the package (directives are read from the parsed
+// comments, so a string or a comment that merely quotes one does not count).
 func docProblems(n node) []string {
 	var out []string
 	fset := token.NewFileSet()
@@ -355,12 +390,17 @@ func docProblems(n node) []string {
 		if len(af.Decls) > 0 {
 			out = append(out, fmt.Sprintf("R12: %s/doc.go holds a declaration; it is the package comment and the package clause only", n.Path))
 		}
-		syn := new(doc.Package).Synopsis(af.Doc.Text())
-		if syn == "" {
+		text := af.Doc.Text()
+		syn := new(doc.Package).Synopsis(text)
+		para, _, _ := strings.Cut(text, "\n\n")
+		para = strings.Join(strings.Fields(para), " ")
+		switch {
+		case syn == "":
 			out = append(out, fmt.Sprintf("R12: %s/doc.go has no first sentence", n.Path))
-		}
-		if syn != "" && !strings.HasSuffix(syn, ".") {
-			out = append(out, fmt.Sprintf("R12: %s/doc.go: the first paragraph must be a sentence ending in a period (it is the \"owns\" cell), not %q", n.Path, syn))
+		case para != syn:
+			out = append(out, fmt.Sprintf("R12: %s/doc.go: the first paragraph must be one sentence ending in a period (it is the \"owns\" cell); the first sentence is %q, the paragraph %q", n.Path, syn, para))
+		case !strings.HasSuffix(syn, "."):
+			out = append(out, fmt.Sprintf("R12: %s/doc.go: the first sentence must end in a period, not %q", n.Path, syn))
 		}
 		if l := utf8.RuneCountInString(syn); l > maxSynopsis {
 			out = append(out, fmt.Sprintf("R12: %s/doc.go: the first sentence is %d characters, the package map allows %d (it is the \"owns\" cell): %q",
@@ -378,15 +418,16 @@ func docProblems(n node) []string {
 			n.Path, strings.Join(withComment, ", ")))
 	}
 	for _, f := range append(slices.Clone(n.Files), n.Tests...) {
-		b, err := os.ReadFile(filepath.Join(n.Dir, f))
+		af, err := parser.ParseFile(fset, filepath.Join(n.Dir, f), nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			out = append(out, fmt.Sprintf("R12: %s: %v", n.Path, err))
 			continue
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			for _, m := range nolintRE.FindAllStringSubmatch(line, -1) {
-				if slices.Contains(strings.Split(m[1], ","), "revive") {
-					out = append(out, fmt.Sprintf("R12: %s/%s:%d has //nolint:revive; the exported-comment budget is zero, write the comment", n.Path, f, i+1))
+		for _, cg := range af.Comments {
+			for _, c := range cg.List {
+				if why := nolintProblem(c.Text); why != "" {
+					out = append(out, fmt.Sprintf("R12: %s/%s:%d: %s; the exported-comment budget is zero, write the comment (and name the linter in every //nolint)",
+						n.Path, f, fset.Position(c.Pos()).Line, why))
 				}
 			}
 		}
@@ -460,6 +501,23 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 	if s := staleRules(graph{}, denyRules[:1], nil); len(s) == 0 {
 		t.Error("a rule naming a missing package is not reported")
 	}
+	// A bumped dependency or a renamed subtree leaves a rule that matches nothing.
+	bumped := graph{"internal/store": {Path: "internal/store", Imports: []string{"github.com/jackc/pgx/v6/pgxpool", "github.com/rabbitmq/amqp091-go/v2"}}}
+	for _, r := range []onlyRule{onlyRules[1], onlyRules[2]} {
+		if s := staleRules(bumped, nil, []onlyRule{r}); !slices.ContainsFunc(s, func(m string) bool { return strings.Contains(m, r.Target[0]) }) {
+			t.Errorf("a target that no package imports (%s) is not reported: %v", r.Target[0], s)
+		}
+	}
+	if s := staleRules(graph{"internal/model": {}}, []denyRule{{ID: "RX", From: []string{"internal/model"}, Deny: []string{"internal/events/..."}}}, nil); len(s) == 0 {
+		t.Error("a /... pattern that matches no package is not reported")
+	}
+	current := graph{"internal/store": {Path: "internal/store", Imports: []string{"github.com/jackc/pgx/v5/pgxpool", "database/sql"}}}
+	if s := staleRules(current, nil, []onlyRule{{ID: "RX", Target: []string{"github.com/jackc/pgx/v5/pgxpool"}, Importers: []allowed{{Pkg: "internal/store"}}}}); len(s) != 0 {
+		t.Errorf("a current rule is reported: %v", s)
+	}
+	if s := staleRules(graph{}, []denyRule{{ID: "RX", Deny: []string{"database/...", "net"}}}, nil); len(s) != 0 {
+		t.Errorf("a standard library pattern is reported: %v", s)
+	}
 
 	dir := t.TempDir()
 	write := func(name, body string) {
@@ -472,10 +530,24 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 	write("doc.go", long)
 	write("a.go", "// Package x is described twice.\npackage x\n\nvar A = 1 //nolint:gosec,revive // no\n")
 	got = docProblems(node{Path: "internal/x", Dir: dir, Files: []string{"doc.go", "a.go"}})
-	for _, w := range []string{"the first sentence is", "package comment in doc.go, a.go", "a.go:4 has //nolint:revive"} {
+	for _, w := range []string{"the first sentence is", "package comment in doc.go, a.go", "a.go:4: //nolint:revive silences revive"} {
 		if !slices.ContainsFunc(got, func(m string) bool { return strings.Contains(m, w) }) {
 			t.Errorf("no doc problem containing %q in:\n%s", w, strings.Join(got, "\n"))
 		}
+	}
+
+	// Directives are read from comments: bare and all are refused, a string that quotes one is not.
+	write("doc.go", "// Package x owns y.\npackage x\n")
+	write("a.go", "package x\n\nvar A = 1 //nolint\nvar B = 2 //nolint:all // x\nvar C = \"//nolint:revive\"\nvar D = 3 //nolint:gosec // fine\n")
+	got = docProblems(node{Path: "internal/x", Dir: dir, Files: []string{"doc.go", "a.go"}})
+	if len(got) != 2 || !strings.Contains(got[0], "a.go:3: a bare //nolint") || !strings.Contains(got[1], "a.go:4: //nolint:all") {
+		t.Errorf("bare and all: %v", got)
+	}
+	write("doc.go", "// Package x owns y. It also does z.\npackage x\n")
+	write("a.go", "package x\n")
+	got = docProblems(node{Path: "internal/x", Dir: dir, Files: []string{"doc.go", "a.go"}})
+	if len(got) != 1 || !strings.Contains(got[0], "one sentence") {
+		t.Errorf("two sentences in the first paragraph: %v", got)
 	}
 
 	write("doc.go", "// Package x owns y.\npackage x\n\nvar Z = 1\n")
@@ -491,7 +563,7 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 
 	write("doc.go", "// Package x is run as:\n//\n//\tgo run x\npackage x\n")
 	got = docProblems(node{Path: "internal/x", Dir: dir, Files: []string{"doc.go", "a.go"}})
-	if len(got) != 1 || !strings.Contains(got[0], "ending in a period") {
+	if len(got) != 1 || !strings.Contains(got[0], "end in a period") {
 		t.Errorf("a first paragraph that is not a sentence: %v", got)
 	}
 

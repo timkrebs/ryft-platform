@@ -100,8 +100,8 @@ JSON (`make synthetics-apply`), not the page.
 
 | Metric | Type | Labels | Service | Meaning |
 | --- | --- | --- | --- | --- |
-| `ryft_http_requests_total` | counter | `route`, `code` | all | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
-| `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
+| `ryft_http_requests_total` | counter | `route`, `code` | ingest, api | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
+| `ryft_http_request_duration_seconds` | histogram | `route` | ingest, api | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`. The recompute gate (one per minute) is not counted here. |

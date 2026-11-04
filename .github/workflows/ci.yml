@@ -49,6 +49,7 @@ jobs:
       pull-requests: read
     outputs:
       run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+      run_pkgmap: ${{ github.event_name != 'pull_request' || steps.filter.outputs.pkgmap == 'true' }}
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
@@ -71,8 +72,12 @@ jobs:
               - 'backend/**'
               - '.golangci.yml'
               - 'docs/API.md'
-              - 'docs/ARCHITECTURE.md'
               - 'scripts/coverage.sh'
+              - '.github/workflows/ci.yml'
+            # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
+            pkgmap:
+              - 'docs/ARCHITECTURE.md'
               - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
             smoke:
@@ -221,7 +226,7 @@ jobs:
 
   lint:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true' || needs.changes.outputs.run_pkgmap == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

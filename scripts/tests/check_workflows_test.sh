@@ -386,4 +386,9 @@ fresh; printf 'name: x\non: [push\njobs: {\n' > "$d/x.yml"; run
 fresh; : > "$d/x.yml"; run
 [ "$rc" = 1 ] || fail "an empty workflow must fail (rc=$rc)"
 
+# The linter release of ci.yml's lint job must be the Makefile's (make lint warns on another).
+fresh; sed 's/version: v2\.15\.0/version: v9.9.9/' "$d/ci.yml" > "$d/ci.new" && mv "$d/ci.new" "$d/ci.yml"; run
+[ "$rc" = 1 ] || fail "a golangci-lint version that differs from the Makefile's must fail (rc=$rc): $(cat "$tmp/err")"
+grep -q 'GOLANGCI_LINT_VERSION' "$tmp/err" || fail "the message does not name the Makefile variable: $(cat "$tmp/err")"
+
 echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment and the App key only in promote, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

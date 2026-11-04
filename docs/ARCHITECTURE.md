@@ -100,9 +100,12 @@ HTTP metrics labelled by route pattern) → **Recover** (a panic becomes a JSON 
 and logged with its stack) → **SecurityHeaders** (`no-store`, `nosniff`, no framing, no
 referrer, HSTS) → mux. scoring and notify serve only health and metrics and wrap their mux
 in **Recover** alone. Behind the chain, `/v1/*` goes through **auth** (verify the token →
-per-user token-bucket rate limit → `EnsureUser`) → in api the invite gate → **Timeout** (15 s
-in api, 50 s for ingest's sync, as a context deadline the database calls honour; running out
-answers `503`) → the route. Three routes differ: `DELETE /v1/me` skips the user lookup and
+per-user token-bucket rate limit → `EnsureUser`) → **Timeout** (15 s in api, 50 s for
+ingest's sync, as a context deadline the database calls honour; running out answers `503`) →
+the route. The gates sit in different places: api's invite gate is a middleware between auth
+and Timeout that lets the routes `API.md` names through, and ingest checks the invite and the
+consent gate inside the sync handler, before it reads the body (D87, D129). Three routes
+differ: `DELETE /v1/me` skips the user lookup and
 the invite gate and has its own deadline, so a retry after a failed Supabase call still
 reaches the handler (D39); the training import has its own 50 s deadline (D129); and
 `/v1/admin/` is behind `ADMIN_API_KEY`, not auth, and is audited (D88). Bodies are read with a

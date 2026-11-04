@@ -8,7 +8,8 @@
 #                               and `make pkgmap-check`)
 # Exit 0: current (or written). 1: stale (--check). 2: it cannot work: no go, go list fails, a marker missing or
 # duplicated, bad usage. A broken check must not read as "current".
-# The file sets are fixed to linux/amd64 without cgo so the table does not depend on the machine. The packages
+# The file sets are fixed to linux/amd64 without cgo, no go.work and no GOFLAGS (-tags) so the table does not
+# depend on the machine. The packages
 # come from backend/ only, so the git worktrees under .claude/ never enter the table.
 # Env (tests): PKGMAP_MODULE (the directory with go.mod, default backend/), PKGMAP_DOC (the markdown file, default
 # docs/ARCHITECTURE.md).
@@ -45,13 +46,13 @@ markers=$(awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
   END { if (nb == 1 && ne == 1 && bl < el) print "ok"; else printf "begin x%d, end x%d\n", nb, ne }' "$doc")
 [ "$markers" = ok ] || die "$doc must hold the line $BEGIN_MARK and, after it, the line $END_MARK, each once ($markers)"
 
-mod=$(cd "$module_dir" && go list -m) || die "go list -m failed in $module_dir"
+mod=$(cd "$module_dir" && GOWORK=off GOFLAGS='' go list -m) || die "go list -m failed in $module_dir"
 
 # One tab-separated line per package: path, name, doc, imports, test files, external test files, test imports,
 # external test imports, directory, number of non-test files.
 tab='{{"\t"}}'
 tmpl="{{.ImportPath}}$tab{{.Name}}$tab{{.Doc}}$tab{{join .Imports \" \"}}$tab{{join .TestGoFiles \" \"}}$tab{{join .XTestGoFiles \" \"}}$tab{{join .TestImports \" \"}}$tab{{join .XTestImports \" \"}}$tab{{.Dir}}$tab{{len .GoFiles}}"
-(cd "$module_dir" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go list -f "$tmpl" ./... >"$tmp/list" 2>"$tmp/list.err") \
+(cd "$module_dir" && GOWORK=off GOFLAGS='' GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go list -f "$tmpl" ./... >"$tmp/list" 2>"$tmp/list.err") \
   || die "go list failed in $module_dir: $(cat "$tmp/list.err")"
 [ -s "$tmp/list" ] || die "go list found no packages in $module_dir"
 
@@ -78,7 +79,9 @@ END {
     if (nfiles[k] == 0) continue          # a test-only directory has nothing to document
     owns = doc[k]
     sub("^Package " name[k] " ", "", owns); sub("^" name[k] " ", "", owns)
-    gsub(/\|/, "\\|", owns)
+    # a table cell: a pipe would end it, an unterminated comment opener would swallow the rest of the file; the
+    # entities render as the characters themselves and leave an existing backslash alone
+    gsub(/\|/, "\\&#124;", owns); gsub(/<!--/, "\\&lt;!--", owns)
     deps = ""; split(imports[k], im, " ")
     for (i = 1; i in im; i++) { r = rel(im[i]); if (r != "") deps = deps (deps == "" ? "" : ", ") short(r) }
     if (deps == "") deps = "none"
@@ -123,7 +126,10 @@ awk -v b="$BEGIN_MARK" -v e="$END_MARK" -v t="$tmp/table" '
   !skip { print }' "$doc" >"$tmp/new"
 
 if [ "$mode" = check ]; then
-  if ! diff -u "$doc" "$tmp/new" >"$tmp/diff"; then
+  # diff: 0 same, 1 differs, anything else is trouble (it must not read as stale)
+  drc=0; diff -u "$doc" "$tmp/new" >"$tmp/diff" 2>"$tmp/diff.err" || drc=$?
+  if [ "$drc" -gt 1 ]; then die "diff failed ($drc): $(cat "$tmp/diff.err")"; fi
+  if [ "$drc" = 1 ]; then
     cat "$tmp/diff" >&2
     echo "pkgmap: the package map in ${doc#"$root"/} is stale; run scripts/pkgmap.sh and commit the result" >&2
     exit 1

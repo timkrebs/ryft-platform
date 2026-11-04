@@ -27,6 +27,9 @@ linters:
       rules:
         - name: exported
         - name: package-comments
+    nolintlint:
+      # A bare //nolint silences every linter, revive's exported rule included (the budget is zero).
+      require-specific: true
     depguard:
       rules:
         logcheck-tests-only:
