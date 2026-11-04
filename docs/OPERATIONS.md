@@ -269,8 +269,8 @@ argocd app diff ryft-platform                                       # git vs. cl
 **What Argo CD may no longer do** (T12-f, D120). Its ClusterRoles are written in
 `infra/aws/kubernetes/argocd.tf` (the chart's defaults give the controller `*` and the
 server delete/get/patch on everything). **What is true after this change alone:** a compromised
-controller can no longer hand itself write on the admission policies through RBAC (no `escalate` or
-`bind` on a ClusterRole), the public server can write nothing cluster-wide, and neither holds Secrets,
+controller can no longer hand itself write on the admission policies through RBAC (no `escalate`
+on a ClusterRole, `bind` on one fixed name), the public server can write nothing cluster-wide, and neither holds Secrets,
 `pods/exec` or `impersonate`. **What is not:** a compromised Argo CD can still reach cluster-admin
 by other routes (`kube-system/aws-auth`, workloads in `cert-manager` and `kube-system`), and so can
 still switch the admission layer off. That closes only when the admission policy P12 ("argo-scope")
@@ -287,7 +287,8 @@ missing one looks like is under "A missing rule" below (a missing write fails th
 | controller | get, list, watch, create, update, patch on namespaces; no `delete` | Namespaces `ryft-web`, `rabbitmq-system` (and the project's others). Deleting one removes everything in it, the broker's data included, so pruning one is an admin's act |
 | controller | get, list, watch, create on CustomResourceDefinitions; update and patch only on the operators' 14 names (`*.rabbitmq.com`); no `delete` | The operators' CRDs (project `ryft-operators`). Create cannot be limited by name; update and patch can, so no other CRD (a conversion webhook on `applications.argoproj.io`, say) can be rewritten. Under P6 in Deny a CRD must be of `rabbitmq.com` without a conversion webhook anyway |
 | controller | all verbs on ClusterRoles, ClusterRoleBindings, Roles, RoleBindings | The operators' app (`deploy/rabbitmq/operators`) |
-| controller | `create` on `tokenreviews` and `subjectaccessreviews`; `get` on the non-resource URL `/metrics` | The three permissions of the operators' remaining ClusterRoles (`messaging-topology-metrics-auth-role`, `-metrics-reader`; the `rabbitmq-cluster-service-binding-role` needs only rabbitmq.com reads, which it has). Kubernetes lets you write or bind a role whose permissions you hold, so Argo CD needs **no `escalate` and no `bind` on any ClusterRole**. This replaces T12-f's first version, where `escalate`/`bind` on three ClusterRoles let the controller add write on VAP/VAPB to one and bind itself to it. Holding these three is harmless: token and access reviews, the metrics endpoint |
+| controller | `create` on `tokenreviews` and `subjectaccessreviews`; `get` on the non-resource URL `/metrics` | The three permissions of the operators' remaining ClusterRoles (`messaging-topology-metrics-auth-role`, `-metrics-reader`; the `rabbitmq-cluster-service-binding-role` needs only rabbitmq.com reads, which it has). Kubernetes lets you write or bind a role whose permissions you hold, so Argo CD needs **no `escalate` on any ClusterRole**, and `bind` on one name only (next row). This replaces T12-f's first version, where `escalate`/`bind` on three ClusterRoles let the controller add write on VAP/VAPB to one and bind itself to it. Holding these three is harmless: token and access reviews, the metrics endpoint |
+| controller | `bind` (no `escalate`) on the ClusterRole `messaging-topology-metrics-auth-role` only | The topology operator's ClusterRoleBinding refers to it. Argo CD dry-runs every object of a sync before applying any, so on a fresh cluster the binding is checked while its ClusterRole does not exist; with `bind` the API server does not resolve the role (the first CI kind run of this round failed exactly there without it). Without `escalate` the controller cannot add a rule to the role, so binding it gives nothing beyond token and access reviews |
 | controller | `escalate` and `bind` on `roles`, only the four names `rabbitmq-cluster-operator-role`, `messaging-topology-manager-role` and the two leader-election Roles | The operators' Roles hold Secrets, `pods/exec`, leases, which Argo CD must not hold. **A ClusterRole's `resourceNames` apply in every namespace**: see "What stays open" |
 | controller | get, list, watch, create on the two webhook-configuration resources; update, patch, delete only on the four operator-owned names | The operators' two Mutating and two ValidatingWebhookConfigurations. Create is needed (the first sync, and one after a deletion, applies an object that does not exist yet: the API server authorizes that as `create`) and cannot be limited by name. Never `ValidatingAdmissionPolicy` or `-Binding` |
 | controller | nothing on `secrets` in the cluster, `pods/exec`, `pods/ephemeralcontainers`, `impersonate`, `deletecollection`, no other non-resource URL | No Secret is in git (VSO makes them). Its own Secrets in `argocd` come from the namespaced Role |
@@ -336,12 +337,15 @@ run. A new kind or verb fails them until it is added on purpose.
 2. **A Role of an operator name in any namespace, until P6 is in Deny.** The `escalate` and `bind` on
    the four Role names are in a ClusterRole, so they match in **every** namespace: without P6 the
    controller can write a Role named `rabbitmq-cluster-operator-role` (any rules, Secrets and
-   `pods/exec` included) in `kube-system` or `argocd` and bind itself to it. This is the vector the
+   `pods/exec` included) in `kube-system` or `argocd` and bind itself to it. (`escalate` by name is
+   checked with the name in the request URL, so it works for an update, a patch and a **server-side
+   apply** create, which is what Argo CD does and what the kind run uses; a plain POST create
+   carries no name and is refused, so a client-side `kubectl apply` of a new Role fails.) This is the vector the
    kind run's `claim-h-open` shows. P6 in Deny admits Roles and RoleBindings only in `rabbitmq-system`
    and the four named objects in `ryft-rabbitmq` (`p06-operators-cluster.yaml`). T12-f's first version
    also let the controller add write on VAP/VAPB to a ClusterRole and bind it; that route is now closed
-   by RBAC alone (`claim-h-clusterrole`), because the controller holds no `escalate`/`bind` on any
-   ClusterRole.
+   by RBAC alone (`claim-h-clusterrole`), because the controller holds no `escalate` on any
+   ClusterRole and its one `bind` is on a role it cannot extend.
 3. **What else P6 in Deny closes besides escalate/bind:** (a) creating a webhook configuration cannot be
    limited by name: a Mutating or ValidatingWebhookConfiguration with a `url` would receive every
    matched object, Secrets and Pods included, and could mutate Pods; P6 admits only the four names,

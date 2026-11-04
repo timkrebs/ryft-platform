@@ -347,14 +347,17 @@ run "argocd_clusterroles_are_an_allowlist" {
     ]]))
     error_message = "a rule with resourceNames names at least one object (an empty list means every name) and no wildcard"
   }
-  # escalate and bind: only on Roles, only with names (and below, only these names).
+  # escalate and bind: only on Roles (both) and on one ClusterRole (bind alone), only with names.
   assert {
     condition = alltrue(flatten([for c in ["controller", "server"] : [
       for r in yamldecode(helm_release.argocd.values[0])[c].clusterRoleRules.rules :
-      length(setintersection(r.verbs, ["escalate", "bind"])) == 0 ||
-      (try(r.apiGroups, []) == ["rbac.authorization.k8s.io"] && try(r.resources, []) == ["roles"] && length(try(r.resourceNames, [])) > 0)
+      length(setintersection(r.verbs, ["escalate", "bind"])) == 0 || (
+        try(r.apiGroups, []) == ["rbac.authorization.k8s.io"] && length(try(r.resourceNames, [])) > 0 && (
+          try(r.resources, []) == ["roles"] || (try(r.resources, []) == ["clusterroles"] && r.verbs == ["bind"])
+        )
+      )
     ]]))
-    error_message = "escalate and bind only on roles (never a ClusterRole), and only by a non-empty resourceNames"
+    error_message = "escalate and bind only on roles, bind alone on one ClusterRole, and only by a non-empty resourceNames"
   }
   assert {
     condition = (
@@ -364,12 +367,18 @@ run "argocd_clusterroles_are_an_allowlist" {
         "rabbitmq-cluster-operator-role", "messaging-topology-manager-role",
       ]) &&
       toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
-        r.resourceNames if contains(r.verbs, "bind")])) == toset([
+        r.resourceNames if contains(r.verbs, "bind") && try(r.resources, []) == ["roles"]])) == toset([
         "rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role",
         "rabbitmq-cluster-operator-role", "messaging-topology-manager-role",
-      ])
+      ]) &&
+      toset(flatten([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+        r.resourceNames if contains(r.verbs, "bind") && try(r.resources, []) == ["clusterroles"]])) == toset([
+        "messaging-topology-metrics-auth-role",
+      ]) &&
+      length([for r in yamldecode(helm_release.argocd.values[0]).controller.clusterRoleRules.rules :
+      r if contains(r.verbs, "escalate") && contains(try(r.resources, []), "clusterroles")]) == 0
     )
-    error_message = "escalate and bind name exactly the operators' four Roles (deploy/rabbitmq/operators); the ClusterRoles are written by holding their permissions"
+    error_message = "escalate names exactly the operators' four Roles and never a ClusterRole; bind names the same four Roles and the one ClusterRole of the topology operator's binding"
   }
   # The server cannot write anything cluster-wide.
   assert {

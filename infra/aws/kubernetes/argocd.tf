@@ -159,6 +159,12 @@ locals {
     "rabbitmq-cluster-operator-role",
     "messaging-topology-manager-role",
   ]
+  # The one ClusterRole the controller may BIND (no escalate): the topology operator's
+  # ClusterRoleBinding refers to it, and Argo CD dry-runs every object of a sync before it
+  # applies any, so on a fresh cluster the binding is checked while the ClusterRole does not
+  # exist yet; with bind the API server does not resolve the role. The controller cannot
+  # add rules to it (that is escalate), so it stays tokenreviews and subjectaccessreviews.
+  argocd_operator_bound_cluster_roles = ["messaging-topology-metrics-auth-role"]
   # The CustomResourceDefinitions the paths render (the operators' 14 kinds). Updating or
   # patching one is limited to these names, so no other CRD (applications.argoproj.io, with a
   # conversion webhook) can be rewritten; creating one cannot be limited by name.
@@ -195,7 +201,7 @@ locals {
 
   # No `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, no `*`, no non-resource
   # URL but the operators' /metrics get, nothing on (Validating|Mutating)AdmissionPolicy or
-  # -Binding, no escalate or bind on a ClusterRole, no impersonate.
+  # -Binding, no escalate on a ClusterRole and bind on one name only, no impersonate.
   argocd_controller_rules = concat(
     local.argocd_controller_managed,
     [
@@ -213,7 +219,7 @@ locals {
       { apiGroups = ["argoproj.io"], resources = ["applications"], verbs = ["get", "list", "watch"] },
       # The operators' ClusterRoles, bindings, Roles and RoleBindings.
       { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = local.argocd_crud },
-      # No escalate and no bind on any ClusterRole: the controller instead HOLDS what the
+      # No escalate on any ClusterRole, and bind on one name only (below): the controller instead HOLDS what the
       # operators' ClusterRoles contain (rabbitmq.com above covers rabbitmq-cluster-service-
       # binding-role; the two rules below and the metrics rule cover messaging-topology-
       # metrics-auth-role and -metrics-reader), so Kubernetes lets it write and bind them.
@@ -222,6 +228,7 @@ locals {
       { apiGroups = ["authentication.k8s.io"], resources = ["tokenreviews"], verbs = ["create"] },
       { apiGroups = ["authorization.k8s.io"], resources = ["subjectaccessreviews"], verbs = ["create"] },
       { nonResourceURLs = ["/metrics"], verbs = ["get"] },
+      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"], resourceNames = local.argocd_operator_bound_cluster_roles },
       # The four Roles, by name. A ClusterRole's resourceNames match in EVERY namespace, so
       # without P6 the controller could write a Role of these names in kube-system or argocd
       # and bind itself to it: P6 in Deny (p06-operators-cluster.yaml) admits Roles only in

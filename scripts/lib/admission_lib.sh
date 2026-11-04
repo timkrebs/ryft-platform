@@ -256,7 +256,7 @@ adm_check_argo_rbac() {
   # escalate, bind (no impersonate, deletecollection, approve, sign, '*'); no '*' anywhere; nothing on
   # secrets, nodes, */proxy, pods/exec, pods/attach, pods/portforward, pods/ephemeralcontainers,
   # serviceaccounts/token, certificatesigningrequests (+ approval), signers, the admission policies and
-  # their bindings; escalate and bind only on roles, only by name; a resourceNames list is never empty;
+  # their bindings; escalate and bind only on roles (bind alone also on one ClusterRole), only by name; a resourceNames list is never empty;
   # the only non-resource URL is the controller's get on /metrics.
   bad=$(jq -r '.[] | .metadata.name as $n | .rules[] | select(
       ((.verbs // []) | any(. as $v | ["get","list","watch","create","update","patch","delete","escalate","bind"] | index($v) | not))
@@ -265,11 +265,12 @@ adm_check_argo_rbac() {
       or ((.resources // []) | any(. == "secrets" or . == "pods/exec" or . == "pods/attach" or . == "pods/portforward" or . == "pods/ephemeralcontainers" or . == "serviceaccounts/token"
             or . == "nodes" or startswith("nodes/") or endswith("/proxy") or . == "signers" or startswith("certificatesigningrequests")
             or . == "validatingadmissionpolicies" or . == "validatingadmissionpolicybindings" or . == "mutatingadmissionpolicies" or . == "mutatingadmissionpolicybindings"))
-      or (((.verbs // []) | any(. == "escalate" or . == "bind")) and (((.resources // []) != ["roles"]) or ((.resourceNames // []) | length == 0)))
+      or (((.verbs // []) | any(. == "escalate" or . == "bind")) and ((((.resources // []) == ["roles"]) or (((.resources // []) == ["clusterroles"]) and (.verbs == ["bind"]))) | not))
+      or (((.verbs // []) | any(. == "escalate" or . == "bind")) and ((.resourceNames // []) | length == 0))
       or (has("resourceNames") and ((.resourceNames // []) | length == 0))
       or (has("nonResourceURLs") and (($n == "argocd-application-controller" and (.nonResourceURLs == ["/metrics"]) and (.verbs == ["get"])) | not))
     ) | $n + ": " + ((.resources // .nonResourceURLs // []) | join(",")) + " [" + ((.verbs // []) | join(",")) + "]"' "$roles")
-  if [ -z "$bad" ]; then rec "argo-rbac-invariants" PASS "verbs from the allowlist only, no wildcard, no secrets, nodes, proxy, pods/exec, attach, portforward, ephemeralcontainers, serviceaccounts/token, CSR or signers, nothing on the admission policies or bindings, escalate/bind only on named roles, the only non-resource URL is the controller's /metrics get"; else rec "argo-rbac-invariants" FAIL "$bad"; fi
+  if [ -z "$bad" ]; then rec "argo-rbac-invariants" PASS "verbs from the allowlist only, no wildcard, no secrets, nodes, proxy, pods/exec, attach, portforward, ephemeralcontainers, serviceaccounts/token, CSR or signers, nothing on the admission policies or bindings, escalate never on a ClusterRole, bind only by name, the only non-resource URL is the controller's /metrics get"; else rec "argo-rbac-invariants" FAIL "$bad"; fi
   bad=$(jq -r '.[] | select(.metadata.name == "argocd-server") | .rules[] | select((.verbs // []) | any(. as $v | ["get","list","watch"] | index($v) | not)) | (.resources // [] | join(",")) + " [" + (.verbs | join(",")) + "]"' "$roles")
   if [ -z "$bad" ]; then rec "argo-rbac-server-readonly" PASS "argocd-server holds read verbs only (it writes Applications and Events in the argocd namespace through the chart's Role)"; else rec "argo-rbac-server-readonly" FAIL "argocd-server may write: $bad"; fi
 }
@@ -838,9 +839,12 @@ EOF
   fi
 }
 
-# Claim h, the NEGATIVE test of T12-f. The application controller holds NO escalate and NO bind on any
-# ClusterRole (it holds what the operators' ClusterRoles contain instead), but it still has both on the
-# four operator Roles by name, and a ClusterRole's resourceNames match in EVERY namespace. Two vectors,
+# Claim h, the NEGATIVE test of T12-f. The application controller holds NO escalate on any ClusterRole
+# (it holds what the operators' ClusterRoles contain instead, and bind on the one the topology operator's
+# binding names), but it still has escalate and bind on the four operator Roles by name, and a
+# ClusterRole's resourceNames match in EVERY namespace. The vectors use server-side apply, as Argo CD does
+# (ServerSideApply=true): the name is then in the request URL; a client-side create is a POST without a
+# name, which `escalate` by resourceNames does not authorize. Two vectors,
 # both as the real service account (no fixture group): its RBAC is what is tested.
 #   1. The ClusterRole vector (T12-f's first version had it open): rewrite a ClusterRole of an operator
 #      name to carry write on the admission policies. Kubernetes' own escalation check refuses it with
@@ -902,12 +906,12 @@ EOF
   rc1=; out1=; can=
   if [ "$phase" = open ]; then
     kc apply -f "$tmp/benign.yaml" >/dev/null 2>&1
-    out1=$(kca "$ARGO_CTRL" apply -f "$tmp/role.yaml" 2>&1); rc1=$?
+    out1=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/role.yaml" 2>&1); rc1=$?
     can=$(kca "$ARGO_CTRL" auth can-i create validatingadmissionpolicybindings 2>/dev/null | head -1)
     kc delete clusterrole rabbitmq-cluster-operator-role --ignore-not-found >/dev/null 2>&1
   fi
-  out2=$(kca "$ARGO_CTRL" apply -f "$tmp/ns-role.yaml" 2>&1); rc2=$?
-  out3=$(kca "$ARGO_CTRL" apply -f "$tmp/ns-binding.yaml" 2>&1); rc3=$?
+  out2=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/ns-role.yaml" 2>&1); rc2=$?
+  out3=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/ns-binding.yaml" 2>&1); rc3=$?
   can2=$(kca "$ARGO_CTRL" auth can-i get secrets -n kube-system 2>/dev/null | head -1)
   # clean up whatever was created, as the admin
   kc delete -f "$tmp/ns-binding.yaml" --ignore-not-found >/dev/null 2>&1

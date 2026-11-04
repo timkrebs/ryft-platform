@@ -127,7 +127,7 @@ commands, NetworkPolicies, VSO or Argo objects.
 | e | `apiserver_validating_admission_policy_check_total` counts clean passes | **false** (T12-e review): only checks that found something are counted, so a quiet policy has no series. Liveness is the scrape's `up` | code review |
 | f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | not tried (D151) | kind |
 | g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | **verified** (kind): `status.typeChecking` empty, the committed project passes, a widened one is refused | kind |
-| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind) for the first version, including the negative test: without the policies the controller rewrote `rabbitmq-cluster-operator-role` and bound itself to it; with P6 in Deny both steps were refused. **Superseded:** the review showed that version was escalation-equivalent (three ClusterRoles in both lists), so the controller now holds the three permissions of the operators' remaining ClusterRoles itself and has **no `escalate`/`bind` on any ClusterRole**; `escalate`/`bind` stay on the four operator Roles by name, which match in every namespace. To be verified again: the ClusterRole rewrite is refused by RBAC alone (`claim-h-clusterrole`); a Role of an operator name in `kube-system` is written and bound without the policies (`claim-h-open`) and refused with P6 in Deny (`claim-h-guarded`) | kind, with a negative test (§3, Kind e2e) |
+| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind) for the first version, including the negative test: without the policies the controller rewrote `rabbitmq-cluster-operator-role` and bound itself to it; with P6 in Deny both steps were refused. **Superseded:** the review showed that version was escalation-equivalent (three ClusterRoles in both lists), so the controller now holds the permissions of the operators' remaining ClusterRoles itself and has **no `escalate` on any ClusterRole** and `bind` on one name only (`messaging-topology-metrics-auth-role`, which Argo CD's all-objects dry-run needs on a fresh cluster: the first CI run of this round failed without it); `escalate`/`bind` stay on the four operator Roles by name, which match in every namespace. To be verified again: the ClusterRole rewrite is refused by RBAC alone (`claim-h-clusterrole`); a Role of an operator name in `kube-system` is written and bound without the policies (`claim-h-open`) and refused with P6 in Deny (`claim-h-guarded`) | kind, with a negative test (§3, Kind e2e) |
 | i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | **verified, after one added rule** (D151, amended): the controller must also get, list and watch `applications.argoproj.io` cluster-wide. Without it the kind run still passed, because under strict the cache asks a self-subject access review for namespace `*` per kind and **silently drops** a kind it may not list (the chart's Role in `argocd` does not count); the root then catches up only at its periodic reconcile (about 3 minutes; Progressing for about 6 minutes in the run), a deleted child Application is not pruned, a hand edit of a child is seen late. The rule is in #47 now; `claim-i-list` checks `can-i list <kind> -A` for the kinds of the apps | kind |
 | j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5). Not tried (D151) | `terraform validate` |
 | k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | **answered** (kind, argo-cd chart 10.10.5): the full commit SHA of the revision the Application was compared with, which is `status.sync.revision`; P10's third alternative admits it, and `--revision <another sha>` is refused (D151) | kind |
@@ -197,8 +197,8 @@ commands, NetworkPolicies, VSO or Argo objects.
     `admissionregistration.k8s.io`;
   - the server may write nothing cluster-wide, and nothing there;
   - neither gets `secrets` get, `pods/exec`, `pods/ephemeralcontainers` or `impersonate`;
-  - the controller holds no `escalate` or `bind` on a ClusterRole (it holds the operators' ClusterRoles'
-    three permissions itself);
+  - the controller holds no `escalate` on a ClusterRole, and `bind` on one name only (it holds the
+    operators' ClusterRoles' permissions itself);
   - ApplicationSet is off.
 - The workloads hold no token (P2).
 - The operators' roles can't grant `admissionregistration.k8s.io` (P6).
@@ -208,7 +208,8 @@ commands, NetworkPolicies, VSO or Argo objects.
   - **Closed by #47 (RBAC alone):** adding VAP/VAPB write to a ClusterRole and binding it. T12-f's first
     version had `escalate`/`bind` on three operator ClusterRoles and was escalation-equivalent to
     cluster-admin; the controller now holds those ClusterRoles' permissions (token and access reviews,
-    `/metrics` get) and has no `escalate` or `bind` on any ClusterRole.
+    `/metrics` get) and has no `escalate` on any ClusterRole, and `bind` only on
+    `messaging-topology-metrics-auth-role`, which it cannot extend.
   - **Open until P6 is in Deny:** `escalate` and `bind` on the four operator **Roles** are in a
     ClusterRole, and `resourceNames` match in every namespace. The controller can write a Role of that
     name in `kube-system` or `argocd` with Secrets and `pods/exec`, and bind itself. P6 admits Roles only
@@ -668,7 +669,7 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 | Ticket | Owner | What | Order |
 | --- | --- | --- | --- |
 | T12-c | gitops-engineer | **`project.yaml` whitelists:** 23 kinds for `ryft`, 7 for `ryft-operators`. **`check_argocd.py`:** every rendered kind must be allowed by its project; L1, L2 and L4. Docs. | 1 |
-| T12-f | infra-engineer | **Argo CD RBAC:** controller and server `clusterRoleRules`, `resource.respectRBAC: strict`, ApplicationSet off, no `escalate`/`bind` on any ClusterRole (the permissions held instead), `escalate`/`bind` on the four operator Roles by name. | 1. Applied alone at Step 0, after the kind e2e; one full deploy watched before a and b |
+| T12-f | infra-engineer | **Argo CD RBAC:** controller and server `clusterRoleRules`, `resource.respectRBAC: strict`, ApplicationSet off, no `escalate` on any ClusterRole and `bind` on one (the permissions held instead), `escalate`/`bind` on the four operator Roles by name. | 1. Applied alone at Step 0, after the kind e2e; one full deploy watched before a and b |
 | T12-h | sre | **SDK injector:** exclude R in `deploy/monitoring/k8s-monitoring.yaml` (you apply). | 1, before Phase 1 |
 | T12-a | infra-engineer | **The `admission-policy` chart** (P1–P11), `admission.tf` and the values file (`enabled: false`). Tests: Audit by default; break-glass gives Warn+Audit; never Deny with Warn; the Vault address matches the generated `vault.yaml`. The `check` block. | 2 |
 | T12-b | infra-engineer | **B2, if chosen:** the `argocd-projects` chart from `project.yaml` (+ `root.yaml`), the same value into P7, `take_ownership` (`enabled: false`). Amends D95. | 2, after a |
