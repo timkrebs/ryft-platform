@@ -125,37 +125,49 @@ locals {
     "prometheus.io/path"   = "/metrics"
   } }
 
-  # --- RBAC (T12-f, D120): Argo CD cannot switch off or bypass the admission layer. ---
+  # --- RBAC (T12-f, D120): narrowed, not a sandbox. ---
   # The chart's defaults give the application controller `*` on everything and the
   # server delete/get/patch on everything (so secrets, and the ValidatingAdmissionPolicy
   # and -Binding objects). Both ClusterRoles are replaced by the lists below, derived
   # from `kubectl kustomize` of every path in deploy/argocd/apps and the kinds in
   # deploy/argocd/project.yaml. docs/OPERATIONS.md has the reason for each rule. A kind
   # added to a path under deploy/argocd/apps needs its rule here first.
+  #
+  # What this alone does: the controller holds no escalate or bind on any ClusterRole, no
+  # secrets, no pods/exec, nothing on the admission policies, and the public server nothing
+  # it can write. What it does NOT do: a ClusterRole cannot be scoped to namespaces, so the
+  # controller still writes ConfigMaps, Deployments, Jobs, Services and ServiceAccounts in
+  # every namespace. With a stolen controller token that reaches kube-system/aws-auth (the
+  # cluster runs authentication mode API_AND_CONFIG_MAP: an IAM principal mapped to
+  # system:masters is cluster-admin, which deletes the policy bindings), workloads in
+  # cert-manager and kube-system, argocd-cm and the argocd-server Deployment. Those routes
+  # close only with the admission policy P12 (argo-scope) in Deny, or for aws-auth with EKS
+  # authentication mode API. The chart's own Roles in `argocd` (the server may rewrite
+  # argocd-secret, argocd-cm and argocd-rbac-cm) are not touched either.
   argocd_crud  = ["get", "list", "watch", "create", "update", "patch", "delete"]
   argocd_apply = ["get", "list", "watch", "create", "update", "patch"] # no delete
 
-  # The operators' roles, as rendered from deploy/rabbitmq/operators.
-  argocd_operator_cluster_roles = [
-    "rabbitmq-cluster-operator-role",
-    "rabbitmq-cluster-service-binding-role",
-    "messaging-topology-manager-role",
-    "messaging-topology-metrics-auth-role",
-    "messaging-topology-metrics-reader",
-  ]
-  argocd_operator_bound_cluster_roles = [ # roleRef of the three ClusterRoleBindings
-    "rabbitmq-cluster-operator-role",
-    "messaging-topology-manager-role",
-    "messaging-topology-metrics-auth-role",
-  ]
-  # Roles: the two leader-election Roles in rabbitmq-system, and (T12-g) the operators' main
-  # rules as namespaced Roles in ryft-rabbitmq. The ClusterRole names above stay until T12-g
-  # has landed; remove them (and their escalate/bind rules) then.
+  # The operators' namespaced Roles, as rendered from deploy/rabbitmq/operators: the two
+  # leader-election Roles in rabbitmq-system (they hold leases and events, which the controller
+  # does not) and, since T12-g, the operators' main rules as Roles in ryft-rabbitmq (secrets,
+  # pods/exec, ...). Writing or binding a Role needs its permissions or escalate/bind on its
+  # name. The operators render no ClusterRole with rules of that kind any more: see
+  # argocd_operator_held.
   argocd_operator_roles = [
     "rabbitmq-cluster-leader-election-role",
     "messaging-topology-leader-election-role",
     "rabbitmq-cluster-operator-role",
     "messaging-topology-manager-role",
+  ]
+  # The CustomResourceDefinitions the paths render (the operators' 14 kinds). Updating or
+  # patching one is limited to these names, so no other CRD (applications.argoproj.io, with a
+  # conversion webhook) can be rewritten; creating one cannot be limited by name.
+  argocd_operator_crds = [
+    "bindings.rabbitmq.com", "exchanges.rabbitmq.com", "federations.rabbitmq.com",
+    "operatorpolicies.rabbitmq.com", "permissions.rabbitmq.com", "policies.rabbitmq.com",
+    "queues.rabbitmq.com", "rabbitmqclusters.rabbitmq.com", "schemareplications.rabbitmq.com",
+    "shovels.rabbitmq.com", "superstreams.rabbitmq.com", "topicpermissions.rabbitmq.com",
+    "users.rabbitmq.com", "vhosts.rabbitmq.com",
   ]
   argocd_operator_mutating_webhooks = [
     "cluster-operator-mutating-webhook-configuration",
@@ -182,7 +194,8 @@ locals {
   ]
 
   # No `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, no `*`, no non-resource
-  # URL, nothing on (Validating|Mutating)AdmissionPolicy or -Binding.
+  # URL but the operators' /metrics get, nothing on (Validating|Mutating)AdmissionPolicy or
+  # -Binding, no escalate or bind on a ClusterRole, no impersonate.
   argocd_controller_rules = concat(
     local.argocd_controller_managed,
     [
@@ -192,16 +205,34 @@ locals {
       # Cluster-scoped kinds of the projects. Namespaces and CRDs: no `delete`, which would
       # take every object in them along; an admin removes one on purpose.
       { apiGroups = [""], resources = ["namespaces"], verbs = local.argocd_apply },
-      { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = local.argocd_apply },
-      # The operators' ClusterRoles, bindings and the two leader-election Roles.
+      { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = ["get", "list", "watch", "create"] },
+      { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = ["update", "patch"], resourceNames = local.argocd_operator_crds },
+      # Every application in the argocd namespace, read cluster-wide: under respectRBAC strict
+      # the controller's cache lists a kind cluster-wide or silently drops it (no tree, no
+      # prune, no log line), and the chart's Role in argocd does not count (D151 amended).
+      { apiGroups = ["argoproj.io"], resources = ["applications"], verbs = ["get", "list", "watch"] },
+      # The operators' ClusterRoles, bindings, Roles and RoleBindings.
       { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = local.argocd_crud },
-      # A role may only be written or bound by someone who holds its permissions (the
-      # cluster operator's has pods/exec) or may escalate/bind it: only these names.
-      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["escalate"], resourceNames = local.argocd_operator_cluster_roles },
-      { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"], resourceNames = local.argocd_operator_bound_cluster_roles },
+      # No escalate and no bind on any ClusterRole: the controller instead HOLDS what the
+      # operators' ClusterRoles contain (rabbitmq.com above covers rabbitmq-cluster-service-
+      # binding-role; the two rules below and the metrics rule cover messaging-topology-
+      # metrics-auth-role and -metrics-reader), so Kubernetes lets it write and bind them.
+      # Holding them is harmless (token and access reviews, the metrics endpoint), whereas
+      # escalate/bind on a ClusterRole let the controller add VAP/VAPB write to it.
+      { apiGroups = ["authentication.k8s.io"], resources = ["tokenreviews"], verbs = ["create"] },
+      { apiGroups = ["authorization.k8s.io"], resources = ["subjectaccessreviews"], verbs = ["create"] },
+      { nonResourceURLs = ["/metrics"], verbs = ["get"] },
+      # The four Roles, by name. A ClusterRole's resourceNames match in EVERY namespace, so
+      # without P6 the controller could write a Role of these names in kube-system or argocd
+      # and bind itself to it: P6 in Deny (p06-operators-cluster.yaml) admits Roles only in
+      # rabbitmq-system and ryft-rabbitmq. docs/OPERATIONS.md has the alternative.
       { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate", "bind"], resourceNames = local.argocd_operator_roles },
       # The operators' four webhook configurations (ryft-operators project): get, list,
-      # watch and create cannot be limited by name; changing or deleting one can.
+      # watch and create cannot be limited by name; changing or deleting one can. Create is
+      # needed: the first sync (and one after a deletion) applies objects that do not exist
+      # yet, which the API server authorizes as create. A webhook with a `url` would receive
+      # every matched object, Secrets included: that is P6's to refuse (Deny), see
+      # docs/OPERATIONS.md.
       { apiGroups = ["admissionregistration.k8s.io"], resources = ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"], verbs = ["get", "list", "watch", "create"] },
       { apiGroups = ["admissionregistration.k8s.io"], resources = ["mutatingwebhookconfigurations"], verbs = ["update", "patch", "delete"], resourceNames = local.argocd_operator_mutating_webhooks },
       { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingwebhookconfigurations"], verbs = ["update", "patch", "delete"], resourceNames = local.argocd_operator_validating_webhooks },
@@ -223,10 +254,11 @@ locals {
     { apiGroups = ["rabbitmq.com"], resources = local.argocd_rabbitmq_kinds, verbs = ["get"] },
     { apiGroups = ["apiextensions.k8s.io"], resources = ["customresourcedefinitions"], verbs = ["get"] },
     { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles", "clusterrolebindings", "roles", "rolebindings"], verbs = ["get"] },
-    { apiGroups = [""], resources = ["events"], verbs = ["list", "create"] },
-    { apiGroups = ["argoproj.io"], resources = ["applications"], verbs = ["get", "list", "update", "watch"] },
-    # No write on workloads: the UI is public (D103), so a leaked server token must not be
-    # able to rewrite a pod template. Restarts and deletes are the cluster admin's kubectl.
+    # The Events tab lists the events of a live object in its namespace. Everything the server
+    # writes (Applications, its audit Events) is in the argocd namespace, where the chart's Role
+    # grants it: no cluster-wide write at all, so a leaked token of the public UI (D103) can
+    # neither rewrite a pod template nor forge an Event in another namespace.
+    { apiGroups = [""], resources = ["events"], verbs = ["list"] },
   ]
 
   argocd_values = {
