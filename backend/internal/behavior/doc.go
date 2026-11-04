@@ -5,7 +5,7 @@
 // the store and the api decide only what to load and persist.
 //
 // Invariants:
-//   - Built-in ids are UUIDv5 of the slug in a fixed namespace, so an id is the
+//   - Built-in ids are UUIDv5 of "behavior:"+slug in a fixed namespace, so an id is the
 //     same in every environment and never changes.
 //   - "Unknown" is not "no": a day never saved, or a behavior not sent that day,
 //     does not count as a day without it (D74).

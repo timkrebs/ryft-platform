@@ -4,10 +4,11 @@
 // It must not delete raw rows (the scoring role cannot, D146) or write a stored
 // number under an old ModelVersion.
 //
-// Only the formulas are pure (algorithms.go, sources.go, calibrating.go,
-// trends.go, maxhr.go, version.go and others take loaded values and return
-// values). compute.go, sleep.go, strength.go and workout.go import the store,
-// so the Engine does I/O and its tests need Postgres.
+// Only the Engine does I/O: its methods in compute.go, strength_day.go,
+// workout_dups.go and learn.go call the store. Everything else is pure
+// (algorithms.go, sources.go, calibrating.go, trends.go, maxhr.go, version.go,
+// and the rest of sleep.go, strength.go and workout.go), some of it over the
+// store's row types, which is why those files import store.
 //
 // Invariants:
 //   - Any change that moves a stored number bumps ModelVersion, adds a

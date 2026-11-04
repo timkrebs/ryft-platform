@@ -13,8 +13,8 @@ import (
 // version prefixes every ciphertext, so the key can be rotated later.
 const version byte = 1
 
-// Key is an AES-256-GCM key. It is built only by ParseKey, so a Key in hand
-// has already passed the 32-byte check.
+// Key is an AES-256-GCM key. Build it with ParseKey: it checks the 32 bytes,
+// and a zero Key{} has no cipher and panics on Seal and Open.
 type Key struct{ aead cipher.AEAD }
 
 // ParseKey reads a base64-encoded 32-byte key.

@@ -5,8 +5,9 @@
 //
 // It must not log the authorization code or a token.
 //
-// Invariant: revocation on deletion is a precondition of App Store Review
-// Guideline 5.1.1(v), which is why account deletion calls it.
+// Invariant: Apple requires revocation on deletion (App Store Review Guideline
+// 5.1.1(v)); DELETE /v1/me revokes a stored token after erasing the data. A
+// failed revoke never blocks the deletion; the reconciler retries (D48).
 //
-// See docs/API.md → POST /v1/me/apple-authorization; D39.
+// See docs/API.md → POST /v1/me/apple-authorization; D48.
 package apple

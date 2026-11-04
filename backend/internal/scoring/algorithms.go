@@ -97,7 +97,8 @@ func clamp(v, lo, hi float64) float64 {
 // ---- Recovery ----------------------------------------------------------------
 
 // RecoveryInputs are one night's signals and the baselines they are compared
-// to. A nil signal is missing, not zero: Recovery re-weights what is present.
+// to. A nil or non-positive signal is missing, not zero: Recovery re-weights what
+// is present.
 type RecoveryInputs struct {
 	HRVms    *float64 // overnight HRV (SDNN from HealthKit); compared in log space
 	RHR      *float64
@@ -128,7 +129,8 @@ const (
 	wResp  = 0.05
 )
 
-// Recovery blends the signals present by the weights above into 1..100. The
+// Recovery blends the signals present by the weights above into 1..100 (0 when
+// no signal is present). The
 // weights are calibration constants: moving one moves stored numbers, so it
 // bumps ModelVersion (docs/SCORING.md → Model version).
 func Recovery(in RecoveryInputs) RecoveryResult {
@@ -324,9 +326,9 @@ func LoadFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) StrainResult 
 
 // ---- Sleep -------------------------------------------------------------------
 
-// SleepTotals is one night after the sources are merged (D40). HasStages says
-// whether any source wrote stages: without it the stage minutes are zero
-// because they are unknown, not because the night had none.
+// SleepTotals is one night's sleep from the one source picked for it (D40).
+// HasStages says whether the segments carry stages: without it the stage
+// minutes are zero because they are unknown, not because the night had none.
 type SleepTotals struct {
 	Start, End                                    time.Time
 	InBedMin, AsleepMin, DeepMin, REMMin, CoreMin int

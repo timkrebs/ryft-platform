@@ -4,7 +4,7 @@
 //
 // It must not decide what to send or to whom (notify does) and uses no
 // certificates. Result says whether a token is gone for good so the caller can
-// delete it; this package keeps no token state.
+// delete it; this package keeps no device-token state (it caches only its provider JWT).
 //
 // See D73.
 package apns

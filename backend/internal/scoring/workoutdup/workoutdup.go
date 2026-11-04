@@ -13,16 +13,15 @@ import (
 )
 
 // FoldTolerance is how far apart two copies of one source may start and end
-// and still be one workout. A source that re-writes a
-// workout (Garmin Connect on every sync) keeps its times to the second; 120 s
-// is the brief's figure and leaves room for a re-write that rounds or trims a
-// pause, while two real workouts of one activity are never this close at
-// both ends.
+// and still be one workout. A source that re-writes a workout (Garmin Connect
+// on every sync) keeps its times to the second; 120 s is the brief's figure and
+// leaves room for a re-write that rounds or trims a pause, while two real
+// workouts of one activity are never this close at both ends.
 const FoldTolerance = 120 * time.Second
 
 // FoldOverlapNum and FoldOverlapDen are the fraction (1/2) of the shorter copy
-// that two copies must also overlap by. A re-write overlaps its original by ~100 %; without
-// this, short workouts of one source and activity that follow each other within
+// that two copies must also overlap by. A re-write overlaps its original by
+// ~100 %; without this, short workouts of one source and activity that follow each other within
 // 120 s (intervals logged as six 45-s workouts 60 s apart) would chain into one
 // component and five would be deleted, which cannot be undone. 50 % rather
 // than the cross-source 80 %: within one source a copy is already pinned by
@@ -169,15 +168,15 @@ func newer(a, b Copy) bool {
 
 // Cross-source rule (U3, D147).
 const (
-	// OverlapNum is the numerator of the cross-source overlap fraction. Two
-	// recordings of different sources are one workout when they overlap by at
-	// least 4/5 (80 %) of the shorter one. A
+	// OverlapNum and OverlapDen are the fraction (4/5, 80 %) of the shorter
+	// recording that two recordings of different sources must overlap by to be
+	// one workout. A
 	// watch and a chest-strap app started a minute apart and stopped a minute
 	// apart overlap by > 95 % on a 30-min run; an evening walk that only
 	// touches the end of a run does not reach 80 %. Integers, so the boundary
 	// is exact (no float rounding at 80 %).
 	OverlapNum = 4
-	// OverlapDen is the denominator of the fraction OverlapNum describes.
+	// OverlapDen: see OverlapNum.
 	OverlapDen = 5
 	// MinOwnHR is how many heart-rate samples a recording's own source must
 	// have written inside its window to "have heart rate": one sample is a
