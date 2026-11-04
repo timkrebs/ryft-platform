@@ -165,7 +165,8 @@ tf init "${init_args[@]}" >"$work/init.log" 2>&1 || { cat "$work/init.log" >&2; 
 
 # After init: the modules it downloaded and the providers it locked.
 if [ -d "$mod/.terraform/modules" ]; then
-  trusted=() scan_opts=()
+  # Terraform loads a module's root, not its examples/ or tests/ (registry modules keep samples there).
+  trusted=() scan_opts=(--skip-dir examples --skip-dir tests --skip-dir test)
   refuse_hcl "$mod/.terraform/modules" "a downloaded module"
 fi
 unknown=$(sed -nE 's/^provider "([^"]+)".*/\1/p' "$mod/.terraform.lock.hcl" | grep -vxE 'registry\.terraform\.io/hashicorp/(aws|helm|kubernetes|random)' || true)

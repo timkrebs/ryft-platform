@@ -28,6 +28,7 @@ echo "$*" >> "@LOG@"
 case "$1" in
   init)
     if [ -s "@MOD@" ]; then mkdir -p .terraform/modules/m; cp "@MOD@" .terraform/modules/m/main.tf; fi
+    if [ -s "@MOD@.ex" ]; then mkdir -p .terraform/modules/m/examples/x; cp "@MOD@.ex" .terraform/modules/m/examples/x/main.tf; fi
     printf 'provider "registry.terraform.io/hashicorp/aws" {\n}\n' > .terraform.lock.hcl ;;
   test)
     find . -path ./.terraform -prune -o \( -name '*.tftest.*' -o -name '*.tfmock.*' \) -print | sort > "@SEEN@"
@@ -210,7 +211,12 @@ if grep -q '^test' "$STUB_LOG"; then fail "terraform test ran with a refused dow
 : > "$STUB_LOG"
 printf 'locals { a = 1 }\n' > "$STUB_MOD"
 run || fail "a clean downloaded module was refused: $(cat "$tmp/run.out")"
-: > "$STUB_MOD"
+# its examples/ are not loaded by Terraform and may use path.cwd; its root may not
+printf 'locals { a = path.cwd }\n' > "$STUB_MOD.ex"
+run || fail "a downloaded module's examples/ were scanned: $(cat "$tmp/run.out")"
+printf 'locals { a = file("x") }\n' > "$STUB_MOD"
+if run; then fail "a downloaded module's root that reads a file was accepted"; fi
+rm -f "$STUB_MOD.ex"; : > "$STUB_MOD"
 
 # --- the optional container: init with a network, test with none, only the work directory mounted
 mkdir -p "$tmp/fakebin"

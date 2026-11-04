@@ -2,7 +2,7 @@
 """The tripwire of scripts/lib/tf_values.sh: refuse a Terraform module that can run a program or read
 a credential file when `terraform test` evaluates it.
 
-  scripts/lib/tf_scan.py [--trusted F]... [--files-ok F]... [--allow-files] DIR   exit 0: nothing found; 1: findings (printed
+  scripts/lib/tf_scan.py [--trusted F]... [--files-ok F]... [--allow-files] [--skip-dir N]... DIR   exit 0: nothing found; 1: findings (printed
                                                        as file:line: reason); 2: usage or read error
 
 It reads every *.tf under DIR with a small HCL lexer: comments (#, //, /* */) are removed and string
@@ -19,7 +19,9 @@ does not hide anything and one inside a string is not a block. It refuses
     fileexists, pathexpand, abspath), path.cwd, path.root, any `::` function (provider::, core::) and
     data "local_file", "local_sensitive_file", "terraform_remote_state": unless the file is named by
     --files-ok (byte-identical to this checkout's, decided by the caller) or --allow-files is given
-    (the caller runs Terraform in a container that sees only the work directory, or on a runner);
+    (the caller runs Terraform in a container that sees only the work directory, or on a runner).
+A --skip-dir NAME is a directory name not walked: a downloaded module's examples/ and tests/ are not
+loaded by Terraform (a registry module's examples use path.cwd and the like);
   - any *.tf.json (not read by this lexer), and a file it cannot lex (an unterminated string or comment).
 
 A --trusted FILE (byte-identical to the file of the checkout that runs the script, decided by the
@@ -177,13 +179,15 @@ def scan_file(path, files_ok=False):
 
 
 def main(argv):
-    trusted, files_ok, allow_files, args = set(), set(), False, []
+    trusted, files_ok, allow_files, skip_dirs, args = set(), set(), False, set(), []
     it = iter(argv)
     for a in it:
         if a == "--trusted":
             trusted.add(os.path.realpath(next(it, "")))
         elif a == "--files-ok":
             files_ok.add(os.path.realpath(next(it, "")))
+        elif a == "--skip-dir":
+            skip_dirs.add(next(it, ""))
         elif a == "--allow-files":
             allow_files = True
         else:
@@ -193,7 +197,7 @@ def main(argv):
         return 2
     bad = 0
     for dirpath, dirnames, filenames in os.walk(args[0]):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
+        dirnames[:] = [d for d in dirnames if d != ".git" and d not in skip_dirs]
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
             if name.endswith(".tf.json"):
