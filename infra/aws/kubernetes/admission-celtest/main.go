@@ -52,6 +52,14 @@ var kinds = map[string]kindInfo{
 	"ApplicationSet":  {"argoproj.io", "v1alpha1", "applicationsets"},
 	"RabbitmqCluster": {"rabbitmq.com", "v1beta1", "rabbitmqclusters"}, "Shovel": {"rabbitmq.com", "v1beta1", "shovels"},
 	"Federation": {"rabbitmq.com", "v1beta1", "federations"}, "Queue": {"rabbitmq.com", "v1beta1", "queues"},
+	// P12 matches every kind, so the cases that pin its refusals need kinds outside the renders.
+	"Event":                   {"", "v1", "events"},
+	"SelfSubjectAccessReview": {"authorization.k8s.io", "v1", "selfsubjectaccessreviews"},
+	"SelfSubjectRulesReview":  {"authorization.k8s.io", "v1", "selfsubjectrulesreviews"},
+	"ClusterIssuer":           {"cert-manager.io", "v1", "clusterissuers"},
+	"PriorityClass":           {"scheduling.k8s.io", "v1", "priorityclasses"},
+	"SubjectAccessReview":     {"authorization.k8s.io", "v1", "subjectaccessreviews"},
+	"EventsK8s":               {"events.k8s.io", "v1", "events"}, // the Event of events.k8s.io; used as ResKind
 }
 
 type compiled struct {
@@ -151,15 +159,15 @@ func ruleMatches(rules []v1.NamedRuleWithOperations, info kindInfo, sub string, 
 		}
 		return false
 	}
+	// The API server's own rule (webhook/predicates/rules.Matcher.resource): the entry is split at
+	// the first "/", the resource part matches itself or "*", the subresource part matches itself
+	// or "*" ("" for an entry without one). So "*" is every resource but no subresource, "pods/*"
+	// every subresource of pods (the main resource is not one), and "*/*" everything, main
+	// resources included (P12 relies on that).
 	resOK := func(list []string) bool {
 		for _, x := range list {
-			if sub == "" {
-				if x == info.resource || x == "*" {
-					return true
-				}
-				continue
-			}
-			if x == info.resource+"/"+sub || x == info.resource+"/*" || x == "*/"+sub || x == "*/*" {
+			res, subx, _ := strings.Cut(x, "/")
+			if (res == "*" || res == info.resource) && (subx == "*" || subx == sub) {
 				return true
 			}
 		}
@@ -184,6 +192,14 @@ type Req struct {
 	Obj   map[string]any
 	Old   map[string]any
 	NsObj map[string]any // namespace object (labels, deletionTimestamp)
+	// For a request without an object (a CONNECT, whose object is the options): the kind of
+	// `kinds` the request is about, and the namespace and name from the request path.
+	ResKind string
+	Ns      string
+	Name    string
+	// A Namespace create: the request path has no namespace, so the API server may send none. The
+	// harness otherwise gives a Namespace its own name, as the apiserver does for UPDATE and DELETE.
+	NoNs bool
 }
 
 type Result struct {
@@ -198,15 +214,27 @@ func (c *chart) eval(r Req) []Result {
 		src = r.Old
 	}
 	kind, _ := src["kind"].(string)
+	if r.ResKind != "" {
+		kind = r.ResKind
+	}
 	info, ok := kinds[kind]
 	if !ok {
 		panic("unknown kind " + kind)
 	}
-	md := src["metadata"].(map[string]any)
+	md, _ := src["metadata"].(map[string]any)
 	name, _ := md["name"].(string)
 	ns, _ := md["namespace"].(string)
 	if kind == "Namespace" {
 		ns = name
+	}
+	if r.Name != "" {
+		name = r.Name
+	}
+	if r.Ns != "" {
+		ns = r.Ns
+	}
+	if r.NoNs {
+		ns = ""
 	}
 	var out []Result
 	for _, b := range c.bindings {
@@ -225,7 +253,11 @@ func (c *chart) eval(r Req) []Result {
 		if r.Old != nil {
 			old = &unstructured.Unstructured{Object: deepCopy(r.Old)}
 		}
-		gvk := schema.GroupVersionKind{Group: info.group, Version: info.version, Kind: kind}
+		gvkKind := kind
+		if k, _ := src["kind"].(string); k != "" {
+			gvkKind = k // a subresource's object (a Scale, a TokenRequest) has its own kind
+		}
+		gvk := schema.GroupVersionKind{Group: info.group, Version: info.version, Kind: gvkKind}
 		gvr := schema.GroupVersionResource{Group: info.group, Version: info.version, Resource: info.resource}
 		var attrs admission.Attributes
 		ui := &user.DefaultInfo{Name: r.User}
@@ -234,8 +266,10 @@ func (c *chart) eval(r Req) []Result {
 			attrs = admission.NewAttributesRecord(obj, old, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
 		case obj != nil:
 			attrs = admission.NewAttributesRecord(obj, nil, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
-		default:
+		case old != nil:
 			attrs = admission.NewAttributesRecord(nil, old, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
+		default: // a CONNECT: no object at all (a typed nil would not be a nil interface)
+			attrs = admission.NewAttributesRecord(nil, nil, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
 		}
 		va := &admission.VersionedAttributes{Attributes: attrs, VersionedKind: gvk}
 		if obj != nil {
@@ -543,6 +577,7 @@ func main() {
 	runNegative(c)
 	runArgo(c)
 	runHardening(c)
+	runArgoScope(c)
 	checkGolden()
 	writeFixtures()
 	fmt.Println("cases:", len(results), "failures:", failures)
@@ -573,6 +608,12 @@ func runPositive(c *chart) {
 		}
 		md := d["metadata"].(map[string]any)
 		user := argoCtl
+		// Not Argo CD's writes (P12 judges Argo CD's identities): the AppProjects are Terraform's
+		// (B2, deploy/argocd/project.yaml), and the generated objects of the monitoring namespace
+		// have no Argo app: the user applies them (make monitoring-apply).
+		if kind == "AppProject" || md["namespace"] == "monitoring" {
+			user = admin
+		}
 		label := fmt.Sprintf("%s %v/%v", kind, md["namespace"], md["name"])
 		var want []string
 		if kind == "ClusterRole" && grantsWhatT12gRemoved(d) {

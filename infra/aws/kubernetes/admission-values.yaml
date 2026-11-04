@@ -25,7 +25,7 @@ netpol:
 # The action of each binding: audit (Warn+Audit) or deny (Deny+Audit). Deny is never
 # combined with Warn. Phase 1 is all audit; Phase 2 changes one step per reviewed PR:
 #   A: vso, operators-cluster, broker          B: namespaces, workloads-templates, netpol,
-#   auth-env, traefik   C: workloads-pods, operator-reach   D: argocd, argocd-operation
+#   auth-env, traefik, argo-scope   C: workloads-pods, operator-reach   D: argocd, argocd-operation
 actions:
   vso: audit
   # P6 refuses the vendored cluster-wide ClusterRoles of both RabbitMQ operators, so T12-g
@@ -44,3 +44,9 @@ actions:
   operator-reach: audit
   argocd: audit
   argocd-operation: audit
+  # P12 (ryft-argo-scope): where Argo CD's service accounts may write. Step B: it blocks only
+  # Argo writes (deploys, never running Pods), but its failure reaches every app, so it goes to
+  # deny only after Phase 1 showed no `ryft-argo-scope` finding (docs/OPERATIONS.md -> P12). The
+  # release depends on helm_release.argocd (admission.tf) so that on a fresh cluster Argo CD has
+  # written its first server.secretkey before any policy exists.
+  argo-scope: audit

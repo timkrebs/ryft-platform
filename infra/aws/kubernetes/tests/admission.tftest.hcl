@@ -65,7 +65,7 @@ mock_provider "random" {
 mock_provider "kubernetes" {}
 
 # The cluster as it should look after a Phase 1 apply, and the chart's render of it: the
-# same eleven policies and twelve bindings, every binding Warn+Audit. The drift checks compare
+# same twelve policies and thirteen bindings, every binding Warn+Audit. The drift checks compare
 # the two; a run that wants to see a drift overrides one side.
 override_data {
   target = data.helm_template.admission
@@ -293,6 +293,26 @@ override_data {
 
         ---
         apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: ryft-argo-scope
+        spec:
+          failurePolicy: Fail
+          matchConstraints:
+            resourceRules:
+              - resources: ["*/*"]
+                operations: [CREATE]
+          matchConditions:
+            - name: m
+              expression: "true"
+          variables:
+            - name: v
+              expression: "true"
+          validations:
+            - expression: "true"
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
         kind: ValidatingAdmissionPolicyBinding
         metadata:
           name: ryft-vso
@@ -406,6 +426,15 @@ override_data {
         spec:
           policyName: ryft-argocd-operation
           validationActions: [Warn, Audit]
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-argo-scope
+        spec:
+          policyName: ryft-argo-scope
+          validationActions: [Warn, Audit]
       EOT
     }
   }
@@ -426,6 +455,7 @@ override_data {
       { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
     ]
   }
 }
@@ -446,6 +476,7 @@ override_data {
       { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+      { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
     ]
   }
 }
@@ -473,8 +504,8 @@ run "the_committed_file_names_every_binding_of_the_chart" {
   command = plan
 
   assert {
-    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 12
-    error_message = "admission-values.yaml must set an action for each of the chart's twelve bindings (P1-P11, P2 twice)"
+    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 13
+    error_message = "admission-values.yaml must set an action for each of the chart's thirteen bindings (P1-P12, P2 twice)"
   }
 
   assert {
@@ -498,7 +529,7 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 12
+    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 13
     error_message = "by default every binding is Warn+Audit"
   }
 
@@ -528,8 +559,8 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = length(local.admission_rendered_policies) == 11 && length(local.admission_rendered_bindings) == 12
-    error_message = "the mocked render holds the eleven policies and twelve bindings the drift checks compare"
+    condition     = length(local.admission_rendered_policies) == 12 && length(local.admission_rendered_bindings) == 13
+    error_message = "the mocked render holds the twelve policies and thirteen bindings the drift checks compare"
   }
 }
 
@@ -723,6 +754,77 @@ run "argocd_and_vpc_values_follow_their_sources" {
   }
 }
 
+run "argo_scope_ships_in_audit_with_the_scope_of_the_design" {
+  command = plan
+
+  assert {
+    condition     = contains(local.admission_keys, "argo-scope") && local.admission_file.actions["argo-scope"] == "audit" && local.admission_effective["argo-scope"] == ["Warn", "Audit"]
+    error_message = "P12 ships in Warn+Audit like the other policies (Deny is a reviewed step, Step B)"
+  }
+
+  assert {
+    condition = (
+      local.admission_defaults.argoScope.namespacePrefixes == ["ryft-"] &&
+      local.admission_defaults.argoScope.namespaces == ["rabbitmq-system"] &&
+      local.admission_defaults.argoScope.namespaceObjects == ["ryft-web", "rabbitmq-system"] &&
+      local.admission_defaults.argoScope.crdGroups == ["rabbitmq.com"] &&
+      local.admission_defaults.argoScope.serverSecret == "argocd-secret" &&
+      local.admission_defaults.argoScope.serverInitKey == "server.secretkey" &&
+      local.admission_defaults.argoScope.redisSecretInit.serviceAccount == "argocd-redis-secret-init" &&
+      local.admission_defaults.argoScope.redisSecretInit.secret == "argocd-redis"
+    )
+    error_message = "the chart's argoScope defaults differ from the design (p12-argo-scope.md): a change of where Argo CD may write is a reviewed decision"
+  }
+
+  assert {
+    condition     = !contains(keys(local.admission_file), "argoScope")
+    error_message = "production overrides nothing of argoScope (the chart's defaults are the scope); an override needs its own reason in admission-values.yaml and this test"
+  }
+
+  assert {
+    condition     = can(regex("depends_on\\s*=\\s*\\[helm_release\\.argocd\\]", file("${path.module}/admission.tf")))
+    error_message = "helm_release.admission_policy must depend on helm_release.argocd: on a fresh cluster Argo CD writes its first server.secretkey before any policy exists (P12)"
+  }
+}
+
+run "argo_scope_deny_is_deny_and_audit_and_break_glass_wins" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+    admission_actions = { argo-scope = "deny" }
+  }
+
+  expect_failures = [check.admission_enabled_override]
+
+  assert {
+    condition     = local.admission_effective["argo-scope"] == ["Deny", "Audit"] && yamldecode(helm_release.admission_policy[0].values[0]).actions["argo-scope"] == "deny"
+    error_message = "argo-scope on deny must reach the chart as deny and be Deny+Audit"
+  }
+
+  assert {
+    condition     = length(helm_release.admission_policy) == 1
+    error_message = "no guard concerns argo-scope: its deny needs nothing the tree lacks"
+  }
+}
+
+run "argo_scope_under_break_glass_is_warn_and_audit" {
+  command = plan
+
+  variables {
+    admission_enabled     = true
+    admission_break_glass = true
+    admission_actions     = { argo-scope = "deny" }
+  }
+
+  expect_failures = [check.admission_enabled_override]
+
+  assert {
+    condition     = local.admission_effective["argo-scope"] == ["Warn", "Audit"] && output.admission_binding_actions["argo-scope"] == ["Warn", "Audit"]
+    error_message = "break-glass must give P12 Warn+Audit too"
+  }
+}
+
 run "p7_has_no_projects_until_t12b" {
   command = plan
 
@@ -880,11 +982,45 @@ run "server_defaults_are_not_drift" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = {}, objectSelector = {}, matchPolicy = "Equivalent" } } },
       ]
     }
   }
 
   expect_failures = [check.admission_enabled_override]
+}
+
+# P12's binding has no matchResources of its own (it matches everything): a live binding that
+# carries a namespace selector is a patched binding that excludes namespaces from the policy.
+run "drift_p12_binding_patched_with_a_namespace_selector" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_bindings
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { policyName = "ryft-operators-cluster", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-broker" }, spec = { policyName = "ryft-broker", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-templates" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["deployments"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-netpol" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { policyName = "ryft-auth-env", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-traefik" }, spec = { policyName = "ryft-traefik", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-pods" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["pods"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "NotIn", values = ["kube-system"] }] } } } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
 }
 
 run "operators_cluster_deny_needs_t12g" {

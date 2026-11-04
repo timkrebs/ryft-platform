@@ -235,7 +235,8 @@ func runHardening(c *chart) {
 	}
 	upd("carve-out: P7 secret-type label added to a deleting Secret", argoSrv,
 		sec(`{"argocd.argoproj.io/secret-type":"repository"}`), sec(""), "P7: argocd-server must not write Secrets")
-	upd("carve-out: a deleting Secret loses only its finalizer", argoSrv, set(sec(""), "metadata/finalizers", jv(`[]`)), sec(""))
+	// P7 does not judge it (the carve-out); P12 has no carve-out and refuses the server a Secret in argocd.
+	upd("carve-out: a deleting Secret loses only its finalizer", argoSrv, set(sec(""), "metadata/finalizers", jv(`[]`)), sec(""), "P12: argocd-server writes only")
 	k = cr()
 	oldK := deleting(deepCopy(k))
 	newK := deepCopy(oldK)

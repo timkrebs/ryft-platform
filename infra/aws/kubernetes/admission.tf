@@ -1,5 +1,5 @@
-# Admission policies for ryft-prod-euc1 (D120): eleven ValidatingAdmissionPolicies P1-P11
-# and their bindings, from the local chart charts/admission-policy, in kube-system. The
+# Admission policies for ryft-prod-euc1 (D120): twelve ValidatingAdmissionPolicies P1-P12
+# and their thirteen bindings, from the local chart charts/admission-policy, in kube-system. The
 # production values are committed in admission-values.yaml (a reviewed PR, then your apply);
 # `enabled: false` there creates nothing. Bindings are exempt from admission, so RBAC guards
 # them (T12-f) and the break-glass is yours alone: kubectl patch or delete a binding, then
@@ -37,6 +37,12 @@ locals {
   # The decoded deploy/argocd/project.yaml documents P7 compares AppProjects with. T12-b
   # (Terraform-owned AppProjects) wires them; until then P7 has no constant.
   admission_projects = []
+
+  # What the chart ends up with for the pieces P12 (argoScope) and the Argo CD identities share: the
+  # chart's defaults, then the committed file (production overrides none of them today).
+  admission_argocd_namespace    = try(local.admission_file.argocd.namespace, local.admission_defaults.argocd.namespace)
+  admission_operators_namespace = try(local.admission_file.operators.namespace, local.admission_defaults.operators.namespace)
+  admission_argo_scope          = merge(local.admission_defaults.argoScope, try(local.admission_file.argoScope, {}))
 
   # T12-g's file; operators-cluster on deny is refused without it (P6 refuses the release's
   # cluster-wide roles). The variable lets a test point elsewhere.
@@ -145,6 +151,13 @@ resource "helm_release" "admission_policy" {
 
   values = [yamlencode(local.admission_values)]
 
+  # P12 (ryft-argo-scope) matches every write of Argo CD's service accounts, and argocd-server writes
+  # the first server.secretkey of argocd-secret on its first start. On a fresh cluster (a rebuild)
+  # Argo CD must therefore be installed and started before any policy exists; the exemption in P12
+  # covers a later recreate of the Secret, not an install under Deny. No data flows between the two
+  # releases, so this is an ordering only (it also orders their destroy: the policies go first).
+  depends_on = [helm_release.argocd]
+
   lifecycle {
     # A deny that would refuse every request of its kind. The chart refuses to render these
     # too; here the plan stops before Helm runs.
@@ -187,6 +200,24 @@ check "admission_vault_address" {
   }
 }
 
+# P12 (ryft-argo-scope) matches Argo CD's service accounts by the username prefix of their namespace,
+# and a policy that matches nothing refuses nothing, silently. The prefix follows the namespace of
+# the argocd release; the scope lists must hold the namespaces Argo CD's apps are synced into.
+check "admission_argo_scope" {
+  assert {
+    condition = (
+      local.admission_argocd_namespace == kubernetes_namespace_v1.argocd.metadata[0].name &&
+      contains(local.admission_argo_scope.namespaces, local.admission_operators_namespace) &&
+      contains(local.admission_argo_scope.namespaceObjects, local.admission_operators_namespace) &&
+      alltrue([
+        for n in local.admission_argo_scope.namespaceObjects :
+        contains(local.admission_argo_scope.namespaces, n) || anytrue([for p in local.admission_argo_scope.namespacePrefixes : startswith(n, p)])
+      ])
+    )
+    error_message = "argocd.namespace in admission-values.yaml differs from the namespace of the argocd release (P12 would match no Argo CD request), or argoScope does not cover the operators' namespace, or lists a Namespace object outside its own scope (Argo CD could create the Namespace and nothing in it)."
+  }
+}
+
 check "admission_enabled_override" {
   assert {
     condition     = var.admission_enabled == null
@@ -223,7 +254,7 @@ check "admission_binding_drift" {
 check "admission_policy_drift" {
   assert {
     condition = !local.admission_enabled ? true : (
-      length(local.admission_rendered_policies) == 11 &&
+      length(local.admission_rendered_policies) == 12 &&
       length(local.admission_live_policies) == length(local.admission_rendered_policies) &&
       alltrue([
         for name, want in local.admission_rendered_policies : (

@@ -5,7 +5,7 @@ spliced in with toJson, which gives CEL string, list and map literals.
 
 {{- /* Fails the render on a value the chart cannot honour. */ -}}
 {{- define "admission.validate" -}}
-{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" -}}
+{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" "argo-scope" -}}
 {{- if not .Values.vaultAddress -}}{{- fail "vaultAddress is required (admission-values.yaml)" -}}{{- end -}}
 {{- if not (hasPrefix "https://" .Values.vaultAddress) -}}{{- fail "vaultAddress must be an https:// URL" -}}{{- end -}}
 {{- range $k, $v := .Values.actions -}}
@@ -14,6 +14,16 @@ spliced in with toJson, which gives CEL string, list and map literals.
 {{- end -}}
 {{- range $known -}}
 {{- if not (hasKey $.Values.actions .) -}}{{- fail (printf "actions.%s is missing" .) -}}{{- end -}}
+{{- end -}}
+{{- /* P12: a prefix of '' would put every namespace in the controller's scope; the secret and key names are what the init exemption compares. */ -}}
+{{- range .Values.argoScope.namespacePrefixes -}}
+{{- if not . -}}{{- fail "argoScope.namespacePrefixes must not hold an empty prefix (it would put every namespace in Argo CD's scope)" -}}{{- end -}}
+{{- end -}}
+{{- range list "serverSecret" "serverInitKey" -}}
+{{- if not (index $.Values.argoScope .) -}}{{- fail (printf "argoScope.%s is required" .) -}}{{- end -}}
+{{- end -}}
+{{- range list "serviceAccount" "secret" -}}
+{{- if not (index $.Values.argoScope.redisSecretInit .) -}}{{- fail (printf "argoScope.redisSecretInit.%s is required" .) -}}{{- end -}}
 {{- end -}}
 {{- range .Values.projects -}}
 {{- if not (and .metadata .metadata.name .spec) -}}{{- fail "projects must be AppProject documents with metadata.name and spec" -}}{{- end -}}
