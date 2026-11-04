@@ -85,6 +85,77 @@ setup hold-ok
 insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 bad migration, fix in #99"; git commit -qam "good hold"
 yes "a hold line of the shape hold.sh writes"
 
+# Diff headers are read only BEFORE the first hunk. A content line that looks like a header (an added
+# line `++ x` is `+++ x` in the diff, a removed `-- x` is `--- x`) is a changed line, checked like any
+# other: next to a real pin change it must make the diff "not promote's" (it was skipped unchecked).
+setup smuggle-add
+pin services "$(short)"
+insert_before 'images:' '++ smuggled line'; git commit -qam "smuggle"
+no "an added line '++ ...' beside a real pin change"
+setup smuggle-add-path
+pin services "$(short)"
+insert_before 'images:' "++ b/$OVERLAY"; git commit -qam "smuggle"
+no "an added line that reads like the +++ b/<overlay> header"
+setup smuggle-del
+insert_before 'images:' '-- a line that starts with two dashes'; git commit -qam "dashes"; base=$(git rev-parse HEAD)
+pin services "$(short)"
+delete_first '^-- a line that starts'; git commit -qam "remove the dashes"
+no "a removed line '-- ...' beside a real pin change"
+setup smuggle-del-path
+insert_before 'images:' "-- a/$OVERLAY"; git commit -qam "dashes"; base=$(git rev-parse HEAD)
+pin services "$(short)"
+delete_first '^-- a/'; git commit -qam "remove the dashes"
+no "a removed line that reads like the --- a/<overlay> header"
+setup smuggle-hunk
+pin services "$(short)"
+insert_before 'images:' '@@ -1 +1 @@'; git commit -qam "hunk"
+no "an added line that reads like a hunk header"
+setup smuggle-only
+insert_before 'images:' '++ smuggled line'; git commit -qam "smuggle alone"
+no "a smuggled line without any pin change"
+setup smuggle-diff
+pin services "$(short)"
+insert_before 'images:' 'diff --git a/x b/x'; git commit -qam "smuggle"
+no "an added line that reads like a diff --git header"
+
+# Other parsing slips: the end of the file, line endings, blanks, binary content, a pin moved elsewhere.
+delete_last_newline() { printf '%s' "$(cat "$OVERLAY")" > "$OVERLAY.new" && mv "$OVERLAY.new" "$OVERLAY"; }
+setup no-newline
+pin services "$(short)"
+delete_last_newline; git commit -qam "no newline at the end"
+no "a pin change plus a missing newline at the end of the file"
+setup crlf-pin
+awk 'done == 0 && /newTag: "[0-9a-f]+"/ { sub(/"$/, "\"\r"); done = 1 } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "crlf"
+no "a pin with a carriage return"
+setup crlf-file
+sed -e 's/$/\r/' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "crlf file"
+no "the whole file with CRLF line endings"
+setup trailing-blank
+edit_first 'newTag: "[0-9a-f]+"' '    newTag: "1234567" '; git commit -qam "trailing blank"
+no "a pin with a trailing blank"
+setup reindent
+awk 'done == 0 && /^    newTag: "[0-9a-f]+"$/ { print "      " substr($0, 5); done = 1; next } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "reindent"
+no "a re-indented pin"
+setup tab-indent
+awk 'done == 0 && /^    newTag: "[0-9a-f]+"$/ { print "\t" substr($0, 5); done = 1; next } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "tab"
+no "a pin indented with a tab"
+setup hold-indent
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "    # hold: web 2026-10-23 reason"; git commit -qam "deep hold"
+no "a hold line indented differently from the one hold.sh writes"
+setup pin-moved
+delete_first 'newTag: "[0-9a-f]+"'
+insert_before '  - name: ghcr.io/timkrebs/ryft/api' '    newTag: "1234567"'; git commit -qam "moved pin"
+no "a pin deleted in one place and added in another (balanced overall, not in place)"
+setup binary
+{ printf '\0'; cat "$OVERLAY"; } > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "binary"
+no "an overlay that git sees as binary"
+setup blank-lines
+insert_before 'images:' ''; git commit -qam "blank"
+no "an added blank line"
+setup two-pins-one-hunk-ok
+pin services web "$(short)"
+yes "pins of both groups (several hunks)"
+
 # Not promote's: any other file, with or without pins; nothing changed at all.
 setup otherfile
 commit_file backend/main.go v2 "backend: change"; base=$(git rev-parse HEAD); pin services "$(short)"
