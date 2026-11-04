@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/timkrebs/ryft/internal/metrics"
 )
 
 func TestReadyzShape(t *testing.T) {
@@ -146,7 +149,7 @@ func TestDrainKeepsServing(t *testing.T) {
 
 func TestStaleText(t *testing.T) {
 	for age, want := range map[time.Duration]string{
-		0: "stale 0s", 59 * time.Second: "stale 59s", 3 * time.Minute: "stale 3m", 90 * time.Second: "stale 1m",
+		0: "stale", 900 * time.Millisecond: "stale", 59 * time.Second: "stale 59s", 3 * time.Minute: "stale 3m", 90 * time.Second: "stale 1m",
 		59 * time.Minute: "stale 59m", 2 * time.Hour: "stale 2h",
 	} {
 		if got := Stale(age).Error(); got != want {
@@ -156,8 +159,49 @@ func TestStaleText(t *testing.T) {
 }
 
 func TestReasonIsShortAndOneLine(t *testing.T) {
-	got := reason(errors.New("dial tcp 10.0.0.1:5671:\n\tconnection refused  " + strings.Repeat("x", 200)))
+	got := oneLine(errors.New("dial tcp 10.0.0.1:5671:\n\tconnection refused  " + strings.Repeat("x", 200)))
 	if strings.ContainsAny(got, "\n\t") || strings.Contains(got, "  ") || len([]rune(got)) != maxReason+3 {
 		t.Errorf("reason = %q (%d runes)", got, len([]rune(got)))
+	}
+}
+
+// A dependency the pod does not need cannot make the probe wait the full deadline.
+func TestOptionalCheckIsCapped(t *testing.T) {
+	g := newRig()
+	g.e.readyTimeout = 2 * time.Second
+	g.parts.Checks = []Check{{Name: "auth", Fn: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := g.serve(t, ctx, g.spec())
+	begun := time.Now()
+	code, body := g.get(t, "/readyz")
+	want := `{"status":"ready","checks":{"auth":"down: timed out after 500ms","broker":"ok","db":"ok"}}`
+	if code != 200 || body != want || time.Since(begun) > time.Second {
+		t.Errorf("/readyz = %d %s after %v\nwant     200 %s within 1 s", code, body, time.Since(begun), want)
+	}
+	cancel()
+	if err := result(t, done); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestCheckPanicIsCountedAndLogged(t *testing.T) {
+	g := newRig()
+	g.parts.Checks = []Check{{Name: "auth", Required: true, Fn: func(context.Context) error { panic("kaboom") }}}
+	before := testutil.ToFloat64(metrics.GoroutinePanics)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := g.serve(t, ctx, g.spec())
+	code, body := g.get(t, "/readyz")
+	if code != 503 || !strings.Contains(body, `"auth":"down: panic: kaboom"`) {
+		t.Errorf("/readyz = %d %s", code, body)
+	}
+	if got := testutil.ToFloat64(metrics.GoroutinePanics) - before; got != 1 {
+		t.Errorf("ryft_goroutine_panics_total rose by %v, want 1", got)
+	}
+	if m := g.logs.find("panic"); len(m) != 1 || m[0]["check"] != "auth" || m[0]["stack"] == "" {
+		t.Errorf("panic line: %v", m)
+	}
+	cancel()
+	if err := result(t, done); err != nil {
+		t.Error(err)
 	}
 }

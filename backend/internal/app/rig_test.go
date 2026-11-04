@@ -149,8 +149,11 @@ type rig struct {
 
 	loadErr, poolErr, busErr, buildErr, httpErr error
 	poolBlocks                                  bool
+	noOutbox                                    bool
 	parts                                       Parts
-	build                                       func(ctx context.Context) // sees Build's ctx
+	build                                       func(ctx context.Context) error // sees Build's ctx; its error is Build's
+
+	exits []int // the codes the watchdog asked for
 
 	mu    sync.Mutex
 	addrs map[string]string
@@ -208,26 +211,34 @@ func newRig() *rig {
 			g.mu.Unlock()
 			return &recListener{Listener: ln, rec: g.rec, tag: name + " closed"}, nil
 		},
-		readyTimeout: 2 * time.Second,
-		launched:     g.rec.add,
+		exit: func(code int) {
+			g.mu.Lock()
+			g.exits = append(g.exits, code)
+			g.mu.Unlock()
+		},
+		readyTimeout:   2 * time.Second,
+		launched:       g.rec.add,
+		consumerMargin: consumerMargin, stepWait: stepWait, afterClose: afterClose,
 	}
 	return g
 }
 
 func (g *rig) spec() Spec {
 	return Spec{
-		Name: "svc", Outbox: true,
+		Name: "svc", Outbox: !g.noOutbox,
 		Load: func(*slog.Logger) error {
 			g.rec.add("load")
 			return g.loadErr
 		},
 		Build: func(ctx context.Context, d Deps) (Parts, error) {
 			g.rec.add("build")
-			if d.Outbox == nil || d.Pool == nil || d.Bus == nil {
-				return Parts{}, errors.New("Build got incomplete Deps")
+			if (d.Outbox != nil) == g.noOutbox || d.Pool == nil || d.Bus == nil || d.ConsumerDrain <= 0 {
+				return Parts{}, errors.New("Build got the wrong Deps")
 			}
 			if g.build != nil {
-				g.build(ctx)
+				if err := g.build(ctx); err != nil {
+					return Parts{}, err
+				}
 			}
 			return g.parts, g.buildErr
 		},
@@ -247,6 +258,12 @@ func (g *rig) serve(t *testing.T, ctx context.Context, s Spec) <-chan error {
 	done := g.run(ctx, s)
 	eventually(t, func() bool { return g.addr("http") != "" }, "the listener")
 	return done
+}
+
+func (g *rig) exitCodes() []int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]int(nil), g.exits...)
 }
 
 func (g *rig) addr(name string) string {

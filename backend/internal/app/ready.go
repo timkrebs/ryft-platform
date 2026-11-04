@@ -4,16 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/metrics"
 )
 
-// maxReason is the longest reason /readyz shows for a failed check.
+// maxReason is the longest reason /readyz shows for a failed check, and the longest
+// error text the shutdown logs.
 const maxReason = 120
+
+// optionalTimeout caps a check that is not required.
+const optionalTimeout = 500 * time.Millisecond
 
 // Check is one dependency /readyz reports by name.
 type Check struct {
@@ -24,13 +31,16 @@ type Check struct {
 
 // Stale is the error a Check returns for a dependency that is failing but still
 // served from what it has cached (JWKS keys past their refresh). It shows as
-// "stale 3m" and counts as ok.
+// "stale 3m" and counts as ok. It is what the design called Degraded(err): the age
+// is the whole reason, so there is no error to wrap.
 func Stale(age time.Duration) error { return staleError{age} }
 
 type staleError struct{ age time.Duration }
 
 func (e staleError) Error() string {
 	switch {
+	case e.age < time.Second:
+		return "stale" // no age worth showing: never "stale 0s"
 	case e.age < time.Minute:
 		return fmt.Sprintf("stale %ds", int(e.age.Seconds()))
 	case e.age < time.Hour:
@@ -51,12 +61,12 @@ type readiness struct {
 
 // readyz answers 200 when every required check passes and 503 otherwise, and 503
 // while draining. The status code is what probes read; the body is for people.
-func readyz(checks []Check, draining *atomic.Bool, timeout time.Duration) http.HandlerFunc {
+func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := readiness{Status: "ready", Checks: make(map[string]string, len(checks)), RequestID: w.Header().Get(httpx.RequestIDHeader)}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		for i, err := range runChecks(ctx, checks, timeout) {
+		for i, err := range runChecks(ctx, log, checks, timeout) {
 			c := checks[i]
 			var stale staleError
 			switch {
@@ -65,7 +75,7 @@ func readyz(checks []Check, draining *atomic.Bool, timeout time.Duration) http.H
 			case errors.As(err, &stale):
 				body.Checks[c.Name] = stale.Error()
 			default:
-				why := reason(err)
+				why := oneLine(err)
 				body.Checks[c.Name] = "down: " + why
 				if c.Required && body.Error == "" {
 					body.Status, body.Error = "unready", c.Name+": "+why
@@ -85,15 +95,29 @@ func readyz(checks []Check, draining *atomic.Bool, timeout time.Duration) http.H
 
 // runChecks runs every check at once and returns their errors in order. A check
 // still running when ctx ends reads "timed out after <timeout>"; its goroutine ends
-// with it, as the check was given the same ctx.
-func runChecks(ctx context.Context, checks []Check, timeout time.Duration) []error {
+// with it, as the check was given the same ctx. A check that is not required gets
+// at most optionalTimeout: a dependency the pod does not need must not make the probe
+// slow.
+func runChecks(ctx context.Context, log *slog.Logger, checks []Check, timeout time.Duration) []error {
 	type result struct {
 		i   int
 		err error
 	}
 	ch := make(chan result, len(checks))
 	for i, c := range checks {
-		go func() { ch <- result{i, safeCheck(ctx, c.Fn)} }()
+		limit := timeout
+		if !c.Required {
+			limit = min(limit, optionalTimeout)
+		}
+		go func() {
+			cctx, cancel := context.WithTimeout(ctx, limit)
+			defer cancel()
+			err := safeCheck(cctx, log, c)
+			if err != nil && errors.Is(err, context.DeadlineExceeded) && cctx.Err() != nil {
+				err = fmt.Errorf("timed out after %s", limit)
+			}
+			ch <- result{i, err}
+		}()
 	}
 	errs := make([]error, len(checks))
 	got := make([]bool, len(checks))
@@ -113,17 +137,21 @@ func runChecks(ctx context.Context, checks []Check, timeout time.Duration) []err
 	return errs
 }
 
-func safeCheck(ctx context.Context, fn func(context.Context) error) (err error) {
+// safeCheck runs a check; a panic reads as the check being down, and is counted and
+// logged with its stack as a handler's panic is (httpx.Recover).
+func safeCheck(ctx context.Context, log *slog.Logger, c Check) (err error) {
 	defer func() {
 		if v := recover(); v != nil {
-			err = fmt.Errorf("panic: %v", v)
+			metrics.GoroutinePanics.Inc()
+			log.Error("panic", "check", c.Name, "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			err = &taskPanic{v}
 		}
 	}()
-	return fn(ctx)
+	return c.Fn(ctx)
 }
 
-// reason is err on one line, cut to maxReason characters.
-func reason(err error) string {
+// oneLine is err on one line, cut to maxReason characters.
+func oneLine(err error) string {
 	s := strings.Join(strings.Fields(err.Error()), " ")
 	if r := []rune(s); len(r) > maxReason {
 		s = string(r[:maxReason]) + "..."

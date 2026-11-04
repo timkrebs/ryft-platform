@@ -37,6 +37,11 @@ linters:
           deny:
             - pkg: github.com/timkrebs/ryft/internal/logx/logcheck
               desc: test-only (D114)
+        goleak-tests-only:
+          files: ["!$test"]
+          deny:
+            - pkg: go.uber.org/goleak
+              desc: leak checks run in tests only
         testsupport-tests-only:
           files: ["!$test"]
           deny:

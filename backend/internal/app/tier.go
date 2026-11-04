@@ -30,9 +30,15 @@ func newTier(parent context.Context, log *slog.Logger, msg string, fail func(tas
 	return &tier{log: log, msg: msg, fail: fail, ctx: ctx, cancel: cancel}
 }
 
+// taskPanic is the error of a task that panicked. Main exits 2 for it, as an
+// unrecovered panic does.
+type taskPanic struct{ v any }
+
+func (p *taskPanic) Error() string { return fmt.Sprintf("panic: %v", p.v) }
+
 // run starts fn as the task name. A panic is recovered, counted and logged, and
 // is a failure. So is an error returned while the tier is still running; one
-// returned after stop is the task winding down and is dropped.
+// returned after stop is the task winding down: logged at warn, not a failure.
 func (t *tier) run(name string, fn func(ctx context.Context) error) {
 	if t.launch != nil {
 		t.launch(name)
@@ -44,11 +50,14 @@ func (t *tier) run(name string, fn func(ctx context.Context) error) {
 				panicked = true
 				metrics.GoroutinePanics.Inc()
 				t.log.Error("panic", "task", name, "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
-				err = fmt.Errorf("panic: %v", v)
+				err = &taskPanic{v}
 			}
-			if err != nil && (panicked || t.ctx.Err() == nil) {
+			switch {
+			case err != nil && (panicked || t.ctx.Err() == nil):
 				t.log.Error(t.msg, "task", name, "err", err)
 				t.fail(name, err)
+			case err != nil:
+				t.log.Warn("task ended with error during shutdown", "task", name, "err", oneLine(err))
 			}
 		}()
 		return fn(t.ctx)
