@@ -239,7 +239,7 @@ Sessions are recomputed whenever their day is: after `…/complete`
 (`ryft.session.completed`), after an edit or delete of a completed session
 (`ryft.ingested`, reason `session`), after an import (`ryft.ingested`, reason `import`,
 scored like a sync's days), and by `scoring rescore`. So a change to these constants takes
-effect for history with `scripts/rescore_all.sh`.
+effect for history with `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`.
 
 **Records** (`PersonalRecords`), recomputed from all completed working sets of an exercise
 whenever a session with it is completed, edited, deleted or imported: `e1rm` (Epley as
@@ -359,7 +359,7 @@ for the reference of later sessions); their `muscular_trimp`, `strain`, `volume_
 
 **Why the dependent days are rescored, not left as scored.** A session's load is a pure
 function of the stored history before it. A stored number that disagreed with that function
-would move at the next edit of its day, a recompute or `scripts/rescore_all.sh`, at a time
+would move at the next edit of its day, a recompute or `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`, at a time
 nobody could explain. Rescoring at the import moves it once, when the user did something,
 and `days_touched` names the days. The 90-day window keeps the reach to 90 days after the
 imported sessions; with the best-ever reference it was everything after them, for good.
@@ -479,7 +479,7 @@ efficiency, with efficiency the mean of the last 7 nights, **90** without any an
 below **85**; bedtimes `wake − share · in bed` for 100, 85 and 70 %. Pin: the API example
 (need 512, 569 in bed, 19:31 / 20:56 / 22:22 for a 05:00 wake).
 
-**After a deploy that changes these rules**, rescore history (`scripts/rescore_all.sh`)
+**After a deploy that changes these rules**, rescore history (`KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`)
 so stored quality, consistency, naps and the need terms are filled for past days; days
 not rescored report the whole need as base.
 
@@ -592,7 +592,7 @@ share HRV). The decisions behind the rule (docs/API.md → `calibrating_reason`)
   month ago `no_hrv` on a single night.
 - **`W` counts days with data, not every stored row.** A range or a rescore stores
   every day it covers, also the days before an account's first data
-  (`scripts/rescore_all.sh` goes 400 days back), with nothing in them. Counted, they
+  (`KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` goes 400 days back), with nothing in them. Counted, they
   would make a watch user's first night `no_hrv` (30 rows, none with an HRV), and in
   the synthetic run below the two empty leading days would start `no_hrv` on the 6th
   day with data instead of the 8th. An iPhone alone still counts: its days have steps.
@@ -639,7 +639,7 @@ is picked once and, re-scored, has the window's counts and is not picked again
 not picked for that: filling them through the pass would spend its 50 days a pass on
 the whole history of every active user for hours after the deploy, ahead of the days
 that are really behind, for a field the app reads as "unknown" anyway. They are filled
-by the next score of their day or by `scripts/rescore_all.sh`. `W` is not stored, so a
+by the next score of their day or by `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. `W` is not stored, so a
 reason stale only in `W` is left to the re-score after a change (which treats a day's
 data appearing as a change); the pass re-scores today and yesterday anyway.
 
@@ -685,7 +685,7 @@ those 9, then `no_hrv` on the other 53; HRV every 4th night, `short_history` unt
 bump would announce moved numbers in `GET /v1/model` where none moved, and rows without
 the fields are found by `baseline_hrv_days IS NULL`, not by their version.
 **Rescore**: the 15-minute pass re-scores today and yesterday of every active user, so
-the Today screen has the reason within a pass of the deploy. Older days keep `null` until `scripts/rescore_all.sh`
+the Today screen has the reason within a pass of the deploy. Older days keep `null` until `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`
 (optional; it moves no stored number, it fills the three fields).
 
 ## Model version
@@ -703,7 +703,8 @@ with a changelog entry whose `affects` lists the metrics it moves, and the commi
 message says why. A refactor that keeps every number does not. After the deploy:
 
 ```bash
-scripts/rescore_all.sh        # every user with consent, 400 days; the last line names the version
+# ryft-prod-euc1: the name from `kubectl config get-contexts -o name`, if your alias differs
+KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh   # every user with consent, 400 days; the last line names the version
 ```
 
 `TestChangelog` fails when the newest entry is not `ModelVersion`; `Changelog()`
@@ -750,7 +751,7 @@ primary's strain unchanged). `scripts/synth.py` writes at most one workout a day
 workouts; `--demo`: 39, all one source), so both rules find nothing there: 0 folds, 0 hidden, before = after.
 Production was not read. `changelog.json` carries an empty `affects` for the first time; `Changelog()` now accepts
 `[]` (never a missing key: the app decodes `[String]`). The data-quality bump for night coverage and the floors
-follows as its own version; **rescore** once after the last of the two deploys: `scripts/rescore_all.sh` (400 days,
+follows as its own version; **rescore** once after the last of the two deploys: `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` (400 days,
 every user with consent). Until then a day shows the new count and attachment once it is scored again (a sync, a
 deletion or a fold queues it; the 15-minute pass re-scores today and yesterday).
 
@@ -763,7 +764,7 @@ read nothing but sessions and their sets, so a synthetic run cannot differ (not 
 this change). The calibration tables
 above are the before/after of each rule; the three anchors (11.0, 8.0, 5.1) and every
 2026.10.1 test pass unchanged. Production was not read for this change. **Rescore** after the
-deploy: `scripts/rescore_all.sh` (400 days, every user with consent), so every stored row
+deploy: `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` (400 days, every user with consent), so every stored row
 carries 2026.10.2 and the app does not show two models side by side; until then only rows
 scored again (today and yesterday by the 15-minute pass, imported and dependent days) carry
 it.
@@ -772,7 +773,8 @@ it.
 last 30 scored days), sleep debt and need, consistency and yesterday's strain come from
 the stored days before it. When late data changes one of those on a stored day,
 scoring re-scores the next 30 scored days with the same model, oldest first, never past
-today (a retried event does so even when its own day is already up to date); the
+today (a retried event, or a dead letter replayed with `scripts/dlq.sh`, does so even
+when its own day is already up to date); the
 15-minute pass re-scores days whose `baseline_days` (or one of its two counts) is
 behind their history or whose baseline is missing although the history has the nights. `model_version` stays; a
 re-score never sends a push (D70). A late sample moves later recoveries by 0–2 points;
@@ -794,6 +796,6 @@ readings per night that are averaged (or the latest one is taken), so a second s
 moves the value slightly but never doubles it.
 
 Changing these rules changes stored scores, so it bumps the model version (above).
-After a deploy, rescore history with `scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
+After a deploy, rescore history with `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` (`OPERATIONS.md` → EKS),
 which runs `scoring rescore` for every user with consent; a single user can still use
 `POST /v1/recompute`.

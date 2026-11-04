@@ -1736,6 +1736,8 @@ sent, and whether a second account shares its phone.
 
 ## D99 — The broker's topology, retries and rights, defined once in Go
 
+- **Amended by D150:** a replayed dead letter is marked `x-ryft-replayed` and handled as a redelivery; the
+  key of a delivery from `ryft.events` is its routing key; `dlq.sh` replays only bound keys.
 - **One source:** `internal/events/amqpbus/topology.go`. `go run ./cmd/rabbitmq-topology`
   writes the Topology Operator's objects (`deploy/rabbitmq/topology/topology.yaml`, 63
   objects in sync waves after the cluster) and the definitions compose and the tests
@@ -2155,7 +2157,7 @@ sent, and whether a second account shares its phone.
   to scoring itself could interleave with the user's next events. A duplicate changes nothing
   and stops (D100); a retry or broker redelivery (`events.Redelivered`) re-scores the 30 days
   after its days, so a cascade interrupted half-way is finished. A DLQ replay arrives as a first
-  delivery: follow it with `POST /v1/recompute` (open: a marker in `dlq.sh`).
+  delivery: follow it with `POST /v1/recompute` (until D150: `dlq.sh` marks a replay since then).
 - **Safety net:** the 15-minute pass re-scores about 50 days a pass, round robin, whose stored
   counts are below the nights their window holds or whose baselines are missing. It compares
   counts, not values.
@@ -2999,3 +3001,59 @@ Engine, and fails with the changed fields grouped by field.
   `.gitattributes`, which `scripts/check_bytes.sh` refuses by name (D115: a `working-tree-encoding` can turn text
   into a hidden line break). The files stay expanded; the failing test's grouped report, not the raw JSON diff, is
   what a reviewer reads first.
+
+## D150 — A replayed dead letter is a redelivery; operator scripts name their cluster (amends D99, D112)
+
+- **Why (2026-10-23):** `dlq.sh replay` stripped every header that said a letter had been handled
+  before, so scoring took it as a first delivery and a re-score left half-done by the failed attempts
+  stayed so (D112's open item). And while building the fix, an agent ran `dlq.sh` to read its usage:
+  the script set up its cluster access before parsing the command, and kubectl's current context was
+  production — two Secrets read, a port-forward opened, nothing written (reported to the user).
+- **The marker:** `x-ryft-replayed`, boolean `true`, set by `dlq.sh` on every replayed letter;
+  `amqpbus` marks the ctx with `events.WithRedelivery`. Not a faked `x-ryft-attempt` (the retry count:
+  a replay would start in a later tier or dead-letter on its first failure). Strict: only the exact
+  name with a boolean `true` counts; anything else is ignored and logged with its type, never its
+  value. A replay gets all six attempts again and counts in the redeliveries metric.
+- **What may be replayed:** per dead-letter queue only the keys its consumer is bound for (scoring:
+  `ingested|session.completed`; notify: `scored|session.scored|refresh`), and only a letter whose
+  type equals its key; anything else goes back unchanged and is named. A delivery from `ryft.events`
+  is handled and filed by its routing key (topic permissions constrain it); a type that is neither
+  empty nor that key is a bad event. So a forged type can't be laundered past the permissions by
+  the operator's replay, nor reach another handler.
+- **Letters the broker dead-lettered** (its delivery limit, or the consumer's own copy into the DLQ
+  failed) carry no `Ryft-*` the consumer wrote, so a replay ignores any such header on a letter with an
+  `x-death` entry for the consumer's own queue: the key is that entry's routing key, taken only when the
+  entry's exchange is `ryft.events`, and the type must be empty or equal it. A letter that was retried and
+  then dead-lettered by the broker has an entry from `ryft.requeue` with routing keys `[consumer]` (a
+  retry's copy carries the queue's name); its key is its type, if that is a key the consumer is bound for
+  (the consumer wrote it, checked against the routing key on the first delivery; only consumers may publish
+  into the retry tiers). Anything else is "dead-lettered by the broker: check by hand", with what is wrong
+  named; OPERATIONS has the manual publish. amqpbus drops `x-death`, its `x-first-death-*`/`x-last-death-*`,
+  `Ryft-*` and `x-ryft-attempt` from a first delivery from `ryft.events`, because a publisher sets any
+  header: a forged `x-death` would pick the key, and a forged attempt count of -1 crashed the consumer
+  (`RetryTiers[-1]`) or, large, skipped the retries. `attemptOf` and `tierFor` clamp as a second line.
+- **Residual:** a letter dead-lettered by an image from before this has `Ryft-Subject` = the type its
+  publisher set, not the routing key it arrived with. That image also copied every header the publisher
+  sent, so such a letter can carry a forged `x-death` entry for the consumer's queue too; the script then
+  reads the key from the entry and requires the type to equal it, so the outcome is the same: a letter
+  whose type, `Ryft-Subject` or entry say one bound key and nothing contradicts it is replayed under that
+  key. ingest, which may publish only `ingested`, could have sent a `session.completed` under `ingested`
+  with type `session.completed`, which the old image filed as `session.completed`. OPERATIONS asks for
+  `show` or `purge` before the first replay after the rollout; the DLQ's 14-day TTL ends the window.
+- **No letter lost:** each taken letter is written to its own files, put back on any failure or
+  signal (an uninterruptible way out), or kept with its path printed (`dlq.sh put-back <dir>`);
+  credentials sit in a mode-600 curl config, never in argv; bodies go from files.
+- **Operator scripts name their cluster:** `dlq.sh`, `rescore_all.sh`, `trace.sh` and every Makefile
+  target that reaches a cluster require `KUBE_CONTEXT` (checked against the kubeconfig, announced,
+  passed as `--context` on every call; `scripts/lib/kube.sh`, `kube.mk` with `override`s and the
+  guard in each call's own shell line, so `make -e`/`-i` can't skip it). `k8s-apply-local`,
+  `k8s-delete-local` and a non-production `k8s-rabbitmq` refuse a context that looks like EKS (name,
+  cluster ARN, server, token exec: a heuristic, not a proof; a context that reaches EKS by none of these
+  signs is taken for a local one). `k8s-rabbitmq` takes exactly `deploy/rabbitmq` or the local overlay.
+  A directory a failed replay kept records its source (context or broker URL) and `put-back` refuses
+  another. Arguments are checked before any cluster access.
+- **Consequences:** no `POST /v1/recompute` after a replay once scoring runs an image with this
+  (OPERATIONS says so for the window before). A replay can cost up to six full catch-up re-scores per
+  letter that keeps failing; OPERATIONS has the checklist (one letter first, 16 minutes, the alerts).
+  Plain `kubectl` lines in the runbooks still use the
+  current context: the user's kubeconfig default should not be production (STATUS).

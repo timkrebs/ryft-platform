@@ -47,8 +47,10 @@ this machine; check with `kubectl config current-context`):
    Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
    (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
    (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
-4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
-   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+4. **Rescore:** `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. It runs
+   `kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app rescore -days 400` in the context
+   you name (never the current one; the name from `kubectl config get-contexts -o name`, if your alias differs)
+   and prints the model first. Worked: the last line names `2026.10.2` and
    no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
 5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
    allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
@@ -437,6 +439,9 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
   lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
 - **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
   APNs refusals log a status code and a bare code only (D117).
+- **`dlq.sh` replay** marks a replay as a redelivery (no recompute needed once scoring runs it),
+  replays only bound keys, loses no letter; every operator script and cluster Makefile target
+  needs `KUBE_CONTEXT`, the local targets refuse EKS (D150).
 - **NUL and non-UTF-8 text** gets a `422`/`400` instead of a 500; the sync strips U+0000 and
   accepts the page; raw JSON fields are normalised; a database refusal is alerted (D118).
 
@@ -453,6 +458,10 @@ Yours:
 - **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
   `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
   ConfigMap in `envFrom` and would override the version in force.
+- **kubectl's default context is production** on your machine (it made the 2026-10-23 incident
+  possible, D150): point the default at something harmless, or keep production in its own
+  `KUBECONFIG` file. The RabbitMQ default user's rotation is not required by that incident (the
+  security review); check the EKS audit log query in the PR if you want certainty.
 - **Postgres version:** confirm the hosted major version once (`select version();` in the
   Supabase SQL editor); the repo targets 17 (SUPABASE.md → Postgres version).
 - **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
@@ -476,8 +485,9 @@ Technical:
   images; the services' `images` still use the GHA cache.
 - **scoring** runs two consumers for 10–30 s during a rollout surge: confirm its timer is
   safe, or `maxSurge: 0` for scoring.
-- **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
-  half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
+- **The rest of D150's guard:** plain `kubectl` lines in the OPERATIONS runbooks and `CLAUDE.md`'s
+  `make k8s-apply-eks` example still use the current context; the guard covers the scripts and the
+  Makefile targets.
 - **Alerts miss a counter's first event:** `Panics`, `DeadLetters`, `DeadLetterPublishFailing`,
   `NewFeedback`, `PushFailing`, `APNsRejectsOurKey`, `AccountDeletionIncomplete` and
   `EventsUnroutable` use `increase()` on CounterVecs created at 1, so the first event per label
@@ -923,14 +933,17 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 (cd infra/vault && export VAULT_TOKEN=… && \
   terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
-make k8s-validate && make k8s-apply-eks
-make monitoring-apply                                  # Grafana Cloud collector, after infra/vault has the token
+# Every cluster command names its cluster, per command (D150). ryft-prod-euc1 is the alias the
+# `aws eks update-kubeconfig` above wrote (the name from `kubectl config get-contexts -o name`, if yours differs).
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=ryft-prod-euc1
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1      # Grafana Cloud collector, after infra/vault has the token
 make smoke-prod                                        # after every deploy (OPERATIONS.md → Deploy and roll back)
 make alerts-apply                                      # alert rules into Grafana Cloud (OBSERVABILITY.md → Alerts)
-scripts/rescore_all.sh                                 # after a deploy that changed scoring rules or the model version (Beta: yes)
-kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
+KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh     # after a deploy that changed scoring rules or the model version (Beta: yes)
+kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
 ```
 
 Run `make smoke-supabase` only with the dedicated test user.
 
-Self-hosted (k3s etc.): `make k8s-apply-local` (`OPERATIONS.md` → Self-hosted).
+Self-hosted (k3s etc.): `make k8s-apply-local KUBE_CONTEXT=<your local context>` (`OPERATIONS.md` → Self-hosted); it refuses a
+context that looks like EKS (a heuristic).

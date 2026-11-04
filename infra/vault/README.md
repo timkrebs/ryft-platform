@@ -85,7 +85,8 @@ The state holds every credential this root writes into Vault in plaintext. It li
 the HCP Terraform workspace `ryft-prod-euc1-vault` (execution mode Local): access to that
 workspace is access to every RYFT secret, so keep its team access to yourself.
 
-Then `make k8s-apply-eks` from the repo root applies the generated operator manifests,
+Then `make k8s-apply-eks KUBE_CONTEXT=<context>` from the repo root (break-glass; Argo CD
+normally does it) applies the generated operator manifests,
 waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
 
 **Rotate:**
@@ -94,7 +95,7 @@ waits for every `ryft-secrets`, and deploys (`docs/OPERATIONS.md` → EKS).
   `terraform apply -replace='random_password.db["api"]'` (or `random_password.amqp["api"]`).
   The operator updates the Secrets within `refreshAfter` (1 h) and restarts the
   workloads. For a database password, run the migrate job again so Postgres has the new
-  one: `make k8s-apply-eks`.
+  one: `make k8s-apply-eks KUBE_CONTEXT=<context>`.
 - **The owner password or the Supabase key:** change it in `terraform.tfvars`, then
   `terraform apply`.
 

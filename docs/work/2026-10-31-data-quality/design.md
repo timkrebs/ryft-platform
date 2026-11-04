@@ -266,8 +266,9 @@ sequenceDiagram
 - **U4** Size of `samples`. Read-only, for the user: `SELECT count(*), pg_size_pretty(pg_total_relation_size('samples')) FROM samples;`.
   Under ~5 M rows, 0030 as a plain index in its own file. Above that, add a no-transaction mode to the migrator (a
   `-- ryft:no-transaction` header) and use `CREATE UNIQUE INDEX CONCURRENTLY`, plus a step that drops an INVALID leftover.
-- Fold run in prod is `kubectl exec deploy/ingest -- /ingest fold-workouts -user <reporter> -dry-run`, then the real run,
-  then `rescore_all.sh`. It runs against `ryft-prod-euc1` (set the context deliberately).
+- Fold run in prod is `kubectl --context ryft-prod-euc1 exec deploy/ingest -- /ingest fold-workouts -user <reporter> -dry-run`,
+  then the real run, then `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. The script runs only in the context you
+  name (D150), never kubectl's current one; name it on the `kubectl` lines too.
 - Privacy text: probably no change (no new processor or purpose, and deletions improve accuracy). `hk_id` is a new
   pseudonymous identifier; the security-privacy-reviewer should confirm.
 

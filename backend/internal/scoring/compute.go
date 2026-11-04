@@ -127,10 +127,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 // at most 30 more, not 400×30, and a re-score that changes nothing goes no
 // further than the days asked for; at most MaxRangeDays beyond them.
 //
-// On a redelivered event (events.Redelivered: a retry, or the broker's
-// redelivery) "nothing changed" proves nothing: the attempt before may have
-// written the change and failed before the days after. Then every asked-for
-// day counts as changed, so the retry finishes what the attempt began (D100).
+// On a redelivered event (events.Redelivered: a retry, the broker's
+// redelivery, or a dead letter replayed with scripts/dlq.sh) "nothing
+// changed" proves nothing: the attempt before may have written the change and
+// failed before the days after. Then every asked-for day counts as changed, so
+// the retry finishes what the attempt began (D100).
 func (e *Engine) ComputeDays(ctx context.Context, userID uuid.UUID, days []string) error {
 	_, err := e.computeDays(ctx, userID, days)
 	return err
