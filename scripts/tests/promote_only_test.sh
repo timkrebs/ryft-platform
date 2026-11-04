@@ -156,6 +156,47 @@ setup two-pins-one-hunk-ok
 pin services web "$(short)"
 yes "pins of both groups (several hunks)"
 
+# Shapes the docs name: a calendar-valid date, one hold per group, no command substitution in a reason,
+# the policy literal moved for api and ingest together.
+for d in 2026-02-30 2026-02-29 2026-04-31 2026-11-31; do
+  setup "hold-date-$d"
+  insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web $d reason"; git commit -qam "bad date"
+  no "a hold dated $d"
+done
+setup hold-leap
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2028-02-29 reason"; git commit -qam "leap day"
+yes "a hold dated on a leap day"
+setup policy-date
+sed -i.bak -E "s/PRIVACY_POLICY_VERSION=[0-9-]+\\]/PRIVACY_POLICY_VERSION=2026-02-30]/" "$OVERLAY"; rm -f "$OVERLAY.bak"; git commit -qam "policy"
+no "a policy version that is no calendar date"
+setup policy-api-only
+awk 'done == 0 && /ryft-api,.*PRIVACY_POLICY_VERSION=/ { sub(/PRIVACY_POLICY_VERSION=[0-9-]+/, "PRIVACY_POLICY_VERSION=2026-11-03"); done = 1 } { print }' "$OVERLAY" > "$OVERLAY.new"; mv "$OVERLAY.new" "$OVERLAY"; git commit -qam "api only"
+no "the policy literal moved for api and not for ingest"
+setup two-holds
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 first"
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-24 second"; git commit -qam "two holds"
+no "two hold lines for one group"
+setup holds-two-groups
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' "  # hold: web 2026-10-23 first"
+insert_before '  - name: ghcr.io/timkrebs/ryft/ingest' "  # hold: services 2026-10-23 second"; git commit -qam "one hold per group"
+yes "one hold line per group"
+setup hold-subst
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' '  # hold: web 2026-10-23 run $(id) now'; git commit -qam "substitution"
+no "a hold reason with \$("
+setup hold-backtick
+insert_before '  - name: ghcr.io/timkrebs/ryft/web' '  # hold: web 2026-10-23 run `id` now'; git commit -qam "backtick"
+no "a hold reason with a backtick"
+
+# Two merge bases (a criss-cross merge): `base...head` would pick one, so the answer is no.
+setup crisscross
+root=$(git rev-parse HEAD); git checkout -q -b side-a; commit_file a.txt 1 "a1"; a1=$(git rev-parse HEAD)
+git checkout -q "$root"; git checkout -q -b side-b; commit_file b.txt 1 "b1"; b1=$(git rev-parse HEAD)
+git checkout -q side-a; git merge -q --no-edit "$b1"; a2=$(git rev-parse HEAD)
+git checkout -q side-b; git merge -q --no-edit "$a1"; b2=$(git rev-parse HEAD)
+[ "$(git merge-base --all "$a2" "$b2" | wc -l | tr -d ' ')" = 2 ] || fail "setup: the criss-cross has not two merge bases"
+if ./scripts/promote_only.sh "$a2" "$b2" > "$tmp/out" 2>&1; then fail "two merge bases: expected NOT promote only"; fi
+grep -q 'merge bases' "$tmp/out" || fail "two merge bases: not named in: $(cat "$tmp/out")"
+
 # Not promote's: any other file, with or without pins; nothing changed at all.
 setup otherfile
 commit_file backend/main.go v2 "backend: change"; base=$(git rev-parse HEAD); pin services "$(short)"
