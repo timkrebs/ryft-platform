@@ -8,10 +8,12 @@ import (
 
 // The training import, POST /v1/train/import (docs/API.md, D124-D129).
 
-// Import sources: the request enum of TrainImportRequest.source, closed; a new one
-// arrives additively.
+// ImportSourceAlphaProgression is a value of TrainImportRequest.source, a closed enum: a
+// new source arrives additively.
 const ImportSourceAlphaProgression = "alpha_progression"
 
+// KnownImportSources is the set of TrainImportRequest.source values the import accepts;
+// train.CheckImportRequest refuses any other (422).
 var KnownImportSources = map[string]bool{ImportSourceAlphaProgression: true}
 
 // Import result kinds and statuses (ImportResult), closed in v1. "exercise" is reserved.

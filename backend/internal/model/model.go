@@ -1,5 +1,3 @@
-// Package model holds the wire types shared by the ingest and api services and
-// mirrored 1:1 by the iOS app (see ../app/Ryft/Networking/Models.swift).
 package model
 
 import (
@@ -22,6 +20,9 @@ const (
 	SampleSteps           = "steps"            // count
 )
 
+// KnownSampleTypes is the set of Sample.Type values ingest stores. Any other type is
+// dropped and counted (ignored.unknown_type), so an app that reads a newer HealthKit type
+// keeps syncing instead of failing.
 var KnownSampleTypes = map[string]bool{
 	SampleHeartRate: true, SampleHRVSDNN: true, SampleRestingHR: true,
 	SampleRespiratoryRate: true, SampleSpO2: true, SampleVO2Max: true,
@@ -38,6 +39,8 @@ const (
 	SleepAwake  = "awake"
 )
 
+// KnownSleepStages is the set of SleepSegment.Stage values ingest stores; others are
+// dropped and counted like unknown sample types.
 var KnownSleepStages = map[string]bool{
 	SleepInBed: true, SleepAsleep: true, SleepCore: true, SleepDeep: true, SleepREM: true, SleepAwake: true,
 }
@@ -58,6 +61,8 @@ const (
 	CalibratingNoRHR        = "no_rhr"        // 7+ days with data in the window, no resting HR there or that day
 )
 
+// Sample is one HealthKit quantity reading in a POST /v1/sync upload. Value is in the unit
+// noted at its Type's constant; ID is the handle a later deletion names (D144).
 type Sample struct {
 	Type   string    `json:"type"`
 	Start  time.Time `json:"start"`
@@ -78,6 +83,8 @@ func SampleSpillsToNextDay(typ string) bool {
 	return typ == SampleHRVSDNN || typ == SampleRespiratoryRate || typ == SampleSpO2
 }
 
+// SleepSegment is one HealthKit sleep-analysis interval of one stage in a POST /v1/sync
+// upload.
 type SleepSegment struct {
 	Start          time.Time  `json:"start"`
 	End            time.Time  `json:"end"`
@@ -114,6 +121,8 @@ type UserSource struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
+// Workout is a workout as uploaded by POST /v1/sync and as served by the api. The fields
+// marked read-only are the server's and are ignored on upload.
 type Workout struct {
 	ID         uuid.UUID `json:"id"`
 	Activity   string    `json:"activity"`
@@ -180,6 +189,9 @@ type SyncDeleted struct {
 	Workouts int `json:"workouts"`
 }
 
+// SyncResponse answers POST /v1/sync. Samples, Sleep, Workouts and Days are the original
+// fields and stay for older apps (the contract is additive-only); Accepted, Ignored and
+// Scoring say what was kept, what was not and why, and when scores will be there (D91).
 type SyncResponse struct {
 	Samples  int      `json:"samples"`
 	Sleep    int      `json:"sleep"`
@@ -297,6 +309,8 @@ type DailyScore struct {
 	ScoringState string `json:"scoring_state"`
 }
 
+// DayDetail is GET /v1/days/{day}: one day's score with its sleep, strain and workouts.
+// Sleep and Strain are null, not absent, when the day has no data for them.
 type DayDetail struct {
 	Score    DailyScore   `json:"score"`
 	Sleep    *SleepDetail `json:"sleep"`  // null when no sleep was recorded for the night
@@ -385,6 +399,8 @@ type SleepNeed struct {
 	Total     int `json:"total"`
 }
 
+// SleepDetail is one night with its need term by term and its stage timeline
+// (DayDetail.sleep).
 type SleepDetail struct {
 	SleepSummary
 	Need     SleepNeed       `json:"need"`
@@ -461,6 +477,8 @@ const (
 	MetricNapMin      = "nap_min"
 )
 
+// KnownTrendMetrics is the set of ?metric= values GET /v1/trends accepts (cmd/api/trends.go
+// answers 422 for any other). It has grown additively.
 var KnownTrendMetrics = map[string]bool{
 	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
 	MetricSleepMin: true, MetricHRV: true, MetricRHR: true, MetricSteps: true, MetricActiveKcal: true,
@@ -474,6 +492,7 @@ const (
 	BaseManual  = "manual"
 )
 
+// TrendPoint is one day's value in a Trend or in an exercise's e1RM series.
 type TrendPoint struct {
 	Day   string  `json:"day"`
 	Value float64 `json:"value"`
@@ -509,6 +528,9 @@ type Insight struct {
 	Day      string `json:"day"`    // the day the insight is about
 }
 
+// User is the account row as GET /v1/me serves it, and the user the handlers load once
+// per request (auth.UserFrom). Email and Provider come from the token, not from the
+// client.
 type User struct {
 	ID           uuid.UUID `json:"id"`
 	Name         string    `json:"name"`     // display name; from the sign-in (Apple full name), may be empty
@@ -753,6 +775,9 @@ const (
 // /v1/train/import checks itself too.
 const FlagTrainImport = "train.import"
 
+// UserPatch is PATCH /v1/me. A nil field is left as it is; setting max_hr or
+// sleep_base_min makes the user's value the source (manual) until the matching *_manual
+// field says otherwise.
 type UserPatch struct {
 	TZ    *string `json:"tz,omitempty"`
 	MaxHR *int    `json:"max_hr,omitempty"` // sets the source to manual
@@ -774,7 +799,13 @@ const (
 )
 
 var (
-	BehaviorKinds      = []string{BehaviorYesNo, BehaviorCount, BehaviorTime}
+	// BehaviorKinds is the closed set of Behavior.Kind values (API.md, Journal): the app decodes
+	// it as a Swift enum, so a new member is a breaking change. cmd/api's journal validation and
+	// the built-in seed (db.seed) check it.
+	BehaviorKinds = []string{BehaviorYesNo, BehaviorCount, BehaviorTime}
+	// BehaviorCategories is the closed set of Behavior.Category values (API.md, Journal), in
+	// display order: store.Behaviors sorts by position in this slice. "custom" is for the
+	// user's own behaviors; a built-in never uses it.
 	BehaviorCategories = []string{"substances", "sleep", "recovery", "supplements", "health", "lifestyle", "custom"}
 )
 
@@ -972,6 +1003,9 @@ type OptionalQuiet struct {
 	Value *QuietHours
 }
 
+// UnmarshalJSON sets Set even for null, which is how PATCH tells "clear the quiet hours"
+// from "leave them" (an absent key never reaches it). Unknown keys inside the object
+// are refused, like everywhere else.
 func (o *OptionalQuiet) UnmarshalJSON(b []byte) error {
 	o.Set = true
 	if string(b) == "null" {
@@ -1018,6 +1052,8 @@ type SessionScoredEvent struct {
 	RequestID string    `json:"request_id,omitempty"`
 }
 
+// RecomputeRequest is POST /v1/recompute: the range of local days (YYYY-MM-DD) to score
+// again. The api bounds its length and allows one request per user per minute.
 type RecomputeRequest struct {
 	From string `json:"from"` // YYYY-MM-DD
 	To   string `json:"to"`
@@ -1071,9 +1107,12 @@ const (
 	LoadDistance   = "distance"   // distance_m
 )
 
+// KnownExerciseKinds is the set of Exercise.Kind values internal/train validates (and the
+// api's list filter checks).
 var KnownExerciseKinds = map[string]bool{KindBarbell: true, KindDumbbell: true, KindKettlebell: true,
 	KindBodyweight: true, KindMachine: true, KindCable: true, KindCardio: true}
 
+// KnownLoadTypes is the set of Exercise.LoadType values internal/train validates.
 var KnownLoadTypes = map[string]bool{LoadWeight: true, LoadBodyweight: true, LoadTime: true, LoadDistance: true}
 
 // Muscles is the closed muscle vocabulary of primary/secondary_muscles.
@@ -1081,6 +1120,7 @@ var Muscles = []string{"chest", "lats", "upper_back", "traps", "front_delts", "s
 	"biceps", "triceps", "forearms", "abs", "obliques", "lower_back", "glutes", "quads", "hamstrings",
 	"adductors", "calves"}
 
+// KnownPlanGoals is the set of Plan.Goal values internal/train validates.
 var KnownPlanGoals = map[string]bool{"strength": true, "hypertrophy": true, "weightlifting": true, "general": true}
 
 // Plan target kinds.
@@ -1094,8 +1134,12 @@ const (
 	ProgressionNone   = "none"
 )
 
+// KnownTargetKinds lists the PlanExercise.TargetKind values. Production validation is the
+// switch in internal/train.checkTarget, which also checks each kind's range; this set is not
+// consulted there.
 var KnownTargetKinds = map[string]bool{TargetPct1RM: true, TargetRPE: true, TargetKG: true, TargetBodyweight: true}
 
+// KnownProgressions is the set of Progression.Type values internal/train validates.
 var KnownProgressions = map[string]bool{ProgressionLinear: true, ProgressionPct: true, ProgressionNone: true}
 
 // Session and enrolment states.
@@ -1113,6 +1157,8 @@ const (
 	EnrollmentCompleted = "completed"
 )
 
+// KnownSessionStatuses is the set of Session.Status values internal/train validates (and the
+// api's list filter checks).
 var KnownSessionStatuses = map[string]bool{SessionInProgress: true, SessionCompleted: true, SessionDiscarded: true}
 
 // Personal record kinds.
@@ -1127,6 +1173,8 @@ const (
 // has no matching HealthKit workout.
 const SessionSource = "ryft-session"
 
+// Exercise is a catalogue entry, built in or the user's own (IsCustom). Name is NameEN or
+// NameDE by Accept-Language; LoadFactor is scoring's and never goes on the wire.
 type Exercise struct {
 	ID               uuid.UUID `json:"id"`
 	Slug             string    `json:"slug"`
@@ -1198,6 +1246,8 @@ type Set struct {
 	UpdatedAt   time.Time  `json:"updated_at"` // the app's clock; decides conflicts
 }
 
+// SessionExercise is one exercise of a logged Session. PlanExerciseID is set when it was done
+// against a plan day's prescription; Position is its order within the session.
 type SessionExercise struct {
 	ID             uuid.UUID  `json:"id"`
 	ExerciseID     uuid.UUID  `json:"exercise_id"`
@@ -1270,6 +1320,8 @@ type ExerciseHistory struct {
 	E1RM       []TrendPoint             `json:"e1rm"`     // best per day, oldest first
 }
 
+// ExerciseHistorySession is one past session's sets of an exercise, newest first in
+// ExerciseHistory, so the exercise screen shows progress without fetching whole sessions.
 type ExerciseHistorySession struct {
 	SessionID uuid.UUID `json:"session_id"`
 	Date      string    `json:"date"` // local day
@@ -1285,6 +1337,8 @@ type Progression struct {
 	DeloadAfter *int     `json:"deload_after,omitempty"`
 }
 
+// PlanExercise is one prescribed exercise of a PlanDay: Sets of RepsMin to RepsMax against
+// a target.
 type PlanExercise struct {
 	ID            uuid.UUID `json:"id"`
 	ExerciseID    uuid.UUID `json:"exercise_id"`
@@ -1300,6 +1354,7 @@ type PlanExercise struct {
 	Notes         string    `json:"notes"`
 }
 
+// PlanDay is one training day of a Plan. A nil Week means the day repeats every week.
 type PlanDay struct {
 	ID        uuid.UUID      `json:"id"`
 	Week      *int           `json:"week"` // nil = every week
@@ -1328,6 +1383,7 @@ type Plan struct {
 	ImportedAt *time.Time `json:"-"`
 }
 
+// PlanSummary is a Plan without its days, for the plans list.
 type PlanSummary struct {
 	ID            uuid.UUID `json:"id"`
 	Slug          *string   `json:"slug"`
@@ -1342,6 +1398,8 @@ type PlanSummary struct {
 	ExerciseCount int       `json:"exercise_count"`
 }
 
+// Enrollment is where a user stands in a plan: CurrentWeek counts from 1,
+// CurrentDayIndex from 0.
 type Enrollment struct {
 	ID              uuid.UUID `json:"id"`
 	PlanID          uuid.UUID `json:"plan_id"`
@@ -1364,12 +1422,16 @@ func (e EnrollPost) Set() bool {
 	return e.StartedAt != nil || e.CurrentWeek != nil || e.CurrentDayIndex != nil
 }
 
+// PlansOverview is GET /v1/plans: the built-in plans, the user's own and the active
+// enrollment (null when there is none).
 type PlansOverview struct {
 	Builtin []PlanSummary `json:"builtin"`
 	Mine    []PlanSummary `json:"mine"`
 	Active  *Enrollment   `json:"active"`
 }
 
+// PlanTarget is today's prescription for one plan exercise, with the sets the user logged
+// last time (LastTime).
 type PlanTarget struct {
 	PlanExerciseID uuid.UUID `json:"plan_exercise_id"`
 	ExerciseID     uuid.UUID `json:"exercise_id"`
@@ -1382,6 +1444,8 @@ type PlanTarget struct {
 	LastTime       []Set     `json:"last_time"`
 }
 
+// PlanToday is GET /v1/plans/today: the enrollment's current day with a target per
+// exercise.
 type PlanToday struct {
 	Enrollment Enrollment   `json:"enrollment"`
 	Day        PlanDay      `json:"day"`

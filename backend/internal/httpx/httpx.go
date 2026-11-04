@@ -1,11 +1,3 @@
-// Package httpx has the HTTP plumbing every service shares: JSON helpers and
-// the error shape, the middleware chain (request IDs and access logs, metrics,
-// panic recovery, security headers, timeouts), health/metrics endpoints and
-// graceful shutdown. Authentication lives in internal/auth, logging in
-// internal/logx.
-//
-// Chain, outermost first: Instrument → Recover → SecurityHeaders → mux;
-// under /v1: auth (incl. per-user rate limits) → Timeout → WithRoutes(api mux).
 package httpx
 
 import (
@@ -43,6 +35,8 @@ const (
 // RequestIDHeader carries the request ID on every response (and is logged).
 const RequestIDHeader = "X-Request-ID"
 
+// WriteJSON writes v as the JSON body of status. An encoding failure comes after the header
+// is sent, so there is nothing left to answer with and the error is dropped.
 func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
