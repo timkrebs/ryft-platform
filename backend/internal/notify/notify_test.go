@@ -409,6 +409,25 @@ func TestCheckStale(t *testing.T) {
 	}
 }
 
+// The shutdown ends the stale check between two users: nothing is sent once the
+// context has ended, the claims stay free for the next pass, and the error says why.
+func TestCheckStaleStopsWhenTheContextEnds(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, berlin)
+	s, st, ap := service(now, model.NotificationPrefs{})
+	old := now.Add(-21 * time.Hour)
+	stale := st.recipient
+	stale.LastSample = &old
+	st.stale = []store.Recipient{stale, stale}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.CheckStale(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckStale = %v, want context.Canceled", err)
+	}
+	if len(ap.sent) != 0 || len(st.claims) != 0 {
+		t.Fatalf("sent %d, claimed %v after the context ended", len(ap.sent), st.claims)
+	}
+}
+
 // D92: a silent refresh after a sync's days are scored, at most one a user every
 // RefreshEvery, shared with the morning one; not claimed per day.
 func TestRefreshAfterSync(t *testing.T) {

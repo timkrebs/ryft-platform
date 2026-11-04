@@ -29,6 +29,79 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1 }
             exp_annotations: { summary: "scoring-1 restarted more than 3 times in 30 minutes" }
+  - name: a service exited and restarted
+    interval: 1m
+    input_series:
+      # scoring panicked in a goroutine (exit 2) at minute 5; notify was restarted by the
+      # kubelet after a clean stop (exit 0); ingest restarted and kube-state-metrics has no
+      # exit code for it yet; api and a pod of the web site restarted outside the set; a
+      # pod that was replaced by a rollout is a new series at 0 and never restarted.
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0x5 1x60' }
+      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '_x5 2x60' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '0x5 1x60' }
+      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '_x5 0x60' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-ingest",pod="ingest-1",container="ingest"}', values: '0x5 1x60' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-web",pod="web-1",container="web"}', values: '0x5 1x60' }
+      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-web",pod="web-1",container="web"}', values: '_x5 1x60' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-2",container="api"}', values: '_x20 0x40' }
+    alert_rule_test:
+      - { eval_time: 4m, alertname: ServiceExited, exp_alerts: [] }
+      - eval_time: 10m
+        alertname: ServiceExited
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1, container: scoring }
+            exp_annotations:
+              summary: "ryft-scoring scoring-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
+              runbook: "docs/OPERATIONS.md → A service exited"
+          - exp_labels: { severity: critical, namespace: ryft-ingest, pod: ingest-1, container: ingest }
+            exp_annotations:
+              summary: "ryft-ingest ingest-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
+              runbook: "docs/OPERATIONS.md → A service exited"
+      # Fifteen minutes after the restart the increase has left the window.
+      - { eval_time: 30m, alertname: ServiceExited, exp_alerts: [] }
+  - name: panics in a handler, an event handler or a goroutine
+    interval: 1m
+    input_series:
+      # The labelled counters are created by their first panic at 1 (api at minute 30,
+      # scoring's event handler at 40); the goroutine counter is 0 from the start of the
+      # process and rises to 1 at minute 80.
+      - { series: 'ryft_http_panics_total{namespace="ryft-api",pod="api-1",route="GET /v1/me"}', values: '_x30 1x120' }
+      - { series: 'ryft_event_handler_panics_total{namespace="ryft-scoring",pod="scoring-1",subject="ingested"}', values: '_x40 1x110' }
+      - { series: 'ryft_goroutine_panics_total{namespace="ryft-notify",pod="notify-1"}', values: '0x80 1x70' }
+      # Nothing here is new after the first quarter hour: a counter at 3 with a 20 minute
+      # scrape gap that leaves earlier samples inside the hour, and a goroutine counter
+      # that stays 0.
+      - { series: 'ryft_http_panics_total{namespace="ryft-ingest",pod="ingest-1",route="POST /v1/sync"}', values: '3x80 _x20 3x50' }
+      - { series: 'ryft_goroutine_panics_total{namespace="ryft-scoring",pod="scoring-1"}', values: '0x150' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: Panics, exp_alerts: [] }
+      # api's first panic: the series is born at 1, which increase() never sees.
+      - eval_time: 32m
+        alertname: Panics
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-api }
+            exp_annotations:
+              summary: "ryft-api: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
+              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+      # scoring's event handler panicked at minute 40; api's has left the window.
+      - eval_time: 45m
+        alertname: Panics
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-scoring }
+            exp_annotations:
+              summary: "ryft-scoring: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
+              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+      - { eval_time: 65m, alertname: Panics, exp_alerts: [] }
+      # notify's goroutine counter rose from 0 to 1: increase() sees it.
+      - eval_time: 82m
+        alertname: Panics
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: ryft-notify }
+            exp_annotations:
+              summary: "ryft-notify: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
+              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+      - { eval_time: 105m, alertname: Panics, exp_alerts: [] }
+      - { eval_time: 130m, alertname: Panics, exp_alerts: [] }
   - name: dead letters, database
     interval: 1m
     input_series:

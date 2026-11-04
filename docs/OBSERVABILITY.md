@@ -112,7 +112,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
-| `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines (consumers, timers, the outbox relay, the servers). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a `/readyz` check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. Not in the `Panics` alert yet. |
+| `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines (consumers, timers, the outbox relay, the servers). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a `/readyz` check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. In the `Panics` alert; the process exits 2 right after it, so a scrape may never see the increase and `ServiceExited` is the other trace. |
 | `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
 | `ryft_http_nul_stripped_total` | counter | `route` | ingest | Syncs accepted after the NULs were removed from their strings (`POST /v1/sync` does not refuse them: the app would never resend the page). One per request, however many NULs; never the text. A steady rate points at a source or device name the app should clean. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
@@ -297,7 +297,8 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | --- | --- | --- | --- |
 | HTTP5xxRatio | critical | api or ingest answers > 2 % of requests with 5xx, 10 min | logs of that namespace, `err` on `level=ERROR` |
 | PodRestarting | critical | a `ryft-*` pod restarted > 3× in 30 min | `kubectl -n <ns> describe pod`, the previous container's log |
-| Panics | critical | a handler panicked | the `msg="panic"` line with the stack |
+| ServiceExited | critical | a container of api, ingest, scoring or notify restarted in the last 15 min and its last exit was not 0 (`kube_pod_container_status_restarts_total`, minus `kube_pod_container_status_last_terminated_exitcode == 0`; a restart with no exit code series counts) | OPERATIONS → A service exited: the previous container's log (`kubectl -n <ns> logs <pod> --previous`, or CloudWatch), the exit code (2: a recovered panic; 1: a failed start or an overrun shutdown; 137: killed) |
+| Panics | critical | a handler (`ryft_http_panics_total`), an event handler (`ryft_event_handler_panics_total`) or a service's own goroutine (`ryft_goroutine_panics_total`) panicked in the last 15 min, per namespace. Terms joined with `or`; the two labelled counters' first panic (a series born at 1) is caught by the TextRefusedByDatabase pattern | the `msg="panic"` line with the stack (`task` or `route` names where); after a goroutine panic the pod has restarted, so read the previous container's log |
 | TextRefusedByDatabase | warning | Postgres refused a request's text (SQLSTATE 22021/22P05) in the last hour, per namespace and route (`ryft_http_text_refused_total{at="database"}`; a route's first refusal included) | The client got a `422` and nothing was logged (it used to be a logged `500`). Either a path the checks miss — a handler reading text without `httpx.ReadJSON`, a raw field `normalizeRaw` does not reach, a URL value outside `WithRoutes` — or a server-side bug writing bad text (a string cut inside a UTF-8 sequence). Reproduce on that route against a throwaway database (the `err` is not logged), then close the gap in `internal/httpx` with a test. |
 | AuthUnavailable | critical | JWKS unavailable or the user lookup fails, 5 min | Supabase status, `ryft_db_up` |
 | DatabaseDown | critical | a service's database ping failed for 2 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins (OPERATIONS → EKS) |
@@ -488,6 +489,24 @@ One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
 | `gate` | the access line of a request a gate in `warn` mode let through | The code(s) it would have been refused with, as in `X-RYFT-Gate`. |
 | `err` | errors and warnings | The internal error. Clients only ever see `"internal error"` and the request ID. |
 | `day`, `model_version`, `inputs_changed` | scoring's `scored day`, one per day scored | The day, the model that scored it, and whether its history inputs changed. The days after it are scored again when they did or when the event was a retry (`inputs_changed` is then often `false`: the first attempt wrote the change): `rescored days after a history change`. No score, input or state: those are in `daily_scores` and the admin view. |
+
+**Lifecycle lines.** A service started through `internal/app` (scoring and notify; api and
+ingest follow) logs its start and stop with these lines and keys (the closed sets are
+pinned by `internal/app/logs_test.go`, D114, D117). OPERATIONS → A deploy: what the old pod
+logs has the Insights queries.
+
+| Message | Keys | When |
+| --- | --- | --- |
+| `listening`, `metrics listening` | `addr` | the HTTP port is open (last step of the start), the `/metrics` port is open |
+| `consuming ingest events` (scoring), `consuming scored events` (notify) | none | the consumer starts |
+| `config`, `beta config`, `apns config`, `apns`, `db`, `events`, `build`, `serve` | `err` | the start failed in that area; the process exits 1. `serve`: the HTTP port would not bind (it used to be logged while the service ran on without probes) |
+| `consume`, `job`, `serve`, `background`, `metrics` | `task`, `err` | a task of that tier returned an error before the shutdown: it stops the service (exit 1). `task` is `ingested events`, `scored events`, `scoring pass`, `stale check`, `http`, `outbox relay`, `db watch`, `metrics` |
+| `panic` | `task` (or `check` for a `/readyz` check), `panic`, `stack` | a task panicked: counted in `ryft_goroutine_panics_total`, the service shuts down in order and exits 2 |
+| `shutting down` | `reason` (`signal`, `task`, `start`), `task`, `err` | the shutdown began; `err` is one line, cut |
+| `shutdown step` | `step` (`drain`, `consumers`, `http`, `jobs`, `relay`, `broker`, `pool`, `metrics`), `dur_ms`, `err` | one per step, at info; at warn with `err` when it failed or overran its bound |
+| `shut down` | `dur_ms`, `exit` (0, 1, 2) | the shutdown is over; `exit` is the process's exit code |
+| `shutdown overdue` | `step`, `elapsed_ms` | the watchdog: the shutdown passed 26 s, the process exits at once (1, or 2 after a panic) |
+| `task ended with error during shutdown` | `task`, `err` | a task returned an error after the shutdown began (warn, not a failure) |
 
 Never logged: health values (scores, samples, sleep, workouts, baselines, the learned
 sleep need, the readiness state), tokens (APNs device tokens included), the
