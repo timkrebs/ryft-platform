@@ -97,8 +97,9 @@ func clamp(v, lo, hi float64) float64 {
 // ---- Recovery ----------------------------------------------------------------
 
 // RecoveryInputs are one night's signals and the baselines they are compared
-// to. A nil or non-positive signal is missing, not zero: Recovery re-weights what
-// is present.
+// to. HRVms, RHR and RespRate are missing when nil or not above 0, not zero;
+// SleepPerformance is missing only when nil, a 0 counts as 0. Recovery
+// re-weights what is present.
 type RecoveryInputs struct {
 	HRVms    *float64 // overnight HRV (SDNN from HealthKit); compared in log space
 	RHR      *float64
