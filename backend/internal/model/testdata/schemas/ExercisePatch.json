@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "archived": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "bodyweight_factor": {
+      "nullable": true,
+      "type": "number"
+    },
+    "equipment": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "is_unilateral": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "kind": {
+      "nullable": true,
+      "type": "string"
+    },
+    "load_type": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name_de": {
+      "nullable": true,
+      "type": "string"
+    },
+    "primary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "secondary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [],
+  "title": "ExercisePatch",
+  "type": "object"
+}

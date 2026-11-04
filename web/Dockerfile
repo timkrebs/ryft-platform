@@ -4,7 +4,7 @@
 # The build stage runs on the builder's own architecture (the export is the same everywhere);
 # only the nginx stage is per target platform.
 
-FROM --platform=$BUILDPLATFORM node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM --platform=$BUILDPLATFORM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS build
 WORKDIR /web
 ENV NEXT_TELEMETRY_DISABLED=1 CI=1
 COPY package.json package-lock.json ./
@@ -19,6 +19,9 @@ RUN npm run build && node scripts/precompress.mjs
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
 USER root
+# CVE-2026-111497: the pinned base ships brotli-libs 1.2.0-r1, fixed in 1.2.1-r0. Upgrade only that
+# package; drop this line once a newer pinned base carries >= 1.2.1-r0.
+RUN apk upgrade --no-cache brotli-libs
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf && mkdir -p /etc/nginx/snippets
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/headers.conf /etc/nginx/snippets/headers.conf

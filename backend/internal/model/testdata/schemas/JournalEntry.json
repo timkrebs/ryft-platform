@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "behavior_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "value_bool": {
+      "type": "boolean"
+    },
+    "value_num": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "value_time": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "behavior_id",
+    "value_bool",
+    "value_num",
+    "value_time"
+  ],
+  "title": "JournalEntry",
+  "type": "object"
+}

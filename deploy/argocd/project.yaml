@@ -8,7 +8,8 @@
 # ryft holds the workloads: only this repository, only the ryft-* namespaces, and of
 # the cluster-scoped kinds only Namespace (ryft-web, the one namespace not made by
 # infra/vault). No application may write to argocd or kube-system. ryft-operators may
-# install cluster-scoped operator objects, into rabbitmq-system only.
+# install cluster-scoped operator objects, and namespaced ones into rabbitmq-system and
+# (the operators' Roles, T12-g) ryft-rabbitmq.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -56,7 +57,8 @@ spec:
 ---
 # The RabbitMQ operators (deploy/rabbitmq/operators, D97): their CRDs, cluster roles and
 # webhooks are cluster-scoped, so they get a project of their own instead of widening
-# ryft. Only that path's application belongs here.
+# ryft. Only that path's application belongs here. The operators run in rabbitmq-system and
+# watch ryft-rabbitmq, where their Roles and RoleBindings are (T12-g).
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -68,6 +70,8 @@ spec:
     - https://github.com/timkrebs/ryft-platform.git
   destinations:
     - { server: https://kubernetes.default.svc, namespace: rabbitmq-system }
+    # The operators' Roles and RoleBindings in the namespace they are scoped to (T12-g, D97).
+    - { server: https://kubernetes.default.svc, namespace: ryft-rabbitmq }
   clusterResourceWhitelist:
     - { group: "", kind: Namespace }
     - { group: apiextensions.k8s.io, kind: CustomResourceDefinition }

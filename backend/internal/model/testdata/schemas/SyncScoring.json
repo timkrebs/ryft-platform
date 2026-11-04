@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "expected_within_sec": {
+      "type": "integer"
+    },
+    "queued_days": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "expected_within_sec",
+    "queued_days"
+  ],
+  "title": "SyncScoring",
+  "type": "object"
+}

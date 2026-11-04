@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
 // Pinned against an independent computation (Python hashlib/hmac) of RFC 7677.
@@ -56,8 +58,8 @@ var trainTables = []string{"exercises", "plans", "plan_days", "plan_exercises", 
 var grants = map[string]map[string][]string{
 	"ryft_ingest": {
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
-		"samples": {"SELECT", "INSERT", "UPDATE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE"},
-		"workouts": {"SELECT", "INSERT", "UPDATE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
+		"samples": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE", "DELETE"}, // DELETE: 0029, the app's deletions
+		"workouts": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
 		"user_sources": {"SELECT", "INSERT", "UPDATE"}, "score_queue": {"SELECT", "INSERT", "UPDATE"},
 		"outbox": {"SELECT", "INSERT", "DELETE"}, // and UPDATE of the relay's columns only (below)
 		// deleted_users: only the id column (below), never the stored Apple token
@@ -219,6 +221,35 @@ func TestServiceRoleGrants(t *testing.T) {
 			}
 		}
 	}
+	// 0028: the api queues the days of an import, in full; notify reads the origin of a session
+	// and nothing the import adds; only the api writes the new columns.
+	for _, c := range []struct {
+		role, table, col, priv string
+		want                   bool
+	}{
+		{"ryft_api", "score_queue", "scored_at", "UPDATE", true}, {"ryft_api", "score_queue", "queued_at", "UPDATE", true},
+		{"ryft_api", "score_queue", "user_id", "UPDATE", false}, {"ryft_api", "score_queue", "day", "UPDATE", false},
+		{"ryft_api", "score_queue", "user_id", "INSERT", true}, {"ryft_api", "score_queue", "day", "INSERT", true},
+		{"ryft_api", "sessions", "imported_at", "UPDATE", true}, {"ryft_api", "plans", "imported_at", "UPDATE", true},
+		{"ryft_scoring", "sessions", "imported_at", "UPDATE", false}, {"ryft_notify", "sessions", "imported_at", "SELECT", false},
+		{"ryft_notify", "sessions", "origin", "SELECT", true}, {"ryft_notify", "sessions", "import_source", "SELECT", false},
+		{"ryft_notify", "sessions", "origin", "UPDATE", false}, {"ryft_notify", "session_sets", "assist_kg", "SELECT", false},
+		{"ryft_scoring", "sessions", "origin", "SELECT", true}, {"ryft_scoring", "sessions", "origin", "UPDATE", false},
+		{"ryft_scoring", "sessions", "import_source", "UPDATE", false}, {"ryft_scoring", "session_sets", "assist_kg", "SELECT", true},
+		{"ryft_scoring", "session_sets", "assist_kg", "UPDATE", false},
+		{"ryft_scoring", "users", "import_lease_until", "UPDATE", false}, {"ryft_scoring", "users", "import_lease_until", "SELECT", true},
+		{"ryft_notify", "users", "import_lease_until", "SELECT", false}, {"ryft_ingest", "users", "import_lease_until", "UPDATE", true},
+		{"ryft_api", "sessions", "origin", "INSERT", true}, {"ryft_api", "session_sets", "assist_kg", "UPDATE", true},
+		{"ryft_api", "users", "import_lease_until", "UPDATE", true},
+	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
 	// scoring writes the learned sleep baseline (0013), nothing else of a user.
 	for col, want := range map[string]bool{"sleep_base_min": true, "sleep_base_source": true, "sleep_base_learned_min": true,
 		"sleep_base_learned_at": true, "sleep_base_manual": false, "tz": false, "max_hr": false, "email": false} {
@@ -257,7 +288,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, role := range []string{"ryft_ingest", "ryft_scoring", "ryft_api", "ryft_notify"} {
-		if err := SetRolePassword(ctx, pool, role, "pw-"+role+"-0123456789"); err != nil {
+		if err := testsupport.WithRoleLock(ctx, func() error { return SetRolePassword(ctx, pool, role, testsupport.RolePassword(role)) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -267,7 +298,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	dsn := pool.Config().ConnString()
 	id := "11111111-2222-3333-4444-555555555555"
 
-	ingest := asRole(t, dsn, "ryft_ingest", "pw-ryft_ingest-0123456789")
+	ingest := asRole(t, dsn, "ryft_ingest", testsupport.RolePassword("ryft_ingest"))
 	if _, err := ingest.Exec(ctx, `INSERT INTO users (id) VALUES ($1)`, id); err != nil {
 		t.Fatalf("ingest insert through RLS: %v", err)
 	}
@@ -275,14 +306,46 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err != nil {
 		t.Fatalf("ingest sample: %v", err)
 	}
-	if _, err := ingest.Exec(ctx, `DELETE FROM samples`); err == nil || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("ingest must not delete: %v", err)
+	// 0029: ingest applies the app's deletions of the three raw tables, through RLS, and cannot
+	// delete a ryft-session workout (restrictive policy; the filtered row is not an error).
+	if _, err := ingest.Exec(ctx, `UPDATE samples SET hk_id = gen_random_uuid() WHERE user_id=$1`, id); err != nil {
+		t.Fatalf("ingest sets hk_id: %v", err)
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM samples WHERE user_id=$1 AND hk_id IS NOT NULL`, id); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes a sample by hk_id: %v %v", ct, err)
+	}
+	if _, err := ingest.Exec(ctx, `INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id)
+		VALUES ($1, now(), now(), 'core', 't', gen_random_uuid())`, id); err != nil {
+		t.Fatalf("ingest sleep segment: %v", err)
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id IS NOT NULL`, id); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes a sleep segment by hk_id: %v %v", ct, err)
+	}
+	wPhone, wOwn := "aaaaaaaa-0000-0000-0000-0000000000f1", "aaaaaaaa-0000-0000-0000-0000000000f2"
+	for _, w := range [][2]string{{wPhone, "Phone"}, {wOwn, "ryft-session"}} {
+		if _, err := ingest.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source)
+			VALUES ($1, $2, 'run', now(), now(), $3)`, w[0], id, w[1]); err != nil {
+			t.Fatalf("ingest workout %s: %v", w[1], err)
+		}
+	}
+	if ct, err := ingest.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2)`, id, []string{wPhone, wOwn}); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("ingest deletes the phone workout only: %v %v", ct, err)
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM workouts WHERE id = $1`, wOwn); n != 1 {
+		t.Fatal("the ryft-session workout must survive ingest's delete")
+	}
+	if _, err := ingest.Exec(ctx, `INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
+		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err != nil {
+		t.Fatalf("ingest sample again: %v", err)
+	}
+	if _, err := ingest.Exec(ctx, `DELETE FROM daily_scores`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("ingest must not delete scores: %v", err)
 	}
 	if _, err := ingest.Exec(ctx, `CREATE TABLE evil (x int)`); err == nil {
 		t.Fatal("ingest must not create tables")
 	}
 
-	scoring := asRole(t, dsn, "ryft_scoring", "pw-ryft_scoring-0123456789")
+	scoring := asRole(t, dsn, "ryft_scoring", testsupport.RolePassword("ryft_scoring"))
 	var n int
 	if err := scoring.QueryRow(ctx, `SELECT count(*) FROM samples WHERE user_id=$1`, id).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("scoring must read the sample through RLS: n=%d err=%v", n, err)
@@ -300,7 +363,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		t.Fatal("only the user turns the manual baseline off")
 	}
 
-	notify := asRole(t, dsn, "ryft_notify", "pw-ryft_notify-0123456789")
+	notify := asRole(t, dsn, "ryft_notify", testsupport.RolePassword("ryft_notify"))
 	var last *time.Time
 	if err := notify.QueryRow(ctx, `SELECT max(start_at) FROM samples WHERE user_id=$1 AND type='steps'`, id).Scan(&last); err != nil || last == nil {
 		t.Fatalf("notify reads when the last sample arrived, through RLS: %v %v", last, err)
@@ -319,13 +382,42 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		}
 	}
 
-	api := asRole(t, dsn, "ryft_api", "pw-ryft_api-0123456789")
+	api := asRole(t, dsn, "ryft_api", testsupport.RolePassword("ryft_api"))
 	if _, err := api.Exec(ctx, `DELETE FROM samples WHERE user_id=$1`, id); err != nil {
 		t.Fatalf("api deletes an account's rows: %v", err)
 	}
 	if _, err := api.Exec(ctx, `INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
 		VALUES ($1, 'steps', now(), now(), 1, 'count', 't')`, id); err == nil {
 		t.Fatal("api must not write raw data")
+	}
+	// 0028: the api queues the days of an import and holds the user's import lease, through RLS;
+	// scoring marks them scored but cannot queue them; notify reads a session's origin only.
+	if _, err := api.Exec(ctx, `INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+		VALUES ($1, '2026-10-18', now(), NULL) ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL`, id); err != nil {
+		t.Fatalf("api queues days: %v", err)
+	}
+	if _, err := api.Exec(ctx, `UPDATE users SET import_lease_until = now() + interval '2 minutes' WHERE id=$1 AND import_lease_until IS NULL`, id); err != nil {
+		t.Fatalf("api takes the import lease: %v", err)
+	}
+	if _, err := scoring.Exec(ctx, `INSERT INTO score_queue (user_id, day) VALUES ($1, '2026-10-19')`, id); err == nil {
+		t.Fatal("scoring must not queue days")
+	}
+	// The api re-queues a day; it cannot move a queue row to another user or day.
+	if _, err := api.Exec(ctx, `UPDATE score_queue SET user_id = user_id WHERE user_id = $1`, id); err == nil {
+		t.Fatal("api must not update score_queue.user_id")
+	}
+	if _, err := api.Exec(ctx, `UPDATE score_queue SET day = day + 1 WHERE user_id = $1`, id); err == nil {
+		t.Fatal("api must not update score_queue.day")
+	}
+	if _, err := api.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, status, origin, import_source)
+		VALUES ($1, gen_random_uuid(), now(), 'completed', 'import', 'alpha_progression')`, id); err != nil {
+		t.Fatalf("api stores an imported session: %v", err)
+	}
+	if err := notify.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1 AND origin = 'import'`, id).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("notify reads a session's origin through RLS: n=%d err=%v", n, err)
+	}
+	if _, err := notify.Exec(ctx, `SELECT import_source FROM sessions`); err == nil {
+		t.Fatal("notify must not read import_source")
 	}
 	if _, err := asRoleErr(dsn, "ryft_api", "wrong-password"); err == nil {
 		t.Fatal("a wrong password must fail")
@@ -340,8 +432,11 @@ func TestEnsureRolePassword(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	// ryft_api: no other package's tests log in as it (roles are cluster-wide).
-	const role, pw, rotated = "ryft_api", "pw-ryft_api-0123456789", "pw-ryft_api-rotated-0123"
+	// ryft_api is rotated and restored below: hold the role lock for the whole test so no
+	// other package's SetRolePassword runs in between (roles are cluster-wide).
+	testsupport.LockRoles(t)
+	const role, rotated = "ryft_api", "pw-ryft_api-rotated-0123"
+	pw := testsupport.RolePassword(role)
 	dsn := pool.Config().ConnString()
 	verifier := func() string {
 		t.Helper()

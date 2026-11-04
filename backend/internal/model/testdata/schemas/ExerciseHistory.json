@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "e1rm": {
+      "items": {
+        "$ref": "TrendPoint"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "prs": {
+      "items": {
+        "$ref": "PR"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "ExerciseHistorySession"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "e1rm",
+    "exercise_id",
+    "prs",
+    "sessions"
+  ],
+  "title": "ExerciseHistory",
+  "type": "object"
+}

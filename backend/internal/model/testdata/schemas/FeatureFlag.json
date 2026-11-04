@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "allow_user_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "key": {
+      "type": "string"
+    },
+    "rollout_pct": {
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "allow_user_ids",
+    "enabled",
+    "key",
+    "rollout_pct",
+    "updated_at"
+  ],
+  "title": "FeatureFlag",
+  "type": "object"
+}

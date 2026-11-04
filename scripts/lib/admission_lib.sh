@@ -417,7 +417,7 @@ EOF
 # dry-runs of the renders
 
 # Values read from the tree under test (an Application's name and path, a Secret's labels) are checked
-# before they name a file, a flag or a label: the tree is code (D123).
+# before they name a file, a flag or a label: the tree is code (D151).
 adm_valid_name() { [[ $1 =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; }
 adm_valid_path() { [[ $1 =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] && [[ $1 != *..* ]]; }
 # A label key (optionally prefix/name) and value as Kubernetes validates them.

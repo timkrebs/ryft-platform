@@ -29,6 +29,43 @@ every file, kustomization and Argo CD app (#31, #38). The app's **calibrating re
 no HRV source; days are re-scored when their history changes (#29); `DailyScore` carries
 `calibrating_reason` and per-signal counts (#30, migration 0027, last 30 days rescored);
 the logs hold no health values any more (#35).
+The **training import** (2026-10-26, PR #59, D124–D141, `docs/work/2026-10-26-train-import/`):
+`POST /v1/train/import` with scoring model 2026.10.2 and migration 0028, reviewed, **not yet
+deployed**. Your steps, in order (cluster: `--context ryft-prod-euc1`, which is the current context on
+this machine; check with `kubectl config current-context`):
+1. **T11 check, read-only, before the merge.** As the database owner in the Supabase SQL editor:
+   `SELECT count(*) FROM plan_exercises WHERE target_kind = 'bodyweight' AND (target_value < 0 OR target_value > 500);`
+   Worked = `0`. Anything else: stop; those plans would fail the new validation on their next save.
+2. **Merge #59** (`gh pr checks 59` green first). CI builds the images and opens a promote PR
+   (`deploy/<7 hex>`) that pins `overlays/eks`; it merges itself once its checks pass
+   (`gh pr list --state open --search 'head:deploy/'`; open over 2 h: the daily deploy watch reports it,
+   merge it by hand).
+3. **Argo CD syncs** (2–6 min after the pin merges, about 15 min for the release):
+   `kubectl --context ryft-prod-euc1 -n argocd get applications` until all are Synced and Healthy.
+   The migrate PreSync hook applies `0028_train_import.sql` (additive; a failed migration fails the sync
+   and nothing rolls: `argocd app get ryft-platform` names the step; the PostSync smoke runs last).
+   Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
+   (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
+   (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
+4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
+   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+   no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
+5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
+   allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
+   Feature flags). Kill switch: `{"enabled": false, "rollout_pct": 100}`.
+6. **Privacy text with the app release, not before** (PR #61, draft): flip both pages to
+   `status: published`, then merge. A draft version on `main` blocks every deploy PR. Every account
+   consents again (`consent_required` rises; expected).
+7. **The vault PR (`infra/vault-import-service`, an import service of the wearable data) does not depend
+   on #59**: land it before or after. Its Terraform is already applied; the merge deploys nothing (its
+   namespace is not an Argo app). Run `cd infra/vault && terraform plan` first: expect no change.
+
+Rollback of 2–4: re-pin the previous images (OPERATIONS → Deploy and roll back); 0028 is additive and stays.
+
+Open (D141, not built): a server-held import namespace for merged accounts (until then the app must not
+import the same file again after a merge); a `score_queue` sweeper (days that stay queued if a request
+dies between queueing and the rescore); the api's shutdown drain against the import's 50 s budget (a
+rolling update can cut an import in flight; the app resends and the stored items come back `unchanged`).
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -224,6 +261,7 @@ per node) and R1 waits for a bigger node group.
 | Merge | `POST /v1/admin/users/{from}/merge-into/{to}` with `dry_run`: one transaction, the kept account's rows win, per-table moved/dropped, consent and access copied if missing, rescored over the moved days, then `from` deleted like `DELETE /v1/me`; `409` if from has more history (`force`) | migration 0024, `store/merge.go`, D90 |
 | Sync state | `X-RYFT-Device-ID` and `User.account_hint` (another account on this device); `GET /v1/me/sync`; `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring` (queued days, `expected_within_sec`); unknown types and out-of-window records ignored and counted instead of `422`; identical re-sends not counted | migration 0025 (`score_queue`), `cmd/api/syncstatus.go`, D91 |
 | Sync to score | `ryft_sync_to_score_seconds` per queued day, alert `SyncToScoreSlow` (p95 > 2 min, 15 min) and a dashboard panel; a silent refresh push (`ryft.refresh`) after every sync's scored days, one per account every 5 minutes, collapsed per day; event handlers recover from a panic (`ryft_event_handler_panics_total`) | `cmd/scoring`, `internal/notify`, D92 |
+| Training import | `POST /v1/train/import`: plans and sessions from another app's export, per-item results, idempotent by per-account ids, the app's edits win (`newer_on_server`), one rescore per request, no pushes, silent records; flag `train.import` (off), its own rate class and a lease per user; model 2026.10.2 (e1RM reference over 90 days, assisted sets) | `cmd/api/train_import.go`, `internal/train/import.go`, migration 0028 |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
@@ -251,7 +289,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | The site from this repository (2026-10-22, D107) | Before: PR #9's own run (every job, the workflow changed): web-checks, web-e2e (the nginx image, 150 Playwright/axe pages, links, Lighthouse), secrets, manifests, smoke, test, lint, terraform ×4, `ci-ok`, `pr-title` green; `ci-ok` red on the first run (actionlint, `GITHUB_BASE_REF` in a test), as designed. After: `web-image` built amd64, checked `/beta` for the address, Trivy, pushed both architectures (provenance, SBOM), Trivy on the digest; `ghcr.io/timkrebs/ryft/web:bfc51b8` exists. #18 changed only web's `newTag` (`f437747` → `bfc51b8`), authored by `app/ryft-deploy`, auto-merged after `changes`, `manifests`, `secrets`, `pr-title`, `ci-ok` (everything else skipped). Live from 06:32:14 UTC (2:50 after the merge): `/`, `/privacy`, `/terms`, `/support`, `/impressum`, `/de/privacy`, `/de/impressum`, `/privacy/2026-10-20`, `/day/2026-10-19`, `/auth/callback`, `/invite/TEST`, `/beta`, `/de/beta`, `/science` 200 `text/html`; the AASA 200 `application/json`, no redirect, appID `M77SKHKG63.dev.timkrebs.ryft`, the ten paths, `webcredentials`, and Apple's CDN copy identical; `/beta` links `mailto:support@ryftapp.de` with no TODO marker; the CSP's hashes match every inline script on `/`, `/privacy`, `/beta`, no external script; `www` → apex, `/privacy/` → 301 `/privacy`, HSTS; the 2026-10-21 legal texts (#10 of ryft-web) served; `api.ryftapp.de/v1/me` 401. Not checked: the pods' image and Argo CD's state through kubectl (the session's AWS login had expired) — the served text proves the new image; check `kubectl -n argocd get applications ryft-platform` once. |
 | Web follow-ups (2026-10-22/23, D108–D111, D115) | Every PR reviewed by code and security (SRE where runtime changed); findings fixed and re-verified before merge (`docs/work/2026-10-22-followups/review.md`). Deploys watched read-only: web `332c252` (#19 → #23, the first build with #17's actions); F1 (#22: four ConfigMaps renamed, migrate and smoke Succeeded, then #25 — the first promote in environment `deploy` with the rotated key); the drill (#26 rollback with a hold, promote held, the watch OK, #27 release, #28 deploy; Argo pickup 2–6 min); #31 (web image `a4ad9f7`, #36). |
 | The calibrating report (2026-10-22/23, D112–D114) | Root cause from admin aggregates (the reporter has 0 HRV nights) and your SQL (0 stale rows); #29 and #30 reviewed by code, scoring and database, #35 by security and code; migration 0027 applied (`migration applied 0027_calibrating_reason.sql`); `scripts/rescore_all.sh 30` (2 users, 0 failed, model 2026.10.1); a fresh production `scored day` line carries only `day, inputs_changed, model_version, request_id, user_id` and the standard fields (`docs/work/2026-10-22-calibrating/review.md`). |
-| Admission kind run (2026-10-26, T12-d, D122, D123) | Podman, kind v0.33.0, node `kindest/node:v1.36.4`, kubectl 1.36.5, helm 4.3.1. `--mode ci` on the branch: 29 checks passed, 1 skipped (`argo-rbac`: the branch has no T12-f); the API server held exactly the 11 policies and 12 bindings `helm template` renders, in Audit and in Deny, with `status.typeChecking` empty and a canary fixture answered within 2 s; 218 objects of the 10 apps, the root and the projects dry-run applied as Argo CD's controller (2 refused/warned by P6 for the vendored operator roles, explained by the missing T12-g); 48 generated and 30 manual fixtures; claims a, b, c, d and the negative test of h. `--mode full` on a git worktree of the branch merged with #47 (plus the `applications` rule), #51: 62 checks passed, 0 failed: cert-manager, Argo CD from `argocd.tf`'s values (narrowed ClusterRoles, `respectRBAC: strict`), 11 Applications Synced and Healthy in Audit and again after a manual sync of every app in Deny, PreSync migrate and PostSync smoke Succeeded, the broker Ready with 63 topology objects, no validation failure logged, the D98 restart, `terminate-op`, both operators' `can-i` answers, claims i, k (the full SHA) and m (disproved). `--mode ci --kubeconfig` on a kind cluster of its own (compared with `kind get kubeconfig`; 28 passed, claim d skipped for want of an audit log), an interruption (SIGTERM deletes the cluster and keeps the logs), and no `ghcr.io/timkrebs/ryft` tag left in the local image store. `make test-scripts` (kind guard with 17 hostile server URLs, links and a fake `kind`, tracked copy, tf_values refusals, chart bump, ref policy, promote_only, audit findings, tree values), `make admission-celtest` (690 cases), `make k8s-validate`, shellcheck, actionlint, `check_workflows.sh`. Not verified: a node drain, three workers, claims f, j and l, the CI job on GitHub (it has not run there), the `admission-e2e` workflow, the install scripts on a runner (their sha256 were checked against the published files and the downloaded bytes). |
+| Admission kind run (2026-10-26, T12-d, D150, D151) | Podman, kind v0.33.0, node `kindest/node:v1.36.4`, kubectl 1.36.5, helm 4.3.1. `--mode ci` on the branch: 29 checks passed, 1 skipped (`argo-rbac`: the branch has no T12-f); the API server held exactly the 11 policies and 12 bindings `helm template` renders, in Audit and in Deny, with `status.typeChecking` empty and a canary fixture answered within 2 s; 218 objects of the 10 apps, the root and the projects dry-run applied as Argo CD's controller (2 refused/warned by P6 for the vendored operator roles, explained by the missing T12-g); 48 generated and 30 manual fixtures; claims a, b, c, d and the negative test of h. `--mode full` on a git worktree of the branch merged with #47 (plus the `applications` rule), #51: 62 checks passed, 0 failed: cert-manager, Argo CD from `argocd.tf`'s values (narrowed ClusterRoles, `respectRBAC: strict`), 11 Applications Synced and Healthy in Audit and again after a manual sync of every app in Deny, PreSync migrate and PostSync smoke Succeeded, the broker Ready with 63 topology objects, no validation failure logged, the D98 restart, `terminate-op`, both operators' `can-i` answers, claims i, k (the full SHA) and m (disproved). `--mode ci --kubeconfig` on a kind cluster of its own (compared with `kind get kubeconfig`; 28 passed, claim d skipped for want of an audit log), an interruption (SIGTERM deletes the cluster and keeps the logs), and no `ghcr.io/timkrebs/ryft` tag left in the local image store. `make test-scripts` (kind guard with 17 hostile server URLs, links and a fake `kind`, tracked copy, tf_values refusals, chart bump, ref policy, promote_only, audit findings, tree values), `make admission-celtest` (690 cases), `make k8s-validate`, shellcheck, actionlint, `check_workflows.sh`. Not verified: a node drain, three workers, claims f, j and l, the CI job on GitHub (it has not run there), the `admission-e2e` workflow, the install scripts on a runner (their sha256 were checked against the published files and the downloaded bytes). |
 | Accounts and sync (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0022–0025 on plain Postgres and the Supabase shape (grants, RLS), gate modes in api, ingest and scoring (the warn header and metric, scoring's consent mode), the audit middleware (written after the call, short ids, `409` when ambiguous), the admin detail with a fake Supabase admin API (identities, relay emails, masking), the merge over every table (dry run equal to the real run, conflicts kept, children of dropped parents not copied, a second run `404`, `from` deletable afterwards), the score queue (queued, marked, pruned, the p95), the sync screen (unknown types, window, duplicates), today's state, the refresh throttle shared with the morning push, a panicking handler retried, the NATS permissions for `ryft.refresh` and its dead letters; `golangci-lint` 0 issues. `make up && make smoke` over the existing volume with 0022–0025 applied: the admin detail and short ids, two accounts on one phone merged (plan first, `404` the second time), `account_hint` (and none without the device header or for the account itself), `GET /v1/me/sync` with nothing pending once scored, `scoring_state`, the `SyncResponse` counts (a re-send and an unknown type ignored), and the refresh path (sync → scoring → `ryft.refresh` → notify, counted without a key). `scripts/smoke_prod.sh` against compose with and without the admin key; its key lookup with a fake `terraform` (found for production, never for another URL). `make test-scripts` (trace with a fake kubectl). `make check-swift`: the mirror decodes `SyncStatus` and the new fields; the app's current models still decode everything. `make alerts-check`: 21 rules with `SyncToScoreSlow`'s unit test. `infra/vault` `terraform test` 18 runs. `make k8s-validate`. `scripts/trace.sh` against production found the incident's line. A rollback past the refresh subject on a throwaway NATS 2.11. Not verified: anything else against production (not deployed), a merge on real accounts, a refresh push reaching a device. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
@@ -320,6 +358,17 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
     `invite_required` apart from sign-in failures.
 
 ## Not done / not verified
+
+**Mail for ryftapp.de on Google Workspace: your steps, in this order** (2026-10-28, D142; PR
+`infra/dns-google-mail`). Done: the records are in `infra/aws/dns` (MX, the apex TXT as two
+values, DKIM split for Route 53, `_dmarc` at `p=none`), tested in `tests/dns.tftest.hcl`
+(not run locally: no terraform allowed here; CI's terraform job runs it); OPERATIONS →
+"Mail for ryftapp.de". Open, yours: (1) merge the PR; (2) import, plan, apply with the
+commands in OPERATIONS (`terraform import` ×3, then `plan`: expect the apex TXT to change
+to two values, `_dmarc` created, nothing else; then `apply`); (3) send a test mail both
+ways and read SPF/DKIM/DMARC in the headers; (4) after 2–4 weeks of clean DMARC reports set
+`dmarc` to `p=quarantine`. The privacy texts' Google line is in PR #66 (2026-10-20) and #61
+(2026-10-26); the Impressum still has the phone and USt-IdNr/§ 36 VSBG `TODO(user)`s.
 
 **Web in this repository: your steps, in this order** (D107; PR bodies have the details).
 All done (2026-10-22): the docs PR (#10); ryft-web archived with the README pointer (its
@@ -420,7 +469,7 @@ Technical:
   Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
   required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
   in progress; nothing reaches the cluster before your applies (the note's §5 commands).
-  **T12-d (the kind run) is done** on `ci/admission-kind` (D122, D123): CI's required job `admission`
+  **T12-d (the kind run) is done** on `ci/admission-kind` (D150, D151): CI's required job `admission`
   (`scripts/admission_e2e.sh --mode ci`, ~5 min; skipped for promote PRs and their merge) and the
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11

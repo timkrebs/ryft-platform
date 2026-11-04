@@ -1,0 +1,78 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "archived": {
+      "type": "boolean"
+    },
+    "bodyweight_factor": {
+      "type": "number"
+    },
+    "equipment": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_custom": {
+      "type": "boolean"
+    },
+    "is_unilateral": {
+      "type": "boolean"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "load_type": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "name_de": {
+      "type": "string"
+    },
+    "name_en": {
+      "type": "string"
+    },
+    "primary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "secondary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "slug": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "archived",
+    "bodyweight_factor",
+    "equipment",
+    "id",
+    "is_custom",
+    "is_unilateral",
+    "kind",
+    "load_type",
+    "name",
+    "name_de",
+    "name_en",
+    "primary_muscles",
+    "secondary_muscles",
+    "slug"
+  ],
+  "title": "Exercise",
+  "type": "object"
+}

@@ -1,5 +1,19 @@
 [
   {
+    "version": "2026.10.3",
+    "date": "2026-10-31",
+    "summary_en": "Workouts recorded twice. When a source re-writes a workout in the Health app, the extra copies are removed and the copy the Health app still has stays. When two of your sources record the same workout (a watch and a second tracker on one run), it is shown once: the recording with the specific activity, then the one with its own heart rate, then the longer one, with the other sources named on it. Your scores do not change, because the day's strain already counted heart rate once. What changes is the number of workouts on a day and which workout carries a logged strength session's load.",
+    "summary_de": "Doppelt erfasste Trainings. Wenn eine Quelle ein Training in der Health-App neu schreibt, werden die zusätzlichen Kopien entfernt; die Kopie, die die Health-App noch hat, bleibt. Wenn zwei deiner Quellen dasselbe Training aufzeichnen (eine Uhr und ein zweiter Tracker beim selben Lauf), wird es einmal gezeigt: die Aufzeichnung mit der genauen Sportart, dann die mit eigener Herzfrequenz, dann die längere, und die anderen Quellen werden dazu genannt. Deine Werte ändern sich nicht, denn die Tagesbelastung hat die Herzfrequenz schon bisher nur einmal gezählt. Es ändern sich die Zahl der Trainings eines Tages und welches Training die Muskellast einer eingetragenen Krafteinheit trägt.",
+    "affects": []
+  },
+  {
+    "version": "2026.10.2",
+    "date": "2026-10-26",
+    "summary_en": "Strength sessions. A set's intensity is now measured against your best estimated one-rep max of the 90 days before the session, its own sets always included; it was your best ever, so a peak from long ago, for example in history imported from another app, made today's sessions count as light. A bodyweight set with assistance (a machine or a band) counts with the assistance taken off the weight you moved, and it sets no records. A set logged after the session's end time still counts for that session.",
+    "summary_de": "Krafteinheiten. Die Intensität eines Satzes wird jetzt an deinem besten geschätzten 1RM der 90 Tage vor der Einheit gemessen, die Sätze der Einheit selbst immer eingeschlossen; bisher war es dein Bestwert überhaupt, sodass ein lange zurückliegender Höchstwert, etwa aus einer aus einer anderen App importierten Historie, heutige Einheiten als leicht zählen ließ. Ein Körpergewichtssatz mit Unterstützung (Maschine oder Band) zählt mit dem bewegten Gewicht abzüglich der Unterstützung und stellt keine Rekorde auf. Ein Satz, der nach dem Ende der Einheit eingetragen ist, zählt trotzdem für diese Einheit.",
+    "affects": ["readiness", "recovery", "sleep", "sleep_quality", "strain", "volume_kg"]
+  },
+  {
     "version": "2026.10.1",
     "date": "2026-10-20",
     "summary_en": "The model at the start of the beta. Recovery compares last night's HRV, resting heart rate and breathing with your own last 30 days, plus sleep. Strain is heart-rate load on a 0–21 scale, with logged strength sessions added as muscular load. Sleep need is your baseline (learned weekly) plus strain and debt, minus naps; sleep quality weighs performance, efficiency and deep + REM sleep. Overlapping sources count once.",

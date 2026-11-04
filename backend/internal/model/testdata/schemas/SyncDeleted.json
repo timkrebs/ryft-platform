@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "samples": {
+      "type": "integer"
+    },
+    "sleep": {
+      "type": "integer"
+    },
+    "workouts": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "samples",
+    "sleep",
+    "workouts"
+  ],
+  "title": "SyncDeleted",
+  "type": "object"
+}

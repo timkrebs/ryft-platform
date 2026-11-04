@@ -21,7 +21,7 @@
 #                    this checkout. THE TREE IS CODE (kustomize renders it, Terraform evaluates its
 #                    argocd.tf, Argo CD syncs it): a tree you do not trust runs in the workflow, or on a
 #                    machine without production credentials, not on a laptop that has them. The values
-#                    it supplies are checked before they reach a command line (D123), but that is a
+#                    it supplies are checked before they reach a command line (D151), but that is a
 #                    second line, not a sandbox.
 #   --kubeconfig F   use that existing kind cluster instead of creating one (it must be a kind-* context
 #                    on 127.0.0.1 that `kind get kubeconfig` agrees with; see scripts/lib/kind_guard.sh).

@@ -1,0 +1,69 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "build": {
+      "nullable": true,
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "device_model": {
+      "nullable": true,
+      "type": "string"
+    },
+    "diagnostics": {
+      "description": "raw JSON"
+    },
+    "id": {
+      "type": "integer"
+    },
+    "message": {
+      "type": "string"
+    },
+    "os_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "request_ids": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "resolved_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "user_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "app_version",
+    "build",
+    "category",
+    "created_at",
+    "device_model",
+    "diagnostics",
+    "id",
+    "message",
+    "os_version",
+    "request_ids",
+    "resolved_at",
+    "user_id"
+  ],
+  "title": "Feedback",
+  "type": "object"
+}

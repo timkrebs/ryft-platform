@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "deleted": {
+      "items": {
+        "$ref": "DeletedRecord"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "device_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "device_name": {
+      "type": "string"
+    },
+    "os_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "samples": {
+      "items": {
+        "$ref": "Sample"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "sleep": {
+      "items": {
+        "$ref": "SleepSegment"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "workouts": {
+      "items": {
+        "$ref": "Workout"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "device_id",
+    "samples",
+    "sleep",
+    "workouts"
+  ],
+  "title": "SyncRequest",
+  "type": "object"
+}

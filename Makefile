@@ -1,12 +1,14 @@
 REGISTRY ?= ghcr.io/timkrebs/ryft
 TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SERVICES := ingest scoring api notify migrate
+# The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
+GOLANGCI_LINT_VERSION := v2.15.0
 
 # Docker if it is installed, otherwise Podman (its `compose` runs the same file).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -168,6 +170,7 @@ k8s-apply-local:
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
 k8s-rabbitmq:
+	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | kubectl apply -f -
 	kubectl apply --server-side --force-conflicts -k deploy/rabbitmq/operators
 	for d in rabbitmq-cluster-operator messaging-topology-operator; do kubectl -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
 	kubectl apply --server-side --force-conflicts -k $(RABBITMQ)
@@ -198,8 +201,55 @@ alerts-check:
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
 
+# Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
+# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
+# RabbitMQ count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_AMQP_URL set, as in CI.
+coverage:
+	@set -e; d=$${COVERDIR:-$$(mktemp -d)}; mkdir -p "$$d"; \
+	(cd backend && go test -race -count=1 -coverprofile="$$d/coverage.out" ./... > "$$d/test.log" 2>&1) \
+	  || { echo "go test failed, tail of $$d/test.log:" >&2; tail -40 "$$d/test.log" >&2; exit 1; }; \
+	env -u GITHUB_STEP_SUMMARY ./scripts/coverage.sh report "$$d/coverage.out" "$$d"; echo "files: $$d"
+
+# Load baseline against the LOCAL compose stack (make up first): 50 synthetic users sync a full day, then read
+# 30 days, one warm-up and 3 measured runs under k6 (a container, pinned by digest). Prints a table, writes
+# scripts/load/out/ (git-ignored) and exits 1 above 1 % errors. Targets other than localhost are refused
+# unless LOAD_ALLOW_REMOTE=1; never aim it at production (docs/OBSERVABILITY.md -> Baselines).
+load:
+	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
+
+# What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
+# map check. The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
+# report different findings, so a mismatch is said out loud before the run.
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
+	@have=$$(golangci-lint version 2>&1 | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1); \
+	if [ "$$have" != "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))" ]; then \
+	  echo "lint: WARNING: golangci-lint $${have:-of unknown version} found, CI pins $(GOLANGCI_LINT_VERSION); findings can differ from CI's" >&2; \
+	fi
+	cd backend && golangci-lint run
+	./scripts/pkgmap.sh --check
+
+# After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
+# docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.
+check-api-doc:
+	cd backend && go test -count=1 -run 'APIDoc|DocChecker' ./internal/model/ ./internal/httpx/ ./internal/gate/
+
+# docs/ARCHITECTURE.md -> Package map is generated; fails (1) when it is stale, `scripts/pkgmap.sh` rewrites it.
+pkgmap-check:
+	./scripts/pkgmap.sh --check
+
+# Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
+# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
+# GOLDEN_MODE=init makes the first set. It starts from the committed manifest and a local database
+# (GOLDEN_ALLOW_REMOTE_DB=1 for another host); the test refuses anything else (docs/SCORING.md →
+# Model version, D149; scripts/golden_guard.sh is the PR-side check, run by CI's golden-guard job).
+.PHONY: golden-update
+golden-update:
+	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
+	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
+
 alerts-apply: alerts-check
-	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
+	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
@@ -228,6 +278,7 @@ k8s-validate:
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh
+	@./scripts/check_operators_scope.sh
 	@./scripts/check_kustomize_refs.sh
 	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check

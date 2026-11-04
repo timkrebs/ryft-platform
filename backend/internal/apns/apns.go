@@ -1,7 +1,3 @@
-// Package apns sends notifications through Apple Push Notification service
-// with token-based authentication: an ES256 JWT from the team's .p8 key over
-// HTTP/2 (net/http negotiates it). It is the small part of APNs RYFT uses
-// (docs/DECISIONS.md D73): one request per device token, no certificates.
 package apns
 
 import (

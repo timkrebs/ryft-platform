@@ -61,6 +61,21 @@ func TestUserLimitsClassifiesSync(t *testing.T) {
 	if class, _, _ := u.Allow(httptest.NewRequest(http.MethodGet, "/v1/sessions/0b1c", nil), "a"); class != "default" {
 		t.Fatalf("reading a session is a default request, got %s", class)
 	}
+	// The training import: its own budget, bursts of 5, then one every 5 s; other routes unaffected.
+	imp := func() (string, bool, time.Duration) {
+		return u.Allow(httptest.NewRequest(http.MethodPost, "/v1/train/import", nil), "imp")
+	}
+	for k := 0; k < 5; k++ {
+		if class, ok, _ := imp(); class != "import" || !ok {
+			t.Fatalf("import %d: class %s ok %v", k, class, ok)
+		}
+	}
+	if _, ok, wait := imp(); ok || wait <= 4*time.Second || wait > 5*time.Second {
+		t.Fatalf("the sixth import waits about 5 s: ok %v wait %v", ok, wait)
+	}
+	if _, ok, _ := u.Allow(httptest.NewRequest(http.MethodGet, "/v1/days", nil), "imp"); !ok {
+		t.Fatal("the import's budget is its own")
+	}
 	// A backfill: 60 pages back to back must all pass.
 	for k := 0; k < 60; k++ {
 		if _, ok, _ := u.Allow(httptest.NewRequest(http.MethodPost, "/v1/sync", nil), "b"); !ok {

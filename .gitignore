@@ -23,3 +23,5 @@ __pycache__/
 
 # make admission-e2e: the summary of the last kind run
 /admission-e2e-summary.md
+# k6 output of scripts/load.sh (make load)
+scripts/load/out/
