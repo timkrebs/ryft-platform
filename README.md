@@ -91,6 +91,6 @@ Locally: `make test`, `cd backend && golangci-lint run`, `make k8s-validate`.
 
 ## Adding a sample type or a metric
 
-1. `backend/internal/model/model.go` → add the `Sample*` constant.
+1. `backend/internal/model/sync.go` → add the `Sample*` constant.
 2. `../app/Ryft/Health/HealthKitManager.swift` → add a `QuantitySpec`.
 3. Use it in `internal/scoring/compute.go`; pin the behaviour in `algorithms_test.go`.
