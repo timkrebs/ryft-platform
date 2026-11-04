@@ -1,7 +1,3 @@
-// Package train holds the pure rules of the Train feature (exercises, plans,
-// sessions) that are not scoring: fixed ids for built-in content, slugs, the
-// exercise name for a language, request validation and the session merge and
-// conflict rule (docs/DECISIONS.md D61). No I/O.
 package train
 
 import (

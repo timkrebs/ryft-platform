@@ -1,14 +1,3 @@
-// Package workoutdup holds the two rules that make one activity one workout
-// (docs/SCORING.md → Several sources, one reading → workouts). They are pure
-// functions of the rows, with no store and no clock, in a package of their own
-// so that ingest and the store (which run the same-source fold, D146) can use
-// them without importing the scoring engine, which imports the store.
-//
-//   - Same source (SameWorkout, FoldClusters): copies of one recording that a
-//     source re-wrote under a new HealthKit UUID. Ingest deletes all but one.
-//   - Different sources (CrossSourceDuplicates): a watch and a second tracker
-//     that both recorded one run. Nothing is deleted; scoring marks every copy
-//     but the primary with duplicate_of (D147).
 package workoutdup
 
 import (
@@ -23,22 +12,25 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// FoldTolerance: two copies of one source are one workout when their starts
-// and their ends each lie within this of each other. A source that re-writes a
+// FoldTolerance is how far apart two copies of one source may start and end
+// and still be one workout. A source that re-writes a
 // workout (Garmin Connect on every sync) keeps its times to the second; 120 s
 // is the brief's figure and leaves room for a re-write that rounds or trims a
 // pause, while two real workouts of one activity are never this close at
 // both ends.
 const FoldTolerance = 120 * time.Second
 
-// FoldOverlapNum/FoldOverlapDen: and the two copies must overlap by at least
-// half of the shorter one. A re-write overlaps its original by ~100 %; without
+// FoldOverlapNum and FoldOverlapDen are the fraction (1/2) of the shorter copy
+// that two copies must also overlap by. A re-write overlaps its original by ~100 %; without
 // this, short workouts of one source and activity that follow each other within
 // 120 s (intervals logged as six 45-s workouts 60 s apart) would chain into one
 // component and five would be deleted, which cannot be undone. 50 % rather
 // than the cross-source 80 %: within one source a copy is already pinned by
 // both ends, the overlap only has to rule out "one after the other".
-const FoldOverlapNum, FoldOverlapDen = 1, 2
+const (
+	FoldOverlapNum = 1
+	FoldOverlapDen = 2
+)
 
 // Copy is what the same-source fold reads of a stored workout. CreatedAt is
 // the row's insert time, which the upsert never updates: the most recently
@@ -177,16 +169,19 @@ func newer(a, b Copy) bool {
 
 // Cross-source rule (U3, D147).
 const (
-	// OverlapNum/OverlapDen: two recordings of different sources are one
-	// workout when they overlap by at least 4/5 (80 %) of the shorter one. A
+	// OverlapNum is the numerator of the cross-source overlap fraction. Two
+	// recordings of different sources are one workout when they overlap by at
+	// least 4/5 (80 %) of the shorter one. A
 	// watch and a chest-strap app started a minute apart and stopped a minute
 	// apart overlap by > 95 % on a 30-min run; an evening walk that only
 	// touches the end of a run does not reach 80 %. Integers, so the boundary
 	// is exact (no float rounding at 80 %).
-	OverlapNum, OverlapDen = 4, 5
-	// MinOwnHR: a recording "has heart rate" when its own source wrote at least
-	// two heart-rate samples inside its window: one sample is a spot reading,
-	// two make a curve (Strain needs two points as well).
+	OverlapNum = 4
+	// OverlapDen is the denominator of the fraction OverlapNum describes.
+	OverlapDen = 5
+	// MinOwnHR is how many heart-rate samples a recording's own source must
+	// have written inside its window to "have heart rate": one sample is a
+	// spot reading, two make a curve (Strain needs two points as well).
 	MinOwnHR = 2
 	// ActivityOther matches every activity: a source that does not know the
 	// sport writes "other" (API.md → Workout.activity).

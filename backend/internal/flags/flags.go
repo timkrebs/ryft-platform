@@ -1,6 +1,3 @@
-// Package flags evaluates remote-config feature flags for one user (GET
-// /v1/config, docs/DECISIONS.md D69). It is pure: flags and a user in, booleans
-// out.
 package flags
 
 import (

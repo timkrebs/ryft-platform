@@ -1,6 +1,3 @@
-// Package behavior is the journal's arithmetic (M5): fixed ids of the built-in
-// behaviors, what an entry may hold, and how a behavior changes the morning
-// after (docs/SCORING.md → Journal, D74–D77). It is pure: no I/O.
 package behavior
 
 import (
@@ -19,6 +16,9 @@ import (
 	"github.com/timkrebs/ryft/internal/train"
 )
 
+// Journal limits. WindowDays, MinDays and Resamples calibrate the impact
+// statistic (docs/SCORING.md → Journal, D75): moving one moves the effects the
+// app shows. The rest are validation limits the API documents.
 const (
 	WindowDays   = 90   // entry days the impact looks at
 	MinDays      = 5    // with and without a behavior, to unlock it

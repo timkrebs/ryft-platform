@@ -26,6 +26,8 @@ const (
 	sleepQualityFair = 60
 )
 
+// SleepQualityLabel maps a 0..100 quality to the closed enum of model.Quality*,
+// which the app localises; the bands are the two constants above.
 func SleepQualityLabel(quality int) string {
 	switch {
 	case quality >= sleepQualityGood:

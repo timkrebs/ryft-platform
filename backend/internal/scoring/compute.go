@@ -77,7 +77,7 @@ const (
 	nightEndOffset   = 13 * time.Hour
 )
 
-// ErrNoConsent: the user has withdrawn (or never given) consent to processing
+// ErrNoConsent means the user has withdrawn (or never given) consent to processing
 // their health data, so nothing is scored (D78). Callers count it, not fail on it.
 var ErrNoConsent = errors.New("no consent to health-data processing")
 
