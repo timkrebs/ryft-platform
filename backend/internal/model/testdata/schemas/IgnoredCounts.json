@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "duplicate": {
+      "type": "integer"
+    },
+    "outside_window": {
+      "type": "integer"
+    },
+    "unknown_id": {
+      "type": "integer"
+    },
+    "unknown_type": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "duplicate",
+    "outside_window",
+    "unknown_id",
+    "unknown_type"
+  ],
+  "title": "IgnoredCounts",
+  "type": "object"
+}

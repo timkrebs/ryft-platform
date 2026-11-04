@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string"
+    },
+    "other_last_sync": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "other_provider": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "other_last_sync",
+    "other_provider"
+  ],
+  "title": "AccountHint",
+  "type": "object"
+}

@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "birth_year": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "max_hr": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "max_hr_manual": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "sleep_base_manual": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "sleep_base_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "tz": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [],
+  "title": "UserPatch",
+  "type": "object"
+}

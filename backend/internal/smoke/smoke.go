@@ -1,13 +1,3 @@
-// Package smoke is the production smoke after a deploy, from inside the cluster:
-// Argo CD runs it as the PostSync hook of the ryft-platform application
-// (`/app smoke` in the migrate image, namespace ryft-smoke; D95). It checks that
-// every service is ready, signs the dedicated smoke user in, sends one tiny sync and
-// waits until scoring has rescored that day with the model the api serves, which
-// proves api, ingest, the broker and scoring end to end. It changes nothing but the
-// smoke user's step count for today (and gives it the current consent).
-//
-// scripts/smoke_prod.sh does the same through the public edge and also probes the
-// gates; that one stays the operator's check from outside.
 package smoke
 
 import (
@@ -31,6 +21,10 @@ import (
 // DeviceID is the smoke user's one device (the same as scripts/smoke_prod.sh).
 var DeviceID = uuid.MustParse("5e0c0a5e-0000-4000-8000-0000000000aa")
 
+// Config is one smoke run's endpoints and credentials; cmd/migrate fills it from the
+// environment. Token (the local stack's API key) and the Supabase sign-in are
+// alternatives, and the zero values of Wait, Poll and ReadyWait take the defaults
+// noted on each field.
 type Config struct {
 	APIURL    string   // e.g. http://api.ryft-api.svc.cluster.local:8080
 	IngestURL string   // e.g. http://ingest.ryft-ingest.svc.cluster.local:8080

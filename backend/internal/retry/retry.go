@@ -1,11 +1,3 @@
-// Package retry runs start-up steps that depend on something that may not be up
-// yet: the database before the migrate job has set the role passwords, RabbitMQ
-// before its nodes are ready.
-//
-// Exiting and letting Kubernetes restart the pod would retry too, but fast and
-// in lockstep across pods. Supabase's pooler blocks a user for a while after
-// repeated failed logins (ECIRCUITBREAKER), which turned a few seconds of
-// "password not set yet" into minutes of crash loops on the first deploy.
 package retry
 
 import (

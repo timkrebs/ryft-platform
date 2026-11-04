@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bodyweight_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ended_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [],
+  "title": "SessionComplete",
+  "type": "object"
+}

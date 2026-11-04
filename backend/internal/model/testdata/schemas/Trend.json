@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "avg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "baseline": {
+      "nullable": true,
+      "type": "number"
+    },
+    "from": {
+      "type": "string"
+    },
+    "max": {
+      "nullable": true,
+      "type": "number"
+    },
+    "metric": {
+      "type": "string"
+    },
+    "min": {
+      "nullable": true,
+      "type": "number"
+    },
+    "points": {
+      "items": {
+        "$ref": "TrendPoint"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "range": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "avg",
+    "baseline",
+    "from",
+    "max",
+    "metric",
+    "min",
+    "points",
+    "range",
+    "to"
+  ],
+  "title": "Trend",
+  "type": "object"
+}

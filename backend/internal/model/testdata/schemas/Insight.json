@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "day": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "metric": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "body",
+    "day",
+    "id",
+    "metric",
+    "severity",
+    "title"
+  ],
+  "title": "Insight",
+  "type": "object"
+}

@@ -14,6 +14,7 @@ variables {
   # terraform test also reads a local terraform.tfvars: these runs assume none.
   shared_secrets = {}
   service_secrets = {
+    "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
     api = {
       SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
       APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
@@ -72,14 +73,15 @@ run "each_namespace_holds_only_its_own_credentials" {
 
   assert {
     condition = jsonencode(output.secret_keys) == jsonencode({
-      ingest     = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "SUPABASE_PROJECT_REF"]
-      scoring    = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL"]
-      api        = ["ADMIN_API_KEY", "AMQP_PASSWORD", "AMQP_USER", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
-      migrate    = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_NOTIFY", "DB_PASSWORD_SCORING"]
-      monitoring = ["GC_TOKEN", "PROM_USERNAME"]
-      notify     = ["AMQP_PASSWORD", "AMQP_USER", "APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL"]
-      rabbitmq   = []
-      smoke      = ["SMOKE_EMAIL", "SMOKE_PASSWORD", "SUPABASE_ANON_KEY", "SUPABASE_PROJECT_REF"]
+      ingest         = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL", "SUPABASE_PROJECT_REF"]
+      scoring        = ["AMQP_PASSWORD", "AMQP_USER", "DATABASE_URL"]
+      api            = ["ADMIN_API_KEY", "AMQP_PASSWORD", "AMQP_USER", "APPLE_CLIENT_ID", "APPLE_KEY_ID", "APPLE_KEY_P8", "APPLE_TEAM_ID", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY"]
+      migrate        = ["DATABASE_URL", "DB_PASSWORD_API", "DB_PASSWORD_INGEST", "DB_PASSWORD_NOTIFY", "DB_PASSWORD_SCORING"]
+      monitoring     = ["GC_TOKEN", "PROM_USERNAME"]
+      notify         = ["AMQP_PASSWORD", "AMQP_USER", "APNS_KEY_ID", "APNS_KEY_P8", "APNS_TEAM_ID", "DATABASE_URL"]
+      rabbitmq       = []
+      smoke          = ["SMOKE_EMAIL", "SMOKE_PASSWORD", "SUPABASE_ANON_KEY", "SUPABASE_PROJECT_REF"]
+      "whoop-import" = ["client_id", "client_secret", "refresh_token"]
     })
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
   }
@@ -166,9 +168,10 @@ run "rejects_placeholders_from_the_example" {
 
   variables {
     service_secrets = {
-      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_KEY_ID = "…", APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----" }
-      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
-      smoke      = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
+      api            = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_KEY_ID = "…", APPLE_KEY_P8 = "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----" }
+      monitoring     = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      smoke          = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
     }
   }
   expect_failures = [var.service_secrets]
@@ -179,6 +182,7 @@ run "accepts_a_base64_encoded_apple_key" {
 
   variables {
     service_secrets = {
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
       api = {
         SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
         APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"
@@ -196,9 +200,10 @@ run "rejects_a_partial_set_of_apple_keys" {
 
   variables {
     service_secrets = {
-      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_TEAM_ID = "M77SKHKG63", APPLE_CLIENT_ID = "dev.timkrebs.ryft" }
-      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
-      smoke      = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
+      api            = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test", APPLE_TEAM_ID = "M77SKHKG63", APPLE_CLIENT_ID = "dev.timkrebs.ryft" }
+      monitoring     = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      smoke          = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
     }
   }
   expect_failures = [var.service_secrets]
@@ -209,8 +214,9 @@ run "warns_without_the_apple_keys" {
 
   variables {
     service_secrets = {
-      api    = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }, smoke = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
-      notify = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----" }
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
+      api            = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }, monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }, smoke = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
+      notify         = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63", APNS_KEY_P8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----" }
     }
   }
   expect_failures = [check.api_has_apple_keys]
@@ -221,10 +227,11 @@ run "rejects_a_partial_set_of_apns_keys" {
 
   variables {
     service_secrets = {
-      api        = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }
-      monitoring = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
-      smoke      = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
-      notify     = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63" }
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
+      api            = { SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test" }
+      monitoring     = { GC_TOKEN = "glc_test", PROM_USERNAME = "123456" }
+      smoke          = { SUPABASE_ANON_KEY = "sb_publishable_test", SMOKE_EMAIL = "smoke@example.com", SMOKE_PASSWORD = "smoke-password" }
+      notify         = { APNS_KEY_ID = "ABCDE12345", APNS_TEAM_ID = "M77SKHKG63" }
     }
   }
   expect_failures = [var.service_secrets]
@@ -235,6 +242,7 @@ run "warns_without_the_apns_key" {
 
   variables {
     service_secrets = {
+      "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
       api = {
         SUPABASE_SERVICE_ROLE_KEY = "sb_secret_test"
         APPLE_TEAM_ID             = "M77SKHKG63", APPLE_KEY_ID = "ABCDE12345", APPLE_CLIENT_ID = "dev.timkrebs.ryft"

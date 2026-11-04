@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "archived": {
+      "type": "boolean"
+    },
+    "day_count": {
+      "type": "integer"
+    },
+    "days_per_week": {
+      "type": "integer"
+    },
+    "description": {
+      "type": "string"
+    },
+    "exercise_count": {
+      "type": "integer"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_builtin": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "slug": {
+      "nullable": true,
+      "type": "string"
+    },
+    "weeks": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "archived",
+    "day_count",
+    "days_per_week",
+    "description",
+    "exercise_count",
+    "goal",
+    "id",
+    "is_builtin",
+    "name",
+    "slug",
+    "weeks"
+  ],
+  "title": "PlanSummary",
+  "type": "object"
+}

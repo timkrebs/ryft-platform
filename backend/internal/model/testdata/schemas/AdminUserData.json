@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "days_scored_14d": {
+      "type": "integer"
+    },
+    "days_with_hrv_14d": {
+      "type": "integer"
+    },
+    "last_sync": {
+      "description": "raw JSON"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "latest": {
+      "additionalProperties": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "nights_with_stages_14d": {
+      "type": "integer"
+    },
+    "open_feedback": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "days_scored_14d",
+    "days_with_hrv_14d",
+    "last_sync",
+    "last_sync_at",
+    "latest",
+    "nights_with_stages_14d",
+    "open_feedback"
+  ],
+  "title": "AdminUserData",
+  "type": "object"
+}

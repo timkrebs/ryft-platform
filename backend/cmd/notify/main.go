@@ -1,8 +1,3 @@
-// notify sends RYFT's push notifications (docs/ARCHITECTURE.md → notify): the
-// morning score and a silent refresh when scoring publishes scored, a
-// scored strength session (session.scored), and a reminder when a user's
-// data has stopped arriving (a 15-minute check). Without an APNs key it runs
-// and counts what it would have sent.
 package main
 
 import (

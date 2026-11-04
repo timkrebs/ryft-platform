@@ -22,6 +22,15 @@ block = re.search(r"```swift\n(.*?)```", doc, re.S)
 open(sys.argv[2], "w").write(block.group(1))
 PY
 
+# The documented answer of POST /v1/train/import, decoded with the mirror as it stands in the doc.
+python3 - "$ROOT/docs/API.md" "$WORK/import_response.json" <<'PY'
+import re, sys
+doc = open(sys.argv[1]).read()
+m = re.search(r"Response `200 TrainImportResponse`.*?```json\n(.*?)```", doc, re.S)
+open(sys.argv[2], "w").write(m.group(1))
+PY
+export IMPORT_EXAMPLE="$WORK/import_response.json"
+
 echo "→ Swift mirror from docs/API.md"
 mkdir "$WORK/mirror"
 cp "$HERE/swift/CheckMirror.swift" "$WORK/mirror/main.swift"

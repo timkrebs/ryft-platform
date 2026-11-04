@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "days_touched": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "results": {
+      "items": {
+        "$ref": "ImportResult"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "scoring": {
+      "$ref": "SyncScoring"
+    }
+  },
+  "required": [
+    "days_touched",
+    "results",
+    "scoring"
+  ],
+  "title": "TrainImportResponse",
+  "type": "object"
+}

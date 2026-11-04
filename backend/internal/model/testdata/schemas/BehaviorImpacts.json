@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "computed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "impacts": {
+      "items": {
+        "$ref": "BehaviorImpact"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "window_days": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "computed_at",
+    "impacts",
+    "window_days"
+  ],
+  "title": "BehaviorImpacts",
+  "type": "object"
+}

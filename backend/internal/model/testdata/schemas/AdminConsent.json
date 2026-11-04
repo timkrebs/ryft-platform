@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "granted_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "policy_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "app_version",
+    "granted_at",
+    "policy_version"
+  ],
+  "title": "AdminConsent",
+  "type": "object"
+}

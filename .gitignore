@@ -20,3 +20,5 @@ __pycache__/
 /backend/notify
 /backend/migrate
 /backend/rabbitmq-topology
+# k6 output of scripts/load.sh (make load)
+scripts/load/out/

@@ -1,9 +1,3 @@
-// Package logx is the services' structured logging: JSON lines on stdout,
-// every line carrying the service name and — when logged with a request's
-// context (InfoContext etc.) — its request_id, user_id and route, so one
-// request can be followed across ingest, the broker and scoring.
-//
-// Tokens, emails and request bodies are never logged.
 package logx
 
 import (

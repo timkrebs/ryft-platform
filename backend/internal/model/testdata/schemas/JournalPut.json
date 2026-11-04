@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "JournalEntry"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "entries"
+  ],
+  "title": "JournalPut",
+  "type": "object"
+}

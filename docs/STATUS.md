@@ -29,6 +29,43 @@ every file, kustomization and Argo CD app (#31, #38). The app's **calibrating re
 no HRV source; days are re-scored when their history changes (#29); `DailyScore` carries
 `calibrating_reason` and per-signal counts (#30, migration 0027, last 30 days rescored);
 the logs hold no health values any more (#35).
+The **training import** (2026-10-26, PR #59, D124–D141, `docs/work/2026-10-26-train-import/`):
+`POST /v1/train/import` with scoring model 2026.10.2 and migration 0028, reviewed, **not yet
+deployed**. Your steps, in order (cluster: `--context ryft-prod-euc1`, which is the current context on
+this machine; check with `kubectl config current-context`):
+1. **T11 check, read-only, before the merge.** As the database owner in the Supabase SQL editor:
+   `SELECT count(*) FROM plan_exercises WHERE target_kind = 'bodyweight' AND (target_value < 0 OR target_value > 500);`
+   Worked = `0`. Anything else: stop; those plans would fail the new validation on their next save.
+2. **Merge #59** (`gh pr checks 59` green first). CI builds the images and opens a promote PR
+   (`deploy/<7 hex>`) that pins `overlays/eks`; it merges itself once its checks pass
+   (`gh pr list --state open --search 'head:deploy/'`; open over 2 h: the daily deploy watch reports it,
+   merge it by hand).
+3. **Argo CD syncs** (2–6 min after the pin merges, about 15 min for the release):
+   `kubectl --context ryft-prod-euc1 -n argocd get applications` until all are Synced and Healthy.
+   The migrate PreSync hook applies `0028_train_import.sql` (additive; a failed migration fails the sync
+   and nothing rolls: `argocd app get ryft-platform` names the step; the PostSync smoke runs last).
+   Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
+   (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
+   (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
+4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
+   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+   no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
+5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
+   allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
+   Feature flags). Kill switch: `{"enabled": false, "rollout_pct": 100}`.
+6. **Privacy text with the app release, not before** (PR #61, draft): flip both pages to
+   `status: published`, then merge. A draft version on `main` blocks every deploy PR. Every account
+   consents again (`consent_required` rises; expected).
+7. **The vault PR (`infra/vault-import-service`, an import service of the wearable data) does not depend
+   on #59**: land it before or after. Its Terraform is already applied; the merge deploys nothing (its
+   namespace is not an Argo app). Run `cd infra/vault && terraform plan` first: expect no change.
+
+Rollback of 2–4: re-pin the previous images (OPERATIONS → Deploy and roll back); 0028 is additive and stays.
+
+Open (D141, not built): a server-held import namespace for merged accounts (until then the app must not
+import the same file again after a merge); a `score_queue` sweeper (days that stay queued if a request
+dies between queueing and the rescore); the api's shutdown drain against the import's 50 s budget (a
+rolling update can cut an import in flight; the app resends and the stored items come back `unchanged`).
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
@@ -224,6 +261,7 @@ per node) and R1 waits for a bigger node group.
 | Merge | `POST /v1/admin/users/{from}/merge-into/{to}` with `dry_run`: one transaction, the kept account's rows win, per-table moved/dropped, consent and access copied if missing, rescored over the moved days, then `from` deleted like `DELETE /v1/me`; `409` if from has more history (`force`) | migration 0024, `store/merge.go`, D90 |
 | Sync state | `X-RYFT-Device-ID` and `User.account_hint` (another account on this device); `GET /v1/me/sync`; `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring` (queued days, `expected_within_sec`); unknown types and out-of-window records ignored and counted instead of `422`; identical re-sends not counted | migration 0025 (`score_queue`), `cmd/api/syncstatus.go`, D91 |
 | Sync to score | `ryft_sync_to_score_seconds` per queued day, alert `SyncToScoreSlow` (p95 > 2 min, 15 min) and a dashboard panel; a silent refresh push (`ryft.refresh`) after every sync's scored days, one per account every 5 minutes, collapsed per day; event handlers recover from a panic (`ryft_event_handler_panics_total`) | `cmd/scoring`, `internal/notify`, D92 |
+| Training import | `POST /v1/train/import`: plans and sessions from another app's export, per-item results, idempotent by per-account ids, the app's edits win (`newer_on_server`), one rescore per request, no pushes, silent records; flag `train.import` (off), its own rate class and a lease per user; model 2026.10.2 (e1RM reference over 90 days, assisted sets) | `cmd/api/train_import.go`, `internal/train/import.go`, migration 0028 |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
@@ -319,6 +357,17 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
     `invite_required` apart from sign-in failures.
 
 ## Not done / not verified
+
+**Mail for ryftapp.de on Google Workspace: your steps, in this order** (2026-10-28, D142; PR
+`infra/dns-google-mail`). Done: the records are in `infra/aws/dns` (MX, the apex TXT as two
+values, DKIM split for Route 53, `_dmarc` at `p=none`), tested in `tests/dns.tftest.hcl`
+(not run locally: no terraform allowed here; CI's terraform job runs it); OPERATIONS →
+"Mail for ryftapp.de". Open, yours: (1) merge the PR; (2) import, plan, apply with the
+commands in OPERATIONS (`terraform import` ×3, then `plan`: expect the apex TXT to change
+to two values, `_dmarc` created, nothing else; then `apply`); (3) send a test mail both
+ways and read SPF/DKIM/DMARC in the headers; (4) after 2–4 weeks of clean DMARC reports set
+`dmarc` to `p=quarantine`. The privacy texts' Google line is in PR #66 (2026-10-20) and #61
+(2026-10-26); the Impressum still has the phone and USt-IdNr/§ 36 VSBG `TODO(user)`s.
 
 **Web in this repository: your steps, in this order** (D107; PR bodies have the details).
 All done (2026-10-22): the docs PR (#10); ryft-web archived with the README pointer (its

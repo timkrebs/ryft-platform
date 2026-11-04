@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "samples": {
+      "$ref": "IgnoredCounts"
+    },
+    "sleep": {
+      "$ref": "IgnoredCounts"
+    },
+    "workouts": {
+      "$ref": "IgnoredCounts"
+    }
+  },
+  "required": [
+    "samples",
+    "sleep",
+    "workouts"
+  ],
+  "title": "SyncIgnored",
+  "type": "object"
+}

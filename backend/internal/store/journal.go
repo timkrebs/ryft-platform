@@ -14,7 +14,8 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// ErrLimit: the user has the most custom behaviors allowed (422).
+// ErrLimit is returned when the user already has the most custom behaviors the
+// journal allows, so a new one is refused (answered 422).
 var ErrLimit = errors.New("limit reached")
 
 const behaviorColumns = `b.id, b.slug, b.name_en, b.name_de, b.category, b.kind, b.default_on,

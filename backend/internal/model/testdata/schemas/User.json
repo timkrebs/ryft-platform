@@ -1,0 +1,90 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "account_hint": {
+      "$ref": "AccountHint",
+      "nullable": true
+    },
+    "beta_access": {
+      "type": "boolean"
+    },
+    "birth_year": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "consent": {
+      "$ref": "Consent",
+      "nullable": true
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "max_hr": {
+      "type": "integer"
+    },
+    "max_hr_source": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "notifications": {
+      "$ref": "NotificationPrefs"
+    },
+    "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "sleep_base_learned_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "sleep_base_learned_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_base_min": {
+      "type": "integer"
+    },
+    "sleep_base_source": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "UserSource"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "tz": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "account_hint",
+    "beta_access",
+    "birth_year",
+    "consent",
+    "email",
+    "id",
+    "max_hr",
+    "max_hr_source",
+    "name",
+    "notifications",
+    "provider",
+    "sleep_base_learned_at",
+    "sleep_base_learned_min",
+    "sleep_base_min",
+    "sleep_base_source",
+    "sources",
+    "tz"
+  ],
+  "title": "User",
+  "type": "object"
+}

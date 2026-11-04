@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "day": {
+      "type": "string"
+    },
+    "value": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "day",
+    "value"
+  ],
+  "title": "TrendPoint",
+  "type": "object"
+}

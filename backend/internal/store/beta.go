@@ -13,7 +13,9 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// ErrInvalidCode: unknown, expired or used up — one answer for all three (422).
+// ErrInvalidCode is an invite redemption refused because the code is unknown,
+// expired or used up. It is one error for all three (answered 422), so a caller
+// cannot probe which codes exist.
 var ErrInvalidCode = errors.New("invalid or used code")
 
 // GrantConsent records the user's consent to policyVersion. A current consent
