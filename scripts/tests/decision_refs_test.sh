@@ -21,6 +21,16 @@ printf '// D1: linked.\n// D3–D5 and D6-D7 are ranges (en dash, hyphen); D8 st
 printf '// D17-18 has no second D.\npackage x\n' > backend/internal/x/z.go
 printf 'a: 1 # D10 is skipped but mentioned (stale)\nb: HD12 D120 ID13 #D1D1D1\n' > deploy/a.yaml
 printf 'D11 in markdown\n' > deploy/README.md
+# The site numbers its own decisions (web/docs/DECISIONS.md): web/ does not count for D11.
+mkdir -p web/src deploy/rabbitmq/operators/cluster-operator
+printf '// D11: a decision of the site\n' > web/src/a.ts
+# A vendored operator release does not count either (D12), our own file next to it does.
+printf '# D12 in an upstream manifest\n' > deploy/rabbitmq/operators/cluster-operator/cluster-operator-2.23.1.yml
+# Many mentions of one decision must not kill the script (SIGPIPE under pipefail once the list outgrows the pipe
+# buffer): D3 in 500 files with 200-character names (about 100 KB of mention lines).
+mkdir -p backend/internal/x/many
+pad=$(printf '0123456789%.0s' $(seq 1 20))
+for i in $(seq 1 500); do printf '// D3\n' > "backend/internal/x/many/f${i}_$pad"; done
 printf 'D14 in testdata\n' > backend/internal/x/testdata/t.txt
 printf 'D15 in a docs file\n' > docs/other.txt
 printf 'D2,D16;\n' > deploy/untracked.txt  # not added: untracked files are not source
@@ -37,8 +47,8 @@ hasnt() { ! grep -q -- "$1" "$tmp/out" || fail "$2: unexpected '$1' in: $(cat "$
 
 run; [ "$rc" = 0 ] || fail "warnings alone exit 0 (rc=$rc): $(cat "$tmp/err")"
 has 'warning: D2 (Decision 2) has no reference' "D2 is mentioned nowhere"
-has 'warning: D11 (Decision 11) has no reference' "markdown does not count"
-has 'warning: D12 (Decision 12) has no reference' "HD12 and D120 are not D12"
+has 'warning: D11 (Decision 11) has no reference' "markdown and web/ do not count"
+has 'warning: D12 (Decision 12) has no reference' "HD12, D120 and a vendored operator release are not D12"
 has 'warning: D13 (Decision 13) has no reference' "ID13 is not D13"
 has 'warning: D14 (Decision 14) has no reference' "testdata does not count"
 has 'warning: D15 (Decision 15) has no reference' "docs/ does not count"

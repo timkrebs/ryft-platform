@@ -1,26 +1,18 @@
 # Decisions with no code consequence to link, for scripts/decision_refs.sh: `D<n> reason`, one per line.
 # A reason is required. A decision that gets mentioned in code or config is reported as stale; remove it here then.
 
-# The contract and reviews: the consequence lives in docs/API.md or in the fixes themselves.
-D7 contract additions (sleep segments, SleepRange, paging); the shapes live in docs/API.md and internal/model
-D22 log of an independent review; every fix is in the code it fixed
+# Comments and README paths only.
+D2 comment and README path fixes (the app's path), no behaviour
 
 # Superseded in full: the code it governed is gone or rewritten under a later decision.
 D15 manifest layout superseded by D44 (base/, services/, overlays/); no flat default overlay remains
-D33 Supabase deploy changes superseded by D44 and the per-namespace Vault secrets; ryft-supabase-admin and the backup job are gone
 D54 S3 remote state, superseded by D56
-D84 NATS JetStream dead-letter stream, replaced by the RabbitMQ DLQ (D97, D100)
 
-# Terraform and Vault roots, applied by the user: no Go, shell or YAML consequence here (comments in .tf are not touched).
+# Terraform and Vault roots, applied by the user. The script scans .tf files too; they are left without
+# decision comments in this PR as a scope choice (the user's roots), and nothing in Go, shell or YAML follows.
 D23 Route 53 zone in its own root (infra/aws/dns)
-D24 Traefik and cert-manager with DNS-01 (infra/aws/kubernetes)
 D25 edge add-ons as a Terraform root (infra/aws/kubernetes)
-D26 encrypted default StorageClass (infra/aws/kubernetes)
 D45 infra/vault paths, credentials and namespaces
-D46 Vault Secrets Operator as a Terraform add-on
-D55 USD budget in Terraform; the apex site itself is D106 and D107
-D56 state in HCP Terraform, one workspace per root
 
-# Operator one-offs and drafts.
+# Operator one-off.
 D49 recreate the Supabase project in Frankfurt; a runbook step in docs/SUPABASE.md, no code change
-D86 legal drafts and the demo account; the texts live in web/content/legal

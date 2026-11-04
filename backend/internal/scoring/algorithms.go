@@ -207,7 +207,7 @@ func ReadinessPenalty(recovery int, yesterdayStrain float64) int {
 
 // ReadinessState is the word the app shows under the greeting. Same bands as
 // recovery (≥67 green, 34–66 yellow, <34 red); "calibrating" while baselines
-// are still being built or there is nothing to score.
+// are still being built or there is nothing to score (D4: the enum has no separate "no data").
 func ReadinessState(readiness *int, calibrating bool) string {
 	switch {
 	case readiness == nil || calibrating:
@@ -309,7 +309,8 @@ func StrainFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) float64 {
 }
 
 // LoadFromAverage is StrainFromAverage with the full result: the whole duration
-// is credited at the average's intensity and to the average's zone, so zone_min is never empty for it (D9).
+// is credited at the average's intensity and, from 50 % of heart-rate reserve up, to the average's zone, so a
+// workout with only an average still has zone minutes (D9).
 func LoadFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) StrainResult {
 	var res StrainResult
 	if maxHR <= rhr || dur <= 0 {

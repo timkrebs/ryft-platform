@@ -75,13 +75,10 @@ jobs:
               - 'scripts/coverage.sh'
               - '.github/workflows/ci.yml'
             # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
-            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite. Likewise the
-            # decision reference check and its skip list (scripts/decision_refs.sh, the same job).
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
             pkgmap:
               - 'docs/ARCHITECTURE.md'
               - 'scripts/pkgmap.sh'
-              - 'scripts/decision_refs.sh'
-              - 'scripts/decision_refs.skip'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -247,10 +244,6 @@ jobs:
       # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
       # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
       - run: ./scripts/pkgmap.sh --check
-      # D-numbers in docs/DECISIONS.md that no source or config file mentions (and scripts/decision_refs.skip does not
-      # excuse): one ::warning annotation, the list in the log. Exit 0 on warnings, so it never fails the job; it fails
-      # only when the script cannot work. `--strict` is the later promotion to a failure.
-      - run: ./scripts/decision_refs.sh
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
@@ -266,6 +259,13 @@ jobs:
           persist-credentials: false
       - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
         run: ./scripts/check_bytes.sh
+      # D-numbers in docs/DECISIONS.md that no source or config file mentions and scripts/decision_refs.skip does not
+      # excuse: one ::warning annotation, the list in the log. Here, not in `lint`: this job has no path filter, so a
+      # PR that only edits docs/DECISIONS.md (or the skip list) runs it, and a renumbered D shows up on the PR that
+      # did it instead of on someone else's Go PR. It needs only git and awk. Exit 0 on warnings, so it never fails
+      # the job; it fails only when the script cannot work. `--strict` is the later promotion to a failure.
+      - name: Decisions are referenced from code, or skipped with a reason (warnings only)
+        run: ./scripts/decision_refs.sh
 
   manifests:
     needs: [changes]
@@ -400,7 +400,7 @@ jobs:
           persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: 1.16.6
+          terraform_version: 1.16.6 # pinned exactly, as in the code and the workspaces (D56)
           terraform_wrapper: false
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
         with:
@@ -411,7 +411,7 @@ jobs:
           path: ${{ github.workspace }}/.terraform-plugin-cache
           key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.root)) }}
       - run: terraform fmt -check -recursive
-      # -backend=false: never touch the HCP Terraform workspace from CI.
+      # -backend=false: never touch the HCP Terraform workspace from CI (D56).
       - run: terraform init -backend=false -input=false
       - run: terraform validate
       - run: tflint --init && tflint --format compact

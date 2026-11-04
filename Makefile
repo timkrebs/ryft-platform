@@ -4,7 +4,7 @@ SERVICES := ingest scoring api notify migrate
 # The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
 GOLANGCI_LINT_VERSION := v2.15.0
 
-# Docker if it is installed, otherwise Podman (its `compose` runs the same file).
+# Docker if it is installed, otherwise Podman (its `compose` runs the same file; D1).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
@@ -123,6 +123,7 @@ monitoring-apply: k8s-check-auth
 # (.terraform/terraform.tfstate: the S3 settings, no resources) is moved next to the
 # copy instead: init then starts fresh and offers no migration from S3. After the
 # push the workspace must hold as many resources as the local state.
+# D56: state lives in HCP Terraform, one workspace per root, runs stay local.
 TF_ORG   := tim-krebs-org
 TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
             infra/aws/kubernetes:ryft-prod-euc1-kubernetes infra/vault:ryft-prod-euc1-vault
@@ -218,8 +219,9 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check, then the decision references (warnings only: scripts/decision_refs.sh exits 0 unless it cannot work). The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
-# report different findings, so a mismatch is said out loud before the run.
+# map check, then the decision references (warnings only: scripts/decision_refs.sh exits 0 unless it cannot work).
+# The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
+# different findings, so a mismatch is said out loud before the run.
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
 	@have=$$(golangci-lint version 2>&1 | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1); \

@@ -4,7 +4,9 @@
 #   scripts/decision_refs.sh            warn about each unreferenced D<n>; exit 0 (`make lint`, CI `lint`)
 #   scripts/decision_refs.sh --strict   the same, exit 1 when there is a warning (for a later promotion to a failure)
 # Mentions come from `git ls-files` (so worktrees, node_modules and build output are out), minus markdown, docs/,
-# test data, lock files and generated outputs. A range counts for each member: D74-D77, D74-77 and D74<en dash>D77.
+# test data, lock files, generated outputs, vendored operator releases and web/ (the site has its own
+# web/docs/DECISIONS.md with its own D1..Dn, so a D<n> there is not this file's). A range counts for each member:
+# D74-D77, D74-77 and D74<en dash>D77.
 # scripts/decision_refs.skip holds the decisions without a code consequence, one `D<n> reason` per line; a reason is
 # required, a skipped decision that gets mentioned is reported as stale, and `#` lines and blank lines are ignored.
 # Exit 0: only warnings (or none). 1: --strict and there is a warning. 2: it cannot work: no DECISIONS.md, not a git
@@ -56,7 +58,7 @@ fi
 
 # The files that may mention a decision: tracked, text, not documentation, test data, a lock file or generated.
 git ls-files -z \
-  | grep -zvE '(\.md$|^docs/|/testdata/|(^|/)package-lock\.json$|(^|/)go\.sum$|\.terraform\.lock\.hcl$|^deploy/rabbitmq/topology/|^deploy/k8s/overlays/vault-namespaces/|^scripts/decision_refs\.(sh|skip)$|^scripts/tests/decision_refs_test\.sh$)' \
+  | grep -zvE '(\.md$|^docs/|/testdata/|(^|/)package-lock\.json$|(^|/)go\.sum$|\.terraform\.lock\.hcl$|^web/|^deploy/rabbitmq/operators/(SHA256SUMS|.*/(cluster-operator|messaging-topology-operator)-[0-9.]+\.ya?ml)$|^deploy/rabbitmq/topology/|^deploy/k8s/overlays/vault-namespaces/|^scripts/decision_refs\.(sh|skip)$|^scripts/tests/decision_refs_test\.sh$)' \
   > "$tmp/candidates" || true
 : > "$tmp/mentions"
 if [ -s "$tmp/candidates" ]; then
@@ -93,7 +95,7 @@ warnings=0
 unlinked=0
 while read -r n heading; do
   skip=$(awk -v n="$n" '$1 == n { sub(/^[^ ]+ /, ""); print; exit }' "$tmp/skipped")
-  where=$(awk -v n="$n" '$1 == n { print $2 }' "$tmp/mentions" | head -n 1)
+  where=$(awk -v n="$n" '$1 == n { print $2; exit }' "$tmp/mentions")
   if [ -n "$skip" ]; then
     if [ -n "$where" ]; then
       echo "warning: D$n is in scripts/decision_refs.skip ($skip) but is mentioned in $where; drop it from the skip list"

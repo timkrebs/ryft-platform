@@ -296,7 +296,7 @@ type DailyScore struct {
 	SpO2               *float64       `json:"spo2"`
 	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"`    // 30-day baseline hrv_ms is scored against
 	RHRBaseline        *float64       `json:"rhr_baseline"`       // 30-day baseline rhr is scored against
-	BaselineDays       int            `json:"baseline_days"`      // nights of history behind the baselines, 0..30 (D20: typed; details counts HRV days only)
+	BaselineDays       int            `json:"baseline_days"`      // nights behind the baselines, 0..30; typed, details' copy stays frozen (D20)
 	BaselineHRVDays    *int           `json:"baseline_hrv_days"`  // of the 30 scored days before, those with an HRV; nil: not known
 	BaselineRHRDays    *int           `json:"baseline_rhr_days"`  // … with a resting HR; baseline_days = min of the two
 	Calibrating        bool           `json:"calibrating"`        // baseline_days < 7, exactly (D20)
@@ -443,7 +443,7 @@ type SleepPlan struct {
 	Basis      SleepPlanBasis `json:"basis"`
 }
 
-// SleepRange backs the Sleep screen's Week / Month tabs.
+// SleepRange backs the Sleep screen's Week / Month tabs (D7: the app fills gaps, days lists nights with data only).
 type SleepRange struct {
 	Range          string         `json:"range"` // week | month
 	From           string         `json:"from"`

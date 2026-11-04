@@ -56,7 +56,7 @@ const MaxRangeDays = 400
 
 // RangeDays is the number of calendar days from `from` to `to` (YYYY-MM-DD).
 // It counts dates, not hours, so a range across a DST change is not off by
-// one hour — the api and scoring must agree exactly on MaxRangeDays.
+// one hour — the api and scoring must agree exactly on MaxRangeDays (D22).
 func RangeDays(from, to string) (int, error) {
 	a, err := time.Parse("2006-01-02", from)
 	if err != nil {
@@ -427,7 +427,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	for _, w := range workouts {
 		// Each workout loads its own window rather than filtering the day's
-		// samples: a 23:20–00:40 run must count its minutes after midnight too,
+		// samples (D22): a 23:20–00:40 run must count its minutes after midnight too,
 		// and match the curve GET /v1/workouts/{id} draws (same whole-hour
 		// window, same source per hour).
 		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))

@@ -17,6 +17,7 @@ spec:
   # is ample for quorum queues of a few messages to hand over.
   terminationGracePeriodSeconds: 600
   persistence:
+    # Named explicitly: the EBS add-on's own default class is unencrypted, and the field is immutable (D26).
     storageClassName: gp3-encrypted
     storage: 10Gi
   # The operator's default is 1 CPU / 2Gi per node; the nodes have 1930m CPU each and
