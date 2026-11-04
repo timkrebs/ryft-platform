@@ -4,7 +4,7 @@
 
 This file is the contract between the platform and the RYFT iOS app. The app's
 wire types (`../app/Ryft/Networking/Models.swift`) mirror the shapes below and
-`backend/internal/model/model.go` 1:1.
+`backend/internal/model/*.go` 1:1.
 
 **Compatibility rule.** v1 only changes additively: new endpoints, new optional
 query parameters, new response fields. A field is never renamed, removed or
