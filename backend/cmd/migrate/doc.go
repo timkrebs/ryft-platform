@@ -5,8 +5,8 @@
 // the services (PreSync, D95; a one-shot compose service locally), so it must be
 // idempotent. It must not run as a service role, which cannot run DDL. Outside a
 // sync the operator re-runs the job by hand only to rotate a role's password
-// (docs/OPERATIONS.md). It reads its own environment and does not use
-// internal/config:
+// (docs/OPERATIONS.md), and the break-glass apply of overlays/eks applies it too.
+// It reads its own environment and does not use internal/config:
 //
 //	DATABASE_URL          the owner (postgres on Supabase)
 //	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING, _API and _NOTIFY

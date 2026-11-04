@@ -887,9 +887,10 @@ func inputColumns(inputs []string) []string {
 }
 
 // UpsertDailyScore writes the day's row, with every score and sleep column, in a
-// single statement (a workout's own load is stored apart, by SetWorkoutLoad), and reports in ScoreWrite whether it
-// was the day's first recovery (the morning push) and whether an input of a later
-// day's history changed (a re-score of the days after follows, D112).
+// single statement (a workout's own load is stored apart, by SetWorkoutLoad), and
+// reports in ScoreWrite whether it was the day's first recovery (the morning push)
+// and whether an input of a later day's history changed (a re-score of the days
+// after follows, D112).
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
 	d, n, l := row.DailyScore, row.Sleep, row.Load

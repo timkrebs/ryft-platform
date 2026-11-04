@@ -10,7 +10,7 @@
 //   - The multi-row writes that must not be seen half done (ApplySync, DeleteUser,
 //     MergeUsers, FoldWorkouts, AddFeedback, a Train session's completion) are one
 //     transaction the method opens and commits. That is not a rule for every
-//     method: some run two statements on the pool (ReleaseSessionWorkouts,
+//     method: some run several statements on the pool (ReleaseSessionWorkouts,
 //     AdvanceEnrollment, ArchiveBehavior, AcquireImportLease), and some reads
 //     (AdminUserDetail, JournalDay, Trend, SyncStateOf) read without one
 //     snapshot. The import writes its outbox row in its own transaction under
@@ -28,12 +28,13 @@
 //     kept out by REVOKE ALL, and authenticated sees only its own rows (0007, D28).
 //   - The other 27 take no user id or take another key. Operator and admin:
 //     AdminUsers, Audit, AuditSince, CreateInvite, DeleteInvite, Invites,
-//     ResolveFeedback, FeedbackSince, ResolveUser, MergeUsers, Flags, PutFlag,
-//     DeleteFlag. Timers and reconcilers: ActiveUsers, UserIDs, SyncAges,
-//     StaleCandidates, ResurrectedUsers, PendingAppleRevocations,
-//     PendingAuthDeletions, PruneScoreQueue. Keyed by a push token: PushDelivered,
-//     DropPushToken. Cross-account but called on user request paths (api and
-//     ingest): ExpectedScoreSec. Wiring: Ready, WithImportRules. EnsureUser is
+//     ResolveFeedback, FeedbackSince, ResolveUser, MergeUsers, PutFlag,
+//     DeleteFlag. Timers and reconcilers: ActiveUsers, SyncAges, StaleCandidates,
+//     ResurrectedUsers, PendingAppleRevocations, PendingAuthDeletions,
+//     PruneScoreQueue. One-off commands (rescore, fold-workouts): UserIDs. Keyed
+//     by a push token: PushDelivered, DropPushToken. Global reads called on user
+//     request paths (api and ingest): Flags (GET /v1/config, the import) and
+//     ExpectedScoreSec. Wiring: Ready, WithImportRules. EnsureUser is
 //     per-user but keyed by identity.
 //
 // See docs/ARCHITECTURE.md → Data model, Database roles; D31, D39, D42, D145, D146.

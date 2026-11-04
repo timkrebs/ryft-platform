@@ -89,10 +89,12 @@ var (
 	}, []string{"step", "result"})
 
 	// EventsPublished counts sends to the broker (ingest, api and scoring publish).
-	// An error from the relay is retried from the outbox row; an error from
-	// outbox.Send means the INSERT failed, so there is no row, and the caller decides:
-	// a sync or completion answers 503, but scoring only logs it and that event is
-	// lost (OBSERVABILITY.md: lost only if its outbox row could not be written, D101).
+	// An error from the relay is retried from the outbox row. A sync and a session
+	// completion write their row with outbox.Insert in their own transaction, so a
+	// failure there rolls the request back. An error from outbox.Send means its INSERT
+	// failed, so there is no row, and the caller decides: recompute and session edits
+	// answer 503, while merge and scoring's three publishes only log it and that event
+	// is lost (D101).
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
 		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
@@ -275,8 +277,8 @@ var (
 	}, []string{"publisher", "result"})
 )
 
-// The RabbitMQ connection's metrics, registered by UseAMQP when a service connects: a
-// binary that never connects (migrate) exposes none, so a 0 is never a false alarm.
+// The RabbitMQ connection's metrics, registered by UseAMQP, which amqpbus.New
+// calls before it dials: a binary that never creates a bus (migrate) exposes none, so a 0 is never a false alarm.
 var (
 	AMQPConnected = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "ryft_amqp_connected",
