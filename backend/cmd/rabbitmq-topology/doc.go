@@ -1,7 +1,9 @@
 // rabbitmq-topology writes the broker's topology (internal/events/amqpbus) as the
-// Topology Operator's objects and as the definitions compose loads:
+// Topology Operator's objects and as the definitions compose loads.
 //
-//	go run ./cmd/rabbitmq-topology          # from backend/: rewrite both files
+// Run it from backend/:
+//
+//	go run ./cmd/rabbitmq-topology          # rewrite both files
 //	go run ./cmd/rabbitmq-topology -check   # fail if either differs (make k8s-validate)
 //
 // The output is committed, and make k8s-validate fails on drift, so the topology

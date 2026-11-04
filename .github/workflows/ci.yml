@@ -49,6 +49,7 @@ jobs:
       pull-requests: read
     outputs:
       run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+      run_pkgmap: ${{ github.event_name != 'pull_request' || steps.filter.outputs.pkgmap == 'true' }}
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
@@ -72,6 +73,12 @@ jobs:
               - '.golangci.yml'
               - 'docs/API.md'
               - 'scripts/coverage.sh'
+              - '.github/workflows/ci.yml'
+            # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
+            pkgmap:
+              - 'docs/ARCHITECTURE.md'
+              - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -219,7 +226,7 @@ jobs:
 
   lint:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true' || needs.changes.outputs.run_pkgmap == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -229,10 +236,14 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # The version is also GOLANGCI_LINT_VERSION in the Makefile (`make lint` runs this job locally).
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           working-directory: backend
+      # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
+      # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
+      - run: ./scripts/pkgmap.sh --check
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a

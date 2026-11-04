@@ -1,6 +1,7 @@
-// scoring runs the scoring consumer: it turns raw samples into daily Recovery,
-// Strain and Sleep scores when a sync's event arrives (queue scoring), keeps
-// today and yesterday fresh on a 15-minute timer, and on Sundays also runs the
+// scoring runs the scoring consumer and the 15-minute pass that keeps today and yesterday fresh.
+//
+// The consumer turns raw samples into daily Recovery, Strain and Sleep scores
+// when a sync's event arrives (queue scoring); on Sundays the pass also runs the
 // weekly sleep-baseline estimate. The rescore and learn-baselines subcommands
 // run the same work once and exit.
 //
