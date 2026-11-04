@@ -30,6 +30,8 @@ spec:
         command:
         - sh
         env:
+        - name: OPERATOR_SCOPE_NAMESPACE
+          value: ryft-rabbitmq
         - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:
