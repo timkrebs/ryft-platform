@@ -268,4 +268,29 @@ func TestOptionalQuietIsPointerUnmarshaler(t *testing.T) {
 	if !reflect.PointerTo(optQuietType).Implements(unmarshalerIf) {
 		t.Fatal("*OptionalQuiet no longer implements json.Unmarshaler: revisit schemaOf and the NotificationPatch snapshot")
 	}
+	if optQuietType.Implements(unmarshalerIf) {
+		t.Fatal("OptionalQuiet now has a value-receiver UnmarshalJSON: revisit schemaOf and the NotificationPatch snapshot")
+	}
+}
+
+// absent keeps, null clears, an object sets: the three states the snapshot
+// describes as one nullable $ref.
+func TestOptionalQuietDecode(t *testing.T) {
+	var absent, cleared, set NotificationPatch
+	for body, dst := range map[string]*NotificationPatch{
+		`{}`: &absent, `{"quiet_hours":null}`: &cleared, `{"quiet_hours":{"from":"22:30","to":"07:00"}}`: &set,
+	} {
+		if err := json.Unmarshal([]byte(body), dst); err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+	}
+	if absent.QuietHours.Set {
+		t.Error("absent quiet_hours must leave Set false")
+	}
+	if !cleared.QuietHours.Set || cleared.QuietHours.Value != nil {
+		t.Errorf("null quiet_hours must give Set true, Value nil: %+v", cleared.QuietHours)
+	}
+	if !set.QuietHours.Set || set.QuietHours.Value == nil || set.QuietHours.Value.From != "22:30" {
+		t.Errorf("object quiet_hours must be set: %+v", set.QuietHours)
+	}
 }

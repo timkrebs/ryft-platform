@@ -26,7 +26,9 @@ import (
 //     <!-- type: model.A, model.B*3 -->        several values in the block, in order (*3: three of B)
 //     <!-- type: model.Session shape -->       "shape" for a block that is written
 //     for people, not parsers (a "…" for the rest, a type name where a value
-//     would be, placeholder ids): only its field names are checked
+//     would be, placeholder ids): it is rewritten to valid JSON first (see
+//     shapeToJSON), then checked like the others; every type name in it must
+//     be a model type
 //
 //   - or be listed in docExampleAllowList with the reason it cannot be checked.
 //
@@ -118,12 +120,17 @@ func trunc(s string) string {
 	return s
 }
 
-// lineOfKey is the line of the first `"key"` in the block, else the fence line.
+// lineOfKey is the line of the first `"key"` in the block, else of the first
+// mention of key, else the block's first line.
 func (b docBlock) lineOfKey(key string) int {
-	if i := strings.Index(b.body, strconv.Quote(key)); i >= 0 {
-		return b.bodyLine + strings.Count(b.body[:i], "\n")
+	i := strings.Index(b.body, strconv.Quote(key))
+	if i < 0 {
+		i = strings.Index(b.body, key)
 	}
-	return b.line
+	if i < 0 {
+		return b.bodyLine
+	}
+	return b.bodyLine + strings.Count(b.body[:i], "\n")
 }
 
 var (
@@ -142,9 +149,10 @@ const (
 )
 
 // shapeToJSON turns the doc's notation into parseable JSON: "…" elisions go,
-// and a bare type name (`SessionSummary`, `SleepDetail?`) becomes null. Strings
-// are masked first so text inside them is untouched.
-func shapeToJSON(s string) string {
+// and a bare type name (`SessionSummary`, `SleepDetail?`) becomes null and is
+// returned, so the caller can check it names a model type. Strings are masked
+// first so text inside them is untouched.
+func shapeToJSON(s string) (string, []string) {
 	s = stampKeyRe.ReplaceAllString(s, `$1"`+placeholderStamp+`"`)
 	var strs []string
 	masked := strLitRe.ReplaceAllStringFunc(s, func(m string) string {
@@ -157,11 +165,15 @@ func shapeToJSON(s string) string {
 	masked = elideCmaRe.ReplaceAllString(masked, "")
 	masked = elideCmbRe.ReplaceAllString(masked, "")
 	masked = strings.ReplaceAll(masked, "…", "")
-	masked = typeNameRe.ReplaceAllString(masked, "null")
+	var words []string
+	masked = typeNameRe.ReplaceAllStringFunc(masked, func(w string) string {
+		words = append(words, strings.TrimSuffix(w, "?"))
+		return "null"
+	})
 	for i, m := range strs {
 		masked = strings.Replace(masked, `"@`+strconv.Itoa(i)+`@"`, m, 1)
 	}
-	return masked
+	return masked, words
 }
 
 // jsonFields maps the JSON names of a struct to their Go types, as
@@ -236,8 +248,13 @@ func walkDoc(v any, t reflect.Type, seenDrift map[int]bool) []unknownField {
 				out = append(out, walkDoc(val, ft, seenDrift)...)
 			}
 		case t.Kind() == reflect.Map:
-			for _, val := range x {
-				out = append(out, walkDoc(val, t.Elem(), seenDrift)...)
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				out = append(out, walkDoc(x[k], t.Elem(), seenDrift)...)
 			}
 		}
 	case []any:
@@ -287,14 +304,20 @@ func checkTied(b docBlock, seenDrift map[int]bool) (errs, covered []string) {
 	isShape := strings.HasSuffix(spec, " shape")
 	spec = strings.TrimSuffix(spec, " shape")
 	body := stripLineComments(b.body)
-	if isShape {
-		body = shapeToJSON(body)
-	}
-	dec := json.NewDecoder(strings.NewReader(body))
-	dec.UseNumber()
 	fail := func(line int, format string, args ...any) {
 		errs = append(errs, fmt.Sprintf("docs/API.md:%d: ", line)+fmt.Sprintf(format, args...))
 	}
+	if isShape {
+		var words []string
+		body, words = shapeToJSON(body)
+		for _, w := range words {
+			if _, ok := contractTypes[w]; !ok {
+				fail(b.line, "shape block names %q where a value would be, which is not a model type", w)
+			}
+		}
+	}
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.UseNumber()
 	for _, ref := range expandRefs(spec) {
 		typ, err := parseTypeRef(ref)
 		if err != nil {
@@ -303,7 +326,12 @@ func checkTied(b docBlock, seenDrift map[int]bool) (errs, covered []string) {
 		}
 		var generic any
 		if err := dec.Decode(&generic); err != nil {
-			fail(b.line, "example is not valid JSON for %s (%d value(s) read before): %v", ref, len(covered), err)
+			line := b.bodyLine
+			var se *json.SyntaxError
+			if errors.As(err, &se) && se.Offset <= int64(len(body)) {
+				line += strings.Count(body[:se.Offset], "\n")
+			}
+			fail(line, "example is not valid JSON for %s (%d value(s) read before): %v", ref, len(covered), err)
 			return
 		}
 		covered = append(covered, strings.TrimPrefix(ref, "[]"))
@@ -318,7 +346,7 @@ func checkTied(b docBlock, seenDrift map[int]bool) (errs, covered []string) {
 		sd := json.NewDecoder(bytes.NewReader(clean))
 		sd.DisallowUnknownFields()
 		if err := sd.Decode(reflect.New(typ).Interface()); err != nil {
-			line := b.line
+			line := b.bodyLine
 			var ute *json.UnmarshalTypeError
 			if errors.As(err, &ute) {
 				parts := strings.Split(ute.Field, ".")
@@ -399,7 +427,7 @@ func TestAPIDocExamples(t *testing.T) {
 			t.Errorf("docDrift[%d] (%s.%s) no longer occurs in docs/API.md or the code has the field now: remove it", i, d.typ, d.field)
 		}
 	}
-	t.Logf("%d json blocks: %d decoded strictly, %d field-checked (shape), %d allow-listed; %d distinct types; %d known drifts",
+	t.Logf("%d json blocks: %d decoded strictly, %d shape (rewritten, then checked the same), %d allow-listed; %d distinct types; %d known drifts",
 		len(blocks), strict, shape, len(docExampleAllowList), len(types), len(docDrift))
 }
 
@@ -411,8 +439,11 @@ func TestShapeToJSON(t *testing.T) {
 		`{ "s": [ SessionSummary, … ], "d": DayStrain? }`: `{ "s": [ null ], "d": null }`,
 		`{ "t": "keep Type … text" }`:                     `{ "t": "keep Type … text" }`,
 	}
+	if _, words := shapeToJSON(`{ "s": [ SessionSummary, … ], "d": DayStrain? }`); strings.Join(words, ",") != "SessionSummary,DayStrain" {
+		t.Errorf("barewords = %v", words)
+	}
 	for in, want := range cases {
-		if got := shapeToJSON(in); got != want {
+		if got, _ := shapeToJSON(in); got != want {
 			t.Errorf("shapeToJSON(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -430,6 +461,8 @@ func TestDocCheckerCatchesMistakes(t *testing.T) {
 		{"unknown nested field", "model.NotificationPrefs", `{ "categories": {}, "quiet_hours": { "from": "22:00", "to": "07:00", "x": 1 } }`, `"x"`},
 		{"extra value", "model.Consent", `{ "policy_version": "x" } { "policy_version": "y" }`, "more JSON values"},
 		{"unknown type", "model.Nope", `{}`, "unknown type"},
+		{"misspelled bareword", "model.DayDetail shape", `{ "score": DailyScore, "sleep": SleepDetial? }`, "SleepDetial"},
+		{"bareword in a list", "model.PlansOverview shape", `{ "builtin": [ Bogus, … ], "mine": [] }`, "Bogus"},
 	}
 	for _, c := range cases {
 		errs, _ := checkTied(docBlock{line: 1, bodyLine: 2, annotation: c.annotation, body: c.body}, map[int]bool{})
