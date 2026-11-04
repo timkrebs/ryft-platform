@@ -1,0 +1,63 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "assist_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "distance_m": {
+      "nullable": true,
+      "type": "number"
+    },
+    "duration_sec": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_warmup": {
+      "type": "boolean"
+    },
+    "reps": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "rpe": {
+      "nullable": true,
+      "type": "number"
+    },
+    "set_index": {
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "weight_kg": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "assist_kg",
+    "completed_at",
+    "distance_m",
+    "duration_sec",
+    "id",
+    "is_warmup",
+    "reps",
+    "rpe",
+    "set_index",
+    "updated_at",
+    "weight_kg"
+  ],
+  "title": "Set",
+  "type": "object"
+}

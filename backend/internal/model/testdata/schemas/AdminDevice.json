@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "first_sync_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "last_sync": {
+      "description": "raw JSON"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "os_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "push_env": {
+      "nullable": true,
+      "type": "string"
+    },
+    "push_last_success_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "app_version",
+    "first_sync_at",
+    "id",
+    "last_sync",
+    "last_sync_at",
+    "name",
+    "os_version",
+    "push_env",
+    "push_last_success_at"
+  ],
+  "title": "AdminDevice",
+  "type": "object"
+}

@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "base": {
+      "type": "integer"
+    },
+    "debt_topup": {
+      "type": "integer"
+    },
+    "efficiency": {
+      "type": "integer"
+    },
+    "nap_credit": {
+      "type": "integer"
+    },
+    "strain_topup": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "base",
+    "debt_topup",
+    "efficiency",
+    "nap_credit",
+    "strain_topup"
+  ],
+  "title": "SleepPlanBasis",
+  "type": "object"
+}

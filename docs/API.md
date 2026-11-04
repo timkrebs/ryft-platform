@@ -1,5 +1,7 @@
 # RYFT HTTP API — v1
 
+<!-- Tests read this file: every json code block needs `<!-- type: model.X -->` on the line before the fence (or an allow-list entry), see backend/internal/model/apidoc_examples_test.go; known doc/code drift is listed in docDrift there. -->
+
 This file is the contract between the platform and the RYFT iOS app. The app's
 wire types (`../app/Ryft/Networking/Models.swift`) mirror the shapes below and
 `backend/internal/model/model.go` 1:1.
@@ -264,6 +266,7 @@ one. So the id is a handle for deletions, and the latest upload owns it:
 
 Response `200 SyncResponse`:
 
+<!-- type: model.SyncResponse -->
 ```json
 { "samples": 1380, "sleep": 14, "workouts": 1, "days_touched": ["2026-10-17", "2026-10-18"],
   "accepted": { "samples": 1380, "sleep": 14, "workouts": 1 },
@@ -334,6 +337,7 @@ kind in the request (a repeated pair is counted once).
 
 Example request (a rewritten workout and a deleted resting heart rate):
 
+<!-- type: model.SyncRequest -->
 ```json
 { "device_id": "0E6B2E54-9C6D-4F7B-8A55-4E3F3B7C1D20", "samples": [], "sleep": [], "workouts": [],
   "deleted": [ { "kind": "workout", "id": "5C3F0B9E-52B1-4E55-AE0A-7B1C2D3E4F50" },
@@ -343,6 +347,7 @@ Example request (a rewritten workout and a deleted resting heart rate):
 
 answers (the two distinct ids; the workout was held, the sample was already gone):
 
+<!-- type: model.SyncResponse -->
 ```json
 { "samples": 0, "sleep": 0, "workouts": 0, "days_touched": ["2026-10-20", "2026-10-21"],
   "accepted": { "samples": 0, "sleep": 0, "workouts": 0 },
@@ -355,6 +360,7 @@ answers (the two distinct ids; the workout was held, the sample was already gone
 
 A sample or sleep segment with an `id`, as the app sends it from 2026-10-31:
 
+<!-- type: model.Sample -->
 ```json
 { "id": "A41D7E02-6F1B-4C58-9B3A-0D5E8F7A6B21", "type": "resting_hr", "start": "2026-10-20T00:00:00Z", "end": "2026-10-20T00:00:00Z",
   "value": 49, "unit": "bpm", "source": "Garmin Connect", "source_bundle_id": "com.garmin.connect.mobile" }
@@ -371,6 +377,7 @@ again once that is resolved.
 
 ### `GET /v1/me` — user settings
 
+<!-- type: model.User -->
 ```json
 { "id": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c", "name": "Tim K", "email": "tim@example.com",
   "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 455,
@@ -493,6 +500,7 @@ Never log the code; it is a credential until used.
 Feature flags, evaluated for the caller. Load on launch and again after `ttl_sec`; keep
 the last answer (and compiled-in defaults) when offline.
 
+<!-- type: model.RemoteConfig -->
 ```json
 { "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
              "coach.enabled": false, "push.enabled": false, "physiology.card": false },
@@ -528,6 +536,7 @@ into the stored ones; the four categories above), `quiet_hours` (`{"from": "22:3
 "07:00"}`, local times; `from` later than `to` spans midnight, equal times mean none;
 `null` clears them, leaving the field out keeps them). Returns `NotificationPrefs`:
 
+<!-- type: model.NotificationPrefs -->
 ```json
 { "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
   "quiet_hours": { "from": "22:30", "to": "07:00" } }
@@ -540,6 +549,7 @@ into the stored ones; the four categories above), `quiet_hours` (`{"from": "22:3
 `{id}` is the install's device ID, the same UUID the app sends as `device_id` with
 `POST /v1/sync`. Body `PushRegistration`:
 
+<!-- type: model.PushRegistration -->
 ```json
 { "token": "8a5e…c41f", "env": "production", "locale": "de-DE" }
 ```
@@ -627,6 +637,7 @@ The keys, as the app ships them in `Localizable.xcstrings` (`%@` and positional
 Heart rate, sleep and the rest are health data (GDPR Art. 9); RYFT processes them on
 the user's explicit consent to the current privacy policy. `POST` records it:
 
+<!-- type: model.ConsentPost -->
 ```json
 { "policy_version": "2026-10-20", "app_version": "0.9.0 (41)" }
 ```
@@ -648,6 +659,7 @@ An account that already has access gets `204` without using the code.
 
 ### `GET /v1/me/sync` — what the server has, and what it is doing with it
 
+<!-- type: model.SyncStatus -->
 ```json
 { "gate": null, "last_sync_at": "2026-10-21T06:58:12Z", "last_sync_device": "iPhone",
   "latest": { "hr": "2026-10-21T06:55:00Z", "hrv": "2026-10-21T04:10:00Z", "sleep": "2026-10-21T06:41:00Z",
@@ -675,6 +687,7 @@ until `pending_days` is empty, or wait for the silent refresh push (Push).
 
 ### `GET /v1/model` — the scoring model and what changed
 
+<!-- type: model.ModelInfo -->
 ```json
 { "current": "2026.10.1",
   "changelog": [ { "version": "2026.10.1", "date": "2026-10-20",
@@ -690,6 +703,7 @@ the app can say "recalculated with model 2026.11.1" and show the entry.
 
 ### `POST /v1/feedback` — report a problem
 
+<!-- type: model.FeedbackPost -->
 ```json
 { "message": "Recovery 41 after a great night?", "category": "data",
   "app_version": "0.9.0", "build": "41", "device_model": "iPhone17,1", "os_version": "iOS 26.1",
@@ -709,6 +723,7 @@ Both parameters optional; default is the 30 days ending today (local). Returns t
 scored days in `[from, to]`, oldest first; days that were never scored are absent.
 `400` on a malformed date, `422` when `from > to`.
 
+<!-- type: model.DailyScore shape -->
 ```json
 { "day": "2026-10-18", "readiness": 84, "state": "balanced", "recovery": 82, "strain": 12.4,
   "steps": 9412, "active_kcal": 612, "strength_min": 59, "volume_kg": 7420, "sleep_performance": 87, "sleep_need_min": 538, "sleep_actual_min": 468, "sleep_debt_min": 137,
@@ -795,6 +810,7 @@ mostly sleep); `state` stays `calibrating`. Old clients ignore the new fields an
 
 Examples (the changed fields only):
 
+<!-- type: model.DailyScore*8 shape -->
 ```json
 { "baseline_days": 3,  "baseline_hrv_days": 3,  "baseline_rhr_days": 5,  "calibrating": true,  "calibrating_reason": "short_history" }
 { "baseline_days": 0,  "baseline_hrv_days": 0,  "baseline_rhr_days": 0,  "calibrating": true,  "calibrating_reason": "short_history" }
@@ -855,6 +871,7 @@ night, the same day with `"sleep_hr_minutes": 400, "hrv_readings": 5, "night_com
 
 ### `GET /v1/days/{day}` — one day
 
+<!-- type: model.DayDetail shape -->
 ```jsonc
 { "score": DailyScore, "sleep": SleepDetail?, "strain": DayStrain?, "workouts": [Workout] }
 ```
@@ -867,6 +884,7 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 
 `SleepDetail` — last night as the Sleep screen's *Day* tab shows it:
 
+<!-- type: model.SleepDetail shape -->
 ```json
 {
   "start": "2026-10-17T21:00:00Z", "end": "2026-10-18T05:12:00Z",
@@ -896,6 +914,7 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 `DayStrain` — the load behind `score.strain` (Strain screen); `null` exactly when
 `score.strain` is `null` (no heart-rate data and no completed strength session that day):
 
+<!-- type: model.DayStrain shape -->
 ```json
 { "trimp": 99, "hr_min": 912, "zone_min": [12, 24, 37, 7, 0], "steps": 9412, "active_kcal": 612,
   "muscular_trimp": 55, "sessions": [ SessionSummary, … ] }
@@ -920,6 +939,7 @@ when `has_stages` is false). For `awake`, `pct` is the share of `in_bed_min`.
 `range` is `week` (7 days) or `month` (30 days), default `week`; `to` is the last day,
 default today. `422` on another `range`, `400` on a malformed `to`.
 
+<!-- type: model.SleepRange shape -->
 ```json
 {
   "range": "week", "from": "2026-10-12", "to": "2026-10-18", "nights": 7,
@@ -948,6 +968,7 @@ default today. `422` on another `range`, `400` on a malformed `to`.
 `wake` is a local wake time (`07:00`): the next time it occurs, today or tomorrow. `422`
 when it is missing or not `HH:MM`.
 
+<!-- type: model.SleepPlan -->
 ```json
 { "wake": "2026-10-20T05:00:00Z", "need_min": 512, "in_bed_min": 569, "efficiency": 90,
   "bedtime_100": "2026-10-19T19:31:00Z", "bedtime_85": "2026-10-19T20:56:00Z", "bedtime_70": "2026-10-19T22:22:00Z",
@@ -1010,6 +1031,7 @@ were folded are deleted, not hidden, and are not returned.
 
 `GET /v1/workouts?include_hidden=true`, a primary and the duplicate hidden behind it:
 
+<!-- type: []model.Workout -->
 ```json
 [ { "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "running", "start": "2026-10-20T16:02:00Z", "end": "2026-10-20T16:58:30Z",
     "avg_hr": 156.2, "max_hr": 181, "distance_m": 10240, "source": "Garmin Connect", "strain": 12.8, "also_recorded_by": ["Tim's Apple Watch"] },
@@ -1019,6 +1041,7 @@ were folded are deleted, not hidden, and are not returned.
 
 A single workout (`GET /v1/days/{day}`, `GET /v1/workouts`):
 
+<!-- type: model.Workout -->
 ```json
 { "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "running", "start": "2026-10-20T16:02:00Z", "end": "2026-10-20T16:58:30Z",
   "avg_hr": 156.2, "max_hr": 181, "distance_m": 10240, "energy_kcal": 702, "source": "Garmin Connect",
@@ -1030,6 +1053,7 @@ A single workout (`GET /v1/days/{day}`, `GET /v1/workouts`):
 `id` is the workout UUID. `400` when it is not a UUID, `404` when no such workout.
 Returns every `Workout` field plus:
 
+<!-- type: model.WorkoutDetail shape -->
 ```json
 {
   "id": "…", "activity": "running", "start": "2026-10-17T17:30:00Z", "end": "2026-10-17T18:40:00Z",
@@ -1063,6 +1087,7 @@ the whole duration counts at that intensity and in that zone.
 
 `422` on a missing/unknown `metric` or `range`, `400` on a malformed `to`.
 
+<!-- type: model.Trend shape -->
 ```json
 { "metric": "hrv", "range": "7d", "from": "2026-10-12", "to": "2026-10-18",
   "points": [ {"day":"2026-10-12","value":47.4}, {"day":"2026-10-13","value":50.8}, … ],
@@ -1083,6 +1108,7 @@ Short rule-based cards about today, most urgent first (`warn`, then `notice`, th
 `info`). `[]` when nothing stands out. Computed on read from the last 30 days and cached
 for 5 minutes, so a sync can take up to 5 minutes to change the cards.
 
+<!-- type: []model.Insight -->
 ```json
 [ { "id": "hrv-low-3d", "severity": "warn", "title": "HRV below your baseline for 3 nights",
     "body": "Your overnight HRV has been under your 30-day baseline of 55 ms for 3 nights in a row (47 ms last night). …",
@@ -1153,6 +1179,7 @@ either name or the slug (case-insensitive); `muscle` matches a primary or second
 muscle; `kind` one kind; archived exercises only with `include_archived=true`. `422` on
 an unknown `muscle` or `kind`.
 
+<!-- type: []model.Exercise -->
 ```json
 [ { "id": "053b5627-084e-5417-a033-a6602d812f86", "slug": "back-squat", "name": "Back squat",
     "name_en": "Back squat", "name_de": "Kniebeuge", "kind": "barbell",
@@ -1180,6 +1207,7 @@ an unknown `muscle` or `kind`.
 
 #### `POST /v1/exercises` — create a custom exercise
 
+<!-- type: model.ExerciseInput shape -->
 ```json
 { "id": "9b0e…", "name": "Landmine press", "name_de": "Landmine-Drücken", "kind": "barbell",
   "primary_muscles": ["front_delts", "chest"], "secondary_muscles": ["triceps"],
@@ -1208,6 +1236,7 @@ The user's completed sessions with this exercise, newest first (`limit` 1–200,
 50), its personal records and the best estimated 1RM per day. `404` when the exercise is
 neither built-in nor the user's.
 
+<!-- type: model.ExerciseHistory shape -->
 ```json
 { "exercise_id": "053b5627…",
   "prs": [ { "exercise_id": "053b5627…", "kind": "e1rm", "value": 142.5, "set_id": "…", "session_id": "…",
@@ -1232,6 +1261,7 @@ neither built-in nor the user's.
 
 #### `GET /v1/plans` — plans overview
 
+<!-- type: model.PlansOverview shape -->
 ```json
 { "builtin": [ PlanSummary, … ], "mine": [ PlanSummary, … ], "active": Enrollment? }
 ```
@@ -1256,6 +1286,7 @@ the active enrolment, or `null`.
 
 Built-in or the user's own; `404` otherwise.
 
+<!-- type: model.Plan shape -->
 ```json
 { "id": "…", "slug": "full-body-3x", "name": "Full Body 3×", "goal": "strength", "weeks": null,
   "days_per_week": 3, "description": "…", "is_builtin": true, "archived": false,
@@ -1314,6 +1345,7 @@ enrolment is paused first. `404` for an unknown plan.
 behaviour above, unchanged). With `EnrollPost` the enrolment starts, or is moved, to a
 position:
 
+<!-- type: model.Enrollment -->
 ```json
 { "started_at": "2026-06-01T00:00:00Z", "current_week": 3, "current_day_index": 1 }
 ```
@@ -1340,6 +1372,7 @@ day moves the enrolment to the next day (and week); after the last day of a plan
 
 `204` (no body) without an active enrolment. Otherwise:
 
+<!-- type: model.PlanToday shape -->
 ```json
 { "enrollment": Enrollment, "day": PlanDay,
   "targets": [ { "plan_exercise_id": "…", "exercise_id": "053b5627…", "sets": 5, "reps_min": 5, "reps_max": 5,
@@ -1361,6 +1394,7 @@ offline queue. Body: the `Session` shape below (`id` must match the path;
 `muscular_trimp`, `strain`, `volume_kg`, `workout_id`, `prs`, `origin`, `import_source`
 and `updated_at` of the session are ignored). Up to 256 KiB, 50 exercises, 50 sets per exercise.
 
+<!-- type: model.Session shape -->
 ```json
 { "id": "a7f2…", "title": "Upper A", "started_at": "2026-10-18T17:02:00Z", "ended_at": null,
   "status": "in_progress", "plan_day_id": "…", "notes": "", "bodyweight_kg": 80, "device_id": "…",
@@ -1460,6 +1494,7 @@ The day's strain includes the load within seconds (it is rescored in the backgro
 The list returns `SessionSummary` for sessions started in `[from, to]` (same semantics
 as `/v1/days`), newest first, optionally only one `status` (`422` on another value):
 
+<!-- type: []model.SessionSummary shape -->
 ```json
 [ { "id": "a7f2…", "title": "Upper A", "started_at": "…", "ended_at": "…", "status": "completed",
     "plan_day_id": "…", "workout_id": "…", "duration_min": 59, "exercise_count": 5, "set_count": 19,
@@ -1502,6 +1537,7 @@ the account, `403 import_not_enabled`. All of it is checked before anything in t
 
 Body up to **1 MiB** (`413`), `Content-Type: application/json`. Request `TrainImportRequest`:
 
+<!-- type: model.TrainImportRequest -->
 ```json
 { "source": "alpha_progression",
   "plans": [
@@ -1577,6 +1613,7 @@ sessions is `200` with `results: []`.
 
 Response `200 TrainImportResponse`, whenever the request was understood, even when every item is rejected:
 
+<!-- type: model.TrainImportResponse -->
 ```json
 { "results": [
     { "kind": "plan", "id": "6a1f3c7e-1b52-5d0a-9c34-7e2b8d4f1a09", "status": "created" },
@@ -1756,6 +1793,7 @@ impact `status` (`locked`, `unlocked`).
 
 Every built-in behavior and the user's own (not deleted), by `category`, then `sort`.
 
+<!-- type: []model.Behavior -->
 ```json
 [ { "id": "bad67883-7fb1-5f98-9761-feba0a813536", "slug": "alcohol", "name": "Alcohol",
     "name_en": "Alcohol", "name_de": "Alkohol", "category": "substances", "kind": "yes_no",
@@ -1784,6 +1822,7 @@ list as `GET` returns it. `422` for an id that is not a built-in or the user's o
 
 #### `POST /v1/behaviors` · `DELETE /v1/behaviors/{id}` — custom behaviors
 
+<!-- type: model.BehaviorInput shape -->
 ```json
 { "id": "3f1c…", "name": "Late screen meeting", "name_de": "Spätes Online-Meeting", "kind": "yes_no" }
 ```
@@ -1799,6 +1838,7 @@ stay, without effect on the impact list): `204`, idempotent; `403` for a built-i
 
 `{day}` is the day the behaviors happened (the morning sheet asks about yesterday).
 
+<!-- type: model.JournalDay -->
 ```json
 { "day": "2026-10-18", "answered": true, "answered_at": "2026-10-19T06:41:12Z", "editable": true,
   "entries": [
@@ -1833,6 +1873,7 @@ D+1. A behavior is `unlocked` with at least 5 days with it and 5 without (`neede
 how many more). Each effect is the difference **yes − no** of the mean, with a 90 %
 bootstrap interval; `significant` when the interval excludes 0.
 
+<!-- type: model.BehaviorImpacts -->
 ```json
 { "window_days": 90, "computed_at": "2026-10-19T06:45:03Z",
   "impacts": [

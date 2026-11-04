@@ -1,0 +1,60 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bodyweight_factor": {
+      "nullable": true,
+      "type": "number"
+    },
+    "equipment": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_unilateral": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "load_type": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "name_de": {
+      "nullable": true,
+      "type": "string"
+    },
+    "primary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "secondary_muscles": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "load_type",
+    "name",
+    "primary_muscles"
+  ],
+  "title": "ExerciseInput",
+  "type": "object"
+}

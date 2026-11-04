@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -198,9 +198,18 @@ alerts-check:
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
 
+# Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
+# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
+# RabbitMQ count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_AMQP_URL set, as in CI.
+coverage:
+	@set -e; d=$${COVERDIR:-$$(mktemp -d)}; mkdir -p "$$d"; \
+	(cd backend && go test -race -count=1 -coverprofile="$$d/coverage.out" ./... > "$$d/test.log" 2>&1) \
+	  || { echo "go test failed, tail of $$d/test.log:" >&2; tail -40 "$$d/test.log" >&2; exit 1; }; \
+	env -u GITHUB_STEP_SUMMARY ./scripts/coverage.sh report "$$d/coverage.out" "$$d"; echo "files: $$d"
+
 # Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
-# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only. The test
-# refuses anything else (docs/SCORING.md → Model version).
+# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
+# GOLDEN_MODE=init makes the first set. The test refuses anything else (docs/SCORING.md → Model version).
 .PHONY: golden-update
 golden-update:
 	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"

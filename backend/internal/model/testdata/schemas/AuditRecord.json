@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "details": {
+      "description": "raw JSON"
+    },
+    "id": {
+      "type": "integer"
+    },
+    "key_fingerprint": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "integer"
+    },
+    "target_user": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "action",
+    "at",
+    "details",
+    "id",
+    "key_fingerprint",
+    "request_id",
+    "status",
+    "target_user"
+  ],
+  "title": "AuditRecord",
+  "type": "object"
+}

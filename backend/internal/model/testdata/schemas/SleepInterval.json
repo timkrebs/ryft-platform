@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "end",
+    "stage",
+    "start"
+  ],
+  "title": "SleepInterval",
+  "type": "object"
+}

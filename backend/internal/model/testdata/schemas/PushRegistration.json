@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "env": {
+      "type": "string"
+    },
+    "locale": {
+      "type": "string"
+    },
+    "token": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "env",
+    "locale",
+    "token"
+  ],
+  "title": "PushRegistration",
+  "type": "object"
+}

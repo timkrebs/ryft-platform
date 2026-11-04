@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "day": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "user_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "day",
+    "session_id",
+    "user_id"
+  ],
+  "title": "SessionScoredEvent",
+  "type": "object"
+}

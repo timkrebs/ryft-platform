@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "allow_user_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "enabled": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "rollout_pct": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "allow_user_ids",
+    "enabled",
+    "rollout_pct"
+  ],
+  "title": "FlagInput",
+  "type": "object"
+}

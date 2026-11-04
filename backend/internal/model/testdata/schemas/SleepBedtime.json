@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bed": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "day": {
+      "type": "string"
+    },
+    "wake": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bed",
+    "day",
+    "wake"
+  ],
+  "title": "SleepBedtime",
+  "type": "object"
+}

@@ -1,0 +1,105 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bodyweight_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "device_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "ended_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "exercises": {
+      "items": {
+        "$ref": "SessionExercise"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "import_source": {
+      "nullable": true,
+      "type": "string"
+    },
+    "muscular_trimp": {
+      "nullable": true,
+      "type": "number"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "plan_day_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "prs": {
+      "items": {
+        "$ref": "PR"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "strain": {
+      "nullable": true,
+      "type": "number"
+    },
+    "title": {
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "volume_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "workout_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "bodyweight_kg",
+    "device_id",
+    "ended_at",
+    "exercises",
+    "id",
+    "import_source",
+    "muscular_trimp",
+    "notes",
+    "origin",
+    "plan_day_id",
+    "prs",
+    "started_at",
+    "status",
+    "strain",
+    "title",
+    "updated_at",
+    "volume_kg",
+    "workout_id"
+  ],
+  "title": "Session",
+  "type": "object"
+}

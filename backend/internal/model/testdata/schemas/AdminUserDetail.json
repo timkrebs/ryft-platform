@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "account": {
+      "$ref": "AdminAccount"
+    },
+    "data": {
+      "$ref": "AdminUserData"
+    },
+    "devices": {
+      "items": {
+        "$ref": "AdminDevice"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "possible_duplicates": {
+      "items": {
+        "$ref": "AdminDuplicate"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "account",
+    "data",
+    "devices",
+    "possible_duplicates"
+  ],
+  "title": "AdminUserDetail",
+  "type": "object"
+}
