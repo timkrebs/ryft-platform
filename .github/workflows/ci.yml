@@ -69,6 +69,7 @@ jobs:
             go:
               - 'backend/**'
               - '.golangci.yml'
+              - 'docs/API.md'
               - 'scripts/coverage.sh'
               - '.github/workflows/ci.yml'
             smoke:

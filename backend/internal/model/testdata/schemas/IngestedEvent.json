@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "days": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "user_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "days",
+    "reason",
+    "user_id"
+  ],
+  "title": "IngestedEvent",
+  "type": "object"
+}

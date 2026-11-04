@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "plan_exercise_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "position": {
+      "type": "integer"
+    },
+    "sets": {
+      "items": {
+        "$ref": "Set"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "exercise_id",
+    "id",
+    "notes",
+    "plan_exercise_id",
+    "position",
+    "sets"
+  ],
+  "title": "SessionExercise",
+  "type": "object"
+}

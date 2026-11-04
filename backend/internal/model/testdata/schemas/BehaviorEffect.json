@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "ci_hi": {
+      "type": "number"
+    },
+    "ci_lo": {
+      "type": "number"
+    },
+    "delta": {
+      "type": "number"
+    },
+    "n_no": {
+      "type": "integer"
+    },
+    "n_yes": {
+      "type": "integer"
+    },
+    "significant": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "ci_hi",
+    "ci_lo",
+    "delta",
+    "n_no",
+    "n_yes",
+    "significant"
+  ],
+  "title": "BehaviorEffect",
+  "type": "object"
+}

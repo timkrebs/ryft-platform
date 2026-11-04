@@ -1,0 +1,61 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "archived": {
+      "type": "boolean"
+    },
+    "days": {
+      "items": {
+        "$ref": "PlanDay"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "days_per_week": {
+      "type": "integer"
+    },
+    "description": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_builtin": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "progression": {
+      "$ref": "Progression",
+      "nullable": true
+    },
+    "slug": {
+      "nullable": true,
+      "type": "string"
+    },
+    "weeks": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "archived",
+    "days",
+    "days_per_week",
+    "description",
+    "goal",
+    "id",
+    "is_builtin",
+    "name",
+    "progression",
+    "slug",
+    "weeks"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

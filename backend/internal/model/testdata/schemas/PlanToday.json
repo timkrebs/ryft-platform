@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "day": {
+      "$ref": "PlanDay"
+    },
+    "enrollment": {
+      "$ref": "Enrollment"
+    },
+    "targets": {
+      "items": {
+        "$ref": "PlanTarget"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "day",
+    "enrollment",
+    "targets"
+  ],
+  "title": "PlanToday",
+  "type": "object"
+}

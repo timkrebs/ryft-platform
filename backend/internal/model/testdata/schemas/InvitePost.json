@@ -1,0 +1,13 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "title": "InvitePost",
+  "type": "object"
+}

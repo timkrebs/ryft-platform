@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "deload_after": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "increment_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "on_fail": {
+      "nullable": true,
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Progression",
+  "type": "object"
+}

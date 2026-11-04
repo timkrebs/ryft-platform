@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "nullable": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "enabled"
+  ],
+  "title": "BehaviorsPatch",
+  "type": "object"
+}
