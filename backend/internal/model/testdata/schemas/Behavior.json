@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "type": "string"
+    },
+    "default_on": {
+      "type": "boolean"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "is_custom": {
+      "type": "boolean"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "name_de": {
+      "type": "string"
+    },
+    "name_en": {
+      "type": "string"
+    },
+    "slug": {
+      "type": "string"
+    },
+    "sort": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "category",
+    "default_on",
+    "enabled",
+    "id",
+    "is_custom",
+    "kind",
+    "name",
+    "name_de",
+    "name_en",
+    "slug",
+    "sort"
+  ],
+  "title": "Behavior",
+  "type": "object"
+}

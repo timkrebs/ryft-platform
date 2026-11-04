@@ -405,12 +405,22 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
 
-	// Strength sessions first: they may create the workouts the loop below scores.
+	// Cross-source duplicates before the sessions: a session attaches to a
+	// workout the user sees, so the hiding must be decided first. Day strain
+	// above is unaffected (de-duplicated heart rate).
+	dups, err := e.workoutDuplicates(ctx, userID, day, dayStart, dayEnd)
+	if err != nil {
+		return false, fmt.Errorf("workout duplicates: %w", err)
+	}
+
+	// Strength sessions next: they may create the workouts the loop below scores.
 	strength, err := e.strength(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return false, fmt.Errorf("strength: %w", err)
 	}
 
+	// Every workout of the day, hidden duplicates included: each keeps a load
+	// from its own window (GET /v1/workouts/{id} still answers for a hidden one).
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return false, err
@@ -494,7 +504,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 		"yesterday_strain":  yesterdayStrain,
 		"readiness_penalty": readinessPenalty,
 		"baseline_days":     len(lnHRV),
-		"workouts":          len(workouts),
+		"workouts":          visibleCount(workouts, dups),
 		"muscular_trimp":    math.Round(strength.TRIMP),
 		"strength_week":     strength.Week,
 	}

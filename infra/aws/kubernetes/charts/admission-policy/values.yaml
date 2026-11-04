@@ -1,0 +1,169 @@
+# Defaults of the admission-policy chart (D120). Production values live in
+# infra/aws/kubernetes/admission-values.yaml; admission.tf merges that file over these and
+# sets breakGlass, actions and vpcCIDR from its variables. `helm template` in CI uses the
+# same file.
+
+# The Vault address every VaultConnection must carry (P4). Required: the chart refuses to
+# render without it. A test compares it with the generated vault.yaml of infra/vault.
+vaultAddress: ""
+
+# The VPC's CIDR (infra/aws vpc_cidr): the only ipBlock a NetworkPolicy may admit besides
+# the public-egress shape (P3).
+vpcCIDR: "10.0.0.0/16"
+
+# Break-glass: every binding gets Warn+Audit whatever `actions` says. Planned through
+# `terraform apply -var admission_break_glass=true`; the fast path is a kubectl patch.
+breakGlass: false
+
+# The action of each binding: audit (Warn+Audit) or deny (Deny+Audit). Deny is never
+# combined with Warn (the API server refuses it). The key is the policy's name without
+# "ryft-". The step is the rollout step of the design (Phase 2).
+actions:
+  vso: audit                  # P4  step A
+  operators-cluster: audit    # P6  step A
+  broker: audit               # P11 step A
+  namespaces: audit           # P1  step B
+  workloads-templates: audit  # P2  step B
+  netpol: audit               # P3  step B
+  auth-env: audit             # P5  step B
+  traefik: audit              # P9  step B
+  workloads-pods: audit       # P2  step C
+  operator-reach: audit       # P8  step C
+  argocd: audit               # P7  step D
+  argocd-operation: audit     # P10 step D
+
+# Argo CD: the identities P1, P6, P7 and P10 judge and the shapes P7 holds Applications to.
+argocd:
+  namespace: argocd
+  controllerServiceAccount: argocd-application-controller
+  serverServiceAccount: argocd-server
+  repoURL: https://github.com/timkrebs/ryft-platform.git
+  targetRevision: main
+  server: https://kubernetes.default.svc
+  # spec keys an Application may carry (everything else is refused)
+  applicationSpecKeys: [project, source, destination, syncPolicy, ignoreDifferences]
+  # Fixed name -> project, path and destination namespace.
+  applications:
+    ryft-root: { project: ryft-root, path: deploy/argocd/apps, namespace: argocd }
+    ryft-platform: { project: ryft, path: deploy/k8s/overlays/eks, namespace: ryft-api }
+    broker-rabbitmq: { project: ryft, path: deploy/rabbitmq, namespace: ryft-rabbitmq }
+    rabbitmq-operators: { project: ryft-operators, path: deploy/rabbitmq/operators, namespace: rabbitmq-system }
+  # vault-<x>: path <pathPrefix>/<x>, destination <namespacePrefix><x>
+  vaultApplications:
+    project: ryft
+    pathPrefix: deploy/k8s/overlays/vault-namespaces
+    namespacePrefix: ryft-
+
+# P7's constant for AppProjects: the decoded documents of deploy/argocd/project.yaml
+# (T12-b passes them: a list of full AppProject objects). The placeholder is empty, so
+# P7 refuses every AppProject write until T12-b wires it (fail closed; keep `argocd` on
+# audit until then).
+projects: []
+
+# The RabbitMQ operators (P6, P8) and the broker (P2, P11).
+operators:
+  namespace: rabbitmq-system
+  clusterOperatorServiceAccount: rabbitmq-cluster-operator
+  topologyOperatorServiceAccount: messaging-topology-operator
+  clusterRoleNamePrefixes: [rabbitmq-cluster-, messaging-topology-]
+  # The (group, resource) pairs the operators' ClusterRoles and Roles may grant (P6): what
+  # the vendored release and the T12-g Roles use, nothing else. A resource that starts
+  # with "*" or is not listed is refused, so */token, */proxy, pods/attach,
+  # pods/ephemeralcontainers and certificatesigningrequests/approval never pass. For the
+  # groups under withStatusAndFinalizers each resource also admits /status and /finalizers.
+  allowedResources:
+    "": [configmaps, persistentvolumeclaims, secrets, serviceaccounts, services, endpoints, events, pods]
+    apps: [statefulsets]
+    coordination.k8s.io: [leases]
+    discovery.k8s.io: [endpointslices]
+    events.k8s.io: [events]
+    authentication.k8s.io: [tokenreviews]
+    authorization.k8s.io: [subjectaccessreviews]
+    rbac.authorization.k8s.io: [roles, rolebindings]
+    rabbitmq.com: [bindings, exchanges, federations, operatorpolicies, permissions, policies, queues, schemareplications, shovels, superstreams, topicpermissions, users, vhosts, rabbitmqclusters]
+  withStatusAndFinalizers: [rabbitmq.com]
+  # The only Roles and RoleBindings Argo CD may write in the broker's namespace (T12-g,
+  # deploy/rabbitmq/operators/*/scoped-rbac.yaml). VAP sees the writer, not the Argo
+  # project, so the names are pinned here; the operators' own Roles there (peer discovery)
+  # are written by the Cluster Operator and limited by P8.
+  scopedRoles: [rabbitmq-cluster-operator-role, messaging-topology-manager-role]
+  scopedRoleBindings: [rabbitmq-cluster-operator-rolebinding, messaging-topology-manager-rolebinding]
+  # pods/exec is the Cluster Operator's (rabbitmqctl upgrade checks): only that one Role, in
+  # the broker's namespace, may carry it (and Secrets). No Role in rabbitmq-system, no ClusterRole.
+  execResource: pods/exec
+  execRoleName: rabbitmq-cluster-operator-role
+  # What a ClusterRole Argo writes may do beyond get/list/watch: the rabbitmq.com groups (with
+  # status and finalizers), events, and the tokenreview / subjectaccessreview creates of the
+  # metrics auth. Anything else cluster-wide (configmaps, services, serviceaccounts, endpoints,
+  # endpointslices, ...) is read-only: a cluster-wide ConfigMap write reaches kube-system/aws-auth
+  # (authentication mode API_AND_CONFIG_MAP) and an EndpointSlice write hijacks any Service.
+  clusterRoleWriteGroups: [rabbitmq.com]
+  clusterRoleWrites:
+    "": [events]
+    events.k8s.io: [events]
+  clusterRoleCreates:
+    authentication.k8s.io: [tokenreviews]
+    authorization.k8s.io: [subjectaccessreviews]
+  webhookConfigurations:
+    - cluster-operator-mutating-webhook-configuration
+    - cluster-operator-validating-webhook-configuration
+    - messaging-topology-mutating-webhook-configuration
+    - messaging-topology-validating-webhook-configuration
+broker:
+  namespace: ryft-rabbitmq
+  statefulSetName: rabbitmq-server
+  # Who may create the broker's Pods: ownerReferences are written by the requester, so the
+  # Pod exemption of P2 also needs this creator (an UPDATE must keep the owner references).
+  statefulSetControllerUser: system:serviceaccount:kube-system:statefulset-controller
+  # What the Cluster Operator creates for the broker `rabbitmq` (P8): <cluster>-peer-discovery
+  # and <cluster>-server. It may write no other Role or RoleBinding in broker.namespace.
+  peerDiscoveryRole: rabbitmq-peer-discovery
+  serverRoleBinding: rabbitmq-server
+  serverServiceAccount: rabbitmq-server
+  # the only pod-template annotations RabbitmqCluster.spec.override may set (P11)
+  overrideAnnotations: [prometheus.io/path, prometheus.io/port, prometheus.io/scrape]
+  # P11: today's plugins (none beyond the image's defaults) and the lines of
+  # spec.rabbitmq.additionalConfig; advancedConfig and envConfig are refused. A change to
+  # the broker's configuration is a change here first (comments and blank lines are free).
+  additionalPlugins: []
+  additionalConfigLines:
+    - prometheus.tcp.port = 15692
+    - prometheus.return_per_object_metrics = true
+    - vm_memory_high_watermark.relative = 0.6
+    - disk_free_limit.absolute = 1GB
+    - log.console.formatter = json
+
+# Images (P2). ryft-<svc> runs <registry>/<svc>:<7 hex>; a namespace listed under
+# repositoryByNamespace runs that repository instead.
+images:
+  registry: ghcr.io/timkrebs/ryft
+  repositoryByNamespace:
+    ryft-smoke: migrate
+  # RE2, no escapes (a bracket expression is a literal dot)
+  broker: '^docker[.]io/library/rabbitmq:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$'
+  operators: '^ghcr[.]io/rabbitmq/(cluster-operator|messaging-topology-operator):[0-9]+[.][0-9]+[.][0-9]+$'
+
+# NetworkPolicy shapes (P3).
+netpol:
+  privateRanges: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+  # Until T12-k narrows ryft-rabbitmq's 443 egress to the VPC CIDR, that rule is
+  # 0.0.0.0/0 without exceptions. true admits exactly that one rule; set false with T12-k.
+  brokerEgressPublic: true
+  # The one endPort range, on the broker's podSelector rules in broker.namespace (Erlang
+  # distribution between the nodes). No endPort on any rule with an ipBlock peer.
+  brokerPortRange: { port: 35672, endPort: 35682 }
+
+# Traefik (P9): the middlewares an Ingress may name, each as <its namespace>-<name>@kubernetescrd.
+traefik:
+  middlewareNames: [ratelimit, hsts, www-to-apex]
+
+# The Vault Secrets Operator objects (P4).
+vso:
+  connectionName: vault
+  authMount: kubernetes
+  audience: vault
+  kvMount: kv
+  secretNames: [ryft-secrets]
+  secretNamePrefixes: [amqp-user-]
+  # A VaultAuth's Vault namespace starts with this (infra/vault: admin/ryft/<service>)
+  vaultNamespacePrefix: admin/ryft/

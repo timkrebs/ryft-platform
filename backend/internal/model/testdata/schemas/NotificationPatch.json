@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "categories": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "quiet_hours": {
+      "$ref": "QuietHours",
+      "description": "absent keeps, null clears",
+      "nullable": true
+    }
+  },
+  "required": [
+    "categories",
+    "quiet_hours"
+  ],
+  "title": "NotificationPatch",
+  "type": "object"
+}

@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -199,6 +199,25 @@ alerts-check:
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
 	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
 
+# Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
+# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
+# RabbitMQ count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_AMQP_URL set, as in CI.
+coverage:
+	@set -e; d=$${COVERDIR:-$$(mktemp -d)}; mkdir -p "$$d"; \
+	(cd backend && go test -race -count=1 -coverprofile="$$d/coverage.out" ./... > "$$d/test.log" 2>&1) \
+	  || { echo "go test failed, tail of $$d/test.log:" >&2; tail -40 "$$d/test.log" >&2; exit 1; }; \
+	env -u GITHUB_STEP_SUMMARY ./scripts/coverage.sh report "$$d/coverage.out" "$$d"; echo "files: $$d"
+
+# Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
+# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
+# GOLDEN_MODE=init makes the first set. It starts from the committed manifest and a local database
+# (GOLDEN_ALLOW_REMOTE_DB=1 for another host); the test refuses anything else (docs/SCORING.md →
+# Model version, D149; scripts/golden_guard.sh is the PR-side check, wired into CI separately).
+.PHONY: golden-update
+golden-update:
+	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
+	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
+
 alerts-apply: alerts-check
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
@@ -233,6 +252,19 @@ k8s-validate:
 	@./scripts/check_kustomize_refs.sh
 	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check
+
+# The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with the
+# Kubernetes CEL libraries against the renders of deploy/ and the fixtures in
+# infra/aws/kubernetes/admission-celtest/testdata. Read-only: helm template and kustomize only, no cluster.
+# Not part of CI yet (T12-d wires the job).
+admission-celtest:
+	./infra/aws/kubernetes/admission-celtest/run.sh
+
+# Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) evaluated in a Lua VM with
+# exactly Argo CD v3.5.6's libraries (no string library) against table-driven objects. Offline:
+# reads argocd.tf only, no Terraform provider, no cluster. CI job argocd-luatest.
+argocd-luatest:
+	cd infra/aws/kubernetes/argocd-luatest && go vet ./... && go run .
 
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide

@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bpm": {
+      "type": "integer"
+    },
+    "t": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bpm",
+    "t"
+  ],
+  "title": "HRSample",
+  "type": "object"
+}

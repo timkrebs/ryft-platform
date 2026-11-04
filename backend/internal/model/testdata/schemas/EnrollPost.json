@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "current_day_index": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "current_week": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "started_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "current_day_index",
+    "current_week",
+    "started_at"
+  ],
+  "title": "EnrollPost",
+  "type": "object"
+}

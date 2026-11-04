@@ -27,12 +27,39 @@ var (
 		Help:    "HTTP request latency by route pattern.",
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	}, []string{"route"})
+	TextRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_text_refused_total",
+		Help: "Requests refused for text Postgres cannot store (a NUL, or bytes that are not UTF-8), by route pattern " +
+			"and where it was found: body (422), url (400) or database (422; a path that bypassed the first two).",
+	}, []string{"route", "at"})
+	NULStripped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_nul_stripped_total",
+		Help: "Requests accepted after the NUL characters were removed from their body's strings (POST /v1/sync), by route pattern.",
+	}, []string{"route"})
 
 	// ingest.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_samples_ingested_total",
 		Help: "Records accepted by POST /v1/sync. kind=sample (type = sample type), sleep (type = stage) or workout.",
 	}, []string{"kind", "type"})
+	SyncDeleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_deleted_total",
+		Help: "Rows removed by the deletions of POST /v1/sync, by kind (sample, sleep, workout).",
+	}, []string{"kind"})
+	SyncIgnored = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_ignored_total",
+		Help: "Records and deletions of POST /v1/sync not applied, by kind (sample, sleep, workout) and reason " +
+			"(duplicate, outside_window, unknown_type, unknown_id).",
+	}, []string{"kind", "reason"})
+	WorkoutsFolded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_folded_total",
+		Help: "Duplicate workouts handled, by reason: same_source (a copy removed, ingest sync or fold-workouts) " +
+			"or cross_source (a workout newly marked as another source's duplicate by scoring).",
+	}, []string{"reason"})
+	WorkoutsFoldSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_fold_skipped_total",
+		Help: "Syncs whose same-source workout fold was skipped, by reason (too_many: more workouts in scope than the fold's bound).",
+	}, []string{"reason"})
 	LastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_last_sync_timestamp_seconds",
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
@@ -102,7 +129,7 @@ var (
 	// Push (notify).
 	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_push_notifications_total",
-		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), stale, no_token, unconfigured (no APNs key).",
+		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key).",
 	}, []string{"category", "result"})
 	APNsResponses = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_apns_responses_total",
@@ -116,7 +143,7 @@ var (
 	// Beta (api, ingest).
 	GateRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_gate_refusals_total",
-		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (sync without consent); mode on = refused with 403, warn = served with X-RYFT-Gate.",
+		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (a sync or a training import without consent; in scoring a day); mode on = refused with 403, warn = served with X-RYFT-Gate.",
 	}, []string{"code", "mode", "service"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
@@ -191,6 +218,23 @@ var (
 		Name: "ryft_train_prs_total",
 		Help: "Personal records set by a completed session, by kind (e1rm, max_weight, max_reps, max_volume).",
 	}, []string{"kind"})
+	// The training import (api, POST /v1/train/import, D124).
+	TrainImports = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_imports_total",
+		Help: "POST /v1/train/import requests past authentication, by result: ok (200, also when every item was rejected), " +
+			"invalid (400/413/422 or 403 consent_required: nothing processed), disabled (403 import_not_enabled: the flag " +
+			"train.import is off for the account), busy (429 import_in_progress), " +
+			"timeout (503 after the 50 s budget), error (503: the database failed; what was stored stays).",
+	}, []string{"result"})
+	TrainImportItems = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_import_items_total",
+		Help: "Items of the training import, by kind (plan, session) and status (created, unchanged, updated, rejected).",
+	}, []string{"kind", "status"})
+	TrainImportSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ryft_train_import_seconds",
+		Help:    "Duration of a POST /v1/train/import that took the lease: the items, the records and the queueing (its budget is 50 s).",
+		Buckets: []float64{.1, .25, .5, 1, 2, 5, 10, 20, 30, 50},
+	})
 )
 
 // Handler serves the default registry (these metrics plus go_* and process_*).

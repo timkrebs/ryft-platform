@@ -19,6 +19,15 @@ func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 		writeRangeError(w, r, err)
 		return
 	}
+	hidden := false
+	switch v := r.URL.Query().Get("include_hidden"); v {
+	case "", "false":
+	case "true":
+		hidden = true
+	default:
+		httpx.WriteError(w, 422, "include_hidden must be true or false")
+		return
+	}
 	loc, err := h.location(r)
 	if err != nil {
 		httpx.Fail(w, r, err)
@@ -26,7 +35,7 @@ func (h *handler) workouts(w http.ResponseWriter, r *http.Request) {
 	}
 	a, _ := time.ParseInLocation(dayLayout, from, loc)
 	b, _ := time.ParseInLocation(dayLayout, to, loc)
-	rows, err := h.st.WorkoutsBetween(r.Context(), userOf(r).ID, a, b.AddDate(0, 0, 1))
+	rows, err := h.st.ListWorkoutsBetween(r.Context(), userOf(r).ID, a, b.AddDate(0, 0, 1), hidden)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return

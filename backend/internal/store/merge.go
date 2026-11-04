@@ -194,11 +194,15 @@ func (m merger) run(res *MergeResult) error {
 	}
 	// Raw data: the same record from both accounts is one record.
 	if err := add(m.move("samples", `NOT EXISTS (SELECT 1 FROM samples t WHERE t.user_id = $2 AND t.type = s.type
-		AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.source = s.source)`, "same type, start, end and source: to's kept")); err != nil {
+		AND t.start_at = s.start_at AND t.end_at = s.end_at AND t.source = s.source)
+		AND (s.hk_id IS NULL OR NOT EXISTS (SELECT 1 FROM samples t WHERE t.user_id = $2 AND t.hk_id = s.hk_id))`,
+		"same type, start, end and source, or the same HealthKit id: to's kept")); err != nil {
 		return err
 	}
 	if err := add(m.move("sleep_segments", `NOT EXISTS (SELECT 1 FROM sleep_segments t WHERE t.user_id = $2 AND t.start_at = s.start_at
-		AND t.end_at = s.end_at AND t.stage = s.stage AND t.source = s.source)`, "same start, end, stage and source: to's kept")); err != nil {
+		AND t.end_at = s.end_at AND t.stage = s.stage AND t.source = s.source)
+		AND (s.hk_id IS NULL OR NOT EXISTS (SELECT 1 FROM sleep_segments t WHERE t.user_id = $2 AND t.hk_id = s.hk_id))`,
+		"same start, end, stage and source, or the same HealthKit id: to's kept")); err != nil {
 		return err
 	}
 	if err := add(m.move("workouts", `NOT EXISTS (SELECT 1 FROM workouts t WHERE t.user_id = $2 AND t.id = s.id)`,

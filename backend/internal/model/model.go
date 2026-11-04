@@ -67,14 +67,24 @@ type Sample struct {
 	Source string    `json:"source"`
 	// The HealthKit source's bundle identifier (input only, for User.sources).
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
+	// The HealthKit object's UUID (HKObject.uuid): the handle a deletion names. Optional.
+	ID *uuid.UUID `json:"id,omitempty"`
+}
+
+// SampleSpillsToNextDay says whether a sample of this type also changes the
+// score of the day after its start (the night's HRV, respiration and SpO2 belong
+// to the morning).
+func SampleSpillsToNextDay(typ string) bool {
+	return typ == SampleHRVSDNN || typ == SampleRespiratoryRate || typ == SampleSpO2
 }
 
 type SleepSegment struct {
-	Start          time.Time `json:"start"`
-	End            time.Time `json:"end"`
-	Stage          string    `json:"stage"`
-	Source         string    `json:"source"`
-	SourceBundleID *string   `json:"source_bundle_id,omitempty"` // input only
+	Start          time.Time  `json:"start"`
+	End            time.Time  `json:"end"`
+	Stage          string     `json:"stage"`
+	Source         string     `json:"source"`
+	SourceBundleID *string    `json:"source_bundle_id,omitempty"` // input only
+	ID             *uuid.UUID `json:"id,omitempty"`               // HKObject.uuid, optional
 }
 
 // Source kinds (UserSource.kinds); closed in v1.
@@ -121,19 +131,53 @@ type Workout struct {
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 	// Read-only: the scoring model of strain (ignored on upload).
 	ModelVersion *string `json:"model_version,omitempty"`
+	// Read-only: the sources of other recordings of this workout the server hid
+	// (cross-source duplicates), distinct and sorted; omitted when none.
+	AlsoRecordedBy []string `json:"also_recorded_by,omitempty"`
+	// Read-only, only with GET /v1/workouts?include_hidden=true: the primary a hidden duplicate is hidden behind.
+	DuplicateOf *uuid.UUID `json:"duplicate_of,omitempty"`
 	// Input only, as on Sample.
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 }
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
 type SyncRequest struct {
-	DeviceID   uuid.UUID      `json:"device_id"`
-	DeviceName string         `json:"device_name,omitempty"`
-	AppVersion *string        `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
-	OSVersion  *string        `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
-	Samples    []Sample       `json:"samples"`
-	Sleep      []SleepSegment `json:"sleep"`
-	Workouts   []Workout      `json:"workouts"`
+	DeviceID   uuid.UUID       `json:"device_id"`
+	DeviceName string          `json:"device_name,omitempty"`
+	AppVersion *string         `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
+	OSVersion  *string         `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
+	Samples    []Sample        `json:"samples"`
+	Sleep      []SleepSegment  `json:"sleep"`
+	Workouts   []Workout       `json:"workouts"`
+	Deleted    []DeletedRecord `json:"deleted,omitempty"`
+}
+
+// MaxWorkouts is the most entries of SyncRequest.Workouts (422 above). The app pages 20 000
+// records of any kind (a page of only workouts would be an extreme backfill, a real account
+// has a few hundred a year), so the bound is far above real use and below a fold's cost.
+const MaxWorkouts = 5000
+
+// MaxDeleted is the most entries of SyncRequest.Deleted (422 above).
+const MaxDeleted = 2000
+
+// Kinds of a DeletedRecord. Others are skipped, not refused: a later app keeps syncing.
+const (
+	DeletedSample  = "sample"
+	DeletedSleep   = "sleep"
+	DeletedWorkout = "workout"
+)
+
+// DeletedRecord is a HealthKit object that no longer exists.
+type DeletedRecord struct {
+	Kind string    `json:"kind"`
+	ID   uuid.UUID `json:"id"`
+}
+
+// SyncDeleted counts the entries of SyncRequest.Deleted that removed a row.
+type SyncDeleted struct {
+	Samples  int `json:"samples"`
+	Sleep    int `json:"sleep"`
+	Workouts int `json:"workouts"`
 }
 
 type SyncResponse struct {
@@ -145,6 +189,7 @@ type SyncResponse struct {
 	Accepted SyncCounts  `json:"accepted"`
 	Ignored  SyncIgnored `json:"ignored"`
 	Scoring  SyncScoring `json:"scoring"`
+	Deleted  SyncDeleted `json:"deleted"`
 }
 
 // SyncCounts are records per kind.
@@ -159,6 +204,7 @@ type IgnoredCounts struct {
 	Duplicate     int `json:"duplicate"`      // identical to one stored
 	OutsideWindow int `json:"outside_window"` // > 24 h in the future, or ended > 400 days ago
 	UnknownType   int `json:"unknown_type"`   // a sample type or sleep stage the server does not know
+	UnknownID     int `json:"unknown_id"`     // a deletion that names nothing deletable for this user
 }
 
 // SyncIgnored is IgnoredCounts per kind.
@@ -695,7 +741,17 @@ type AdminSource struct {
 const (
 	CodeInviteRequired  = "invite_required"
 	CodeConsentRequired = "consent_required"
+	// CodeImportInProgress: POST /v1/train/import while another import of the account
+	// runs (429, Retry-After: 10; D129).
+	CodeImportInProgress = "import_in_progress"
+	// CodeImportNotEnabled: POST /v1/train/import for an account the flag train.import is off
+	// for (403, S4). The app hides the import then; the server enforces it as well.
+	CodeImportNotEnabled = "import_not_enabled"
 )
+
+// FlagTrainImport is the training import's feature flag (GET /v1/config), which POST
+// /v1/train/import checks itself too.
+const FlagTrainImport = "train.import"
 
 type UserPatch struct {
 	TZ    *string `json:"tz,omitempty"`
@@ -967,6 +1023,14 @@ type RecomputeRequest struct {
 	To   string `json:"to"`
 }
 
+// IngestedEvent reasons that scoring and notify branch on (the others: "recompute",
+// "merge", "session"). Both are an explicit list of days, and both end in the silent
+// refresh push once scored; an import never carries a session id (D125, D128).
+const (
+	ReasonSync   = "sync"
+	ReasonImport = "import"
+)
+
 // IngestedEvent is published (routing key ingested) after a successful sync.
 type IngestedEvent struct {
 	UserID uuid.UUID `json:"user_id"` // the event is always scoped to one user
@@ -1039,6 +1103,10 @@ const (
 	SessionInProgress = "in_progress"
 	SessionCompleted  = "completed"
 	SessionDiscarded  = "discarded"
+
+	// Where a session came from (D125).
+	OriginApp    = "app"
+	OriginImport = "import"
 
 	EnrollmentActive    = "active"
 	EnrollmentPaused    = "paused"
@@ -1121,6 +1189,7 @@ type Set struct {
 	SetIndex    int        `json:"set_index"`
 	Reps        *int       `json:"reps"`
 	WeightKG    *float64   `json:"weight_kg"`
+	AssistKG    *float64   `json:"assist_kg"` // bodyweight sets: the support, 0-200; comes off the moved weight, no record (D134)
 	RPE         *float64   `json:"rpe"`
 	DurationSec *int       `json:"duration_sec"`
 	DistanceM   *float64   `json:"distance_m"`
@@ -1158,6 +1227,13 @@ type Session struct {
 	Exercises     []SessionExercise `json:"exercises"`
 	PRs           []PR              `json:"prs"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	// Origin is "app" or "import"; ImportSource is set exactly for "import" (D125). Read-only:
+	// the server owns both and PUT /v1/sessions/{id} ignores them.
+	Origin       string  `json:"origin"`
+	ImportSource *string `json:"import_source"`
+	// ImportedAt is when the training import last wrote the session (nil for the app's): an
+	// UpdatedAt after it means the app changed it since (D126). Server-only, never serialised.
+	ImportedAt *time.Time `json:"-"`
 }
 
 // SessionSummary is one row of GET /v1/sessions and DayStrain.sessions.
@@ -1176,6 +1252,8 @@ type SessionSummary struct {
 	MuscularTRIMP *float64   `json:"muscular_trimp"`
 	Strain        *float64   `json:"strain"`
 	PRCount       int        `json:"pr_count"`
+	Origin        string     `json:"origin"`
+	ImportSource  *string    `json:"import_source"`
 }
 
 // SessionComplete is the body of POST /v1/sessions/{id}/complete.
@@ -1244,6 +1322,10 @@ type Plan struct {
 	IsBuiltin   bool         `json:"is_builtin"`
 	Archived    bool         `json:"archived"`
 	Days        []PlanDay    `json:"days"`
+	// UpdatedAt and ImportedAt (nil unless the training import wrote it) say whether the app
+	// changed an imported plan since (D126). Server-only, never serialised.
+	UpdatedAt  time.Time  `json:"-"`
+	ImportedAt *time.Time `json:"-"`
 }
 
 type PlanSummary struct {
@@ -1267,6 +1349,19 @@ type Enrollment struct {
 	CurrentWeek     int       `json:"current_week"`      // 1-based
 	CurrentDayIndex int       `json:"current_day_index"` // 0-based
 	Status          string    `json:"status"`
+}
+
+// EnrollPost is the optional body of POST /v1/plans/{id}/enroll (T8): where the
+// enrolment starts or is moved to. A nil field takes its default.
+type EnrollPost struct {
+	StartedAt       *time.Time `json:"started_at"`
+	CurrentWeek     *int       `json:"current_week"`
+	CurrentDayIndex *int       `json:"current_day_index"`
+}
+
+// Set says whether any field is given (none: the enrolment as before T8).
+func (e EnrollPost) Set() bool {
+	return e.StartedAt != nil || e.CurrentWeek != nil || e.CurrentDayIndex != nil
 }
 
 type PlansOverview struct {

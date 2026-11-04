@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "granted_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "policy_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "granted_at",
+    "policy_version"
+  ],
+  "title": "Consent",
+  "type": "object"
+}

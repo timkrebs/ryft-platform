@@ -66,7 +66,7 @@ func (l *Limiter) Allow(key string) (bool, time.Duration) {
 
 // UserLimits applies a per-user limit per request class.
 type UserLimits struct {
-	sync, session, invite, other *Limiter
+	sync, session, invite, imports, other *Limiter
 }
 
 // NewUserLimits returns the platform's limits: uploads may burst through a
@@ -75,8 +75,10 @@ type UserLimits struct {
 // their own; everything else allows a screen's worth of parallel reads plus
 // pull-to-refresh.
 func NewUserLimits() *UserLimits {
-	// Invite codes: 5 attempts an hour per user (per pod), against guessing.
-	return &UserLimits{sync: New(2, 60), session: New(2, 60), invite: New(5.0/3600, 5), other: New(10, 60)}
+	// Invite codes: 5 attempts an hour per user (per pod), against guessing. The training
+	// import (each request up to 50 sessions and a few seconds of database work): bursts of 5,
+	// then one every 5 seconds (an app sends its batches one after another, S2).
+	return &UserLimits{sync: New(2, 60), session: New(2, 60), invite: New(5.0/3600, 5), imports: New(0.2, 5), other: New(10, 60)}
 }
 
 // Allow classifies r and takes a token from user's bucket for that class.
@@ -89,6 +91,8 @@ func (u *UserLimits) Allow(r *http.Request, user string) (class string, ok bool,
 		class, l = "session", u.session
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/me/invite":
 		class, l = "invite", u.invite
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/train/import":
+		class, l = "import", u.imports
 	}
 	ok, retryAfter = l.Allow(user)
 	return class, ok, retryAfter

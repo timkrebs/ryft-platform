@@ -128,18 +128,17 @@ func main() {
 	handle := func(ctx context.Context, ev model.IngestedEvent) error {
 		ctx = logx.WithFields(ctx, &logx.Fields{RequestID: ev.RequestID, UserID: ev.UserID.String()})
 		err := handleEvent(ctx, engine, ev)
-		if err == nil && ev.SessionID != nil && len(ev.Days) == 1 {
-			// The session's load is final now: notify may announce it.
-			if perr := pub.PublishSessionScored(ctx, model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID,
-				Day: ev.Days[0], RequestID: ev.RequestID}); perr != nil {
-				log.ErrorContext(ctx, "publish session scored", "session_id", *ev.SessionID, "err", perr)
+		if err == nil {
+			session, refresh := announce(ev)
+			if session != nil {
+				if perr := pub.PublishSessionScored(ctx, *session); perr != nil {
+					log.ErrorContext(ctx, "publish session scored", "session_id", session.SessionID, "err", perr)
+				}
 			}
-		}
-		if err == nil && ev.Reason == "sync" && len(ev.Days) > 0 {
-			// The sync's days are scored: a silent push lets the app refetch (D92).
-			newest := slices.Max(ev.Days)
-			if perr := pub.PublishRefresh(ctx, model.RefreshEvent{UserID: ev.UserID, Day: newest, RequestID: ev.RequestID}); perr != nil {
-				log.ErrorContext(ctx, "publish refresh", "day", newest, "err", perr)
+			if refresh != nil {
+				if perr := pub.PublishRefresh(ctx, *refresh); perr != nil {
+					log.ErrorContext(ctx, "publish refresh", "day", refresh.Day, "err", perr)
+				}
 			}
 		}
 		if errors.Is(err, store.ErrNotFound) {
@@ -179,6 +178,27 @@ func main() {
 	}
 }
 
+// announce is what scoring tells notify once an event's days are scored:
+//
+//   - a completed session (session.completed carries its id): session.scored, its load
+//     is final, notify may announce it;
+//   - a sync's or an import's days (D92, D125): refresh with the newest, the silent push
+//     that lets the app refetch.
+//
+// An import's event never carries a session id, so it never leads to SESSION_SCORED or
+// PR; notify refuses an imported session as well.
+func announce(ev model.IngestedEvent) (*model.SessionScoredEvent, *model.RefreshEvent) {
+	var session *model.SessionScoredEvent
+	var refresh *model.RefreshEvent
+	if ev.SessionID != nil && len(ev.Days) == 1 {
+		session = &model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID, Day: ev.Days[0], RequestID: ev.RequestID}
+	}
+	if (ev.Reason == model.ReasonSync || ev.Reason == model.ReasonImport) && len(ev.Days) > 0 {
+		refresh = &model.RefreshEvent{UserID: ev.UserID, Day: slices.Max(ev.Days), RequestID: ev.RequestID}
+	}
+	return session, refresh
+}
+
 func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
 	err := scoreEvent(ctx, engine, ev)
 	if errors.Is(err, scoring.ErrNoConsent) {
@@ -194,10 +214,11 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 	if (ev.Reason == "recompute" || ev.Reason == "merge") && len(days) == 2 {
 		return engine.ComputeRange(ctx, ev.UserID, days[0], days[1])
 	}
-	// The sync's days, then the stored days after them whose history changed,
-	// in this handler: a duplicate finds nothing changed and stops there, a
-	// retry (events.Redelivered in ctx) re-scores the days after its days
-	// anyway, finishing what the failed attempt began (D100).
+	// The sync's (or an import's, D128: an explicit list, which may hold two days) days,
+	// then the stored days after them whose history changed, in this handler: a
+	// duplicate finds nothing changed and stops there, a retry (events.Redelivered in
+	// ctx) re-scores the days after its days anyway, finishing what the failed attempt
+	// began (D100).
 	return engine.ComputeDays(ctx, ev.UserID, days)
 }
 

@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "nullable": true,
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "name_de": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "category",
+    "id",
+    "kind",
+    "name",
+    "name_de"
+  ],
+  "title": "BehaviorInput",
+  "type": "object"
+}

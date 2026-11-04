@@ -1,0 +1,52 @@
+{{- /*
+P1 ryft-namespaces (C, U; D for Argo CD). Namespaces ryft-*, rabbitmq-system and argocd
+keep the Pod Security labels (enforce, warn, audit = restricted, versions only "latest"),
+whoever writes them (infra/vault included). Argo CD may write only ryft-web and
+rabbitmq-system and deletes no Namespace. monitoring is outside by name (D51).
+*/ -}}
+{{- /* name: the Namespace's name; request.name is empty for generateName and request fields are omitted when empty, so the object is read. */ -}}
+{{- $name := "(request.operation == 'DELETE' ? oldObject.metadata.name : (has(object.metadata.name) ? object.metadata.name : ''))" -}}
+{{- $inScope := printf "(%s.startsWith('ryft-') || %s in ['rabbitmq-system', 'argocd'] || (request.operation == 'CREATE' && has(object.metadata.generateName) && object.metadata.generateName.startsWith('ryft-')))" $name $name -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-namespaces" "id" "P1" "summary" "Pod Security labels on RYFT namespaces; what Argo CD may do to Namespaces") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: in-scope-or-argo
+      expression: |-
+        request.userInfo.username in {{ include "admission.cel.argoUsers" . }} || {{ $inScope }}
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: isArgo
+      expression: request.userInfo.username in {{ include "admission.cel.argoUsers" . }}
+    - name: inScope
+      expression: |-
+        {{ $inScope }}
+    - name: labels
+      expression: |-
+        request.operation != 'DELETE' && has(object.metadata.labels) ? object.metadata.labels : {}
+  validations:
+    - expression: |-
+        request.operation == 'DELETE' || !variables.inScope ||
+        ['enforce', 'warn', 'audit'].all(l,
+          ('pod-security.kubernetes.io/' + l) in variables.labels &&
+          variables.labels['pod-security.kubernetes.io/' + l] == 'restricted')
+      message: "P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' || !variables.inScope ||
+        variables.labels.all(k,
+          !(k.startsWith('pod-security.kubernetes.io/') && k.endsWith('-version')) || variables.labels[k] == 'latest')
+      message: "P1: Pod Security version labels must be absent or latest."
+      reason: Forbidden
+    - expression: |-
+        !variables.isArgo || (request.operation != 'DELETE' && {{ $name }} in ['ryft-web', 'rabbitmq-system'])
+      message: "P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "namespaces" "policy" "ryft-namespaces" "id" "P1" "step" "B") }}

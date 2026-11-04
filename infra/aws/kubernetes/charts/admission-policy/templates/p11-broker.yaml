@@ -1,0 +1,69 @@
+{{- /*
+P11 ryft-broker (C, U). The RabbitmqCluster in ryft-rabbitmq: spec.image matches the
+broker pattern (digest-pinned), and spec.override holds only the pod-template annotations
+of today (override.statefulSet.spec.template.metadata.annotations, the three keys under
+broker.overrideAnnotations). Shovel, Federation and SchemaReplication are refused
+cluster-wide, from every writer (recommended in the design): they move messages off the
+cluster. The plugins and the lines of additionalConfig are pinned to today's, advancedConfig
+and envConfig are refused, and the Service stays ClusterIP.
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-broker" "id" "P11" "summary" "the RabbitmqCluster's image and override; no Shovel, Federation or SchemaReplication") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rabbitmq.com"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rabbitmqclusters", "shovels", "federations", "schemareplications"]
+  matchConditions:
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: spec
+      expression: dyn(object).spec
+    - name: override
+      expression: |-
+        has(variables.spec.override) ? variables.spec.override : {}
+  validations:
+    - expression: variables.reqKind == 'RabbitmqCluster'
+      message: "P11: Shovels, Federations and SchemaReplications are not allowed."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' ||
+        (request.namespace == {{ .Values.broker.namespace | toJson }} &&
+         has(variables.spec.image) && variables.spec.image.matches({{ .Values.images.broker | toJson }}))
+      message: "P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' || size(variables.override) == 0 ||
+        (size(variables.override) == 1 && has(variables.override.statefulSet) &&
+         size(variables.override.statefulSet) == 1 && has(variables.override.statefulSet.spec) &&
+         size(variables.override.statefulSet.spec) == 1 && has(variables.override.statefulSet.spec.template) &&
+         size(variables.override.statefulSet.spec.template) == 1 && has(variables.override.statefulSet.spec.template.metadata) &&
+         size(variables.override.statefulSet.spec.template.metadata) == 1 && has(variables.override.statefulSet.spec.template.metadata.annotations) &&
+         variables.override.statefulSet.spec.template.metadata.annotations.all(k, k in {{ .Values.broker.overrideAnnotations | toJson }}))
+      message: "P11: spec.override may only set the pod-template annotations prometheus.io/path, port and scrape."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.rabbitmq) ||
+        ((!has(variables.spec.rabbitmq.additionalPlugins) || variables.spec.rabbitmq.additionalPlugins.all(x, x in {{ .Values.broker.additionalPlugins | toJson }})) &&
+         !has(variables.spec.rabbitmq.advancedConfig) && !has(variables.spec.rabbitmq.envConfig) &&
+         !has(variables.spec.rabbitmq.erlangInetConfig) &&
+         (!has(variables.spec.rabbitmq.additionalConfig) ||
+          variables.spec.rabbitmq.additionalConfig.split('\n').all(l,
+            l.trim() == '' || l.trim().startsWith('#') || l.trim() in {{ .Values.broker.additionalConfigLines | toJson }})))
+      message: "P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.secretBackend)
+      message: "P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.service) ||
+        !has(variables.spec.service.type) || variables.spec.service.type == 'ClusterIP'
+      message: "P11: the broker's Service must stay ClusterIP."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "broker" "policy" "ryft-broker" "id" "P11" "step" "A") }}

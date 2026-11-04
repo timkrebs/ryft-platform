@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kinds": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kinds",
+    "name"
+  ],
+  "title": "AdminSource",
+  "type": "object"
+}

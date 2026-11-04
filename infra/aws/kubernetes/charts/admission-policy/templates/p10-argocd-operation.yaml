@@ -1,0 +1,50 @@
+{{- /*
+P10 ryft-argocd-operation (C, U on Applications). Judges only a request that sets or
+changes the top-level `operation`; status.operationState is never looked at. So the
+controller's status writes, argocd-server's terminate-op, pause, hard refresh and the
+controller clearing a finished operation pass unjudged (they carry the in-flight operation
+unchanged, or none).
+ - From any writer: no operation.sync.manifests, .source or .sources. This refuses
+   `--local` and `argocd app rollback` (which carries the history entry's source).
+ - From argocd-server: operation.sync.revision must be "", the target revision, or the
+   revision the Application is synced to (claim k: what argocd-server writes for a plain
+   sync is unverified).
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-argocd-operation" "id" "P10" "summary" "a new Argo CD sync operation carries no local manifests, no foreign source and no foreign revision") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: argocd-namespace
+      expression: request.namespace == {{ .Values.argocd.namespace | toJson }}
+    - name: sets-or-changes-the-operation
+      expression: |-
+        has(object.operation) && (oldObject == null || !has(oldObject.operation) || object.operation != oldObject.operation)
+  variables:
+    - name: sync
+      expression: |-
+        has(dyn(object).operation.sync) ? dyn(object).operation.sync : {}
+    - name: isServer
+      expression: request.userInfo.username == {{ include "admission.user.argoServer" . | toJson }}
+    - name: syncedRevision
+      expression: |-
+        oldObject != null && has(dyn(oldObject).status) && has(dyn(oldObject).status.sync) && has(dyn(oldObject).status.sync.revision) ?
+          dyn(oldObject).status.sync.revision : ''
+  validations:
+    - expression: |-
+        !has(variables.sync.manifests) && !has(variables.sync.source) && !has(variables.sync.sources)
+      message: "P10: a sync operation must not carry local manifests or a source of its own."
+      reason: Forbidden
+    - expression: |-
+        !variables.isServer || !has(variables.sync.revision) ||
+        variables.sync.revision in ['', {{ .Values.argocd.targetRevision | toJson }}] ||
+        (variables.syncedRevision != '' && variables.sync.revision == variables.syncedRevision)
+      message: "P10: a sync started through the API server must use the target revision or the revision the Application is synced to."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "argocd-operation" "policy" "ryft-argocd-operation" "id" "P10" "step" "D") }}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/outbox"
+	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -32,6 +34,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "fold-workouts" {
+		os.Exit(foldWorkouts(os.Args[2:]))
+	}
 	log := httpx.Logger("ingest")
 	cfg, err := config.Load("ingest")
 	if err != nil {
@@ -153,25 +158,9 @@ type handler struct {
 // admitted says whether user may upload: beta access (BETA_GATE) and a consent
 // to the current privacy policy (CONSENT_ENFORCE; GDPR Art. 9(2)(a), D78). A
 // gate in warn mode lets the sync through with the code in X-RYFT-Gate (D87).
-// The user row, consent included, is read fresh for every request, so a
-// withdrawal counts at once.
+// The consent rule is the api's import's as well (internal/gate, D129).
 func (h *handler) admitted(w http.ResponseWriter, r *http.Request, user model.User) bool {
-	check := func(mode config.Mode, failed bool, code, msg string) bool {
-		if mode == config.ModeOff || !failed {
-			return true
-		}
-		metrics.GateRefusals.WithLabelValues(code, string(mode), "ingest").Inc()
-		if mode == config.ModeWarn {
-			w.Header().Add(httpx.GateHeader, code)
-			return true
-		}
-		httpx.WriteCodedError(w, r, http.StatusForbidden, code, msg)
-		return false
-	}
-	return check(h.beta.Gate, !user.BetaAccess, model.CodeInviteRequired, "this beta needs an invite code") &&
-		check(h.beta.Consent, user.Consent == nil || user.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion,
-			model.CodeConsentRequired,
-			"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
+	return gate.Invite(w, r, h.beta.Gate, user, "ingest") && gate.Consent(w, r, h.beta, user, "ingest")
 }
 
 func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +169,9 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req model.SyncRequest
-	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodySync); err != nil {
+	// NULs removed, not refused: the app does not retry a 422, and its strings come
+	// from HealthKit and the device, so one NUL would stall that stream for good.
+	if err := httpx.ReadJSONStripNUL(w, r, &req, httpx.MaxBodySync); err != nil {
 		httpx.WriteDecodeError(w, err)
 		return
 	}
@@ -205,17 +196,17 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 
 	ns, err := h.st.UpsertSamples(ctx, userID, req.Samples)
 	if err != nil {
-		httpx.Fail(w, r, fmt.Errorf("samples: %w", err))
+		h.fail(w, r, fmt.Errorf("samples: %w", err))
 		return
 	}
 	nsl, err := h.st.UpsertSleep(ctx, userID, req.Sleep)
 	if err != nil {
-		httpx.Fail(w, r, fmt.Errorf("sleep: %w", err))
+		h.fail(w, r, fmt.Errorf("sleep: %w", err))
 		return
 	}
 	nw, err := h.st.UpsertWorkouts(ctx, userID, req.Workouts)
 	if err != nil {
-		httpx.Fail(w, r, fmt.Errorf("workouts: %w", err))
+		h.fail(w, r, fmt.Errorf("workouts: %w", err))
 		return
 	}
 	// User.sources only: the data is stored, so a failure here does not fail the sync.
@@ -223,31 +214,53 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(ctx, "sources", "err", err)
 	}
 
-	days := touchedDays(&req, loc)
+	// The deletions, the days for GET /v1/me/sync and the event for scoring, in one
+	// transaction (D101, D-b) after the records are stored. A failure is a 503, not
+	// swallowed: the records are idempotent, the app sends the request again, and a
+	// deletion that already happened comes back as unknown_id.
+	reqDays := touchedDays(&req, loc)
+	var applied store.Applied
+	eventFailed := false
+	if len(reqDays) > 0 || len(req.Deleted) > 0 {
+		applied, err = h.st.ApplySync(ctx, userID, store.Apply{Days: reqDays, Deleted: req.Deleted, Loc: loc, Fold: foldRequest(req.Workouts),
+			Emit: func(tx pgx.Tx, days []string) error {
+				m, err := events.Ingested(model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, "")
+				if err != nil {
+					return err
+				}
+				return outbox.Insert(ctx, tx, "ingest", m)
+			}})
+		if err != nil {
+			if eventFailed {
+				metrics.EventsPublished.WithLabelValues("sync", "error").Inc()
+			}
+			countIngested(&req) // the records are stored whatever happened to the deletions
+			h.unavailable(w, r, fmt.Errorf("apply: %w", err))
+			return
+		}
+	}
+	if applied.FoldSkipped {
+		h.log.WarnContext(ctx, "workout fold skipped, too many workouts in scope", "workouts", len(req.Workouts), "limit", store.FoldMaxRows)
+	}
+	if len(applied.Days) > 0 {
+		h.outbox.Kick()
+	}
+	days := applied.Days
+	if days == nil {
+		days = []string{}
+	}
 	ignored.Samples.Duplicate, ignored.Sleep.Duplicate, ignored.Workouts.Duplicate = sent.Samples-ns, sent.Sleep-nsl, sent.Workouts-nw
+	ignored.Samples.UnknownID, ignored.Sleep.UnknownID, ignored.Workouts.UnknownID =
+		applied.Unknown.Samples, applied.Unknown.Sleep, applied.Unknown.Workouts
 	summary := map[string]any{"samples": ns, "sleep": nsl, "workouts": nw, "days": len(days), "app_version": req.AppVersion,
-		"ignored": ignored}
+		"ignored": ignored, "deleted": applied.Deleted}
 	if err := h.st.RecordSync(ctx, userID, req.DeviceID, summary); err != nil {
 		h.log.ErrorContext(ctx, "record sync", "err", err)
 	}
-	// The days for GET /v1/me/sync and the event for scoring, in one transaction
-	// (D101). A failure does not fail the sync: the data is stored, and scoring's
-	// periodic pass catches up.
-	if len(days) > 0 {
-		m, err := events.Ingested(model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, "")
-		if err == nil {
-			err = h.st.QueueDaysWith(ctx, userID, days, func(tx pgx.Tx) error { return outbox.Insert(ctx, tx, "ingest", m) })
-		}
-		if err != nil {
-			h.log.ErrorContext(ctx, "queue days and their event", "err", err)
-			metrics.EventsPublished.WithLabelValues("sync", "error").Inc()
-		} else {
-			h.outbox.Kick()
-		}
-	}
 	countIngested(&req)
+	countOutcomes(ignored, applied.Deleted)
 	h.log.InfoContext(ctx, "sync", "device", req.DeviceID, "samples", ns, "sleep", nsl, "workouts", nw, "days", len(days))
-	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days,
+	httpx.WriteJSON(w, http.StatusOK, model.SyncResponse{Samples: ns, Sleep: nsl, Workouts: nw, Days: days, Deleted: applied.Deleted,
 		Accepted: model.SyncCounts{Samples: ns, Sleep: nsl, Workouts: nw}, Ignored: ignored,
 		Scoring: model.SyncScoring{QueuedDays: days, ExpectedWithinSec: h.expectedSec(ctx)}})
 }
@@ -336,6 +349,12 @@ func validate(req *model.SyncRequest) error {
 	if tooLong(req.AppVersion, maxVersionLen) || tooLong(req.OSVersion, maxVersionLen) {
 		return fmt.Errorf("app_version and os_version: at most %d characters", maxVersionLen)
 	}
+	if len(req.Deleted) > model.MaxDeleted {
+		return fmt.Errorf("deleted: at most %d entries per request", model.MaxDeleted)
+	}
+	if len(req.Workouts) > model.MaxWorkouts {
+		return fmt.Errorf("workouts: at most %d entries per request", model.MaxWorkouts)
+	}
 	for i := range req.Samples {
 		s := &req.Samples[i]
 		if s.Start.IsZero() {
@@ -383,7 +402,7 @@ func touchedDays(req *model.SyncRequest, loc *time.Location) []string {
 	add := func(t time.Time) { set[t.In(loc).Format("2006-01-02")] = struct{}{} }
 	for _, s := range req.Samples {
 		add(s.Start)
-		if s.Type == model.SampleHRVSDNN || s.Type == model.SampleRespiratoryRate || s.Type == model.SampleSpO2 {
+		if model.SampleSpillsToNextDay(s.Type) {
 			add(s.Start.Add(24 * time.Hour))
 		}
 	}
@@ -422,4 +441,45 @@ func countIngested(req *model.SyncRequest) {
 		metrics.Ingested.WithLabelValues("workout", "workout").Add(float64(len(req.Workouts)))
 	}
 	metrics.LastSync.WithLabelValues().SetToCurrentTime()
+}
+
+// countOutcomes feeds ryft_sync_deleted_total and ryft_sync_ignored_total.
+func countOutcomes(ig model.SyncIgnored, del model.SyncDeleted) {
+	for kind, n := range map[string]int{"sample": del.Samples, "sleep": del.Sleep, "workout": del.Workouts} {
+		if n > 0 {
+			metrics.SyncDeleted.WithLabelValues(kind).Add(float64(n))
+		}
+	}
+	for kind, c := range map[string]model.IgnoredCounts{"sample": ig.Samples, "sleep": ig.Sleep, "workout": ig.Workouts} {
+		for reason, n := range map[string]int{"duplicate": c.Duplicate, "outside_window": c.OutsideWindow,
+			"unknown_type": c.UnknownType, "unknown_id": c.UnknownID} {
+			if n > 0 {
+				metrics.SyncIgnored.WithLabelValues(kind, reason).Add(float64(n))
+			}
+		}
+	}
+}
+
+// unavailable answers 503 with Retry-After: the request can be sent again as it is
+// (records dedupe, a deletion already done is unknown_id).
+func (h *handler) unavailable(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.Canceled) {
+		httpx.Fail(w, r, err) // timeout and abandoned requests have their own answers
+		return
+	}
+	h.log.ErrorContext(r.Context(), "sync not applied", "err", err)
+	w.Header().Set("Retry-After", "5")
+	httpx.WriteError(w, http.StatusServiceUnavailable, "temporarily unavailable, send the request again")
+}
+
+// fail is httpx.Fail, except that a conflict between two syncs of one user (a
+// unique violation on a HealthKit id, a deadlock, a serialization failure) is a
+// retryable 503.
+func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && (pg.Code == "23505" || pg.Code == "40P01" || pg.Code == "40001") {
+		h.unavailable(w, r, err)
+		return
+	}
+	httpx.Fail(w, r, err)
 }

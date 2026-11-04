@@ -19,6 +19,9 @@ RUN npm run build && node scripts/precompress.mjs
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
 USER root
+# CVE-2026-111497: the pinned base ships brotli-libs 1.2.0-r1, fixed in 1.2.1-r0. Upgrade only that
+# package; drop this line once a newer pinned base carries >= 1.2.1-r0.
+RUN apk upgrade --no-cache brotli-libs
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf && mkdir -p /etc/nginx/snippets
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/headers.conf /etc/nginx/snippets/headers.conf

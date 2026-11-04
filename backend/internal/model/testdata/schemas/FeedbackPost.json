@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "build": {
+      "nullable": true,
+      "type": "string"
+    },
+    "category": {
+      "nullable": true,
+      "type": "string"
+    },
+    "device_model": {
+      "nullable": true,
+      "type": "string"
+    },
+    "diagnostics": {
+      "description": "raw JSON"
+    },
+    "message": {
+      "type": "string"
+    },
+    "os_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "request_ids": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "app_version",
+    "build",
+    "category",
+    "device_model",
+    "diagnostics",
+    "message",
+    "os_version",
+    "request_ids"
+  ],
+  "title": "FeedbackPost",
+  "type": "object"
+}

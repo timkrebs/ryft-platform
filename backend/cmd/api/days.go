@@ -134,7 +134,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
-	workouts, err := h.st.WorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
+	workouts, err := h.st.VisibleWorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
