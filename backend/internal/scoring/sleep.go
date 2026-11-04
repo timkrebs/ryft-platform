@@ -20,7 +20,8 @@ func NightWindow(d time.Time) (from, to time.Time) {
 	return d.Add(nightStartOffset), d.Add(nightEndOffset)
 }
 
-// Sleep quality bands (SleepQuality); the brand board shows 82 % as "Good".
+// Sleep quality bands (SleepQuality); the brand board shows 82 % as "Good", so a stricter 85 split cannot be
+// used (D5).
 const (
 	sleepQualityGood = 80
 	sleepQualityFair = 60
@@ -60,7 +61,8 @@ func SleepEfficiency(totalMin, inBedMin int) int {
 
 // SleepStageBreakdown returns deep, light, rem and awake, always in that order.
 // Deep/light/rem percentages are shares of the staged sleep and sum to exactly
-// 100 (all 0 when nothing was staged); awake is its share of time in bed.
+// 100 (all 0 when nothing was staged); awake is its share of time in bed (D6: the contract example only works
+// that way).
 func SleepStageBreakdown(deep, light, rem, awake, inBed int) []model.SleepStage {
 	pct := sharesOf100([]int{deep, light, rem})
 	awakePct := 0

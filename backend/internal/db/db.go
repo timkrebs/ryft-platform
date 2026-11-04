@@ -185,6 +185,7 @@ func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	// Transaction-level, so a pod dying mid-migration cannot leave a lock on a pooled connection (D34).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLock); err != nil {
 		return err
 	}

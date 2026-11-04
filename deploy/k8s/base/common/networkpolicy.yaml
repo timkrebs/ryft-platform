@@ -1,4 +1,4 @@
-# Nothing reaches or leaves a pod in this namespace unless a policy allows it.
+# Nothing reaches or leaves a pod in this namespace unless a policy allows it (D44: both ways).
 # Kubelet probes come from the node, which the EKS VPC CNI (and k3s's
 # kube-router, Calico, Cilium) admit regardless of policy.
 apiVersion: networking.k8s.io/v1

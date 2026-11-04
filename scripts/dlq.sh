@@ -13,7 +13,7 @@
 #
 # <queue> is dlq.scoring or dlq.notify (or scoring / notify); n is 1 to 1000, all is 1000.
 # notify's letters are not replayed without --force: a push hours late is wrong (list and
-# purge them). A replay republishes only the keys its queue's consumer is bound for
+# purge them; D84). A replay republishes only the keys its queue's consumer is bound for
 # (scoring: ingested, session.completed; notify: scored, session.scored, refresh), and only
 # a letter whose type is its key; any other goes back into its dead-letter queue as it was,
 # and is named. A letter taken off is never dropped: one that is neither replayed nor put

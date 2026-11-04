@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The bytes of every tracked file (CI's `bytes` job, which runs on every push and pull request with
-# no path filter; the `manifests` job repeats it as its first step; .githooks/pre-commit runs it on
-# the staged files). Line-based checks (deploy_targets.sh, check_registry.sh, check_workflows.sh) and
+# The bytes of every tracked file (D115: checks read what the parsers read). CI's `bytes` job runs it on every push
+# and pull request with no path filter; the `manifests` job repeats it as its first step; .githooks/pre-commit runs
+# it on the staged files. Line-based checks (deploy_targets.sh, check_registry.sh, check_workflows.sh) and
 # the parsers disagree about what a line break is: U+0085, U+2028, U+2029 and a lone CR end a
 # line for a YAML parser but not for grep or awk, so one comment line can carry a hidden second
 # line (a sidecar with envFrom: ryft-secrets, an `images:` entry with a newName). Kustomize also

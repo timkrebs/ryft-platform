@@ -9,7 +9,7 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        # Traefik in kube-system (infra/aws/kubernetes; k3s's default)
+        # Traefik in kube-system (infra/aws/kubernetes; k3s's default; D24)
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
           podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
         # ingress-nginx, if you run that instead
@@ -18,7 +18,8 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
     - from:
-        # The metrics collector (namespace monitoring) scrapes /metrics on its own port.
+        # The metrics collector (namespace monitoring) scrapes /metrics on its own port 9090 (D16: an exception
+        # to "only the Ingress"; D51).
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
         - { protocol: TCP, port: 9090 }

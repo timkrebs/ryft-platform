@@ -36,7 +36,7 @@ var (
 )
 
 // Headers on a dead-lettered message (they keep the names the NATS dead letters had,
-// D99, so scripts/dlq.sh and the runbooks read one shape).
+// D84, D99, so scripts/dlq.sh and the runbooks read one shape).
 const (
 	HeaderSubject    = "Ryft-Subject"    // the key it was published with
 	HeaderConsumer   = "Ryft-Consumer"   // who gave up on it
