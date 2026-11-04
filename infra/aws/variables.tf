@@ -1,3 +1,25 @@
+variable "admin_principal_arns" {
+  description = "Extra cluster admins by label => IAM role or user ARN (AmazonEKSClusterAdminPolicy, cluster scope, through access entries). The identity that runs the apply is always an admin; add a principal only if your kubectl uses another one. Empty = none."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for a in values(var.admin_principal_arns) : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(role|user)/.+$", a))])
+    error_message = "admin_principal_arns values must be IAM role or user ARNs."
+  }
+}
+
+variable "authentication_mode" {
+  description = "EKS access-entry authentication mode: API_AND_CONFIG_MAP (today) or API (aws-auth ignored). One-way: API cannot be reverted. Switch only after the pre-checks in docs/OPERATIONS.md (EKS authentication mode API), with -var='authentication_mode=API', and change this default in a follow-up commit afterwards."
+  type        = string
+  default     = "API_AND_CONFIG_MAP"
+
+  validation {
+    condition     = contains(["API_AND_CONFIG_MAP", "API"], var.authentication_mode)
+    error_message = "authentication_mode must be API_AND_CONFIG_MAP or API."
+  }
+}
+
 variable "deletion_protection" {
   description = "Protect the EKS cluster from deletion; turn off before `terraform destroy`"
   type        = bool
@@ -49,6 +71,12 @@ variable "kubernetes_version" {
   description = "Kubernetes minor version of the EKS control plane"
   type        = string
   default     = "1.36"
+}
+
+variable "node_access_entry" {
+  description = "Create the EC2_LINUX access entry for the node group's role. Leave false: EKS creates that entry itself. true only if `aws eks list-access-entries` does not list the node role before the switch to API (docs/OPERATIONS.md)."
+  type        = bool
+  default     = false
 }
 
 variable "node_group" {

@@ -27,6 +27,19 @@ node_group = {
   # instance_types = ["t4g.medium"]
 }
 
+# Access to the cluster. The identity that runs the apply is always a cluster admin (an access
+# entry). Mode API ignores kube-system/aws-auth and cannot be reverted: do the read-only checks in
+# docs/OPERATIONS.md (EKS authentication mode API) first, then pass -var='authentication_mode=API'
+# on one reviewed plan; do not put it here before the checks are green.
+# authentication_mode = "API_AND_CONFIG_MAP"
+#
+# Only if `aws eks list-access-entries` does not list the node group's role (EKS normally creates
+# that EC2_LINUX entry itself; true on top of an existing one fails with ResourceInUseException):
+# node_access_entry = true
+#
+# Only if your kubectl uses another IAM role/user than the one that runs terraform:
+# admin_principal_arns = { me = "arn:aws:iam::111122223333:role/your-admin-role" }
+
 tags = {
   Owner = "platform-team"
 }
