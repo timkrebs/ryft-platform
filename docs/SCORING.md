@@ -710,6 +710,32 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 refuses entries out of order, an unknown metric, an unsorted or a missing `affects` (`[]` is a version that moves
 stored numbers but no trend metric).
 
+**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`, generator in `golden_gen_test.go`, diff and
+guard in `golden_diff_test.go`, D149): six synthetic users × 30 days (2026-10-05 .. 2026-11-03, across both autumn
+DST changes; Apple Watch + iPhone with a depleted day, Garmin without HRV and a cross-source pair at 23:58/00:01,
+Watch + Garmin overlapping with a 17-hour hike, naps, split nights and a run across midnight, strength sessions with
+an import, a strap duplicate, a watch workout that arrives late and one re-sent late, a tracker without resting HR), fixed seed, no
+wall clock, scored through the real Engine in two phases (the late records after the first scoring), with checks
+that a second `ComputeRange` moves nothing, that the last ten days scored newest first give the same, and that no
+user's scoring wrote another's rows.
+Everything scoring writes is pinned as canonical JSON (sorted keys, numbers rounded to 1e-6, ids as readable
+labels): every `daily_scores` column but `user_id` and `computed_at`, the `workouts` (load, zones, `duplicate_of`,
+the attached session, the ones created for sessions), the `sessions` (load, `workout_id`) and what each sync's
+`ApplySync` returned (the fold's days and removed copies). Records go in through the store calls ingest makes after
+its checks (upserts, then `ApplySync` with the request's same-source fold) and sessions through
+`train.CheckSession`/`SaveSession`/`CompleteSession` and `ImportSession` (in `train.ImportOrder`, as the api does;
+the order only moves `personal_records`, which are not pinned, so the files do not prove it); the ingest handler's
+`validate`, `screen` and touched days live in `cmd/ingest` (`screen`'s 400-day window reads the wall clock), so the
+golden run starts after them. `go test ./internal/scoring/... -run Golden` (with `RYFT_TEST_POSTGRES_URL`;
+in CI it never skips) prints the changed fields grouped by field; a refactor must pass it unchanged. A model change
+bumps the version first, then `make golden-update` regenerates and the reviewed diff goes into the PR. Without a
+bump the update only takes users whose generator inputs changed (their digest in the manifest), and
+`GOLDEN_MODE=additive` only new fields and rows; every update starts from the committed manifest, and the first set
+needs `GOLDEN_MODE=init`. `TestGoldenManifest` (no database) fails when `ModelVersion` moved without a
+regeneration or a digest in the manifest is not what the generator and the files give now, and
+`scripts/golden_guard.sh <base>` fails a PR whose golden user file changed while `ModelVersion`, that user's input
+digest and the field digest did not (wired into CI in a follow-up PR).
+
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
 | 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |

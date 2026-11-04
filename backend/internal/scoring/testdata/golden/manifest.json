@@ -1,0 +1,59 @@
+{
+  "days": 30,
+  "excluded_columns": {
+    "daily_scores": ["user_id", "computed_at"],
+    "sessions": ["user_id", "created_at", "updated_at", "imported_at"],
+    "workouts": ["user_id", "created_at"]
+  },
+  "fields": "15211855271502612580",
+  "first_day": "2026-10-05",
+  "inputs": {
+    "user-a": {
+      "digest": "16411363567158736504",
+      "samples": 12875,
+      "sessions": 0,
+      "sleep_segments": 483,
+      "workouts": 14
+    },
+    "user-b": {
+      "digest": "8858031362782871865",
+      "samples": 22677,
+      "sessions": 0,
+      "sleep_segments": 189,
+      "workouts": 16
+    },
+    "user-c": {
+      "digest": "7438635367835587596",
+      "samples": 35686,
+      "sessions": 0,
+      "sleep_segments": 969,
+      "workouts": 33
+    },
+    "user-d": {
+      "digest": "16411010830553602281",
+      "samples": 11659,
+      "sessions": 0,
+      "sleep_segments": 495,
+      "workouts": 8
+    },
+    "user-e": {
+      "digest": "5260183551147085094",
+      "samples": 11607,
+      "sessions": 40,
+      "sleep_segments": 487,
+      "workouts": 16
+    },
+    "user-f": {
+      "digest": "1839194347501994670",
+      "samples": 9240,
+      "sessions": 0,
+      "sleep_segments": 480,
+      "workouts": 0
+    }
+  },
+  "model_version": "2026.10.3",
+  "numbers": "rounded to 1e-6, printed shortest; ids replaced by labels; digests: first 64 bits of a SHA-256, inputs over the generator's canonical field=value lines, fields over the files' field names",
+  "regenerate": "make golden-update: after a ModelVersion bump, or for the users whose generator inputs changed; GOLDEN_MODE=additive for new fields only, GOLDEN_MODE=init for the first set; commit before the next update",
+  "seed": 20261104,
+  "users": ["user-a", "user-b", "user-c", "user-d", "user-e", "user-f"]
+}
