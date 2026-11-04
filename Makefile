@@ -324,6 +324,9 @@ argocd-luatest:
 # operators: the files git tracks under deploy/ and infra/aws/kubernetes/ are read from it (the chart and
 # the fixtures from this checkout). THE TREE IS CODE (kustomize, Terraform and Argo CD run it): an
 # untrusted one belongs in the admission-e2e workflow, not on a machine with production credentials.
+# A REPO that is not this checkout must have its HEAD commit on an origin/* branch (git fetch origin) and
+# unmodified tracked files under deploy/ and infra/aws/kubernetes/, or the run is refused; FORCE=1 runs it
+# anyway, with a warning, on a machine that has no production credentials.
 # Local kind only, and not through KUBE_CONTEXT (scripts/lib/kube.mk, D150): the target names no context from the
 # ambient kubeconfig, which may be production's. The script creates its own cluster with its own kubeconfig in a temporary directory,
 # refuses any context that is not a kind-* one at https://127.0.0.1, and deletes the cluster afterwards.
@@ -331,7 +334,7 @@ argocd-luatest:
 # About 25 minutes. MODE=ci runs only what CI's `admission` job runs (about 5 minutes).
 admission-e2e:
 	@test -n "$(REPO)" || { echo "usage: make admission-e2e REPO=<path to the tree under test> [MODE=ci|full]"; exit 2; }
-	./scripts/admission_e2e.sh --mode $(or $(MODE),full) --repo "$(REPO)" --summary "$(or $(SUMMARY),admission-e2e-summary.md)"
+	./scripts/admission_e2e.sh --mode $(or $(MODE),full) --repo "$(REPO)" $(if $(filter 1,$(FORCE)),--force) --summary "$(or $(SUMMARY),admission-e2e-summary.md)"
 
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide

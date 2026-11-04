@@ -11,7 +11,7 @@
 #                and the broker synced by Argo CD from this tree, hooks, terminate-op, the broker restart
 #                of D98, the operators' reach, claims i, k and m. See scripts/lib/admission_full.sh.
 #
-#   scripts/admission_e2e.sh [--mode ci|full] [--repo DIR] [--summary FILE] [--keep]
+#   scripts/admission_e2e.sh [--mode ci|full] [--repo DIR] [--force] [--summary FILE] [--keep]
 #                            [--kubeconfig FILE] [--argocd-values FILE]
 #
 #   --repo DIR       the tree under test, a git checkout (a worktree of #47's or #51's branch, say):
@@ -22,8 +22,14 @@
 #                    argocd.tf, Argo CD syncs it): a tree you do not trust runs in the workflow, or on a
 #                    machine without production credentials, not on a laptop that has them. The values
 #                    it supplies are checked before they reach a command line (D152), but that is a
-#                    second line, not a sandbox.
-#   --kubeconfig F   use that existing kind cluster instead of creating one (it must be a kind-* context
+#                    second line, not a sandbox. A tree that is not this checkout is refused unless its
+#                    HEAD commit is on an origin/* branch of this checkout and its tracked files under
+#                    deploy/ and infra/aws/kubernetes/ are unmodified (see --force); the Terraform
+#                    step is a tripwire (scripts/lib/tf_values.sh), and TF_VALUES_CONTAINER=<image> runs
+#                    it in a container without network (optional).
+#   --force          run a tree that failed that check anyway (make: FORCE=1), with a loud warning, on a
+#                    machine that has no production credentials.
+#   --kubeconfig F  use that existing kind cluster instead of creating one (it must be a kind-* context
 #                    on 127.0.0.1 that `kind get kubeconfig` agrees with; see scripts/lib/kind_guard.sh).
 #                    Not deleted afterwards; a previous release of the chart and the claim-a objects are
 #                    removed first.
@@ -40,13 +46,14 @@
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-MODE=ci REPO="" SUMMARY="" KEEP=0 GIVEN_KUBECONFIG="" ARGO_VALUES_FILE=""
+MODE=ci REPO="" SUMMARY="" KEEP=0 GIVEN_KUBECONFIG="" ARGO_VALUES_FILE="" FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE=${2:?}; shift 2 ;;
     --repo) REPO=${2:?}; shift 2 ;;
     --summary) SUMMARY=${2:?}; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --force) FORCE=1; shift ;;
     --kubeconfig) GIVEN_KUBECONFIG=${2:?}; shift 2 ;;
     --argocd-values) ARGO_VALUES_FILE=${2:?}; shift 2 ;;
     -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -59,6 +66,44 @@ REPO=$(cd "$REPO" 2>/dev/null && pwd) || { echo "admission_e2e: --repo is not a 
 [ -d "$REPO/deploy/argocd" ] || { echo "admission_e2e: $REPO has no deploy/argocd" >&2; exit 2; }
 REPO_SRC=$REPO   # the tree as the user named it; REPO becomes the copy of its tracked files (below)
 export ROOT REPO REPO_SRC MODE ARGO_VALUES_FILE
+
+# A tree that is not this checkout is CODE that runs on this machine (kustomize, Terraform, Argo CD in
+# kind). The checks of tf_values.sh are a tripwire, so the first line is the provenance: its HEAD commit
+# must be on an origin/* branch of THIS checkout (scripts/check_e2e_ref.sh, the workflow's own check;
+# `git fetch origin` first), and the tracked files under deploy/ and infra/aws/kubernetes/ must be
+# unmodified (the copy reads the working tree, which the commit does not vouch for). Anything else is
+# refused unless --force (make: FORCE=1), which says so loudly. In GitHub Actions the workflow has run
+# check_e2e_ref.sh on the ref already (its `tree/` checkout holds one commit and no origin branches).
+adm_tree_guard() {
+  local sha why="" dirty
+  if sha=$(git -c core.fsmonitor=false -C "$REPO_SRC" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$sha" ]; then
+    if ! why=$(cd "$ROOT" && "$ROOT/scripts/check_e2e_ref.sh" "$sha" refs/heads/local-run main 2>&1 >/dev/null); then
+      why=$(printf '%s' "$why" | sed 's/^::error title=ref:://')
+    else
+      why=""
+      dirty=$(git -c core.fsmonitor=false -C "$REPO_SRC" status --porcelain --untracked-files=no -- deploy infra/aws/kubernetes 2>/dev/null | head -n 1)
+      [ -z "$dirty" ] || why="tracked files under deploy/ or infra/aws/kubernetes/ are modified ($dirty), and the commit does not vouch for them"
+    fi
+  else
+    why="it has no commit"
+  fi
+  [ -n "$why" ] || return 0
+  if [ "$FORCE" = 1 ]; then
+    {
+      echo "admission_e2e: !!!! --force: running a tree that failed the provenance check: $REPO_SRC"
+      echo "admission_e2e: !!!! $why"
+      echo "admission_e2e: !!!! kustomize, Terraform and Argo CD will execute this tree's code on this machine, with your user's reach (credentials in ~/.aws and ~/.kube included)."
+    } >&2
+    return 0
+  fi
+  {
+    echo "admission_e2e: refused: the tree $REPO_SRC is not this checkout and $why."
+    echo "admission_e2e: the tree is code that runs here. Test a branch that is pushed (git fetch origin, then a worktree of it), use the admission-e2e workflow,"
+    echo "admission_e2e: or run it on a machine without production credentials with FORCE=1 (make) / --force."
+  } >&2
+  exit 2
+}
+if [ "${GITHUB_ACTIONS:-}" != true ] && [ "$(cd "$REPO_SRC" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]; then adm_tree_guard; fi
 
 for tool in kind kubectl helm yq jq git; do
   command -v "$tool" >/dev/null 2>&1 || { echo "admission_e2e: $tool is not installed (this script installs no software)" >&2; exit 2; }

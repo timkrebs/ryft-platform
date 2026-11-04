@@ -778,9 +778,23 @@ not a sandbox):
   `.terraform` or `deploy/k8s/secrets.yaml` is never rendered, evaluated or served to the cluster; a
   tracked symbolic link is refused;
 - Terraform runs under `env -i` with a throwaway `HOME` and no AWS, HCP Terraform or Kubernetes
-  credential, with this checkout's mock providers; a module with a `provisioner`, `data "external"`,
-  `data "http"` or a `*.tf.json` (also in the modules `terraform init` downloads) is refused, as is a
-  lock file naming a provider other than aws, helm, kubernetes and random;
+  credential, with this checkout's mock providers (the tree's `*.tftest.hcl`, `*.tftest.json`,
+  `*.tfmock.*` and tfvars are deleted). `scripts/lib/tf_scan.py` is a **tripwire**, not a refusal to rely
+  on: it reads the `*.tf` files with comments removed and strings blanked and stops at `provisioner`,
+  `alias` (an aliased provider is not mocked, so its `exec`, `credential_process` or `postrender` would
+  run), `exec`, `config_path`, `shared_config_files`, `shared_credentials_files`, `credential_process`,
+  `postrender`, `local-exec`, `data "external"`, `data "http"`, a `\u` escape in a string and any
+  `*.tf.json`, also in the modules `terraform init` downloads (only a `providers.tf` byte-identical to
+  this checkout's, which holds the real `exec`, is skipped), and at a lock file naming a provider other
+  than aws, helm, kubernetes and random. HCL is a language: a clever tree gets past a lexer, and
+  `env -i` does not stop a program from reading `~/.aws` or `~/.kube` by absolute path. What contains it
+  is a runner or a machine with no credentials, or, optionally, `TF_VALUES_CONTAINER=<terraform image
+  pinned by digest>` (docker or podman): `init` then runs in a container that mounts only the work
+  directory and `terraform test` in it with `--network none`;
+- a `REPO` that is not this checkout must have its HEAD commit on an `origin/*` branch of this checkout
+  (`scripts/check_e2e_ref.sh`, the workflow's check; `git fetch origin` first) and unmodified tracked
+  files under `deploy/` and `infra/aws/kubernetes/`, or `make admission-e2e` refuses; `FORCE=1` runs it
+  anyway with a warning, for a machine that has no production credentials;
 - every value the tree supplies (an Application's name and path, a Secret's labels, an image name) is
   checked before it reaches a command line, and `kc`, `kca` and `hc` refuse any argument that would
   choose another cluster or user (`--kubeconfig`, `--context`, `--server`, `--token`, `--as`, `--kube-*`,
