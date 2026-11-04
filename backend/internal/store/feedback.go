@@ -15,8 +15,9 @@ import (
 // FeedbackPerDay is how many reports a user may send in 24 hours.
 const FeedbackPerDay = 10
 
-// ErrTooMuchFeedback: the user sent FeedbackPerDay reports in the last 24
-// hours; RetryAfter says when the oldest of them stops counting.
+// ErrTooMuchFeedback is AddFeedback's refusal when the user already sent
+// FeedbackPerDay reports in the last 24 hours; RetryAfter says when the oldest of
+// them stops counting, for the Retry-After header.
 type ErrTooMuchFeedback struct{ RetryAfter time.Duration }
 
 func (e ErrTooMuchFeedback) Error() string {

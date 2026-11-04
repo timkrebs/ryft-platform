@@ -1,6 +1,3 @@
-// Package testsupport holds helpers the Postgres-backed tests of several packages share.
-// It imports no other package of this module, so any test (including package-internal
-// ones such as internal/db) can use it without an import cycle.
 package testsupport
 
 import (
