@@ -249,7 +249,7 @@ golden-update:
 	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
 
 alerts-apply: alerts-check
-	@: "$${GRAFANA_PROM_URL:?e.g. https://ryft.grafana.net}" \
+	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \

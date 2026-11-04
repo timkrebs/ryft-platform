@@ -1,10 +1,12 @@
 # RYFT platform — agent fleet
 
-How Claude Code works on `plattform/` as a small platform team: a lead, specialists who build, independent
-reviewers, an SRE and a debugger. Definitions: `.claude/agents/`; shared rules every agent preloads:
-`.claude/skills/ryft-platform-conventions/SKILL.md`; guard rails: `.claude/settings.json` + `.claude/hooks/`.
-The iOS app has its own fleet (`../app/docs/AGENT_FLEET.md`); the two meet only through `docs/API.md` and
-`../app/docs/API_REQUESTS.md`.
+How Claude Code is used on `plattform/` as a small platform team: a lead, specialists who build, independent
+reviewers, an SRE and a debugger. This page is the overview only. **The fleet definition lives locally on the
+maintainer's machine and is not part of this repository**: the agent files, the shared conventions skill, the
+settings and the hook scripts sit in an untracked `.claude/` directory. What the agents must follow is tracked
+here: `CLAUDE.md`, `docs/DECISIONS.md`, `docs/ARCHITECTURE.md`, `docs/API.md` and `docs/OPERATIONS.md`. The iOS
+app has its own fleet and its own repository; the two meet only through `docs/API.md` (here) and
+`docs/API_REQUESTS.md` (in the app repository).
 
 ## Org chart
 
@@ -83,9 +85,12 @@ user runs the rescore.
 ```bash
 cd plattform && claude --agent platform-lead
 ```
-Then: "Run `CLAUDE_FOLLOWUP_WEB_MONOREPO.md`." `/agents` lists and edits the fleet.
+Then paste the brief or the roadmap milestone. `/agents` lists and edits the fleet (local definitions only).
 
-## Guard rails (enforced)
+## Guard rails (enforced locally)
+
+These are configured in the local, untracked `.claude/settings.json` and `.claude/hooks/`; the repository's own
+checks (CI, `.githooks`) do not depend on them.
 
 - `pre-tool-guard.sh` (PreToolUse on Read/Edit/Write/Bash) blocks: reading or writing `terraform.tfvars`,
   `*.tfstate`, `.terraform/`, `.env`, `secrets.yaml`; edits to generated `overlays/vault-namespaces/**` and RabbitMQ
