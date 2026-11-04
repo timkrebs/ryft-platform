@@ -37,17 +37,17 @@ var (
 // are referenced by name ($ref), everything else is inlined. A pointer, a map
 // or a slice is "nullable" because the wire value may be null.
 func schemaOf(t reflect.Type) map[string]any {
-	switch {
-	case t == timeType:
+	switch t {
+	case timeType:
 		return map[string]any{"type": "string", "format": "date-time"}
-	case t == rawType:
+	case rawType:
 		return map[string]any{"description": "raw JSON"}
-	case t == optQuietType:
+	case optQuietType:
 		// absent / null / object, see OptionalQuiet.UnmarshalJSON
 		return map[string]any{"$ref": "QuietHours", "nullable": true, "description": "absent keeps, null clears"}
 	}
 	switch t.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		s := schemaOf(t.Elem())
 		out := map[string]any{"nullable": true}
 		for k, v := range s {
@@ -58,7 +58,7 @@ func schemaOf(t reflect.Type) map[string]any {
 		if t.PkgPath() == reflect.TypeOf(Sample{}).PkgPath() {
 			return map[string]any{"$ref": t.Name()}
 		}
-		if t.NumField() == 0 || t.Implements(unmarshalerIf) {
+		if t.NumField() == 0 || reflect.PointerTo(t).Implements(unmarshalerIf) {
 			return map[string]any{"description": "custom JSON: " + t.String()}
 		}
 		// foreign struct (e.g. uuid arrays are handled below); describe by name
@@ -197,7 +197,6 @@ func TestSchemaSnapshots(t *testing.T) {
 	}
 
 	for _, n := range names {
-		n := n
 		t.Run(n, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(schemaDir, n+".json")
@@ -259,5 +258,14 @@ func TestContractTypesComplete(t *testing.T) {
 		if !declared[n] {
 			t.Errorf("contractTypes lists model.%s, which is not declared in the package", n)
 		}
+	}
+}
+
+// OptionalQuiet is special-cased in schemaOf because of its custom decoder; if
+// that decoder goes away (or moves to a value receiver) the special case must be
+// revisited.
+func TestOptionalQuietIsPointerUnmarshaler(t *testing.T) {
+	if !reflect.PointerTo(optQuietType).Implements(unmarshalerIf) {
+		t.Fatal("*OptionalQuiet no longer implements json.Unmarshaler: revisit schemaOf and the NotificationPatch snapshot")
 	}
 }

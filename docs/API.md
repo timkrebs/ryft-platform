@@ -1,5 +1,7 @@
 # RYFT HTTP API — v1
 
+<!-- Tests read this file: every json code block needs `<!-- type: model.X -->` on the line before the fence (or an allow-list entry), see backend/internal/model/apidoc_examples_test.go; known doc/code drift is listed in docDrift there. -->
+
 This file is the contract between the platform and the RYFT iOS app. The app's
 wire types (`../app/Ryft/Networking/Models.swift`) mirror the shapes below and
 `backend/internal/model/model.go` 1:1.

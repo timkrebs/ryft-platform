@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,13 +40,15 @@ const apiDocPath = "../../../docs/API.md"
 // docExampleAllowList names blocks that have no Go type. The key is a substring
 // of the block's first non-blank line (stable when lines move). Every entry
 // says why.
-var docExampleAllowList = []struct{ firstLine, reason string }{
-	{`"error": "human-readable message"`, "error body: written by httpx, no model type"},
-	{`"error": "strings must not contain the NUL character`, "error body: written by httpx, no model type"},
-	{`"status": "deleted", "auth_user_deleted"`, "DELETE /v1/me response: an inline map in the handler, no model type"},
-	{`"code": "c1b2`, "POST /v1/me/apple-authorization body: decoded into a handler-local struct, no model type"},
-	{`"aps": { "alert"`, "APNs payload sent to Apple, not an API type"},
-	{`"sleep_hr_minutes": 170`, "TODO(drift, api-contract-owner): documented type ScoreCoverage (DailyScore.coverage) does not exist in the code, see docDrift"},
+// missingType, when set, is the documented type the code lacks: the entry fails
+// as soon as contractTypes has it, so the block gets annotated instead.
+var docExampleAllowList = []struct{ firstLine, reason, missingType string }{
+	{`"error": "human-readable message"`, "error body: written by httpx, no model type", ""},
+	{`"error": "strings must not contain the NUL character`, "error body: written by httpx, no model type", ""},
+	{`"status": "deleted", "auth_user_deleted"`, "DELETE /v1/me response: an inline map in the handler, no model type", ""},
+	{`"code": "c1b2`, "POST /v1/me/apple-authorization body: decoded into a handler-local struct, no model type", ""},
+	{`"aps": { "alert"`, "APNs payload sent to Apple, not an API type", ""},
+	{`"sleep_hr_minutes": 170`, "TODO(drift, api-contract-owner): documented type ScoreCoverage (DailyScore.coverage) does not exist in the code, see docDrift", "ScoreCoverage"},
 }
 
 // docDrift lists fields that docs/API.md documents and the Go type does not
@@ -128,14 +131,26 @@ var (
 	elideCmaRe = regexp.MustCompile(`,\s*…`)
 	elideCmbRe = regexp.MustCompile(`…\s*,`)
 	typeNameRe = regexp.MustCompile(`\b[A-Z][A-Za-z]+\??`)
+	stampKeyRe = regexp.MustCompile(`("(?:[a-z_]*(?:_at|start|end|wake|bed)|t)"\s*:\s*)"…"`)
+	elidedStr  = regexp.MustCompile(`^"[0-9a-fA-F-]*…[0-9a-fA-F]*"$`) // "a7f2…", "…"
+)
+
+// Stand-ins for elided strings, so the value types are checked as well.
+const (
+	placeholderUUID  = "00000000-0000-4000-8000-000000000000"
+	placeholderStamp = "2026-10-19T00:00:00Z"
 )
 
 // shapeToJSON turns the doc's notation into parseable JSON: "…" elisions go,
 // and a bare type name (`SessionSummary`, `SleepDetail?`) becomes null. Strings
 // are masked first so text inside them is untouched.
 func shapeToJSON(s string) string {
+	s = stampKeyRe.ReplaceAllString(s, `$1"`+placeholderStamp+`"`)
 	var strs []string
 	masked := strLitRe.ReplaceAllStringFunc(s, func(m string) string {
+		if elidedStr.MatchString(m) {
+			m = `"` + placeholderUUID + `"`
+		}
 		strs = append(strs, m)
 		return `"@` + strconv.Itoa(len(strs)-1) + `@"`
 	})
@@ -184,7 +199,7 @@ type unknownField struct{ typ, field string }
 // (so the strict decode that follows can still check everything else) and
 // counted in seenDrift.
 func walkDoc(v any, t reflect.Type, seenDrift map[int]bool) []unknownField {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == optQuietType {
@@ -196,7 +211,13 @@ func walkDoc(v any, t reflect.Type, seenDrift map[int]bool) []unknownField {
 		switch {
 		case t.Kind() == reflect.Struct && t.PkgPath() == reflect.TypeOf(Sample{}).PkgPath():
 			fields := jsonFields(t)
-			for k, val := range x {
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				val := x[k]
 				ft, ok := fields[k]
 				if !ok {
 					drifted := false
@@ -259,6 +280,71 @@ func parseTypeRef(ref string) (reflect.Type, error) {
 	return typ, nil
 }
 
+// checkTied checks one annotated block and returns its failures (each starting
+// with the docs/API.md line) and the type names it covered.
+func checkTied(b docBlock, seenDrift map[int]bool) (errs, covered []string) {
+	spec := b.annotation
+	isShape := strings.HasSuffix(spec, " shape")
+	spec = strings.TrimSuffix(spec, " shape")
+	body := stripLineComments(b.body)
+	if isShape {
+		body = shapeToJSON(body)
+	}
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.UseNumber()
+	fail := func(line int, format string, args ...any) {
+		errs = append(errs, fmt.Sprintf("docs/API.md:%d: ", line)+fmt.Sprintf(format, args...))
+	}
+	for _, ref := range expandRefs(spec) {
+		typ, err := parseTypeRef(ref)
+		if err != nil {
+			fail(b.line, "%v", err)
+			return
+		}
+		var generic any
+		if err := dec.Decode(&generic); err != nil {
+			fail(b.line, "example is not valid JSON for %s (%d value(s) read before): %v", ref, len(covered), err)
+			return
+		}
+		covered = append(covered, strings.TrimPrefix(ref, "[]"))
+		unknown := walkDoc(generic, typ, seenDrift)
+		for _, u := range unknown {
+			fail(b.lineOfKey(u.field), "field %q of the example is not in model.%s (the doc is ahead of the code, or the field was removed: contract drift, the api-contract-owner decides; allow-list it in docDrift with a TODO until then)", u.field, u.typ)
+		}
+		if len(unknown) > 0 {
+			continue // the strict decode below would only repeat it
+		}
+		clean, _ := json.Marshal(generic) // known-drift fields already removed
+		sd := json.NewDecoder(bytes.NewReader(clean))
+		sd.DisallowUnknownFields()
+		if err := sd.Decode(reflect.New(typ).Interface()); err != nil {
+			line := b.line
+			var ute *json.UnmarshalTypeError
+			if errors.As(err, &ute) {
+				parts := strings.Split(ute.Field, ".")
+				line = b.lineOfKey(parts[len(parts)-1])
+			}
+			fail(line, "example does not decode into %s: %v", ref, err)
+		}
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		fail(b.line, "the block holds more JSON values than its annotation names (%s)", b.annotation)
+	}
+	return
+}
+
+// stripLineComments blanks whole-line // comments (jsonc blocks), keeping the
+// line count so reported lines stay right.
+func stripLineComments(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "//") {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestAPIDocExamples(t *testing.T) {
 	blocks := readDocBlocks(t)
 	if len(blocks) < 30 {
@@ -283,72 +369,24 @@ func TestAPIDocExamples(t *testing.T) {
 			continue
 		}
 
-		spec := b.annotation
-		isShape := strings.HasSuffix(spec, " shape")
-		spec = strings.TrimSuffix(spec, " shape")
-		body := b.body
-		if isShape {
-			body = shapeToJSON(body)
+		errs, refs := checkTied(b, seenDrift)
+		for _, e := range errs {
+			t.Error(e)
 		}
-		dec := json.NewDecoder(strings.NewReader(body))
-		dec.UseNumber()
-		okBlock := true
-		reported := map[unknownField]bool{}
-		for _, ref := range expandRefs(spec) {
-			typ, err := parseTypeRef(ref)
-			if err != nil {
-				t.Errorf("docs/API.md:%d: %v", b.line, err)
-				okBlock = false
-				break
-			}
-			var generic any
-			if err := dec.Decode(&generic); err != nil {
-				t.Errorf("docs/API.md:%d: example is not valid JSON for %s: %v", b.line, ref, err)
-				okBlock = false
-				break
-			}
-			for _, u := range walkDoc(generic, typ, seenDrift) {
-				if reported[u] {
-					continue
-				}
-				reported[u] = true
-				t.Errorf("docs/API.md:%d: field %q of the example is not in model.%s (the doc is ahead of the code, or the field was removed: contract drift, the api-contract-owner decides; allow-list it in docDrift with a TODO until then)",
-					b.lineOfKey(u.field), u.field, u.typ)
-				okBlock = false
-			}
-			if isShape {
-				continue
-			}
-			clean, _ := json.Marshal(generic) // known-drift fields already removed
-			sd := json.NewDecoder(bytes.NewReader(clean))
-			sd.DisallowUnknownFields()
-			if err := sd.Decode(reflect.New(typ).Interface()); err != nil {
-				line := b.line
-				var ute *json.UnmarshalTypeError
-				if errors.As(err, &ute) {
-					parts := strings.Split(ute.Field, ".")
-					line = b.lineOfKey(parts[len(parts)-1])
-				}
-				t.Errorf("docs/API.md:%d: example does not decode into %s: %v", line, ref, err)
-				okBlock = false
-			}
-			types[strings.TrimPrefix(ref, "[]")] = true
+		for _, r := range refs {
+			types[r] = true
 		}
-		if isShape {
-			for _, ref := range expandRefs(spec) {
-				types[strings.TrimPrefix(ref, "[]")] = true
-			}
-		}
-		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-			t.Errorf("docs/API.md:%d: the block holds more JSON values than its annotation names (%s)", b.line, b.annotation)
-			okBlock = false
-		}
-		if okBlock {
-			if isShape {
+		if len(errs) == 0 {
+			if strings.HasSuffix(b.annotation, " shape") {
 				shape++
 			} else {
 				strict++
 			}
+		}
+	}
+	for _, a := range docExampleAllowList {
+		if _, ok := contractTypes[a.missingType]; a.missingType != "" && ok {
+			t.Errorf("allow-list entry %q waits for model.%s, which exists now: annotate the block with `<!-- type: model.%s -->` and remove the entry", a.firstLine, a.missingType, a.missingType)
 		}
 	}
 	for i, u := range usedAllow {
@@ -377,5 +415,31 @@ func TestShapeToJSON(t *testing.T) {
 		if got := shapeToJSON(in); got != want {
 			t.Errorf("shapeToJSON(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestDocCheckerCatchesMistakes is the mutation test of the checker itself.
+func TestDocCheckerCatchesMistakes(t *testing.T) {
+	cases := []struct {
+		name, annotation, body, want string
+	}{
+		{"wrong value type in a shape block", "model.DailyScore shape", `{ "day": "2026-10-18", "recovery": "82", "details": { … } }`, "recovery"},
+		{"unknown field in a shape block", "model.DailyScore shape", `{ "day": "2026-10-18", "recoveryy": 82 }`, "recoveryy"},
+		{"wrong value type, strict", "model.Consent", `{ "policy_version": 7 }`, "does not decode"},
+		{"unknown field, strict", "model.Consent", `{ "policy_version": "x", "nope": 1 }`, "nope"},
+		{"unknown nested field", "model.NotificationPrefs", `{ "categories": {}, "quiet_hours": { "from": "22:00", "to": "07:00", "x": 1 } }`, `"x"`},
+		{"extra value", "model.Consent", `{ "policy_version": "x" } { "policy_version": "y" }`, "more JSON values"},
+		{"unknown type", "model.Nope", `{}`, "unknown type"},
+	}
+	for _, c := range cases {
+		errs, _ := checkTied(docBlock{line: 1, bodyLine: 2, annotation: c.annotation, body: c.body}, map[int]bool{})
+		if len(errs) == 0 || !strings.Contains(strings.Join(errs, "\n"), c.want) {
+			t.Errorf("%s: want a failure mentioning %q, got %v", c.name, c.want, errs)
+		}
+	}
+	// and a comment line in a block is not a second value
+	errs, _ := checkTied(docBlock{line: 1, bodyLine: 2, annotation: "model.Consent", body: "// note\n{ \"policy_version\": \"x\" }"}, map[int]bool{})
+	if len(errs) != 0 {
+		t.Errorf("comment line should be ignored: %v", errs)
 	}
 }
