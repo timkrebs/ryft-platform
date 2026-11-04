@@ -15,7 +15,7 @@ cp "$HERE/scripts/decision_refs.sh" "$repo/scripts/"
 cd "$repo"
 git init -q -b main; git config user.email t@example.com; git config user.name test
 {
-  for n in $(seq 1 18); do printf '## D%s — Decision %s\n\nBody mentioning D%s.\n\n' "$n" "$n" "$n"; done
+  for n in $(seq 1 19); do printf '## D%s — Decision %s\n\nBody mentioning D%s.\n\n' "$n" "$n" "$n"; done
 } > docs/DECISIONS.md
 printf '// D1: linked.\n// D3–D5 and D6-D7 are ranges (en dash, hyphen); D8 stands alone.\npackage x\n' > backend/internal/x/x.go
 printf '// D17-18 has no second D.\npackage x\n' > backend/internal/x/z.go
@@ -24,7 +24,8 @@ printf 'D11 in markdown\n' > deploy/README.md
 # The site numbers its own decisions (web/docs/DECISIONS.md): web/ does not count for D11.
 mkdir -p web/src deploy/rabbitmq/operators/cluster-operator
 printf '// D11: a decision of the site\n' > web/src/a.ts
-# A vendored operator release does not count either (D12), our own file next to it does.
+# A vendored operator release does not count either (D12); our own file in the same directory does (D19).
+printf '# D19 in our own manifest\n' > deploy/rabbitmq/operators/cluster-operator/scoped-rbac.yaml
 printf '# D12 in an upstream manifest\n' > deploy/rabbitmq/operators/cluster-operator/cluster-operator-2.23.1.yml
 # Many mentions of one decision must not kill the script (SIGPIPE under pipefail once the list outgrows the pipe
 # buffer): D3 in 500 files with 200-character names (about 100 KB of mention lines).
@@ -49,6 +50,7 @@ run; [ "$rc" = 0 ] || fail "warnings alone exit 0 (rc=$rc): $(cat "$tmp/err")"
 has 'warning: D2 (Decision 2) has no reference' "D2 is mentioned nowhere"
 has 'warning: D11 (Decision 11) has no reference' "markdown and web/ do not count"
 has 'warning: D12 (Decision 12) has no reference' "HD12, D120 and a vendored operator release are not D12"
+hasnt "warning: D19 " "our own file next to a vendored release counts"
 has 'warning: D13 (Decision 13) has no reference' "ID13 is not D13"
 has 'warning: D14 (Decision 14) has no reference' "testdata does not count"
 has 'warning: D15 (Decision 15) has no reference' "docs/ does not count"
@@ -56,7 +58,7 @@ has 'warning: D16 (Decision 16) has no reference' "untracked files do not count"
 has 'warning: D10 is in scripts/decision_refs.skip .* but is mentioned in deploy/a.yaml' "a stale skip"
 for n in 1 3 4 5 6 7 8 17 18; do hasnt "warning: D$n " "D$n is mentioned (plain or in a range)"; done
 hasnt 'warning: D9 ' "D9 is skipped and unmentioned: quiet"
-has 'decision_refs: 7 of 18 decisions have no reference in code or config (2 skipped)' "summary"
+has 'decision_refs: 7 of 19 decisions have no reference in code or config (2 skipped)' "summary"
 hasnt '::warning' "no annotation outside GitHub Actions"
 
 # Same output on a second run; the order is by number.
@@ -73,7 +75,7 @@ has '^::warning title=decision references::' "annotation shape"
 printf '# nothing skipped\n' > scripts/decision_refs.skip
 git add -A -- . ':!deploy/untracked.txt'; git commit -qm second
 run --strict; [ "$rc" = 0 ] || fail "all linked: --strict exits 0 (rc=$rc): $(cat "$tmp/out")"
-has '0 of 18 decisions' "all linked"
+has '0 of 19 decisions' "all linked"
 hasnt 'warning' "all linked: no warning"
 
 # The script cannot work: exit 2, never "all linked".

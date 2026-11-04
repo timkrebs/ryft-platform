@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Decisions whose code never says so: lists the D-numbers defined in docs/DECISIONS.md that no tracked source or
 # config file mentions, so a reader of the code can find the reason for a branch, a constant or a manifest.
-#   scripts/decision_refs.sh            warn about each unreferenced D<n>; exit 0 (`make lint`, CI `lint`)
+#   scripts/decision_refs.sh            warn about each unreferenced D<n>; exit 0 (`make lint`, CI `bytes`)
 #   scripts/decision_refs.sh --strict   the same, exit 1 when there is a warning (for a later promotion to a failure)
 # Mentions come from `git ls-files` (so worktrees, node_modules and build output are out), minus markdown, docs/,
 # test data, lock files, generated outputs, vendored operator releases and web/ (the site has its own

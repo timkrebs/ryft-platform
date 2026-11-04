@@ -263,7 +263,8 @@ jobs:
       # excuse: one ::warning annotation, the list in the log. Here, not in `lint`: this job has no path filter, so a
       # PR that only edits docs/DECISIONS.md (or the skip list) runs it, and a renumbered D shows up on the PR that
       # did it instead of on someone else's Go PR. It needs only git and awk. Exit 0 on warnings, so it never fails
-      # the job; it fails only when the script cannot work. `--strict` is the later promotion to a failure.
+      # the job; it fails only when the script cannot work (which would also stop images, web-image and ci-ok on
+      # main; the PR's own run catches it first). `--strict` is the later promotion to a failure.
       - name: Decisions are referenced from code, or skipped with a reason (warnings only)
         run: ./scripts/decision_refs.sh
 

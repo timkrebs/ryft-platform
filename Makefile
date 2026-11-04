@@ -219,7 +219,8 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check, then the decision references (warnings only: scripts/decision_refs.sh exits 0 unless it cannot work).
+# map check. Then the decision references, which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
+# exits 0 unless it cannot work).
 # The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
 # different findings, so a mismatch is said out loud before the run.
 lint:
