@@ -104,6 +104,7 @@ func TestTaskContextsOutliveTheSignal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := g.serve(t, ctx, s)
 	g.rec.waitLen(t, 9)
+	eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return consumerCtx != nil }, "the consumer to run")
 	cancel()
 	eventually(t, func() bool { return len(g.logs.find("shutting down")) == 1 }, "the shutdown")
 	mu.Lock()
@@ -383,11 +384,31 @@ func TestDatabaseWaitOpensNoPort(t *testing.T) {
 		t.Error("a port opened during the database wait")
 	}
 	cancel()
-	if err := result(t, done); !errors.Is(err, context.Canceled) {
-		t.Errorf("Run = %v, want the cancelled wait", err)
+	if err := result(t, done); err != nil {
+		t.Errorf("Run = %v, a signal during the wait is a clean stop", err)
 	}
 	if got := g.rec.list(); !slices.Equal(got, []string{"load", "pool"}) {
 		t.Errorf("records %v", got)
+	}
+	if len(g.logs.find("db")) != 0 || len(g.logs.find("start interrupted by the signal")) != 1 {
+		t.Errorf("the interrupted wait is logged as an error: %v", g.logs.lines())
+	}
+	if m := g.logs.find("shut down"); len(m) != 1 || m[0]["exit"] != float64(0) {
+		t.Errorf("shut down: %v", m)
+	}
+}
+
+// Only a signal makes a cancelled wait a clean stop: the same error without one is
+// a dependency failing.
+func TestCanceledWithoutASignalIsAFailure(t *testing.T) {
+	g := newRig()
+	g.poolErr = context.Canceled
+	err := run(context.Background(), g.spec(), g.e)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v", err)
+	}
+	if m := g.logs.find("shut down"); len(m) != 1 || m[0]["exit"] != float64(1) || len(g.logs.find("db")) != 1 {
+		t.Errorf("shut down: %v", m)
 	}
 }
 
@@ -396,6 +417,7 @@ func TestSignalStartsTheShutdown(t *testing.T) {
 	g.parts = fullParts(g)
 	code := make(chan int, 1)
 	go func() { code <- runSignals(g.spec(), g.e, syscall.SIGUSR1) }()
+	<-g.started
 	eventually(t, func() bool { return g.addr("http") != "" }, "the listener")
 	g.rec.waitLen(t, len(started))
 	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
@@ -433,7 +455,7 @@ func TestTierDropsErrorsAfterStop(t *testing.T) {
 	if got := <-failed; got != "early" {
 		t.Fatalf("failed %q, want early", got)
 	}
-	if err := tr.stop(time.Second); err != nil {
+	if err := tr.stop(limit(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if len(failed) != 0 {
@@ -443,7 +465,7 @@ func TestTierDropsErrorsAfterStop(t *testing.T) {
 
 func TestWithinGivesUp(t *testing.T) {
 	release := make(chan struct{})
-	err := within(20*time.Millisecond, func() error { <-release; return nil })
+	err := within(limit(20*time.Millisecond), func() error { <-release; return nil })
 	close(release)
 	if err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
 		t.Errorf("within = %v", err)
@@ -523,7 +545,7 @@ func TestStepOverrunsAreReportedAndSurvived(t *testing.T) {
 	for _, tc := range []struct{ name, step string }{{"a consumer", "consumers"}, {"a job", "jobs"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig()
-			g.e.consumerMargin, g.e.stepWait = 20*time.Millisecond, 30*time.Millisecond
+			g.e.bounds.consumerMargin, g.e.bounds.stepWait = 20*time.Millisecond, 30*time.Millisecond
 			release := make(chan struct{})
 			stuck := Task{Name: "stuck", Run: func(context.Context) error { <-release; return nil }}
 			if tc.step == "consumers" {
@@ -558,20 +580,33 @@ func TestShutdownStaysInBudget(t *testing.T) {
 		consumers bool
 		want      time.Duration // the table next to the constants
 	}{
-		{"api, ingest", Spec{Edge: true}, false, 19 * time.Second},
-		{"api, ingest with the planned 5 s drain delay", Spec{Edge: true, DrainDelay: 5 * time.Second}, false, 24 * time.Second},
-		{"scoring, notify", Spec{}, true, 26 * time.Second},
+		{"api, ingest", Spec{Edge: true}, false, 18 * time.Second},
+		{"api, ingest with the planned 5 s drain delay", Spec{Edge: true, DrainDelay: 5 * time.Second}, false, 23 * time.Second},
+		{"scoring, notify", Spec{}, true, 25 * time.Second},
 	} {
-		got := tc.s.worstCase(tc.consumers)
+		got := tc.s.worstCase(defaultSeams().bounds, tc.consumers) // what Run really uses
 		if got != tc.want {
 			t.Errorf("%s: worst case %v, the table says %v (update both)", tc.name, got, tc.want)
 		}
-		if got+watchdogMargin > tc.s.grace() {
-			t.Errorf("%s: worst case %v plus the watchdog's %v margin passes the %v grace period", tc.name, got, watchdogMargin, tc.s.grace())
+		if got >= tc.s.watchdogAfter() {
+			t.Errorf("%s: worst case %v reaches the watchdog at %v: no headroom", tc.name, got, tc.s.watchdogAfter())
 		}
 	}
-	if (Spec{}).grace() != 30*time.Second {
-		t.Error("the default grace period is the kubelet's 30 s")
+}
+
+// The watchdog fires four seconds before the kubelet's 30 s, pinned as literals.
+func TestWatchdogTime(t *testing.T) {
+	if got := (Spec{}).grace(); got != 30*time.Second {
+		t.Errorf("default grace %v, the kubelet's is 30 s", got)
+	}
+	if got := (Spec{}).watchdogAfter(); got != 26*time.Second {
+		t.Errorf("watchdog at %v, want 26 s", got)
+	}
+	if got := (Spec{Grace: 40 * time.Second}).watchdogAfter(); got != 36*time.Second {
+		t.Errorf("watchdog at %v for a 40 s grace, want 36 s", got)
+	}
+	if got := (Spec{Grace: 3 * time.Second}).watchdogAfter(); got != 1500*time.Millisecond {
+		t.Errorf("watchdog at %v for a grace shorter than its margin, want half of it", got)
 	}
 }
 
@@ -636,8 +671,11 @@ func TestSignalDuringStartEndsBuild(t *testing.T) {
 	cancel()
 	begun := time.Now()
 	err := result(t, done)
-	if !errors.Is(err, context.Canceled) || time.Since(begun) > 2*time.Second {
-		t.Errorf("Run = %v after %v, want context.Canceled at once", err, time.Since(begun))
+	if err != nil || time.Since(begun) > 2*time.Second {
+		t.Errorf("Run = %v after %v, want a clean stop at once", err, time.Since(begun))
+	}
+	if m := g.logs.find("shut down"); len(m) != 1 || m[0]["exit"] != float64(0) || len(g.logs.find("build")) != 0 {
+		t.Errorf("a signal during Build is a clean stop, not an error: %v", g.logs.lines())
 	}
 	if list := g.rec.list(); !slices.Contains(list, "bus closed") || !slices.Contains(list, "pool closed") {
 		t.Errorf("no teardown: %v", list)
@@ -649,7 +687,7 @@ func TestLateTaskErrorIsLoggedNotFailed(t *testing.T) {
 	failed := make(chan string, 1)
 	tr := newTier(context.Background(), slog.New(slog.NewJSONHandler(logs, nil)), "job", func(task string, _ error) { failed <- task })
 	tr.run("winding down", func(ctx context.Context) error { <-ctx.Done(); return errors.New("flush failed") })
-	if err := tr.stop(time.Second); err != nil {
+	if err := tr.stop(limit(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	m := logs.find("task ended with error during shutdown")
@@ -666,5 +704,114 @@ func TestExitCodes(t *testing.T) {
 		if got := exitCode(err); got != want {
 			t.Errorf("exitCode(%v) = %d, want %d", err, got, want)
 		}
+	}
+}
+
+// Every bound is reached at once, with the bounds scaled down: the measured shutdown
+// is the sum Spec.worstCase says, so no step waits longer than its bound says.
+func TestEverythingStuckStaysInBudget(t *testing.T) {
+	g := newRig()
+	g.stuck = true
+	g.bus.hold = g.release
+	defer g.free()
+	const unit = 200 * time.Millisecond
+	g.e.bounds = bounds{consumerMargin: unit, stepWait: unit, afterClose: unit, brokerClose: unit, poolClose: unit}
+	entered := make(chan struct{})
+	stuck := func(context.Context) error { <-g.release; return nil }
+	g.parts = Parts{
+		Consumers: []Task{{Name: "consumer", Run: stuck}},
+		Jobs:      []Task{{Name: "job", Run: stuck}},
+		Routes: func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /v1/slow", func(http.ResponseWriter, *http.Request) { close(entered); <-g.release })
+		},
+	}
+	s := g.spec()
+	s.ConsumerDrain, s.ShutdownTimeout = unit, unit
+	ctx, cancel := context.WithCancel(context.Background())
+	done := g.serve(t, ctx, s)
+	go func() {
+		c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
+		if resp, err := c.Get("http://" + g.addr("http") + "/v1/slow"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-entered
+	begun := time.Now()
+	cancel()
+	err := result(t, done)
+	took := time.Since(begun)
+	g.free()
+	// The bounds the shutdown waited are exactly the ones worstCase adds up (nothing
+	// timing-dependent: a wrong bound is a wrong number here, and the type limit keeps a
+	// bare duration out). Each step then reached its own bound, and none ran on for
+	// seconds (the margin is for a loaded machine; a bypass of 4 s or more is caught).
+	g.mu.Lock()
+	waited := g.bounds
+	g.mu.Unlock()
+	wantBound := map[string]time.Duration{"consumers": 2 * unit, "http": unit, "http wait": unit, "jobs": unit,
+		"relay": unit, "broker": unit, "pool": unit, "metrics": unit}
+	for step, want := range wantBound {
+		if got := waited[step]; len(got) != 1 || got[0] != want {
+			t.Errorf("step %s waited %v, its bound is %v", step, got, want)
+		}
+	}
+	reached := map[string]time.Duration{"consumers": 2 * unit, "http": 2 * unit, "jobs": unit, "relay": unit,
+		"broker": unit, "pool": unit}
+	for _, m := range g.logs.find("shutdown step") {
+		step, _ := m["step"].(string)
+		dur := time.Duration(m["dur_ms"].(float64)) * time.Millisecond
+		if want, ok := reached[step]; ok && (dur < want-20*time.Millisecond || dur > want+3*time.Second) {
+			t.Errorf("step %s took %v with everything stuck, its bound is %v", step, dur, want)
+		}
+		delete(reached, step)
+	}
+	for _, step := range []string{"consumers", "http", "jobs", "relay", "broker", "pool", "metrics"} {
+		if err == nil || !strings.Contains(err.Error(), step+": ") {
+			t.Errorf("no overrun reported for %s: %v", step, err)
+		}
+	}
+	for step := range reached {
+		t.Errorf("no step line for %s", step)
+	}
+	if want := s.worstCase(g.e.bounds, true); took < want-30*time.Millisecond || took > want+3*time.Second {
+		t.Errorf("the shutdown took %v with everything stuck; the bounds add up to %v", took, want)
+	}
+}
+
+func TestWatchdogStopsWithTheShutdown(t *testing.T) {
+	g := newRig()
+	s := g.spec()
+	s.Grace = watchdogMargin + 150*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := g.serve(t, ctx, s)
+	cancel()
+	if err := result(t, done); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if got := g.exitCodes(); len(got) != 0 {
+		t.Errorf("the watchdog fired after the shutdown was over: %v", got)
+	}
+}
+
+// After a recovered panic the watchdog exits 2 too, as the shutdown would have.
+func TestWatchdogExitsTwoAfterAPanic(t *testing.T) {
+	g := newRig()
+	g.parts = Parts{
+		Jobs:      []Task{{Name: "boom", Run: func(context.Context) error { panic("kaboom") }}},
+		Consumers: []Task{{Name: "stuck", Run: func(context.Context) error { <-g.release; return nil }}},
+	}
+	defer g.free()
+	s := g.spec()
+	s.ConsumerDrain = 5 * time.Second
+	s.Grace = watchdogMargin + 100*time.Millisecond
+	done := g.run(context.Background(), s)
+	eventually(t, func() bool { return len(g.exitCodes()) == 1 }, "the watchdog")
+	if got := g.exitCodes(); got[0] != 2 {
+		t.Errorf("watchdog exit %v, want 2", got)
+	}
+	g.free()
+	if err := result(t, done); err == nil {
+		t.Error("the panic is not in Run's result")
 	}
 }

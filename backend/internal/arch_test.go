@@ -155,7 +155,7 @@ var onlyRules = []onlyRule{
 			{Pkg: "internal/testsupport", Reason: "test helper that opens the throwaway database"},
 			{Pkg: "cmd/api", Reason: "pgx.Tx for the outbox callback (D101)"},
 			{Pkg: "cmd/ingest", Reason: "pgx.Tx for the outbox callback (D101) and pgconn.PgError codes in fail"},
-			{Pkg: "internal/app", Reason: "the pgxpool.Pool it opens and closes; no other pgx type (the deny rule below)"},
+			{Pkg: "internal/app", Reason: "the pgxpool.Pool it opens and closes; no other pgx type (the deny rule above)"},
 		},
 	},
 	{

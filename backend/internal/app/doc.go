@@ -16,11 +16,13 @@
 //     panics, starts the shutdown, which undoes the start in reverse: /readyz
 //     answers 503 draining, timers stop, the drain delay passes, consumers
 //     stop, HTTP drains within its budget, then the relay and db watch, the
-//     broker and the pool. Each step logs "shutdown step" with its duration and
-//     is bounded; the bounds add up to less than Spec.Grace (see app.go), and a
+//     broker and the pool. Each step logs "shutdown step" with its duration (the
+//     /metrics stop only when it fails) and is bounded; the bounds add up to less than Spec.Grace (see app.go), and a
 //     watchdog ends the process before the kubelet's SIGKILL. A step that
 //     overruns is logged and the shutdown goes on; Run then returns an error
-//     (exit 1, and 2 after a recovered panic, as an unrecovered one exits).
+//     (exit 1, and 2 after a recovered panic, as an unrecovered one exits). A
+//     signal during the start's waits is a clean stop (exit 0); a Build that
+//     ignores its ctx ends at the kubelet's SIGKILL.
 //   - The contexts that Build and the tasks receive end with the shutdown's own
 //     steps: the consumers' at their step, after the drain delay, not at the
 //     signal. Until amqpbus lets a delivery in hand finish (A4), a consumer
@@ -29,8 +31,9 @@
 //   - The service's own goroutines (consumers, timers, relay, db watch, the
 //     servers) are Tasks in errgroup tiers with panic recovery
 //     (ryft_goroutine_panics_total). The /readyz checks and the bounded
-//     waits at shutdown are short-lived goroutines of their own, and end with
-//     their context or their bound.
+//     waits at shutdown are short-lived goroutines of their own: a check ends
+//     with its context, and a wait gives up after its bound (the call it
+//     waits for keeps running; the process is about to exit).
 //   - /healthz stays 200 until the http step closes the listener. /readyz names
 //     each check (db, auth, broker) and answers the same status codes as
 //     before; the broker gates it only where Spec.BrokerRequired says so (D101).

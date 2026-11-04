@@ -115,6 +115,7 @@ type fakeBus struct {
 	events.Bus
 	rec   *rec
 	ready func(context.Context) error
+	hold  <-chan struct{} // when set, Close blocks until it is closed
 }
 
 func (b *fakeBus) Ready(ctx context.Context) error {
@@ -124,7 +125,12 @@ func (b *fakeBus) Ready(ctx context.Context) error {
 	return nil
 }
 
-func (b *fakeBus) Close() { b.rec.add("bus closed") }
+func (b *fakeBus) Close() {
+	b.rec.add("bus closed")
+	if b.hold != nil {
+		<-b.hold
+	}
+}
 
 // recListener records its first Close, which is the server beginning to shut down.
 type recListener struct {
@@ -149,18 +155,24 @@ type rig struct {
 
 	loadErr, poolErr, busErr, buildErr, httpErr error
 	poolBlocks                                  bool
+	stuck                                       bool          // everything that can hang does, until free
+	release                                     chan struct{} // closed by free
+	freed                                       sync.Once
+	started                                     chan struct{} // closed when the start is over
+	startedOnce                                 sync.Once
 	noOutbox                                    bool
 	parts                                       Parts
 	build                                       func(ctx context.Context) error // sees Build's ctx; its error is Build's
 
-	exits []int // the codes the watchdog asked for
+	exits  []int                      // the codes the watchdog asked for
+	bounds map[string][]time.Duration // every bound the shutdown waited, by step
 
 	mu    sync.Mutex
 	addrs map[string]string
 }
 
 func newRig() *rig {
-	g := &rig{rec: &rec{}, logs: &syncBuf{}, addrs: map[string]string{}}
+	g := &rig{rec: &rec{}, logs: &syncBuf{}, addrs: map[string]string{}, bounds: map[string][]time.Duration{}, release: make(chan struct{}), started: make(chan struct{})}
 	g.bus = &fakeBus{rec: g.rec}
 	log := slog.New(slog.NewJSONHandler(g.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	g.e = seams{
@@ -178,12 +190,15 @@ func newRig() *rig {
 			return pgxpool.New(ctx, "postgres://u:p@127.0.0.1:1/x") // does not dial until used
 		},
 		watch: func(ctx context.Context, _ *pgxpool.Pool, _ string, _ *slog.Logger) {
-			<-ctx.Done()
+			g.wait(ctx)
 			g.rec.add("watch stopped")
 		},
 		ping: func(context.Context, *pgxpool.Pool) error { return nil },
 		closePool: func(p *pgxpool.Pool) {
 			g.rec.add("pool closed")
+			if g.stuck {
+				<-g.release
+			}
 			p.Close()
 		},
 		openBus: func(context.Context, config.Config, string, *slog.Logger) (events.Bus, error) {
@@ -194,7 +209,7 @@ func newRig() *rig {
 			return g.bus, nil
 		},
 		relay: func(ctx context.Context, _ *outbox.Outbox) {
-			<-ctx.Done()
+			g.wait(ctx)
 			g.rec.add("relay stopped")
 		},
 		listen: func(_ context.Context, addr string) (net.Listener, error) {
@@ -209,16 +224,28 @@ func newRig() *rig {
 			g.mu.Lock()
 			g.addrs[name] = ln.Addr().String()
 			g.mu.Unlock()
-			return &recListener{Listener: ln, rec: g.rec, tag: name + " closed"}, nil
+			l := &recListener{Listener: ln, rec: g.rec, tag: name + " closed"}
+			return l, nil
 		},
 		exit: func(code int) {
 			g.mu.Lock()
 			g.exits = append(g.exits, code)
 			g.mu.Unlock()
 		},
-		readyTimeout:   2 * time.Second,
-		launched:       g.rec.add,
-		consumerMargin: consumerMargin, stepWait: stepWait, afterClose: afterClose,
+		readyTimeout: 2 * time.Second,
+		launched:     g.rec.add,
+		serverExit: func(string) { // a server whose Serve does not return: http.Server.Close cannot be made to wait for it, so the hook stands in
+			if g.stuck {
+				<-g.release
+			}
+		},
+		bounded: func(step string, d time.Duration) {
+			g.mu.Lock()
+			g.bounds[step] = append(g.bounds[step], d)
+			g.mu.Unlock()
+		},
+		startDone: func() { g.startedOnce.Do(func() { close(g.started) }) },
+		bounds:    defaultBounds(),
 	}
 	return g
 }
@@ -252,13 +279,33 @@ func (g *rig) run(ctx context.Context, s Spec) <-chan error {
 	return done
 }
 
-// serve starts the service and returns once it listens.
+// serve starts the service and returns once it listens and the start is over: a
+// cancel before that would be a signal during the start, which ends Build's context.
 func (g *rig) serve(t *testing.T, ctx context.Context, s Spec) <-chan error {
 	t.Helper()
 	done := g.run(ctx, s)
+	select {
+	case <-g.started:
+	case err := <-done:
+		t.Fatalf("Run ended before it served: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start did not finish")
+	}
 	eventually(t, func() bool { return g.addr("http") != "" }, "the listener")
 	return done
 }
+
+// wait is what the relay and the db watch do: end with ctx, or when stuck, only when freed.
+func (g *rig) wait(ctx context.Context) {
+	if g.stuck {
+		<-g.release
+		return
+	}
+	<-ctx.Done()
+}
+
+// free lets everything that is stuck go.
+func (g *rig) free() { g.freed.Do(func() { close(g.release) }) }
 
 func (g *rig) exitCodes() []int {
 	g.mu.Lock()

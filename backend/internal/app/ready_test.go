@@ -194,8 +194,9 @@ func TestCheckPanicIsCountedAndLogged(t *testing.T) {
 	if code != 503 || !strings.Contains(body, `"auth":"down: panic: kaboom"`) {
 		t.Errorf("/readyz = %d %s", code, body)
 	}
-	if got := testutil.ToFloat64(metrics.GoroutinePanics) - before; got != 1 {
-		t.Errorf("ryft_goroutine_panics_total rose by %v, want 1", got)
+	g.get(t, "/readyz") // every probe is counted, the stack is logged once a minute
+	if got := testutil.ToFloat64(metrics.GoroutinePanics) - before; got != 2 {
+		t.Errorf("ryft_goroutine_panics_total rose by %v, want 2", got)
 	}
 	if m := g.logs.find("panic"); len(m) != 1 || m[0]["check"] != "auth" || m[0]["stack"] == "" {
 		t.Errorf("panic line: %v", m)

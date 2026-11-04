@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -62,11 +63,12 @@ type readiness struct {
 // readyz answers 200 when every required check passes and 503 otherwise, and 503
 // while draining. The status code is what probes read; the body is for people.
 func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout time.Duration) http.HandlerFunc {
+	quiet := &panicLog{log: log, last: map[string]time.Time{}}
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := readiness{Status: "ready", Checks: make(map[string]string, len(checks)), RequestID: w.Header().Get(httpx.RequestIDHeader)}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		for i, err := range runChecks(ctx, log, checks, timeout) {
+		for i, err := range runChecks(ctx, quiet, checks, timeout) {
 			c := checks[i]
 			var stale staleError
 			switch {
@@ -98,7 +100,7 @@ func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout tim
 // with it, as the check was given the same ctx. A check that is not required gets
 // at most optionalTimeout: a dependency the pod does not need must not make the probe
 // slow.
-func runChecks(ctx context.Context, log *slog.Logger, checks []Check, timeout time.Duration) []error {
+func runChecks(ctx context.Context, log *panicLog, checks []Check, timeout time.Duration) []error {
 	type result struct {
 		i   int
 		err error
@@ -139,15 +141,35 @@ func runChecks(ctx context.Context, log *slog.Logger, checks []Check, timeout ti
 
 // safeCheck runs a check; a panic reads as the check being down, and is counted and
 // logged with its stack as a handler's panic is (httpx.Recover).
-func safeCheck(ctx context.Context, log *slog.Logger, c Check) (err error) {
+func safeCheck(ctx context.Context, log *panicLog, c Check) (err error) {
 	defer func() {
 		if v := recover(); v != nil {
-			metrics.GoroutinePanics.Inc()
-			log.Error("panic", "check", c.Name, "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			metrics.GoroutinePanics.Inc() // the service keeps running: nothing else counts it
+			log.panicked(c.Name, v, debug.Stack())
 			err = &taskPanic{v}
 		}
 	}()
 	return c.Fn(ctx)
+}
+
+// panicLog logs a check's panic with its stack at most once a minute per check: a
+// probe asks every few seconds, and the counter has every one.
+type panicLog struct {
+	log  *slog.Logger
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func (p *panicLog) panicked(check string, v any, stack []byte) {
+	p.mu.Lock()
+	quiet := time.Since(p.last[check]) < time.Minute
+	if !quiet {
+		p.last[check] = time.Now()
+	}
+	p.mu.Unlock()
+	if !quiet {
+		p.log.Error("panic", "check", check, "panic", fmt.Sprint(v), "stack", string(stack))
+	}
 }
 
 // oneLine is err on one line, cut to maxReason characters.

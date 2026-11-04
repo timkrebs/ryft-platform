@@ -22,36 +22,46 @@ import (
 	"github.com/timkrebs/ryft/internal/httpx"
 )
 
-// The shutdown's budget. Every step is bounded by what is written here, the bound
-// includes the waits after it, and a test (TestShutdownStaysInBudget) fails when
-// the worst case plus watchdogMargin passes Spec.Grace (the kubelet's 30 s).
+// The shutdown's budget. Every step is bounded by what is written here, the bounds
+// live in one place (bounds), the bound of a step includes the waits after it, and a
+// test (TestShutdownStaysInBudget) fails when the worst case reaches the watchdog's
+// time, Spec.Grace (the kubelet's 30 s) less watchdogMargin.
 //
 //	step       bound                                  api, ingest      scoring, notify
 //	drain      Spec.DrainDelay (A7: 5 s)              0 (5 s)          0
 //	consumers  ConsumerDrain 15 s + consumerMargin    none             16 s
-//	http       Shutdown (10 s, health only 1 s) + 1 s 11 s             2 s
+//	http       Shutdown (10 s, health only 1 s) + afterClose   11 s    2 s
 //	jobs       stepWait                               2 s              2 s
 //	relay      stepWait (relay and db watch)          2 s              2 s
 //	broker     brokerClose                            1 s              1 s
-//	pool       poolClose                              2 s              2 s
+//	pool       poolClose                              1 s              1 s
 //	metrics    afterClose                             1 s              1 s
-//	worst case                                        19 s (24 s)      26 s
+//	worst case                                        18 s (23 s)      25 s
 //
 // A step that overruns is logged, recorded (exit 1) and the next one runs; the
-// watchdog ends the process at Grace minus watchdogMargin whatever step is stuck.
+// watchdog (26 s) ends the process whatever step is stuck.
 const (
 	defaultEdgeShutdown   = 10 * time.Second // HTTP Shutdown of a service with a public API: today's budget
 	defaultHealthShutdown = time.Second      // of one that serves health and metrics only
 	defaultConsumerDrain  = 15 * time.Second
 	defaultGrace          = 30 * time.Second
 	defaultReadyTimeout   = 2 * time.Second // how long /readyz waits for its checks
-	consumerMargin        = time.Second     // the consumers step waits ConsumerDrain plus this
-	afterClose            = time.Second     // waiting for Serve to return after Shutdown or Close; the /metrics stop
-	stepWait              = 2 * time.Second // jobs, relay and db watch
-	brokerClose           = time.Second
-	poolClose             = 2 * time.Second
 	watchdogMargin        = 4 * time.Second // the watchdog fires this long before Grace
 )
+
+// bounds are the shutdown steps' own bounds, all in one place; the tests shorten them.
+type bounds struct {
+	consumerMargin time.Duration // the consumers step waits ConsumerDrain plus this
+	stepWait       time.Duration // jobs; relay and db watch
+	afterClose     time.Duration // waiting for Serve to return after Shutdown or Close; the /metrics stop
+	brokerClose    time.Duration
+	poolClose      time.Duration
+}
+
+func defaultBounds() bounds {
+	return bounds{consumerMargin: time.Second, stepWait: 2 * time.Second, afterClose: time.Second,
+		brokerClose: time.Second, poolClose: time.Second}
+}
 
 // Spec describes one service. The zero durations take the defaults.
 type Spec struct {
@@ -65,9 +75,10 @@ type Spec struct {
 	// ConfigError to choose the message it is logged under.
 	Load func(log *slog.Logger) error
 	// Build makes what the service runs on the opened pool and broker. Its ctx lasts
-	// until the shutdown's last step, not until the signal; a signal while Build runs
-	// ends it, so Build should return when ctx does. An error is logged under
-	// ConfigError's message when it is one, else as "build".
+	// until the shutdown's last steps (it ends before the pool and /metrics close),
+	// not until the signal; a signal while Build runs ends it, so Build must return
+	// when ctx does (one that does not ends at the kubelet's SIGKILL). An error is
+	// logged under ConfigError's message when it is one, else as "build".
 	Build func(ctx context.Context, d Deps) (Parts, error)
 
 	DrainDelay      time.Duration // keep serving this long after the shutdown starts, for the edge to drop the pod (default none)
@@ -99,12 +110,12 @@ func (s Spec) watchdogAfter() time.Duration {
 	return s.grace() / 2
 }
 
-// worstCase is the sum of the shutdown's step bounds for this Spec; consumers says
-// whether the service has any.
-func (s Spec) worstCase(consumers bool) time.Duration {
-	d := s.DrainDelay + s.shutdownTimeout() + afterClose + 2*stepWait + brokerClose + poolClose + afterClose
+// worstCase is the sum of the shutdown's step bounds for this Spec and these bounds;
+// consumers says whether the service has any.
+func (s Spec) worstCase(b bounds, consumers bool) time.Duration {
+	d := s.DrainDelay + s.shutdownTimeout() + b.afterClose + 2*b.stepWait + b.brokerClose + b.poolClose + b.afterClose
 	if consumers {
-		d += s.consumerDrain() + consumerMargin
+		d += s.consumerDrain() + b.consumerMargin
 	}
 	return d
 }
@@ -156,8 +167,9 @@ func (e ConfigError) Unwrap() error { return e.Err }
 
 // Run starts s and blocks until ctx ends or a part fails; then it shuts down in
 // order. It logs why it failed and returns the error: a start-up error, the failed
-// task's error, or the steps of a shutdown that overran. Main turns it into the
-// exit code: 1, or 2 when a task panicked (as an unrecovered panic exits).
+// task's error, or the steps of a shutdown that overran. A signal during the start
+// (the database or broker wait, Build) is a clean stop: nil. Main turns the result
+// into the exit code: 0, 1, or 2 when a task panicked (as an unrecovered panic exits).
 func Run(ctx context.Context, s Spec) error { return run(ctx, s, defaultSeams()) }
 
 // seams are the dependencies Run opens, so the tests can stand in for them.
@@ -171,11 +183,13 @@ type seams struct {
 	openBus      func(ctx context.Context, cfg config.Config, service string, log *slog.Logger) (events.Bus, error)
 	relay        func(ctx context.Context, ob *outbox.Outbox)
 	listen       func(ctx context.Context, addr string) (net.Listener, error)
-	exit         func(code int)    // the watchdog's way out
-	launched     func(task string) // a test hook: every task as it starts
+	exit         func(code int)                     // the watchdog's way out
+	launched     func(task string)                  // a test hook: every task as it starts
+	startDone    func()                             // a test hook: the start is over and its watcher has ended
+	serverExit   func(server string)                // a test hook: a server's Serve has returned
+	bounded      func(step string, d time.Duration) // a test hook: every bound a step waits
 	readyTimeout time.Duration
-	// Bounds the tests shorten.
-	consumerMargin, stepWait, afterClose time.Duration
+	bounds       bounds
 }
 
 func defaultSeams() seams {
@@ -193,9 +207,9 @@ func defaultSeams() seams {
 		listen: func(ctx context.Context, addr string) (net.Listener, error) {
 			return (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 		},
-		exit:           os.Exit,
-		readyTimeout:   defaultReadyTimeout,
-		consumerMargin: consumerMargin, stepWait: stepWait, afterClose: afterClose,
+		exit:         os.Exit,
+		readyTimeout: defaultReadyTimeout,
+		bounds:       defaultBounds(),
 	}
 }
 
@@ -254,10 +268,16 @@ func run(ctx context.Context, s Spec, e seams) error {
 	err := r.start(ctx)
 	close(started)
 	<-watched
+	if r.e.startDone != nil {
+		r.e.startDone()
+	}
 
-	if err != nil {
+	switch {
+	case err != nil && r.interrupted(ctx, err):
+		// a signal during the wait: stopping is what was asked, not a failure
+	case err != nil:
 		r.setCause("start", "", err)
-	} else {
+	default:
 		<-waitCtx.Done()
 	}
 	steps := r.shutdown()
@@ -301,8 +321,18 @@ func (r *service) tier(msg string) *tier {
 	return t
 }
 
-// logSetup logs an error of Load or Build under its ConfigError message, or def.
-func (r *service) logSetup(def string, err error) {
+// interrupted is whether err is only the signal ending a wait of the start.
+func (r *service) interrupted(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) && ctx.Err() != nil
+}
+
+// logSetup logs an error of the start under its ConfigError message, or def; a
+// signal that ended a wait is logged at info.
+func (r *service) logSetup(ctx context.Context, def string, err error) {
+	if r.interrupted(ctx, err) {
+		r.log.Info("start interrupted by the signal", "step", def)
+		return
+	}
 	msg, cause := def, err
 	var ce ConfigError
 	if errors.As(err, &ce) {
@@ -316,12 +346,12 @@ func (r *service) logSetup(def string, err error) {
 // probe covers the waits above.
 func (r *service) start(ctx context.Context) (err error) {
 	if r.cfg, err = r.e.loadConfig(r.s.Name); err != nil {
-		r.log.Error("config", "err", err)
+		r.logSetup(ctx, "config", err)
 		return err
 	}
 	if r.s.Load != nil {
 		if err = r.s.Load(r.log); err != nil {
-			r.logSetup("config", err)
+			r.logSetup(ctx, "config", err)
 			return err
 		}
 	}
@@ -329,7 +359,7 @@ func (r *service) start(ctx context.Context) (err error) {
 	// schema; a signal ends the wait.
 	if r.pool, err = r.e.openPool(ctx, r.cfg, r.log); err != nil {
 		r.pool = nil
-		r.log.Error("db", "err", err)
+		r.logSetup(ctx, "db", err)
 		return err
 	}
 	r.infra = r.tier("background")
@@ -339,7 +369,7 @@ func (r *service) start(ctx context.Context) (err error) {
 	})
 	if r.bus, err = r.e.openBus(ctx, r.cfg, r.s.Name, r.log); err != nil {
 		r.bus = nil
-		r.log.Error("events", "err", err)
+		r.logSetup(ctx, "events", err)
 		return err
 	}
 	r.startMetrics(ctx)
@@ -350,7 +380,7 @@ func (r *service) start(ctx context.Context) (err error) {
 	}
 	parts, err := r.s.Build(r.life, deps)
 	if err != nil {
-		r.logSetup("build", err)
+		r.logSetup(ctx, "build", err)
 		return err
 	}
 	if deps.Outbox != nil {
@@ -394,13 +424,17 @@ func (r *service) startHTTP(ctx context.Context, parts Parts) error {
 	addr := ":" + r.cfg.Port
 	ln, err := r.e.listen(ctx, addr)
 	if err != nil {
-		r.log.Error("serve", "err", err)
+		r.logSetup(ctx, "serve", err)
 		return err
 	}
 	r.web = httpx.Server(r.log, addr, handler)
 	r.serve = r.tier("serve")
 	r.serve.run("http", func(context.Context) error {
-		if err := r.web.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		err := r.web.Serve(ln)
+		if r.e.serverExit != nil {
+			r.e.serverExit("http")
+		}
+		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
@@ -422,7 +456,11 @@ func (r *service) startMetrics(ctx context.Context) {
 	r.metrics = httpx.MetricsServer(r.log, addr)
 	r.scrape = r.tier("metrics")
 	r.scrape.run("metrics", func(context.Context) error {
-		if err := r.metrics.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		err := r.metrics.Serve(ln)
+		if r.e.serverExit != nil {
+			r.e.serverExit("metrics")
+		}
+		if !errors.Is(err, http.ErrServerClosed) {
 			r.log.Error("metrics server", "err", err)
 		}
 		return nil
@@ -438,7 +476,13 @@ func (r *service) shutdown() error {
 	r.current.Store("begin")
 	wd := time.AfterFunc(r.s.watchdogAfter(), func() {
 		r.log.Error("shutdown overdue", "step", r.current.Load(), "elapsed_ms", time.Since(began).Milliseconds())
-		r.e.exit(1)
+		r.mu.Lock()
+		code := 1
+		if r.panicErr != nil {
+			code = 2
+		}
+		r.mu.Unlock()
+		r.e.exit(code)
 	})
 	defer wd.Stop()
 
@@ -459,30 +503,37 @@ func (r *service) shutdown() error {
 		r.step("drain", func() error { time.Sleep(r.s.DrainDelay); return nil })
 	}
 	if r.consumers != nil {
-		r.step("consumers", func() error { return r.consumers.stop(r.s.consumerDrain() + r.e.consumerMargin) })
+		r.step("consumers", func() error {
+			return r.consumers.stop(r.bound("consumers", r.s.consumerDrain()+r.e.bounds.consumerMargin))
+		})
 	}
 	if r.web != nil {
 		r.step("http", r.stopHTTP)
 	}
 	if r.jobs != nil {
-		r.step("jobs", func() error { return r.jobs.wait(r.e.stepWait) })
+		r.step("jobs", func() error { return r.jobs.wait(r.bound("jobs", r.e.bounds.stepWait)) })
 	}
 	if r.infra != nil {
-		r.step("relay", func() error { return r.infra.stop(r.e.stepWait) })
+		r.step("relay", func() error { return r.infra.stop(r.bound("relay", r.e.bounds.stepWait)) })
 	}
 	if r.bus != nil {
-		r.step("broker", func() error { return within(brokerClose, func() error { r.bus.Close(); return nil }) })
+		r.step("broker", func() error {
+			return within(r.bound("broker", r.e.bounds.brokerClose), func() error { r.bus.Close(); return nil })
+		})
 	}
 	r.endLife()
 	if r.pool != nil {
-		r.step("pool", func() error { return within(poolClose, func() error { r.e.closePool(r.pool); return nil }) })
+		r.step("pool", func() error {
+			return within(r.bound("pool", r.e.bounds.poolClose), func() error { r.e.closePool(r.pool); return nil })
+		})
 	}
 	if r.metrics != nil {
 		r.current.Store("metrics")
+		stopped := time.Now()
 		_ = r.metrics.Close()
-		if err := r.scrape.stop(r.e.afterClose); err != nil {
+		if err := r.scrape.stop(r.bound("metrics", r.e.bounds.afterClose)); err != nil {
 			r.fail("metrics", err)
-			r.log.Warn("shutdown step", "step", "metrics", "err", err)
+			r.log.Warn("shutdown step", "step", "metrics", "dur_ms", time.Since(stopped).Milliseconds(), "err", err)
 		}
 	}
 	r.mu.Lock()
@@ -504,13 +555,13 @@ func (r *service) shutdown() error {
 // on.
 func (r *service) stopHTTP() error {
 	r.serve.stopping() // Serve returning is the plan now
-	ctx, cancel := context.WithTimeout(context.Background(), r.s.shutdownTimeout())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.bound("http", r.s.shutdownTimeout())))
 	defer cancel()
 	err := r.web.Shutdown(ctx)
 	if err != nil {
 		_ = r.web.Close()
 	}
-	if werr := r.serve.wait(r.e.afterClose); err == nil {
+	if werr := r.serve.wait(r.bound("http wait", r.e.bounds.afterClose)); err == nil {
 		err = werr
 	}
 	return err
@@ -529,6 +580,14 @@ func (r *service) step(name string, fn func() error) {
 		return
 	}
 	r.log.Info("shutdown step", attrs...)
+}
+
+// bound is the time a step may wait; the tests see every one.
+func (r *service) bound(step string, d time.Duration) limit {
+	if r.e.bounded != nil {
+		r.e.bounded(step, d)
+	}
+	return limit(d)
 }
 
 // fail records a shutdown step that failed or overran its bound.

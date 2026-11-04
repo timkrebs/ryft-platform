@@ -73,7 +73,7 @@ func (t *tier) stopping() {
 }
 
 // wait blocks until every task has returned, at most grace.
-func (t *tier) wait(grace time.Duration) error {
+func (t *tier) wait(grace limit) error {
 	if t == nil {
 		return nil
 	}
@@ -81,22 +81,27 @@ func (t *tier) wait(grace time.Duration) error {
 }
 
 // stop is stopping and wait.
-func (t *tier) stop(grace time.Duration) error {
+func (t *tier) stop(grace limit) error {
 	t.stopping()
 	return t.wait(grace)
 }
 
+// limit is how long a shutdown step may wait. Only service.bound makes one, so
+// every bound a step waits is the one the budget adds up (the compiler refuses a
+// bare duration).
+type limit time.Duration
+
 // within runs fn and gives up waiting for it after d. fn keeps running when it
 // overruns (nothing can cancel a blocked Close); the process is about to exit.
-func within(d time.Duration, fn func() error) error {
+func within(d limit, fn func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
-	timer := time.NewTimer(d)
+	timer := time.NewTimer(time.Duration(d))
 	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
 	case <-timer.C:
-		return fmt.Errorf("timed out after %s", d)
+		return fmt.Errorf("timed out after %s", time.Duration(d))
 	}
 }
