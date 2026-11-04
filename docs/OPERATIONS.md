@@ -1907,9 +1907,9 @@ Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMi
 - `pod_security_evaluations_total{decision="deny"}` and
   `apiserver_validating_admission_policy_check_total` have series only after the first
   refusal or finding: absent is normal, there is no series for a clean pass.
-  `kube_validatingadmissionpolicybinding_info` has 12 `ryft-*` series once the chart is enabled,
+  `kube_validatingadmissionpolicybinding_info` has 13 `ryft-*` series once the chart is enabled,
   `kube_validatingadmissionpolicybinding_validation_action` one per live action, and
-  `ryft:admission_binding_intended` 12 whether or not the chart is enabled.
+  `ryft:admission_binding_intended` 13 whether or not the chart is enabled.
 - The binding alerts are quiet until bindings exist; the counter alerts are quiet until a
   `ryft-*` policy finds something.
 
@@ -1947,6 +1947,13 @@ aws logs start-query --region eu-central-1 --log-group-name /aws/eks/ryft-prod-e
     | fields strcontains(requestURI, "dryRun") as dryRun
     | stats count(*) as evaluations, count_distinct(objectRef.name) as objects by dryRun, user.username, objectRef.namespace, objectRef.resource'
 aws logs get-query-results --region eu-central-1 --query-id <queryId>
+```
+
+For one policy (the P12 exit check of Phase 1: `ryft-argo-scope`, zero lines), add a filter on the
+policy name after the two `filter` lines; the annotation carries the policy and binding names:
+
+```
+| filter `annotations.validation.policy.admission.k8s.io/validation_failure` like /ryft-argo-scope/
 ```
 
 `evaluations` counts audit events (a controller that retries counts every try); `objects`
@@ -2003,7 +2010,7 @@ expression meeting an object shape it did not expect, so the fix is the chart, n
 object: for the critical one bring the binding to audit through the Break-glass fast path to
 restore writes, then correct the expression (`admission-celtest` reproduces it) and apply.
 
-**AdmissionBindingMissing** (critical). Fewer than 12 `ryft-*` bindings exist for 10 minutes
+**AdmissionBindingMissing** (critical). Fewer than 13 `ryft-*` bindings exist for 10 minutes
 while bindings existed within the last day. A binding that is gone means its policy judges
 nothing (silently open). Compare with what is live, and check that the metric is not the
 blind one:
@@ -2012,7 +2019,7 @@ kubectl get validatingadmissionpolicybindings -o name | sort
 kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics
 ```
 Helm does not see out-of-band changes (a deleted binding is not a diff to it), so a plain
-apply restores nothing. The restore is the replace under **Restore** below. All 12 gone with
+apply restores nothing. The restore is the replace under **Restore** below. All 13 gone with
 the chart switched off on purpose (back to Phase 0) raises this for up to a day: silence it
 in Grafana Alerting.
 

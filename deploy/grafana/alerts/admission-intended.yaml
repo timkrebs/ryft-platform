@@ -42,3 +42,6 @@ groups:
       - record: ryft:admission_binding_intended
         expr: vector(1)
         labels: { validatingadmissionpolicybinding: ryft-argocd-operation, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-argo-scope, intended_action: audit }
