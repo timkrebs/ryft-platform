@@ -87,7 +87,8 @@ adm_tree_guard() {
   else
     why="it has no commit"
   fi
-  [ -n "$why" ] || return 0
+  # The commit is what was vouched for: the copy reads it, not the working tree.
+  [ -n "$why" ] || { export TRACKED_COPY_HEAD=1; return 0; }
   if [ "$FORCE" = 1 ]; then
     {
       echo "admission_e2e: !!!! --force: running a tree that failed the provenance check: $REPO_SRC"
@@ -103,7 +104,14 @@ adm_tree_guard() {
   } >&2
   exit 2
 }
-if [ "${GITHUB_ACTIONS:-}" != true ] && [ "$(cd "$REPO_SRC" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]; then adm_tree_guard; fi
+[ "$FORCE" != 1 ] || export TF_VALUES_FORCE=1   # tf_values.sh: a tree that is not this checkout, on the host
+if [ "$(cd "$REPO_SRC" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]; then
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    echo "admission_e2e: notice: GITHUB_ACTIONS=true, so the provenance check of $REPO_SRC is skipped (the workflow ran check_e2e_ref.sh on the ref)" >&2
+  else
+    adm_tree_guard
+  fi
+fi
 
 for tool in kind kubectl helm yq jq git; do
   command -v "$tool" >/dev/null 2>&1 || { echo "admission_e2e: $tool is not installed (this script installs no software)" >&2; exit 2; }
