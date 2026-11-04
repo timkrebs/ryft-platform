@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "basis": {
+      "$ref": "SleepPlanBasis"
+    },
+    "bedtime_100": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "bedtime_70": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "bedtime_85": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "efficiency": {
+      "type": "integer"
+    },
+    "in_bed_min": {
+      "type": "integer"
+    },
+    "need_min": {
+      "type": "integer"
+    },
+    "wake": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "basis",
+    "bedtime_100",
+    "bedtime_70",
+    "bedtime_85",
+    "efficiency",
+    "in_bed_min",
+    "need_min",
+    "wake"
+  ],
+  "title": "SleepPlan",
+  "type": "object"
+}

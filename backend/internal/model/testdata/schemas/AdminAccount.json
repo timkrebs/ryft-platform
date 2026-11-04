@@ -1,0 +1,77 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "beta_access_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "consent": {
+      "$ref": "AdminConsent",
+      "nullable": true
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "identities": {
+      "items": {
+        "$ref": "AdminIdentity"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "identities_note": {
+      "type": "string"
+    },
+    "last_sign_in_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "max_hr": {
+      "type": "integer"
+    },
+    "max_hr_source": {
+      "type": "string"
+    },
+    "private_relay": {
+      "type": "boolean"
+    },
+    "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "short_id": {
+      "type": "string"
+    },
+    "tz": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "beta_access_at",
+    "consent",
+    "created_at",
+    "email",
+    "id",
+    "identities",
+    "last_sign_in_at",
+    "max_hr",
+    "max_hr_source",
+    "private_relay",
+    "provider",
+    "short_id",
+    "tz"
+  ],
+  "title": "AdminAccount",
+  "type": "object"
+}

@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "behavior_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "hrv_pct": {
+      "$ref": "BehaviorEffect",
+      "nullable": true
+    },
+    "kind": {
+      "type": "string"
+    },
+    "n_no": {
+      "type": "integer"
+    },
+    "n_yes": {
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "needed": {
+      "$ref": "ImpactNeeded"
+    },
+    "recovery": {
+      "$ref": "BehaviorEffect",
+      "nullable": true
+    },
+    "sleep_performance": {
+      "$ref": "BehaviorEffect",
+      "nullable": true
+    },
+    "slug": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "behavior_id",
+    "hrv_pct",
+    "kind",
+    "n_no",
+    "n_yes",
+    "name",
+    "needed",
+    "recovery",
+    "sleep_performance",
+    "slug",
+    "status"
+  ],
+  "title": "BehaviorImpact",
+  "type": "object"
+}

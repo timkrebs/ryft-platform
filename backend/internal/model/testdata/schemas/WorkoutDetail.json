@@ -1,0 +1,102 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "activity": {
+      "type": "string"
+    },
+    "also_recorded_by": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "avg_hr": {
+      "nullable": true,
+      "type": "number"
+    },
+    "distance_m": {
+      "nullable": true,
+      "type": "number"
+    },
+    "duplicate_of": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "energy_kcal": {
+      "nullable": true,
+      "type": "number"
+    },
+    "hr": {
+      "items": {
+        "$ref": "HRSample"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "max_hr": {
+      "nullable": true,
+      "type": "number"
+    },
+    "model_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "muscular_load": {
+      "nullable": true,
+      "type": "number"
+    },
+    "session_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_bundle_id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "strain": {
+      "nullable": true,
+      "type": "number"
+    },
+    "trimp": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "zone_min": {
+      "items": {
+        "type": "integer"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "activity",
+    "end",
+    "hr",
+    "id",
+    "source",
+    "start",
+    "trimp",
+    "zone_min"
+  ],
+  "title": "WorkoutDetail",
+  "type": "object"
+}

@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "affects": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "date": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "summary_de": {
+      "type": "string"
+    },
+    "summary_en": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "affects",
+    "date",
+    "summary",
+    "summary_de",
+    "summary_en",
+    "version"
+  ],
+  "title": "ModelChangeEntry",
+  "type": "object"
+}

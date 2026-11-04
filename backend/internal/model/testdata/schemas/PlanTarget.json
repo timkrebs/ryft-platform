@@ -1,0 +1,52 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "last_time": {
+      "items": {
+        "$ref": "Set"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "plan_exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "reps_max": {
+      "type": "integer"
+    },
+    "reps_min": {
+      "type": "integer"
+    },
+    "rest_sec": {
+      "type": "integer"
+    },
+    "sets": {
+      "type": "integer"
+    },
+    "target_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "target_kind": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "exercise_id",
+    "last_time",
+    "plan_exercise_id",
+    "reps_max",
+    "reps_min",
+    "rest_sec",
+    "sets",
+    "target_kg",
+    "target_kind"
+  ],
+  "title": "PlanTarget",
+  "type": "object"
+}

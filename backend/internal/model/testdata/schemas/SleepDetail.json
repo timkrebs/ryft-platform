@@ -1,0 +1,67 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "efficiency": {
+      "type": "integer"
+    },
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "has_stages": {
+      "type": "boolean"
+    },
+    "in_bed_min": {
+      "type": "integer"
+    },
+    "need": {
+      "$ref": "SleepNeed"
+    },
+    "quality": {
+      "type": "integer"
+    },
+    "quality_label": {
+      "type": "string"
+    },
+    "restorative": {
+      "type": "integer"
+    },
+    "segments": {
+      "items": {
+        "$ref": "SleepInterval"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "stages": {
+      "items": {
+        "$ref": "SleepStage"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "total_min": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "efficiency",
+    "end",
+    "has_stages",
+    "in_bed_min",
+    "need",
+    "quality",
+    "quality_label",
+    "restorative",
+    "segments",
+    "stages",
+    "start",
+    "total_min"
+  ],
+  "title": "SleepDetail",
+  "type": "object"
+}

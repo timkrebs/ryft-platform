@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_bundle_id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "value": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "end",
+    "source",
+    "start",
+    "type",
+    "unit",
+    "value"
+  ],
+  "title": "Sample",
+  "type": "object"
+}

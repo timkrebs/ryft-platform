@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "max_uses": {
+      "type": "integer"
+    },
+    "note": {
+      "type": "string"
+    },
+    "uses": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "code",
+    "created_at",
+    "expires_at",
+    "max_uses",
+    "note",
+    "uses"
+  ],
+  "title": "BetaInvite",
+  "type": "object"
+}

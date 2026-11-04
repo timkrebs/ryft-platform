@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "evaluated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "flags": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "privacy_policy_url": {
+      "type": "string"
+    },
+    "privacy_policy_version": {
+      "type": "string"
+    },
+    "ttl_sec": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "evaluated_at",
+    "flags",
+    "privacy_policy_url",
+    "privacy_policy_version",
+    "ttl_sec"
+  ],
+  "title": "RemoteConfig",
+  "type": "object"
+}

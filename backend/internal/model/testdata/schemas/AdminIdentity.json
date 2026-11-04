@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "last_sign_in_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "private_relay": {
+      "type": "boolean"
+    },
+    "provider": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "email",
+    "last_sign_in_at",
+    "private_relay",
+    "provider"
+  ],
+  "title": "AdminIdentity",
+  "type": "object"
+}
