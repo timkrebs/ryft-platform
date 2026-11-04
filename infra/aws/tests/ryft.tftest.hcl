@@ -276,7 +276,7 @@ run "node_role_entry_is_opt_in" {
 run "extra_admin_gets_a_cluster_admin_entry" {
   variables {
     admin_principal_arns = {
-      sso = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_Admin_0123456789abcdef"
+      sso = "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_Admin_example"
     }
   }
 

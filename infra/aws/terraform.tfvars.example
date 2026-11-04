@@ -38,7 +38,7 @@ node_group = {
 # node_access_entry = true
 #
 # Only if your kubectl uses another IAM role/user than the one that runs terraform:
-# admin_principal_arns = { me = "arn:aws:iam::111122223333:role/your-admin-role" }
+# admin_principal_arns = { me = "arn:aws:iam::123456789012:role/your-admin-role" }
 
 tags = {
   Owner = "platform-team"
