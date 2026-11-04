@@ -2962,8 +2962,8 @@ Engine, and fails with the changed fields grouped by field.
   ties to `version.go`), a moved input digest for that user, or a moved field digest (additive); a file kept without
   its digest fails. It exits 2 when it cannot check (no `jq`, the base is not a commit here, no merge base in a
   shallow checkout). Manifest values and paths are printed only in their expected form (digits, `YEAR.MONTH.N`,
-  `user-<name>`), never raw: a `::` in a printed string would be a workflow command. It is wired into CI in a
-  follow-up PR (gitops). **Honestly:** the field digest is one value for all files, so a PR that adds a column lets
+  `user-<name>`), never raw: a `::` in a printed string would be a workflow command. CI runs it as the `golden-guard` job
+  (pull requests only, whole history, path-filtered, in `ci-ok`'s needs). **Honestly:** the field digest is one value for all files, so a PR that adds a column lets
   every user file change in the script's eyes; the Go guard's additive mode is what stops a moved value there, and
   review does the rest.
 - **CI fails instead of skipping.** Locally the test skips without `RYFT_TEST_POSTGRES_URL`, as every engine test.

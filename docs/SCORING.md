@@ -734,7 +734,7 @@ bump the update only takes users whose generator inputs changed (their digest in
 needs `GOLDEN_MODE=init`. `TestGoldenManifest` (no database) fails when `ModelVersion` moved without a
 regeneration or a digest in the manifest is not what the generator and the files give now, and
 `scripts/golden_guard.sh <base>` fails a PR whose golden user file changed while `ModelVersion`, that user's input
-digest and the field digest did not (wired into CI in a follow-up PR).
+digest and the field digest did not (CI runs it: the `golden-guard` job).
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |

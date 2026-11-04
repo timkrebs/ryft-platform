@@ -5,7 +5,7 @@
 # A user-*.json that changed against the merge base without any of the three is a hand edit or a
 # regeneration that hides a model change: this fails it. The version is the manifest's
 # model_version at both refs (TestGoldenManifest ties it to version.go's ModelVersion, and checks
-# that the digests are the generator's). Meant for pull requests; CI wiring is a follow-up PR.
+# that the digests are the generator's). Meant for pull requests: CI runs it (the `golden-guard` job in ci.yml).
 #   scripts/golden_guard.sh <base-ref>     e.g. origin/main, or a commit sha
 # Exit 1: a finding. Exit 2: cannot check (no jq, no such base, no merge base).
 # Manifest values and paths are never printed raw: a digest must be all digits, a version
