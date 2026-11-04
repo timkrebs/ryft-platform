@@ -150,7 +150,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 23 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 24 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 7 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its queue and a 15-minute timer. | apns, config, db, eventbus, events, httpx, logx, notify, store | none |
@@ -167,13 +167,13 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/events/amqpbus` | owns events.Bus on RabbitMQ (AMQP 0-9-1) and the broker's topology as Go, from which the manifests and the dev definitions are generated. | events, metrics, model, retry | 3 files (RabbitMQ) |
 | `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, metrics | 1 file (Postgres) |
 | `internal/flags` | evaluates remote-config feature flags for one user (GET /v1/config): flags and a user id in, booleans out. | model | 1 file |
-| `internal/gate` | owns the decision and the answer of the beta invite gate and the consent gate, for a user the caller has already loaded. | config, httpx, metrics, model | 1 file |
-| `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, health and shutdown. | logx, metrics | 3 files |
+| `internal/gate` | owns the decision and the answer of the beta invite gate and the consent gate, for a user the caller has already loaded. | config, httpx, metrics, model | 2 files |
+| `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, health and shutdown. | logx, metrics | 4 files |
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
 | `internal/logx/logcheck` | owns the test-side half of "no health values in logs": it checks captured log lines against the keys each message may carry. | none | 1 file |
 | `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, gate, httpx, notify, scoring |
-| `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 4 files |
+| `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
