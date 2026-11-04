@@ -2343,6 +2343,194 @@
   ],
   "scenario": "A ring tracker that never writes a resting heart rate (no_rhr, strain against the 60-bpm fallback): HRV, respiration, SpO2, staged nights, heart rate every 5 min, steps; max HR estimated from birth year 1984",
   "sessions": [],
+  "syncs": [
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-04"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-05"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-06"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-07"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-08"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-09"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-10"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-11"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-12"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-13"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-14"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-15"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-16"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-17"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-18"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-19"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-20"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-21"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-22"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-23"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-24"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-25"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-26"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-27"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-28"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-29"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-30"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-31"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-01"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-02"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-03"
+    }
+  ],
   "tz": "Asia/Tokyo",
   "user": "user-f",
   "workouts": []

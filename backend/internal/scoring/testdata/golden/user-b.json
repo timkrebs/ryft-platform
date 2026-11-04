@@ -2278,8 +2278,202 @@
       "zone_minutes": [0, 0, 0, 0, 0]
     }
   ],
-  "scenario": "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent with a new id (folded), DST on day 27",
+  "scenario": "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent twice with new ids in one later sync (both folded), DST on day 27",
   "sessions": [],
+  "syncs": [
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-04"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-05"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-06"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-07"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-08"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-09"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-10"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-11"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-12"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-13"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-14"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-15"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-16"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-17"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-18"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-19"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-20"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-21"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-22"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-23"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-24"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-25"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-26"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-27"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-28"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-29"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-30"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-31"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-01"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-02"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-03"
+    },
+    {
+      "days": ["2026-10-21", "2026-10-22"],
+      "fold_skipped": false,
+      "folded": 2,
+      "sync": "resend"
+    }
+  ],
   "tz": "America/New_York",
   "user": "user-b",
   "workouts": [
@@ -2434,7 +2628,7 @@
       "duplicate_of": null,
       "end_at": "2026-10-21T12:00:30+00:00",
       "energy_kcal": null,
-      "id": "workout Garmin Connect 2026-10-21T06:50 resent",
+      "id": "workout Garmin Connect 2026-10-21T06:50 resent 1",
       "max_hr": null,
       "model_version": "2026.10.3",
       "muscular_load": null,

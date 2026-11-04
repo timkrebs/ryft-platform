@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,8 +49,9 @@ import (
 // printed shortest, which also absorbs last-bit differences between CPUs).
 //
 // Opt-in like every engine test (RYFT_TEST_POSTGRES_URL), but never skipped in
-// CI. It runs on the test's superuser pool, so the ryft_scoring grants and RLS
-// are not exercised here; HealthKit deletions are not part of the generator.
+// CI. It runs on the test's superuser (or table-owner) pool, so the
+// ryft_scoring grants and RLS are not exercised here; HealthKit deletions are
+// not part of the generator (D149).
 
 // goldenNewestFirst is how many of the last days are scored again newest first.
 const goldenNewestFirst = 10
@@ -106,8 +109,20 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 	if len(g.resends) > 0 {
 		syncs["resend"], order = &sync{workouts: g.resends}, append(order, "resend")
 	}
+	// What each apply returned, pinned as the file's syncs: the days it queued
+	// (with no days asked, the fold's: a removed copy's day and the next, and
+	// the day before when it carried a session), the copies it removed.
+	var applied []map[string]any
+	record := func(key string, a store.Applied) {
+		days := make([]any, len(a.Days))
+		for k, d := range a.Days {
+			days[k] = d
+		}
+		applied = append(applied, map[string]any{"sync": key, "days": days,
+			"folded": json.Number(strconv.Itoa(a.Folded)), "fold_skipped": a.FoldSkipped})
+	}
 	for _, d := range order {
-		goldenSync(t, st, user, g.loc, syncs[d].samples, syncs[d].sleep, syncs[d].workouts)
+		record(d, goldenSync(t, st, user, g.loc, syncs[d].samples, syncs[d].sleep, syncs[d].workouts))
 	}
 
 	// Sessions: the app's saved and completed, then one import request.
@@ -160,8 +175,8 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 	for _, w := range g.workouts {
 		label(w.ID, name(w))
 	}
-	for _, w := range g.resends {
-		label(w.ID, name(w)+" resent")
+	for k, w := range g.resends {
+		label(w.ID, name(w)+" resent "+strconv.Itoa(k+1))
 	}
 	for _, w := range g.late {
 		label(w.ID, name(w)+" late")
@@ -176,6 +191,7 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 		for _, tb := range goldenTables {
 			*f.section(tb.section) = goldenRows(t, pool, user, tb.table, tb.order, tb.volatile, labels)
 		}
+		f.Syncs = slices.Clone(applied)
 		return f
 	}
 	first, last := goldenFirstDay, addDays(goldenFirstDay, goldenDays-1)
@@ -204,7 +220,7 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 	// Phase two: what arrived after the month was scored, then the re-score a
 	// sync triggers (here the whole range).
 	if len(g.late) > 0 {
-		goldenSync(t, st, user, g.loc, nil, nil, g.late)
+		record("late", goldenSync(t, st, user, g.loc, nil, nil, g.late))
 		score()
 		f = read(t)
 	}
@@ -233,8 +249,8 @@ func goldenRun(t *testing.T, st *store.Store, pool *pgxpool.Pool, engine *Engine
 // whose scope is cmd/ingest/fold.go's foldRequest (the request's sources, its
 // starts ±1 day). The apply gets no days: the harness scores the whole range
 // itself (ComputeRange), so ingest's touched days are not needed and not
-// copied here.
-func goldenSync(t *testing.T, st *store.Store, user uuid.UUID, loc *time.Location, samples []model.Sample, sleep []model.SleepSegment, workouts []model.Workout) {
+// copied here. It returns what the apply returned.
+func goldenSync(t *testing.T, st *store.Store, user uuid.UUID, loc *time.Location, samples []model.Sample, sleep []model.SleepSegment, workouts []model.Workout) store.Applied {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := st.UpsertSamples(ctx, user, samples); err != nil {
@@ -262,9 +278,11 @@ func goldenSync(t *testing.T, st *store.Store, user uuid.UUID, loc *time.Locatio
 	if fold != nil {
 		fold.From, fold.To = fold.From.Add(-24*time.Hour), fold.To.Add(24*time.Hour)
 	}
-	if _, err := st.ApplySync(ctx, user, store.Apply{Loc: loc, Fold: fold}); err != nil {
+	out, err := st.ApplySync(ctx, user, store.Apply{Loc: loc, Fold: fold})
+	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	return out
 }
 
 // goldenRows reads the user's rows of a table whole but for the volatile
@@ -335,6 +353,11 @@ func TestGoldenScores(t *testing.T) {
 		t.Skip("set RYFT_TEST_POSTGRES_URL to a throwaway Postgres server to run the golden scores")
 	}
 	if update {
+		if os.Getenv(goldenAllowRemote) != "1" {
+			if err := goldenLocalDB(admin); err != nil {
+				t.Fatalf("refusing to regenerate the golden files: %v", err)
+			}
+		}
 		head, disk, err := goldenHEADManifest()
 		if err == nil {
 			err = goldenCommitted(head, disk)

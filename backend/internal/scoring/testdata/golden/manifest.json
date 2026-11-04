@@ -5,7 +5,7 @@
     "sessions": ["user_id", "created_at", "updated_at", "imported_at"],
     "workouts": ["user_id", "created_at"]
   },
-  "fields": "1219727780666297320",
+  "fields": "15211855271502612580",
   "first_day": "2026-10-05",
   "inputs": {
     "user-a": {
@@ -16,11 +16,11 @@
       "workouts": 14
     },
     "user-b": {
-      "digest": "18009381517352989055",
+      "digest": "8858031362782871865",
       "samples": 22677,
       "sessions": 0,
       "sleep_segments": 189,
-      "workouts": 15
+      "workouts": 16
     },
     "user-c": {
       "digest": "7438635367835587596",
@@ -37,11 +37,11 @@
       "workouts": 8
     },
     "user-e": {
-      "digest": "1317453377066326200",
+      "digest": "5260183551147085094",
       "samples": 11607,
       "sessions": 40,
       "sleep_segments": 487,
-      "workouts": 15
+      "workouts": 16
     },
     "user-f": {
       "digest": "1839194347501994670",

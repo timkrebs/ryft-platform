@@ -53,13 +53,13 @@ var goldenUsers = []goldenUser{
 	{Name: "user-a", TZ: "Europe/Berlin", build: goldenWatchUser,
 		Scenario: "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, an evening spot HRV reading on day 5 that is not overnight, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)"},
 	{Name: "user-b", TZ: "America/New_York", build: goldenGarminUser,
-		Scenario: "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent with a new id (folded), DST on day 27"},
+		Scenario: "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent twice with new ids in one later sync (both folded), DST on day 27"},
 	{Name: "user-c", TZ: "Europe/Berlin", MaxHR: 186, build: goldenTwoSourceUser,
 		Scenario: "Apple Watch and Garmin worn together: both write heart rate, steps, resting HR and the night; runs recorded by both (one shown; day 10's Garmin one is 'other'); short watch-only intervals on Tuesdays in an hour the Garmin's heart rate wins; a 17-hour hike on day 13 whose last 40 minutes the watch also recorded after midnight; manual max HR 186; DST on day 20"},
 	{Name: "user-d", TZ: "UTC", build: goldenNapUser,
 		Scenario: "Apple Watch: afternoon naps every third day (one under 20 min, one over the 90-min cap), split nights every fifth day, a morning nap on day 18, a run across midnight from day 13 into day 14"},
 	{Name: "user-e", TZ: "UTC", build: goldenStrengthUser,
-		Scenario: "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Mondays also a longer strap recording the watch's hides, Wed without; day 23's watch workout arrives after the month was scored), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged"},
+		Scenario: "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Mondays also a longer strap recording the watch's hides, Wed without; day 23's watch workout arrives after the month was scored, and day 25's is re-sent then under a new id), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged"},
 	{Name: "user-f", TZ: "Asia/Tokyo", BirthYear: 1984, build: goldenRingUser,
 		Scenario: "A ring tracker that never writes a resting heart rate (no_rhr, strain against the 60-bpm fallback): HRV, respiration, SpO2, staged nights, heart rate every 5 min, steps; max HR estimated from birth year 1984"},
 }
@@ -239,20 +239,21 @@ func (g *goldenGen) workout(dev goldenDevice, activity string, w window, avgHR *
 	return x
 }
 
-// resend is the source writing w again under a new id, its end 30 s later: a
-// same-source copy the sync's fold removes (D146). The copy's id is chosen
-// above the original's, so "the most recently uploaded copy" is the same one
-// whether the fold decides by created_at or, on a tie, by id.
-func (g *goldenGen) resend(w model.Workout) {
+// copyOf is the source writing w again under a new id (its k-th copy), the
+// end 30 s later per copy: a same-source copy the sync's fold removes (D146).
+// The copy's id is chosen above the original's, so "the most recently
+// uploaded copy" is the same one whether the fold decides by created_at or,
+// on a tie, by id.
+func (g *goldenGen) copyOf(w model.Workout, k int) model.Workout {
 	c := w
 	for n := 0; ; n++ {
-		c.ID = g.id("workout", w.Source, w.Start.UTC().Format(time.RFC3339), "resent", strconv.Itoa(n))
+		c.ID = g.id("workout", w.Source, w.Start.UTC().Format(time.RFC3339), "resent", strconv.Itoa(k), strconv.Itoa(n))
 		if bytes.Compare(c.ID[:], w.ID[:]) > 0 {
 			break
 		}
 	}
-	c.End = w.End.Add(30 * time.Second)
-	g.resends = append(g.resends, c)
+	c.End = w.End.Add(time.Duration(k+1) * 30 * time.Second)
+	return c
 }
 
 // night is the usual night ending on day k's morning: to bed 22:45-23:40,
@@ -374,8 +375,8 @@ func goldenGarminUser(g *goldenGen) {
 			w := window{from, from.Add(goldenMin(g.between(45, 70)))}
 			avg := float64(g.between(128, 150))
 			ride := g.workout(garmin, "cycling", w, &avg)
-			if k == 16 {
-				g.resend(ride)
+			if k == 16 { // re-sent twice in one later sync: one fold removes two copies
+				g.resends = append(g.resends, g.copyOf(ride, 0), g.copyOf(ride, 1))
 			}
 			if wd == 0 { // Mondays: the ride's heart rate never reached Health, only its average
 				g.heart(garmin, wake, w.from, 2*time.Minute, 60, 86)
@@ -601,7 +602,13 @@ func goldenStrengthUser(g *goldenGen) {
 				if k == 23 {
 					g.late = append(g.late, g.record(watch, "strength", w, nil))
 				} else {
-					g.workout(watch, "strength", w, nil)
+					x := g.workout(watch, "strength", w, nil)
+					if k == 25 {
+						// Friday's workout is re-sent under a new id after the month was
+						// scored: the fold removes the copy that carries the session (and
+						// queues the day before), and the session moves to the new copy.
+						g.late = append(g.late, g.copyOf(x, 0))
+					}
 				}
 				if wd == 0 {
 					// Mondays a strap's app records it as well, 2 minutes longer at

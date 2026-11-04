@@ -2911,7 +2911,7 @@
       "zone_minutes": [0, 0, 0, 0, 0]
     }
   ],
-  "scenario": "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Mondays also a longer strap recording the watch's hides, Wed without; day 23's watch workout arrives after the month was scored), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged",
+  "scenario": "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Mondays also a longer strap recording the watch's hides, Wed without; day 23's watch workout arrives after the month was scored, and day 25's is re-sent then under a new id), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged",
   "sessions": [
     {
       "bodyweight_kg": null,
@@ -3574,7 +3574,7 @@
       "strain": 12,
       "title": "app-2026-10-30",
       "volume_kg": 6687.5,
-      "workout_id": "workout Apple Watch 2026-10-30T17:57"
+      "workout_id": "workout Apple Watch 2026-10-30T17:57 late"
     },
     {
       "bodyweight_kg": null,
@@ -3592,6 +3592,200 @@
       "title": "app-2026-11-02",
       "volume_kg": 6875,
       "workout_id": "workout Apple Watch 2026-11-02T17:57"
+    }
+  ],
+  "syncs": [
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-04"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-05"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-06"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-07"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-08"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-09"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-10"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-11"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-12"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-13"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-14"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-15"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-16"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-17"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-18"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-19"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-20"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-21"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-22"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-23"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-24"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-25"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-26"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-27"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-28"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-29"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-30"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-31"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-01"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-02"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-03"
+    },
+    {
+      "days": ["2026-10-29", "2026-10-30", "2026-10-31"],
+      "fold_skipped": false,
+      "folded": 1,
+      "sync": "late"
     }
   ],
   "tz": "UTC",
@@ -3872,9 +4066,9 @@
       "avg_hr": null,
       "distance_m": null,
       "duplicate_of": null,
-      "end_at": "2026-10-30T19:04:00+00:00",
+      "end_at": "2026-10-30T19:04:30+00:00",
       "energy_kcal": null,
-      "id": "workout Apple Watch 2026-10-30T17:57",
+      "id": "workout Apple Watch 2026-10-30T17:57 late",
       "max_hr": null,
       "model_version": "2026.10.3",
       "muscular_load": 68.1,

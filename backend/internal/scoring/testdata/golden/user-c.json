@@ -2403,6 +2403,194 @@
   ],
   "scenario": "Apple Watch and Garmin worn together: both write heart rate, steps, resting HR and the night; runs recorded by both (one shown; day 10's Garmin one is 'other'); short watch-only intervals on Tuesdays in an hour the Garmin's heart rate wins; a 17-hour hike on day 13 whose last 40 minutes the watch also recorded after midnight; manual max HR 186; DST on day 20",
   "sessions": [],
+  "syncs": [
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-04"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-05"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-06"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-07"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-08"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-09"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-10"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-11"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-12"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-13"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-14"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-15"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-16"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-17"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-18"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-19"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-20"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-21"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-22"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-23"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-24"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-25"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-26"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-27"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-28"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-29"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-30"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-10-31"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-01"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-02"
+    },
+    {
+      "days": [],
+      "fold_skipped": false,
+      "folded": 0,
+      "sync": "2026-11-03"
+    }
+  ],
   "tz": "Europe/Berlin",
   "user": "user-c",
   "workouts": [

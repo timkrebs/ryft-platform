@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // The golden files' canonical JSON, diff, report and update guard: everything
@@ -40,10 +43,18 @@ var goldenTables = []struct {
 	{"sessions", "sessions", "id", "started_at, id", []string{"user_id", "created_at", "updated_at", "imported_at"}},
 }
 
+// goldenSections are the file's sections in report order, each row's key: the
+// three tables, then what each sync's apply returned (store.Applied: the days
+// it queued, the copies the fold removed, whether it skipped).
+var goldenSections = []struct{ section, key string }{
+	{"days", "day"}, {"workouts", "id"}, {"sessions", "id"}, {"syncs", "sync"},
+}
+
 // goldenIDColumns hold ids; the files have labels in their place.
 var goldenIDColumns = []string{"id", "session_id", "duplicate_of", "workout_id", "plan_day_id", "device_id"}
 
-// goldenFile is one user's file: the rows of each table, oldest first.
+// goldenFile is one user's file: the rows of each table, oldest first, and
+// the syncs in the order they were sent.
 type goldenFile struct {
 	User     string           `json:"user"`
 	Scenario string           `json:"scenario"`
@@ -51,6 +62,7 @@ type goldenFile struct {
 	Days     []map[string]any `json:"days"`
 	Workouts []map[string]any `json:"workouts"`
 	Sessions []map[string]any `json:"sessions"`
+	Syncs    []map[string]any `json:"syncs"`
 }
 
 func (f *goldenFile) section(name string) *[]map[string]any {
@@ -59,6 +71,8 @@ func (f *goldenFile) section(name string) *[]map[string]any {
 		return &f.Days
 	case "workouts":
 		return &f.Workouts
+	case "syncs":
+		return &f.Syncs
 	}
 	return &f.Sessions
 }
@@ -89,7 +103,7 @@ func goldenDigest(sum [sha256.Size]byte) string {
 func goldenFields(files map[string]goldenFile) string {
 	names := map[string]bool{}
 	for _, f := range files {
-		for _, tb := range goldenTables {
+		for _, tb := range goldenSections {
 			for _, r := range *f.section(tb.section) {
 				flat := map[string]string{}
 				goldenFlatten("", r, flat)
@@ -283,7 +297,7 @@ func (c goldenChange) addition() bool { return c.from == goldenAbsent }
 // ModelVersion: after a bump every row has one, and the report says so once.
 func goldenChanges(want, got goldenFile, skipVersion bool) []goldenChange {
 	var out []goldenChange
-	for _, tb := range goldenTables {
+	for _, tb := range goldenSections {
 		index := func(rows []map[string]any) map[string]map[string]string {
 			m := map[string]map[string]string{}
 			for _, r := range rows {
@@ -398,7 +412,7 @@ func goldenSummary(changes []goldenChange) string {
 		rows[c.section][c.row] = true
 	}
 	var parts []string
-	for _, tb := range goldenTables {
+	for _, tb := range goldenSections {
 		if n := len(rows[tb.section]); n > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", tb.section, n))
 		}
@@ -509,14 +523,14 @@ func goldenHEADManifest() (head, disk []byte, err error) {
 	rel := "./" + filepath.ToSlash(filepath.Join(goldenDir, "manifest.json"))
 	out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("an update needs a git checkout to compare the manifest with HEAD's: %w", err)
+		return nil, nil, fmt.Errorf("an update needs a git checkout to compare the manifest with HEAD's: %w%s", err, goldenStderr(err))
 	}
 	if strings.TrimSpace(string(out)) != "true" {
 		return nil, nil, errors.New("an update needs a git work tree to compare the manifest with HEAD's")
 	}
 	if exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD:"+rel).Run() == nil {
 		if head, err = exec.Command("git", "show", "HEAD:"+rel).Output(); err != nil {
-			return nil, nil, fmt.Errorf("git show HEAD:%s: %w", rel, err)
+			return nil, nil, fmt.Errorf("git show HEAD:%s: %w%s", rel, err, goldenStderr(err))
 		}
 	}
 	disk, err = os.ReadFile(filepath.Join(goldenDir, "manifest.json"))
@@ -526,11 +540,51 @@ func goldenHEADManifest() (head, disk []byte, err error) {
 	return head, disk, err
 }
 
+// goldenStderr is what git wrote to stderr before it failed (Output keeps it
+// in the ExitError), as ": <text>", or "".
+func goldenStderr(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+		return ": " + strings.TrimSpace(string(ee.Stderr))
+	}
+	return ""
+}
+
+// goldenAllowRemote lets an update run against a database host that is not
+// this machine's.
+const goldenAllowRemote = "GOLDEN_ALLOW_REMOTE_DB"
+
+// goldenLocalDB refuses a database URL whose hosts (fallbacks included) are not
+// loopback or a unix socket: the run creates a database and the service roles
+// on that server (engineDB), which must be a throwaway one. Parsed as pgx
+// parses it, so a URL and a keyword/value string read the same.
+func goldenLocalDB(dsn string) error {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("RYFT_TEST_POSTGRES_URL does not parse: %w", err)
+	}
+	hosts := []string{cfg.Host}
+	for _, f := range cfg.Fallbacks {
+		hosts = append(hosts, f.Host)
+	}
+	for _, h := range hosts {
+		ip := net.ParseIP(h)
+		if h == "localhost" || strings.HasPrefix(h, "/") || (ip != nil && ip.IsLoopback()) {
+			continue
+		}
+		return fmt.Errorf("RYFT_TEST_POSTGRES_URL names host %q, which is not this machine: the update creates a database "+
+			"and roles there; use a local throwaway server, or set %s=1 if that host is one", h, goldenAllowRemote)
+	}
+	return nil
+}
+
 // ---- the tests that need no database ------------------------------------------------
 
 // TestGoldenManifest: the files must belong to the current ModelVersion (a
 // bump without make golden-update fails here), list every user of the
-// generator, and hold 30 consecutive days each, scored by that version.
+// generator, hold 30 consecutive days each, scored by that version, and
+// carry the field digest of the files and the input digests of the generator
+// as they are now (no database: the generator only needs the built-in exercises).
 func TestGoldenManifest(t *testing.T) {
 	if os.Getenv(goldenUpdate) != "" {
 		t.Skip("regenerating")
@@ -579,6 +633,24 @@ func TestGoldenManifest(t *testing.T) {
 	}
 	if !t.Failed() && goldenFields(files) != m.Fields {
 		t.Errorf("the files' field names digest to %s, the manifest says %s: a file edited by hand?", goldenFields(files), m.Fields)
+	}
+	// The input digests must be the generator's as it is now: a regeneration
+	// with a generator edit that was then reverted (or a digest edited by hand)
+	// would otherwise leave a moved digest that lets golden_guard.sh pass files
+	// whose numbers moved without a ModelVersion bump.
+	if keys := slices.Sorted(maps.Keys(m.Inputs)); !slices.Equal(keys, slices.Sorted(slices.Values(m.Users))) {
+		t.Errorf("manifest inputs for %v, users %v: one entry per user, no more", keys, m.Users)
+	}
+	lib := library(t)
+	for _, u := range goldenUsers {
+		g, err := newGoldenGen(u, lib)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if now, was := g.inputs(u), m.Inputs[u.Name]; now != was {
+			t.Errorf("%s: the generator's inputs are %+v, the manifest has %+v: the files were made by another generator; "+
+				"restore testdata/golden from git, or regenerate with make golden-update and commit both", u.Name, now, was)
+		}
 	}
 }
 
@@ -670,6 +742,22 @@ func TestGoldenDiffReads(t *testing.T) {
 	} {
 		if err := goldenCommitted(c.head, c.disk); (err == nil) != c.ok {
 			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+	// An update only against this machine's database.
+	for dsn, ok := range map[string]bool{
+		"postgres://postgres:pw@localhost:55432/postgres":                            true,
+		"postgres://postgres:pw@127.0.0.1:5432/postgres":                             true,
+		"postgres://postgres:pw@[::1]:5432/postgres":                                 true,
+		"host=/var/run/postgresql user=postgres":                                     true,
+		"postgres://postgres:pw@db.example.com:5432/postgres":                        false,
+		"host=10.0.0.5 user=postgres password=pw":                                    false,
+		"postgres://postgres:pw@localhost:5432,db.example.com:5432/postgres":         false,
+		"postgres://postgres:pw@localhost.example.com:5432/postgres":                 false,
+		"postgres://postgres:pw@127.0.0.1.example.com:5432/postgres?sslmode=disable": false,
+	} {
+		if err := goldenLocalDB(dsn); (err == nil) != ok {
+			t.Errorf("%s: %v", dsn, err)
 		}
 	}
 }
