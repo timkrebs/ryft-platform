@@ -389,18 +389,18 @@ groups:
           summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }}); requests are admitted"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionBindingMissing
-        # Fewer than the chart's 12 ryft-* bindings exist (a binding deleted by hand, a release
+        # Fewer than the chart's 13 ryft-* bindings exist (a binding deleted by hand, a release
         # that lost objects, or kube-state-metrics blind), once bindings have existed in the
         # last day. A chart that was never enabled stays quiet; a deliberate rollback to
         # Phase 0 raises this for up to a day: silence it.
         expr: |
-          (count(count by (validatingadmissionpolicybinding) (kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"})) or vector(0)) < 12
+          (count(count by (validatingadmissionpolicybinding) (kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"})) or vector(0)) < 13
             and on ()
           count(last_over_time(kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"}[1d])) > 0
         for: 10m
         labels: { severity: critical }
         annotations:
-          summary: "{{ $value }} of 12 admission policy bindings exist"
+          summary: "{{ $value }} of 13 admission policy bindings exist"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionBindingNotDenying
         # A binding committed as deny (ryft:admission_binding_intended) has no Deny while

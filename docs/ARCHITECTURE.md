@@ -403,6 +403,30 @@ Not covered (yet): mTLS between Traefik and the services (inside the cluster tha
 plain HTTP), image signing and admission policy, and per-user row-level security inside
 the services' own roles. The services scope every query by user themselves.
 
+What the admission layer does not cover (P12, `ryft-argo-scope`, D120 and its amendment; the policies are
+off until Phase 1, `docs/OPERATIONS.md` → Admission policies):
+
+1. **Reads.** Admission sees writes only. Both Argo CD Roles in `argocd` read Secrets there, so a stolen
+   controller or server token reads `server.secretkey` and can mint a UI session; that session acts as
+   argocd-server, which P7, P10 and P12 bound. The controller also reads ConfigMaps and Services
+   cluster-wide. Closing these needs RBAC, not admission.
+2. **Writes inside the scope.** In `ryft-*` and `rabbitmq-system` a stolen controller token still writes
+   and deletes whatever RBAC allows. Nothing judges a Service selector, a ConfigMap value (beyond P5's
+   auth keys), an HPA, a PDB or a cert-manager Certificate or Issuer. A namespaced Issuer cannot use
+   cert-manager's Pod Identity while `--issuer-ambient-credentials` stays off (the chart default).
+3. **The controller's choice of revision.** P10's revision rule binds argocd-server only. A stolen
+   controller token can start a sync of any commit the repository serves (on GitHub that includes
+   fork-PR commits by SHA); what it deploys is still held to P12's scope and the content rules. Not
+   fixable at admission; accepted.
+4. **The admission objects themselves.** They are exempt from admission, so RBAC holds them. P12 removes
+   the indirect routes (`kube-system/aws-auth`, a Pod running as a controller-manager or cert-manager
+   service account), not a direct write.
+5. **Every other identity.** The operators have P8 and VSO has P4 and P5; cert-manager, Traefik,
+   ExternalDNS, the nodes and the kube-controller-manager have none; the user and Terraform are
+   break-glass.
+6. **A merged malicious commit.** Argo CD applies it within the scope and the content rules. Review is
+   the control (D95).
+
 ## Deployment
 
 `deploy/k8s/base/<service>` holds namespace-neutral manifests for each workload. The
