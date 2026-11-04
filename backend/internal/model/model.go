@@ -54,7 +54,7 @@ const (
 )
 
 // Why a day is calibrating: DailyScore.calibrating_reason, a closed enum
-// (the rule is scoring.CalibratingReason).
+// (D113; the rule is scoring.CalibratingReason).
 const (
 	CalibratingShortHistory = "short_history" // under 7 nights with both signals yet; waiting ends it
 	CalibratingNoHRV        = "no_hrv"        // 7+ days with data in the window, no overnight HRV there or that night
@@ -296,10 +296,10 @@ type DailyScore struct {
 	SpO2               *float64       `json:"spo2"`
 	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"`    // 30-day baseline hrv_ms is scored against
 	RHRBaseline        *float64       `json:"rhr_baseline"`       // 30-day baseline rhr is scored against
-	BaselineDays       int            `json:"baseline_days"`      // nights of history behind the baselines, 0..30
+	BaselineDays       int            `json:"baseline_days"`      // nights of history behind the baselines, 0..30 (D20: typed; details counts HRV days only)
 	BaselineHRVDays    *int           `json:"baseline_hrv_days"`  // of the 30 scored days before, those with an HRV; nil: not known
 	BaselineRHRDays    *int           `json:"baseline_rhr_days"`  // … with a resting HR; baseline_days = min of the two
-	Calibrating        bool           `json:"calibrating"`        // baseline_days < 7
+	Calibrating        bool           `json:"calibrating"`        // baseline_days < 7, exactly (D20)
 	CalibratingReason  *string        `json:"calibrating_reason"` // Calibrating* when calibrating; nil otherwise or not known
 	Details            map[string]any `json:"details"`
 	ComputedAt         time.Time      `json:"computed_at"`
@@ -464,7 +464,7 @@ const (
 	MetricReadiness   = "readiness"    // DailyScore.readiness
 	MetricRecovery    = "recovery"     // DailyScore.recovery
 	MetricStrain      = "strain"       // DailyScore.strain
-	MetricSleep       = "sleep"        // DailyScore.sleep_performance (%)
+	MetricSleep       = "sleep"        // DailyScore.sleep_performance (%), not minutes (D12)
 	MetricSleepMin    = "sleep_min"    // DailyScore.sleep_actual_min (minutes asleep)
 	MetricHRV         = "hrv"          // DailyScore.hrv_ms
 	MetricRHR         = "rhr"          // DailyScore.rhr

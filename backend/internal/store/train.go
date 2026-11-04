@@ -717,7 +717,7 @@ func (s *Store) CompleteSessionWith(ctx context.Context, userID, id uuid.UUID, c
 }
 
 // SetSessionLoad is scoring's write: the load it computed and the workout it
-// attached the session to.
+// attached the session to. The api writes what the user enters, scoring what it derives (D63).
 func (s *Store) SetSessionLoad(ctx context.Context, userID, id uuid.UUID, trimp, strain, volume float64, workoutID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE sessions SET muscular_trimp=$3, strain=$4, volume_kg=$5, workout_id=$6
 		WHERE user_id=$1 AND id=$2 AND (muscular_trimp, strain, volume_kg, workout_id) IS DISTINCT FROM ($3::float8, $4::float8, $5::float8, $6::uuid)`,

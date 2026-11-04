@@ -18,7 +18,8 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
     - from:
-        # The metrics collector (namespace monitoring) scrapes /metrics on its own port.
+        # The metrics collector (namespace monitoring) scrapes /metrics on its own port (D16: an exception to
+        # "only the Ingress").
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
       ports:
         - { protocol: TCP, port: 9090 }

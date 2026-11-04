@@ -218,7 +218,7 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check. The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
+# map check, then the decision references (warnings only: scripts/decision_refs.sh exits 0 unless it cannot work). The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
 # report different findings, so a mismatch is said out loud before the run.
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
@@ -228,6 +228,7 @@ lint:
 	fi
 	cd backend && golangci-lint run
 	./scripts/pkgmap.sh --check
+	./scripts/decision_refs.sh
 
 # After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
 # docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.

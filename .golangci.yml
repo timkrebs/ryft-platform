@@ -1,4 +1,4 @@
-# golangci-lint v2. Run from backend/: `golangci-lint run` (CI does the same).
+# golangci-lint v2 (D18: the standard set plus the extras below). Run from backend/: `golangci-lint run` (CI does the same).
 version: "2"
 
 run:

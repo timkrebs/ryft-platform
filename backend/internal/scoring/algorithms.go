@@ -309,7 +309,7 @@ func StrainFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) float64 {
 }
 
 // LoadFromAverage is StrainFromAverage with the full result: the whole duration
-// is credited at the average's intensity and to the average's zone.
+// is credited at the average's intensity and to the average's zone, so zone_min is never empty for it (D9).
 func LoadFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) StrainResult {
 	var res StrainResult
 	if maxHR <= rhr || dur <= 0 {

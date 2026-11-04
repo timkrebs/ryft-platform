@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
-# Holds an image group, or releases it (docs/OPERATIONS.md → Deploy and roll back; D107):
+# Holds an image group, or releases it (docs/OPERATIONS.md → Deploy and roll back; D107, D110: a script writes
+# the line, so its format and reason rules cannot drift):
 #   scripts/hold.sh add <services|web> "<reason>"
 #   scripts/hold.sh rm  <services|web>
 # `add` writes exactly one line, `  # hold: <group> <YYYY-MM-DD UTC> <reason>`, right above the

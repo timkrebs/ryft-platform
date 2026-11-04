@@ -75,10 +75,13 @@ jobs:
               - 'scripts/coverage.sh'
               - '.github/workflows/ci.yml'
             # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
-            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite. Likewise the
+            # decision reference check and its skip list (scripts/decision_refs.sh, the same job).
             pkgmap:
               - 'docs/ARCHITECTURE.md'
               - 'scripts/pkgmap.sh'
+              - 'scripts/decision_refs.sh'
+              - 'scripts/decision_refs.skip'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -244,6 +247,10 @@ jobs:
       # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
       # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
       - run: ./scripts/pkgmap.sh --check
+      # D-numbers in docs/DECISIONS.md that no source or config file mentions (and scripts/decision_refs.skip does not
+      # excuse): one ::warning annotation, the list in the log. Exit 0 on warnings, so it never fails the job; it fails
+      # only when the script cannot work. `--strict` is the later promotion to a failure.
+      - run: ./scripts/decision_refs.sh
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
