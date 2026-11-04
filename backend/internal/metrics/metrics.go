@@ -1,9 +1,3 @@
-// Package metrics declares every Prometheus metric the three services export
-// and serves them on /metrics. All service-specific metrics are vectors: a
-// vector only appears in a service's output once that service records a label
-// set, so ingest shows ingest metrics, scoring shows scoring metrics, and all
-// three show the HTTP, Go runtime and process metrics. docs/OBSERVABILITY.md
-// lists them with the dashboard queries.
 package metrics
 
 import (
@@ -15,18 +9,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// The service metrics. Each metric's Help string says what it counts and what its
+// labels mean (the Prometheus name is the contract with the dashboards and alerts,
+// so a rename is a dashboard change); a comment below adds only what Help cannot.
 var (
-	// HTTP, all services. route is the ServeMux pattern ("GET /v1/days/{day}"),
-	// never the raw path, so cardinality stays bounded.
+	// HTTPRequests counts every HTTP answer, for all services. route is the ServeMux
+	// pattern ("GET /v1/days/{day}"), never the raw path, so cardinality stays bounded (D14).
 	HTTPRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_requests_total",
 		Help: "HTTP requests by route pattern and status code.",
 	}, []string{"route", "code"})
+	// HTTPDuration is the latency behind HTTPRequests, by the same route pattern.
 	HTTPDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ryft_http_request_duration_seconds",
 		Help:    "HTTP request latency by route pattern.",
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	}, []string{"route"})
+	// TextRefused counts requests refused for text Postgres cannot store, by where it
+	// was found: body, url or database. A database hit means a path bypassed the first
+	// two checks, so it should stay zero.
 	TextRefused = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_text_refused_total",
 		Help: "Requests refused for text Postgres cannot store (a NUL, or bytes that are not UTF-8), by route pattern " +
@@ -37,7 +38,7 @@ var (
 		Help: "Requests accepted after the NUL characters were removed from their body's strings (POST /v1/sync), by route pattern.",
 	}, []string{"route"})
 
-	// ingest.
+	// Ingested counts the records POST /v1/sync accepted (ingest), by kind and type.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_samples_ingested_total",
 		Help: "Records accepted by POST /v1/sync. kind=sample (type = sample type), sleep (type = stage) or workout.",
@@ -65,13 +66,15 @@ var (
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
 	}, []string{})
 
-	// all services.
+	// Panics counts handler panics that Recover turned into a 500. Any increase is a
+	// bug to fix; the response body stays generic (D37).
 	Panics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_panics_total",
 		Help: "Handler panics recovered (answered 500), by route pattern.",
 	}, []string{"route"})
 
-	// ingest + api.
+	// RateLimited counts requests answered 429 by the per-pod, per-user token bucket
+	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_rate_limited_total",
 		Help: "Requests answered 429 by the per-user limit, by class (sync, default).",
@@ -86,7 +89,9 @@ var (
 		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
-	// Events (RabbitMQ): ingest, api and scoring publish, scoring and notify consume.
+	// EventsPublished counts sends to the broker (ingest, api and scoring publish;
+	// scoring and notify consume). A non-ok result means the outbox keeps the row and
+	// retries, so it is a delay, not a loss (D101).
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
 		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
@@ -97,13 +102,14 @@ var (
 		Help: "Events consumed, by reason and result: ok, retry (to the next retry tier), failed (the last attempt failed, " +
 			"dead-lettered), bad (unparseable, dead-lettered), dropped (cannot succeed, e.g. the user was deleted), deferred (notify: quiet hours).",
 	}, []string{"reason", "result"})
-	// The name is from NATS, kept so the dashboards and history stay (D102).
+	// Redeliveries counts messages a consumer received again. The metric name is from
+	// NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
 		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
 	}, []string{"consumer"})
 
-	// scoring.
+	// DaysScored counts days scoring computed, by result (scoring).
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_days_scored_total",
 		Help: "Days scored, by result (ok, error, no_consent: skipped, the user withdrew consent).",
@@ -126,7 +132,7 @@ var (
 		Help: "Weekly sleep-baseline estimates, by outcome (applied: the baseline in use moved and the last 7 days were rescored; kept: the same value, or set by hand; insufficient: too few qualifying nights; error).",
 	}, []string{"outcome"})
 
-	// Push (notify).
+	// PushNotifications counts what notify decided per category, sent or not (notify).
 	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_push_notifications_total",
 		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key).",
@@ -140,7 +146,8 @@ var (
 		Help: "Device tokens dropped because APNs said they are gone (410, BadDeviceToken, DeviceTokenNotForTopic).",
 	})
 
-	// Beta (api, ingest).
+	// GateRefusals counts the requests a gate refuses or, in warn mode, would refuse
+	// (api, ingest, scoring); warn mode is how a gate is rehearsed before it is on (D87).
 	GateRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_gate_refusals_total",
 		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (a sync or a training import without consent; in scoring a day); mode on = refused with 403, warn = served with X-RYFT-Gate.",
@@ -184,7 +191,7 @@ var (
 		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",
 	}, []string{"category"})
 
-	// Journal (api).
+	// JournalSaves counts journal days saved (api).
 	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_journal_saves_total",
 		Help: "Journal days saved (PUT /v1/journal/{day}).",
@@ -195,7 +202,8 @@ var (
 		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5},
 	}, []string{"caller"})
 
-	// Remote config (api).
+	// FlagEvaluations counts feature flags evaluated for GET /v1/config (api). The key
+	// label is a flag key from the flags table, a bounded set.
 	FlagEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_flag_evaluations_total",
 		Help: "Feature flags evaluated for GET /v1/config, by key and result (on, off).",
@@ -205,7 +213,7 @@ var (
 		Help: "Requests to /v1/admin, by result (ok, unauthorized, invalid, error).",
 	}, []string{"result"})
 
-	// Train (api).
+	// TrainSessionsCompleted counts strength sessions completed (api).
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",
 		Help: "Strength sessions completed (POST /v1/sessions/{id}/complete, repeats included).",
@@ -218,7 +226,8 @@ var (
 		Name: "ryft_train_prs_total",
 		Help: "Personal records set by a completed session, by kind (e1rm, max_weight, max_reps, max_volume).",
 	}, []string{"kind"})
-	// The training import (api, POST /v1/train/import, D124).
+	// TrainImports counts POST /v1/train/import requests that passed authentication
+	// (api, D124), by how they ended.
 	TrainImports = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_train_imports_total",
 		Help: "POST /v1/train/import requests past authentication, by result: ok (200, also when every item was rejected), " +

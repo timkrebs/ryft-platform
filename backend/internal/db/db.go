@@ -1,4 +1,3 @@
-// Package db owns the Postgres connection pool and embedded SQL migrations.
 package db
 
 import (

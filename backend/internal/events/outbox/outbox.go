@@ -1,10 +1,3 @@
-// Package outbox is the transactional outbox between a service's database writes and
-// its broker (D101): an event is a row in table outbox, written in the same
-// transaction as what it announces (Insert) or right after it (Send), and the
-// service's relay (Run) sends the rows with the broker's confirm and marks them
-// published. Several replicas drain one publisher's rows without sending one twice
-// (FOR UPDATE SKIP LOCKED); a crash between a send and its mark sends it again, which
-// the idempotent handlers absorb (D100).
 package outbox
 
 import (
@@ -23,8 +16,9 @@ import (
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
-// MaxAttempts: a row that failed this often is set aside (stuck, alerted) instead of
-// holding up the rows after it, e.g. an event no queue is bound for.
+// MaxAttempts is how many failed sends a row gets before the relay sets it aside
+// (stuck, alerted as OutboxStuck) instead of letting it hold up the rows after it,
+// e.g. an event no queue is bound for. A stuck row needs a person.
 const MaxAttempts = 50
 
 // Keep is how long published rows stay, for looking back.

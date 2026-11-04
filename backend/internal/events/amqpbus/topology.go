@@ -142,10 +142,20 @@ func ResourceRegex(names []string) string {
 	return oneOf(names...)
 }
 
-// Exchange, Queue, Binding and Policy describe the topology.
+// Exchange is a declared exchange; Type is "topic" or "direct".
 type Exchange struct{ Name, Type string }
+
+// Queue is a declared quorum queue. It has no arguments on purpose: limits, TTLs and
+// dead-lettering come from a Policy, since the Topology Operator cannot change a
+// queue's arguments once it exists (D99).
 type Queue struct{ Name string }
+
+// Binding routes Key from the Source exchange to the Destination queue.
 type Binding struct{ Source, Destination, Key string }
+
+// Policy applies Definition (delivery limit, TTL, dead-lettering, length) to every
+// queue whose name matches Pattern. Every queue must match exactly one policy
+// (Topology.Validate checks it).
 type Policy struct {
 	Name, Pattern string
 	Priority      int
