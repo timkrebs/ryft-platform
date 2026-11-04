@@ -67,5 +67,9 @@ if grep -q '!!!!' "$tmp/out"; then fail "a tree that passed got a warning"; fi
 # in GitHub Actions the workflow has checked the ref (scripts/check_e2e_ref.sh) and the checkout is one commit
 PATH="$tmp/tools" GITHUB_ACTIONS=true "$BASH" "$tmp/root/scripts/admission_e2e.sh" --repo "$tmp/ahead" >"$tmp/out" 2>&1 && rc=0 || rc=$?
 grep -q 'is not installed' "$tmp/out" || fail "GITHUB_ACTIONS: the guard ran: $(cat "$tmp/out")"
+grep -q 'notice: GITHUB_ACTIONS=true, so the provenance check' "$tmp/out" || fail "GITHUB_ACTIONS: the skipped guard is not announced: $(cat "$tmp/out")"
+# and not announced where it did not apply (this checkout)
+PATH="$tmp/tools" GITHUB_ACTIONS=true "$BASH" "$tmp/root/scripts/admission_e2e.sh" >"$tmp/out" 2>&1 || true
+if grep -q 'notice:' "$tmp/out"; then fail "a notice for this checkout, which has no guard: $(cat "$tmp/out")"; fi
 
 echo "✓ admission_e2e_guard_test"
