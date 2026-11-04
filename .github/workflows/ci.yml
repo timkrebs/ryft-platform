@@ -55,6 +55,7 @@ jobs:
       run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
+      run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -123,6 +124,12 @@ jobs:
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
+              - '.github/workflows/ci.yml'
+            # The scoring golden files and their PR guard (D149).
+            golden:
+              - 'backend/internal/scoring/testdata/golden/**'
+              - 'scripts/golden_guard.sh'
+              - 'scripts/tests/golden_guard_test.sh'
               - '.github/workflows/ci.yml'
       - if: github.event_name != 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -589,6 +596,28 @@ jobs:
             git /repo --config /config/gitleaks.toml --gitleaks-ignore-path /noignore \
             --log-opts=HEAD --redact --no-banner --exit-code 1
 
+  # A golden user file moves only with a ModelVersion bump, a generator change or new fields
+  # (D149). Pull requests only: it compares with the merge base, which a push has no use for.
+  # Its own job (not a step of `test`): it needs the whole history, not the Go toolchain or
+  # Postgres, and a red guard should name itself.
+  golden-guard:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.run_golden == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The whole history: the guard needs the merge base with the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Golden files changed without a ModelVersion bump, input digest or field digest
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/golden_guard.sh "$BASE_SHA"
+
   # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
   # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
   # A new check job is one more entry in `needs`.
@@ -596,7 +625,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

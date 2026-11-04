@@ -5,7 +5,7 @@
 # A user-*.json that changed against the merge base without any of the three is a hand edit or a
 # regeneration that hides a model change: this fails it. The version is the manifest's
 # model_version at both refs (TestGoldenManifest ties it to version.go's ModelVersion, and checks
-# that the digests are the generator's). Meant for pull requests; CI wiring is a follow-up PR.
+# that the digests are the generator's). Meant for pull requests: CI runs it (the `golden-guard` job in ci.yml).
 #   scripts/golden_guard.sh <base-ref>     e.g. origin/main, or a commit sha
 # Exit 1: a finding. Exit 2: cannot check (no jq, no such base, no merge base).
 # Manifest values and paths are never printed raw: a digest must be all digits, a version
@@ -26,7 +26,7 @@ mb=$(git merge-base "$base_sha" HEAD) \
 changed=()
 while IFS= read -r -d '' f; do
   case "$f" in "$dir"/user-*.json) changed+=("$f") ;; esac
-done < <(git diff -z --name-only "$mb" HEAD -- "$dir")
+done < <(git diff -z --no-renames --name-only "$mb" HEAD -- "$dir")
 if [ "${#changed[@]}" -eq 0 ]; then echo "golden guard: no golden user file changed against $shown"; exit 0; fi
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -66,6 +66,18 @@ for f in "${changed[@]}"; do
   # The name comes from git: print it only as a plain user name directly in the folder.
   if ! [[ "$u" =~ ^user-[a-z0-9-]{1,32}$ ]] || [ "$f" != "$dir/$u.json" ]; then
     err "a golden user file has an unexpected name or place"; bad=1; continue
+  fi
+  if ! git cat-file -e "HEAD:$f" 2>/dev/null; then
+    # A deleted file (a rename shows up as a deletion plus an addition): a retired user is a
+    # model-visible change, so it needs the ModelVersion bump (handled above) or a change of the
+    # manifest's users list.
+    if [ "$(jq -c '.users // null' "$tmp/old")" != "$(jq -c '.users // null' "$tmp/new")" ]; then
+      echo "golden guard: $u: removed, the manifest's users list changed"
+    else
+      err "$u.json was deleted, but ModelVersion ($new_v) and the manifest's users list did not change"
+      bad=1
+    fi
+    continue
   fi
   was=$(value "$tmp/old" ".inputs[\"$u\"].digest" "$digest_re" "digest")
   now=$(value "$tmp/new" ".inputs[\"$u\"].digest" "$digest_re" "digest")

@@ -2962,10 +2962,14 @@ Engine, and fails with the changed fields grouped by field.
   ties to `version.go`), a moved input digest for that user, or a moved field digest (additive); a file kept without
   its digest fails. It exits 2 when it cannot check (no `jq`, the base is not a commit here, no merge base in a
   shallow checkout). Manifest values and paths are printed only in their expected form (digits, `YEAR.MONTH.N`,
-  `user-<name>`), never raw: a `::` in a printed string would be a workflow command. It is wired into CI in a
-  follow-up PR (gitops). **Honestly:** the field digest is one value for all files, so a PR that adds a column lets
+  `user-<name>`), never raw: a `::` in a printed string would be a workflow command. CI runs it as the `golden-guard` job
+  (pull requests only, whole history, path-filtered, in `ci-ok`'s needs). **Honestly:** the field digest is one value for all files, so a PR that adds a column lets
   every user file change in the script's eyes; the Go guard's additive mode is what stops a moved value there, and
-  review does the rest.
+  review does the rest. A deleted user file (a rename counts as a deletion plus an addition) fails unless
+  `ModelVersion` or the manifest's `users` list changed. The job runs the PR's own copy of the script, so it is a
+  tripwire for accidental regenerations, not a security boundary: a PR that touches `scripts/golden_guard.sh`, the
+  `golden` filter, the `golden-guard` job or `ci-ok.needs` says so in its description and gets that diff reviewed
+  explicitly.
 - **CI fails instead of skipping.** Locally the test skips without `RYFT_TEST_POSTGRES_URL`, as every engine test.
   With `GITHUB_ACTIONS=true` or an update mode it fails: a CI job that lost its Postgres must not read as green.
 - **Superuser pool.** The run uses the test's admin pool (migrate, seed, then a `Store` on a superuser, or at least
