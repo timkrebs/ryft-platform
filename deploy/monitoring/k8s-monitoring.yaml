@@ -11,6 +11,78 @@
 cluster:
   name: ryft-prod-euc1
 
+# ---- Admission signals (T12-e, D120; docs/OBSERVABILITY.md → Admission) ----------------
+# Fleet Management owns the cluster's usual pipelines. This block adds two small scrapes
+# the chart owns, each with its own job label (so nothing collides with a Fleet series):
+#   1. the API servers' admission metrics (apiServer below, one target per endpoint of
+#      default/kubernetes, not the VIP), kept by an allow-list;
+#   2. kube-state-metrics' series for the policy bindings (its native collector, enabled
+#      under telemetryServices.kube-state-metrics).
+# Every other source of clusterMetrics is off, or Fleet's pipelines would be duplicated.
+# The data needs a destination of the chart's own: the stack's Prometheus write endpoint
+# with the same user and token as OpenCost (ryft-secrets PROM_USERNAME, GC_TOKEN). The
+# Fleet's pipelines write with the same token, so it can already write. If the pods log
+# 401/403 from remote_write, check the access policy (OPERATIONS → Admission policy signals).
+destinations:
+  admission-signals:
+    type: prometheus
+    url: https://prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom/push
+    auth:
+      type: basic
+      usernameKey: PROM_USERNAME
+      passwordKey: GC_TOKEN
+    # With an existing secret the chart reads every other field from it too (tenant id,
+    # client TLS), and ryft-secrets has neither: the tenant id is the same PROM_USERNAME
+    # (Grafana Cloud's tenant is the Prometheus user), and the client TLS block goes, as
+    # for the remote config above.
+    tenantIdKey: PROM_USERNAME
+    tls: null
+    secret:
+      create: false
+      name: ryft-secrets
+      namespace: monitoring
+
+clusterMetrics:
+  enabled: true
+  destinations: [admission-signals]
+  # The chart needs to be told which collector runs the scrapes: the clustered
+  # cluster-wide one (a single replica; both collectors are Fleet-assigned otherwise).
+  collector: alloy-deployment
+  kubelet: { enabled: false }
+  kubeletResource: { enabled: false }
+  kubeletProbes: { enabled: false }
+  cadvisor: { enabled: false }
+  apiServer:
+    enabled: true
+    jobLabel: ryft/kube-apiserver-admission
+    scrapeInterval: 60s
+    metricsTuning:
+      # The chart anchors this regex and always keeps up and scrape_samples_scraped.
+      # The latency histogram is kept as _sum and _count only (no buckets): nothing
+      # alerts on its quantiles, and its buckets would be most of the series.
+      includeMetrics:
+        - apiserver_validating_admission_policy_check_total
+        - apiserver_validating_admission_policy_check_duration_seconds_(sum|count)
+        - pod_security_evaluations_total
+    # Pod Security counts every Pod it allows too; only its refusals are of interest.
+    extraMetricProcessingRules: |-
+      rule {
+        source_labels = ["__name__", "decision"]
+        regex = "pod_security_evaluations_total;(allow|exempt)"
+        action = "drop"
+      }
+  kube-state-metrics:
+    enabled: true
+    jobLabel: ryft/admission-bindings
+    metricsTuning:
+      useDefaultAllowList: false
+      includeMetrics:
+        - kube_validatingadmissionpolicybinding_(info|validation_action)
+
+# The chart's self-report would add its own series to the new destination.
+selfReporting:
+  enabled: false
+
 collectorCommon:
   alloy:
     remoteConfig:
@@ -62,6 +134,43 @@ telemetryServices:
     deploy: true
   kube-state-metrics:
     deploy: true
+    # The policy bindings as metrics (design claim m): kube-state-metrics' own collector for
+    # them (v2.20+, Kubernetes 1.30+), not custom-resource-state, which resolves kinds from
+    # CRDs only and ignores built-in ones. The chart adds list/watch on the bindings to the
+    # ClusterRole itself. A list replaces the chart's default, so this is that default plus
+    # the last entry. Series: kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,
+    # policy_name} and _validation_action{validatingadmissionpolicybinding,action} (1 for each live
+    # action only). The committed action is not in them: ryft:admission_binding_intended.
+    collectors:
+      - certificatesigningrequests
+      - configmaps
+      - cronjobs
+      - daemonsets
+      - deployments
+      - endpointslices
+      - horizontalpodautoscalers
+      - ingresses
+      - jobs
+      - leases
+      - limitranges
+      - mutatingwebhookconfigurations
+      - namespaces
+      - networkpolicies
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - poddisruptionbudgets
+      - pods
+      - replicasets
+      - replicationcontrollers
+      - resourcequotas
+      - secrets
+      - services
+      - statefulsets
+      - storageclasses
+      - validatingwebhookconfigurations
+      - volumeattachments
+      - validatingadmissionpolicybindings
   beyla:
     deploy: true
     k8sCache:
