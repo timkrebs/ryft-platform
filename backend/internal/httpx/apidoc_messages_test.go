@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,6 +57,11 @@ func jsonQuoted(t *testing.T, s string) string {
 }
 
 func TestAPIDocQuotedMessagesMatchCode(t *testing.T) {
+	// Fail and Recover log the failure (and a stack): not for this test's output
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	raw, err := os.ReadFile(apiDoc)
 	if err != nil {
 		t.Fatal(err)
@@ -168,17 +175,10 @@ func TestAPIDocQuotedMessagesMatchCode(t *testing.T) {
 		t.Errorf("docs/API.md → Conventions → Timeouts does not show {\"error\":%q}", timedOut)
 	}
 
-	// 2. the other handlers that answer the same texts say it the same way. cmd/api's import
-	// answers 503 "request timed out" itself (importUnavailable).
-	src, err := os.ReadFile("../../cmd/api/train_import.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), `msg = "`+timedOut+`"`) {
-		t.Errorf("cmd/api/train_import.go no longer answers %q the way API.md → Retries says; keep it equal to httpx.Fail's", timedOut)
-	}
+	// (cmd/api's import writes its own 503 "request timed out"; cmd/api/apidoc_messages_test.go
+	// requires it to equal Fail's.)
 
-	// 3. every {"error": "…"} in API.md is one of these, a placeholder, or pinned elsewhere
+	// 2. every {"error": "…"} in API.md is one of these, a placeholder, or pinned elsewhere
 	known := map[string]bool{}
 	for _, m := range got {
 		known[m.text] = true
