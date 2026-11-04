@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "DeviceID": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "Env": {
+      "type": "string"
+    },
+    "Locale": {
+      "type": "string"
+    },
+    "Token": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "DeviceID",
+    "Env",
+    "Locale",
+    "Token"
+  ],
+  "title": "PushToken",
+  "type": "object"
+}

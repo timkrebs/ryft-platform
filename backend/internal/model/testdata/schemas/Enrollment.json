@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "current_day_index": {
+      "type": "integer"
+    },
+    "current_week": {
+      "type": "integer"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "plan_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "current_day_index",
+    "current_week",
+    "id",
+    "plan_id",
+    "started_at",
+    "status"
+  ],
+  "title": "Enrollment",
+  "type": "object"
+}

@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "days_scored": {
+      "type": "integer"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "newest_record": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "short_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "days_scored",
+    "id",
+    "last_sync_at",
+    "newest_record",
+    "provider",
+    "short_id"
+  ],
+  "title": "AdminDuplicate",
+  "type": "object"
+}

@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bundle_id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "kinds": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "last_seen": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "kinds",
+    "last_seen",
+    "name"
+  ],
+  "title": "UserSource",
+  "type": "object"
+}

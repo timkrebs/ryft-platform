@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "active": {
+      "$ref": "Enrollment",
+      "nullable": true
+    },
+    "builtin": {
+      "items": {
+        "$ref": "PlanSummary"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "mine": {
+      "items": {
+        "$ref": "PlanSummary"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "active",
+    "builtin",
+    "mine"
+  ],
+  "title": "PlansOverview",
+  "type": "object"
+}

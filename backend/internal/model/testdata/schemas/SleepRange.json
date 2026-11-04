@@ -1,0 +1,74 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "avg_consistency": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "avg_efficiency": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "avg_in_bed_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "avg_quality": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "avg_stages": {
+      "items": {
+        "$ref": "SleepStage"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "avg_total_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "bedtimes": {
+      "items": {
+        "$ref": "SleepBedtime"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "days": {
+      "items": {
+        "$ref": "SleepDay"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "from": {
+      "type": "string"
+    },
+    "nights": {
+      "type": "integer"
+    },
+    "range": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "avg_consistency",
+    "avg_efficiency",
+    "avg_in_bed_min",
+    "avg_quality",
+    "avg_stages",
+    "avg_total_min",
+    "bedtimes",
+    "days",
+    "from",
+    "nights",
+    "range",
+    "to"
+  ],
+  "title": "SleepRange",
+  "type": "object"
+}

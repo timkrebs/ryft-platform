@@ -1,17 +1,3 @@
-// Package insights turns recent scored days into the short cards on the
-// Insights screen. It is pure: a History in, cards out, no I/O.
-//
-// A rule is a func(History) *model.Insight that returns nil when it has nothing
-// to say. Adding one is a function and a line in Rules, e.g.:
-//
-//	func lowSpO2(h History) *model.Insight {
-//		d, ok := h.Latest(func(d Day) bool { return d.SpO2 != nil })
-//		if !ok || *d.SpO2 >= 94 {
-//			return nil
-//		}
-//		return &model.Insight{ID: "spo2-low", Severity: model.SeverityNotice, Metric: "spo2", Day: d.Day,
-//			Title: "Low overnight SpO₂", Body: fmt.Sprintf("Your overnight SpO₂ averaged %.0f %%.", *d.SpO2)}
-//	}
 package insights
 
 import (

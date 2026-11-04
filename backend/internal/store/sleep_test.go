@@ -11,6 +11,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
 func TestSleepBaselineSources(t *testing.T) {
@@ -91,8 +92,8 @@ func TestSetLearnedBaseAsScoringRole(t *testing.T) {
 	if _, err := st.EnsureUser(ctx, Identity{ID: id}); err != nil {
 		t.Fatal(err)
 	}
-	const pw = "pw-ryft_scoring-0123456789"
-	if err := db.SetRolePassword(ctx, pool, "ryft_scoring", pw); err != nil {
+	pw := testsupport.RolePassword("ryft_scoring")
+	if err := testsupport.WithRoleLock(ctx, func() error { return db.SetRolePassword(ctx, pool, "ryft_scoring", pw) }); err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(pool.Config().ConnString())

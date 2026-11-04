@@ -203,6 +203,12 @@ the workload on a change.
 
 ## Deploy and roll back
 
+**One-way door (2026-10-31, D144/D145).** Once an app build sends `deleted` or a record `id` (the
+changelog "Deletions and HealthKit ids"), ingest must not be re-pinned to an image from before
+that change: the older ingest rejects unknown request fields with `400`, the app does not retry a
+`400`, and uploads stall until you roll forward again. Roll forward or fix forward; for an
+unrelated incident pin only the other groups back.
+
 Git is the only way anything reaches `ryft-prod-euc1` (D94–D96). Argo CD syncs the
 applications in `deploy/argocd/apps`; CI promotes images by a PR that pins
 `deploy/k8s/overlays/eks`. Nobody runs `kubectl apply` against production, except
@@ -832,6 +838,35 @@ about 130 MiB idle); the disk alarm
 at 1 GB free of 10 GiB. Either blocks every publisher until it clears
 (`RabbitMQAlarm`); first look at the queue depths (a consumer that stopped consuming).
 
+**The operators' reach** (T12-g, D97): both operators run in `rabbitmq-system` but watch
+and write `ryft-rabbitmq` only (`OPERATOR_SCOPE_NAMESPACE=ryft-rabbitmq` on both
+Deployments), and neither holds a cluster-wide `secrets` or `pods` right. Their former
+ClusterRoles are replaced by Roles in `ryft-rabbitmq` (`scoped-rbac.yaml` beside each
+vendored file; kustomize deletes the release's ClusterRole and binding, the vendored files
+stay byte for byte). What they touch there: the Cluster Operator the RabbitmqCluster's
+StatefulSet, Services, ConfigMaps, Secrets, ServiceAccount, PVCs, the peer-discovery Role
+and RoleBinding, pods (update, `pods/exec`); the Topology Operator the Vhost, Exchange,
+Queue, Binding, Policy, User, Permission and TopicPermission objects and the Secrets of
+the users. Left cluster-wide on purpose: the CRDs, the webhooks (they must see the
+objects before the operator does), the metrics token-review roles, the Cluster
+Operator's service-binding role (RabbitmqCluster read for the service binding
+controller). The leader election stays in `rabbitmq-system`. The Argo CD project
+`ryft-operators` therefore also has `ryft-rabbitmq` as a destination (`project.yaml`,
+applied by hand). A RabbitMQ object in another namespace is no longer reconciled.
+
+**Before the sync, a baseline:** save both operators' logs
+(`kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator > before-cro.log`, the same for
+`deploy/messaging-topology-operator`) and count `forbidden` in them. A `forbidden` line that is
+already there (a stray reconcile of something else) is not a reason to revert.
+
+**After an operator sync:** `kubectl -n rabbitmq-system get pods` (both Running, one
+restart from the sync), `kubectl -n rabbitmq-system logs deploy/rabbitmq-cluster-operator`
+and `deploy/messaging-topology-operator` (a line about limiting the watch to one namespace
+and no NEW `forbidden` against the baseline), `kubectl -n ryft-rabbitmq get rabbitmqcluster rabbitmq` (the two
+columns as under Healthy), the topology objects Ready, and
+`kubectl auth can-i list secrets -A --as=system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator`
+answering no. A new `forbidden` in an operator log means a verb the Role lacks: revert.
+
 **The broker's egress** (T12-k): besides the other nodes, the NetworkPolicy lets the broker
 reach port 443 inside the VPC (`10.0.0.0/16`) only, for the peer discovery plugin
 (`rabbitmq_peer_discovery_k8s`), which talks to the API server's private ENIs. It is
@@ -852,7 +887,20 @@ Do the canary before relying on a node drain.
 `deploy/rabbitmq/cluster/rabbitmqcluster.yaml`; the operator replaces the nodes one at a
 time. The operators: vendor the new release files byte for byte into
 `deploy/rabbitmq/operators/`, update `SHA256SUMS`, read the release notes (a Cluster
-Operator upgrade rolls every cluster).
+Operator upgrade rolls every cluster). Re-check the scope: the new release's ClusterRole
+(cluster operator `rabbitmq-cluster-operator-role`, topology operator
+`messaging-topology-manager-role`) against `scoped-rbac.yaml` (a new resource or verb goes
+into the Role, or the operator logs `forbidden`); the patches' targets (Deployment, container,
+ClusterRole and ClusterRoleBinding names). Kustomize does NOT fail on a target that matches
+nothing: a renamed ClusterRole would render with its cluster-wide rules intact. That is what
+`scripts/check_operators_scope.sh` (part of `make k8s-validate`) catches: no ClusterRole with
+`secrets`, `pods`, `pods/exec` or `*`, the only ClusterRoleBinding the topology operator's
+metrics one, both Roles and RoleBindings in `ryft-rabbitmq`, and `OPERATOR_SCOPE_NAMESPACE`
+on the containers `operator` and `manager`. Also check that `OPERATOR_SCOPE_NAMESPACE` is still
+the setting: it is read in `cmd/main.go` of `rabbitmq/cluster-operator` at `v2.23.1` and of
+`rabbitmq/messaging-topology-operator` at `v1.20.4`; and any new cluster-wide read.
+`make k8s-rabbitmq` (break-glass) creates `ryft-rabbitmq` with its Pod Security labels first,
+because the Roles live there.
 
 **Backups:** none beyond git. Messages are triggers, the topology and users are in git
 and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
@@ -1161,9 +1209,84 @@ Where both accounts have the same row (a sample, a device id, a session id, a jo
 day, a custom exercise's slug), the kept account's wins and the other's is counted as
 dropped. A consent and beta access are copied only when the kept account has none.
 Merging the account with more scored days into the smaller one is refused (`409`) unless
-`--force`. A second run answers `404` (from is gone). Afterwards, the person signs in the
+`--force`. A second run answers `404` (from is gone). **After the merge, fold the target's
+workouts**: both accounts may have held copies of one workout under different ids
+(`fold-workouts -user <to>`, "Fold duplicate workouts" below; dry-run first). Afterwards, the person signs in the
 way the kept account uses; if both identities should open it, they link Apple to the
 email account in the app (Supabase **manual linking**, `SUPABASE.md`).
+
+**Imported training history and a merge.** The app derives the training import's ids from the
+account's id (API.md → `POST /v1/train/import` → For the app). The merge moves imported
+sessions and plans with the ids they have; an import of the same file into the kept account
+would derive other ids and store that history a second time. So after a merge the person must
+not import the same file again: tell them when you merge. A server-held import namespace that
+the merge carries over is an open point (D141).
+
+## Fold duplicate workouts
+
+What it does: `ingest fold-workouts` removes the extra copies of one workout that were
+uploaded before the app sent deletions (D-c, `docs/work/2026-10-31-data-quality/design.md`).
+Two workouts of one user are one when they have the same `source` and `activity` and both
+their starts and their ends are within 120 s and they overlap by at least half of the
+shorter one. Per group it keeps the most recently
+uploaded id (`created_at`, ties to the higher id) and **deletes the rest**. `ryft-session`
+workouts are never touched, and users without a current consent are skipped (counted in the
+summary). A Train session on a removed copy stays; scoring attaches it to the kept workout
+when the day is rescored. The days of the removed rows (and the day after, and the day
+before when a session was attached) are queued and one `ingested` event per user goes
+through the outbox, so the running ingest relays it and scoring rescores them. New syncs
+fold on their own; this is for what is already stored.
+
+**It cannot be undone** by this tool. The recovery path is Supabase's own backup (7 days;
+`Backups`). A copy folded under that rule (120 s at both ends, at least half overlap) is near-identical
+to it, so what is lost is a duplicate row, not a workout. There is deliberately no export
+step: health rows on a laptop would outlive the retention, and the ids of a dry run can
+differ from the real run's if a sync lands between them.
+
+Flags only; any other argument exits 2 without doing anything. A real run needs either
+`-user <uuid>` (one account) or `-all` (every account); `-dry-run` over everyone needs
+neither.
+
+```bash
+# 1. Dry run for one account, then for everyone. Reads only; no lock, no queue, no event.
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -user <uuid> -dry-run
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -dry-run
+```
+
+It prints one line per group, `user=<uuid> day=<yyyy-mm-dd> kept=<id> folded=<id>,<id>`
+(ids and a day, no health values), and a summary (`would fold N workouts in G groups, U of
+T users, S skipped without consent, F failed`). The lines name a user who worked out on a
+day: keep them out of tickets and chat. Check the reporter's account against what you
+expect before going on (6 on 2026-10-20).
+
+```bash
+# 2. For real: one transaction per user, under the user's apply lock. It prints the same
+#    list, now of what it deleted.
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -user <uuid>
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -all
+```
+
+The summary now reads `folded N workouts ...`. A second run prints `folded 0 workouts in 0
+groups`. The exit status is non-zero when any user failed (that user's transaction rolled
+back; run it again) or when the command was interrupted. Locally:
+`podman compose exec -T ingest /app fold-workouts -dry-run`. Counters:
+`ryft_workouts_folded_total{reason="same_source"}` (the one-off process does not serve
+metrics, so only the syncs' folds show up there) and
+`ryft_workouts_fold_skipped_total{reason="too_many"}` (a sync whose scope held more than
+5 000 workouts folded nothing; run `fold-workouts -user <uuid>` for that account).
+`scripts/rescore_all.sh` is not needed: the queued days are rescored by the running
+scoring service.
+
+## The coverage gate went red
+
+`coverage-gate` (the `test` job of a pull request, D148) says "internal/ coverage fell from X% on main to Y%".
+The job summary lists every package; compare it with the `coverage` artifact of the latest push run on main to see
+which package lost. Usual causes: code added without a test (add the test), a test that needs Postgres or RabbitMQ
+that skipped (look for a service container that did not start, then re-run the job), or main moved: the baseline
+is main's tip, so rebase first. A drop that is really intended (code deleted together with its well-tested
+siblings) is accepted by raising `MAX_DROP` in the PR's own `ci.yml` for that PR, with the reason in the
+description; there is no other override. A warning "main's coverage is unknown" is not a failure: the gate passed
+without a baseline (artifact outage or expired); re-run once the artifact is back. Locally: `make coverage`.
 
 ## When a tester's scores do not appear
 
@@ -1186,6 +1309,32 @@ scripts/user.sh <id>                 # devices, what the last sync carried and i
 | days stay `pending` for minutes | scoring is behind or failing | `SyncToScoreSlow`, `RabbitMQBacklog`, `DeadLetters`, `OutboxBacklog`; scoring's logs for the id |
 | no sync for days, the phone has data | the app's background sync or its anchors | `user.sh <id> --resync-hint`: the app re-reads its window without anchors |
 | scored, but the app shows yesterday | the silent refresh did not arrive (iOS budgets them) | `ryft_push_notifications_total{category="REFRESH"}`; the app polls `GET /v1/me/sync` too |
+
+## Training import
+
+`POST /v1/train/import` (D124-D133, API.md) stores plans and finished sessions that the
+app parsed from another training app's export, each item in its own transaction, then
+queues the days with one `ingested` event (`reason` `import`) for scoring, then
+recomputes the records. Imported sessions send no `SESSION_SCORED` or `PR` push and move no
+enrolment. The switch is the flag `train.import` (dark by default: testers by the allow-list,
+Feature flags); the app hides the import while it is off, and the endpoint checks it too
+(`403 import_not_enabled`), so the kill switch does not wait for the app's cached config.
+A resend never overwrites what the user changed in the app since (`newer_on_server`, D141).
+
+`scripts/trace.sh <request id>` shows the access line and the import's one line
+(`msg="train import"`: `result`, the items sent and their statuses, the days queued;
+never a title, a value, an id list or the source app), then scoring's lines for the same id.
+
+| Sign | Means | Do |
+| --- | --- | --- |
+| `429`, `code=import_in_progress` | another import of the account holds the lease (`users.import_lease_until`, 70 s, D132) | nothing: the app waits `Retry-After` (10 s) and resends the same request. A pod that died mid-import blocks that account for up to 70 s; the lease expires on its own, do not clear it by hand |
+| `503`, `result=timeout` or `error` | the 50 s ran out (the items stop at 40 s), or the database failed; what was stored stays stored and was finished | nothing: the app resends, the stored items come back `unchanged`. Many in a row: `ryft_db_up`, `ryft_train_import_seconds` |
+| `403`, `code=consent_required` | no consent to the current privacy policy (the import is an upload of health data, D129); on this route `CONSENT_ENFORCE=warn` refuses too (D141) | as for a sync (Beta) |
+| `403`, `code=import_not_enabled` | the flag `train.import` is off for the account (`ryft_train_imports_total{result="disabled"}`) | intended for anyone not allow-listed; a tester: add the id to the allow-list (Feature flags) |
+| `429` without a `code` | the import's own rate budget: bursts of 5, then one every 5 s (`ryft_rate_limited_total{class="import"}`) | nothing: the app waits `Retry-After` |
+| `200` with `rejected` items | items the app must change; the `code` and `message` (ids and field names) are in the response only | the app's report; `ryft_train_import_items_total{status="rejected"}` |
+| `days_touched` stay pending | scoring is behind | as for a sync (above) |
+| sessions older than 400 days without strain | by design: stored for history and records, never scored (D128) | nothing |
 
 ## Feature flags
 
@@ -1517,28 +1666,57 @@ for `www` with 308 where a GET gets 301 (the check accepts both).
 
 ## Mail for ryftapp.de
 
-The site prints `support@ryftapp.de` (support, the privacy contact, the Impressum), and
-the zone has **no MX record**: mail to it bounces until a mail service is set up. The
-records go into the `ryftapp.de` zone in `infra/aws/dns` (Terraform, the user applies),
-next to the CAA records, as `aws_route53_record`s:
+`support@ryftapp.de` (support, the privacy contact, the Impressum) is a **Google Workspace**
+mailbox (D142; AWS WorkMail is closed to new customers and ends 2027-03-31). Admin: the
+user (the Workspace super admin, admin.google.com); nobody else has access. The records
+are in `infra/aws/dns` (Terraform, the user applies), next to the CAA records:
 
-- **MX** at the apex, the service's mail servers with their priorities.
-- **TXT at the apex: one record set** with every value that belongs there, the SPF
-  (`v=spf1 include:<the service> -all`) and the service's verification string. Route 53
-  holds one TXT set per name; the apex has none today, and ExternalDNS keeps its ownership
-  records under prefixed names (`a-www.ryftapp.de`), so nothing collides.
-- **DKIM:** the service's selector records (`<selector>._domainkey`, CNAME or TXT, as it
-  says).
-- **DMARC:** TXT at `_dmarc`, starting with `v=DMARC1; p=none; rua=mailto:…` (a report
-  address at the service, not a private one), tightened to `quarantine` once the reports
-  are clean.
+| Record | Name | Value |
+| --- | --- | --- |
+| MX | `ryftapp.de` | `1 smtp.google.com` |
+| TXT (two values) | `ryftapp.de` | `google-site-verification=…` and `v=spf1 include:_spf.google.com ~all` |
+| TXT | `google._domainkey.ryftapp.de` | `v=DKIM1; k=rsa; p=…` (2048-bit; strings of ≤255 characters, written `chunk1" "chunk2` with no outer quotes: the provider adds them) |
+| TXT | `_dmarc.ryftapp.de` | `v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s` |
 
-How: the user picks an EU mail service with forwarding and send-as, pastes the records it
-asks for into the session, and they come back as a PR to `infra/aws/dns` (with a test in
-`tests/dns.tftest.hcl`); then `(cd infra/aws/dns && terraform plan -out=tfplan &&
-terraform apply tfplan)` and `dig +short MX ryftapp.de`. **The forwarding target, the
-user's private address, is configured in the mail service only**: it never appears in a
-DNS record, this repository or a Terraform variable.
+Each TXT value is its own string: never put the verification and the SPF inside one pair
+of quotes (that was the hand-made record's fault, and the SPF did not count). ExternalDNS
+keeps its ownership records under prefixed names (`a-www.ryftapp.de`), so nothing collides
+at the apex.
+
+**First time (the records were made by hand in the console): import, plan, apply.**
+
+```bash
+cd infra/aws/dns
+Z=Z08455293REDHBC9QW5MZ
+# the DKIM value exactly as it is live (dig joins nothing: strip the quotes between chunks)
+export TF_VAR_dkim_record="$(dig +short TXT google._domainkey.ryftapp.de | sed -e 's/" "//g' -e 's/^"//' -e 's/"$//')"
+terraform import aws_route53_record.mx "${Z}_ryftapp.de_MX"
+terraform import aws_route53_record.apex_txt "${Z}_ryftapp.de_TXT"
+terraform import aws_route53_record.dkim "${Z}_google._domainkey.ryftapp.de_TXT"
+terraform plan -out=tfplan     # expect: apex_txt changes to two values, dmarc is created, nothing else
+terraform apply tfplan
+dig +short TXT ryftapp.de; dig +short TXT _dmarc.ryftapp.de; dig +short MX ryftapp.de
+```
+
+If the plan shows a change to `mx` (TTL) or `dkim`, stop: the value or TTL in the zone
+differs from the file; fix the variable, not the live record. Then send a test mail to
+`support@ryftapp.de` and one from it to an outside address; check "Show original" for
+`SPF: PASS`, `DKIM: PASS`, `DMARC: PASS`.
+
+**DKIM rotation.** Admin console → Apps → Google Workspace → Gmail → Authenticate email →
+generate a new record (2048-bit), set the new value as `dkim_record` (and the selector as
+`dkim_selector` if it is not `google`), apply, and only then click "Start authentication".
+Lower the TTL to 300 a day before if you want a quick rollback.
+
+**DMARC ramp.** `p=none` collects aggregate reports at `support@ryftapp.de` (XML,
+attached, daily). After 2–4 weeks with only Google/Workspace sources passing, set
+`dmarc` to `v=DMARC1; p=quarantine; rua=mailto:support@ryftapp.de; adkim=s; aspf=s`, plan,
+apply; later `p=reject` and SPF `-all`. A legitimate sender that fails (a newsletter tool,
+a contact form) is added to SPF/DKIM first.
+
+**The forwarding target is not in the repository.** Any private address mail is
+forwarded to is configured in Workspace only; it never appears in a DNS record, this
+repository or a Terraform variable.
 
 ## App Review demo account
 
@@ -1570,7 +1748,8 @@ scripts/seed_demo.py`.
 
 - **What is logged:** one access line per request (method, path, status, bytes,
   duration, route, request id, user id) and what the services decide: a sync's counts
-  and device id, which day was scored by which model (`scored day`: `day`,
+  and device id, a training import's counts (`train import`: source, result, items per
+  status, days), which day was scored by which model (`scored day`: `day`,
   `model_version`, `inputs_changed`), a push's category and day, errors with their
   cause. Paths carry dates and resource ids (`/v1/days/2026-10-19`,
   `/v1/workouts/<uuid>`), so the lines still show when someone used the app and which
@@ -1588,8 +1767,8 @@ scripts/seed_demo.py`.
   argument. Fixing the bug needs both; read such lines as health data.
 - **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
   line's keys allowlisted), `TestSyncLogsCountsOnly` and
-  `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies` and
-  `TestErrorPathsLogNoBodies` (api), `TestSyncStripsNULBeforeTheDatabase` and
+  `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies`,
+  `TestErrorPathsLogNoBodies` and `TestTrainImportLogsCountsOnly` (api), `TestSyncStripsNULBeforeTheDatabase` and
   `TestWritesRefuseNULBeforeTheDatabase` (a NUL removed, or refused with `422`/`400`,
   logs no text), `TestDecodeErrorsQuoteNoValues` (events), `TestJSONErrorDropsTheValue`
   (logx), `TestTransportErrorsHideTheDeviceToken` (apns), `TestAdminErrorsHoldNoBody`
@@ -1605,7 +1784,7 @@ scripts/seed_demo.py`.
     the request's keys after the call site's, so a duplicate would hide one). The known
     values of each test (recovery, readiness, device tokens, the seeded samples) are
     scanned for in the raw line. `TestSyncLogKindsRejectMutations`,
-    `TestWriteLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
+    `TestWriteLogKindsRejectMutations`, `TestImportLogKindsRejectMutations`, `TestEngineLogKindsRejectMutations` and
     `TestNotifyLogKindsRejectMutations` feed the checker synthetic lines (a float under
     `applied`, a score under a renamed key, a non-UUID `user_id`, a duplicate key, …) and
     require a problem that names the mutated key; `TestNotifyLogsNoHealthValuesOrTokens`

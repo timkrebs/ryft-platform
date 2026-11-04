@@ -1,0 +1,62 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "exercise": {
+      "$ref": "Exercise",
+      "nullable": true
+    },
+    "exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "position": {
+      "type": "integer"
+    },
+    "reps_max": {
+      "type": "integer"
+    },
+    "reps_min": {
+      "type": "integer"
+    },
+    "rest_sec": {
+      "type": "integer"
+    },
+    "sets": {
+      "type": "integer"
+    },
+    "superset_group": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "target_kind": {
+      "type": "string"
+    },
+    "target_value": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "exercise",
+    "exercise_id",
+    "id",
+    "notes",
+    "position",
+    "reps_max",
+    "reps_min",
+    "rest_sec",
+    "sets",
+    "superset_group",
+    "target_kind",
+    "target_value"
+  ],
+  "title": "PlanExercise",
+  "type": "object"
+}

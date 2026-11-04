@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_bundle_id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "end",
+    "source",
+    "stage",
+    "start"
+  ],
+  "title": "SleepSegment",
+  "type": "object"
+}

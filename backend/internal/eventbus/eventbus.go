@@ -1,5 +1,3 @@
-// Package eventbus opens a service's broker from its configuration: RabbitMQ (D97),
-// the only one since the cutover (D102).
 package eventbus
 
 import (

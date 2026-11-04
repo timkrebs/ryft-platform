@@ -1,15 +1,3 @@
-// migrate applies the database migrations as the schema owner, loads the
-// built-in exercises and plans, and sets the passwords of the services'
-// least-privilege roles where they changed. It runs once per deploy,
-// before the services (a Kubernetes Job in ryft-migrate, a one-shot compose
-// service); the services themselves cannot change the schema.
-//
-//	DATABASE_URL          the owner (postgres on Supabase)
-//	DB_PASSWORD_INGEST    password of ryft_ingest, likewise _SCORING, _API and _NOTIFY
-//
-// `migrate smoke` is instead the in-cluster smoke after a deploy (internal/smoke),
-// which Argo CD runs as the PostSync hook in namespace ryft-smoke: this image is the
-// one tool image, so a hook needs no image of its own.
 package main
 
 import (

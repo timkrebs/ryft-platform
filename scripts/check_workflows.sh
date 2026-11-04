@@ -13,7 +13,8 @@
 #      `secrets[format(...)]`, not `toJSON(secrets)`, not the bare context;
 #   5. none of the test hooks of the scripts (CHECK_REGISTRY, CHECK_REGISTRY_OFFLINE, CHECK_RENDER,
 #      RENDER_CMD, PIN_QUIET, RYFT_HOOKS_NODE_DIRS) is named anywhere, and NOW or TODAY is no
-#      environment variable and no assignment in a script: a workflow must not switch a check off.
+#      environment variable and no assignment in a script: a workflow must not switch a check off;
+#   6. the golangci-lint version of ci.yml's lint job equals GOLANGCI_LINT_VERSION in the Makefile.
 # Comments are gone after parsing. Without yq it fails (exit 2): a check that cannot read the
 # files must not pass them. Usage: scripts/check_workflows.sh [workflow-dir]  (default .github/workflows)
 set -euo pipefail
@@ -175,5 +176,13 @@ $out
 EOT
   fi
 done
+# 6. the golangci-lint release of ci.yml's lint job is the one `make lint` expects (GOLANGCI_LINT_VERSION in the Makefile).
+if [ -f "$dir/ci.yml" ] && [ -f Makefile ]; then
+  ci_v=$(yq '.jobs.lint.steps[] | select((.uses // "") | test("^golangci/golangci-lint-action@")) | .with.version' "$dir/ci.yml" 2>/dev/null || true)
+  mk_v=$(sed -n 's/^GOLANGCI_LINT_VERSION[[:space:]]*:\{0,1\}=[[:space:]]*//p' Makefile | head -n 1)
+  if [ -z "$ci_v" ] || [ -z "$mk_v" ] || [ "$ci_v" != "$mk_v" ]; then
+    fail "the golangci-lint version of ci.yml's lint job (${ci_v:-not found}) must equal GOLANGCI_LINT_VERSION in the Makefile (${mk_v:-not found})"
+  fi
+fi
 [ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only promote names the environment deploy and reads the App key"
 exit "$rc"

@@ -13,6 +13,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/testsupport"
 	"github.com/timkrebs/ryft/internal/train"
 )
 
@@ -21,8 +22,8 @@ import (
 func asNotify(t *testing.T, pool *pgxpool.Pool) *Store {
 	t.Helper()
 	ctx := context.Background()
-	const pw = "pw-ryft_notify-0123456789"
-	if err := db.SetRolePassword(ctx, pool, "ryft_notify", pw); err != nil {
+	pw := testsupport.RolePassword("ryft_notify")
+	if err := testsupport.WithRoleLock(ctx, func() error { return db.SetRolePassword(ctx, pool, "ryft_notify", pw) }); err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(pool.Config().ConnString())

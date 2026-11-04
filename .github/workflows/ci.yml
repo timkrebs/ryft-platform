@@ -49,12 +49,14 @@ jobs:
       pull-requests: read
     outputs:
       run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+      run_pkgmap: ${{ github.event_name != 'pull_request' || steps.filter.outputs.pkgmap == 'true' }}
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
       run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
+      run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -69,6 +71,14 @@ jobs:
             go:
               - 'backend/**'
               - '.golangci.yml'
+              - 'docs/API.md'
+              - 'scripts/coverage.sh'
+              - '.github/workflows/ci.yml'
+            # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
+            pkgmap:
+              - 'docs/ARCHITECTURE.md'
+              - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -122,6 +132,12 @@ jobs:
               - 'web/public/.well-known/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+            # The scoring golden files and their PR guard (D149).
+            golden:
+              - 'backend/internal/scoring/testdata/golden/**'
+              - 'scripts/golden_guard.sh'
+              - 'scripts/tests/golden_guard_test.sh'
+              - '.github/workflows/ci.yml'
       - if: github.event_name != 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,6 +156,10 @@ jobs:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only to list and download main's coverage artifact (coverage-gate); no write.
+      actions: read
     # A throwaway server for the opt-in migration and store tests (account
     # deletion races); they create and drop their own databases.
     services:
@@ -176,11 +196,37 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      # -race makes the cover mode atomic; one profile for all packages (scripts/coverage.sh).
+      - run: |
+          mkdir -p coverage
+          go test -race -count=1 -coverprofile=coverage/coverage.out ./...
+      # The per-package table in the job summary, and total.txt (internal/) next to the profile.
+      - run: ../scripts/coverage.sh report coverage/coverage.out coverage
+      # Every run uploads; the newest one from main is the baseline of the next pull request.
+      # This step must stay BEFORE the coverage-gate step: the gate downloads main's files into
+      # backend/coverage, and those must never be uploaded again as this run's coverage.
+      # An artifact outage must not hold back `images` on main; a missing upload only means no baseline.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: coverage
+          path: backend/coverage
+          retention-days: 90
+      # internal/ may fall at most 1 point below main's last number; no absolute threshold. No
+      # artifact from main yet (first run, or older than the retention) -> passes and says so.
+      - name: coverage-gate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The one knob: the points internal/ may fall below main's (D148). Raising it is a reviewed diff.
+          MAX_DROP: "1.0"
+        run: |
+          ../scripts/coverage.sh baseline coverage
+          ../scripts/coverage.sh gate coverage/total.txt coverage/main-total.txt
 
   lint:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true' || needs.changes.outputs.run_pkgmap == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,10 +236,14 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # The version is also GOLANGCI_LINT_VERSION in the Makefile (`make lint` runs this job locally).
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           working-directory: backend
+      # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
+      # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
+      - run: ./scripts/pkgmap.sh --check
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
@@ -557,6 +607,28 @@ jobs:
             git /repo --config /config/gitleaks.toml --gitleaks-ignore-path /noignore \
             --log-opts=HEAD --redact --no-banner --exit-code 1
 
+  # A golden user file moves only with a ModelVersion bump, a generator change or new fields
+  # (D149). Pull requests only: it compares with the merge base, which a push has no use for.
+  # Its own job (not a step of `test`): it needs the whole history, not the Go toolchain or
+  # Postgres, and a red guard should name itself.
+  golden-guard:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.run_golden == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The whole history: the guard needs the merge base with the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Golden files changed without a ModelVersion bump, input digest or field digest
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/golden_guard.sh "$BASE_SHA"
+
   # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
   # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
   # A new check job is one more entry in `needs`.
@@ -564,7 +636,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -590,7 +662,7 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -635,7 +707,7 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

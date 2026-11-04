@@ -1,7 +1,3 @@
-// Package train holds the pure rules of the Train feature (exercises, plans,
-// sessions) that are not scoring: fixed ids for built-in content, slugs, the
-// exercise name for a language, request validation and the session merge and
-// conflict rule (docs/DECISIONS.md D61). No I/O.
 package train
 
 import (
@@ -355,6 +351,10 @@ func checkTarget(e model.PlanExercise) error {
 			return problem("plan exercise %s: kg needs target_value 0–500", e.ID)
 		}
 	case model.TargetBodyweight:
+		// The added load in kg, or none (T11): stored as sent, never used for a target.
+		if v != nil && (*v < 0 || *v > 500) {
+			return problem("plan exercise %s: bodyweight needs target_value 0–500 (added kg) or null", e.ID)
+		}
 	default:
 		return problem("plan exercise %s: target_kind must be pct_1rm, rpe, kg or bodyweight", e.ID)
 	}
@@ -443,6 +443,7 @@ func CheckSession(s *model.Session, now time.Time) error {
 func ClampSet(st *model.Set) {
 	st.Reps = clampI(st.Reps, 0, 100)
 	st.WeightKG = clampF(st.WeightKG, 0, 500)
+	st.AssistKG = clampF(st.AssistKG, 0, 200)
 	st.RPE = clampF(st.RPE, 1, 10)
 	st.DurationSec = clampI(st.DurationSec, 0, 21600)
 	st.DistanceM = clampF(st.DistanceM, 0, 100000)

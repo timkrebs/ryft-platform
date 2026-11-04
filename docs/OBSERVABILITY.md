@@ -100,16 +100,20 @@ JSON (`make synthetics-apply`), not the page.
 
 | Metric | Type | Labels | Service | Meaning |
 | --- | --- | --- | --- | --- |
-| `ryft_http_requests_total` | counter | `route`, `code` | all | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
-| `ryft_http_request_duration_seconds` | histogram | `route` | all | Request latency. |
+| `ryft_http_requests_total` | counter | `route`, `code` | ingest, api | Requests by ServeMux pattern (`GET /v1/days/{day}`, never the raw path) and status. Unauthenticated requests carry the outer pattern `/v1/`; unknown routes `unmatched`. |
+| `ryft_http_request_duration_seconds` | histogram | `route` | ingest, api | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
-| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`) or `default`. The recompute gate (one per minute) is not counted here. |
+| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
 | `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
 | `ryft_http_nul_stripped_total` | counter | `route` | ingest | Syncs accepted after the NULs were removed from their strings (`POST /v1/sync` does not refuse them: the app would never resend the page). One per request, however many NULs; never the text. A steady rate points at a source or device name the app should clean. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
 | `ryft_account_deletions_total` | counter | `step`, `result` | api | `DELETE /v1/me` and the reconciler. `step="data"` (our rows), `apple` (revoking the Sign in with Apple token) or `auth` (the Supabase auth user); `result` `ok`, `error` or `skipped` (not configured: no `APPLE_*` / `SUPABASE_SERVICE_ROLE_KEY`, or apikey mode). |
+| `ryft_sync_deleted_total` | counter | `kind` | ingest | Rows removed by the deletions of `POST /v1/sync`, by `kind` (`sample`, `sleep`, `workout`). The same-source workout fold is not counted here. |
+| `ryft_sync_ignored_total` | counter | `kind`, `reason` | ingest | Records and deletions of `POST /v1/sync` not applied: `kind` `sample`, `sleep`, `workout`; `reason` `duplicate`, `outside_window`, `unknown_type`, `unknown_id`. |
+| `ryft_workouts_folded_total` | counter | `reason` | ingest, scoring | Duplicate workouts handled: `same_source` (a copy removed by a sync's fold, ingest) or `cross_source` (a workout newly marked `duplicate_of` another source's, scoring). `fold-workouts` runs as a one-off process without `/metrics`, so its removals are not counted here. |
+| `ryft_workouts_fold_skipped_total` | counter | `reason` | ingest | Syncs whose same-source fold did nothing: `too_many` (more than 5 000 workouts of the request's sources in its range). Log line `workout fold skipped`. |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api, scoring | Sends to the broker (by the outbox relay, D101), `ok`/`error`, on RabbitMQ also `unroutable` (no queue bound for the key: a topology change missed): `ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), `session.completed` as `session_completed` (api), and scoring's `scored`, `session_scored`, `refresh`. An `error` here is retried by the relay; an event is lost only if its outbox row could not be written (also `error`, and the sync or completion answers `503`). |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (to the next retry tier: 5 s, 30 s, 5 min), `failed` (the sixth attempt failed — dead-lettered), `bad` (unparseable — dead-lettered), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored`, `session_scored` and `refresh`. |
 | `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received again, `consumer` the queue: redelivered by the broker (a consumer died holding it) or a retry tier's copy (`x-ryft-attempt` > 1). The name is from NATS, kept for the dashboards and the history (D102). |
@@ -121,11 +125,11 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_behavior_impact_seconds` | histogram | `caller` | api | CPU time of the behavior-impact computation: `caller="impact"` (`GET /v1/behaviors/impact`) or `insight` (yesterday's behaviors for the card). Its p95 passing ~0.1 s is the signal to move it into a worker (D76). |
 | `ryft_flag_evaluations_total` | counter | `key`, `result` | api | Feature flags evaluated for `GET /v1/config`, `on` or `off` per flag key. |
 | `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `unauthorized` (wrong or no `ADMIN_API_KEY`), `invalid`, `error`. |
-| `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync, or in scoring a day, without consent, D78). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
+| `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync or, `service="api"`, a training import, or in scoring a day, without consent, D78, D129). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. The training import's consent refusals count as `mode="on"` also under `CONSENT_ENFORCE=warn`: on that route warn acts as on (D141). (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
 | `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), by routing key, into `dlq.scoring`/`dlq.notify` (D99): `ok`, or `error` (the publish failed; the message was rejected, and the broker's delivery limit dead-letters it). Before the cutover, `subject` was the NATS subject (`ryft.ingested`). |
-| `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
+| `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91; an import's days too: they share the queue, so a large import shows as a short rise, and `expected_within_sec`, the queue's p95 of the last 6 hours, rises with it, D141). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
 | `ryft_event_handler_panics_total` | counter | `subject` | scoring, notify | Event handlers that panicked: the message is retried and, at its last delivery, dead-lettered, instead of the service crashing (D92). Any is a bug. |
 | `ryft_amqp_connected` | gauge | — | ingest, api, scoring, notify | 1 while the connection to RabbitMQ is up, 0 while it reconnects (backoff 1 s → 30 s with jitter). Registered when the service connects (migrate has none). |
 | `ryft_amqp_reconnects_total` | counter | — | ingest, api, scoring, notify | Connections that closed and were dialled again (a broker restart, a node drain, a certificate renewal). |
@@ -140,12 +144,15 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_db_ping_failures_total` | counter | `service` | all | Failed pings: Supabase or its pooler unreachable, or the role refused. |
 | `ryft_users_by_last_sync` | gauge | `age` | scoring | Accounts by the age of their newest device sync (every 15 min): `under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`. Counts only, no user ids. |
 | `ryft_feedback_received_total` | counter | `category` | api | Reports stored by `POST /v1/feedback` (`bug`, `idea`, `data`, `other`). The alert on any increase is how the operator hears about them (D83); read them with `scripts/beta_report.sh feedback`. |
-| `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `throttled` (a silent refresh within 5 minutes of the last), `stale` (old day or session, deleted user), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). |
+| `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `throttled` (a silent refresh within 5 minutes of the last), `stale` (old day or session, deleted user), `import` (`SESSION_SCORED` only: an imported session, never announced, D125; scoring sends none for an import, so this counts only a re-complete of an imported session), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). An import's days end in one `REFRESH` once scored, like a sync's. |
 | `ryft_apns_responses_total` | counter | `push_type`, `status` | notify | APNs answers per device request: `alert` or `background`, HTTP status (`200`, `400`, `403`, `410`, `429`, `5xx`) or `error` (no answer). |
 | `ryft_push_tokens_pruned_total` | counter | — | notify | Device tokens dropped because APNs said they are gone. |
 | `ryft_train_sessions_completed_total` | counter | — | api | Strength sessions completed (the first `POST /v1/sessions/{id}/complete` of each). |
 | `ryft_train_sets_logged_total` | counter | — | api | Completed sets `PUT /v1/sessions/{id}` stored for the first time. |
 | `ryft_train_prs_total` | counter | `kind` | api | Personal records a session took over (`e1rm`, `max_weight`, `max_reps`, `max_volume`). |
+| `ryft_train_imports_total` | counter | `result` | api | `POST /v1/train/import` requests past authentication (D124): `ok` (`200`, also when every item was rejected), `invalid` (`400`/`413`/`422` or `403 consent_required`: nothing processed), `disabled` (`403 import_not_enabled`: the flag `train.import` is off for the account; nothing read), `busy` (`429 import_in_progress`: another import of the account holds the lease, D132), `timeout` (`503 "request timed out"`: the items ran into the 50 s budget, or the client went away), `error` (`503`: the database failed). After `timeout` and `error` the stored items stay stored and are finished (queue and event, then records); the app resends and gets them back `unchanged`. A steady `busy` for one account means a lease left by a pod that died (it expires after 70 s). |
+| `ryft_train_import_items_total` | counter | `kind`, `status` | api | Items of the import: `kind` `plan` or `session`, `status` `created`, `unchanged` (identical, nothing written), `updated` (replaced whole), `rejected` (the `code` is in the response, not here). Mostly `unchanged` means the app resends files it already sent. |
+| `ryft_train_import_seconds` | histogram | — | api | Duration of an import that took the lease: the items, the records and the queueing. The budget is 50 s (the items stop 10 s before it so the finish fits); p95 above ~20 s means the per-item reads (D131's note) need batching. |
 | `argocd_app_info` | gauge | `name`, `sync_status`, `health_status`, `autosync_enabled`, … | Argo CD (controller, :8082) | One series per application, value 1; the alerts below read `sync_status` (`Synced`, `OutOfSync`, `Unknown` when manifests do not render) and `health_status` (`Healthy`, `Progressing`, `Degraded`, `Missing`). |
 | `argocd_app_sync_total` | counter | `name`, `phase` | Argo CD | Sync operations by outcome: `Succeeded`, `Failed`, `Error` (a PreSync migration, a refused apply, the PostSync smoke), `Running`, `Terminating`. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
@@ -219,6 +226,9 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Sets logged | time series, 1 h buckets | `sum(increase(ryft_train_sets_logged_total[1h]))` |
 | Records by kind | stacked bars, 1 d buckets | `sum by (kind) (increase(ryft_train_prs_total[1d]))` |
 | Session saves: 409 / 422 / 429 | time series | `sum by (code) (rate(ryft_http_requests_total{route="PUT /v1/sessions/{id}",code=~"409\|422\|429"}[5m]))` |
+| Imports by result | stacked bars, 1 h buckets | `sum by (result) (increase(ryft_train_imports_total[1h]))` |
+| Imported items by status | stacked bars, 1 d buckets | `sum by (kind, status) (increase(ryft_train_import_items_total[1d]))` |
+| Import duration p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_train_import_seconds_bucket[1h])))` |
 
 **Row: Runtime** (repeat by `app`)
 
@@ -315,6 +325,83 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
 is no incident.
 
+## Baselines
+
+Recorded numbers a later change is compared with. **A laptop is not production**: these come from the
+compose stack on one machine, Postgres in a container on a local disk, no network between the services, no
+Supabase pooler, no TLS at the edge, one replica of everything. Use them for "did this change get slower
+than it was", never as a capacity statement or an SLO.
+
+### Local load (`make load`, `scripts/load.sh`)
+
+What it does: k6 (`grafana/k6:2.3.0`, pinned by digest in the script, run by `$CONTAINER` on the compose network)
+drives 50 synthetic users. Each consents, syncs **one full UTC day** (about 1 250 records: heart rate every minute from
+waking to midnight, steps and active energy in 10-minute buckets with the phone's 30-minute steps beside them, a night
+of sleep with stages, overnight HRV, respiration, SpO2, resting HR, one run; the shape of `scripts/synth.py`, generated
+from a seeded PRNG so the bytes are the same every run) and then reads `GET /v1/days?from=…&to=…` over 30 days 20 times
+with 250 ms think time. The users start 100 ms apart. One warm-up run, then 3 measured runs, each with fresh accounts;
+the script waits until scoring has finished (the `ryft_sync_to_score_seconds` count stops rising) before it scrapes
+`/metrics` of ingest, api and scoring, which are not published to the host, over the compose network.
+`make up && make load`; it prints the table, writes `scripts/load/out/<UTC timestamp>/` (ignored by version control;
+`baseline.json` has every run and the median run; `out/latest` names the newest; nothing is deleted, and `LOAD_OUT` is
+refused if it is `/`, `$HOME` or a non-empty directory without the `.ryft-load-out` marker) and exits 1 when any
+route's error rate is above 1 % (`LOAD_MAX_ERROR_RATE`) or an optional k6 threshold (`LOAD_P95_SYNC_MS`,
+`LOAD_P95_DAYS_MS`) failed. In local mode `INGEST_URL` and `API_URL` are only the readiness probes from the host; k6
+talks to the services over the compose network. A plain URL on localhost is required: `LOAD_ALLOW_REMOTE=1` allows
+other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftapp.de` or
+`*.supabase.co`; never aim it at production. Each invocation leaves 200 accounts and about 250 000 samples in the dev
+database (`make down` clears it).
+
+How 50 users exist locally: `AUTH_MODE=apikey` accepts the bearer `<API_KEY>:<uuid>` as that user
+(`internal/auth/apikey.go`), so one key is enough and no auth code changes.
+
+Rate limits (`internal/ratelimit`, per user): `POST /v1/sync` 2/s with bursts of 60, everything else 10/s with bursts
+of 60. The test does one sync per user and 4 reads/s per user, so it stays under both: client-side 429s 0 and
+`ryft_rate_limited_total` 0 in every run. No override was needed or set.
+
+Metric: `ryft_sync_to_score_seconds` (histogram, scoring; buckets 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800 s) is
+taken as the difference of the buckets before and after each run and read like `histogram_quantile`. The buckets
+are coarse: a value under 1 s is interpolated inside the first bucket (read it as "under a second"), and the 2.4, 4.0,
+4.4 and 4.6 s values below are linear interpolation inside the (2, 5] s bucket: read them as "in the 2 to 5 s bucket".
+Each run observes 102 days (about two queued days per user).
+
+| | |
+| --- | --- |
+| Date | 2026-11-04 |
+| Commit | `fb7b971` (main; the load tooling is scripts only) |
+| Machine | MacBook, Apple M4 Pro, 12 cores, 48 GB, macOS 27.2; podman 6.1.4, libkrun VM of 4 vCPU and 7.9 GiB; Postgres 17-alpine and RabbitMQ 4.3.6 in that VM, volumes on the VM disk |
+| Other load | another project's throwaway Postgres ran in the same VM (about 13 % of a vCPU); the machine was otherwise in ordinary use |
+| Stack | `make up` with the default compose file; single replica of ingest, api, scoring, notify |
+
+Three measured runs (invocation 1; ms unless noted; sync→score in s from the buckets). Warm-up run before them:
+sync p50 222 / p95 465 ms.
+
+| Run | `POST /v1/sync` p50 / p95 / p99 | `GET /v1/days` p50 / p95 / p99 | errors | sync→score p50 / p95 |
+| --- | --- | --- | --- | --- |
+| 1 | 98.9 / 1 252 / 1 413 | 18.4 / 167 / 254 | 0 % | 0.5 / 0.9 s |
+| 2 | 1 573 / 4 564 / 4 607 | 16.8 / 422 / 986 | 0 % | 0.8 / 4.0 s |
+| 3 (median) | 520 / 4 275 / 4 486 | 16.5 / 221 / 652 | 0 % | 0.8 / 2.4 s |
+
+**Recorded baseline = the median run (run 3, by sync p95)**: sync p50 520 ms, p95 4.3 s, p99 4.5 s; days p50 16.5 ms,
+p95 221 ms, p99 652 ms; error rate 0 %; `ryft_sync_to_score_seconds` p95 2.4 s.
+
+The spread is wide and honest: the sync p95 over the three runs is 1.3 to 4.6 s, and a second invocation straight
+after (a fresh set of accounts, same stack) gave sync p95 of 4.4 / 0.23 / 2.5 s, days p95 of 97 / 26 / 66 ms and
+sync→score p95 of 4.4 / 0.9 / 4.6 s. The runs are bimodal: either every upload takes about 100 to 250 ms (p95 under
+0.5 s) or the burst of 50 queues behind Postgres (WAL and fsync on the VM disk, the shared VM) and takes 2 to 4 s. The
+days p50 alone moved between 7 and 18 ms. **Nothing here is stable enough to gate on except the error rate.** The later
+nightly job therefore gates only on the error rate (one failed sync of 50 is 2 %, above the 1 % limit); latency is
+reported, not gated, until a quieter runner exists. With n = 50 syncs per run the p95 sits between the 3rd and 2nd
+slowest upload and the p99 is about the maximum, so they are single events, not distributions. `GET /v1/days` reads
+one scored day each (the users have a single synced day), lighter than a tester with months of history.
+
+A check of the revised script on a quieter machine (no other database in the VM) gave sync p95 of 83 and 73 ms and days
+p95 of 8 and 6 ms over two measured runs, an order of magnitude below the table: the same code, so the table mostly
+measures the machine's state that day.
+
+The table was measured with the first version of the tooling (tree of `fb7b971` plus the first commit of the load
+scripts); the verdict, threshold, output-directory and drain logic changed afterwards (review fixes).
+
 ## Logs
 
 One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
@@ -328,7 +415,8 @@ One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
 | `user_id` | once the token is verified; scoring per event and per user in the 15-minute pass | The Supabase user ID (`sub`). |
 | `route` | request lines once routed | ServeMux pattern, e.g. `GET /v1/days/{day}`. |
 | `method`, `path`, `status`, `bytes`, `dur_ms` | the access line (`msg="http"`, one per request) | `status` `499`: the client gave up before the answer (logged at info, not an error). |
-| `code` | the access line of a refused request | The error code (`invite_required`, `consent_required`) or, for a `401`/auth `503`, the reason (`expired`, `signature`, `deleted`, …). |
+| `code` | the access line of a refused request | The error code (`invite_required`, `consent_required`, `import_in_progress`) or, for a `401`/auth `503`, the reason (`expired`, `signature`, `deleted`, …). |
+| `result`, `plans`, `sessions`, `created`, `unchanged`, `updated`, `rejected`, `days`, `duration_ms` | the api's `train import`, one per import that took the lease | Its result as in `ryft_train_imports_total`, the items sent and what happened to them (counts over plans and sessions), the days queued. Never a title, a note, a value or an id list (D114, D117; `cmd/api/train_import_logs_test.go`). |
 | `gate` | the access line of a request a gate in `warn` mode let through | The code(s) it would have been refused with, as in `X-RYFT-Gate`. |
 | `err` | errors and warnings | The internal error. Clients only ever see `"internal error"` and the request ID. |
 | `day`, `model_version`, `inputs_changed` | scoring's `scored day`, one per day scored | The day, the model that scored it, and whether its history inputs changed. The days after it are scored again when they did or when the event was a retry (`inputs_changed` is then often `false`: the first attempt wrote the change): `rescored days after a history change`. No score, input or state: those are in `daily_scores` and the admin view. |

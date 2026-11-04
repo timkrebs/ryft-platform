@@ -125,7 +125,7 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 	return out, nil
 }
 
-// ErrNoAuthUser: Supabase has no auth user with that id.
+// ErrNoAuthUser means Supabase has no auth user with that id.
 var ErrNoAuthUser = errors.New("supabase admin: no such user")
 
 // DeleteUser deletes the auth user for good (with its identities and
