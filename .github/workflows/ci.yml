@@ -69,6 +69,7 @@ jobs:
             go:
               - 'backend/**'
               - '.golangci.yml'
+              - 'scripts/coverage.sh'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -140,6 +141,10 @@ jobs:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only to list and download main's coverage artifact (coverage-gate); no write.
+      actions: read
     # A throwaway server for the opt-in migration and store tests (account
     # deletion races); they create and drop their own databases.
     services:
@@ -176,7 +181,27 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      # -race makes the cover mode atomic; one profile for all packages (scripts/coverage.sh).
+      - run: |
+          mkdir -p coverage
+          go test -race -count=1 -coverprofile=coverage/coverage.out ./...
+      # The per-package table in the job summary, and total.txt (internal/) next to the profile.
+      - run: ../scripts/coverage.sh report coverage/coverage.out coverage
+      # Every run uploads; the newest one from main is the baseline of the next pull request.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: backend/coverage
+          retention-days: 90
+      # internal/ may fall at most 1 point below main's last number; no absolute threshold. No
+      # artifact from main yet (first run, or older than the retention) -> passes and says so.
+      - name: coverage-gate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ../scripts/coverage.sh baseline coverage
+          ../scripts/coverage.sh gate coverage/total.txt coverage/main-total.txt
 
   lint:
     needs: [changes]
