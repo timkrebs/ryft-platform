@@ -472,16 +472,16 @@ func TestPublisherCannotForgeWhatTheBrokerWrites(t *testing.T) {
 	h := amqp.Table{
 		"x-death":             []any{amqp.Table{"queue": events.ConsumerScoring, "exchange": ExchangeEvents}},
 		"x-first-death-queue": events.ConsumerScoring, "x-last-death-reason": "rejected",
-		events.HeaderSubject: events.KeySessionCompleted, events.HeaderError: "x",
+		events.HeaderSubject: events.KeySessionCompleted, events.HeaderError: "x", "Ryft-Other": "forged",
 		HeaderReplayed: true, HeaderAttempt: int64(2), "x-other": "kept",
 	}
 	dropWrittenHeaders(h)
-	for _, k := range []string{"x-death", "x-first-death-queue", "x-last-death-reason", events.HeaderSubject, events.HeaderError} {
+	for _, k := range []string{"x-death", "x-first-death-queue", "x-last-death-reason", events.HeaderSubject, events.HeaderError, "Ryft-Other", HeaderAttempt} {
 		if _, ok := h[k]; ok {
 			t.Errorf("%s survived", k)
 		}
 	}
-	for _, k := range []string{HeaderReplayed, HeaderAttempt, "x-other"} {
+	for _, k := range []string{HeaderReplayed, "x-other"} {
 		if _, ok := h[k]; !ok {
 			t.Errorf("%s was dropped", k)
 		}
@@ -498,7 +498,7 @@ func TestPublisherCannotForgeWhatTheBrokerWrites(t *testing.T) {
 		"properties": map[string]any{"message_id": "forged-death", "delivery_mode": 2, "headers": map[string]any{
 			"x-death": []any{map[string]any{"queue": events.ConsumerScoring, "exchange": ExchangeEvents,
 				"routing-keys": []any{events.KeySessionCompleted}, "reason": "rejected", "count": 1}},
-			events.HeaderSubject: events.KeySessionCompleted, events.HeaderConsumer: "notify",
+			events.HeaderSubject: events.KeySessionCompleted, events.HeaderConsumer: "notify", "Ryft-Other": "forged",
 		}},
 	})
 	d, ok := b.get(DLQ(events.ConsumerScoring))
@@ -510,5 +510,83 @@ func TestPublisherCannotForgeWhatTheBrokerWrites(t *testing.T) {
 	}
 	if d.Headers[events.HeaderSubject] != events.KeyIngested || d.Headers[events.HeaderConsumer] != events.ConsumerScoring {
 		t.Errorf("subject %v, consumer %v", d.Headers[events.HeaderSubject], d.Headers[events.HeaderConsumer])
+	}
+	// Only the consumer writes Ryft-*: a header of that family it does not write is the publisher's.
+	if v, ok := d.Headers["Ryft-Other"]; ok {
+		t.Errorf("the letter carries the publisher's Ryft-Other: %v", v)
+	}
+}
+
+// A publisher sets any header, and attemptOf's number indexes the retry tiers: a count that is
+// negative, huge or not a number must not panic or skip the retries. 0 to MaxAttempts-1 is
+// honoured (a retry tier's copy carries it); anything else is the first try.
+func TestAttemptOfIsClamped(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		v    any
+		want int
+	}{
+		{"absent", nil, 0}, {"int64 3", int64(3), 3}, {"int32 2", int32(2), 2}, {"max", int64(MaxAttempts - 1), MaxAttempts - 1},
+		{"-1", int64(-1), 0}, {"min int64", int64(-1 << 63), 0}, {`"-1"`, "-1", 0}, {`"2"`, "2", 2}, {`"x"`, "x", 0},
+		{"huge", int64(1 << 62), MaxAttempts - 1}, {"huge uint64", uint64(1<<64 - 1), MaxAttempts - 1}, {"huge string", "99999999999999999999", 0},
+		{"float", float64(3), 0}, {"bool", true, 0}, {"nil value", nil, 0}, {"bytes", []byte("2"), 0},
+	} {
+		d := amqp.Delivery{Headers: amqp.Table{HeaderAttempt: c.v}}
+		if c.v == nil && c.name == "absent" {
+			d.Headers = nil
+		}
+		if got := attemptOf(d); got != c.want {
+			t.Errorf("%s: attemptOf = %d, want %d", c.name, got, c.want)
+		}
+	}
+	for _, n := range []int{-1 << 62, -1, 0, 1, 2, 3, 100, 1 << 62} {
+		if tierFor(n).Name == "" { // must not panic
+			t.Errorf("tierFor(%d) is empty", n)
+		}
+	}
+	if tierFor(-1) != RetryTiers[0] || tierFor(0) != RetryTiers[0] || tierFor(1<<62) != RetryTiers[len(RetryTiers)-1] {
+		t.Error("tierFor does not clamp to the first and last tier")
+	}
+}
+
+// Against a broker: x-ryft-attempt on a first delivery from ryft.events is a publisher's.
+// -1 must not crash the consumer (it did: RetryTiers[-1]), and a count of 5 must not
+// dead-letter on the first failure: both are handled as the first try, retried once, and done.
+func TestForgedAttemptOnTheBroker(t *testing.T) {
+	for _, forged := range []any{-1, "-1", 5, 1 << 40} {
+		b := newBroker(t)
+		bus := b.bus("test")
+		var mu sync.Mutex
+		var redelivered []bool
+		done := make(chan struct{})
+		consumeIngested(t, bus, func(ctx context.Context, _ model.IngestedEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			redelivered = append(redelivered, events.Redelivered(ctx))
+			if len(redelivered) == 1 {
+				return errors.New("once")
+			}
+			close(done)
+			return nil
+		})
+		body, _ := json.Marshal(ingested("2026-10-21"))
+		b.call(http.MethodPost, "/api/exchanges/"+b.vhost+"/"+ExchangeEvents+"/publish", map[string]any{
+			"routing_key": events.KeyIngested, "payload": string(body), "payload_encoding": "string",
+			"properties": map[string]any{"message_id": "forged-attempt", "delivery_mode": 2, "type": events.KeyIngested,
+				"headers": map[string]any{HeaderAttempt: forged}},
+		})
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("x-ryft-attempt %v: handled %d times, want a first try and one retry", forged, len(redelivered))
+		}
+		mu.Lock()
+		if !slices.Equal(redelivered, []bool{false, true}) {
+			t.Errorf("x-ryft-attempt %v: redelivered per attempt %v, want [false true]", forged, redelivered)
+		}
+		mu.Unlock()
+		if n := b.depth(DLQ(events.ConsumerScoring), 0); n != 0 {
+			t.Errorf("x-ryft-attempt %v: %d dead letters", forged, n)
+		}
 	}
 }

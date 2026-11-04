@@ -3023,17 +3023,23 @@ Engine, and fails with the changed fields grouped by field.
 - **Letters the broker dead-lettered** (its delivery limit, or the consumer's own copy into the DLQ
   failed) carry no `Ryft-*` the consumer wrote, so a replay ignores any such header on a letter with an
   `x-death` entry for the consumer's own queue: the key is that entry's routing key, taken only when the
-  entry's exchange is `ryft.events`, and the type must be empty or equal it; else "dead-lettered by the
-  broker: check by hand". amqpbus drops `x-death`, its `x-first-death-*`/`x-last-death-*` and `Ryft-*` from a
-  first delivery from `ryft.events`, because a publisher sets any header and a forged `x-death` would
-  otherwise pick the key.
+  entry's exchange is `ryft.events`, and the type must be empty or equal it. A letter that was retried and
+  then dead-lettered by the broker has an entry from `ryft.requeue` with routing keys `[consumer]` (a
+  retry's copy carries the queue's name); its key is its type, if that is a key the consumer is bound for
+  (the consumer wrote it, checked against the routing key on the first delivery; only consumers may publish
+  into the retry tiers). Anything else is "dead-lettered by the broker: check by hand", with what is wrong
+  named; OPERATIONS has the manual publish. amqpbus drops `x-death`, its `x-first-death-*`/`x-last-death-*`,
+  `Ryft-*` and `x-ryft-attempt` from a first delivery from `ryft.events`, because a publisher sets any
+  header: a forged `x-death` would pick the key, and a forged attempt count of -1 crashed the consumer
+  (`RetryTiers[-1]`) or, large, skipped the retries. `attemptOf` and `tierFor` clamp as a second line.
 - **Residual:** a letter dead-lettered by an image from before this has `Ryft-Subject` = the type its
-  publisher set, not the routing key it arrived with, and (consumer-filed) no `x-death` entry for the
-  consumer's queue, so the script cannot tell it from a good one. If that type is a bound key and the
-  letter's own type equals it, it is replayed under it: ingest, which may publish only `ingested`, could
-  have sent a `session.completed` under `ingested`, which the old image filed as `session.completed`.
-  OPERATIONS asks for `show` or `purge` before the first replay after the rollout; the DLQ's 14-day
-  TTL ends the window.
+  publisher set, not the routing key it arrived with. That image also copied every header the publisher
+  sent, so such a letter can carry a forged `x-death` entry for the consumer's queue too; the script then
+  reads the key from the entry and requires the type to equal it, so the outcome is the same: a letter
+  whose type, `Ryft-Subject` or entry say one bound key and nothing contradicts it is replayed under that
+  key. ingest, which may publish only `ingested`, could have sent a `session.completed` under `ingested`
+  with type `session.completed`, which the old image filed as `session.completed`. OPERATIONS asks for
+  `show` or `purge` before the first replay after the rollout; the DLQ's 14-day TTL ends the window.
 - **No letter lost:** each taken letter is written to its own files, put back on any failure or
   signal (an uninterruptible way out), or kept with its path printed (`dlq.sh put-back <dir>`);
   credentials sit in a mode-600 curl config, never in argv; bodies go from files.

@@ -23,8 +23,10 @@
 //     the attempts before the dead letter may have left work half done, and it gets
 //     all its attempts again. A delivery from ryft.events is handled and filed by its
 //     routing key, not by the type a publisher set; a type that is neither empty nor
-//     the key is a bad event (D150). x-death and Ryft-* on such a first delivery are
-//     dropped: only the broker and this package write them, and dlq.sh reads them.
+//     the key is a bad event (D150). x-death, x-ryft-attempt and Ryft-* on such a first
+//     delivery are dropped: only the broker and this package write them (a retry's copy
+//     returns through ryft.requeue), dlq.sh reads them, and a forged attempt count must
+//     not skip the retries or index past the tiers; attemptOf clamps as well.
 //   - The connection is kept up with backoff and jitter while the service runs;
 //     Ready reports why it is down, and the outbox keeps events meanwhile (D101).
 //

@@ -628,10 +628,12 @@ func copyOf(d amqp.Delivery, h amqp.Table) amqp.Publishing {
 // delivery from ryft.events comes from a publisher, who sets any header: a copy of its
 // message into a delay tier or the dead-letter queue must not carry a forged account of
 // where it died, which scripts/dlq.sh reads to tell a letter the broker dead-lettered
-// (its key then comes from x-death alone).
+// (its key then comes from x-death alone). HeaderAttempt goes too: a retry tier's copy comes
+// back through ryft.requeue and dlq.sh strips it on a replay, so no first delivery carries
+// one honestly, and a forged count would skip the retries.
 func dropWrittenHeaders(h amqp.Table) {
 	for k := range h {
-		if strings.HasPrefix(k, "Ryft-") || k == "x-death" || strings.HasPrefix(k, "x-first-death-") ||
+		if strings.HasPrefix(k, "Ryft-") || k == "x-death" || k == HeaderAttempt || strings.HasPrefix(k, "x-first-death-") ||
 			strings.HasPrefix(k, "x-last-death-") {
 			delete(h, k)
 		}
@@ -651,24 +653,35 @@ func replayOf(d amqp.Delivery) (replayed, malformed bool) {
 	return replayed, !replayed
 }
 
-// attemptOf reads HeaderAttempt, whatever integer type it arrived as.
+// attemptOf reads HeaderAttempt, whatever integer type it arrived as, as a number from 0 to
+// MaxAttempts-1 (the last delivery before a dead letter). Anything else is 0: a header that is
+// not a whole number, or one a publisher forged (a first delivery from ryft.events has it
+// stripped, dropWrittenHeaders; this is the second line, since tierFor indexes a slice with it).
 func attemptOf(d amqp.Delivery) int {
+	var n int64
 	switch v := d.Headers[HeaderAttempt].(type) {
 	case int64:
-		return int(v)
+		n = v
 	case int32:
-		return int(v)
+		n = int64(v)
 	case int16:
-		return int(v)
+		n = int64(v)
 	case int8:
-		return int(v)
+		n = int64(v)
 	case int:
-		return v
+		n = int64(v)
 	case uint8:
-		return int(v)
+		n = int64(v)
+	case uint16:
+		n = int64(v)
+	case uint32:
+		n = int64(v)
+	case uint64:
+		n = int64(min(v, MaxAttempts))
 	case string:
-		n, _ := strconv.Atoi(v)
-		return n
+		if v, err := strconv.ParseInt(v, 10, 64); err == nil { // out of range or not a number: 0
+			n = v
+		}
 	}
-	return 0
+	return int(min(max(n, 0), MaxAttempts-1))
 }

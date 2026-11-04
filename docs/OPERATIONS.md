@@ -867,31 +867,52 @@ only repeats that).
   must equal that key.
 - A letter **the broker dead-lettered** (its delivery limit, or the consumer's own copy into the
   DLQ failed: an `x-death` entry for the consumer's queue, `list` says `"dead_lettered_by_broker":
-  true`) has no `Ryft-*` the consumer wrote, so any it carries is ignored. Its key is the routing
-  key of that `x-death` entry, and only when the entry says the exchange was `ryft.events`; its
-  type must be empty or equal that key. Anything else (a retry's copy, entries that disagree, a
-  type that says otherwise) is refused as "dead-lettered by the broker: check by hand": `show`
-  it and decide.
+  true`) has no `Ryft-*` the consumer wrote, so any it carries is ignored. The entries for the
+  consumer's queue must agree, and then its key is:
+  - for an entry from exchange `ryft.events`, that entry's routing key (the publisher's, limited
+    by topic permissions); the letter's type must be empty or equal it;
+  - for an entry from `ryft.requeue` with routing keys `[<consumer>]` (the letter had been retried:
+    a retry's copy has the queue's name as routing key), the letter's **type**, when that is a key
+    the consumer is bound for: the consumer wrote it and checked it against the routing key on the
+    first delivery, and only consumers may publish into the retry tiers.
+
+  Anything else (an entry from another exchange or with other routing keys, entries that disagree, a
+  retry's copy whose type is empty, not a key or not text, a type that says otherwise) is refused as
+  "dead-lettered by the broker: check by hand", with what is wrong named.
 
 Any other letter (a forged type: the broker's administrator would otherwise send it where its
 publisher may not) goes back into its DLQ as it was and is named on stderr, as is a letter the
-broker does not route; the script then exits 1. amqpbus drops `x-death` and `Ryft-*` from a first
-delivery from `ryft.events` (a publisher sets any header), so a letter the consumer files never
-carries a forged account of where it died.
+broker does not route; the script then exits 1. amqpbus drops `x-death`, `x-ryft-attempt` and
+`Ryft-*` from a first delivery from `ryft.events` (a publisher sets any header, and a forged attempt
+count would skip the retries), so a letter the consumer files never carries a forged account of
+where it died.
+
+**A letter that is refused and must go through** (`show` it first, and be sure of its key): publish
+it by hand through the management API (UI or `POST /api/exchanges/ryft/ryft.events/publish`) with
+`routing_key` the key, the same payload and `message_id`, `type` the key, `delivery_mode` 2 and the
+header `x-ryft-replayed: true` (boolean). Leave out every other header the letter carries: `Ryft-*`,
+`x-death`, `x-first-death-*`, `x-last-death-*`, `x-delivery-count`, `x-acquired-count` and
+`x-ryft-attempt`. The original stays in the DLQ (`purge` deletes every letter of the queue, so purge only
+when the rest are dealt with; otherwise the 14-day TTL removes it).
 
 **Nothing is lost.** Taking letters off and republishing them are separate calls, so a
 dropped port-forward can strand letters half-way: the script puts back what is left on
 its way out, and if even that fails it keeps them in a directory it names (mode 700,
 without the credentials), with `source.txt` saying which cluster (or broker URL) they came from.
 Put them back with `KUBE_CONTEXT=… scripts/dlq.sh put-back <dir>` once the cluster answers
-again: it refuses a directory from another cluster or broker, and removes the directory (and its
-`dlq.*` parent) when nothing is left in it. A second Ctrl-C, a TERM or a dropped session (SIGHUP)
+again: it refuses a directory from another cluster or broker, or one without a `source.txt`, and
+afterwards removes what it wrote there (`source.txt` and the like) and the directory, with `rmdir`,
+when that leaves it empty; it never removes the current directory, a `taken.json` or anything of yours.
+Give the broker's login as `RABBITMQ_USER` and `RABBITMQ_PASSWORD`, not inside `RABBITMQ_MGMT_URL`
+(the URL is recorded, minus everything before its last `@`). A second Ctrl-C, a TERM or a dropped session (SIGHUP)
 does not stop that way out, and it names the directory before it starts; after a dropped session
 the message may not have reached you, so look for a `dlq.*` directory in `$TMPDIR` (or
 `/tmp`) with a `pending/` in it, and put back what it holds. A `dlq.*` directory with a
 `taken.json` is different: the take's answer could not be read, and the letters are only in that
-file. Read it, republish what matters by hand (the management API's publish, or `put-back` after
-splitting it into `*.back.json` files), then delete the directory; `taken.json` holds message
+file, and the directory has a `source.txt` from the start of the take. Read it, then either publish
+what matters by hand (as above), or split it into one `*.back.json` per letter in that directory
+(`{"routing_key": "<consumer: scoring or notify>", "properties": {…the letter's properties…},
+"payload": …, "payload_encoding": …}`) and run `put-back` on it; then delete the directory; `taken.json` holds message
 bodies, which name users and days. A kept directory must not outlive the DLQ's 14 days: after that
 the letters would be older than any copy of them, and the replay's premise (the cause fixed) is stale.
 The take itself may run for

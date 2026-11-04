@@ -120,7 +120,8 @@ json.dump([letter("first", "ingested", "ingested", "scoring", {"trace": "kept"})
 json.dump([letter("push", "scored", "scored", "notify", {})], open(os.path.join(d, "dlq.notify.json"), "w"))
 # Letters the broker dead-lettered itself (its delivery limit): an x-death entry for the consumer's
 # own queue, and no Ryft-* header the consumer wrote (a forged one may be there). The key is the
-# entry's routing key, taken only when its exchange is ryft.events. The last one is a letter of a
+# entry's routing key when its exchange is ryft.events, or, for a retry's copy (ryft.requeue, the
+# queue's name as routing key), its type when that is a key the consumer is bound for. The last one is a letter of a
 # pre-D150 image: Ryft-Subject is the publisher's type, and no entry names the consumer's queue.
 def broker(mid, typ, entry, extra):
     h = {"x-delivery-count": 10}
@@ -137,14 +138,20 @@ def broker(mid, typ, entry, extra):
     return {"payload_bytes": len(body), "redelivered": False, "exchange": "ryft.dlx", "routing_key": "scoring", "message_count": 0,
             "properties": props, "payload": body, "payload_encoding": "string"}
 ev = {"exchange": "ryft.events", "routing-keys": ["ingested"]}
+rq = {"exchange": "ryft.requeue", "routing-keys": ["scoring"]}  # a retry's copy: the queue's name is its routing key
 json.dump([broker("b-ok", "ingested", ev, {}),
            broker("b-forged-type", "session.completed", ev, {}),
            broker("b-forged-subject", "ingested", ev, {"Ryft-Subject": "session.completed", "Ryft-Consumer": "scoring"}),
            broker("b-no-type", None, ev, {}),
-           broker("b-requeued", "ingested", {"exchange": "ryft.requeue", "routing-keys": ["scoring"]}, {}),
+           broker("b-requeued", "ingested", rq, {}),
+           broker("b-requeued-session", "session.completed", rq, {}),
            broker("b-requeue-key", "ingested", {"exchange": "ryft.requeue", "routing-keys": ["ingested"]}, {}),
+           broker("b-requeued-notype", None, rq, {}),
+           broker("b-requeued-unbound", "scored", rq, {}),
+           broker("b-requeued-nonstring", 5, rq, {}),
            broker("b-unbound", "scored", {"exchange": "ryft.events", "routing-keys": ["scored"]}, {}),
            broker("b-two-keys", "ingested", [ev, {"exchange": "ryft.events", "routing-keys": ["session.completed"]}], {}),
+           broker("b-mixed", "ingested", [ev, rq], {}),
            broker("pre-d150", "session.completed", None, {"Ryft-Subject": "session.completed", "Ryft-Deliveries": "6"})],
           open(os.path.join(d, "dlq.scoring-broker.json"), "w"))
 json.dump([], open(os.path.join(d, "dlq.notify-broker.json"), "w"))
@@ -312,24 +319,28 @@ check 'assert [c["data"]["count"] for c in calls if c["path"].endswith("/get")] 
 # "check by hand". A letter of a pre-D150 image (no entry for the consumer's queue) keeps the
 # Ryft-Subject rule: bound key, type equal to it.
 rc=0; out=$(FAKE_SET=-broker run mgmt replay dlq.scoring all 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 4, put back 5" ] || fail "broker letters: $rc $out $(cat "$t/err")"
-for id in b-forged-type b-requeued b-requeue-key b-unbound b-two-keys; do
+[ "$rc" = 1 ] && [ "$out" = "replayed 6, put back 8" ] || fail "broker letters: $rc $out $(cat "$t/err")"
+for id in b-forged-type b-requeue-key b-requeued-notype b-requeued-unbound b-requeued-nonstring b-unbound b-two-keys b-mixed; do
   grep -q "! not replayed, put back: message_id \"$id\".*dead-lettered by the broker: check by hand" "$t/err" || fail "$id is not named for a check by hand: $(cat "$t/err")"
 done
 grep -q 'message_id "b-forged-type", key "ingested": its type "session.completed" is not its key; dead' "$t/err" || fail "the forged type is not said: $(cat "$t/err")"
+grep -q 'b-requeued-notype", key "": a retry.s copy (ryft.requeue) whose type null is not a key scoring.s consumer is bound for' "$t/err" || fail "an untyped retry is not explained: $(cat "$t/err")"
+grep -q 'b-requeue-key", key "": its x-death entry says exchange "ryft.requeue", routing keys \["ingested"\]' "$t/err" || fail "a requeue with a key is not explained: $(cat "$t/err")"
+grep -q 'b-two-keys", key "": its x-death entries for scoring.s queue disagree' "$t/err" || fail "disagreeing entries are not explained: $(cat "$t/err")"
 check '
 pubs = [c for c in calls if c["path"].endswith("/publish")]
 events = [p["data"] for p in pubs if p["path"].split("/")[-2] == "ryft.events"]
 ids = [e["properties"]["message_id"] for e in events]
-assert ids == ["b-ok", "b-forged-subject", "b-no-type", "pre-d150"], ids
-# Each under its x-death routing key (the forged Ryft-Subject, session.completed, is not used), typed
-# with it, marked, and without anything the broker or the consumer wrote.
-assert [e["routing_key"] for e in events] == ["ingested", "ingested", "ingested", "session.completed"], events
-assert [e["properties"]["type"] for e in events] == ["ingested", "ingested", "ingested", "session.completed"], events
+assert ids == ["b-ok", "b-forged-subject", "b-no-type", "b-requeued", "b-requeued-session", "pre-d150"], ids
+# Each under its x-death routing key (the forged Ryft-Subject, session.completed, is not used) or, for
+# a retry'"'"'s copy, its type; typed with it, marked, and without anything the broker or the consumer wrote.
+keys = ["ingested", "ingested", "ingested", "ingested", "session.completed", "session.completed"]
+assert [e["routing_key"] for e in events] == keys, events
+assert [e["properties"]["type"] for e in events] == keys, events
 for e in events:
     assert e["properties"]["headers"] == {"x-ryft-replayed": True}, e
 back = [p["data"]["properties"]["message_id"] for p in pubs if p["path"].split("/")[-2] == "ryft.dlx"]
-assert back == ["b-forged-type", "b-requeued", "b-requeue-key", "b-unbound", "b-two-keys"], back
+assert back == ["b-forged-type", "b-requeue-key", "b-requeued-notype", "b-requeued-unbound", "b-requeued-nonstring", "b-unbound", "b-two-keys", "b-mixed"], back
 ' || fail "the broker letters (above)"
 
 # 5. Nothing is lost. The connection drops after the first replay: the publish of the second
@@ -443,6 +454,38 @@ if echo "$out" | grep -q empty; then fail "a bad take is not empty: $out"; fi
 kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
 case $kept in "$t/tmp/dlq."?*) ;; *) fail "the kept directory $kept is not in TMPDIR ($t/tmp)" ;; esac
 [ "$(cat "$kept/taken.json")" = "not json" ] || fail "the raw answer is not kept: $(cat "$t/err")"
+# The take's directory records its source from the start, so the documented recovery works: the
+# operator reads taken.json, writes a *.back.json per letter next to it, and puts them back.
+[ "$(cat "$kept/source.txt")" = "url http://dlq-test.invalid" ] || fail "a kept take does not record its source: $(ls -A "$kept")"
+letter_file() { # DIR NAME: the first fixture letter as a kept *.back.json
+  python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))[0]
+json.dump({"routing_key": "scoring", "properties": m["properties"], "payload": m["payload"], "payload_encoding": "string"}, open(sys.argv[2], "w"))' "$t/dlq.scoring.json" "$1/$2"
+}
+letter_file "$kept" 0001.back.json
+rc=0; MGMT_URL=http://elsewhere.invalid run mgmt put-back "$kept" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 2 ] && grep -q 'not from url http://elsewhere.invalid' "$t/err" && [ -e "$kept/0001.back.json" ] || fail "put-back of a kept take into another broker: $rc $(cat "$t/err")"
+rc=0; run mgmt put-back "$kept" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 0 ] && [ ! -e "$kept/0001.back.json" ] && [ -e "$kept/taken.json" ] || fail "put-back of a kept take: $rc $(cat "$t/err") $(ls -A "$kept")"
+# From inside the directory (`put-back .`): the letters go back and nothing fails afterwards.
+echo "url http://dlq-test.invalid" > "$kept/source.txt"; letter_file "$kept" 0001.back.json
+rc=0; ( cd "$kept" && run mgmt put-back . ) >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 0 ] && [ ! -e "$kept/0001.back.json" ] || fail "put-back . : $rc $(cat "$t/err")"
+rm -rf "$kept"
+# A directory of the operator's own that merely looks like ours is never removed, nor is anything in
+# its parent: only a directory that carries source.txt is tidied, and only with rmdir.
+mkdir -p "$t/tmp/dlq.backup/pending"; echo precious > "$t/tmp/dlq.backup/keepme"
+echo "url http://dlq-test.invalid" > "$t/tmp/dlq.backup/pending/source.txt"; letter_file "$t/tmp/dlq.backup/pending" 0001.back.json
+echo mine > "$t/tmp/dlq.backup/pending/notes.txt"
+rc=0; run mgmt put-back "$t/tmp/dlq.backup/pending" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 0 ] && [ "$(cat "$t/tmp/dlq.backup/keepme")" = precious ] && [ "$(cat "$t/tmp/dlq.backup/pending/notes.txt")" = mine ] \
+  || fail "put-back removed what is not dlq.sh's: $rc $(cat "$t/err") $(ls -A "$t/tmp/dlq.backup" "$t/tmp/dlq.backup/pending")"
+rm -rf "$t/tmp/dlq.backup"
+# A URL with a login, and an @ in the password: none of it reaches source.txt.
+rc=0; out=$(MGMT_URL='http://user:p@ss:w0rd@dlq-test.invalid:15672' FAKE_BAD_TAKE=1 run mgmt replay scoring 2>"$t/err") || rc=$?
+kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
+[ "$(cat "$kept/source.txt")" = "url http://dlq-test.invalid:15672" ] || fail "the login is in source.txt: $(cat "$kept/source.txt")"
 rm -rf "$kept"
 out=$(FAKE_EMPTY=1 run mgmt replay scoring 2>"$t/err") && [ "$out" = "dlq.scoring is empty" ] || fail "empty: $out $(cat "$t/err")"
 
@@ -460,9 +503,9 @@ out=$(FAKE_SET=-broker run mgmt list 2>"$t/err") || fail "list (broker): $(cat "
 echo "$out" | python3 -c '
 import json, sys
 lines = sys.stdin.read().splitlines()
-assert lines[0] == "dlq.scoring: 9" and lines[10] == "dlq.notify: 0", lines
-rows = [json.loads(l) for l in lines[1:10]]
-assert [r["dead_lettered_by_broker"] for r in rows] == [True] * 8 + [False], rows
+assert lines[0] == "dlq.scoring: 14" and lines[15] == "dlq.notify: 0", lines
+rows = [json.loads(l) for l in lines[1:15]]
+assert [r["dead_lettered_by_broker"] for r in rows] == [True] * 13 + [False], rows
 ' || fail "list (broker) printed: $out"
 check '
 assert {c["data"]["ackmode"] for c in calls if c["path"].endswith("/get")} == {"ack_requeue_true"}, calls

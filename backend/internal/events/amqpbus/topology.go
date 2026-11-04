@@ -217,9 +217,9 @@ func Spec(scale float64) Topology {
 	return t
 }
 
-// tierFor is the tier of a retry after attempt failures (1-based).
+// tierFor is the tier of a retry after attempt failures (1-based; below 1 is the first tier).
 func tierFor(attempt int) Tier {
-	return RetryTiers[min(attempt, len(RetryTiers))-1]
+	return RetryTiers[min(max(attempt, 1), len(RetryTiers))-1]
 }
 
 // waitTierFor is the longest of consumer's tiers that does not exceed d, or the

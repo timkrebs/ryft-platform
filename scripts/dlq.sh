@@ -81,6 +81,7 @@ case "$cmd" in
     [ "${#pos[@]}" = 2 ] || usage
     dir=${pos[1]}
     [ -d "$dir" ] || refuse "no directory $dir"
+    dir=$(cd "$dir" && pwd -P)
     compgen -G "$dir/*.back.json" >/dev/null || refuse "no letters (*.back.json) in $dir"
     python3 - "$dir" <<'PY' || refuse "$dir holds something that is not a dead letter dlq.sh kept"
 import glob, json, os, sys
@@ -101,8 +102,9 @@ VHOST=${RABBITMQ_VHOST:-ryft}
 if [ -n "${RABBITMQ_MGMT_URL:-}" ]; then
   [ -z "$ctx" ] || refuse "--context and RABBITMQ_MGMT_URL exclude each other"
   : "${RABBITMQ_USER:?with RABBITMQ_MGMT_URL set RABBITMQ_USER and RABBITMQ_PASSWORD}" "${RABBITMQ_PASSWORD:?}"
-  # Where the letters live, for a kept directory (source.txt): the URL without a login in it.
-  source_id="url $(printf '%s' "$RABBITMQ_MGMT_URL" | sed 's|^\([A-Za-z][A-Za-z0-9+.-]*://\)[^/@]*@|\1|')"
+  # Where the letters live, for a kept directory (source.txt): the URL without a login in it (everything up to
+  # the authority's last @ goes; RABBITMQ_USER and RABBITMQ_PASSWORD are the way to give a login).
+  source_id="url $(printf '%s' "$RABBITMQ_MGMT_URL" | sed 's|^\([A-Za-z][A-Za-z0-9+.-]*://\)[^/]*@|\1|')"
 else
   kube_context "$ctx" || exit 2
   source_id="context $KUBE_CONTEXT"
@@ -141,6 +143,11 @@ put_back_dir() { # DIR: each *.back.json in it back into its dead-letter queue (
   for f in "$1"/*.back.json; do [ ! -e "$f" ] || left=$((left + 1)); done
   [ "$back_n" = 0 ] || echo "put back $back_n letters into their dead-letter queue" >&2
   [ "$left" = 0 ] || { echo "✗ dlq.sh: $left letters are in no queue, only in $1: put them back with scripts/dlq.sh put-back $1" >&2; return 1; }
+}
+tidy() { # DIR: the files dlq.sh wrote into a kept directory, then DIR itself when that leaves it empty
+  [ -f "$1/source.txt" ] || return 0
+  rm -f "$1/source.txt" "$1/manifest.tsv" "$1/ca.crt" "$1/get.json"
+  rmdir "$1" 2>/dev/null || true
 }
 cleanup() {
   local status=$?; trap '' INT TERM HUP  # $? first, then nothing interrupts the way out
@@ -254,6 +261,8 @@ PY
   show)
     get "$q" "$n" ack_requeue_true | python3 -m json.tool ;;
   replay)
+    # Before the take: whatever directory is kept from here on says where its letters came from.
+    printf '%s\n' "$source_id" > "$tmp/source.txt"
     get "$q" "$n" ack_requeue_false > "$tmp/taken.json" || {
       keep=1; echo "✗ dlq.sh: the take from $q failed: letters it took may be only in $tmp/taken.json" >&2; exit 1; }
     # Per letter, written at once (pending/ appears only when all are): the publish to
@@ -277,18 +286,31 @@ def broker_deaths(h):
     xd = h.get("x-death")
     return [e for e in xd if isinstance(e, dict) and e.get("queue") == consumer] if isinstance(xd, list) else []
 
-def broker_key(entries):
-    """The routing key a broker-dead-lettered letter was published to ryft.events with, from its
-    x-death entry (the entry's exchange must be ryft.events: a retry's copy came through
-    ryft.requeue, with the queue's name as key). "" when the entries do not agree on one."""
+def broker_key(entries, typ):
+    """(key, why): the key a broker-dead-lettered letter is replayed under, or "" and what is wrong.
+    From the x-death entries for the consumer's own queue, which must agree:
+      - exchange ryft.events: the entry's routing key (the publisher's, limited by topic permissions);
+      - exchange ryft.requeue with routing keys == [consumer]: a retry's copy, whose routing key is the
+        queue's name; its key is its type, which the consumer wrote and checked against the routing
+        key on the first delivery (only consumers may publish into the retry tiers), if that is a key
+        the consumer is bound for.
+    Anything else is refused."""
     seen = set()
     for e in entries:
         rk = e.get("routing-keys")
-        seen.add((e.get("exchange"), rk[0] if isinstance(rk, list) and rk and isinstance(rk[0], str) else ""))
+        seen.add((e.get("exchange"), tuple(rk) if isinstance(rk, list) and all(isinstance(k, str) for k in rk) else None))
     if len(seen) != 1:
-        return ""
-    exchange, key = seen.pop()
-    return key if exchange == "ryft.events" else ""
+        return "", "its x-death entries for %s's queue disagree about the exchange or routing keys" % consumer
+    exchange, rks = seen.pop()
+    if exchange == "ryft.events":
+        if not rks or not rks[0]:
+            return "", "its x-death entry names no routing key"
+        return rks[0], ""
+    if exchange == "ryft.requeue" and rks == (consumer,):
+        if isinstance(typ, str) and typ in keys:
+            return typ, ""
+        return "", "a retry's copy (ryft.requeue) whose type %s is not a key %s's consumer is bound for" % (json.dumps(typ), consumer)
+    return "", "its x-death entry says exchange %s, routing keys %s: not ryft.events, nor a retry's copy" % (json.dumps(exchange), json.dumps(rks))
 
 new = out + ".new"
 os.mkdir(new)
@@ -301,8 +323,9 @@ for i, m in enumerate(taken, 1):
     deaths = broker_deaths(h)
     if deaths:
         # Ignore every Ryft-* header: whoever wrote them, it was not the consumer.
-        key = broker_key(deaths)
+        key, why = broker_key(deaths, p.get("type"))
     else:
+        why = ""
         key = h.get("Ryft-Subject") or p.get("type") or ""
     typ = p.get("type") or key
     def body(k, headers):
@@ -315,7 +338,7 @@ for i, m in enumerate(taken, 1):
     what = "message_id %s, key %s" % (json.dumps(p.get("message_id", "")), json.dumps(key))
     hand = "; dead-lettered by the broker: check by hand" if deaths else ""
     if not key:
-        verdict, what = "refused", what + ": its x-death does not say it was published to ryft.events with one key" + hand
+        verdict, what = "refused", what + ": " + (why or "it has no key") + hand
     elif key not in keys:
         verdict, what = "refused", what + ": not a key %s's consumer is bound for" % consumer + hand
     elif typ != key:
@@ -358,17 +381,11 @@ PY
     api DELETE "/api/queues/$VHOST/$q/contents" && echo "$q purged" ;;
   put-back)
     put_back_dir "$dir" || exit 1
-    # Nothing left in it: remove it, and the temp directory a replay kept it in, when that holds
-    # nothing else of use (a taken.json, the raw answer of a failed take, stays: see OPERATIONS).
-    rm -rf "$dir"
+    # Nothing left in it: take away what dlq.sh itself wrote there (only in a directory that carries
+    # its source.txt) and the directory if that empties it, then the same for the temp directory a
+    # replay kept it in. rmdir, never rm -rf: a taken.json (the raw answer of a failed take), the
+    # current directory or anything of yours stays.
+    tidy "$dir"
     parent=$(dirname "$dir")
-    case $(basename "$parent") in
-      dlq.??????)
-        other=
-        for f in "$parent"/* "$parent"/.[!.]*; do
-          [ -e "$f" ] || continue
-          case ${f##*/} in ca.crt | get.json) ;; *) other=1 ;; esac
-        done
-        [ -n "$other" ] || rm -rf "$parent" ;;
-    esac ;;
+    case $(basename "$parent") in dlq.??????) tidy "$parent" ;; esac ;;
 esac
