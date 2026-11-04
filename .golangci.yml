@@ -1,4 +1,5 @@
-# golangci-lint v2. Run from backend/: `golangci-lint run` (CI does the same).
+# golangci-lint v2 (D18: the standard set plus the extras below).
+# Run from backend/: `golangci-lint run` (CI does the same).
 version: "2"
 
 run:
@@ -10,7 +11,7 @@ linters:
   enable:
     - bodyclose       # unclosed HTTP response bodies
     - copyloopvar     # pre-Go 1.22 loop variable copies
-    - depguard        # internal/logx/logcheck is for tests only (D114)
+    - depguard        # internal/logx/logcheck and internal/testsupport are for tests only (D114)
     - errorlint       # wrapped errors compared with == or type-switched
     - gosec           # security smells
     - misspell
@@ -20,7 +21,16 @@ linters:
     - sqlclosecheck   # unclosed rows / statements
     - unconvert       # redundant conversions
     - usestdlibvars   # http.MethodGet over "GET", etc.
+    - revive          # exported identifiers and package comments only (rules below)
   settings:
+    revive:
+      # Listed explicitly: revive's default set adds unrelated findings.
+      rules:
+        - name: exported
+        - name: package-comments
+    nolintlint:
+      # A bare //nolint silences every linter, revive's exported rule included (the budget is zero).
+      require-specific: true
     depguard:
       rules:
         logcheck-tests-only:
@@ -28,6 +38,16 @@ linters:
           deny:
             - pkg: github.com/timkrebs/ryft/internal/logx/logcheck
               desc: test-only (D114)
+        goleak-tests-only:
+          files: ["!$test"]
+          deny:
+            - pkg: go.uber.org/goleak
+              desc: leak checks run in tests only
+        testsupport-tests-only:
+          files: ["!$test"]
+          deny:
+            - pkg: github.com/timkrebs/ryft/internal/testsupport
+              desc: test helpers; tests only
     gosec:
       excludes:
         - G115 # int conversions: values here are bounded scores and minutes
@@ -36,6 +56,10 @@ linters:
       - common-false-positives
       - std-error-handling
     rules:
+      # model.ModelInfo and model.ModelChangeEntry keep their names: they mirror
+      # the API and the Swift types. Nothing else may stutter.
+      - linters: [revive]
+        text: 'type name will be used as model\.Model(Info|ChangeEntry) by other packages'
       - path: _test\.go
         linters: [gosec, errcheck, noctx]
 

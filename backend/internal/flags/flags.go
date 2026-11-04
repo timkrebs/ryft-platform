@@ -1,6 +1,3 @@
-// Package flags evaluates remote-config feature flags for one user (GET
-// /v1/config, docs/DECISIONS.md D69). It is pure: flags and a user in, booleans
-// out.
 package flags
 
 import (
@@ -48,4 +45,14 @@ func Evaluate(all []model.FeatureFlag, user uuid.UUID) map[string]bool {
 		out[f.Key] = On(f, user)
 	}
 	return out
+}
+
+// Enabled says whether user gets the flag key; a flag that does not exist is off.
+func Enabled(all []model.FeatureFlag, key string, user uuid.UUID) bool {
+	for _, f := range all {
+		if f.Key == key {
+			return On(f, user)
+		}
+	}
+	return false
 }

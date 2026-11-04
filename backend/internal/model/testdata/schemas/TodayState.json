@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "day": {
+      "type": "string"
+    },
+    "model_version": {
+      "type": "string"
+    },
+    "scored_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "day",
+    "model_version",
+    "scored_at",
+    "state"
+  ],
+  "title": "TodayState",
+  "type": "object"
+}

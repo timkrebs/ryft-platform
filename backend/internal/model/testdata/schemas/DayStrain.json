@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "active_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "hr_min": {
+      "type": "integer"
+    },
+    "muscular_trimp": {
+      "type": "integer"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "SessionSummary"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "steps": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "trimp": {
+      "type": "integer"
+    },
+    "zone_min": {
+      "items": {
+        "type": "integer"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "active_kcal",
+    "hr_min",
+    "muscular_trimp",
+    "sessions",
+    "steps",
+    "trimp",
+    "zone_min"
+  ],
+  "title": "DayStrain",
+  "type": "object"
+}

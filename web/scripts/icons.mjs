@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
-import { markSvg } from '../src/lib/mark.ts';
+import { markSvg, OUTER_SPAN } from '../src/lib/mark.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const PUBLIC = join(ROOT, 'public');
@@ -17,8 +17,18 @@ const tokens = JSON.parse(readFileSync(join(ROOT, 'src/styles/tokens.json'), 'ut
 const graphite = tokens.colors.graphite.dark;
 const mist = tokens.colors.mist.dark;
 
-// The favicon adapts to the tab: its own <style>, colours from the tokens.
-const favicon = markSvg({ size: 32, padding: 2 })
+// The app icon's composition (icon-spec.swift): the outer ring's span is 0.963 of the tile,
+// so the tile is OUTER_SPAN / 0.963 box units wide, centred on the mark (negative padding).
+const RING_SPAN = 0.963;
+const PADDING = (OUTER_SPAN / RING_SPAN - 100) / 2;
+// Maskable: the whole mark, dots included (they reach 50 from the centre), inside the
+// 80 % safe circle: 2 × 50 box units = 0.8 of the tile, i.e. padding 12.5.
+const MASKABLE_PADDING = 12.5;
+const maskableScale = (100 + 2 * PADDING) / (100 + 2 * MASKABLE_PADDING);
+
+// The favicon adapts to the tab: its own <style>, colours from the tokens. One SVG serves
+// 16 and 32 px, so the small-size rule is applied for 24 px (stroke 1.25 px there).
+const favicon = markSvg({ size: 24, padding: PADDING })
   .replace('<svg ', '<svg class="m" ')
   .replace(
     /^(<svg[^>]*>)/,
@@ -32,12 +42,12 @@ const png = (size, padding) =>
     .toBuffer();
 
 const outputs = [
-  ['favicon-32.png', 32, 8],
-  ['apple-touch-icon.png', 180, 24],
-  ['icon-192.png', 192, 24],
-  ['icon-512.png', 512, 24],
-  // Maskable: the mark inside the 80 % safe zone.
-  ['icon-maskable-512.png', 512, 40],
+  ['favicon-32.png', 32, PADDING],
+  ['apple-touch-icon.png', 180, PADDING],
+  ['icon-192.png', 192, PADDING],
+  ['icon-512.png', 512, PADDING],
+  // Maskable: the whole mark inside the 80 % safe circle.
+  ['icon-maskable-512.png', 512, MASKABLE_PADDING],
 ];
 for (const [name, size, padding] of outputs) writeFileSync(join(PUBLIC, name), await png(size, padding));
 
@@ -58,3 +68,4 @@ const manifest = {
 };
 writeFileSync(join(PUBLIC, 'site.webmanifest'), `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`icons: favicon, apple-touch-icon, ${outputs.length} PNGs and site.webmanifest in public/.`);
+console.log(`icons: maskable scale ${maskableScale.toFixed(3)} of the reference composition.`);

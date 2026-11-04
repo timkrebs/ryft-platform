@@ -120,19 +120,19 @@ commands, NetworkPolicies, VSO or Argo objects.
 
 | # | Claim | Status | Checked in |
 | --- | --- | --- | --- |
-| a | the API server runs no admission policy on policy or binding objects (no lockout; no self-protection) | verified (source) | kind fixture: a policy written to match bindings never fires |
-| b | webhook configurations are not exempt, so P6 sees them | plausible | kind |
-| c | CONNECT on `pods/exec` can be matched (P8) | plausible | kind |
-| d | dry-run requests carry the `validation_failure` audit annotation | plausible | kind |
-| e | `apiserver_validating_admission_policy_check_total` counts clean passes | doubtful. Not used for liveness; claim m instead | – |
-| f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | plausible | kind |
-| g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | plausible. Fallback: one equality per top-level key | kind |
-| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | plausible for the operators' roles. **But it does not stop the controller from being handed VAP/VAPB write**: three ClusterRoles (`rabbitmq-cluster-operator-role`, `messaging-topology-manager-role`, `messaging-topology-metrics-auth-role`) are in both the `escalate` and the `bind` list, so the controller can add VAP/VAPB write (or `*/*/*`) to one of them and bind it to its own service account. Only P6 and P7 in Deny close that. | kind, with a negative test (§3, Kind e2e) |
-| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | plausible | kind |
-| j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5) | `terraform validate` |
-| k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | unknown | kind |
-| l | the broker's 443 egress only reaches the API server inside the VPC | plausible | production: T12-k's canary |
-| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | plausible | kind |
+| a | the API server runs no admission policy on policy or binding objects (no lockout; no self-protection) | **verified** in kind 1.36.4 (T12-d): a Deny policy matching both kinds, proven live by refusing a canary ConfigMap, refused neither a further policy and binding nor their deletion | kind fixture: a policy written to match bindings never fires |
+| b | webhook configurations are not exempt, so P6 sees them | **verified** (kind): P6 refused a webhook configuration written as Argo's controller | kind |
+| c | CONNECT on `pods/exec` can be matched (P8) | **verified** (kind): refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it | kind |
+| d | dry-run requests carry the `validation_failure` audit annotation | **verified** (kind, audit level Metadata): on the dry-run and on the real request, told apart by `dryRun=All` in `requestURI` | kind |
+| e | `apiserver_validating_admission_policy_check_total` counts clean passes | **false** (T12-e review): only checks that found something are counted, so a quiet policy has no series. Liveness is the scrape's `up` | code review |
+| f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | not tried (D151) | kind |
+| g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | **verified** (kind): `status.typeChecking` empty, the committed project passes, a widened one is refused | kind |
+| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind), including the negative test: without the policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it; with P6 in Deny both steps are refused. **Limit:** the `resourceNames` limits do not stop the controller from being handed VAP/VAPB write: three ClusterRoles (`rabbitmq-cluster-operator-role`, `messaging-topology-manager-role`, `messaging-topology-metrics-auth-role`) are in both the `escalate` and the `bind` list, so the controller can add VAP/VAPB write (or `*/*/*`) to one of them and bind it to its own service account. Only P6 and P7 in Deny close that | kind, with a negative test (§3, Kind e2e) |
+| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | **verified, after one added rule** (D151): the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for its children for ever. #47 lacks the rule | kind |
+| j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5). Not tried (D151) | `terraform validate` |
+| k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | **answered** (kind, argo-cd chart 10.10.5): the full commit SHA of the revision the Application was compared with, which is `status.sync.revision`; P10's third alternative admits it, and `--revision <another sha>` is refused (D151) | kind |
+| l | the broker's 443 egress only reaches the API server inside the VPC | plausible. Not tried (D151) | production: T12-k's canary |
+| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | **false** (T12-e review): custom-resource-state resolves kinds from CRDs only and skips built-in ones. Instead kube-state-metrics' native collector `validatingadmissionpolicybindings` (v2.20+, the chart adds the RBAC): `kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,policy_name}` and `_validation_action{validatingadmissionpolicybinding,action}` (1 per live action). It exports no labels, so the committed action is a recording rule generated from `admission-values.yaml` | kind: the metrics exist with these names (T12-d's kind run confirmed the custom-resource-state result, D151) |
 
 ### Ownership
 
@@ -244,7 +244,10 @@ flowchart LR
 - Value-free messages.
 - A matchCondition skips an UPDATE when `oldObject.metadata.deletionTimestamp` is set and the spec (or
   `data`) is unchanged, so finalizer removal (VSO's, for example) passes.
-- Pod rules walk `containers` and `initContainers`, never `ephemeralContainers`.
+- Pod rules walk `containers` and `initContainers`. `ephemeralContainers` get only the image rule and a
+  token rule (no mount of a token volume, no `vault-auth-token`): P2 also matches `pods/ephemeralcontainers`
+  (UPDATE), so a debug image in a `ryft-*` namespace is refused by design. A Pod UPDATE is judged on images
+  only (command, args, probes, volumes and automount are immutable on a Pod).
 - C/U/D means CREATE/UPDATE/DELETE. DELETE is matched only where stated.
 
 **P1 `ryft-namespaces`** (C, U; D for Argo)
@@ -327,7 +330,16 @@ flowchart LR
   - services in OPS, never a `url`;
   - rules on `rabbitmq.com` only.
 - **Namespaced RBAC:** only in OPS, `roleRef.kind: Role`, with RoleBinding subjects only the two
-  operator service accounts.
+  operator service accounts. With T12-g, exactly four more objects in `ryft-rabbitmq`:
+  `rabbitmq-cluster-operator-role` / `-rolebinding` and `messaging-topology-manager-role` /
+  `-rolebinding` (VAP sees the writer, not the Argo project, so the chart names them). Every
+  rule of a Role or ClusterRole is checked against an allowlist of the (group, resource) pairs
+  the vendored roles use (a `*` prefix, `*/token`, `pods/attach`, ephemeral containers, CSR
+  approval never pass; `pods/exec` only in a `rabbitmq-cluster-*` role). A ClusterRole grants
+  no Secrets, no `pods/exec` and no Pod write, so the operators' cluster-wide Secret reads
+  (S11) cannot come back through git. After Step A, reverting T12-g by git therefore needs the
+  user's break-glass. The Cluster Operator itself (P8) may write only the broker's
+  `rabbitmq-peer-discovery` Role and `rabbitmq-server` RoleBinding there.
 
 **P7 `ryft-argocd`** (C, U, D; namespace `argocd`, any writer)
 - **Carve-out:** the application controller's UPDATEs with `object.spec == oldObject.spec` (its status
@@ -378,16 +390,32 @@ flowchart LR
   - pause and hard-refresh;
   - the controller clearing a finished operation.
 - **Rules for a new or changed operation:**
-  - from any writer, no `operation.sync.manifests`, `.source` or `.sources`. This refuses `--local` and
-    `argocd app rollback`, which carries the history entry's source;
+  - from any writer, no `operation.sync.manifests`, and no `.source` or `.sources` other than a copy of
+    the Application's own `spec.source` / `spec.sources`. The controller's automated sync carries
+    exactly that copy (found by the kind run, chart 0.2.2, D151), so the original rule, any `source`,
+    refused Argo CD's own auto-sync. This still refuses `--local`. It no longer refuses
+    `argocd app rollback` by itself: a history entry whose source equals the spec's passes this rule,
+    and the revision rule below is what refuses the rollback, **for argocd-server only**;
   - from argocd-server, `operation.sync.revision` must be `""`, `main` or
-    `oldObject.status.sync.revision` (claim k).
-- **Open until k is verified:** `argocd app sync --revision <sha>` after a pause. While auto-sync is on,
-  Argo itself refuses other revisions. RYFT rolls back by revert and hold (D95, D107).
+    `oldObject.status.sync.revision`. Claim k, answered: a plain sync writes the full SHA of the
+    revision the Application was compared with, i.e. `status.sync.revision`, so the third alternative is
+    the one that admits it.
+- **"No foreign source" rests on P7, not on P10.** A request that changes `spec.source` and the
+  operation together carries a source equal to its own new spec, which this rule admits. P7 pins the
+  Application's whole `spec` (our repository, `main`, the fixed path), so the guard is P7. P7 must
+  therefore not go to break-glass on the assumption that P10 blocks `--repo`, `--path` or a changed
+  source (P7 refuses `--repo` and `--path` itself; see Operations below).
+- **Closed by claim k:** `argocd app sync --revision <sha>` after a pause is refused for any SHA other
+  than the synced one, through argocd-server. While auto-sync is on, Argo itself refuses other
+  revisions. RYFT rolls back by revert and hold (D95, D107).
 
 **P11 `ryft-broker`** (C, U)
 - **RabbitmqCluster in `ryft-rabbitmq`:** `spec.image` matches the broker pattern, and `override` holds
   only today's pod-template annotations.
+- **`spec.secretBackend` is an allowlist** (chart 0.2.3, D151): the only key is `externalSecret`, and
+  that only as the Cluster Operator's defaulting webhook writes it into every RabbitmqCluster
+  (`{"externalSecret": {"name": ""}}`, found by the kind run). A Vault block next to it, a named
+  external secret, another field and any key a later CRD version adds are refused.
 - **Shovel, Federation and SchemaReplication are refused cluster-wide** (recommended), from every writer:
   they move messages off the cluster.
 
@@ -404,7 +432,7 @@ flowchart LR
 | the operators project's cluster power | P6, P8; their reads: T12-g |
 | `project.yaml` read from the PR | P7 with B2: the cluster compares against the same file |
 | L1, L2 | P7's fixed map, plus CI (T12-c) |
-| L3 | Argo's project (`rabbitmq-system` only), plus P2 and P6 in OPS; CI: accepted |
+| L3 | Argo's project (`rabbitmq-system`, and `ryft-rabbitmq` for the four T12-g objects), plus P2 and P6 in OPS and in those four names; CI: accepted |
 | L4 | CI-only: a typed finding (T12-c) |
 
 **Accepted:**
@@ -470,18 +498,22 @@ T12-k (the broker's egress) lands before Step B.
   kept.
 - The scrape is configured in `deploy/monitoring/k8s-monitoring.yaml` (your `make monitoring-apply`).
 - Alerts:
-  - `AdmissionPolicyViolation` (warning, Audit);
+  - `AdmissionPolicyViolation` (info, Audit: findings repeat on every refresh);
   - `AdmissionPolicyDenied` (warning);
-  - `AdmissionPodDenied` (critical, P2 `pods`);
-  - `AdmissionPolicyError` (critical).
+  - `AdmissionPodDenied` (critical: P2 `pods`, P5, P8 and Pod Security enforce, which is live today);
+  - `AdmissionPolicyError` (critical when the binding refuses, warning under Warn+Audit);
+  - `AdmissionSignalsMissing` and `AdmissionScrapeDown` (warning: the scrapes themselves).
 
-**Binding state** (claim m).
-- KSM custom-resource-state exports each binding with its `validationActions` and the chart's
-  intended-action label. That needs `rbac.extraRules` for list/watch on
-  `validatingadmissionpolicybindings`.
+**Binding state** (claim m, as built).
+- kube-state-metrics' native collector exports each binding's name and live validation actions.
+  The committed action is `ryft:admission_binding_intended`, a recording rule per binding that
+  `scripts/admission_intended.sh` generates from `admission-values.yaml`; `make alerts-check`
+  fails when the two differ.
 - Alerts:
-  - `AdmissionBindingMissing` (critical);
-  - `AdmissionBindingDrift` (actions differ from the label for 2 h: a patch or a forgotten break-glass).
+  - `AdmissionBindingMissing` (critical, fewer than 12 `ryft-*` bindings);
+  - `AdmissionBindingNotDenying` (warning, 10 min: a deny binding without `Deny` while others deny);
+  - `AdmissionBindingDrift` (warning, 2 h: the other mismatches);
+  - `AdmissionBreakGlass` (warning, 4 h: no binding has `Deny` although some are committed as deny).
 
 **Also:**
 - A Terraform `check` block in `admission.tf` warns on every plan.
@@ -490,32 +522,43 @@ T12-k (the broker's egress) lands before Step B.
 ### Testing: a CI job and a repeatable kind run
 
 **CI job `admission`, required in `ci-ok` when it runs.**
-- **When it runs:** on PRs touching `deploy/**`, the chart or the values file, and on push to main. It
-  skips a promote PR whose diff is limited to what promote writes (`newTag`, the
-  `PRIVACY_POLICY_VERSION` literals, hold lines).
+- **When it runs:** on PRs touching `deploy/**`, the chart or the values file, the scripts of the job
+  and the Makefile, and on push to main. It skips a promote PR whose diff is limited to what promote
+  writes (`newTag`, the `PRIVACY_POLICY_VERSION` literals, hold lines), **and the push to main that
+  merges one**. That last part is a deviation from "every push to main" (D151): the diff of a promote
+  merge is the same pins the PR carried, which cannot change what the cluster admits, and a kind run
+  per release would cost minutes of each one. A manual run (`workflow_dispatch`) always runs it.
 - **Steps:**
-  1. Start a kind node at 1.36, pinned by digest, with checksummed binaries.
+  1. Start a kind node at 1.36, pinned by digest, with checksummed binaries (kind, kubectl, helm, yq:
+     `scripts/install_*.sh`).
   2. Install the CRDs:
      - VSO, cert-manager and Traefik, at the pinned chart versions;
      - **Argo CD's** (Application, AppProject, ApplicationSet, from argo-cd chart 10.10.5), without
        which the root render and the projects can't be dry-run and P7 and P10 would go untested;
      - the vendored RabbitMQ CRDs.
   3. Create the namespaces with `infra/vault`'s labels, plus `ryft-web`, `rabbitmq-system` and `argocd`.
-  4. Install the chart with the committed values, in Deny.
+  4. Install the chart with the committed values (Audit), then in Deny (every binding), each time waiting
+     until the API server holds exactly the policies and bindings `helm template` renders and enforces
+     a canary fixture.
   5. Run every render with `--dry-run=server` as Argo's controller service account (bound to
      cluster-admin in kind).
   6. Run the projects and `root.yaml` through the same decode the Terraform code uses.
 - **Fixtures:**
-  - one negative fixture per rule, P10's terminate-op and status-write passes included;
-  - a large-Pod fixture for CEL cost.
-- **Checks:** `status.typeChecking` is empty, and `Chart.yaml` is bumped whenever a template changes.
+  - one negative fixture per rule, P10's terminate-op and status-write passes included (generated from
+    the CEL harness's cases, plus hand-written ones for UPDATE, DELETE and the objects the CRDs
+    would reject);
+  - a large-Pod fixture for CEL cost: **harness-only** (`cost:` cases of `admission-celtest`, which
+    evaluate the policies with the API server's cost budget); the kind run has none.
+- **Checks:** `status.typeChecking` is empty, and `Chart.yaml`'s version goes up whenever a template or
+  the chart's `values.yaml` changes (a pull request; `scripts/check_chart_bump.sh`).
 
-**Kind e2e** (`scripts/admission_e2e.sh` plus a manual `workflow_dispatch`). It runs before Step 0 and
-on every operator, argo-cd chart or EKS minor upgrade:
+**Kind e2e** (`scripts/admission_e2e.sh --mode full` plus a manual `workflow_dispatch`). It runs before
+Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 - the argo-cd chart with T12-f's RBAC;
-- the operators and the broker on three workers;
-- a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart` and a node drain;
-- verification of claims a–d and f–m;
+- the operators and the broker (**one node, one replica**, not three workers: D151);
+- a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart`;
+  **not** a node drain (D151);
+- verification of claims a–d, g–i, k and m; **not** f, j, l (D151);
 - a **negative test** that pins the sequencing: with T12-f's RBAC and no policies, the controller
   token's `escalate`-update of `rabbitmq-cluster-operator-role` (adding VAP/VAPB write) plus a
   self-bind *succeeds*. It must flip to denied once P6 and P7 are in Deny;
@@ -532,7 +575,8 @@ on every operator, argo-cd chart or EKS minor upgrade:
    - A release left `pending-upgrade`: `helm -n kube-system history` and `rollback admission-policy`,
      then apply again.
    - Helm doesn't see a patch. `AdmissionBindingDrift` and the `check` block do; restore with
-     `-replace`.
+     `-replace='helm_release.admission_policy[0]'` (quoted for zsh; the instance key is needed
+     because of `count`). A replace uninstalls every policy for a moment.
 3. **Node debugging:** `kubectl debug node/<node> -n default` needs no break-glass, because the pod lands
    outside R.
 
@@ -551,7 +595,7 @@ on every operator, argo-cd chart or EKS minor upgrade:
   - `terminate-op`, pause (`--sync-policy none`), resume and hard-refresh keep working: P10 doesn't match
     them, and P7 leaves `syncPolicy` free.
   - P7 refuses `--kustomize-image`, `--repo` and `--path`.
-  - P10 refuses `--local` and `rollback`, and `--revision` once claim k is verified.
+  - P10 refuses `--local`; through argocd-server's revision rule it also refuses `rollback` and `--revision <other sha>` (claim k, answered: D151).
 - **Prune:** removing `default-deny` or the `ryft-web` Namespace from git fails the sync instead of
   deleting them.
 
@@ -560,7 +604,10 @@ on every operator, argo-cd chart or EKS minor upgrade:
 - **The broker's StatefulSet `rabbitmq-server` and its Pods** carry the digest image. The commands, exec
   hooks and token are exempt only for that writer and owner, and for a `restartedAt`-only UPDATE. The
   broker's other objects stay in `ryft-rabbitmq` (P8) and carry no auth keys (P5).
-- **An operator upgrade that renames an object or adds an image** needs the chart first.
+- **An operator upgrade that renames an object or adds an image** needs the chart first. So does one that
+  adds an RBAC resource to a role (the P6 allowlist `operators.allowedResources`; a ClusterRole is read-only
+  cluster-wide except for `rabbitmq.com`, events and the review creates), and so does a change of the
+  broker's configuration (P11 `additionalPlugins`, `additionalConfigLines`).
 
 **VSO:**
 - A forbidden key from Vault is refused. The `VaultStaticSecret` goes Degraded, and the old Secret
@@ -580,7 +627,7 @@ on every operator, argo-cd chart or EKS minor upgrade:
 | P10 refuses or errors | only requests that start a new operation: manual syncs and the controller's auto-sync and retries. Status writes, terminate-op, pause and refresh are never matched | apps stop syncing → `ArgoAppOutOfSync` | break-glass; terminate-op still works |
 | a CEL error under `Fail` | everything that policy matches (rows above) | `AdmissionPolicyError` | break-glass; Audit and kind catch it first |
 | a new mutating webhook changes RYFT pods | as P2 `pods` | as P2 `pods` | exclude R from it, or chart first |
-| a binding patched, deleted or left in break-glass | that policy is off | `AdmissionBindingMissing` / `Drift`, the `check` block | `terraform apply -replace=helm_release.admission_policy` |
+| a binding patched, deleted or left in break-glass | that policy is off | `AdmissionBindingMissing` / `Drift`, the `check` block | `terraform apply -replace='helm_release.admission_policy[0]'` (uninstalls every policy for a moment) |
 | an EKS minor changes CEL behaviour | any | the kind e2e at the target minor | run it before the upgrade |
 
 ## 5. Work breakdown
@@ -593,10 +640,10 @@ on every operator, argo-cd chart or EKS minor upgrade:
 | T12-a | infra-engineer | **The `admission-policy` chart** (P1–P11), `admission.tf` and the values file (`enabled: false`). Tests: Audit by default; break-glass gives Warn+Audit; never Deny with Warn; the Vault address matches the generated `vault.yaml`. The `check` block. | 2 |
 | T12-b | infra-engineer | **B2, if chosen:** the `argocd-projects` chart from `project.yaml` (+ `root.yaml`), the same value into P7, `take_ownership` (`enabled: false`). Amends D95. | 2, after a |
 | T12-d | gitops-engineer | **The CI job `admission`** (with Argo CD's CRDs), the kind e2e script and workflow, the fixtures. | 3, after a (and b) |
-| T12-e | sre | **Signals:** the API-server scrape with a keep-list, KSM custom-resource-state with `rbac.extraRules` (both in `deploy/monitoring`), the alerts with promtool tests, the runbook and the query. | 3, after a |
+| T12-e | sre | **Signals:** the API-server scrape with a keep-list, KSM's native binding collector (both in `deploy/monitoring`), the committed-action recording rules, the alerts with promtool tests, the runbook and the query. | 3, after a |
 | T12-k | gitops-engineer | **The broker's 443 egress** narrowed to the VPC CIDR in `deploy/rabbitmq/cluster/networkpolicy.yaml`, in its own PR so it can be reverted alone; your canary afterwards (§5 commands). | any time before Step B |
 | T12-i | user | **Applies:** Step 0 (T12-f), T12-h, Phase 1 (`enabled: true`), the checklist, the T12-k canary, Steps A–D. | 4 |
-| T12-g | gitops-engineer | **Recommended:** namespace-scope **both** operators. Both hold cluster-wide `secrets` get/list (`DATA_ENCRYPTION_KEY`, database URLs, `ADMIN_API_KEY`), and admission can't see reads. Needs your D97 consent. | after consent, before Step C |
+| T12-g | gitops-engineer | **Recommended:** namespace-scope **both** operators. Both hold cluster-wide `secrets` get/list (`DATA_ENCRYPTION_KEY`, database URLs, `ADMIN_API_KEY`), and admission can't see reads. Needs your D97 consent. | after consent, **before Step A** (P6 refuses today's vendored ClusterRoles), ideally before Phase 1 ends; in Audit P6 flags those roles on every refresh: expected, not an unexplained finding. `admission.tf` refuses `operators-cluster: deny` while `scoped-rbac.yaml` is missing |
 | T12-j | infra-engineer | **PSA warn+audit, then enforce,** on the three add-on namespaces. | after Step D |
 
 **Commands for the user.** No agent runs these.
@@ -613,7 +660,7 @@ terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan
 kubectl -n argocd get applications
 
 # 2. Before Phase 1: the SDK injector excluded, the scrape and KSM config (T12-h, T12-e)
-make monitoring-apply
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 
 # 3. Phase 1: a reviewed PR sets enabled: true (policies in Warn+Audit, AppProjects adopted; T12-a, b)
 #    Only if the helm provider lacks take_ownership: Helm's ownership metadata (metadata only)
@@ -653,7 +700,7 @@ terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 # Break-glass (you only). The fast path first:
 kubectl patch validatingadmissionpolicybinding ryft-workloads-pods --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'
 #   restore (Helm doesn't see the patch):
-terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -replace=helm_release.admission_policy
+terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'
 #   planned, through Terraform:
 terraform -chdir=infra/aws/kubernetes apply -target=helm_release.admission_policy -var='admission_break_glass=true'
 #   a release stuck in pending-upgrade:
@@ -726,6 +773,6 @@ helm -n kube-system history admission-policy && helm -n kube-system rollback adm
   after a pause (rollback and `--local` are refused).
 - **Consequences:** a change to `project.yaml` reaches the cluster with the user's apply. A new
   Argo-made namespace, a new mutating webhook on RYFT pods, a Vault address change, or an operator
-  upgrade that renames an object or adds an image needs the chart first. A new service doesn't (images
-  and app paths are patterns).
+  upgrade that renames an object, adds an image or adds an RBAC resource, or a change of the broker's
+  configuration (P11), needs the chart first. A new service doesn't (images and app paths are patterns).
 ```

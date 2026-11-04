@@ -49,11 +49,18 @@ jobs:
       pull-requests: read
     outputs:
       run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
+      run_pkgmap: ${{ github.event_name != 'pull_request' || steps.filter.outputs.pkgmap == 'true' }}
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
+      run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
+      # The admission policies against a kind cluster (D120): what the diff touches, minus a promote
+      # PR (and its merge on main), whose diff is only pins, holds and policy-version literals
+      # (scripts/promote_only.sh). A manual run always runs it.
+      run_admission: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'pull_request' || steps.filter.outputs.admission == 'true') && steps.promote.outputs.only != 'true') }}
+      run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -68,6 +75,17 @@ jobs:
             go:
               - 'backend/**'
               - '.golangci.yml'
+              - 'docs/API.md'
+              - 'scripts/coverage.sh'
+              # amqpbus's replay tests run the script against the broker.
+              - 'scripts/dlq.sh'
+              - 'scripts/lib/kube.sh'
+              - '.github/workflows/ci.yml'
+            # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
+            # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
+            pkgmap:
+              - 'docs/ARCHITECTURE.md'
+              - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -95,12 +113,37 @@ jobs:
               - 'web/content/legal/**'
               - 'web/scripts/check-policy-version.mjs'
               - 'web/scripts/lib/policy.mjs'
+            # Argo CD's health checks harness: its script source, itself, and the recipe.
+            argocd_luatest:
+              - 'infra/aws/kubernetes/argocd.tf'
+              - 'infra/aws/kubernetes/argocd-luatest/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
             terraform:
               - 'infra/**'
+              # infra/aws/kubernetes' test compares its Vault address with these generated files
+              - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
             web:
               - 'web/**'
               - 'docs/SCORING.md'
+              - '.github/workflows/ci.yml'
+            # The admission policies, the manifests they judge and the scripts of the kind run.
+            admission:
+              - 'deploy/**'
+              - 'infra/aws/kubernetes/**'
+              - 'scripts/admission_e2e.sh'
+              - 'scripts/install_kind.sh'
+              - 'scripts/install_yq.sh'
+              - 'scripts/install_kubectl.sh'
+              - 'scripts/install_helm.sh'
+              - 'scripts/check_chart_bump.sh'
+              - 'scripts/lib/kind_guard.sh'
+              - 'scripts/lib/tracked_copy.sh'
+              - 'scripts/lib/admission_*.sh'
+              - 'scripts/lib/tf_values.sh'
+              - 'scripts/lib/gitsrv.go'
+              - 'Makefile'
               - '.github/workflows/ci.yml'
             # The alert rules and the synthetic checks; the checks' body markers are read from
             # the site's own sources (the policy text and the AASA).
@@ -109,15 +152,45 @@ jobs:
               - 'scripts/synthetics.sh'
               - 'scripts/synthetics_re2.go'
               - 'scripts/tests/synthetics_test.sh'
+              # the committed actions of the admission bindings (a step-change PR edits only the values)
+              - 'infra/aws/kubernetes/admission-values.yaml'
+              - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
+              - 'scripts/admission_intended.sh'
+              - 'scripts/tests/admission_intended_test.sh'
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
-      - if: github.event_name != 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            # The scoring golden files and their PR guard (D149).
+            golden:
+              - 'backend/internal/scoring/testdata/golden/**'
+              - 'scripts/golden_guard.sh'
+              - 'scripts/tests/golden_guard_test.sh'
+              - '.github/workflows/ci.yml'
+      # The whole history: deploy_targets.sh compares with the running pin; the promote check below
+      # diffs the change. On a pull request this is the merge of the PR (the default ref).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Is the change only what promote writes? (A deploy PR, and its merge on main.) The predicate
+      # is the base's copy when the base has one, so a PR cannot widen what it skips by editing it.
+      # Fails closed: any doubt is "not promote only", and the `admission` job runs. When the base has no
+      # copy of the script (the PR that introduces it, a base that cannot be read) the answer is "no": the
+      # PR's own copy is never the judge of its own diff.
+      - if: github.event_name != 'workflow_dispatch'
+        id: promote
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          only=false
+          if git show "$BASE:scripts/promote_only.sh" > "$RUNNER_TEMP/promote_only.sh" 2>/dev/null; then
+            if bash "$RUNNER_TEMP/promote_only.sh" "$BASE" "$HEAD"; then only=true; fi
+          else
+            echo "the base has no scripts/promote_only.sh: not promote only"
+          fi
+          echo "only=$only" >> "$GITHUB_OUTPUT"
       - if: github.event_name != 'pull_request'
         id: targets
         env:
@@ -131,6 +204,10 @@ jobs:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only to list and download main's coverage artifact (coverage-gate); no write.
+      actions: read
     # A throwaway server for the opt-in migration and store tests (account
     # deletion races); they create and drop their own databases.
     services:
@@ -167,11 +244,37 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      # -race makes the cover mode atomic; one profile for all packages (scripts/coverage.sh).
+      - run: |
+          mkdir -p coverage
+          go test -race -count=1 -coverprofile=coverage/coverage.out ./...
+      # The per-package table in the job summary, and total.txt (internal/) next to the profile.
+      - run: ../scripts/coverage.sh report coverage/coverage.out coverage
+      # Every run uploads; the newest one from main is the baseline of the next pull request.
+      # This step must stay BEFORE the coverage-gate step: the gate downloads main's files into
+      # backend/coverage, and those must never be uploaded again as this run's coverage.
+      # An artifact outage must not hold back `images` on main; a missing upload only means no baseline.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
+        with:
+          name: coverage
+          path: backend/coverage
+          retention-days: 90
+      # internal/ may fall at most 1 point below main's last number; no absolute threshold. No
+      # artifact from main yet (first run, or older than the retention) -> passes and says so.
+      - name: coverage-gate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The one knob: the points internal/ may fall below main's (D148). Raising it is a reviewed diff.
+          MAX_DROP: "1.0"
+        run: |
+          ../scripts/coverage.sh baseline coverage
+          ../scripts/coverage.sh gate coverage/total.txt coverage/main-total.txt
 
   lint:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true' || needs.changes.outputs.run_pkgmap == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,10 +284,14 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # The version is also GOLANGCI_LINT_VERSION in the Makefile (`make lint` runs this job locally).
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           working-directory: backend
+      # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
+      # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
+      - run: ./scripts/pkgmap.sh --check
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
@@ -200,6 +307,14 @@ jobs:
           persist-credentials: false
       - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
         run: ./scripts/check_bytes.sh
+      # D-numbers in docs/DECISIONS.md that no source or config file mentions and scripts/decision_refs.skip does not
+      # excuse: one ::warning annotation, the list in the log. Here, not in `lint`: this job has no path filter, so a
+      # PR that only edits docs/DECISIONS.md (or the skip list) runs it, and a renumbered D shows up on the PR that
+      # did it instead of on someone else's Go PR. It needs only git and awk. Exit 0 on warnings, so it never fails
+      # the job; it fails only when the script cannot work (which would also stop images, web-image and ci-ok on
+      # main; the PR's own run catches it first). `--strict` is the later promotion to a failure.
+      - name: Decisions are referenced from code, or skipped with a reason (warnings only)
+        run: ./scripts/decision_refs.sh
 
   manifests:
     needs: [changes]
@@ -334,7 +449,7 @@ jobs:
           persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: 1.16.6
+          terraform_version: 1.16.6 # pinned exactly, as in the code and the workspaces (D56)
           terraform_wrapper: false
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
         with:
@@ -345,11 +460,32 @@ jobs:
           path: ${{ github.workspace }}/.terraform-plugin-cache
           key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.root)) }}
       - run: terraform fmt -check -recursive
-      # -backend=false: never touch the HCP Terraform workspace from CI.
+      # -backend=false: never touch the HCP Terraform workspace from CI (D56).
       - run: terraform init -backend=false -input=false
       - run: terraform validate
       - run: tflint --init && tflint --format compact
       - run: terraform test
+
+  # Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) in a Lua VM with
+  # exactly Argo CD's libraries (no string library), against table-driven objects. Reads
+  # argocd.tf only: no provider, no state, no credentials.
+  argocd-luatest:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_argocd_luatest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Go modules come from the module proxy; nothing may fetch a repository over anything but file://.
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: infra/aws/kubernetes/argocd-luatest/go.mod
+          cache: false
+      - run: make argocd-luatest
 
   # Alert rules as code (promtool check and unit tests, mimirtool check) and the synthetic
   # checks of ryftapp.de (offline validation, RE2, markers against the site's sources).
@@ -369,6 +505,75 @@ jobs:
       - run: make alerts-check CONTAINER=docker
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
+      - run: bash scripts/tests/admission_intended_test.sh
+
+  # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
+  # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the
+  # add-ons and of Argo CD (argo-cd chart 10.10.5, T12-f's RBAC when argocd.tf has it), the namespaces
+  # with infra/vault's labels, the chart installed in Audit (the committed values) and in Deny (every
+  # binding): every Application's render server-side dry-run applied as Argo CD's controller, one
+  # refused fixture per rule, status.typeChecking of every policy, claims a, b, c, d and h.
+  # scripts/admission_e2e.sh holds the steps (make admission-e2e runs the longer local variant, the
+  # same script with --mode full). Required in `ci-ok` when it ran; skipped for a promote PR.
+  admission:
+    needs: [changes]
+    if: needs.changes.outputs.run_admission == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+      TF_IN_AUTOMATION: "true"
+    steps:
+      # The whole history on a pull request: the chart-version check below diffs against the base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The chart's templates and values never change without a higher version in Chart.yaml: the Helm
+      # provider upgrades a release only when the version moves (the comment in Chart.yaml).
+      - name: The chart version moves with its templates
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+      # From here on every step that renders may only use git over file:// (see `manifests`). The
+      # terraform step of the script, which downloads modules, lifts it for itself.
+      - name: Git over file:// only, after the checkout
+        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: infra/aws/kubernetes/admission-celtest/go.mod
+          cache-dependency-path: infra/aws/kubernetes/admission-celtest/go.sum
+      # yq (mikefarah), kind, kubectl and helm pinned, each checked against a sha256 (the scripts hold
+      # both); the versions are printed in the summary of the run.
+      - run: ./scripts/install_yq.sh
+      - run: ./scripts/install_kind.sh
+      - run: ./scripts/install_kubectl.sh
+      - run: ./scripts/install_helm.sh
+      # Terraform only to evaluate argocd.tf's values offline (scripts/lib/tf_values.sh): mock providers.
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.terraform-plugin-cache
+          key: terraform-${{ runner.os }}-${{ hashFiles('infra/aws/kubernetes/.terraform.lock.hcl') }}
+      # The policies against the repository's renders without an API server, once: its cases are the
+      # first line, and the fixtures the kind run uses must be its output (the diff).
+      - name: The CEL harness, and the fixtures are its output
+        run: |
+          if ! CELTEST_EMIT="$RUNNER_TEMP/fixtures" ./infra/aws/kubernetes/admission-celtest/run.sh > "$RUNNER_TEMP/celtest.log" 2>&1; then
+            tail -60 "$RUNNER_TEMP/celtest.log"
+            exit 1
+          fi
+          tail -2 "$RUNNER_TEMP/celtest.log"
+          diff -r "$RUNNER_TEMP/fixtures" infra/aws/kubernetes/admission-e2e/fixtures/generated
+      - name: kind cluster, CRDs, chart in Audit and Deny, dry-runs, fixtures, claims
+        run: ./scripts/admission_e2e.sh --mode ci --summary "$RUNNER_TEMP/admission-summary.md"
 
   # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
@@ -527,6 +732,28 @@ jobs:
             git /repo --config /config/gitleaks.toml --gitleaks-ignore-path /noignore \
             --log-opts=HEAD --redact --no-banner --exit-code 1
 
+  # A golden user file moves only with a ModelVersion bump, a generator change or new fields
+  # (D149). Pull requests only: it compares with the merge base, which a push has no use for.
+  # Its own job (not a step of `test`): it needs the whole history, not the Go toolchain or
+  # Postgres, and a red guard should name itself.
+  golden-guard:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.run_golden == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The whole history: the guard needs the merge base with the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Golden files changed without a ModelVersion bump, input digest or field digest
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/golden_guard.sh "$BASE_SHA"
+
   # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
   # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
   # A new check job is one more entry in `needs`.
@@ -534,7 +761,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, monitoring, web-checks, web-e2e, secrets]
+    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -560,7 +787,7 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -605,7 +832,7 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

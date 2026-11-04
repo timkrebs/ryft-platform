@@ -1,0 +1,13 @@
+# fixture: P1 argo creates another namespace
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-namespaces
+# message: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+  name: ryft-evil

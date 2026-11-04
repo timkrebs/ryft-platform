@@ -1,4 +1,4 @@
-# Nightly logical backup of the app schema (public): pg_dump (custom format) of the
+# Nightly logical backup of the app schema (public; D33): pg_dump (custom format) of the
 # in-cluster Postgres to the pg-backups PVC, keeping 14 days. On EKS the data
 # lives in Supabase, which keeps its own backups (docs/SUPABASE.md).
 # Deleted accounts stay in these dumps until they age out (14 days).

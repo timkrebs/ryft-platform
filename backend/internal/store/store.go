@@ -1,8 +1,7 @@
-// Package store is the only place SQL lives. Services call these methods;
-// nothing else touches the pool directly.
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,10 +16,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-type Store struct{ pool *pgxpool.Pool }
+// Store is a service's handle on the domain tables, bound to that service's
+// database role: the role's grants, not this type, decide which methods work in
+// which service.
+type Store struct {
+	pool  *pgxpool.Pool
+	rules ImportRules // the import's comparisons (WithImportRules)
+}
 
 // ErrNotFound is returned by single-row reads when the row does not exist.
 var ErrNotFound = errors.New("not found")
@@ -30,8 +36,11 @@ var ErrNotFound = errors.New("not found")
 // account back.
 var ErrDeleted = errors.New("account deleted")
 
+// New is a Store on pool, which the caller opened with db.Open and still owns
+// (closing it).
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
+// Ready pings the database; the services' /readyz calls it.
 func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ---- users / devices -------------------------------------------------------
@@ -86,10 +95,6 @@ type Identity struct {
 
 // seenEvery bounds how often an active user's row is written (last_seen_at).
 const seenEvery = 5 * time.Minute
-
-// lockUser serialises EnsureUser's writes and DeleteUser for one user, so a
-// request racing a deletion either finishes first or sees the tombstone.
-const lockUser = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
 
 // EnsureUser returns the caller's user row, creating it on the first request
 // (users come from Supabase Auth; there is no sign-up endpoint). The common
@@ -407,12 +412,31 @@ func (s *Store) TryRequestRecompute(ctx context.Context, userID uuid.UUID, minIn
 
 // ---- ingest ----------------------------------------------------------------
 
+// UpsertSamples stores a sync's samples in one transaction and returns how many
+// rows changed. A record that carries its HealthKit id adopts it on the row with the
+// same natural key (D144); an identical re-send changes nothing and is not counted.
 func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.Sample) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
 	b := &pgx.Batch{}
 	for _, x := range in {
+		if x.ID != nil {
+			// The record's id is the latest upload's (D-a): the stored row with this natural
+			// key adopts it, and the new value (a source re-writing a value under a new UUID
+			// and deleting the old one). Not when another row already holds the id.
+			b.Queue(`UPDATE samples SET hk_id=$1, value=$7
+				WHERE user_id=$2 AND type=$3 AND start_at=$4 AND end_at=$5 AND source=$6
+				  AND (hk_id, value) IS DISTINCT FROM ($1::uuid, $7::double precision)
+				  AND NOT EXISTS (SELECT 1 FROM samples x WHERE x.user_id=$2 AND x.hk_id=$1 AND x.id <> samples.id)`,
+				*x.ID, userID, x.Type, x.Start, x.End, x.Source, x.Value)
+			// No conflict target: a clash on either unique index (natural key, or the id of a
+			// renamed source) is a duplicate, never an error.
+			b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source, hk_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+				userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, *x.ID)
+			continue
+		}
 		// An identical re-send is neither rewritten nor counted (SyncResponse → ignored.duplicate).
 		b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
 			VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -423,12 +447,26 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 	return s.runBatch(ctx, b)
 }
 
+// UpsertSleep stores a sync's sleep segments in one transaction and returns how many
+// rows changed. A duplicate is skipped, never an error; a segment with a HealthKit
+// id adopts it on the row with the same natural key (D144).
 func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.SleepSegment) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
 	b := &pgx.Batch{}
 	for _, x := range in {
+		if x.ID != nil {
+			b.Queue(`UPDATE sleep_segments SET hk_id=$1
+				WHERE user_id=$2 AND start_at=$3 AND end_at=$4 AND stage=$5 AND source=$6
+				  AND hk_id IS DISTINCT FROM $1::uuid
+				  AND NOT EXISTS (SELECT 1 FROM sleep_segments x WHERE x.user_id=$2 AND x.hk_id=$1 AND x.id <> sleep_segments.id)`,
+				*x.ID, userID, x.Start, x.End, x.Stage, x.Source)
+			b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id)
+				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+				userID, x.Start, x.End, x.Stage, x.Source, *x.ID)
+			continue
+		}
 		b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source)
 			VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
 			userID, x.Start, x.End, x.Stage, x.Source)
@@ -436,10 +474,22 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 	return s.runBatch(ctx, b)
 }
 
+// UpsertWorkouts stores a sync's workouts in one transaction and returns how many
+// rows changed. A row from a Train session (model.SessionSource) is never
+// overwritten by a sync, and an identical re-send is not counted. Workouts go in
+// (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
 func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model.Workout) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
+	// In (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
+	in = slices.Clone(in)
+	slices.SortFunc(in, func(x, y model.Workout) int {
+		if c := x.Start.Compare(y.Start); c != 0 {
+			return c
+		}
+		return bytes.Compare(x.ID[:], y.ID[:])
+	})
 	b := &pgx.Batch{}
 	for _, w := range in {
 		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source)
@@ -449,8 +499,9 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source
 			WHERE (workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
 			  workouts.distance_m, workouts.source) IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at,
-			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)`,
-			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source)
+			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)
+			  AND workouts.source <> $11`,
+			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, model.SessionSource)
 	}
 	return s.runBatch(ctx, b)
 }
@@ -479,6 +530,9 @@ func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
 
 // ---- reads for scoring -----------------------------------------------------
 
+// SamplesBetween returns the user's samples of one type whose start falls in
+// [from,to), oldest first: the raw input scoring reads, before any de-duplication
+// across sources.
 func (s *Store) SamplesBetween(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) ([]model.Sample, error) {
 	rows, err := s.pool.Query(ctx, `SELECT type, start_at, end_at, value, unit, source FROM samples
 		WHERE user_id=$1 AND type=$2 AND start_at >= $3 AND start_at < $4 ORDER BY start_at`,
@@ -530,6 +584,9 @@ func (s *Store) WorkoutPeakHR(ctx context.Context, userID uuid.UUID, since time.
 	return out, err
 }
 
+// WorkoutsBetween returns every workout starting in [from,to), the hidden duplicates
+// included: scoring decides on all of them (compute). What a user is shown, and what a
+// session attaches to, is VisibleWorkoutsBetween.
 func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source, strain,
 		muscular_load, session_id, model_version
@@ -543,6 +600,97 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 			&w.MuscularLoad, &w.SessionID, &w.ModelVersion)
 		return w, err
 	})
+}
+
+// VisibleWorkoutsBetween returns the workouts starting in [from,to) a user sees; see
+// ListWorkoutsBetween.
+func (s *Store) VisibleWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
+	return s.ListWorkoutsBetween(ctx, userID, from, to, false)
+}
+
+// ListWorkoutsBetween returns the workouts starting in [from,to). A workout is hidden
+// while it names a primary (duplicate_of) that exists and is itself not hidden: a deleted
+// primary shows its duplicate at once (until scoring picks a new one), and a ryft-session
+// workout is never hidden. Hidden ones are left out, or with includeHidden returned with
+// DuplicateOf set. Each visible primary carries AlsoRecordedBy, the distinct sorted sources
+// of the duplicates pointing at it. The primary lookup is the primary key; the duplicates
+// are read once through workouts_user_start, the range padded by two days.
+func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
+	rows, err := s.pool.Query(ctx, `WITH dups AS (
+		  SELECT d.duplicate_of AS id, array_agg(DISTINCT d.source ORDER BY d.source) AS sources
+		  FROM workouts d WHERE d.user_id=$1 AND d.duplicate_of IS NOT NULL AND d.source <> '' AND d.source <> $4
+		    AND d.start_at >= $2::timestamptz - interval '2 days' AND d.start_at < $3::timestamptz + interval '2 days'
+		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL)
+		  GROUP BY d.duplicate_of),
+		  ws AS (
+		  SELECT w.*, (w.duplicate_of IS NOT NULL AND w.source <> $4 AND EXISTS (SELECT 1 FROM workouts p
+		      WHERE p.user_id = w.user_id AND p.id = w.duplicate_of AND p.duplicate_of IS NULL)) AS hidden
+		  FROM workouts w WHERE w.user_id=$1 AND w.start_at >= $2 AND w.start_at < $3)
+		SELECT w.id, w.activity, w.start_at, w.end_at, w.avg_hr, w.max_hr, w.energy_kcal, w.distance_m, w.source, w.strain,
+		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END
+		FROM ws w LEFT JOIN dups ON dups.id = w.id AND NOT w.hidden
+		WHERE $5::bool OR NOT w.hidden
+		ORDER BY w.start_at, w.id`, userID, from, to, model.SessionSource, includeHidden)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
+		var w model.Workout
+		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
+			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf)
+		return w, err
+	})
+}
+
+// SetWorkoutDuplicates stores which workouts of a local day are another source's
+// duplicate: dups maps a duplicate to its primary. Every other workout of the day gets
+// duplicate_of cleared, so a deletion or late heart rate heals on the next scoring. It
+// runs as ryft_scoring, which may write only that column (0031). The day is the user's
+// local day of the workout's start, as scoring's day window. Newly marked workouts are
+// counted in ryft_workouts_folded_total{reason="cross_source"}. A ryft-session workout and
+// a self-reference are never marked.
+func (s *Store) SetWorkoutDuplicates(ctx context.Context, userID uuid.UUID, day string, dups map[uuid.UUID]uuid.UUID) error {
+	ids, primaries := make([]uuid.UUID, 0, len(dups)), make([]uuid.UUID, 0, len(dups))
+	for id, p := range dups {
+		if id != p {
+			ids, primaries = append(ids, id), append(primaries, p)
+		}
+	}
+	marked := 0
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		marked = 0
+		// Lock the rows this pass may change in (start_at, id) order, as the fold does, so two
+		// writers of one user cannot deadlock (40P01).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM (SELECT id FROM workouts WHERE user_id=$1
+			  AND (id = ANY($3) OR (duplicate_of IS NOT NULL
+			    AND start_at >= $2::text::date - 2 AND start_at < $2::text::date + 3
+			    AND (start_at AT TIME ZONE (SELECT tz FROM users WHERE id=$1))::date = $2::text::date))
+			ORDER BY start_at, id FOR UPDATE) l`, userID, day, ids); err != nil {
+			return fmt.Errorf("lock duplicates: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE workouts SET duplicate_of = NULL
+			WHERE user_id=$1 AND duplicate_of IS NOT NULL AND NOT (id = ANY($3))
+			  AND start_at >= $2::text::date - 2 AND start_at < $2::text::date + 3
+			  AND (start_at AT TIME ZONE (SELECT tz FROM users WHERE id=$1))::date = $2::text::date`, userID, day, ids); err != nil {
+			return fmt.Errorf("clear duplicates: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		tag, err := tx.Exec(ctx, `UPDATE workouts w SET duplicate_of = t.p
+			FROM unnest($2::uuid[], $3::uuid[]) AS t(id, p)
+			WHERE w.user_id=$1 AND w.id = t.id AND w.source <> $4 AND w.duplicate_of IS DISTINCT FROM t.p`,
+			userID, ids, primaries, model.SessionSource)
+		if err != nil {
+			return fmt.Errorf("set duplicates: %w", err)
+		}
+		marked = int(tag.RowsAffected())
+		return nil
+	})
+	if err == nil && marked > 0 {
+		metrics.WorkoutsFolded.WithLabelValues("cross_source").Add(float64(marked))
+	}
+	return err
 }
 
 // SetWorkoutLoad stores what scoring computed for one workout: strain, TRIMP
@@ -565,13 +713,22 @@ type WorkoutRow struct {
 	TRIMP       *float64
 }
 
+// Workout returns one of the user's workouts with the load scoring attached, and
+// the sources of its duplicates in AlsoRecordedBy. ErrNotFound when the id is not
+// the user's, whoever else holds it.
 func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, error) {
 	var w WorkoutRow
 	var zones []byte
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
-		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
+		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version,
+		(SELECT array_agg(DISTINCT d.source ORDER BY d.source) FROM workouts d
+		  WHERE d.user_id = workouts.user_id AND d.duplicate_of = workouts.id AND d.source <> ''
+		    AND d.source <> $3
+		    AND d.start_at >= workouts.start_at - interval '2 days' AND d.start_at < workouts.start_at + interval '2 days'
+		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL))
+		FROM workouts WHERE user_id=$1 AND id=$2`, userID, id, model.SessionSource).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}
@@ -653,7 +810,7 @@ func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, 
 // ---- daily scores ----------------------------------------------------------
 
 // SleepNight is the stored summary of the night that ended on Day. Pointers
-// are nil for rows scored before migration 0003.
+// are nil for rows scored before migration 0003 (D8: typed columns, not the free-form details).
 type SleepNight struct {
 	Day         string
 	Start, End  *time.Time
@@ -729,6 +886,12 @@ func inputColumns(inputs []string) []string {
 	return cols
 }
 
+// UpsertDailyScore writes the day's row, with every score and sleep column, in a
+// single statement (a workout's own load is stored apart, by SetWorkoutLoad), and
+// reports in ScoreWrite whether it was the day's first recovery (the morning push)
+// and whether an input of a later day's history changed (a re-score of the days
+// after follows, D112). The baselines are stored with the day (D11), so trends and insights read the one
+// definition recovery scored against.
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
 	d, n, l := row.DailyScore, row.Sleep, row.Load
@@ -868,6 +1031,11 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 	})
 }
 
+// DailyScores returns the stored days in [from,to] (local days, YYYY-MM-DD), oldest
+// first, with the model version each was scored under. It reads what scoring stored;
+// the one thing it rewrites is the calibration fields: a row whose counts and
+// reason no longer agree (an older image wrote it after a rollback) reads as
+// "unknown" until it is scored again (knownCalibration).
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
 		strength_min, volume_kg, sleep_performance, sleep_need_min,

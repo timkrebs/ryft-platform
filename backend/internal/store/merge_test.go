@@ -81,6 +81,10 @@ func TestMergeUsers(t *testing.T) {
 	session(from, sOwn, exFromPress)
 	session(from, sShared, exCurl)
 	session(to, sShared, exToPress)
+	// from's own session was imported (0028): origin, source and an assisted set move with it.
+	exec(`UPDATE sessions SET origin = 'import', import_source = 'alpha_progression' WHERE user_id = $1 AND id = $2`, from, sOwn)
+	exec(`UPDATE session_sets SET assist_kg = 25 WHERE user_id = $1 AND session_exercise_id IN
+		(SELECT id FROM session_exercises WHERE user_id = $1 AND session_id = $2)`, from, sOwn)
 	// Journal: a custom behavior of the same slug on both; a day only from has, a day both have.
 	bFrom, bTo := uuid.New(), uuid.New()
 	for _, b := range []struct{ id, user uuid.UUID }{{bFrom, from}, {bTo, to}} {
@@ -178,6 +182,9 @@ func TestMergeUsers(t *testing.T) {
 		{`SELECT count(*) FROM journal_entries WHERE user_id = $1 AND behavior_id <> $2`, []any{to, bTo}, 0},
 		// to's session of the shared id keeps exactly its own exercise.
 		{`SELECT count(*) FROM session_exercises WHERE user_id = $1 AND session_id = $2`, []any{to, sShared}, 1},
+		// the imported session keeps its origin, its source and its assisted set.
+		{`SELECT count(*) FROM sessions WHERE user_id = $1 AND id = $2 AND origin = 'import' AND import_source = 'alpha_progression'`, []any{to, sOwn}, 1},
+		{`SELECT count(*) FROM session_sets WHERE user_id = $1 AND assist_kg = 25`, []any{to}, 1},
 	} {
 		if got := count(c.q, c.args...); got != c.want {
 			t.Errorf("%s: %d, want %d", c.q, got, c.want)

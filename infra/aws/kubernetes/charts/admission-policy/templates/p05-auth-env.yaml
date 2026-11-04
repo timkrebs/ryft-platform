@@ -1,0 +1,64 @@
+{{- /*
+P5 ryft-auth-env (C, U; ConfigMap, Secret and the P2 kinds in ryft-*; any writer). Nothing
+may switch the services to the local API-key mode: no ConfigMap or Secret key API_KEY,
+ALLOW_INSECURE_APIKEY_AUTH or USER_ID; AUTH_MODE only in ConfigMaps and only supabase; the
+same names are refused in `env` (AUTH_MODE must be the literal supabase, never a
+valueFrom); no envFrom prefix. This catches a Vault key that VSO syncs into ryft-secrets.
+Messages never name a value, and not even a key.
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-auth-env" "id" "P5" "summary" "no API-key auth mode through ConfigMaps, Secrets or env in RYFT namespaces") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configmaps", "secrets", "pods"]
+      {{- include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE")) | nindent 6 }}
+  matchConditions:
+    - name: ryft-namespace
+      expression: request.namespace.startsWith('ryft-')
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    {{- include "admission.podVariables" . | nindent 4 }}
+    - name: isData
+      expression: variables.reqKind in ['ConfigMap', 'Secret']
+    - name: data
+      expression: |-
+        has(variables.o.data) ? variables.o.data : {}
+    - name: stringData
+      expression: |-
+        has(variables.o.stringData) ? variables.o.stringData : {}
+    - name: binaryData
+      expression: |-
+        has(variables.o.binaryData) ? variables.o.binaryData : {}
+    - name: forbidden
+      expression: "['API_KEY', 'ALLOW_INSECURE_APIKEY_AUTH', 'USER_ID']"
+  validations:
+    - expression: |-
+        !variables.isData ||
+        variables.forbidden.all(k, !(k in variables.data) && !(k in variables.stringData) && !(k in variables.binaryData))
+      message: "P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID."
+      reason: Forbidden
+    - expression: |-
+        !variables.isData ||
+        (variables.reqKind == 'Secret' ?
+          (!('AUTH_MODE' in variables.data) && !('AUTH_MODE' in variables.stringData) && !('AUTH_MODE' in variables.binaryData)) :
+          (!('AUTH_MODE' in variables.binaryData) && (!('AUTH_MODE' in variables.data) || variables.data['AUTH_MODE'] == 'supabase')))
+      message: "P5: AUTH_MODE may only be set in a ConfigMap, and only to supabase."
+      reason: Forbidden
+    - expression: |-
+        variables.isData ||
+        variables.containers.all(c, !has(c.env) || c.env.all(e,
+          !(e.name in variables.forbidden) &&
+          (e.name != 'AUTH_MODE' || (has(e.value) && e.value == 'supabase' && !has(e.valueFrom)))))
+      message: "P5: a container must not set API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID, and AUTH_MODE only as the literal supabase."
+      reason: Forbidden
+    - expression: |-
+        variables.isData ||
+        variables.containers.all(c, !has(c.envFrom) || c.envFrom.all(f, !has(f.prefix) || f.prefix == ''))
+      message: "P5: envFrom must not use a prefix."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "auth-env" "policy" "ryft-auth-env" "id" "P5" "step" "B") }}

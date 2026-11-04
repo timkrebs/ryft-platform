@@ -1,0 +1,86 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "duration_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "ended_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "exercise_count": {
+      "type": "integer"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "import_source": {
+      "nullable": true,
+      "type": "string"
+    },
+    "muscular_trimp": {
+      "nullable": true,
+      "type": "number"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "plan_day_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "pr_count": {
+      "type": "integer"
+    },
+    "set_count": {
+      "type": "integer"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "strain": {
+      "nullable": true,
+      "type": "number"
+    },
+    "title": {
+      "type": "string"
+    },
+    "volume_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "workout_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "duration_min",
+    "ended_at",
+    "exercise_count",
+    "id",
+    "import_source",
+    "muscular_trimp",
+    "origin",
+    "plan_day_id",
+    "pr_count",
+    "set_count",
+    "started_at",
+    "status",
+    "strain",
+    "title",
+    "volume_kg",
+    "workout_id"
+  ],
+  "title": "SessionSummary",
+  "type": "object"
+}

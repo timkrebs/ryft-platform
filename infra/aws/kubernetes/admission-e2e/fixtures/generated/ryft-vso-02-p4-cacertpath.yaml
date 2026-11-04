@@ -1,0 +1,14 @@
+# fixture: P4 caCertPath
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vso
+# message: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: ryft-api
+spec:
+  address: https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200
+  caCertPath: /x
+  skipTLSVerify: false

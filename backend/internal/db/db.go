@@ -1,4 +1,3 @@
-// Package db owns the Postgres connection pool and embedded SQL migrations.
 package db
 
 import (
@@ -90,6 +89,8 @@ func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgx
 // migrationLock serialises migrators across pods. It is a transaction-level
 // advisory lock: it disappears with the transaction even if the pod dies or a
 // pooler hands the session to someone else.
+//
+// Other advisory-lock classes (7419002 and up) are listed in internal/store/locks.go.
 const migrationLock = 7_419_001
 
 // lockTimeout bounds how long any statement of a migration waits for a lock
@@ -184,6 +185,7 @@ func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	// Transaction-level, so a pod dying mid-migration cannot leave a lock on a pooled connection (D34).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLock); err != nil {
 		return err
 	}

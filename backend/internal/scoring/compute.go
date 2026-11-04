@@ -56,7 +56,7 @@ const MaxRangeDays = 400
 
 // RangeDays is the number of calendar days from `from` to `to` (YYYY-MM-DD).
 // It counts dates, not hours, so a range across a DST change is not off by
-// one hour — the api and scoring must agree exactly on MaxRangeDays.
+// one hour — the api and scoring must agree exactly on MaxRangeDays (D22).
 func RangeDays(from, to string) (int, error) {
 	a, err := time.Parse("2006-01-02", from)
 	if err != nil {
@@ -77,7 +77,7 @@ const (
 	nightEndOffset   = 13 * time.Hour
 )
 
-// ErrNoConsent: the user has withdrawn (or never given) consent to processing
+// ErrNoConsent means the user has withdrawn (or never given) consent to processing
 // their health data, so nothing is scored (D78). Callers count it, not fail on it.
 var ErrNoConsent = errors.New("no consent to health-data processing")
 
@@ -127,10 +127,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 // at most 30 more, not 400×30, and a re-score that changes nothing goes no
 // further than the days asked for; at most MaxRangeDays beyond them.
 //
-// On a redelivered event (events.Redelivered: a retry, or the broker's
-// redelivery) "nothing changed" proves nothing: the attempt before may have
-// written the change and failed before the days after. Then every asked-for
-// day counts as changed, so the retry finishes what the attempt began (D100).
+// On a redelivered event (events.Redelivered: a retry, the broker's
+// redelivery, or a dead letter replayed with scripts/dlq.sh) "nothing
+// changed" proves nothing: the attempt before may have written the change and
+// failed before the days after. Then every asked-for day counts as changed, so
+// the retry finishes what the attempt began (D100).
 func (e *Engine) ComputeDays(ctx context.Context, userID uuid.UUID, days []string) error {
 	_, err := e.computeDays(ctx, userID, days)
 	return err
@@ -405,19 +406,29 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
 
-	// Strength sessions first: they may create the workouts the loop below scores.
+	// Cross-source duplicates before the sessions: a session attaches to a
+	// workout the user sees, so the hiding must be decided first. Day strain
+	// above is unaffected (de-duplicated heart rate).
+	dups, err := e.workoutDuplicates(ctx, userID, day, dayStart, dayEnd)
+	if err != nil {
+		return false, fmt.Errorf("workout duplicates: %w", err)
+	}
+
+	// Strength sessions next: they may create the workouts the loop below scores.
 	strength, err := e.strength(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return false, fmt.Errorf("strength: %w", err)
 	}
 
+	// Every workout of the day, hidden duplicates included: each keeps a load
+	// from its own window (GET /v1/workouts/{id} still answers for a hidden one).
 	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
 	if err != nil {
 		return false, err
 	}
 	for _, w := range workouts {
 		// Each workout loads its own window rather than filtering the day's
-		// samples: a 23:20–00:40 run must count its minutes after midnight too,
+		// samples (D22): a 23:20–00:40 run must count its minutes after midnight too,
 		// and match the curve GET /v1/workouts/{id} draws (same whole-hour
 		// window, same source per hour).
 		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))
@@ -494,7 +505,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 		"yesterday_strain":  yesterdayStrain,
 		"readiness_penalty": readinessPenalty,
 		"baseline_days":     len(lnHRV),
-		"workouts":          len(workouts),
+		"workouts":          visibleCount(workouts, dups),
 		"muscular_trimp":    math.Round(strength.TRIMP),
 		"strength_week":     strength.Week,
 	}

@@ -1,0 +1,91 @@
+# fixture: P5 env API_KEY
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-auth-env
+# message: P5: a container must not set API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID, and AUTH_MODE only as the literal supabase.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: notify
+    part-of: ryft
+  name: notify
+  namespace: ryft-notify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notify
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
+        prometheus.io/scrape: "true"
+      labels:
+        app: notify
+        part-of: ryft
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: "y"
+              name: x
+        envFrom:
+        - configMapRef:
+            name: ryft-config-md7676f8dg
+        - secretRef:
+            name: ryft-secrets
+        image: ghcr.io/timkrebs/ryft/notify:0000000
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 20
+        name: notify
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          periodSeconds: 10
+        resources:
+          limits:
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 48Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        startupProbe:
+          failureThreshold: 126
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /etc/ryft/amqp
+          name: amqp-client
+          readOnly: true
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: notify
+      volumes:
+      - name: amqp-client
+        secret:
+          secretName: amqp-client

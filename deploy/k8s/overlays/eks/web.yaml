@@ -1,4 +1,4 @@
-# ryftapp.de and www.ryftapp.de → the apex site in ryft-web. www redirects to the
+# ryftapp.de and www.ryftapp.de → the apex site in ryft-web (D55). www redirects to the
 # apex (Apple's apple-app-site-association lookup does not follow redirects, so the
 # app's associated domains name ryftapp.de itself). One certificate for both names
 # (DNS-01), DNS by ExternalDNS (an alias A record at the apex).

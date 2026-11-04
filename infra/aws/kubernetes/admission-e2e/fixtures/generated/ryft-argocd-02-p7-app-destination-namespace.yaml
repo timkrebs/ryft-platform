@@ -1,0 +1,36 @@
+# fixture: P7 app destination namespace
+# op: create
+# as: system:serviceaccount:argocd:argocd-server
+# refused-by: ryft-argocd
+# message: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "0"
+  name: vault-api
+  namespace: argocd
+spec:
+  destination:
+    namespace: kube-system
+    server: https://kubernetes.default.svc
+  project: ryft
+  source:
+    path: deploy/k8s/overlays/vault-namespaces/api
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 1m
+        factor: 2
+        maxDuration: 5m
+      limit: 2
+    syncOptions:
+    - ServerSideApply=true
+    - PruneLast=true
+    - CreateNamespace=false

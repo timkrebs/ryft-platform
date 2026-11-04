@@ -1,13 +1,3 @@
-// Package events is what the services exchange: five trigger events, how they are
-// encoded, and what a handler's error means. The transport lives beside it: amqpbus
-// (RabbitMQ, D97); an outbox sits between a service's database writes and it.
-//
-// Events are triggers, not records: Postgres is the source of truth, POST
-// /v1/recompute replays, and every handler is idempotent, so a duplicate delivery
-// changes nothing. ingested (a sync or recompute touched days) and
-// session.completed (a strength session was finished) go to scoring;
-// scored, session.scored and refresh (scoring has scored a morning, a session, a
-// sync's days) go to notify. Each event has exactly one consumer (D71).
 package events
 
 import (
@@ -45,7 +35,8 @@ var (
 	NotifyKeys  = []string{KeyScored, KeySessionScored, KeyRefresh}
 )
 
-// Headers on a dead-lettered message, the same on both transports.
+// Headers on a dead-lettered message (they keep the names the NATS dead letters had,
+// D84, D99, so scripts/dlq.sh and the runbooks read one shape).
 const (
 	HeaderSubject    = "Ryft-Subject"    // the key it was published with
 	HeaderConsumer   = "Ryft-Consumer"   // who gave up on it
@@ -59,7 +50,7 @@ const ReasonSessionCompleted = "session_completed"
 // Message is one event on the wire.
 type Message struct {
 	Key    string // event key (above)
-	ID     string // stable for the same trigger: the dedup id, a consumer's idempotency key
+	ID     string // stable for the same trigger: the broker's message_id (nothing dedups on it, D100)
 	Body   []byte // JSON
 	Reason string // the label of ryft_events_published_total
 }
@@ -294,8 +285,8 @@ func Deferred(err error) (time.Duration, bool) {
 type redeliveryKey struct{}
 
 // WithRedelivery marks ctx as handling a message that came before: a retry
-// tier's copy, or one the broker delivered again after a consumer died. The
-// transport sets it.
+// tier's copy, one the broker delivered again after a consumer died, or a dead
+// letter replayed with scripts/dlq.sh. The transport sets it.
 func WithRedelivery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, redeliveryKey{}, true)
 }

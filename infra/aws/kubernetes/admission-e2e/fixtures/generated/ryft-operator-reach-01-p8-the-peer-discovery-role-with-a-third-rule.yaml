@@ -1,0 +1,29 @@
+# fixture: P8 the peer-discovery role with a third rule
+# op: create
+# as: system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator
+# refused-by: ryft-operator-reach
+# message: P8: the peer-discovery Role may hold only endpoints get and events create.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-peer-discovery
+  namespace: ryft-rabbitmq
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get

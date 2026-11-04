@@ -1,0 +1,16 @@
+# fixture: P6 clusterrole creates configmaps
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-operators-cluster
+# message: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rabbitmq-cluster-operator-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create

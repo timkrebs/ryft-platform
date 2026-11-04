@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "date": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "sets": {
+      "items": {
+        "$ref": "Set"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "date",
+    "session_id",
+    "sets",
+    "started_at"
+  ],
+  "title": "ExerciseHistorySession",
+  "type": "object"
+}

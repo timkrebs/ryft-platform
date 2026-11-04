@@ -74,3 +74,73 @@ echo "→ API contract checks"
 ADMIN_API_KEY="${ADMIN_API_KEY-$( [ "$AUTH_MODE" = apikey ] && echo dev-admin-key-change-me-0123456789abcdef)}" \
 NOTIFY_METRICS_URL="${NOTIFY_METRICS_URL-$( [ "$AUTH_MODE" = apikey ] && echo http://localhost:9093/metrics)}" \
 NAP="$NAP" AUTH_MODE="$AUTH_MODE" INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 "$HERE/check_api.py" "$TO"
+
+echo "→ deletions: upload a sample with a HealthKit id, delete it, send the deletion again"
+INGEST_URL="$INGEST_URL" API_KEY="$API_KEY" python3 - <<'PY'
+import json, os, sys, urllib.request, uuid
+from datetime import datetime, timedelta, timezone
+
+def post(body):
+    req = urllib.request.Request(os.environ["INGEST_URL"] + "/v1/sync", data=json.dumps(body).encode(), method="POST",
+                                headers={"Authorization": "Bearer " + os.environ["API_KEY"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+def fail(msg, got):
+    print("✗ deletions: " + msg + ": " + json.dumps(got)); sys.exit(1)
+
+at = (datetime.now(timezone.utc) - timedelta(days=2)).replace(second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+hk, device = str(uuid.uuid4()), "5eed0000-0000-4000-8000-00000000de1e"  # fixed: no new device row per run
+sample = {"type": "steps", "start": at, "end": at, "value": 1, "unit": "count", "source": "smoke-deletion", "id": hk.upper()}
+up = post({"device_id": device, "samples": [sample], "sleep": [], "workouts": []})
+if up["accepted"]["samples"] != 1:
+    fail("the sample with an id is accepted", up)
+deletion = {"device_id": device, "samples": [], "sleep": [], "workouts": [], "deleted": [{"kind": "sample", "id": hk}]}
+first = post(deletion)
+if first["deleted"]["samples"] != 1 or first["ignored"]["samples"]["unknown_id"] != 0 or not first["days_touched"]:
+    fail("the first deletion removes the sample and touches its day", first)
+again = post(deletion)
+if again["deleted"]["samples"] != 0 or again["ignored"]["samples"]["unknown_id"] != 1:
+    fail("the re-sent deletion is unknown_id", again)
+print("  ok: deleted 1, re-sent is unknown_id 1")
+PY
+
+echo "→ fold: upload two copies of one workout 60 s apart, expect one workout afterwards"
+INGEST_URL="$INGEST_URL" API_URL="$API_URL" API_KEY="$API_KEY" python3 - <<'PY'
+import json, os, sys, urllib.request, uuid
+from datetime import datetime, timedelta, timezone
+
+def call(method, url, body=None):
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, method=method,
+                                headers={"Authorization": "Bearer " + os.environ["API_KEY"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+def fail(msg, got):
+    print("✗ fold: " + msg + ": " + json.dumps(got)); sys.exit(1)
+
+device = "5eed0000-0000-4000-8000-00000000de1e"  # fixed: no new device row per run
+t0 = (datetime.now(timezone.utc) - timedelta(days=3)).replace(hour=4, minute=10, second=0, microsecond=0)
+iso = lambda t: t.isoformat().replace("+00:00", "Z")
+def copy(shift):
+    s = t0 + timedelta(seconds=shift)
+    return {"id": str(uuid.uuid4()), "activity": "swimming", "start": iso(s), "end": iso(s + timedelta(minutes=30)), "source": "smoke-fold"}
+older, newer = copy(0), copy(60)
+post = lambda w: call("POST", os.environ["INGEST_URL"] + "/v1/sync", {"device_id": device, "samples": [], "sleep": [], "workouts": [w]})
+first = post(older)
+if first["accepted"]["workouts"] != 1:
+    fail("the first copy is accepted", first)
+second = post(newer)
+if second["accepted"]["workouts"] != 1 or second["deleted"]["workouts"] != 0:
+    fail("the second copy is accepted and a fold is not counted as deleted", second)
+day = second["days_touched"][0]
+mine = lambda: [w for w in call("GET", os.environ["API_URL"] + "/v1/days/" + day)["workouts"] if w["source"] == "smoke-fold" and w["start"][:10] == t0.date().isoformat()]
+got = mine()
+if [w["id"] for w in got] != [newer["id"]]:
+    fail("one workout remains, the newer upload", got)
+del_ = call("POST", os.environ["INGEST_URL"] + "/v1/sync", {"device_id": device, "samples": [], "sleep": [], "workouts": [],
+                                                           "deleted": [{"kind": "workout", "id": newer["id"]}]})
+if del_["deleted"]["workouts"] != 1:
+    fail("the remaining copy is deletable (leaves the synthetic user clean)", del_)
+print("  ok: two copies 60 s apart, one workout")
+PY

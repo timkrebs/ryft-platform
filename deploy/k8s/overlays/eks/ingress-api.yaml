@@ -1,5 +1,5 @@
 # Traefik (infra/aws/kubernetes) terminates TLS on its websecure entrypoint, the only
-# one exposed, with a certificate cert-manager obtains via DNS-01. ExternalDNS points
+# one exposed (D24: no port 80), with a certificate cert-manager obtains via DNS-01. ExternalDNS points
 # api.ryftapp.de at the NLB from this Ingress.
 apiVersion: networking.k8s.io/v1
 kind: Ingress

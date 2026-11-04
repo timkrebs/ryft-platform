@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
@@ -43,7 +44,7 @@ func (h *handler) gateFor(u model.User) *string {
 	switch {
 	case h.beta.Gate != config.ModeOff && !u.BetaAccess:
 		code = model.CodeInviteRequired
-	case h.beta.Consent != config.ModeOff && (u.Consent == nil || u.Consent.PolicyVersion != h.beta.PrivacyPolicyVersion):
+	case h.beta.Consent != config.ModeOff && !gate.Consented(h.beta, u):
 		code = model.CodeConsentRequired
 	default:
 		return nil

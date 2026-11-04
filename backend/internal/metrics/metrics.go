@@ -1,9 +1,3 @@
-// Package metrics declares every Prometheus metric the three services export
-// and serves them on /metrics. All service-specific metrics are vectors: a
-// vector only appears in a service's output once that service records a label
-// set, so ingest shows ingest metrics, scoring shows scoring metrics, and all
-// three show the HTTP, Go runtime and process metrics. docs/OBSERVABILITY.md
-// lists them with the dashboard queries.
 package metrics
 
 import (
@@ -15,9 +9,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// The service metrics. Each metric's Help string says what it counts and what its
+// labels mean (the Prometheus name is the contract with the dashboards and alerts,
+// so a rename is a dashboard change); a comment below adds only what Help cannot.
 var (
-	// HTTP, all services. route is the ServeMux pattern ("GET /v1/days/{day}"),
-	// never the raw path, so cardinality stays bounded.
+	// HTTPRequests counts HTTP answers; only httpx.Instrument records it, so only api
+	// and ingest emit it. route is the ServeMux pattern ("GET /v1/days/{day}"), never
+	// the raw path, so cardinality stays bounded (D14).
 	HTTPRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_requests_total",
 		Help: "HTTP requests by route pattern and status code.",
@@ -27,24 +25,66 @@ var (
 		Help:    "HTTP request latency by route pattern.",
 		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	}, []string{"route"})
+	// TextRefused counts requests refused for text Postgres cannot store, by where it
+	// was found: body, url or database. A database hit means a path bypassed the first
+	// two checks, so it should stay zero.
+	TextRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_text_refused_total",
+		Help: "Requests refused for text Postgres cannot store (a NUL, or bytes that are not UTF-8), by route pattern " +
+			"and where it was found: body (422), url (400) or database (422; a path that bypassed the first two).",
+	}, []string{"route", "at"})
+	NULStripped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_http_nul_stripped_total",
+		Help: "Requests accepted after the NUL characters were removed from their body's strings (POST /v1/sync), by route pattern.",
+	}, []string{"route"})
 
-	// ingest.
 	Ingested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_samples_ingested_total",
 		Help: "Records accepted by POST /v1/sync. kind=sample (type = sample type), sleep (type = stage) or workout.",
 	}, []string{"kind", "type"})
+	SyncDeleted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_deleted_total",
+		Help: "Rows removed by the deletions of POST /v1/sync, by kind (sample, sleep, workout).",
+	}, []string{"kind"})
+	SyncIgnored = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_sync_ignored_total",
+		Help: "Records and deletions of POST /v1/sync not applied, by kind (sample, sleep, workout) and reason " +
+			"(duplicate, outside_window, unknown_type, unknown_id).",
+	}, []string{"kind", "reason"})
+	WorkoutsFolded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_folded_total",
+		Help: "Duplicate workouts handled, by reason: same_source (a copy removed, ingest sync or fold-workouts) " +
+			"or cross_source (a workout newly marked as another source's duplicate by scoring).",
+	}, []string{"reason"})
+	WorkoutsFoldSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_fold_skipped_total",
+		Help: "Syncs whose same-source workout fold was skipped, by reason (too_many: more workouts in scope than the fold's bound).",
+	}, []string{"reason"})
 	LastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_last_sync_timestamp_seconds",
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",
 	}, []string{})
 
-	// all services.
+	// Panics counts handler panics that Recover turned into a 500. Any increase is a
+	// bug to fix; the response body stays generic (D37).
 	Panics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_panics_total",
 		Help: "Handler panics recovered (answered 500), by route pattern.",
 	}, []string{"route"})
 
-	// ingest + api.
+	// GoroutinePanics counts panics that internal/app recovered in a service's own
+	// goroutines (consumers, timers, the outbox relay, the HTTP servers). The service
+	// then shuts down in order and exits 2, as an unrecovered panic does. A panic in a
+	// /readyz check is counted too, and the service keeps running. Any increase is a
+	// bug to fix. It has no label: the log line "panic" names the task or the check,
+	// and a handler's panic is counted by Panics or ConsumerPanics instead.
+	GoroutinePanics = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_goroutine_panics_total",
+		Help: "Panics recovered in a service's own goroutines (consumers, timers, relay, servers); the service then shuts down and exits 2 (a /readyz check's panic does not stop it).",
+	})
+
+	// RateLimited counts requests answered 429 by the per-pod, per-user token bucket
+	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_rate_limited_total",
 		Help: "Requests answered 429 by the per-user limit, by class (sync, default).",
@@ -59,7 +99,13 @@ var (
 		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
-	// Events (RabbitMQ): ingest, api and scoring publish, scoring and notify consume.
+	// EventsPublished counts sends to the broker (ingest, api and scoring publish).
+	// An error from the relay is retried from the outbox row. A sync and a session
+	// completion write their row with outbox.Insert in their own transaction, so a
+	// failure there rolls the request back. An error from outbox.Send means its INSERT
+	// failed, so there is no row, and the caller decides: recompute and session edits
+	// answer 503, while merge and scoring's three publishes only log it and that event
+	// is lost (D101).
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
 		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
@@ -70,13 +116,13 @@ var (
 		Help: "Events consumed, by reason and result: ok, retry (to the next retry tier), failed (the last attempt failed, " +
 			"dead-lettered), bad (unparseable, dead-lettered), dropped (cannot succeed, e.g. the user was deleted), deferred (notify: quiet hours).",
 	}, []string{"reason", "result"})
-	// The name is from NATS, kept so the dashboards and history stay (D102).
+	// Redeliveries counts messages a consumer received again. The metric name is from
+	// NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
-		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
+		Help: "Messages received again, per queue: redelivered by the broker, a retry tier's copy, or a dead letter replayed by hand.",
 	}, []string{"consumer"})
 
-	// scoring.
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_days_scored_total",
 		Help: "Days scored, by result (ok, error, no_consent: skipped, the user withdrew consent).",
@@ -99,10 +145,10 @@ var (
 		Help: "Weekly sleep-baseline estimates, by outcome (applied: the baseline in use moved and the last 7 days were rescored; kept: the same value, or set by hand; insufficient: too few qualifying nights; error).",
 	}, []string{"outcome"})
 
-	// Push (notify).
+	// PushNotifications counts what notify decided per category, sent or not (notify).
 	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_push_notifications_total",
-		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), stale, no_token, unconfigured (no APNs key).",
+		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key).",
 	}, []string{"category", "result"})
 	APNsResponses = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_apns_responses_total",
@@ -113,10 +159,11 @@ var (
 		Help: "Device tokens dropped because APNs said they are gone (410, BadDeviceToken, DeviceTokenNotForTopic).",
 	})
 
-	// Beta (api, ingest).
+	// GateRefusals counts the requests a gate refuses or, in warn mode, would refuse
+	// (api, ingest, scoring); warn mode is how a gate is rehearsed before it is on (D87).
 	GateRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_gate_refusals_total",
-		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (sync without consent); mode on = refused with 403, warn = served with X-RYFT-Gate.",
+		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (a sync or a training import without consent; in scoring a day); mode on = refused with 403, warn = served with X-RYFT-Gate.",
 	}, []string{"code", "mode", "service"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
@@ -157,7 +204,6 @@ var (
 		Help: "Reports stored by POST /v1/feedback, by category (bug, idea, data, other).",
 	}, []string{"category"})
 
-	// Journal (api).
 	JournalSaves = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_journal_saves_total",
 		Help: "Journal days saved (PUT /v1/journal/{day}).",
@@ -168,7 +214,8 @@ var (
 		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5},
 	}, []string{"caller"})
 
-	// Remote config (api).
+	// FlagEvaluations counts feature flags evaluated for GET /v1/config (api). The key
+	// label is a flag key from the flags table, a bounded set.
 	FlagEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_flag_evaluations_total",
 		Help: "Feature flags evaluated for GET /v1/config, by key and result (on, off).",
@@ -178,7 +225,6 @@ var (
 		Help: "Requests to /v1/admin, by result (ok, unauthorized, invalid, error).",
 	}, []string{"result"})
 
-	// Train (api).
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",
 		Help: "Strength sessions completed (POST /v1/sessions/{id}/complete, repeats included).",
@@ -191,6 +237,24 @@ var (
 		Name: "ryft_train_prs_total",
 		Help: "Personal records set by a completed session, by kind (e1rm, max_weight, max_reps, max_volume).",
 	}, []string{"kind"})
+	// TrainImports counts POST /v1/train/import requests that passed authentication
+	// (api, D124), by how they ended.
+	TrainImports = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_imports_total",
+		Help: "POST /v1/train/import requests past authentication, by result: ok (200, also when every item was rejected), " +
+			"invalid (400/413/422 or 403 consent_required: nothing processed), disabled (403 import_not_enabled: the flag " +
+			"train.import is off for the account), busy (429 import_in_progress), " +
+			"timeout (503 after the 50 s budget), error (503: the database failed; what was stored stays).",
+	}, []string{"result"})
+	TrainImportItems = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_train_import_items_total",
+		Help: "Items of the training import, by kind (plan, session) and status (created, unchanged, updated, rejected).",
+	}, []string{"kind", "status"})
+	TrainImportSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ryft_train_import_seconds",
+		Help:    "Duration of a POST /v1/train/import that took the lease: the items, the records and the queueing (its budget is 50 s).",
+		Buckets: []float64{.1, .25, .5, 1, 2, 5, 10, 20, 30, 50},
+	})
 )
 
 // Handler serves the default registry (these metrics plus go_* and process_*).
@@ -224,8 +288,8 @@ var (
 	}, []string{"publisher", "result"})
 )
 
-// The RabbitMQ connection's metrics, registered by UseAMQP when a service connects: a
-// binary that never connects (migrate) exposes none, so a 0 is never a false alarm.
+// The RabbitMQ connection's metrics, registered by UseAMQP, which amqpbus.New
+// calls before it dials: a binary that never creates a bus (migrate) exposes none, so a 0 is never a false alarm.
 var (
 	AMQPConnected = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "ryft_amqp_connected",

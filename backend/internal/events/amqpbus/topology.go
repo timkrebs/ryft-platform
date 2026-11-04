@@ -142,10 +142,21 @@ func ResourceRegex(names []string) string {
 	return oneOf(names...)
 }
 
-// Exchange, Queue, Binding and Policy describe the topology.
+// Exchange is a declared exchange; Type is "topic" or "direct".
 type Exchange struct{ Name, Type string }
+
+// Queue is a declared quorum queue. It carries no arguments of its own (the dev
+// definitions add only x-queue-type: quorum): limits, TTLs and dead-lettering come
+// from a Policy, since the Topology Operator cannot change a queue's arguments once
+// it exists (D99).
 type Queue struct{ Name string }
+
+// Binding routes Key from the Source exchange to the Destination queue.
 type Binding struct{ Source, Destination, Key string }
+
+// Policy applies Definition (delivery limit, TTL, dead-lettering, length) to every
+// queue whose name matches Pattern. Every queue must match exactly one policy
+// (Topology.Validate checks it).
 type Policy struct {
 	Name, Pattern string
 	Priority      int
@@ -206,9 +217,9 @@ func Spec(scale float64) Topology {
 	return t
 }
 
-// tierFor is the tier of a retry after attempt failures (1-based).
+// tierFor is the tier of a retry after attempt failures (1-based; below 1 is the first tier).
 func tierFor(attempt int) Tier {
-	return RetryTiers[min(attempt, len(RetryTiers))-1]
+	return RetryTiers[min(max(attempt, 1), len(RetryTiers))-1]
 }
 
 // waitTierFor is the longest of consumer's tiers that does not exceed d, or the

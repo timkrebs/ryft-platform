@@ -1,12 +1,14 @@
 REGISTRY ?= ghcr.io/timkrebs/ryft
 TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SERVICES := ingest scoring api notify migrate
+# The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
+GOLANGCI_LINT_VERSION := v2.15.0
 
-# Docker if it is installed, otherwise Podman (its `compose` runs the same file).
+# Docker if it is installed, otherwise Podman (its `compose` runs the same file; D1).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -74,6 +76,11 @@ smoke-prod:
 check-swift:
 	./scripts/check_swift.sh
 
+# The cluster every target below talks to is named: KUBE_CONTEXT=<context>. Every kubectl
+# and helm call goes through $(KUBECTL), $(KUBECTL_LOCAL) or $(HELM), which run the guard
+# right before it (scripts/lib/kube.mk); the local targets refuse a context that looks like EKS (a heuristic, scripts/lib/kube.sh).
+include scripts/lib/kube.mk
+
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
 NAMESPACES := migrate ingest scoring api notify smoke
 LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
@@ -87,28 +94,28 @@ LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
 # ryft.dev/stage=first), and the services only once migrate has set their role
 # passwords; the PostSync smoke Job (label ryft.dev/hook) is left out. The finished
 # migrate Job is deleted first because a Job's pod template cannot change.
-k8s-apply-eks: k8s-check-images k8s-check-registry k8s-check-auth
+k8s-apply-eks: k8s-context k8s-check-images k8s-check-registry k8s-check-auth
 	@echo "! break-glass: Argo CD reverts anything here that git does not hold; pause its auto-sync first (docs/OPERATIONS.md → Deploy)."
-	for s in $(NAMESPACES); do kubectl apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
-	for s in $(NAMESPACES); do kubectl -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
-	kubectl apply -k deploy/k8s/overlays/vault-namespaces/rabbitmq
-	for u in ingest scoring api notify; do kubectl -n ryft-rabbitmq wait --for=create secret/amqp-user-$$u --timeout=120s || exit 1; done
+	for s in $(NAMESPACES); do $(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
+	for s in $(NAMESPACES); do $(KUBECTL) -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
+	$(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/rabbitmq
+	for u in ingest scoring api notify; do $(KUBECTL) -n ryft-rabbitmq wait --for=create secret/amqp-user-$$u --timeout=120s || exit 1; done
 	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/rabbitmq
-	kubectl -n ryft-migrate delete job migrate --ignore-not-found
-	kubectl apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
-	kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
-	kubectl apply -k deploy/k8s/overlays/eks -l 'ryft.dev/hook!=postsync'
-	for s in ingest api scoring notify; do kubectl -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
+	$(KUBECTL) -n ryft-migrate delete job migrate --ignore-not-found
+	$(KUBECTL) apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
+	$(KUBECTL) -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
+	$(KUBECTL) apply -k deploy/k8s/overlays/eks -l 'ryft.dev/hook!=postsync'
+	for s in ingest api scoring notify; do $(KUBECTL) -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
 
 # Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
 # its Fleet Management token is synced from Vault into namespace monitoring first.
 K8S_MONITORING_VERSION := 4.5.3
-monitoring-apply: k8s-check-auth
-	kubectl apply -k deploy/k8s/overlays/vault-namespaces/monitoring
-	kubectl -n monitoring wait --for=create secret/ryft-secrets --timeout=120s
+monitoring-apply: k8s-context k8s-check-auth
+	$(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/monitoring
+	$(KUBECTL) -n monitoring wait --for=create secret/ryft-secrets --timeout=120s
 	helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
 	helm repo update grafana >/dev/null
-	helm upgrade --install grafana-cloud grafana/k8s-monitoring --version $(K8S_MONITORING_VERSION) \
+	$(HELM) upgrade --install grafana-cloud grafana/k8s-monitoring --version $(K8S_MONITORING_VERSION) \
 	  --namespace monitoring --values deploy/monitoring/k8s-monitoring.yaml --wait --timeout 10m
 
 # Move every Terraform root's state into its HCP Terraform workspace, once
@@ -121,6 +128,7 @@ monitoring-apply: k8s-check-auth
 # (.terraform/terraform.tfstate: the S3 settings, no resources) is moved next to the
 # copy instead: init then starts fresh and offers no migration from S3. After the
 # push the workspace must hold as many resources as the local state.
+# D56: state lives in HCP Terraform, one workspace per root, runs stay local.
 TF_ORG   := tim-krebs-org
 TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
             infra/aws/kubernetes:ryft-prod-euc1-kubernetes infra/vault:ryft-prod-euc1-vault
@@ -155,26 +163,36 @@ tf-migrate-hcp:
 # Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
 # Self-hosted: cert-manager must be installed. The internal CA (the same chart template
 # as on EKS), the RabbitMQ operators, then everything else with one broker node.
-k8s-apply-local:
+k8s-apply-local: k8s-context-local
 	./scripts/local-secrets.sh 2>/dev/null || [ -d $(LOCAL_SECRETS) ]
 	helm template ryft-issuers infra/aws/kubernetes/charts/cluster-issuers --namespace cert-manager \
-	  --show-only templates/internal-ca.yaml | kubectl apply -f -
-	kubectl -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
-	kubectl -n ryft-migrate delete job migrate --ignore-not-found
+	  --show-only templates/internal-ca.yaml | { $(KUBECTL_LOCAL) apply -f -; }
+	$(KUBECTL_LOCAL) -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
+	$(KUBECTL_LOCAL) -n ryft-migrate delete job migrate --ignore-not-found
 	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres
 
-# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ) (the broker,
+# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ_DIR) (the broker,
 # its topology; for local-postgres everything), then wait for the broker. Server-side
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
-k8s-rabbitmq:
-	kubectl apply --server-side --force-conflicts -k deploy/rabbitmq/operators
-	for d in rabbitmq-cluster-operator messaging-topology-operator; do kubectl -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
-	kubectl apply --server-side --force-conflicts -k $(RABBITMQ)
-	kubectl -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
+# RABBITMQ is exactly one of two values: deploy/rabbitmq is the EKS broker (the EKS guard);
+# deploy/k8s/overlays/local-postgres uses the local guard. A trailing / is allowed. Anything
+# else, or more than one word, stops before the first cluster call.
+override RABBITMQ_DIR = $(RABBITMQ:%/=%)
+override RABBITMQ_EKS = $(filter deploy/rabbitmq,$(RABBITMQ_DIR))
+override RABBITMQ_CHECK = $(if $(RABBITMQ),,$(error RABBITMQ is not set: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter 1,$(words $(RABBITMQ))),,$(error RABBITMQ must be one word: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter deploy/rabbitmq deploy/k8s/overlays/local-postgres,$(RABBITMQ_DIR)),,$(error RABBITMQ must be deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres, not $(RABBITMQ)))
+override RABBITMQ_KUBECTL = $(RABBITMQ_CHECK)$(if $(RABBITMQ_EKS),$(KUBECTL),$(KUBECTL_LOCAL))
+k8s-rabbitmq: $(if $(RABBITMQ_EKS),k8s-context,k8s-context-local)
+	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | { $(RABBITMQ_KUBECTL) apply -f -; }
+	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k deploy/rabbitmq/operators
+	for d in rabbitmq-cluster-operator messaging-topology-operator; do $(RABBITMQ_KUBECTL) -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
+	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ_DIR)
+	$(RABBITMQ_KUBECTL) -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
 
-k8s-delete-local:
-	kubectl delete -k deploy/k8s/overlays/local-postgres
+# On EKS this would delete the service namespaces and the broker's volumes: the local guard
+# refuses a context that looks like EKS (a heuristic), in the same shell line as the call.
+k8s-delete-local: k8s-context-local
+	$(KUBECTL_LOCAL) delete -k deploy/k8s/overlays/local-postgres
 
 # Render every overlay offline and validate it (no cluster needed): each service's
 # namespace, EKS, local-postgres (with throwaway secrets if none exist), the
@@ -192,19 +210,71 @@ PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a6
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
+	scripts/admission_intended.sh --check; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
+	sed '/^namespace:/d' deploy/grafana/alerts/admission-intended.yaml > "$$d/admission-intended.rules.yaml"; \
 	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml /rules/admission-intended.rules.yaml; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml /alerts/admission-intended.yaml
+
+# Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
+# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
+# RabbitMQ count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_AMQP_URL set, as in CI.
+coverage:
+	@set -e; d=$${COVERDIR:-$$(mktemp -d)}; mkdir -p "$$d"; \
+	(cd backend && go test -race -count=1 -coverprofile="$$d/coverage.out" ./... > "$$d/test.log" 2>&1) \
+	  || { echo "go test failed, tail of $$d/test.log:" >&2; tail -40 "$$d/test.log" >&2; exit 1; }; \
+	env -u GITHUB_STEP_SUMMARY ./scripts/coverage.sh report "$$d/coverage.out" "$$d"; echo "files: $$d"
+
+# Load baseline against the LOCAL compose stack (make up first): 50 synthetic users sync a full day, then read
+# 30 days, one warm-up and 3 measured runs under k6 (a container, pinned by digest). Prints a table, writes
+# scripts/load/out/ (git-ignored) and exits 1 above 1 % errors. Targets other than localhost are refused
+# unless LOAD_ALLOW_REMOTE=1; never aim it at production (docs/OBSERVABILITY.md -> Baselines).
+load:
+	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
+
+# What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
+# map check. Then the decision references, which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
+# exits 0 unless it cannot work).
+# The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
+# different findings, so a mismatch is said out loud before the run.
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
+	@have=$$(golangci-lint version 2>&1 | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1); \
+	if [ "$$have" != "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))" ]; then \
+	  echo "lint: WARNING: golangci-lint $${have:-of unknown version} found, CI pins $(GOLANGCI_LINT_VERSION); findings can differ from CI's" >&2; \
+	fi
+	cd backend && golangci-lint run
+	./scripts/pkgmap.sh --check
+	./scripts/decision_refs.sh
+
+# After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
+# docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.
+check-api-doc:
+	cd backend && go test -count=1 -run 'APIDoc|DocChecker' ./internal/model/ ./internal/httpx/ ./internal/gate/
+
+# docs/ARCHITECTURE.md -> Package map is generated; fails (1) when it is stale, `scripts/pkgmap.sh` rewrites it.
+pkgmap-check:
+	./scripts/pkgmap.sh --check
+
+# Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
+# ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
+# GOLDEN_MODE=init makes the first set. It starts from the committed manifest and a local database
+# (GOLDEN_ALLOW_REMOTE_DB=1 for another host); the test refuses anything else (docs/SCORING.md →
+# Model version, D149; scripts/golden_guard.sh is the PR-side check, run by CI's golden-guard job).
+.PHONY: golden-update
+golden-update:
+	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
+	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
 
 alerts-apply: alerts-check
-	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-65-prod-eu-west-2.grafana.net}" \
+	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
 
 # External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
@@ -228,20 +298,52 @@ k8s-validate:
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh
+	@./scripts/check_operators_scope.sh
 	@./scripts/check_kustomize_refs.sh
 	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check
 
+# The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with the
+# Kubernetes CEL libraries against the renders of deploy/ and the fixtures in
+# infra/aws/kubernetes/admission-celtest/testdata. Read-only: helm template and kustomize only, no cluster.
+# CI runs it in the `admission` job.
+admission-celtest:
+	./infra/aws/kubernetes/admission-celtest/run.sh
+
+# Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) evaluated in a Lua VM with
+# exactly Argo CD v3.5.6's libraries (no string library) against table-driven objects. Offline:
+# reads argocd.tf only, no Terraform provider, no cluster. CI job argocd-luatest.
+argocd-luatest:
+	cd infra/aws/kubernetes/argocd-luatest && go vet ./... && go run .
+
+# The admission policies against a real API server in kind (T12-d, docs/OPERATIONS.md -> Admission
+# policies: the kind run): cert-manager, Argo CD with argocd.tf's values, the operators and the
+# broker synced by Argo CD from the tree REPO, the policies in Audit and then Deny, the hooks,
+# terminate-op, the broker restart, claims a-d, g-i, k and m (f, j, l are not tried). REPO is the tree
+# under test, a git checkout of a branch such as the narrowed Argo CD RBAC or the namespace-scoped
+# operators: the files git tracks under deploy/ and infra/aws/kubernetes/ are read from it (the chart and
+# the fixtures from this checkout). THE TREE IS CODE (kustomize, Terraform and Argo CD run it): an
+# untrusted one belongs in the admission-e2e workflow, not on a machine with production credentials.
+# Local kind only, and not through KUBE_CONTEXT (scripts/lib/kube.mk, D150): the target names no context from the
+# ambient kubeconfig, which may be production's. The script creates its own cluster with its own kubeconfig in a temporary directory,
+# refuses any context that is not a kind-* one at https://127.0.0.1, and deletes the cluster afterwards.
+# Needs kind and docker or podman, kubectl, helm, yq (mikefarah v4), jq, git, go and terraform.
+# About 25 minutes. MODE=ci runs only what CI's `admission` job runs (about 5 minutes).
+admission-e2e:
+	@test -n "$(REPO)" || { echo "usage: make admission-e2e REPO=<path to the tree under test> [MODE=ci|full]"; exit 2; }
+	./scripts/admission_e2e.sh --mode $(or $(MODE),full) --repo "$(REPO)" --summary "$(or $(SUMMARY),admission-e2e-summary.md)"
+
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide
 # credentials" (2026-10-20). Say so before applying anything.
-k8s-check-auth:
-	@if ! kubectl auth whoami >/dev/null 2>&1; then \
-	  echo "✗ kubectl is not logged in to $$(kubectl config current-context 2>/dev/null)."; \
+k8s-check-auth: k8s-context
+	@$(KUBE_GUARD) || exit 1; \
+	if ! { $(KUBECTL) auth whoami; } >/dev/null 2>&1; then \
+	  echo "✗ kubectl's login to $$KUBE_CONTEXT is missing or expired."; \
 	  aws sts get-caller-identity --query Arn --output text 2>&1 | sed '/^$$/d; s/^/  aws sts: /' | head -2; \
 	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \
 	  exit 1; fi
-	@echo "✓ kubectl is logged in to $$(kubectl config current-context) as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
+	@echo "$(KUBE_REQUIRED)✓ kubectl's login to $$KUBE_CONTEXT works, as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
 
 # Every image the EKS overlay deploys must be a well-formed reference with a pinned
 # tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in

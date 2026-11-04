@@ -1,0 +1,169 @@
+{{- /*
+P6 ryft-operators-cluster (C, U; requester Argo CD). What the operators project
+(rabbitmq-operators, project ryft-operators) may put on the cluster:
+ - CustomResourceDefinitions of rabbitmq.com only, without a conversion webhook;
+ - ClusterRoles named rabbitmq-cluster-* or messaging-topology-*, and Roles of those names
+   in rabbitmq-system and (the two of T12-g) in the broker's namespace.
+   Every rule of either: no wildcard verb, no escalate, bind or impersonate; only the
+   (group, resource) pairs of operators.allowedResources (so no wildcard resource, no
+   token or proxy subresource of every resource, no pods/attach, pods/ephemeralcontainers, CSR approval or signers,
+   and pods/exec only in a rabbitmq-cluster-* role); no non-resource URL but /metrics.
+   A ClusterRole has no aggregationRule or aggregate-to label either, and is read-only
+   (get, list, watch) except for rabbitmq.com, events and the tokenreview and
+   subjectaccessreview creates;
+ - ClusterRoleBindings only to those roles, only for the two operator service accounts;
+ - RoleBindings in rabbitmq-system and the four objects of T12-g in the broker's namespace
+   (rabbitmq-cluster-operator-role/-rolebinding, messaging-topology-manager-role/-rolebinding),
+   roleRef.kind Role, subjects only the two operator service accounts of rabbitmq-system.
+   A ClusterRole grants no Secrets, no pods/exec and no Pod write (the cluster-wide reads
+   T12-g removed must not come back); reverting T12-g by git therefore needs the break-glass;
+ - the four webhook configurations, with services in rabbitmq-system, never a url, on
+   rabbitmq.com only.
+*/ -}}
+{{- $allow := dict -}}
+{{- range $g, $rs := .Values.operators.allowedResources -}}
+{{- $l := list -}}
+{{- range $rs -}}
+{{- $l = append $l . -}}
+{{- if has $g $.Values.operators.withStatusAndFinalizers -}}
+{{- $l = append $l (printf "%s/status" .) -}}
+{{- $l = append $l (printf "%s/finalizers" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $allow $g $l -}}
+{{- end -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-operators-cluster" "id" "P6" "summary" "cluster-scoped power Argo CD may give the RabbitMQ operators") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apiextensions.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["customresourcedefinitions"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+      - apiGroups: ["admissionregistration.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  matchConditions:
+    - name: requester-is-argocd
+      expression: request.userInfo.username in {{ include "admission.cel.argoUsers" . }}
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: o
+      expression: dyn(object)
+    - name: rules
+      expression: |-
+        has(variables.o.rules) ? variables.o.rules : []
+    - name: subjects
+      expression: |-
+        has(variables.o.subjects) ? variables.o.subjects : []
+    - name: operatorAccounts
+      expression: |-
+        [{{ .Values.operators.clusterOperatorServiceAccount | toJson }}, {{ .Values.operators.topologyOperatorServiceAccount | toJson }}]
+    - name: roleNames
+      expression: |-
+        {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.o.metadata.name.startsWith(p))
+    - name: roleNamespaces
+      expression: |-
+        [{{ .Values.operators.namespace | toJson }}, {{ .Values.broker.namespace | toJson }}]
+    - name: clusterCreates
+      expression: |-
+        {{ include "admission.cel.literal" .Values.operators.clusterRoleCreates }}
+    - name: clusterWrites
+      expression: |-
+        {{ include "admission.cel.literal" .Values.operators.clusterRoleWrites }}
+    - name: allowed
+      expression: |-
+        {{ include "admission.cel.literal" $allow }}
+  validations:
+    - expression: |-
+        variables.reqKind != 'CustomResourceDefinition' ||
+        (variables.o.spec.group == 'rabbitmq.com' &&
+         (!has(variables.o.spec.conversion) || !has(variables.o.spec.conversion.strategy) || variables.o.spec.conversion.strategy == 'None'))
+      message: "P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRole' ||
+        (variables.roleNames && !has(variables.o.aggregationRule) &&
+         (!has(variables.o.metadata.labels) ||
+          variables.o.metadata.labels.all(k, !k.startsWith('rbac.authorization.k8s.io/aggregate-to-'))))
+      message: "P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['ClusterRole', 'Role']) ||
+        variables.rules.all(r,
+          (!has(r.verbs) || r.verbs.all(v, v != '*' && !(v in ['escalate', 'bind', 'impersonate']))) &&
+          (!has(r.resources) ||
+            (has(r.apiGroups) && r.apiGroups.all(g, r.resources.all(x,
+              (g in variables.allowed && x in variables.allowed[g]) ||
+              (g == '' && x == {{ .Values.operators.execResource | toJson }} && variables.reqKind == 'Role' &&
+               request.namespace == {{ .Values.broker.namespace | toJson }} && variables.o.metadata.name == {{ .Values.operators.execRoleName | toJson }}))))) &&
+          (!has(r.nonResourceURLs) || r.nonResourceURLs.all(u, u == '/metrics')))
+      message: "P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRole' ||
+        variables.rules.all(r,
+          !has(r.verbs) || r.verbs.all(v, v in ['get', 'list', 'watch']) ||
+          (has(r.apiGroups) && r.apiGroups.all(g, g in {{ .Values.operators.clusterRoleWriteGroups | toJson }})) ||
+          (has(r.apiGroups) && has(r.resources) &&
+            r.apiGroups.all(g, r.resources.all(x, g in variables.clusterWrites && x in variables.clusterWrites[g]))) ||
+          (r.verbs.all(v, v == 'create') && has(r.apiGroups) && has(r.resources) &&
+            r.apiGroups.all(g, r.resources.all(x, g in variables.clusterCreates && x in variables.clusterCreates[g]))))
+      message: "P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Role' || request.namespace != {{ .Values.operators.namespace | toJson }} ||
+        variables.rules.all(r, !has(r.resources) || r.resources.all(x, x != 'secrets' && x != {{ .Values.operators.execResource | toJson }}))
+      message: "P6: a Role in rabbitmq-system (leader election) holds no Secrets and no pods/exec; those are the broker namespace's named Role."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRoleBinding' ||
+        (variables.o.roleRef.kind == 'ClusterRole' &&
+         {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.o.roleRef.name.startsWith(p)) &&
+         variables.subjects.all(s, s.kind == 'ServiceAccount' && has(s.namespace) && s.namespace == {{ .Values.operators.namespace | toJson }} && s.name in variables.operatorAccounts))
+      message: "P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['MutatingWebhookConfiguration', 'ValidatingWebhookConfiguration']) ||
+        (variables.o.metadata.name in {{ .Values.operators.webhookConfigurations | toJson }} &&
+         has(variables.o.webhooks) &&
+         variables.o.webhooks.all(w,
+           has(w.clientConfig.service) && !has(w.clientConfig.url) &&
+           w.clientConfig.service.namespace == {{ .Values.operators.namespace | toJson }} &&
+           has(w.rules) && w.rules.all(r, has(r.apiGroups) && r.apiGroups.all(g, g == 'rabbitmq.com'))))
+      message: "P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['Role', 'RoleBinding']) ||
+        ((request.namespace == {{ .Values.operators.namespace | toJson }} ||
+          (request.namespace == {{ .Values.broker.namespace | toJson }} &&
+           variables.o.metadata.name in (variables.reqKind == 'Role' ? {{ .Values.operators.scopedRoles | toJson }} : {{ .Values.operators.scopedRoleBindings | toJson }}))) &&
+         (variables.reqKind == 'Role' ||
+          (variables.o.roleRef.kind == 'Role' &&
+           (request.namespace == {{ .Values.operators.namespace | toJson }} ?
+             {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.o.roleRef.name.startsWith(p)) :
+             variables.o.roleRef.name in {{ .Values.operators.scopedRoles | toJson }}) &&
+           variables.subjects.all(s, s.kind == 'ServiceAccount' && has(s.namespace) && s.namespace == {{ .Values.operators.namespace | toJson }} && s.name in variables.operatorAccounts))))
+      message: "P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Role' || variables.roleNames
+      message: "P6: a Role must be named rabbitmq-cluster-* or messaging-topology-*."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterRole' ||
+        variables.rules.all(r, !has(r.resources) || r.resources.all(x,
+          x != 'secrets' && x != {{ .Values.operators.execResource | toJson }} &&
+          (x != 'pods' || (has(r.verbs) && r.verbs.all(v, v in ['get', 'list', 'watch'])))))
+      message: "P6: a ClusterRole of the operators must not grant Secrets, pods/exec or writes to Pods: the operators read and write those in the broker's namespace only (Roles, T12-g)."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "operators-cluster" "policy" "ryft-operators-cluster" "id" "P6" "step" "A") }}

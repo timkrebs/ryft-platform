@@ -1,0 +1,17 @@
+# fixture: P3 default-deny narrowed
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-netpol
+# message: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ryft-api
+spec:
+  podSelector:
+    matchLabels:
+      a: b
+  policyTypes:
+  - Ingress
+  - Egress

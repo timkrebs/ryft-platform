@@ -1,0 +1,46 @@
+# Production values of the admission policies (D120). Read by admission.tf; the same file
+# feeds `helm template` in CI. Everything not set here comes from
+# charts/admission-policy/values.yaml. A step change is a reviewed PR that edits this file,
+# followed by the user's terraform apply (docs/OPERATIONS.md).
+
+# Phase 0: nothing is created. A reviewed PR sets true to start Phase 1 (Warn+Audit).
+# Flipping it back to false destroys the release (and with it every policy).
+enabled: false
+
+# The Vault address P4 holds every VaultConnection to. A terraform test compares it with
+# the VaultConnections infra/vault generates (deploy/k8s/overlays/vault-namespaces/*/vault.yaml).
+vaultAddress: https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200
+
+# Argo CD's identities, as P1, P6, P7 and P10 judge them.
+argocd:
+  namespace: argocd
+  controllerServiceAccount: argocd-application-controller
+  serverServiceAccount: argocd-server
+
+# T12-k narrows ryft-rabbitmq's 443 egress to the VPC CIDR; its PR sets this to false
+# (before Step B).
+netpol:
+  brokerEgressPublic: true
+
+# The action of each binding: audit (Warn+Audit) or deny (Deny+Audit). Deny is never
+# combined with Warn. Phase 1 is all audit; Phase 2 changes one step per reviewed PR:
+#   A: vso, operators-cluster, broker          B: namespaces, workloads-templates, netpol,
+#   auth-env, traefik   C: workloads-pods, operator-reach   D: argocd, argocd-operation
+actions:
+  vso: audit
+  # P6 refuses the vendored cluster-wide ClusterRoles of both RabbitMQ operators, so T12-g
+  # (deploy/rabbitmq/operators/*/scoped-rbac.yaml, both operators namespace-scoped) must be
+  # merged and synced before this goes to deny (Step A), ideally before Phase 1 ends: in Audit
+  # P6 flags those two roles on every refresh, expected and not an unexplained finding.
+  # admission.tf refuses operators-cluster: deny while that file is missing.
+  operators-cluster: audit
+  broker: audit
+  namespaces: audit
+  workloads-templates: audit
+  netpol: audit
+  auth-env: audit
+  traefik: audit
+  workloads-pods: audit
+  operator-reach: audit
+  argocd: audit
+  argocd-operation: audit

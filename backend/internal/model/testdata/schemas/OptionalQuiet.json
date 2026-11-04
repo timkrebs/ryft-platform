@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "Set": {
+      "type": "boolean"
+    },
+    "Value": {
+      "$ref": "QuietHours",
+      "nullable": true
+    }
+  },
+  "required": [
+    "Set",
+    "Value"
+  ],
+  "title": "OptionalQuiet",
+  "type": "object"
+}

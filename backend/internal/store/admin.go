@@ -14,7 +14,8 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// ErrAmbiguous: a short id matches more than one user.
+// ErrAmbiguous is ResolveUser's answer when a short id (8 hex digits) matches more than
+// one user: the operator must give the full id rather than act on a guess.
 var ErrAmbiguous = errors.New("the short id matches more than one user")
 
 var shortID = regexp.MustCompile(`^[0-9a-f]{8}$`)
