@@ -2965,3 +2965,7 @@ and the real Engine, and fails with the changed fields grouped by field.
   apply gets no touched days because the harness scores the whole range itself. Newest-first scoring is checked on
   the last ten days only (the whole month costs ~465 day passes a user). The generator is the coverage: a scenario
   it does not have is not pinned.
+- **Not marked as generated.** `linguist-generated` would collapse the files in GitHub's diff view, but it needs a
+  `.gitattributes`, which `scripts/check_bytes.sh` refuses by name (D115: a `working-tree-encoding` can turn text
+  into a hidden line break). The files stay expanded; the failing test's grouped report, not the raw JSON diff, is
+  what a reviewer reads first.

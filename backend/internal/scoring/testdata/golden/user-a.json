@@ -2395,7 +2395,7 @@
       "zone_minutes": [0, 15, 26, 11, 0]
     }
   ],
-  "scenario": "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)",
+  "scenario": "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, an evening spot HRV reading on day 5 that is not overnight, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)",
   "sessions": [],
   "tz": "Europe/Berlin",
   "user": "user-a",

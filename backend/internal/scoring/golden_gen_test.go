@@ -51,7 +51,7 @@ type goldenUser struct {
 
 var goldenUsers = []goldenUser{
 	{Name: "user-a", TZ: "Europe/Berlin", build: goldenWatchUser,
-		Scenario: "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)"},
+		Scenario: "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, an evening spot HRV reading on day 5 that is not overnight, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)"},
 	{Name: "user-b", TZ: "America/New_York", build: goldenGarminUser,
 		Scenario: "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent with a new id (folded), DST on day 27"},
 	{Name: "user-c", TZ: "Europe/Berlin", MaxHR: 186, build: goldenTwoSourceUser,
@@ -293,6 +293,12 @@ func goldenWatchUser(g *goldenGen) {
 			g.heart(watch, bed, wake, 10*time.Minute, 62, 70)
 		default:
 			g.watchNight(watch, bed, wake)
+		}
+		if k == 5 {
+			// A spot HRV reading at 20:30 (a breathing session): inside day 6's
+			// night window (from 20:00) but more than an hour before bed, so not
+			// part of day 6's overnight HRV.
+			g.add(watch, model.SampleHRVSDNN, "ms", g.at(k, 20, 30), g.at(k, 20, 30), 31.5)
 		}
 		switch k {
 		case 16, 17: // no resting HR: day 17 has none for itself or the day before
