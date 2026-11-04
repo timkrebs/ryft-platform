@@ -49,6 +49,21 @@ git update-ref refs/remotes/fork/other "$forked"
 no "${forked:0:10}" refs/heads/feature main
 no "$forked" refs/heads/feature main
 
+# a pull request's commit fetched into origin/pr/* or origin/pull/* does not make it a branch commit
+prc=$(git -c user.name=t -c user.email=t@example.com commit-tree "$tree" -p HEAD -m "a pull request")
+git update-ref refs/remotes/origin/pr/7 "$prc"; git update-ref refs/remotes/origin/pull/8/head "$prc"
+[ -n "$(git branch -r --list 'origin/*' --contains "$prc")" ] || fail "setup: origin/pr/7 does not contain its commit"
+no "${prc:0:10}" refs/heads/feature main
+no "$prc" refs/heads/feature main
+git update-ref -d refs/remotes/origin/pr/7; git update-ref -d refs/remotes/origin/pull/8/head
+
+# a user refspec that fetches pull requests into origin/* makes origin/* untrustworthy: refused, FORCE=1 warns
+git config --add remote.origin.fetch '+refs/pull/*/head:refs/remotes/origin/pr/*'
+no feature refs/heads/feature main
+if FORCE=1 "$S" feature refs/heads/feature main 2>"$tmp/warn" >/dev/null; then grep -q '::warning' "$tmp/warn" || fail "FORCE=1 did not warn"; else fail "FORCE=1 should pass with a warning"; fi
+git config --unset-all remote.origin.fetch; git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+ok feature refs/heads/feature main >/dev/null
+
 # the ref is user input in a workflow command: a line break or % must not survive, and the line is cut
 for bad in $'x\n::error title=pwn::boom' 'a%0A::warning::x' "$(printf 'z%.0s' $(seq 1 300))"; do
   err=$("$S" "$bad" refs/heads/feature main 2>&1 >/dev/null || true)

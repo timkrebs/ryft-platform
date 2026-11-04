@@ -864,7 +864,12 @@ not a sandbox):
   on: it reads the `*.tf` files with comments removed and strings blanked and stops at `provisioner`,
   `alias` (an aliased provider is not mocked, so its `exec`, `credential_process` or `postrender` would
   run), `exec`, `config_path`, `shared_config_files`, `shared_credentials_files`, `credential_process`,
-  `postrender`, `local-exec`, `data "external"`, `data "http"`, a `\u` escape in a string and any
+  `postrender`, `local-exec`, `data "external"`, `data "http"`, `data "local_file"` (also
+  `local_sensitive_file`, `terraform_remote_state`), the functions that read a local file (`file`,
+  `templatefile`, `filebase64*`, `filemd5`, `filesha*`, `fileset`, `fileexists`, `pathexpand`, `abspath`,
+  `path.cwd`, `path.root`, any `provider::` or `core::` function: this checkout's own module uses `file()`,
+  `fileset()` and `fileexists()`, so a file is exempt from this one check only when it is byte-identical
+  to this checkout's), a `\u` escape in a string and any
   `*.tf.json`, also in the modules `terraform init` downloads (only a `providers.tf` byte-identical to
   this checkout's, which holds the real `exec`, is skipped), and at a lock file naming a provider other
   than aws, helm, kubernetes and random. HCL is a language: a clever tree gets past a lexer, and
@@ -874,8 +879,16 @@ not a sandbox):
   directory and `terraform test` in it with `--network none`;
 - a `REPO` that is not this checkout must have its HEAD commit on an `origin/*` branch of this checkout
   (`scripts/check_e2e_ref.sh`, the workflow's check; `git fetch origin` first) and unmodified tracked
-  files under `deploy/` and `infra/aws/kubernetes/`, or `make admission-e2e` refuses; `FORCE=1` runs it
-  anyway with a warning, for a machine that has no production credentials;
+  files under `deploy/` and `infra/aws/kubernetes/`, or `make admission-e2e` refuses; the files are then
+  copied from that commit (`git archive HEAD`), not from the working tree, which `git status` can be
+  made to misreport. `origin/pr/*` and `origin/pull/*` never count, and a `remote.origin.fetch` other than
+  the default `+refs/heads/*:refs/remotes/origin/*` refuses (a refspec can put fork pull requests under
+  `origin/*`). `FORCE=1` runs it anyway with a warning, for a machine that has no production credentials;
+- for such a tree Terraform needs `TF_VALUES_CONTAINER=<terraform image pinned by digest>` (the container
+  sees only the work directory, so its file functions read the tree's own files and nothing else), or
+  `FORCE=1`, which keeps the loud warning and still refuses a changed file that uses the file functions.
+  In GitHub Actions both guards are skipped with a notice in the log (the runner holds none of your
+  credentials; the workflow ran `check_e2e_ref.sh` on the ref);
 - every value the tree supplies (an Application's name and path, a Secret's labels, an image name) is
   checked before it reaches a command line, and `kc`, `kca` and `hc` refuse any argument that would
   choose another cluster or user (`--kubeconfig`, `--context`, `--server`, `--token`, `--as`, `--kube-*`,

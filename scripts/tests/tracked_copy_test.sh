@@ -33,6 +33,17 @@ for f in deploy/k8s/secrets.yaml infra/aws/kubernetes/tfplan deploy/k8s/new.yaml
   [ ! -e "$tmp/out/$f" ] || fail "$f was copied"
 done
 
+# TRACKED_COPY_HEAD=1 reads the HEAD commit, not the working tree: an edit, a deletion, and an edit that
+# `git status` no longer shows (assume-unchanged) are all invisible to it; ignored and untracked files too
+g update-index --assume-unchanged deploy/k8s/a.yaml
+TRACKED_COPY_HEAD=1 tracked_copy "$tmp/t" "$tmp/outh" deploy infra/aws/kubernetes 2>/dev/null || fail "the HEAD copy failed on a plain tree"
+[ "$(cat "$tmp/outh/deploy/k8s/a.yaml")" = "a: 1" ] || fail "the HEAD copy read the working tree's a.yaml"
+[ -f "$tmp/outh/deploy/k8s/gone.yaml" ] || fail "the HEAD copy lacks a committed file deleted in the working tree"
+for f in deploy/k8s/secrets.yaml infra/aws/kubernetes/tfplan deploy/k8s/new.yaml infra/aws/kubernetes/.terraform/x; do
+  [ ! -e "$tmp/outh/$f" ] || fail "the HEAD copy has $f"
+done
+g update-index --no-assume-unchanged deploy/k8s/a.yaml
+
 # a link is refused, a directory that is no checkout is refused, so is a path with no tracked file
 ln -s /etc/hosts "$tmp/t/deploy/k8s/link.yaml"; g add -f deploy/k8s/link.yaml >/dev/null
 if tracked_copy "$tmp/t" "$tmp/out2" deploy >/dev/null 2>&1; then fail "a tracked symbolic link was copied"; fi
