@@ -60,6 +60,25 @@ var kinds = map[string]kindInfo{
 	"PriorityClass":           {"scheduling.k8s.io", "v1", "priorityclasses"},
 	"SubjectAccessReview":     {"authorization.k8s.io", "v1", "subjectaccessreviews"},
 	"EventsK8s":               {"events.k8s.io", "v1", "events"}, // the Event of events.k8s.io; used as ResKind
+	// The rest of what the renders hold. Only P12 matches them (it matches every kind), so they
+	// were skipped as "unmodelled" until P12 made them matter.
+	"HorizontalPodAutoscaler": {"autoscaling", "v2", "horizontalpodautoscalers"},
+	"PodDisruptionBudget":     {"policy", "v1", "poddisruptionbudgets"},
+	"Certificate":             {"cert-manager.io", "v1", "certificates"},
+	"Issuer":                  {"cert-manager.io", "v1", "issuers"},
+	"Binding":                 {"rabbitmq.com", "v1beta1", "bindings"},
+	"Exchange":                {"rabbitmq.com", "v1beta1", "exchanges"},
+	"Permission":              {"rabbitmq.com", "v1beta1", "permissions"},
+	"Policy":                  {"rabbitmq.com", "v1beta1", "policies"},
+	"TopicPermission":         {"rabbitmq.com", "v1beta1", "topicpermissions"},
+	"User":                    {"rabbitmq.com", "v1beta1", "users"},
+	"Vhost":                   {"rabbitmq.com", "v1beta1", "vhosts"},
+	// Negatives only (no render holds them): kinds Argo CD must not reach.
+	"Lease":            {"coordination.k8s.io", "v1", "leases"},
+	"PersistentVolume": {"", "v1", "persistentvolumes"},
+	"StorageClass":     {"storage.k8s.io", "v1", "storageclasses"},
+	"APIService":       {"apiregistration.k8s.io", "v1", "apiservices"},
+	"Node":             {"", "v1", "nodes"},
 }
 
 type compiled struct {
@@ -594,7 +613,12 @@ func printUnmodelled() {
 		ks = append(ks, fmt.Sprintf("%s(%d)", k, n))
 	}
 	sort.Strings(ks)
-	fmt.Println("== kinds of the renders that no policy can match, not evaluated:", strings.Join(ks, " "))
+	// P12 matches every kind, so a kind of the renders that `kinds` does not model is a render that
+	// no policy was evaluated against: a new kind in a render needs a line in `kinds`.
+	if len(ks) > 0 {
+		fmt.Println("FAIL kinds of the renders that `kinds` does not model, so P12 never saw them:", strings.Join(ks, " "))
+		failures++
+	}
 }
 
 func runPositive(c *chart) {

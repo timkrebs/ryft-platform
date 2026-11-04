@@ -127,7 +127,10 @@ func runArgoScope(c *chart) {
 	del("P12 controller deletes a rabbitmq.com CRD", argoCtl, crd("rabbitmqclusters.rabbitmq.com"), r5)
 	crt("P12 controller creates a CRD of another group", argoCtl, set(crd("rabbitmqclusters.rabbitmq.com"), "metadata/name", "certificates.cert-manager.io"), r5)
 	crt("P12 controller creates a CRD named like the group", argoCtl, set(crd("rabbitmqclusters.rabbitmq.com"), "metadata/name", "rabbitmq.com"), r5)
-	crt("P12 controller creates a ClusterIssuer", argoCtl, mk("cert-manager.io/v1", "ClusterIssuer", "", "x"), r5)
+	// (a spec, so that the CRD's schema accepts it: it is emitted as the rule 5 fixture of the kind run)
+	issuer := mk("cert-manager.io/v1", "ClusterIssuer", "", "x")
+	issuer["spec"] = map[string]any{"selfSigned": map[string]any{}}
+	crt("P12 controller creates a ClusterIssuer", argoCtl, issuer, r5)
 	crt("P12 controller creates a PriorityClass", argoCtl, mk("scheduling.k8s.io/v1", "PriorityClass", "", "x"), r5)
 	crt("P12 controller creates a ClusterRoleBinding without the prefix", argoCtl, set(find("ClusterRoleBinding", "", "messaging-topology-metrics-auth-rolebinding"), "metadata/name", "evil"), r5)
 	crt("P12 controller creates a ClusterRoleBinding of the operators", argoCtl, find("ClusterRoleBinding", "", "messaging-topology-metrics-auth-rolebinding"))
@@ -158,6 +161,58 @@ func runArgoScope(c *chart) {
 		Obj: map[string]any{"apiVersion": "v1", "kind": "PodExecOptions", "command": []any{"sh"}}}, r1)
 	raw("P12 server execs into a Pod", Req{User: argoSrv, Op: "CONNECT", Sub: "exec", ResKind: "Pod", Ns: "ryft-api", Name: "api-abc12"}, r1)
 	raw("P12 the admin execs into a Pod", Req{User: admin, Op: "CONNECT", Sub: "exec", ResKind: "Pod", Ns: "ryft-api", Name: "api-abc12"})
+
+	evict := map[string]any{"apiVersion": "policy/v1", "kind": "Eviction", "metadata": map[string]any{"name": "api-abc12", "namespace": "ryft-api"}}
+	raw("P12 controller evicts a Pod in ryft-api", Req{User: argoCtl, Op: "CREATE", Sub: "eviction", ResKind: "Pod", Obj: evict}, r1)
+	raw("P12 server evicts a Pod in ryft-api", Req{User: argoSrv, Op: "CREATE", Sub: "eviction", ResKind: "Pod", Obj: evict}, r1)
+	raw("P12 the admin evicts a Pod in ryft-api", Req{User: admin, Op: "CREATE", Sub: "eviction", ResKind: "Pod", Obj: evict})
+	raw("P12 controller proxies to a Node (nodes/proxy, CONNECT)", Req{User: argoCtl, Op: "CONNECT", Sub: "proxy", ResKind: "Node", Name: "ip-10-0-1-1"}, r1)
+	raw("P12 server proxies to a Node (nodes/proxy, CONNECT)", Req{User: argoSrv, Op: "CONNECT", Sub: "proxy", ResKind: "Node", Name: "ip-10-0-1-1"}, r1)
+	raw("P12 the admin proxies to a Node", Req{User: admin, Op: "CONNECT", Sub: "proxy", ResKind: "Node", Name: "ip-10-0-1-1"})
+	raw("P12 controller proxies to a Pod in ryft-api (pods/proxy, CONNECT)", Req{User: argoCtl, Op: "CONNECT", Sub: "proxy", ResKind: "Pod", Ns: "ryft-api", Name: "api-abc12"}, r1)
+	raw("P12 controller attaches to a Pod in ryft-api", Req{User: argoCtl, Op: "CONNECT", Sub: "attach", ResKind: "Pod", Ns: "ryft-api", Name: "api-abc12"}, r1)
+
+	// ---- kinds Argo CD has no business with, namespaced and cluster-scoped (rules 4 and 5)
+	lease := func(ns string) map[string]any {
+		o := mk("coordination.k8s.io/v1", "Lease", ns, "kube-controller-manager")
+		o["spec"] = map[string]any{"holderIdentity": "x"}
+		return o
+	}
+	crt("P12 controller creates a Lease in kube-system", argoCtl, lease("kube-system"), r4)
+	upd("P12 controller updates a Lease in kube-system", argoCtl, lease("kube-system"), r4)
+	del("P12 controller deletes a Lease in kube-system", argoCtl, lease("kube-system"), r4)
+	crt("P12 controller creates a Lease in ryft-api", argoCtl, lease("ryft-api"))
+	crt("P12 server creates a Lease in kube-system", argoSrv, lease("kube-system"), r3)
+	crt("P12 the admin creates a Lease in kube-system", admin, lease("kube-system"))
+	pv := func() map[string]any {
+		o := mk("v1", "PersistentVolume", "", "pv0")
+		o["spec"] = map[string]any{"capacity": map[string]any{"storage": "1Gi"}, "accessModes": []any{"ReadWriteOnce"}, "hostPath": map[string]any{"path": "/"}}
+		return o
+	}
+	sc := func() map[string]any {
+		o := mk("storage.k8s.io/v1", "StorageClass", "", "gp3")
+		o["provisioner"] = "ebs.csi.aws.com"
+		return o
+	}
+	apisvc := func() map[string]any {
+		o := mk("apiregistration.k8s.io/v1", "APIService", "", "v1beta1.metrics.k8s.io")
+		o["spec"] = map[string]any{"group": "metrics.k8s.io", "version": "v1beta1", "groupPriorityMinimum": float64(100), "versionPriority": float64(100),
+			"service": map[string]any{"name": "evil", "namespace": "argocd"}}
+		return o
+	}
+	crt("P12 controller creates a PersistentVolume", argoCtl, pv(), r5)
+	upd("P12 controller updates a PersistentVolume", argoCtl, pv(), r5)
+	del("P12 controller deletes a PersistentVolume", argoCtl, pv(), r5)
+	crt("P12 controller creates a StorageClass", argoCtl, sc(), r5)
+	upd("P12 controller updates a StorageClass", argoCtl, sc(), r5)
+	crt("P12 controller creates an APIService", argoCtl, apisvc(), r5)
+	upd("P12 controller updates an APIService", argoCtl, apisvc(), r5)
+	del("P12 controller deletes an APIService", argoCtl, apisvc(), r5)
+	crt("P12 server creates a PersistentVolume", argoSrv, pv(), r3)
+	crt("P12 server creates an APIService", argoSrv, apisvc(), r3)
+	crt("P12 the admin creates a PersistentVolume", admin, pv())
+	crt("P12 the admin creates a StorageClass", admin, sc())
+	crt("P12 the admin creates an APIService", admin, apisvc())
 
 	// ---- the server (rule 3)
 	crt("P12 server creates an Application in argocd", argoSrv, app("vault-api"))
@@ -245,7 +300,9 @@ func runArgoScope(c *chart) {
 	// ---- fields that are absent: no namespace (cluster-scoped), no name (generateName), no
 	// subresource, no object (DELETE, CONNECT), no oldObject (CREATE). Every one is an admit or a
 	// refusal with P12's message, never a CEL error (report fails a case on an error).
-	crt("P12 controller creates a ConfigMap with a generateName in cert-manager", argoCtl,
+	// (named so that it sorts after "P12 controller creates a Deployment in cert-manager": the emitter
+	// takes the first case by name for rule 4, and the design wants the Deployment as the fixture)
+	crt("P12 controller creates a generateName ConfigMap in cert-manager", argoCtl,
 		func() map[string]any {
 			o := cm("cert-manager", "")
 			delete(o["metadata"].(map[string]any), "name")

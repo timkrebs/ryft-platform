@@ -23,6 +23,10 @@ import (
 //	# message: <the refusal, as in testdata/messages.golden>
 //	<the object>
 //
+// A refusal that only cases with several refusing bindings pin (P12 overlaps P1, P6 and P7 by
+// design) is emitted from the first such case by name, with one refused-by/message pair per binding:
+// in Deny the API server reports one of them, in Audit every one warns (scripts/lib/admission_lib.sh).
+//
 // One refused fixture per rule, from the same cases the harness pins: the kind run asks the real
 // API server whether it agrees. UPDATE, DELETE and subresource cases are not emitted (the kind
 // runner has hand-written fixtures for those, infra/aws/kubernetes/admission-e2e/fixtures/manual).
@@ -52,6 +56,12 @@ var notEmitted = map[string]string{
 	"P2 image volume":                                    "the volume mount names a volume the case replaced",
 	"P2 projected token":                                 "the volume mount names a volume the case replaced",
 	"P6 crd of another group":                            "a CRD's name must be its plural.group",
+	// P12: the API server validates the object before it asks admission.
+	"P12 controller creates a CRD named like the group": "a CRD's name must be its plural.group (rabbitmq.com is not)",
+	"P12 controller creates a CRD of another group":     "a CRD's name must be its plural.group",
+	"P12 controller creates an APIService":              "an APIService needs a caBundle or insecureSkipTLSVerify",
+	"P12 server creates an APIService":                  "an APIService needs a caBundle or insecureSkipTLSVerify",
+	"P12 controller creates an ApplicationSet":          "ApplicationSet needs generators and a template",
 	// The broker's NetworkPolicy carries the open 443 egress rule the committed values admit
 	// (brokerEgressPublic); the kind run's Deny variant closes it (the chart's guard), so the
 	// object would be refused for that rule first.
@@ -71,10 +81,16 @@ func maybeEmit(name string, r Req, res []Result) {
 	if _, bad := notEmitted[name]; bad || opensBrokerEgress(r.Obj) {
 		return
 	}
-	// Exactly one failing validation: the API server reports the first one it finds, so an object
-	// that breaks two rules would make the message to look for ambiguous.
-	if len(res) != 1 || res[0].Action != "deny" {
-		return
+	// One failing validation per binding, and no CEL error: the API server reports the first one it
+	// finds, so an object that breaks two rules of one policy would make the message to look for
+	// ambiguous. Several bindings may refuse the object (P12 overlaps P1, P6 and P7 by design); such a
+	// case is emitted only for a refusal no single-binding case covers (see writeFixtures).
+	seenBinding := map[string]bool{}
+	for _, x := range res {
+		if x.Action != "deny" || seenBinding[x.Binding] {
+			return
+		}
+		seenBinding[x.Binding] = true
 	}
 	emitted = append(emitted, emitCase{name: name, req: Req{User: r.User, Op: r.Op, Obj: deepCopy(r.Obj)}, res: res})
 }
@@ -118,16 +134,56 @@ func writeFixtures() {
 	must(os.RemoveAll(dir))
 	must(os.MkdirAll(dir, 0o755))
 	sort.Slice(emitted, func(i, j int) bool { return emitted[i].name < emitted[j].name })
-	seen := map[string]bool{}
-	count := map[string]int{}
-	for _, e := range emitted {
-		binding := e.res[0].Binding
-		msg := e.res[0].Messages[0]
-		key := binding + "|" + msg
-		if seen[key] {
+	// A refusal is a pair of binding and message. Pass 1: the first case by name that a single
+	// binding refuses, per pair. Pass 2: a case that several bindings refuse is emitted when it
+	// holds a pair no single-binding case covers (the first such case by name); its fixture lists
+	// every binding with its message, and is named after the first uncovered one.
+	type pair struct{ binding, msg string }
+	pairsOf := func(e emitCase) []pair {
+		var ps []pair
+		for _, x := range e.res {
+			ps = append(ps, pair{x.Binding, oneLine(x.Messages[0])})
+		}
+		sort.Slice(ps, func(i, j int) bool { return ps[i].binding < ps[j].binding })
+		return ps
+	}
+	covered := map[pair]bool{}
+	primary := map[int]string{}
+	for i, e := range emitted {
+		if len(e.res) != 1 {
 			continue
 		}
-		seen[key] = true
+		if p := pairsOf(e)[0]; !covered[p] {
+			covered[p] = true
+			primary[i] = p.binding
+		}
+	}
+	for i, e := range emitted {
+		if len(e.res) < 2 {
+			continue
+		}
+		fresh := ""
+		for _, p := range pairsOf(e) {
+			if !covered[p] && fresh == "" {
+				fresh = p.binding
+			}
+		}
+		if fresh == "" {
+			continue
+		}
+		for _, p := range pairsOf(e) {
+			covered[p] = true
+		}
+		primary[i] = fresh
+	}
+	count := map[string]int{}
+	written := 0
+	for i, e := range emitted {
+		binding, ok := primary[i]
+		if !ok {
+			continue
+		}
+		written++
 		count[binding]++
 		slug := strings.Trim(slugRE.ReplaceAllString(strings.ToLower(e.name), "-"), "-")
 		if len(slug) > 60 {
@@ -138,11 +194,14 @@ func writeFixtures() {
 		must(err)
 		body = pinRE.ReplaceAll(body, []byte("${1}:0000000"))
 		var b strings.Builder
-		fmt.Fprintf(&b, "# fixture: %s\n# op: create\n# as: %s\n# refused-by: %s\n# message: %s\n", e.name, e.req.User, binding, oneLine(msg))
+		fmt.Fprintf(&b, "# fixture: %s\n# op: create\n# as: %s\n", e.name, e.req.User)
+		for _, p := range pairsOf(e) {
+			fmt.Fprintf(&b, "# refused-by: %s\n# message: %s\n", p.binding, p.msg)
+		}
 		b.Write(body)
 		must(os.WriteFile(file, []byte(b.String()), 0o644))
 	}
-	fmt.Printf("fixtures written: %d files in %s\n", len(seen), dir)
+	fmt.Printf("fixtures written: %d files in %s\n", written, dir)
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
