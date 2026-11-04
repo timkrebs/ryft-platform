@@ -287,284 +287,41 @@ func (e *Engine) scoreDay(ctx context.Context, userID uuid.UUID, day string) (bo
 }
 
 // computeDay scores one day and reports whether its history inputs changed
-// (store.ScoreWrite.InputsChanged).
+// (store.ScoreWrite.InputsChanged). Its steps (compute_steps.go) run as
+// docs/SCORING.md reads: the night, the baselines from the stored days before
+// it, the sleep need, recovery, the day's strain with its workouts and
+// strength sessions, steps and energy, then the row. One source is picked per
+// night (loadNight) and per hour of heart rate, steps and energy (strain,
+// activity), SCORING.md → Several sources. The store reads and writes keep
+// this order: the golden files score every month twice (D149) and the
+// strength pass must follow the duplicate pass (strain).
 func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (bool, error) {
-	user, loc, err := e.st.GetUser(ctx, userID)
+	user, loc, err := e.admitted(ctx, userID)
 	if err != nil {
 		return false, err
 	}
-	if !e.Admits(user) {
-		return false, ErrNoConsent
-	}
-	if user.Consent == nil && e.consent == config.ModeWarn {
-		metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(config.ModeWarn), "scoring").Inc()
-	}
-	d, err := time.ParseInLocation("2006-01-02", day, loc)
+	d, err := time.ParseInLocation(dayLayout, day, loc)
 	if err != nil {
 		return false, fmt.Errorf("bad day %q: %w", day, err)
 	}
-	dayStart, dayEnd := d, d.AddDate(0, 0, 1)
-	nightFrom, nightTo := NightWindow(d)
-
-	// ---- sleep -------------------------------------------------------------
-	// Yesterday's naps lower last night's need (D66), so both days' sleep.
-	from, _ := DaySleepWindow(d.AddDate(0, 0, -1))
-	_, to := DaySleepWindow(d)
-	segs, err := e.st.SleepEndingBetween(ctx, userID, from, to)
-	if err != nil {
+	p := dayScore{day: day, loc: loc}
+	if p.night, err = e.loadNight(ctx, userID, d); err != nil {
 		return false, err
 	}
-	nightSegs, napMin := SplitDay(segs, d)
-	_, napYesterday := SplitDay(segs, d.AddDate(0, 0, -1))
-	sleep := SummarizeSleep(nightSegs)
-
-	hrvFrom, hrvTo := nightFrom, nightTo
-	if !sleep.Start.IsZero() {
-		hrvFrom, hrvTo = sleep.Start.Add(-1*time.Hour), sleep.End.Add(2*time.Hour)
-	}
-
-	// ---- overnight physiology ------------------------------------------------
-	hrv := e.mean(ctx, userID, model.SampleHRVSDNN, hrvFrom, hrvTo)
-	resp := e.mean(ctx, userID, model.SampleRespiratoryRate, hrvFrom, hrvTo)
-	spo2 := e.mean(ctx, userID, model.SampleSpO2, hrvFrom, hrvTo)
-	rhr := e.last(ctx, userID, model.SampleRestingHR, dayStart, dayEnd)
-	if rhr == nil {
-		rhr = e.last(ctx, userID, model.SampleRestingHR, dayStart.AddDate(0, 0, -1), dayStart)
-	}
-
-	// ---- baselines from history --------------------------------------------
 	hist, err := e.st.ScoreHistory(ctx, userID, day, baselineDays)
 	if err != nil {
 		return false, err
 	}
-	var lnHRV, rhrs, resps []float64
-	var yesterdayStrain float64
-	var window int // the days in hist with any data: calibrating_reason's W
-	yesterday := dayStart.AddDate(0, 0, -1).Format("2006-01-02")
-	// Consistency: the last 7 nights, this one included.
-	firstNight := dayStart.AddDate(0, 0, -(consistencyDays - 1)).Format("2006-01-02")
-	var bedtimes []Bedtime
-	if sleep.AsleepMin > 0 {
-		bedtimes = append(bedtimes, Bedtime{Bed: sleep.Start, Wake: sleep.End})
-	}
-	for _, h := range hist {
-		if h.Day >= firstNight && h.SleepStart != nil && h.SleepEnd != nil {
-			bedtimes = append(bedtimes, Bedtime{Bed: *h.SleepStart, Wake: *h.SleepEnd})
-		}
-		if h.HRV != nil && *h.HRV > 0 {
-			lnHRV = append(lnHRV, math.Log(*h.HRV))
-		}
-		if h.RHR != nil && *h.RHR > 0 {
-			rhrs = append(rhrs, *h.RHR)
-		}
-		if h.RespRate != nil && *h.RespRate > 0 {
-			resps = append(resps, *h.RespRate)
-		}
-		if h.Day == yesterday && h.Strain != nil {
-			yesterdayStrain = *h.Strain
-		}
-		if h.HasData {
-			window++
-		}
-	}
-	debt := SleepDebtFrom(hist)
-	parts := SleepNeedParts(user.SleepBaseMin, yesterdayStrain, debt, napYesterday)
-	need := parts.Total()
-
-	var sleepPerf, quality *int
-	if sleep.AsleepMin > 0 {
-		p := SleepPerformance(sleep.AsleepMin, need)
-		q, _ := NightQuality(sleep.AsleepMin, InBedMinutes(sleep), sleep.DeepMin, sleep.REMMin, sleep.HasStages, p)
-		sleepPerf, quality = &p, &q
-	}
-	var consistency *int
-	if c, ok := SleepConsistency(bedtimes, loc); ok {
-		consistency = &c
-	}
-
-	lnHRVBase, rhrBase := NewBaseline(lnHRV, fallbackSDlnHRV), NewBaseline(rhrs, fallbackSDRHR)
-	rec := Recovery(RecoveryInputs{
-		HRVms: hrv, RHR: rhr, RespRate: resp,
-		LnHRVBase:        lnHRVBase,
-		RHRBase:          rhrBase,
-		RespBase:         NewBaseline(resps, fallbackSDResp),
-		SleepPerformance: sleepPerf,
-	})
-
-	// ---- strain ------------------------------------------------------------------
-	strainRHR := 60.0
-	if rhr != nil {
-		strainRHR = *rhr
-	} else if len(rhrs) > 0 {
-		strainRHR = rhrBase.Mean
-	}
-	maxHR := float64(user.MaxHR)
-
-	hrSamples, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, dayStart, dayEnd)
-	if err != nil {
+	p.base = baselines(hist, p.night.sleep, d)
+	p.sleep = sleepNeed(user.SleepBaseMin, hist, p.base, p.night, loc)
+	p.rec = recoveryOf(p.night, p.base, p.sleep.performance)
+	if p.strain, err = e.strain(ctx, userID, day, d, strainRHR(p.night.rhr, p.base), float64(user.MaxHR)); err != nil {
 		return false, err
 	}
-	strain := Strain(hrPoints(DedupSources(hrSamples)), strainRHR, maxHR)
-
-	// Cross-source duplicates before the sessions: a session attaches to a
-	// workout the user sees, so the hiding must be decided first. Day strain
-	// above is unaffected (de-duplicated heart rate).
-	dups, err := e.workoutDuplicates(ctx, userID, day, dayStart, dayEnd)
-	if err != nil {
-		return false, fmt.Errorf("workout duplicates: %w", err)
-	}
-
-	// Strength sessions next: they may create the workouts the loop below scores.
-	strength, err := e.strength(ctx, userID, dayStart, dayEnd)
-	if err != nil {
-		return false, fmt.Errorf("strength: %w", err)
-	}
-
-	// Every workout of the day, hidden duplicates included: each keeps a load
-	// from its own window (GET /v1/workouts/{id} still answers for a hidden one).
-	workouts, err := e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd)
-	if err != nil {
+	if p.steps, p.kcal, err = e.activity(ctx, userID, d); err != nil {
 		return false, err
 	}
-	for _, w := range workouts {
-		// Each workout loads its own window rather than filtering the day's
-		// samples (D22): a 23:20–00:40 run must count its minutes after midnight too,
-		// and match the curve GET /v1/workouts/{id} draws (same whole-hour
-		// window, same source per hour).
-		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))
-		around, err := e.st.SamplesBetween(ctx, userID, model.SampleHeartRate, from, to)
-		if err != nil {
-			return false, err
-		}
-		var load StrainResult
-		inWindow := hrPoints(WorkoutSamples(w, around))
-		if len(inWindow) >= 2 {
-			load = Strain(inWindow, strainRHR, maxHR)
-		} else if w.AvgHR != nil {
-			load = LoadFromAverage(*w.AvgHR, strainRHR, maxHR, w.End.Sub(w.Start))
-		}
-		if err := e.st.SetWorkoutLoad(ctx, userID, w.ID, strainOf(load, w), load.TRIMP, load.ZoneMinutes, ModelVersion); err != nil {
-			return false, err
-		}
-	}
-
-	// ---- activity ----------------------------------------------------------------
-	steps, err := e.dayTotal(ctx, userID, model.SampleSteps, dayStart, dayEnd)
-	if err != nil {
-		return false, err
-	}
-	kcal, err := e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd)
-	if err != nil {
-		return false, err
-	}
-
-	// ---- persist -----------------------------------------------------------------
-	var recovery *int
-	if rec.Score > 0 {
-		recovery = &rec.Score
-	}
-	// Readiness needs a recovery score; without a night of sleep it falls back
-	// to recovery alone (the sleep weight renormalises away, as in Recovery).
-	var readiness *int
-	var readinessPenalty int
-	if recovery != nil {
-		sp := *recovery
-		if sleepPerf != nil {
-			sp = *sleepPerf
-		}
-		r := Readiness(*recovery, sp, yesterdayStrain)
-		readiness = &r
-		readinessPenalty = ReadinessPenalty(*recovery, yesterdayStrain)
-	}
-	state := ReadinessState(readiness, rec.Calibrating)
-
-	var strainScore *float64
-	var load store.DayLoad
-	if strain.Minutes > 0 {
-		strainScore = &strain.Score
-		trimp, hrMin := strain.TRIMP, int(math.Round(strain.Minutes))
-		load = store.DayLoad{TRIMP: &trimp, HRMin: &hrMin, ZoneMinutes: strain.ZoneMinutes[:]}
-	}
-	// Muscular load joins the heart-rate TRIMP before the compression, so a day
-	// with only a logged session has a strain too (SCORING.md → Strength).
-	if strength.TRIMP > 0 {
-		s, m := StrainFromTRIMP(strain.TRIMP+strength.TRIMP), strength.TRIMP
-		strainScore, load.MuscularTRIMP = &s, &m
-	}
-	var actual *int
-	if sleep.AsleepMin > 0 {
-		actual = &sleep.AsleepMin
-	}
-	details := map[string]any{
-		"recovery":          rec.Components,
-		"trimp":             math.Round(strain.TRIMP),
-		"hr_minutes":        math.Round(strain.Minutes),
-		"zone_minutes":      strain.ZoneMinutes,
-		"sleep_stages":      map[string]int{"deep": sleep.DeepMin, "rem": sleep.REMMin, "core": sleep.CoreMin, "awake": sleep.AwakeMin, "inbed": sleep.InBedMin},
-		"sleep_has_stages":  sleep.HasStages,
-		"yesterday_strain":  yesterdayStrain,
-		"readiness_penalty": readinessPenalty,
-		"baseline_days":     len(lnHRV),
-		"workouts":          visibleCount(workouts, dups),
-		"muscular_trimp":    math.Round(strength.TRIMP),
-		"strength_week":     strength.Week,
-	}
-	if !sleep.Start.IsZero() {
-		details["sleep_start"] = sleep.Start.In(loc).Format(time.RFC3339)
-		details["sleep_end"] = sleep.End.In(loc).Format(time.RFC3339)
-	}
-
-	var night store.SleepNight
-	if sleep.AsleepMin > 0 {
-		start, end, inBed := sleep.Start.UTC(), sleep.End.UTC(), InBedMinutes(sleep)
-		night = store.SleepNight{Day: day, Start: &start, End: &end, TotalMin: &sleep.AsleepMin,
-			InBedMin: &inBed, DeepMin: &sleep.DeepMin, LightMin: &sleep.CoreMin, REMMin: &sleep.REMMin,
-			AwakeMin: &sleep.AwakeMin, HasStages: sleep.HasStages, Performance: sleepPerf}
-	}
-
-	hrvBaseline, rhrBaseline := HRVBaselineMS(lnHRVBase), RHRBaseline(rhrBase)
-	version := ModelVersion
-	// The counts behind baseline_days, and why the day calibrates. The window is
-	// the stored rows the baselines were drawn from that hold any data, not the
-	// nights with a value: a phone-only month is 30 days of steps without an
-	// HRV; a new account has none, even after a range stored empty days for it.
-	// The day's own signals count too: the first night of a new source is not
-	// "no HRV".
-	hrvDays, rhrDays := lnHRVBase.N, rhrBase.N
-	var reason *string
-	if r := CalibratingReason(Calibration{Window: window, HRVDays: hrvDays, RHRDays: rhrDays,
-		DayHRV: hrv != nil && *hrv > 0, DayRHR: rhr != nil && *rhr > 0}); r != "" {
-		reason = &r
-	}
-
-	row := model.DailyScore{
-		Day: day, Readiness: readiness, State: state, Recovery: recovery, Strain: strainScore, Steps: steps, ActiveKcal: kcal,
-		SleepPerformance: sleepPerf,
-		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &debt,
-		HRVms: hrv, RHR: rhr, RespRate: resp, SpO2: spo2, HRVBaselineMS: hrvBaseline, RHRBaseline: rhrBaseline,
-		BaselineDays: min(hrvDays, rhrDays), BaselineHRVDays: &hrvDays, BaselineRHRDays: &rhrDays,
-		Calibrating: rec.Calibrating, CalibratingReason: reason, Details: details,
-		SleepNeedBaseMin: &parts.Base, SleepNeedStrainMin: &parts.Strain, SleepNeedDebtMin: &parts.Debt,
-		SleepNeedNapMin: &parts.Nap, NapMin: &napMin, SleepQuality: quality, SleepConsistency: consistency,
-		ModelVersion: &version,
-	}
-	if strength.Sessions > 0 {
-		minutes, volume := strength.Minutes, math.Round(strength.VolumeKG*10)/10
-		row.StrengthMin, row.VolumeKG = &minutes, &volume
-	}
-	written, err := e.st.UpsertDailyScore(ctx, userID, store.ScoreRow{DailyScore: row, Sleep: night, Load: load})
-	if err != nil {
-		return false, err
-	}
-	if written.FirstRecovery && sleep.AsleepMin > 0 && e.onScored != nil && day == time.Now().In(loc).Format("2006-01-02") {
-		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: day, Recovery: *recovery, Readiness: readiness,
-			State: state, SleepPerformance: sleepPerf, SleepMin: sleep.AsleepMin})
-	}
-	// Which day, by which model, and whether it moves the days after it: no
-	// score, input or state (docs/OPERATIONS.md → Data protection (logs)). The
-	// values are in daily_scores and the admin view, the counts in the metrics.
-	e.log.InfoContext(ctx, "scored day", "day", day, "model_version", version, "inputs_changed", written.InputsChanged)
-	return written.InputsChanged, nil
+	return e.persist(ctx, userID, p)
 }
 
 func hrPoints(samples []model.Sample) []HRPoint {

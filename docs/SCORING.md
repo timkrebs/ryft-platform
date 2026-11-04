@@ -413,7 +413,7 @@ import skips a file workout that overlaps a session logged in RYFT (it has them 
 ## Sleep (M4)
 
 Code: `internal/scoring/sleep.go` (pure, tested in `sleep_upgrades_test.go`),
-`compute.go` (the day pass), `learn.go` (the weekly estimate). Decisions: D65–D68.
+`compute.go` and `compute_steps.go` (the day pass), `learn.go` (the weekly estimate). Decisions: D65–D68.
 
 **The night and the naps.** Day D's night window is D−1 20:00 to D 13:00 local (as
 before); its segments come from one source (`DedupSleepSources`). They are grouped into
