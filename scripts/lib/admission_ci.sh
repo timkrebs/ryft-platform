@@ -10,7 +10,7 @@ adm_baseline() {
   if kc apply -f "$REPO/deploy/argocd/project.yaml" -f "$REPO/deploy/argocd/root.yaml" -f "$REPO/deploy/argocd/apps/" >"$WORK/log/baseline.out" 2>&1 \
     && kc apply -f "$FIXTURE_DIR/baseline/objects.yaml" >>"$WORK/log/baseline.out" 2>&1 \
     && kc -n argocd patch application vault-smoke --type merge -p '{"operation":{"sync":{"revision":"main"}}}' >>"$WORK/log/baseline.out" 2>&1; then
-    rec "baseline" PASS "projects, root, $(adm_apps | wc -l | tr -d ' ') applications, default-deny and a repository Secret applied by the admin before the policies"
+    rec "baseline" PASS "projects, root, $(adm_apps | wc -l | tr -d ' ') applications, default-deny, a repository Secret and P12's stand-ins (argocd-cm, argocd-rbac-cm, argocd-secret without server.secretkey, Deployment argocd-server, a scale target in ryft-api, a hook Job in ryft-migrate) applied by the admin before the policies"
   else
     rec "baseline" FAIL "$(tail -3 "$WORK/log/baseline.out")"
   fi
@@ -42,6 +42,7 @@ adm_ci_checks() {
   adm_dryrun_apps audit
   adm_fixtures audit generated "$FIXTURE_DIR/generated"
   adm_fixtures audit manual "$FIXTURE_DIR/manual"
+  adm_argo_scope_secretkey audit
   adm_claim_d
   endgroup
   group "policies in Deny (every binding)"
@@ -49,6 +50,7 @@ adm_ci_checks() {
   adm_dryrun_apps deny
   adm_fixtures deny generated "$FIXTURE_DIR/generated"
   adm_fixtures deny manual "$FIXTURE_DIR/manual"
+  adm_argo_scope_secretkey deny
   adm_claim_a
   adm_claim_b
   adm_claim_c

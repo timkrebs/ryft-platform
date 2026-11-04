@@ -4,12 +4,14 @@
 #   --mode ci    (CI's `admission` job; about 5 minutes) a kind cluster at EKS's minor, the CRDs of
 #                the add-ons and of Argo CD, the namespaces with their labels, the chart installed
 #                twice (the committed values: Audit; every binding Deny), every Application's render
-#                dry-run applied as Argo CD's controller, one refused fixture per rule, status.typeChecking
-#                of every policy, claims a, b, c, d and h (the negative test of T12-f).
-#   --mode full  (make admission-e2e; the manual workflow; about 25 minutes) the above, plus the real
+#                dry-run applied as Argo CD's controller (P12 judges every one), one refused fixture per
+#                rule, status.typeChecking of every policy (P12's is empty), claims a, b, c, d and h (the
+#                negative test of T12-f), P12's first-key exemption on a stand-in argocd-secret.
+#   --mode full  (make admission-e2e; the manual workflow; about 30 minutes) the above, plus the real
 #                stack: cert-manager, Argo CD from argocd.tf's values with T12-f's RBAC, the operators
 #                and the broker synced by Argo CD from this tree, hooks, terminate-op, the broker restart
-#                of D98, the operators' reach, claims i, k and m. See scripts/lib/admission_full.sh.
+#                of D98, the operators' reach, a restart and a chart upgrade of Argo CD and an access
+#                review under P12 in Deny, claims i, k, m, n, o and p. See scripts/lib/admission_full.sh.
 #
 #   scripts/admission_e2e.sh [--mode ci|full] [--repo DIR] [--force] [--summary FILE] [--keep]
 #                            [--kubeconfig FILE] [--argocd-values FILE]

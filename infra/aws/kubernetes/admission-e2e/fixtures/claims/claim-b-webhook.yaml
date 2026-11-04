@@ -1,5 +1,8 @@
 # Claims b and c (scripts/lib/admission_lib.sh runs them from adm_claim_b and adm_claim_c, not with
 # the other fixtures). Same header format as manual/argo-cd.yaml.
+# The name is one of the operators' four (P12 admits the controller's write of those names; any other
+# name is refused by P12 as well as by P6, and the API server names only one of two refusals): the
+# content is what P6 refuses, so P6 alone answers.
 # fixture: claim b: a webhook configuration written by the application controller
 # op: create
 # as: system:serviceaccount:argocd:argocd-application-controller
@@ -8,7 +11,7 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: claim-b-not-an-operator
+  name: cluster-operator-validating-webhook-configuration
 webhooks:
   - name: claim-b.example.com
     admissionReviewVersions: ["v1"]

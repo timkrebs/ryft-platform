@@ -744,12 +744,26 @@ holds and privacy-version literals; any doubt, and a base without the script, ru
    offline), its two ClusterRoles compared with the rules of the values and checked against T12-f's list.
 5. The chart in Audit (the committed values) and in Deny (every binding, `brokerEgressPublic: false`).
    After each install the API server must hold exactly the policies and bindings `helm template`
-   renders with the same values (11 and 12 today; nothing is accepted on an empty answer), every policy
-   must be type-checked without warnings, and a canary fixture must be answered as the variant says
-   (polled for 30 s). Then every Application's render (and the projects and the root) dry-run applied
-   server-side as Argo CD's controller (every app must give at least one object); one refused fixture
-   per rule (Deny), the same fixtures passing with the rule's message as a warning (Audit); claims a, b, c,
-   d and the negative test of claim h.
+   renders with the same values (12 and 13 today; nothing is accepted on an empty answer), every policy
+   must be type-checked without warnings (P12's `status.typeChecking` is read back on its own: it matches
+   `resources: ["*/*"]`, `scope: "*"`, so it is expected to be present and empty), and a canary fixture
+   must be answered as the variant says (polled for 30 s). Then every Application's render (and the
+   projects and the root) dry-run applied server-side as Argo CD's controller (every app must give at
+   least one object; today 218 objects, 213 as the controller and 5 as the admin, and **no refusal and no
+   warning of `ryft-argo-scope`**, in Audit and in Deny); one refused fixture per rule (Deny), the same
+   fixtures passing with the rule's message as a warning (Audit). A request that several bindings refuse
+   (P12 overlaps P1, P6 and P7 by design) lists a `refused-by`/`message` pair per binding: in Deny the API
+   server names one of them (the order is not fixed), in Audit every one warns. P12's own fixtures are
+   the generated ones (a Deployment in `cert-manager` as the controller; a lookalike of the controller; the
+   server creating a CRD; the controller creating a ClusterIssuer) and `manual/argo-scope.yaml` (the
+   controller patches `argocd-cm` and `argocd-rbac-cm`; the server patches `argocd-rbac-cm`,
+   `argocd-secret` and the `argocd-server` image; deletes of `kube-system/coredns` and Namespace
+   `rabbitmq-system`; `deployments/scale`; `kube-system/aws-auth`; a hook Job delete, the chart's
+   `redis-secret-init` and the admin's Deployment in `cert-manager`, all admitted), on stand-ins of the
+   baseline (`argocd-cm`, `argocd-rbac-cm`, `argocd-secret` without `server.secretkey`, a Deployment
+   `argocd-server`). `server.secretkey` is added for real as the server (admitted), then a change and a
+   removal are refused (Deny) or warned about (Audit), and the admin removes it. Claims a, b, c, d and the
+   negative test of claim h; exec as the controller on claim c's Pod (refused by P12 rule 1).
 
 **By hand: `make admission-e2e REPO=<path>`** (or Actions -> `admission-e2e` -> Run workflow, with the
 branch or commit as `ref`, dispatched from that branch). About 25 minutes, 6 GB of memory. It creates its
@@ -835,7 +849,12 @@ in Audit while the tree lacks what it needs: `operators-cluster` without T12-g, 
 and a manual `argocd app sync` of every app through argocd-server; the hooks again; the broker's
 `rollout restart` (D98); `argocd app sync --async` then `terminate-op` (and what argocd-server writes
 as the sync's revision, claim k); the operators' logs (no `forbidden`, since the stage began), the
-topology Ready, `kubectl auth can-i` for both operator service accounts; claim i (`respectRBAC: strict`
+topology Ready, `kubectl auth can-i` for both operator service accounts; then, with P12 in Deny, a
+`kubectl -n argocd rollout restart` of argocd-server and the application controller (claim p: the Secret
+`argocd-secret` is not written), a `helm upgrade` of the argocd release with the same values (the
+`redis-secret-init` hook Job) and one access review as the controller (claim o), each followed by every app
+Synced and Healthy again, the findings and P12's own (`claim-n-*`, `full-*-p12`: no warning in the audit
+annotation and no 403 naming `ryft-argo-scope`); claim i (`respectRBAC: strict`
 with no cluster-wide Secrets) and claim m (kube-state-metrics, disproved). Validation failures the API
 server logged during each stage (the audit log of the kind node, grepped there) are listed; one is
 explained only if it has the policy, requester, resource and message of what the tree has not fixed yet
@@ -868,9 +887,18 @@ three workers, Traefik, the Vault auth, the real images, claims f, j and l (D151
   live); the break-glass is not safe, stop. `claim-b` / `claim-c`: P6 does not see webhook
   configurations / P8 does not see `pods/exec`; the design leaned on both. `claim-d`: the audit
   annotation is not on dry runs, so §5's CloudWatch query cannot split them.
-- `chart-install-*`: the API server refused a policy or binding (a CEL compile error, often an EKS minor),
-  or reports other policies and bindings than the chart renders, or none. `typechecking`: a policy has
-  type-check warnings; a warning is a rule that may never fire or may error under `failurePolicy: Fail`.
+- `chart-install-*`: the API server refused a policy or binding (a CEL compile error, often an EKS minor;
+  for `ryft-argo-scope` possibly `resources: ["*/*"]` with `scope: "*"`, which the harness cannot show the
+  API server accepts), or reports other policies and bindings than the chart renders, or none.
+  `typechecking`: a policy has type-check warnings; a warning is a rule that may never fire or may error
+  under `failurePolicy: Fail`. `argo-scope-policy-*`: P12 is not stored as rendered, or its
+  `status.typeChecking` is absent or not empty.
+- `dryrun-*-argo-scope`: an object an app renders is refused or flagged by P12 as the controller: the
+  chart's allowlist is too narrow (a new namespace, a cluster-scoped kind or name, a new Argo CD write):
+  chart first. `argo-scope-secretkey-*`: the first `server.secretkey` was not admitted, or a change or
+  removal of it was. `argo-scope-exec`: P12 does not see CONNECT. `claim-n-*`, `full-*-p12`: a line of
+  `ryft-argo-scope` in the audit log (the first one names requester, verb, resource and name): do not
+  enable P12 in Deny until it is explained. `claim-p`: `argocd-secret` changed during a restart.
   `enforced-*`: the bindings are not answering within 30 s of the install.
 - `dryrun-*`: a render of this tree is refused or flagged, or an app renders nothing. Fix the manifest; if
   the manifest is right the chart is wrong (that is how P10 and P11 were found wrong). `errors` are no
@@ -892,7 +920,7 @@ again each time; the table is in the design too):
 
 | Claim | Result |
 | --- | --- |
-| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 11 policies and 12 bindings |
+| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 12 policies and 13 bindings |
 | b: P6 sees webhook configurations | holds |
 | c: P8 matches CONNECT on `pods/exec` | holds (refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it) |
 | d: dry runs carry `validation_failure` | holds (audit level Metadata; `requestURI` has `dryRun=All`) |
@@ -901,6 +929,9 @@ again each time; the table is in the design too):
 | i: `respectRBAC: strict` without cluster-wide Secrets | holds, **after** one added rule: the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its children for ever (#47 lacks it) |
 | k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D151) |
 | m: kube-state-metrics exports the bindings | **no**: custom-resource-state exports CustomResourceDefinitions only (v2.20.0); T12-e needs another binding-state signal (D151) |
+| n: Argo CD's controller and server write only P12's allowlist | **not yet kind-verified** (the harness evaluates every render against P12; `make admission-e2e` MODE=full is the check: no `ryft-argo-scope` line through the first sync in Audit, and none through sync, hooks, terminate-op, restart and chart upgrade in Deny) |
+| o: `selfsubjectaccessreviews` reach validating admission | **not yet kind-verified** (full mode: the controller's review is admitted by rule 5, the server's is refused by rule 3 only if admission sees reviews) |
+| p: argocd-server writes `argocd-secret` only when `server.secretkey` is absent | **not yet kind-verified** (full mode: a restart under Deny leaves the Secret's resourceVersion unchanged; CI mode: the first key added for real, its change and removal refused) |
 | f, j, l | not tried here (f: a refusal under server-side diff; j: `terraform validate`; l: the VPC) |
 
 **Upgrading it.** The EKS minor: change the node image (tag and index digest) in

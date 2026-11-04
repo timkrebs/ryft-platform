@@ -6,6 +6,8 @@
 # target: namespace ryft-web
 # refused-by: ryft-namespaces
 # message: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 # ----
 # fixture: P1 a Pod Security version label pinned by a patch
 # op: patch

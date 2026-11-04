@@ -14,3 +14,83 @@ metadata:
   namespace: argocd
   labels: { argocd.argoproj.io/secret-type: repository }
 stringData: { url: "https://example.invalid/repo.git" }
+# ---- P12 (manual/argo-scope.yaml): stand-ins for what helm_release.argocd makes and Argo CD's identities
+# must not write. Nothing here runs: the Deployments have no replicas and the Job is suspended. The
+# full mode removes all of it before it installs the real Argo CD (adm_unbaseline).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: argocd-cm, namespace: argocd }
+data: { url: "https://argocd.example.invalid" }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: argocd-rbac-cm, namespace: argocd }
+data: { policy.default: "role:readonly" }
+---
+# argocd-secret WITHOUT server.secretkey: the first key is the one write argocd-server may make to it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-secret
+  namespace: argocd
+  labels: { app.kubernetes.io/part-of: argocd }
+stringData:
+  admin.password: stand-in
+  admin.passwordMtime: "2026-01-01T00:00:00Z"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: argocd-server, namespace: argocd }
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: argocd-server-standin } }
+  template:
+    metadata: { labels: { app: argocd-server-standin } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: server
+          image: registry.k8s.io/pause:3.10
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+---
+# The target of the deployments/scale fixture, in a namespace the controller may write in, so that the
+# subresource rule is the only one that refuses.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: argo-scope-scale-target, namespace: ryft-api }
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: argo-scope-scale-target } }
+  template:
+    metadata: { labels: { app: argo-scope-scale-target } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: target
+          image: registry.k8s.io/pause:3.10
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+---
+# A hook Job as Argo CD leaves it (BeforeHookCreation): the controller deletes it on the next sync. (Not named
+# like a Job of the renders: the dry-runs of the apps must not meet an immutable template.)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: argo-scope-hook
+  namespace: ryft-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  suspend: true
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: migrate
+          image: registry.k8s.io/pause:3.10
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
