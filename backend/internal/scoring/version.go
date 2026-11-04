@@ -15,7 +15,7 @@ import (
 // entry to changelog.json in the same commit, and rescore everyone after the
 // deploy (docs/SCORING.md → Model version, D80). Scoring writes it on every
 // daily_scores row and workout.
-const ModelVersion = "2026.10.2"
+const ModelVersion = "2026.10.3"
 
 //go:embed changelog.json
 var changelogJSON []byte
@@ -39,8 +39,10 @@ func Changelog() ([]ModelChange, error) {
 		return nil, fmt.Errorf("changelog.json: the newest entry must be ModelVersion %s", ModelVersion)
 	}
 	for k, c := range out {
-		if _, err := time.Parse("2006-01-02", c.Date); err != nil || c.SummaryEN == "" || c.SummaryDE == "" || len(c.Affects) == 0 {
-			return nil, fmt.Errorf("changelog.json: entry %s needs a date, both summaries and what it affects", c.Version)
+		// affects may be empty (a version that moves stored numbers but no
+		// trend metric, 2026.10.3), never missing: the app decodes [String].
+		if _, err := time.Parse("2006-01-02", c.Date); err != nil || c.SummaryEN == "" || c.SummaryDE == "" || c.Affects == nil {
+			return nil, fmt.Errorf("changelog.json: entry %s needs a date, both summaries and what it affects ([] for no trend metric)", c.Version)
 		}
 		if k > 0 && (c.Version >= out[k-1].Version || c.Date > out[k-1].Date) {
 			return nil, fmt.Errorf("changelog.json: entries newest first (%s after %s)", c.Version, out[k-1].Version)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
 // Database-level tests of the deletion handle hk_id (migrations 0029, 0030; design D-a):
@@ -261,8 +262,8 @@ func TestMergeAsAPIRoleWithHKIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const pw = "pw-ryft_api-0123456789"
-	if err := db.SetRolePassword(ctx, pool, "ryft_api", pw); err != nil {
+	pw := testsupport.RolePassword("ryft_api")
+	if err := testsupport.WithRoleLock(ctx, func() error { return db.SetRolePassword(ctx, pool, "ryft_api", pw) }); err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(pool.Config().ConnString())

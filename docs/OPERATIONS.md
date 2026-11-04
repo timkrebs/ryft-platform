@@ -1167,7 +1167,9 @@ Where both accounts have the same row (a sample, a device id, a session id, a jo
 day, a custom exercise's slug), the kept account's wins and the other's is counted as
 dropped. A consent and beta access are copied only when the kept account has none.
 Merging the account with more scored days into the smaller one is refused (`409`) unless
-`--force`. A second run answers `404` (from is gone). Afterwards, the person signs in the
+`--force`. A second run answers `404` (from is gone). **After the merge, fold the target's
+workouts**: both accounts may have held copies of one workout under different ids
+(`fold-workouts -user <to>`, "Fold duplicate workouts" below; dry-run first). Afterwards, the person signs in the
 way the kept account uses; if both identities should open it, they link Apple to the
 email account in the app (Supabase **manual linking**, `SUPABASE.md`).
 
@@ -1177,6 +1179,61 @@ sessions and plans with the ids they have; an import of the same file into the k
 would derive other ids and store that history a second time. So after a merge the person must
 not import the same file again: tell them when you merge. A server-held import namespace that
 the merge carries over is an open point (D141).
+
+## Fold duplicate workouts
+
+What it does: `ingest fold-workouts` removes the extra copies of one workout that were
+uploaded before the app sent deletions (D-c, `docs/work/2026-10-31-data-quality/design.md`).
+Two workouts of one user are one when they have the same `source` and `activity` and both
+their starts and their ends are within 120 s and they overlap by at least half of the
+shorter one. Per group it keeps the most recently
+uploaded id (`created_at`, ties to the higher id) and **deletes the rest**. `ryft-session`
+workouts are never touched, and users without a current consent are skipped (counted in the
+summary). A Train session on a removed copy stays; scoring attaches it to the kept workout
+when the day is rescored. The days of the removed rows (and the day after, and the day
+before when a session was attached) are queued and one `ingested` event per user goes
+through the outbox, so the running ingest relays it and scoring rescores them. New syncs
+fold on their own; this is for what is already stored.
+
+**It cannot be undone** by this tool. The recovery path is Supabase's own backup (7 days;
+`Backups`). A copy folded under that rule (120 s at both ends, at least half overlap) is near-identical
+to it, so what is lost is a duplicate row, not a workout. There is deliberately no export
+step: health rows on a laptop would outlive the retention, and the ids of a dry run can
+differ from the real run's if a sync lands between them.
+
+Flags only; any other argument exits 2 without doing anything. A real run needs either
+`-user <uuid>` (one account) or `-all` (every account); `-dry-run` over everyone needs
+neither.
+
+```bash
+# 1. Dry run for one account, then for everyone. Reads only; no lock, no queue, no event.
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -user <uuid> -dry-run
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -dry-run
+```
+
+It prints one line per group, `user=<uuid> day=<yyyy-mm-dd> kept=<id> folded=<id>,<id>`
+(ids and a day, no health values), and a summary (`would fold N workouts in G groups, U of
+T users, S skipped without consent, F failed`). The lines name a user who worked out on a
+day: keep them out of tickets and chat. Check the reporter's account against what you
+expect before going on (6 on 2026-10-20).
+
+```bash
+# 2. For real: one transaction per user, under the user's apply lock. It prints the same
+#    list, now of what it deleted.
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -user <uuid>
+kubectl --context ryft-prod-euc1 -n ryft-ingest exec deploy/ingest -- /app fold-workouts -all
+```
+
+The summary now reads `folded N workouts ...`. A second run prints `folded 0 workouts in 0
+groups`. The exit status is non-zero when any user failed (that user's transaction rolled
+back; run it again) or when the command was interrupted. Locally:
+`podman compose exec -T ingest /app fold-workouts -dry-run`. Counters:
+`ryft_workouts_folded_total{reason="same_source"}` (the one-off process does not serve
+metrics, so only the syncs' folds show up there) and
+`ryft_workouts_fold_skipped_total{reason="too_many"}` (a sync whose scope held more than
+5 000 workouts folded nothing; run `fold-workouts -user <uuid>` for that account).
+`scripts/rescore_all.sh` is not needed: the queued days are rescored by the running
+scoring service.
 
 ## When a tester's scores do not appear
 

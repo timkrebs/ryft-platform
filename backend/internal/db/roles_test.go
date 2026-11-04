@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
 // Pinned against an independent computation (Python hashlib/hmac) of RFC 7677.
@@ -286,7 +288,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, role := range []string{"ryft_ingest", "ryft_scoring", "ryft_api", "ryft_notify"} {
-		if err := SetRolePassword(ctx, pool, role, "pw-"+role+"-0123456789"); err != nil {
+		if err := testsupport.WithRoleLock(ctx, func() error { return SetRolePassword(ctx, pool, role, testsupport.RolePassword(role)) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -296,7 +298,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	dsn := pool.Config().ConnString()
 	id := "11111111-2222-3333-4444-555555555555"
 
-	ingest := asRole(t, dsn, "ryft_ingest", "pw-ryft_ingest-0123456789")
+	ingest := asRole(t, dsn, "ryft_ingest", testsupport.RolePassword("ryft_ingest"))
 	if _, err := ingest.Exec(ctx, `INSERT INTO users (id) VALUES ($1)`, id); err != nil {
 		t.Fatalf("ingest insert through RLS: %v", err)
 	}
@@ -343,7 +345,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		t.Fatal("ingest must not create tables")
 	}
 
-	scoring := asRole(t, dsn, "ryft_scoring", "pw-ryft_scoring-0123456789")
+	scoring := asRole(t, dsn, "ryft_scoring", testsupport.RolePassword("ryft_scoring"))
 	var n int
 	if err := scoring.QueryRow(ctx, `SELECT count(*) FROM samples WHERE user_id=$1`, id).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("scoring must read the sample through RLS: n=%d err=%v", n, err)
@@ -361,7 +363,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		t.Fatal("only the user turns the manual baseline off")
 	}
 
-	notify := asRole(t, dsn, "ryft_notify", "pw-ryft_notify-0123456789")
+	notify := asRole(t, dsn, "ryft_notify", testsupport.RolePassword("ryft_notify"))
 	var last *time.Time
 	if err := notify.QueryRow(ctx, `SELECT max(start_at) FROM samples WHERE user_id=$1 AND type='steps'`, id).Scan(&last); err != nil || last == nil {
 		t.Fatalf("notify reads when the last sample arrived, through RLS: %v %v", last, err)
@@ -380,7 +382,7 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 		}
 	}
 
-	api := asRole(t, dsn, "ryft_api", "pw-ryft_api-0123456789")
+	api := asRole(t, dsn, "ryft_api", testsupport.RolePassword("ryft_api"))
 	if _, err := api.Exec(ctx, `DELETE FROM samples WHERE user_id=$1`, id); err != nil {
 		t.Fatalf("api deletes an account's rows: %v", err)
 	}
@@ -430,8 +432,11 @@ func TestEnsureRolePassword(t *testing.T) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
-	// ryft_api: no other package's tests log in as it (roles are cluster-wide).
-	const role, pw, rotated = "ryft_api", "pw-ryft_api-0123456789", "pw-ryft_api-rotated-0123"
+	// ryft_api is rotated and restored below: hold the role lock for the whole test so no
+	// other package's SetRolePassword runs in between (roles are cluster-wide).
+	testsupport.LockRoles(t)
+	const role, rotated = "ryft_api", "pw-ryft_api-rotated-0123"
+	pw := testsupport.RolePassword(role)
 	dsn := pool.Config().ConnString()
 	verifier := func() string {
 		t.Helper()

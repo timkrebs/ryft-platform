@@ -34,6 +34,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "fold-workouts" {
+		os.Exit(foldWorkouts(os.Args[2:]))
+	}
 	log := httpx.Logger("ingest")
 	cfg, err := config.Load("ingest")
 	if err != nil {
@@ -219,7 +222,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	var applied store.Applied
 	eventFailed := false
 	if len(reqDays) > 0 || len(req.Deleted) > 0 {
-		applied, err = h.st.ApplySync(ctx, userID, store.Apply{Days: reqDays, Deleted: req.Deleted, Loc: loc,
+		applied, err = h.st.ApplySync(ctx, userID, store.Apply{Days: reqDays, Deleted: req.Deleted, Loc: loc, Fold: foldRequest(req.Workouts),
 			Emit: func(tx pgx.Tx, days []string) error {
 				m, err := events.Ingested(model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, "")
 				if err != nil {
@@ -235,6 +238,9 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 			h.unavailable(w, r, fmt.Errorf("apply: %w", err))
 			return
 		}
+	}
+	if applied.FoldSkipped {
+		h.log.WarnContext(ctx, "workout fold skipped, too many workouts in scope", "workouts", len(req.Workouts), "limit", store.FoldMaxRows)
 	}
 	if len(applied.Days) > 0 {
 		h.outbox.Kick()
@@ -345,6 +351,9 @@ func validate(req *model.SyncRequest) error {
 	}
 	if len(req.Deleted) > model.MaxDeleted {
 		return fmt.Errorf("deleted: at most %d entries per request", model.MaxDeleted)
+	}
+	if len(req.Workouts) > model.MaxWorkouts {
+		return fmt.Errorf("workouts: at most %d entries per request", model.MaxWorkouts)
 	}
 	for i := range req.Samples {
 		s := &req.Samples[i]

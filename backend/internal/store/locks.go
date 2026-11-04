@@ -8,7 +8,8 @@ package store
 //	7419002  lockUser         EnsureUser and DeleteUser, per user
 //	7419003  lockSession      saves of one Train session, per user and session
 //	7419004  lockEnrollments  a user's plan enrolment changes
-//	7419005  lockApply        a user's sync apply transaction (deletions, queueing)
+//	7419005  lockApply        a user's sync apply transaction (deletions, the same-source
+//	                        workout fold, queueing) and `ingest fold-workouts`
 const (
 	lockUser        = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
 	lockSession     = `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`

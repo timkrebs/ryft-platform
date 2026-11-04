@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/logx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -466,6 +468,14 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 	if len(in) == 0 {
 		return 0, nil
 	}
+	// In (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
+	in = slices.Clone(in)
+	slices.SortFunc(in, func(x, y model.Workout) int {
+		if c := x.Start.Compare(y.Start); c != 0 {
+			return c
+		}
+		return bytes.Compare(x.ID[:], y.ID[:])
+	})
 	b := &pgx.Batch{}
 	for _, w := range in {
 		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source)
@@ -557,6 +567,9 @@ func (s *Store) WorkoutPeakHR(ctx context.Context, userID uuid.UUID, since time.
 	return out, err
 }
 
+// WorkoutsBetween returns every workout starting in [from,to), the hidden duplicates
+// included: scoring decides on all of them (compute). What a user is shown, and what a
+// session attaches to, is VisibleWorkoutsBetween.
 func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source, strain,
 		muscular_load, session_id, model_version
@@ -570,6 +583,97 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 			&w.MuscularLoad, &w.SessionID, &w.ModelVersion)
 		return w, err
 	})
+}
+
+// VisibleWorkoutsBetween returns the workouts starting in [from,to) a user sees; see
+// ListWorkoutsBetween.
+func (s *Store) VisibleWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
+	return s.ListWorkoutsBetween(ctx, userID, from, to, false)
+}
+
+// ListWorkoutsBetween returns the workouts starting in [from,to). A workout is hidden
+// while it names a primary (duplicate_of) that exists and is itself not hidden: a deleted
+// primary shows its duplicate at once (until scoring picks a new one), and a ryft-session
+// workout is never hidden. Hidden ones are left out, or with includeHidden returned with
+// DuplicateOf set. Each visible primary carries AlsoRecordedBy, the distinct sorted sources
+// of the duplicates pointing at it. The primary lookup is the primary key; the duplicates
+// are read once through workouts_user_start, the range padded by two days.
+func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
+	rows, err := s.pool.Query(ctx, `WITH dups AS (
+		  SELECT d.duplicate_of AS id, array_agg(DISTINCT d.source ORDER BY d.source) AS sources
+		  FROM workouts d WHERE d.user_id=$1 AND d.duplicate_of IS NOT NULL AND d.source <> '' AND d.source <> $4
+		    AND d.start_at >= $2::timestamptz - interval '2 days' AND d.start_at < $3::timestamptz + interval '2 days'
+		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL)
+		  GROUP BY d.duplicate_of),
+		  ws AS (
+		  SELECT w.*, (w.duplicate_of IS NOT NULL AND w.source <> $4 AND EXISTS (SELECT 1 FROM workouts p
+		      WHERE p.user_id = w.user_id AND p.id = w.duplicate_of AND p.duplicate_of IS NULL)) AS hidden
+		  FROM workouts w WHERE w.user_id=$1 AND w.start_at >= $2 AND w.start_at < $3)
+		SELECT w.id, w.activity, w.start_at, w.end_at, w.avg_hr, w.max_hr, w.energy_kcal, w.distance_m, w.source, w.strain,
+		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END
+		FROM ws w LEFT JOIN dups ON dups.id = w.id AND NOT w.hidden
+		WHERE $5::bool OR NOT w.hidden
+		ORDER BY w.start_at, w.id`, userID, from, to, model.SessionSource, includeHidden)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
+		var w model.Workout
+		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
+			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf)
+		return w, err
+	})
+}
+
+// SetWorkoutDuplicates stores which workouts of a local day are another source's
+// duplicate: dups maps a duplicate to its primary. Every other workout of the day gets
+// duplicate_of cleared, so a deletion or late heart rate heals on the next scoring. It
+// runs as ryft_scoring, which may write only that column (0031). The day is the user's
+// local day of the workout's start, as scoring's day window. Newly marked workouts are
+// counted in ryft_workouts_folded_total{reason="cross_source"}. A ryft-session workout and
+// a self-reference are never marked.
+func (s *Store) SetWorkoutDuplicates(ctx context.Context, userID uuid.UUID, day string, dups map[uuid.UUID]uuid.UUID) error {
+	ids, primaries := make([]uuid.UUID, 0, len(dups)), make([]uuid.UUID, 0, len(dups))
+	for id, p := range dups {
+		if id != p {
+			ids, primaries = append(ids, id), append(primaries, p)
+		}
+	}
+	marked := 0
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		marked = 0
+		// Lock the rows this pass may change in (start_at, id) order, as the fold does, so two
+		// writers of one user cannot deadlock (40P01).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM (SELECT id FROM workouts WHERE user_id=$1
+			  AND (id = ANY($3) OR (duplicate_of IS NOT NULL
+			    AND start_at >= $2::text::date - 2 AND start_at < $2::text::date + 3
+			    AND (start_at AT TIME ZONE (SELECT tz FROM users WHERE id=$1))::date = $2::text::date))
+			ORDER BY start_at, id FOR UPDATE) l`, userID, day, ids); err != nil {
+			return fmt.Errorf("lock duplicates: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE workouts SET duplicate_of = NULL
+			WHERE user_id=$1 AND duplicate_of IS NOT NULL AND NOT (id = ANY($3))
+			  AND start_at >= $2::text::date - 2 AND start_at < $2::text::date + 3
+			  AND (start_at AT TIME ZONE (SELECT tz FROM users WHERE id=$1))::date = $2::text::date`, userID, day, ids); err != nil {
+			return fmt.Errorf("clear duplicates: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		tag, err := tx.Exec(ctx, `UPDATE workouts w SET duplicate_of = t.p
+			FROM unnest($2::uuid[], $3::uuid[]) AS t(id, p)
+			WHERE w.user_id=$1 AND w.id = t.id AND w.source <> $4 AND w.duplicate_of IS DISTINCT FROM t.p`,
+			userID, ids, primaries, model.SessionSource)
+		if err != nil {
+			return fmt.Errorf("set duplicates: %w", err)
+		}
+		marked = int(tag.RowsAffected())
+		return nil
+	})
+	if err == nil && marked > 0 {
+		metrics.WorkoutsFolded.WithLabelValues("cross_source").Add(float64(marked))
+	}
+	return err
 }
 
 // SetWorkoutLoad stores what scoring computed for one workout: strain, TRIMP
@@ -596,9 +700,15 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 	var w WorkoutRow
 	var zones []byte
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
-		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version FROM workouts WHERE user_id=$1 AND id=$2`, userID, id).
+		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version,
+		(SELECT array_agg(DISTINCT d.source ORDER BY d.source) FROM workouts d
+		  WHERE d.user_id = workouts.user_id AND d.duplicate_of = workouts.id AND d.source <> ''
+		    AND d.source <> $3
+		    AND d.start_at >= workouts.start_at - interval '2 days' AND d.start_at < workouts.start_at + interval '2 days'
+		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL))
+		FROM workouts WHERE user_id=$1 AND id=$2`, userID, id, model.SessionSource).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}

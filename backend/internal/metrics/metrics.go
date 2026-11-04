@@ -51,6 +51,15 @@ var (
 		Help: "Records and deletions of POST /v1/sync not applied, by kind (sample, sleep, workout) and reason " +
 			"(duplicate, outside_window, unknown_type, unknown_id).",
 	}, []string{"kind", "reason"})
+	WorkoutsFolded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_folded_total",
+		Help: "Duplicate workouts handled, by reason: same_source (a copy removed, ingest sync or fold-workouts) " +
+			"or cross_source (a workout newly marked as another source's duplicate by scoring).",
+	}, []string{"reason"})
+	WorkoutsFoldSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_workouts_fold_skipped_total",
+		Help: "Syncs whose same-source workout fold was skipped, by reason (too_many: more workouts in scope than the fold's bound).",
+	}, []string{"reason"})
 	LastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_last_sync_timestamp_seconds",
 		Help: "Unix time of the last successful sync (any user; per-user detail would be unbounded).",

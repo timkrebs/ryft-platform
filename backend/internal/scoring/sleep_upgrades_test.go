@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -303,5 +304,15 @@ func TestChangelog(t *testing.T) {
 	c, err := Changelog()
 	if err != nil || len(c) == 0 || c[0].Version != ModelVersion {
 		t.Fatalf("changelog: %v %v", c, err)
+	}
+	// 2026.10.3 (the workout rules) moves stored numbers but no trend metric:
+	// affects is [] on the wire, never null (the app decodes [String]).
+	if c[0].Version != "2026.10.3" || c[0].Affects == nil || len(c[0].Affects) != 0 {
+		t.Fatalf("2026.10.3 affects: %#v", c[0].Affects)
+	}
+	for _, e := range c {
+		if b, _ := json.Marshal(e.Affects); string(b) == "null" {
+			t.Fatalf("%s: affects marshals as null", e.Version)
+		}
 	}
 }

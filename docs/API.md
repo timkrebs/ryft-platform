@@ -218,7 +218,7 @@ Request `SyncRequest`:
 | `os_version` | string? | e.g. `iOS 26.1`. |
 | `samples` | `[Sample]` | May be empty. |
 | `sleep` | `[SleepSegment]` | May be empty. |
-| `workouts` | `[Workout]` | May be empty. `strain` and `also_recorded_by` are ignored on input. |
+| `workouts` | `[Workout]` | May be empty, at most **5 000** entries (`422` above, nothing of the request is stored, and the app never retries a `422`: split a larger backfill into more requests). `strain` and `also_recorded_by` are ignored on input. |
 | `deleted` | `[DeletedRecord]?` | HealthKit objects that were deleted in Apple Health: `{"kind": "sample" \| "sleep" \| "workout", "id": uuid}`, at most **2 000** per request (`422` above; send more in the next request). Optional and may be empty; a request with only `deleted` is valid. See **Deletions** below. |
 
 `Sample`: `type` (enum below), `start`, `end` (timestamps, `end ≥ start`), `value`
@@ -365,7 +365,7 @@ A sample or sleep segment with an `id`, as the app sends it from 2026-10-31:
 score (the 95th percentile over every account and the last 6 hours; 30 until it knows).
 `GET /v1/me/sync` says when they are done. A `\u0000` in any string is removed, not
 refused (Errors → NUL). Errors: `400` bad JSON, `422` validation
-(`device_id` missing, `end` before `start`, workout without `id`, more than 2 000 entries in `deleted`), `403` `invite_required`
+(`device_id` missing, `end` before `start`, workout without `id`, more than 2 000 entries in `deleted`, more than 5 000 in `workouts`), `403` `invite_required`
 / `consent_required` (Errors above): keep the HealthKit anchors and send the same pages
 again once that is resolved.
 
@@ -685,7 +685,7 @@ until `pending_days` is empty, or wait for the silent refresh push (Push).
 ```
 
 Newest first. `summary` follows `Accept-Language`. `affects` names trend metrics
-(`GET /v1/trends`). Scores with an older `model_version` move when they are rescored;
+(`GET /v1/trends`); it is always an array, never `null` or absent, and **may be empty** (a change that moves no score metric, e.g. 2026.10.3, which changes workout handling only), so do not assume a non-empty list. Scores with an older `model_version` move when they are rescored;
 the app can say "recalculated with model 2026.11.1" and show the entry.
 
 ### `POST /v1/feedback` — report a problem
@@ -970,7 +970,13 @@ when it is missing or not `HH:MM`.
 ### `GET /v1/workouts?from&to` — workouts
 
 Same `from`/`to` semantics as `/v1/days`. Workouts whose start falls in the range,
-oldest first.
+oldest first. Cross-source duplicates are left out (see **Duplicate workouts** below);
+`include_hidden=true` (optional; `true` or `false`, absent = `false`; anything else is `422`) returns
+them too, each with `duplicate_of` set to the id of the primary it is hidden behind. A visible primary
+still carries `also_recorded_by`. **The app's data export passes `include_hidden=true`**, so the file
+holds every workout the account has (the export promises completeness); every other screen leaves it off.
+`GET /v1/days/{day}` has no such parameter and never lists hidden duplicates. Same-source copies that
+were folded are deleted, not hidden, and are not returned.
 
 `Workout`:
 
@@ -987,6 +993,7 @@ oldest first.
 | `muscular_load` | number? | Muscular load (TRIMP-equivalent) of the strength session attached to this workout. Omitted when none. |
 | `session_id` | uuid? | That session. Omitted when none. A workout with `source` `ryft-session` was created for a session that has no matching HealthKit workout. |
 | `model_version` | string? | The scoring model of its `strain`, as on `DailyScore`. Omitted until scored. |
+| `duplicate_of` | uuid? | Only with `include_hidden=true`, on a hidden duplicate: the `id` of the primary it is hidden behind. Absent on visible workouts, and always absent without `include_hidden`. |
 | `also_recorded_by` | `[string]?` | The `source` names of other recordings of this same workout that the server hid (a Watch and a Garmin that both recorded one run): "also recorded by Garmin Connect". Distinct, sorted. Omitted when there are none (a client treats missing and `[]` alike). Ignored on input. |
 
 **Duplicate workouts.** One activity must appear once. Two rules, both server-side:
@@ -995,9 +1002,22 @@ oldest first.
   120 seconds of each other are one workout (Garmin Connect re-writes a workout in Apple Health under a new UUID and deletes the old one).
   When a sync stores such a copy, the server **removes the older copies** and keeps the most recently uploaded id (the one Apple Health still has); a
   one-off run does the same for copies stored earlier. The removed ids answer `404` on `GET /v1/workouts/{id}`, a Train session that was attached to one stays and is
-  re-attached to the kept workout when the day is rescored (`session_id`, `muscular_load`). These removals are not counted in `SyncResponse.deleted`, which counts the requested deletions only; their days are queued.
-- *Different sources.* Workouts of **different** `source`s with the same `activity` (either one `other` counts as the same) that overlap by at least **80 %** of the shorter one's duration are one workout. Nothing is deleted. The server picks a **primary** (the one with at least 2 heart-rate samples from its own source inside its window, then the longer one, then the lower `id`), lists only the primary in `GET /v1/days/{day}` → `workouts` and `GET /v1/workouts`, and puts the other sources in the primary's `also_recorded_by`. The primary's heart-rate window, zones and strain are the day's de-duplicated heart rate, so the day's strain does not change. `DayDetail.workouts` and `details.workouts` count the visible workouts.
-- A workout with `source` `ryft-session` is never hidden. The hiding is decided when the day is scored, so a copy can show until `scoring_state` leaves `pending`; if the primary is deleted its duplicate shows again at once and a later scoring picks a new primary. `GET /v1/workouts/{id}` with a hidden duplicate's id still answers `200` with that workout as stored (without `also_recorded_by`), so a link the app holds keeps working.
+  re-attached to the kept workout when the day is rescored (`session_id`, `muscular_load`). These removals are not counted in `SyncResponse.deleted`, which counts the requested deletions only; their days are queued. If a request is too large for the fold on sync, the fold is skipped for that request: it still succeeds (`200`) and the one-off run folds the copies later.
+- *Different sources.* Workouts of **different** `source`s with the same `activity` (either one `other` counts as the same) that overlap by at least **80 %** of the shorter one's duration are one workout. Nothing is deleted. The server picks a **primary** (a workout with a specific `activity` ranks before one whose activity is `other`; then the one with at least 2 heart-rate samples from its own source inside its window; then the longer one; then the lower `id`). So an `other` workout still matches as a duplicate but can only be hidden behind a specific one: a Watch `strength` workout stays visible against a longer Garmin `other`, which is listed in its `also_recorded_by`, lists only the primary in `GET /v1/days/{day}` → `workouts` and `GET /v1/workouts`, and puts the other sources in the primary's `also_recorded_by`. The primary's heart-rate window, zones and strain are the day's de-duplicated heart rate, so the day's strain does not change. `DayDetail.workouts` and `details.workouts` count the visible workouts.
+- A workout with `source` `ryft-session` is never hidden.
+- Hiding is decided **when the day is scored** (not at upload), so a copy can show until `scoring_state` leaves `pending`. If a primary is deleted, its duplicate is visible again **at once**, before the re-score, which later picks a new primary.
+- `GET /v1/workouts/{id}` on a primary carries `also_recorded_by` too (distinct, sorted sources of its duplicates; omitted when none). On a hidden duplicate's id it still answers `200` with that workout as stored and **no** `also_recorded_by`, so a link the app holds keeps working.
+
+`GET /v1/workouts?include_hidden=true`, a primary and the duplicate hidden behind it:
+
+```json
+[ { "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "running", "start": "2026-10-20T16:02:00Z", "end": "2026-10-20T16:58:30Z",
+    "avg_hr": 156.2, "max_hr": 181, "distance_m": 10240, "source": "Garmin Connect", "strain": 12.8, "also_recorded_by": ["Tim's Apple Watch"] },
+  { "id": "2b9f4a60-8d3e-4c71-a5b2-6e0d1c9f3a77", "activity": "running", "start": "2026-10-20T16:02:10Z", "end": "2026-10-20T16:58:20Z",
+    "avg_hr": 155.0, "max_hr": 179, "source": "Tim's Apple Watch", "duplicate_of": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12" } ]
+```
+
+A single workout (`GET /v1/days/{day}`, `GET /v1/workouts`):
 
 ```json
 { "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "running", "start": "2026-10-20T16:02:00Z", "end": "2026-10-20T16:58:30Z",
@@ -1976,6 +1996,7 @@ struct Workout: Codable, Identifiable {
     let sessionId: UUID?
     let modelVersion: String?
     let alsoRecordedBy: [String]?     // omitted when none
+    let duplicateOf: UUID?            // only with GET /v1/workouts?include_hidden=true, on a hidden duplicate
 }
 
 struct DayDetail: Codable {
@@ -2658,8 +2679,8 @@ struct APIErrorBody: Codable {
 | Date | Change |
 | --- | --- |
 | 2026-10-31 | **Coverage and provisional scores** (answers the app's data-quality D2 and D4, `API_REQUESTS.md` → Sync and performance): `DailyScore.coverage` (`ScoreCoverage?`: `sleep_hr_minutes`, `hrv_readings`, `sleep_source`, `hr_source_hours`, `night_complete`, `status` `provisional` \| `final`, closed); `User.sources[].samples_7d` (sample counts per `Sample.type` over the last 7 days, all eight keys on every source). `details.hr_minutes` stays. **Behaviour:** a night is complete on wake evidence or at 10:00 local; a day is `provisional` until then and `final` after, sticky; scoring gains two floors (sleep heart rate < 120 min drops the resting-HR input of Recovery, which is renormalised, `rhr` itself stays; < 60 min of sleep from the winning source makes `sleep_performance` `null`), so stored numbers change for thin nights and the model version is bumped (`GET /v1/model`; rescore history to fill `coverage` on old rows); `MORNING_SCORE` now waits for the first `final` scoring of the day with recovery and sleep, the silent refresh still follows every scoring. Old clients ignore the new fields. Swift: `ScoreStatus`, `ScoreCoverage`, `DailyScore.coverage`, `UserSource.samples7D` (wire key `samples_7d`; the app's `.convertFromSnakeCase` maps it to `samples7D`, capital D). |
-| 2026-10-31 | **Workout duplicates**: `Workout.also_recorded_by` (`[string]?`, omitted when none). **Behaviour:** workouts of one source with the same activity and start and end within 120 s of each other are folded to the most recently uploaded id (the older ids are removed, `404` afterwards, a Train session stays and is re-attached when the day is rescored); workouts of different sources with the same activity (or `other`) that overlap by at least 80 % of the shorter are listed once, as the primary with the other sources in `also_recorded_by`, in `GET /v1/days/{day}` and `GET /v1/workouts` (`GET /v1/workouts/{id}` still answers for the hidden one). Distances, counts and `muscular_load` attachment on affected days change when they are rescored. Swift: `Workout.alsoRecordedBy`. |
-| 2026-10-31 | **Deletions and HealthKit ids** (answers the app's request, `API_REQUESTS.md` → Sync and performance §2): `Sample.id` and `SleepSegment.id` (uuid?, the HealthKit object UUID); `SyncRequest.deleted` (`[{kind: sample \| sleep \| workout, id}]`, ≤ 2 000, `422` above); `SyncResponse.deleted` (`samples`, `sleep`, `workouts`); `ignored.<kind>.unknown_id` (an id the server cannot delete for this user; a re-sent deletion). **Behaviour:** deletions apply after the same request's records; a record with an `id` adopts a stored row with the same natural key (and a sample takes the new value), so a source re-writing a value under a new UUID does not double it; a record whose `id` is already stored is `duplicate`; deleted days are queued for rescoring (in `days_touched`); `ryft-session` workouts are not deletable (`unknown_id`); deleting a workout that has a Train session keeps the session; a failed deletion is a `503` the app re-sends. Request bodies reject unknown fields (`400`), so a platform from before this entry would refuse `deleted` and `id`: ship the app change only after this entry is deployed (there is no flag). Swift: `DeletionKind`, `DeletedRecord`, `SyncDeleted`, `SyncResponse.deleted`, `IgnoredCounts.unknownId`, `Sample.id` / `SleepSegment.id` / `SyncRequest.deleted` on the app's own request types. |
+| 2026-10-31 | **Workout duplicates** (extended the same day with `include_hidden`): `GET /v1/workouts?include_hidden=true` (optional, `true`/`false`, else `422`) also returns the hidden cross-source duplicates, each with `Workout.duplicate_of` (uuid?, the primary's id); the app's export passes it so the file is complete; without it, and on `GET /v1/days/{day}`, nothing changes. `Workout.also_recorded_by` (`[string]?`, omitted when none). **Behaviour:** workouts of one source with the same activity and start and end within 120 s of each other are folded to the most recently uploaded id (the older ids are removed, `404` afterwards, a Train session stays and is re-attached when the day is rescored); workouts of different sources with the same activity (or `other`) that overlap by at least 80 % of the shorter are listed once, as the primary with the other sources in `also_recorded_by`, in `GET /v1/days/{day}` and `GET /v1/workouts` (`GET /v1/workouts/{id}` still answers for the hidden one). Distances, counts and `muscular_load` attachment on affected days change when they are rescored. Swift: `Workout.alsoRecordedBy`, `Workout.duplicateOf`. |
+| 2026-10-31 | **Deletions and HealthKit ids** (answers the app's request, `API_REQUESTS.md` → Sync and performance §2): `Sample.id` and `SleepSegment.id` (uuid?, the HealthKit object UUID); `SyncRequest.deleted` (`[{kind: sample \| sleep \| workout, id}]`, ≤ 2 000, `422` above); `SyncResponse.deleted` (`samples`, `sleep`, `workouts`); `ignored.<kind>.unknown_id` (an id the server cannot delete for this user; a re-sent deletion). **Behaviour:** deletions apply after the same request's records; a record with an `id` adopts a stored row with the same natural key (and a sample takes the new value), so a source re-writing a value under a new UUID does not double it; a record whose `id` is already stored is `duplicate`; deleted days are queued for rescoring (in `days_touched`); `ryft-session` workouts are not deletable (`unknown_id`); deleting a workout that has a Train session keeps the session; a failed deletion is a `503` the app re-sends; more than 5 000 entries in `workouts` is a `422` (nothing stored; the limit lives in this entry's request changes). Request bodies reject unknown fields (`400`), so a platform from before this entry would refuse `deleted` and `id`: ship the app change only after this entry is deployed (there is no flag). Swift: `DeletionKind`, `DeletedRecord`, `SyncDeleted`, `SyncResponse.deleted`, `IgnoredCounts.unknownId`, `Sample.id` / `SleepSegment.id` / `SyncRequest.deleted` on the app's own request types. |
 | 2026-10-29 | **Minimum age 16**: `PATCH /v1/me` `birth_year`: the accepted range is 1920 to the current year − 16 (it was − 13); `422` otherwise. No field renamed or removed, no shape change. **Behaviour:** birth years stored before stay as they are, also those now outside the range (nothing re-checks or clears them; `max_hr` is unchanged); a client that sends such a value again gets `422`. Swift: none. |
 | 2026-10-27 | **UUID case** (documentation only, behaviour unchanged): Conventions → UUIDs. The server accepts ids in upper or lower case (Swift's `JSONEncoder` writes upper case) and always writes lower case, so `results[].id` of `POST /v1/train/import` is lower case whatever was sent. |
 | 2026-10-27 | **Training import, T13** (documentation only, no field, status or header changed): [Training import: answers to T1–T13](#training-import-answers) gains **T13**: `results` of `POST /v1/train/import` has one entry per submitted item whatever its status, and `X-Request-ID` is on `2xx` responses too. The anchor is unchanged. |
