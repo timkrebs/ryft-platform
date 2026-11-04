@@ -14,12 +14,15 @@ set -uo pipefail
 ref=${1:?usage: check_e2e_ref.sh <ref> <running-ref> <default-branch>}
 run_ref=${2:?}
 default_branch=${3:?}
+# The ref is user input and ends up in a workflow command (::error): print it with every character
+# outside a short safe set replaced (a line break would start a new command), cut to 80.
+shown=$(printf '%.80s' "$ref" | LC_ALL=C tr -c 'A-Za-z0-9._/@^~+-' '?')
 err() { echo "::error title=ref::$*" >&2; exit 1; }
 
 [ "$run_ref" != "refs/heads/$default_branch" ] || err "With a ref, dispatch this workflow from the branch under test (Use workflow from), not from $default_branch."
 case "$ref" in
   refs/pull/*|pull/*) err "A pull request ref is not tested here: test the branch it comes from." ;;
-  -*|"") err "'$ref' is no ref." ;;
+  -*|"") err "'$shown' is no ref." ;;
 esac
 sha=
 if git rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}" >/dev/null; then
@@ -29,8 +32,8 @@ elif git rev-parse --verify --quiet "refs/tags/$ref^{commit}" >/dev/null; then
 elif [[ $ref =~ ^[0-9a-f]{7,40}$ ]] && git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
   sha=$(git rev-parse "$ref^{commit}")
 fi
-[ -n "$sha" ] || err "'$ref' is no branch, tag or commit of this repository."
-if [ -z "$(git branch -r --contains "$sha" 2>/dev/null | grep -v 'origin/HEAD' || true)" ]; then
+[ -n "$sha" ] || err "'$shown' is no branch, tag or commit of this repository."
+if [ -z "$(git branch -r --list 'origin/*' --contains "$sha" 2>/dev/null | grep -v 'origin/HEAD' || true)" ]; then
   err "$sha is on no branch of this repository (a commit of a fork or of a pull request?): refused."
 fi
 echo "$sha"

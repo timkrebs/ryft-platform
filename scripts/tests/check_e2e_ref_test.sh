@@ -40,4 +40,21 @@ no "$hidden_sha" refs/heads/feature main
 no nosuchbranch refs/heads/feature main
 no "" refs/heads/feature main
 no -x refs/heads/feature main
+
+# a commit that only another remote's branch holds (a fork added as a remote) is on no origin/* branch
+tree=$(git rev-parse 'HEAD^{tree}')
+forked=$(git -c user.name=t -c user.email=t@example.com commit-tree "$tree" -p HEAD -m "only the fork has it")
+git update-ref refs/remotes/fork/other "$forked"
+[ -n "$(git branch -r --contains "$forked")" ] || fail "setup: the fork's branch does not contain its commit"
+no "${forked:0:10}" refs/heads/feature main
+no "$forked" refs/heads/feature main
+
+# the ref is user input in a workflow command: a line break or % must not survive, and the line is cut
+for bad in $'x\n::error title=pwn::boom' 'a%0A::warning::x' "$(printf 'z%.0s' $(seq 1 300))"; do
+  err=$("$S" "$bad" refs/heads/feature main 2>&1 >/dev/null || true)
+  [ "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" = 1 ] || fail "the error for a ref with a line break is more than one line: $err"
+  case "$err" in "::error title=ref::"*) ;; *) fail "unexpected error line: $err" ;; esac
+  case "$err" in *%*|*$'\r'*) fail "a % or CR survived in: $err" ;; esac
+  [ "${#err}" -lt 200 ] || fail "a 300-character ref was echoed whole: ${#err}"
+done
 echo "✓ check_e2e_ref_test"

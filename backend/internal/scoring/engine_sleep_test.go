@@ -3,6 +3,7 @@ package scoring
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -136,30 +137,75 @@ func TestEngineLearnsSleepBase(t *testing.T) {
 }
 
 // The morning hook: today's first recovery after a night with sleep calls it
-// once; a rescore of today, and past days, never.
+// once, with the stored row's values; a rescore of today, and past days, never.
+// "Today" is the user's local date. The engine reads the wall clock, so the
+// zones are chosen to make that testable at any hour: UTC+14 is a day ahead of
+// UTC from 10:00 UTC on, UTC−12 a day behind until 12:00 UTC, so at every
+// instant one of the two has a local today that is not UTC's.
 func TestEngineAnnouncesTodaysFirstRecovery(t *testing.T) {
-	st, engine, user := engineStore(t)
+	st, engine, first := engineStore(t)
 	ctx := context.Background()
-	var got []model.ScoredEvent
-	engine.OnScored(func(_ context.Context, ev model.ScoredEvent) { got = append(got, ev) })
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-	var segs []model.SleepSegment
-	for k := 3; k >= 0; k-- {
-		d := today.AddDate(0, 0, -k)
-		segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(6 * time.Hour), Stage: model.SleepCore, Source: "watch"})
-	}
-	if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
-		t.Fatal(err)
-	}
-	from, to := today.AddDate(0, 0, -3).Format("2006-01-02"), today.Format("2006-01-02")
-	if err := engine.ComputeRange(ctx, user, from, to); err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].Day != to || got[0].SleepMin != 420 || got[0].Recovery <= 0 {
-		t.Fatalf("one event, for today: %+v", got)
-	}
-	if err := engine.ComputeRange(ctx, user, from, to); err != nil || len(got) != 1 {
-		t.Fatalf("a rescore announces nothing: %d events", len(got))
+	got := map[uuid.UUID][]model.ScoredEvent{}
+	engine.OnScored(func(_ context.Context, ev model.ScoredEvent) { got[ev.UserID] = append(got[ev.UserID], ev) })
+	for k, tz := range []string{"UTC", "Etc/GMT-14", "Etc/GMT+12"} {
+		t.Run(tz, func(t *testing.T) {
+			user := first
+			if k > 0 {
+				user = uuid.New()
+				if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.GrantConsent(ctx, user, "test", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := st.UpdateUser(ctx, user, model.UserPatch{TZ: &tz}, nil); err != nil {
+				t.Fatal(err)
+			}
+			loc, err := time.LoadLocation(tz)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().In(loc)
+			today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+			var segs []model.SleepSegment
+			var hrv []model.Sample
+			for n := 3; n >= 0; n-- {
+				d := today.AddDate(0, 0, -n)
+				segs = append(segs, model.SleepSegment{Start: d.Add(-time.Hour), End: d.Add(6 * time.Hour), Stage: model.SleepCore, Source: "watch"})
+				// A low last night against the nights before: recovery is not
+				// the sleep performance alone, so readiness differs from it.
+				at := d.Add(3 * time.Hour)
+				hrv = append(hrv, model.Sample{Type: model.SampleHRVSDNN, Start: at, End: at, Value: float64(40 + 25*min(n, 1)), Unit: "ms", Source: "watch"})
+			}
+			if _, err := st.UpsertSleep(ctx, user, segs); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.UpsertSamples(ctx, user, hrv); err != nil {
+				t.Fatal(err)
+			}
+			from, to := today.AddDate(0, 0, -3).Format("2006-01-02"), today.Format("2006-01-02")
+			if err := engine.ComputeRange(ctx, user, from, to); err != nil {
+				t.Fatal(err)
+			}
+			if len(got[user]) != 1 {
+				t.Fatalf("one event, for %s: %+v", to, got[user])
+			}
+			row := scoresByDay(t, st, user, to, to)[to]
+			ev := got[user][0]
+			want := model.ScoredEvent{UserID: user, Day: to, Recovery: deref(row.Recovery), Readiness: row.Readiness,
+				State: row.State, SleepPerformance: row.SleepPerformance, SleepMin: 420}
+			// The night's 420 minutes against a need of about 8 h: readiness
+			// (0.6 recovery + 0.4 performance) differs from recovery, so the
+			// event cannot carry one for the other unnoticed.
+			if ev.Recovery <= 0 || ev.Readiness == nil || *ev.Readiness == ev.Recovery || ev.SleepPerformance == nil ||
+				!reflect.DeepEqual(ev, want) {
+				t.Fatalf("the event is the stored row:\n got %+v\nwant %+v", ev, want)
+			}
+			if err := engine.ComputeRange(ctx, user, from, to); err != nil || len(got[user]) != 1 {
+				t.Fatalf("a rescore announces nothing: %d events", len(got[user]))
+			}
+		})
 	}
 }
 
