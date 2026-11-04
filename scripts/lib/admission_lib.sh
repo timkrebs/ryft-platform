@@ -134,11 +134,16 @@ EOF
 # overlays create them: ryft-<service> and monitoring from the generated vault-namespaces
 # directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd.
 adm_create_namespaces() {
-  local out="$WORK/namespaces.yaml" d svc ns level
+  local out="$WORK/namespaces.yaml" d svc ns level sa line
   : > "$out"
   for d in "$REPO"/deploy/k8s/overlays/vault-namespaces/*/; do
     svc=$(basename "$d")
     ns=$(yq '.namespace' "$d/kustomization.yaml")
+    # Both come from the tree under test and are written into YAML below: DNS names, or nothing (D152).
+    if ! adm_valid_name "$svc" || ! adm_valid_name "$ns"; then
+      rec "namespaces" FAIL "vault-namespaces holds the directory '$(printf '%s' "$svc" | cut -c1-40)' with the namespace '$(printf '%s' "$ns" | cut -c1-40)': not DNS names"
+      return 1
+    fi
     level=restricted
     [ "$svc" != monitoring ] || level=privileged   # D51
     cat >> "$out" <<EOF
@@ -172,7 +177,14 @@ EOF
   # The service accounts infra/vault creates (a VaultAuth names each): the API server refuses a Pod
   # fixture for a service account that does not exist, before admission is asked.
   for d in "$REPO"/deploy/k8s/overlays/vault-namespaces/*/vault.yaml; do
-    yq 'select(.kind == "VaultAuth") | "---\napiVersion: v1\nkind: ServiceAccount\nmetadata: { name: " + .spec.kubernetes.serviceAccount + ", namespace: " + .metadata.namespace + " }"' "$d" >> "$out"
+    while IFS=' ' read -r sa ns line; do
+      [ -n "$sa$ns" ] || continue
+      if [ -n "$line" ] || ! adm_valid_name "$sa" || ! adm_valid_name "$ns"; then
+        rec "namespaces" FAIL "a VaultAuth in $(basename "$(dirname "$d")") names the service account '$(printf '%s' "$sa" | cut -c1-40)' in the namespace '$(printf '%s' "$ns" | cut -c1-40)': not DNS names"
+        return 1
+      fi
+      printf -- '---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: %s\n  namespace: %s\n' "$sa" "$ns" >> "$out"
+    done < <(yq 'select(.kind == "VaultAuth") | .spec.kubernetes.serviceAccount + " " + .metadata.namespace' "$d")
   done
   if kc apply -f "$out" >"$WORK/log/namespaces.out" 2>&1; then
     rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, monitoring)"

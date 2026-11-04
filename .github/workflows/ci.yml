@@ -142,6 +142,10 @@ jobs:
               - 'scripts/lib/tracked_copy.sh'
               - 'scripts/lib/admission_*.sh'
               - 'scripts/lib/tf_values.sh'
+              - 'scripts/lib/tf_scan.py'
+              # the namespaces' labels and Pod Security levels are a hand copy of infra/vault's
+              # (kubernetes_namespace_v1.service, adm_create_namespaces)
+              - 'infra/vault/**'
               - 'scripts/lib/gitsrv.go'
               - 'Makefile'
               - '.github/workflows/ci.yml'

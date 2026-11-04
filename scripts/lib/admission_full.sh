@@ -130,8 +130,10 @@ EOF
 adm_full_images() {
   local dir="$WORK/stub-images" imgs ref n=0 local_ref node="${KIND_CLUSTER}-control-plane" built=()
   mkdir -p "$dir"
-  printf 'FROM docker.io/library/busybox:1.37\nRUN mkdir -p /www && echo ok > /www/healthz && echo ok > /www/readyz\nEXPOSE 8080\nENTRYPOINT ["httpd", "-f", "-p", "8080", "-h", "/www"]\n' > "$dir/server.containerfile"
-  printf 'FROM docker.io/library/busybox:1.37\nENTRYPOINT ["/bin/sh", "-c", "sleep 15"]\n' > "$dir/job.containerfile"
+  # The base images (busybox here, alpine below) are pinned by the digest of the multi-arch index,
+  # resolved from the registry; the tag stays for the reader. Move tag and digest together.
+  printf 'FROM docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\nRUN mkdir -p /www && echo ok > /www/healthz && echo ok > /www/readyz\nEXPOSE 8080\nENTRYPOINT ["httpd", "-f", "-p", "8080", "-h", "/www"]\n' > "$dir/server.containerfile"
+  printf 'FROM docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\nENTRYPOINT ["/bin/sh", "-c", "sleep 15"]\n' > "$dir/job.containerfile"
   imgs=$(kubectl kustomize "$REPO/deploy/k8s/overlays/eks" | sed -nE 's/^[[:space:]]+(- )?image: (ghcr\.io\/timkrebs\/ryft\/[^[:space:]]+)$/\2/p' | sort -u)
   [ -n "$imgs" ] || { rec "full-images" FAIL "the EKS overlay names no ghcr.io/timkrebs/ryft image"; return 1; }
   while IFS= read -r ref; do
@@ -196,7 +198,7 @@ adm_full_gitserver() {
   if ! ( cd "$g/build" && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o gitsrv "$ROOT/scripts/lib/gitsrv.go" ) >"$WORK/log/gitsrv-build.out" 2>&1; then
     rec "full-gitserver" FAIL "go build of scripts/lib/gitsrv.go: $(tail -3 "$WORK/log/gitsrv-build.out")"; return 1
   fi
-  printf 'FROM docker.io/library/alpine:3.22\nRUN apk add --no-cache git git-daemon\nCOPY gitsrv /gitsrv\nUSER 65532:65532\nENTRYPOINT ["/gitsrv"]\n' > "$g/build/Containerfile"
+  printf 'FROM docker.io/library/alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f\nRUN apk add --no-cache git git-daemon\nCOPY gitsrv /gitsrv\nUSER 65532:65532\nENTRYPOINT ["/gitsrv"]\n' > "$g/build/Containerfile"
   if ! "$ENGINE" build -q -t localhost/gitsrv:e2e -f "$g/build/Containerfile" "$g/build" >"$WORK/log/gitsrv-image.out" 2>&1 \
     || ! "$ENGINE" save -o "$g/build/gitsrv.tar" localhost/gitsrv:e2e >/dev/null 2>&1 \
     || ! kind load image-archive "$g/build/gitsrv.tar" --name "$KIND_CLUSTER" >>"$WORK/log/gitsrv-image.out" 2>&1; then
