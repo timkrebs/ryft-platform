@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -73,42 +74,60 @@ func TestSplitSleepAndOvernightWindow(t *testing.T) {
 }
 
 func TestBaselines(t *testing.T) {
-	u := func(s string) time.Time { return wall(t, time.UTC, s) }
-	d := u("2026-10-14 00:00")
-	night := func(day string) (*time.Time, *time.Time) {
-		bed, wake := u(addDays(day, -1)+" 23:00"), u(day+" 07:00")
-		return &bed, &wake
-	}
-	row := func(day string, hrv, rhr, resp, strain float64, data bool) store.History {
-		h := store.History{Day: day, HasData: data}
-		h.SleepStart, h.SleepEnd = night(day)
+	// row is a stored day in loc: its night 23:00–07:00 and its signals (0: none).
+	row := func(loc *time.Location, day string, hrv, rhr, resp, strain float64, data bool) store.History {
+		bed, wake := wall(t, loc, addDays(day, -1)+" 23:00"), wall(t, loc, day+" 07:00")
+		h := store.History{Day: day, HasData: data, SleepStart: &bed, SleepEnd: &wake}
 		h.HRV, h.RHR, h.RespRate, h.Strain = &hrv, &rhr, &resp, &strain
 		return h
 	}
-	tonight := SleepTotals{Start: u("2026-10-13 23:00"), End: u("2026-10-14 07:00"), AsleepMin: 480}
+	utc := time.UTC
+	tonight := SleepTotals{Start: wall(t, utc, "2026-10-13 23:00"), End: wall(t, utc, "2026-10-14 07:00"), AsleepMin: 480}
 	for _, c := range []struct {
 		name     string
+		loc      *time.Location
+		day      string
 		hist     []store.History // newest first, as ScoreHistory
 		sleep    SleepTotals
 		hrvN     int
+		hrvMS    float64 // the geometric mean (HRVBaselineMS); 0: none
 		rhrMean  float64
+		respN    int
+		respMean float64
 		yStrain  float64
 		window   int
 		bedtimes int
 	}{
-		{"no history", nil, SleepTotals{}, 0, 0, 0, 0, 0},
-		{"this night counts toward consistency only", nil, tonight, 0, 0, 0, 0, 1},
-		{"yesterday's strain, the week's bedtimes, zero values left out", []store.History{
-			row("2026-10-13", 60, 50, 14, 16.5, true),
-			row("2026-10-08", 0, 54, 0, 3, true),   // the 7th night back: still the week
-			row("2026-10-07", 70, 0, 15, 2, false), // the 8th: not the week; no data
-		}, tonight, 2, 52, 16.5, 2, 3},
+		{"no history", utc, "2026-10-14", nil, SleepTotals{}, 0, 0, 0, 0, 0, 0, 0, 0},
+		{"this night counts toward consistency only", utc, "2026-10-14", nil, tonight, 0, 0, 0, 0, 0, 0, 0, 1},
+		{"yesterday's strain, the week's bedtimes, zero values left out", utc, "2026-10-14", []store.History{
+			row(utc, "2026-10-13", 60, 50, 14, 16.5, true),
+			row(utc, "2026-10-08", 0, 54, 0, 3, true),   // the 7th night back: still the week
+			row(utc, "2026-10-07", 70, 0, 15, 2, false), // the 8th: not the week; no data
+		}, tonight, 2, 64.8, 52, 2, 14.5, 16.5, 2, 3},
+		// The day after the spring change (Berlin's 2026-03-29 has 23 h): 24 h
+		// before the 30th's midnight is the 28th and 6 × 24 h the 23rd, so both
+		// labels must come from the calendar, or yesterday's strain is the 28th's
+		// (none) and the 23rd's night is an 8th one in the consistency week.
+		{"yesterday and the week by the calendar after a 23-hour day", berlin, "2026-03-30", []store.History{
+			row(berlin, "2026-03-29", 58, 51, 15, 9.5, true),
+			row(berlin, "2026-03-23", 0, 0, 0, 0, true), // the 8th night back
+		}, SleepTotals{}, 1, 58, 51, 1, 15, 9.5, 2, 1},
 	} {
+		d, _ := time.ParseInLocation(dayLayout, c.day, c.loc)
 		b := baselines(c.hist, c.sleep, d)
-		if b.lnHRVBase.N != c.hrvN || b.rhrBase.Mean != c.rhrMean || b.yesterdayStrain != c.yStrain ||
-			b.window != c.window || len(b.bedtimes) != c.bedtimes {
-			t.Errorf("%s: hrv n %d rhr mean %v yesterday %v window %d bedtimes %d", c.name, b.lnHRVBase.N,
-				b.rhrBase.Mean, b.yesterdayStrain, b.window, len(b.bedtimes))
+		for _, f := range []struct {
+			what      string
+			got, want any
+		}{
+			{"hrv days", b.lnHRVBase.N, c.hrvN}, {"hrv ms", deref(HRVBaselineMS(b.lnHRVBase)), c.hrvMS},
+			{"rhr mean", b.rhrBase.Mean, c.rhrMean}, {"resp days", b.respBase.N, c.respN},
+			{"resp mean", b.respBase.Mean, c.respMean}, {"yesterday's strain", b.yesterdayStrain, c.yStrain},
+			{"window", b.window, c.window}, {"bedtimes", len(b.bedtimes), c.bedtimes},
+		} {
+			if f.got != f.want {
+				t.Errorf("%s: %s %v, want %v", c.name, f.what, f.got, f.want)
+			}
 		}
 		if c.sleep.AsleepMin > 0 && !b.bedtimes[0].Bed.Equal(c.sleep.Start) {
 			t.Errorf("%s: this night is not first: %v", c.name, b.bedtimes)
@@ -171,14 +190,16 @@ func TestWorkoutLoad(t *testing.T) {
 		around        []model.Sample
 		strain, trimp float64
 	}{
-		// 60 minutes at 150 bpm (RHR 60, max 190); the average is not used.
-		{"its heart rate", withAvg(100), hr, 12.3, 70.3},
-		// The engine case's workout (D9): 60 minutes at the average, the same
-		// load as the curve it stands in for.
-		{"fewer than two samples: its average", withAvg(150), hr[:1], 12.3, 70.3},
+		// 60 minutes at 150 bpm (RHR 48, max 190); the average is not used.
+		// RHR 48, not strainRHR's fallback of 60: the load must use the RHR
+		// it is given.
+		{"its heart rate", withAvg(100), hr, 13.2, 79.5},
+		// 60 minutes at the average (D9), the same load as the curve it
+		// stands in for.
+		{"fewer than two samples: its average", withAvg(150), hr[:1], 13.2, 79.5},
 		{"neither: no load", run, nil, 0, 0},
 	} {
-		got := workoutLoad(c.w, c.around, 60, 190)
+		got := workoutLoad(c.w, c.around, 48, 190)
 		if got.Score != c.strain || math.Round(got.TRIMP*10)/10 != c.trimp {
 			t.Errorf("%s: strain %v trimp %v, want %v %v", c.name, got.Score, got.TRIMP, c.strain, c.trimp)
 		}
@@ -193,16 +214,20 @@ func TestReadinessOf(t *testing.T) {
 		perf      *int
 		yStrain   float64
 		readiness int // 0: none
+		penalty   int
 		state     string
 	}{
-		{"no recovery, no readiness", RecoveryResult{}, &perf, 0, 0, ReadinessState(nil, false)},
+		{"no recovery, no readiness", RecoveryResult{}, &perf, 0, 0, 0, "calibrating"},
 		// The engine cases: recovery 50 without a night, 63 with a full one.
-		{"without a night, recovery alone", RecoveryResult{Score: 50, Calibrating: true}, nil, 0, 50, model.StateCalibrating},
-		{"with a night", RecoveryResult{Score: 63}, &perf, 0, 78, ReadinessState(ptrTo(78), false)},
+		{"without a night, recovery alone", RecoveryResult{Score: 50, Calibrating: true}, nil, 0, 50, 0, "calibrating"},
+		{"with a night", RecoveryResult{Score: 63}, &perf, 0, 78, 0, "balanced"},
+		// Strain 17.5 after a recovery under 50: half the 10-point penalty.
+		{"an overreach costs", RecoveryResult{Score: 40}, &perf, 17.5, 59, 5, "strained"},
 	} {
-		r, _, state := readinessOf(c.rec, c.perf, c.yStrain)
-		if deref(r) != c.readiness || (r == nil) != (c.readiness == 0) || state != c.state {
-			t.Errorf("%s: readiness %v state %q, want %d %q", c.name, r, state, c.readiness, c.state)
+		r, penalty, state := readinessOf(c.rec, c.perf, c.yStrain)
+		if deref(r) != c.readiness || (r == nil) != (c.readiness == 0) || penalty != c.penalty || state != c.state {
+			t.Errorf("%s: readiness %v penalty %d state %q, want %d %d %q", c.name, r, penalty, state,
+				c.readiness, c.penalty, c.state)
 		}
 	}
 }
@@ -237,38 +262,47 @@ func TestStrainScore(t *testing.T) {
 
 func TestScoreRow(t *testing.T) {
 	loc := berlin
-	hrv, rhr := 64.0, 52.0
+	hrv, rhr, resp, spo2 := 64.0, 52.0, 14.5, 96.0
 	sleep := SleepTotals{Start: wall(t, loc, "2026-10-13 23:00"), End: wall(t, loc, "2026-10-14 07:00"),
 		AsleepMin: 480, InBedMin: 480, CoreMin: 480}
-	b := baselineSet{lnHRV: []float64{math.Log(64), math.Log(64)}, rhrs: []float64{52}, window: 2}
+	b := baselineSet{lnHRV: []float64{math.Log(64), math.Log(64)}, rhrs: []float64{52}, window: 2, yesterdayStrain: 17.5}
 	b.lnHRVBase, b.rhrBase = NewBaseline(b.lnHRV, fallbackSDlnHRV), NewBaseline(b.rhrs, fallbackSDRHR)
 	perf := 100
 	p := dayScore{day: "2026-10-14", loc: loc,
-		night: overnight{sleep: sleep, hrv: &hrv, rhr: &rhr, napMin: 20},
+		night: overnight{sleep: sleep, hrv: &hrv, rhr: &rhr, resp: &resp, spo2: &spo2, napMin: 20},
 		base:  b,
 		sleep: sleepScores{need: NeedParts{Base: 480, Strain: 10, Nap: 30}, debt: 0, performance: &perf},
-		rec:   RecoveryResult{Score: 63},
+		rec:   RecoveryResult{Score: 40},
 		strain: strainDay{strength: strengthDay{TRIMP: 40, Minutes: 45, VolumeKG: 6600.04, Sessions: 1},
 			workouts: []model.Workout{{ID: uuid.New()}}},
 	}
 	row := scoreRow(p)
 	d := row.DailyScore
-	switch {
-	case deref(d.SleepNeedMin) != 460, deref(d.SleepActualMin) != 480, deref(d.NapMin) != 20:
-		t.Errorf("sleep: need %v actual %v nap %v", d.SleepNeedMin, d.SleepActualMin, d.NapMin)
-	case d.BaselineDays != 1 || deref(d.BaselineHRVDays) != 2 || d.Details["baseline_days"] != 2:
-		t.Errorf("baseline days %d hrv %v details %v (D20: the typed column is the min, details HRV only)",
-			d.BaselineDays, d.BaselineHRVDays, d.Details["baseline_days"])
-	case d.Recovery == nil || *d.Recovery != 63 || deref(d.Readiness) != 78:
-		t.Errorf("recovery %v readiness %v", d.Recovery, d.Readiness)
-	case deref(d.Strain) != StrainFromTRIMP(40) || deref(d.StrengthMin) != 45 || deref(d.VolumeKG) != 6600:
-		t.Errorf("strain %v strength %v volume %v", d.Strain, d.StrengthMin, d.VolumeKG)
-	case d.Details["sleep_start"] != "2026-10-13T23:00:00+02:00" || d.Details["workouts"] != 1:
-		t.Errorf("details %v", d.Details)
-	case row.Sleep.Day != p.day || deref(row.Sleep.TotalMin) != 480 || row.Load.MuscularTRIMP == nil:
-		t.Errorf("sleep %+v load %+v", row.Sleep, row.Load)
-	case d.CalibratingReason == nil || d.ModelVersion == nil || *d.ModelVersion != ModelVersion:
-		t.Errorf("reason %v version %v", d.CalibratingReason, d.ModelVersion)
+	for _, f := range []struct {
+		what      string
+		got, want any
+	}{
+		{"sleep need", deref(d.SleepNeedMin), 460}, {"sleep actual", deref(d.SleepActualMin), 480},
+		{"nap", deref(d.NapMin), 20},
+		// D20: the typed column is the min of both signals, details' copy the HRV nights.
+		{"baseline days", d.BaselineDays, 1}, {"baseline hrv days", deref(d.BaselineHRVDays), 2},
+		{"details.baseline_days", d.Details["baseline_days"], 2},
+		{"hrv", d.HRVms, &hrv}, {"rhr", d.RHR, &rhr}, {"resp", d.RespRate, &resp}, {"spo2", d.SpO2, &spo2},
+		{"recovery", deref(d.Recovery), 40}, {"readiness", deref(d.Readiness), 59}, {"state", d.State, "strained"},
+		{"details.readiness_penalty", d.Details["readiness_penalty"], 5},
+		{"details.yesterday_strain", d.Details["yesterday_strain"], 17.5},
+		{"strain", deref(d.Strain), StrainFromTRIMP(40)}, {"strength min", deref(d.StrengthMin), 45},
+		{"volume", deref(d.VolumeKG), 6600.0},
+		{"details.sleep_start", d.Details["sleep_start"], "2026-10-13T23:00:00+02:00"},
+		{"details.workouts", d.Details["workouts"], 1},
+		{"sleep row day", row.Sleep.Day, p.day}, {"sleep row total", deref(row.Sleep.TotalMin), 480},
+		{"muscular trimp", deref(row.Load.MuscularTRIMP), 40.0},
+		{"calibrating reason set", d.CalibratingReason != nil, true},
+		{"model version", *d.ModelVersion, ModelVersion},
+	} {
+		if !reflect.DeepEqual(f.got, f.want) {
+			t.Errorf("%s: %v, want %v", f.what, f.got, f.want)
+		}
 	}
 	if empty := scoreRow(dayScore{day: p.day, loc: loc}); empty.Sleep != (store.SleepNight{}) ||
 		empty.Recovery != nil || empty.Readiness != nil || empty.Strain != nil || empty.SleepActualMin != nil {

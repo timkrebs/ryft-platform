@@ -278,7 +278,10 @@ func workoutLoad(w model.Workout, around []model.Sample, rhr, maxHR float64) Str
 	return StrainResult{}
 }
 
-// activity is the day's steps and active energy (dayTotal).
+// activity sums the day's steps and active energy over the local calendar day
+// with one source per hour (DayTotal), so a phone and a watch that both count
+// are not counted twice (SCORING.md → Steps and active energy); nil without
+// samples, not 0, so "no data" stays apart from a day without steps.
 func (e *Engine) activity(ctx context.Context, userID uuid.UUID, d time.Time) (steps, kcal *int, err error) {
 	dayStart, dayEnd := localDay(d)
 	if steps, err = e.dayTotal(ctx, userID, model.SampleSteps, dayStart, dayEnd); err != nil {
