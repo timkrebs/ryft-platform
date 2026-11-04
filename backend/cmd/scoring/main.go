@@ -1,8 +1,3 @@
-// scoring turns raw samples into daily Recovery / Strain / Sleep scores.
-// It is driven by two things: events from RabbitMQ (recompute the days a
-// sync touched, for the user in the event) and a timer (keep today and
-// yesterday fresh, in each user's timezone, for everyone who synced lately;
-// on Sundays also the weekly sleep-baseline estimate).
 package main
 
 import (

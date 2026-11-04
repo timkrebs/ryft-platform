@@ -20,7 +20,13 @@ linters:
     - sqlclosecheck   # unclosed rows / statements
     - unconvert       # redundant conversions
     - usestdlibvars   # http.MethodGet over "GET", etc.
+    - revive          # exported identifiers and package comments only (rules below)
   settings:
+    revive:
+      # Listed explicitly: revive's default set adds unrelated findings.
+      rules:
+        - name: exported
+        - name: package-comments
     depguard:
       rules:
         logcheck-tests-only:
@@ -36,6 +42,10 @@ linters:
       - common-false-positives
       - std-error-handling
     rules:
+      # model.ModelInfo and model.ModelChangeEntry keep their names: they mirror
+      # the API and the Swift types. Nothing else may stutter.
+      - linters: [revive]
+        text: 'type name will be used as model\.Model(Info|ChangeEntry) by other packages'
       - path: _test\.go
         linters: [gosec, errcheck, noctx]
 

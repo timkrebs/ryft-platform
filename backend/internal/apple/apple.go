@@ -1,6 +1,3 @@
-// Package apple talks to Sign in with Apple's REST API. It exchanges the
-// authorization code the app gets at sign-in for a refresh token, and revokes
-// that token when the account is deleted (App Store Review Guideline 5.1.1(v)).
 package apple
 
 import (
@@ -35,6 +32,8 @@ type Config struct {
 	BaseURL    string // default https://appleid.apple.com (tests point it elsewhere)
 }
 
+// Client calls Apple with a client secret it signs itself. now is a field so
+// tests can pin the JWT's times.
 type Client struct {
 	cfg  Config
 	key  *ecdsa.PrivateKey
@@ -45,6 +44,9 @@ type Client struct {
 
 const appleBase = "https://appleid.apple.com"
 
+// New checks the config and parses the key up front, so a bad APPLE_* setting
+// fails at start-up and not on the first user's deletion. A nil client gets a
+// default with a timeout.
 func New(c Config, client *http.Client) (*Client, error) {
 	if c.TeamID == "" || c.KeyID == "" || c.ClientID == "" {
 		return nil, errors.New("apple: team ID, key ID and client ID are required")
@@ -105,9 +107,9 @@ func (c *Client) clientSecret() (string, error) {
 }
 
 var (
-	// ErrInvalidGrant: the code is invalid, expired (five minutes) or used.
+	// ErrInvalidGrant means the code is invalid, expired (five minutes) or used.
 	ErrInvalidGrant = errors.New("apple: authorization code invalid, expired or already used")
-	// ErrInvalidClient: Apple rejected our team/key/client ID or key.
+	// ErrInvalidClient means Apple rejected our team/key/client ID or key.
 	ErrInvalidClient = errors.New("apple: client rejected (check APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8)")
 )
 

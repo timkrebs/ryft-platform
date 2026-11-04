@@ -53,11 +53,16 @@ const (
 	Refresh = "REFRESH"
 	// StaleAfter without a heart-rate or step sample, a user gets SYNC_STALE,
 	// in the daytime only (StaleFromHour to StaleToHour local).
-	StaleAfter    = 20 * time.Hour
+	StaleAfter = 20 * time.Hour
+	// StaleFromHour is the first local hour (inclusive) a SYNC_STALE reminder
+	// may go out; before it the check waits.
 	StaleFromHour = 9
-	StaleToHour   = 21
-	// SessionFresh: a session that ended longer ago (an offline queue
-	// replayed days later) is scored, not announced.
+	// StaleToHour is the local hour (exclusive) after which no SYNC_STALE
+	// reminder goes out, so nobody is woken by a reminder to sync.
+	StaleToHour = 21
+	// SessionFresh is how recently a session must have ended to be announced;
+	// one that ended longer ago (an offline queue replayed days later) is
+	// scored, not announced.
 	SessionFresh = 12 * time.Hour
 )
 

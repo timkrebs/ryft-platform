@@ -1,8 +1,3 @@
-// Package notify decides what RYFT pushes, to whom and when (cmd/notify runs
-// it): the morning score, a scored strength session or its records, and a
-// reminder when no data has arrived (docs/DECISIONS.md D70–D73). Messages are
-// APNs payloads with localisation keys the app resolves (docs/API.md → Push);
-// the arguments are formatted for the install's language.
 package notify
 
 import (

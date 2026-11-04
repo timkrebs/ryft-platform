@@ -148,7 +148,7 @@ func CheckImportSession(s *model.Session, now time.Time, exercises map[uuid.UUID
 	return nil
 }
 
-// CheckAssist: assist_kg (the support of an assisted bodyweight set, T4) belongs only to
+// CheckAssist enforces that assist_kg (the support of an assisted bodyweight set, T4) belongs only to
 // a set of a bodyweight exercise, and not together with an added weight_kg above 0. Run
 // it after ClampSet.
 func CheckAssist(ex model.Exercise, st model.Set) error {
