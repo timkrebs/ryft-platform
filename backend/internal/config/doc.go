@@ -17,5 +17,8 @@
 // variables, httpx.Logger reads LOG_LEVEL, and the Postgres test helpers read
 // RYFT_TEST_POSTGRES_URL.
 //
-// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D102.
+// The AMQP settings carry the service's own TLS identity (CA, client certificate
+// and key), because the broker verifies client certificates (D98).
+//
+// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D98, D102.
 package config

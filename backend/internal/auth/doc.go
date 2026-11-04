@@ -16,7 +16,9 @@
 //     it without ALLOW_INSECURE_APIKEY_AUTH=true.
 //   - Admin holds the Supabase secret key; only cmd/api builds one, for account
 //     deletion and the operator's user view.
+//   - The JWKS keyfunc library is pinned at v3.7.0 to keep the module's Go floor
+//     (D30).
 //
 // See docs/ARCHITECTURE.md → Services (Auth and users); docs/SUPABASE.md → What
-// the services check; D29, D32, D36.
+// the services check; D29, D30, D32, D36.
 package auth

@@ -799,12 +799,13 @@ const (
 )
 
 var (
-	// BehaviorKinds is the set of Behavior.Kind values that cmd/api's journal validation and
-	// the built-in seed (db.seed) accept.
+	// BehaviorKinds is the closed set of Behavior.Kind values (API.md, Journal): the app decodes
+	// it as a Swift enum, so a new member is a breaking change. cmd/api's journal validation and
+	// the built-in seed (db.seed) check it.
 	BehaviorKinds = []string{BehaviorYesNo, BehaviorCount, BehaviorTime}
-	// BehaviorCategories is the set of Behavior.Category values, in display order:
-	// store.Behaviors sorts by position in this slice. "custom" is for the user's own
-	// behaviors; a built-in never uses it.
+	// BehaviorCategories is the closed set of Behavior.Category values (API.md, Journal), in
+	// display order: store.Behaviors sorts by position in this slice. "custom" is for the
+	// user's own behaviors; a built-in never uses it.
 	BehaviorCategories = []string{"substances", "sleep", "recovery", "supplements", "health", "lifestyle", "custom"}
 )
 

@@ -4,8 +4,10 @@
 // write the day scores: it queues days by publishing ingested (and
 // session.completed) and scoring consumes them. What it does compute and store
 // (a completed session's load, personal records, the estimated max heart rate)
-// uses scoring's own functions, so it matches what scoring stores. Events go out
-// only through the outbox, never to the broker directly (D101).
+// uses scoring's own functions. The session load matches what scoring stores
+// for the day; scoring never stores the records or max_hr, so the api is their
+// only writer. Events go out only through the outbox, never to the broker
+// directly (D101).
 //
 // Invariants:
 //   - api is the only service that builds the Supabase admin client and the only
