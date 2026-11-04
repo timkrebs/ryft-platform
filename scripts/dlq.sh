@@ -16,8 +16,12 @@
 # purge them; D84). A replay republishes only the keys its queue's consumer is bound for
 # (scoring: ingested, session.completed; notify: scored, session.scored, refresh), and only
 # a letter whose type is its key; any other goes back into its dead-letter queue as it was,
-# and is named. A letter taken off is never dropped: one that is neither replayed nor put
-# back is put back on the way out, or else kept in a directory the script names.
+# and is named. A letter the broker dead-lettered itself (an x-death entry for the consumer's
+# queue) is read by that entry alone: its key is the entry's routing key, if the exchange was
+# ryft.events, and any Ryft-* header on it is ignored; a doubtful one is named "check by hand".
+# A letter taken off is never dropped: one that is neither replayed nor put back is put back on
+# the way out, or else kept in a directory the script names, with the cluster or broker it came
+# from (put-back refuses another); put-back removes the directory once it is empty.
 #
 # The cluster is named, never kubectl's current context (scripts/lib/kube.sh):
 #   KUBE_CONTEXT=<context> scripts/dlq.sh list        (or: scripts/dlq.sh --context <context> list)
@@ -97,8 +101,18 @@ VHOST=${RABBITMQ_VHOST:-ryft}
 if [ -n "${RABBITMQ_MGMT_URL:-}" ]; then
   [ -z "$ctx" ] || refuse "--context and RABBITMQ_MGMT_URL exclude each other"
   : "${RABBITMQ_USER:?with RABBITMQ_MGMT_URL set RABBITMQ_USER and RABBITMQ_PASSWORD}" "${RABBITMQ_PASSWORD:?}"
+  # Where the letters live, for a kept directory (source.txt): the URL without a login in it.
+  source_id="url $(printf '%s' "$RABBITMQ_MGMT_URL" | sed 's|^\([A-Za-z][A-Za-z0-9+.-]*://\)[^/@]*@|\1|')"
 else
   kube_context "$ctx" || exit 2
+  source_id="context $KUBE_CONTEXT"
+fi
+# put-back goes only where the letters came from: a directory kept by a replay against one
+# cluster (or broker) is not put into another's dead-letter queue.
+if [ "$cmd" = put-back ]; then
+  [ -f "$dir/source.txt" ] || refuse "$dir has no source.txt: it is not a directory dlq.sh kept"
+  [ "$(cat "$dir/source.txt")" = "$source_id" ] \
+    || refuse "$dir holds letters from $(cat "$dir/source.txt"), not from $source_id: name that one"
 fi
 
 # The keys each dead-letter queue's consumer is bound for (amqpbus consumerKeys; a Go test
@@ -200,7 +214,8 @@ else
   CURL_EXTRA=(--cacert "$tmp/ca.crt" --resolve "rabbitmq.$ns.svc:$port:127.0.0.1")
 fi
 api() { # METHOD PATH [BODY FILE] [MAX SECONDS, default 120] → the answer
-  curl -fsS -K "$tmp/curl.conf" --max-time "${4:-120}" ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} \
+  # -q first: a ~/.curlrc is not read (it could undo --cacert or add a header that leaks the login).
+  curl -q -fsS -K "$tmp/curl.conf" --max-time "${4:-120}" ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} \
     -H 'content-type: application/json' -X "$1" ${3:+--data-binary "@$3"} "$mgmt$2"
 }
 publish() { # EXCHANGE BODY-FILE: true only when the broker routed it
@@ -227,8 +242,12 @@ letters = json.load(open(sys.argv[2]))
 print("%s: %d" % (sys.argv[1], len(letters)))
 for m in letters:
     p = m.get("properties") or {}; h = p.get("headers") or {}
+    xd = h.get("x-death") if isinstance(h.get("x-death"), list) else []
+    # An x-death entry for the consumer's own queue: the broker dead-lettered it (a replay reads
+    # its key from that entry, not from Ryft-*); entries for retry tiers do not count.
+    broker = any(isinstance(e, dict) and e.get("queue") == sys.argv[1].split(".", 1)[1] for e in xd)
     print(json.dumps({"subject": h.get("Ryft-Subject"), "attempts": h.get("Ryft-Deliveries"),
-        "error": h.get("Ryft-Error"), "message_id": p.get("message_id"), "dead_lettered_by_broker": "x-death" in h,
+        "error": h.get("Ryft-Error"), "message_id": p.get("message_id"), "dead_lettered_by_broker": broker,
         "replayed_before": h.get("x-ryft-replayed") is True}))
 PY
     done ;;
@@ -239,24 +258,52 @@ PY
       keep=1; echo "✗ dlq.sh: the take from $q failed: letters it took may be only in $tmp/taken.json" >&2; exit 1; }
     # Per letter, written at once (pending/ appears only when all are): the publish to
     # ryft.events with its key, the one back into its dead-letter queue, and the verdict.
-    python3 - "$tmp/taken.json" "${q#dlq.}" "$(replay_keys "$q")" "$tmp/pending" <<'PY' || {
+    DLQ_SOURCE=$source_id python3 - "$tmp/taken.json" "${q#dlq.}" "$(replay_keys "$q")" "$tmp/pending" <<'PY' || {
 import json, os, sys
 taken, consumer, keys, out = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3].split(), sys.argv[4]
 if not isinstance(taken, list):
     sys.exit("the take did not answer a list")
 death = ("x-death", "x-ryft-attempt", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason",
-         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason")
+         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason", "x-delivery-count", "x-acquired-count")
 # amqpbus.HeaderReplayed: the consumer takes the letter as a redelivery (events.Redelivered), so
 # scoring finishes a re-score its failed attempts left half-done (D112). Only the boolean true
 # counts. Without x-ryft-attempt the letter has all its attempts again.
 REPLAYED = "x-ryft-replayed"
+
+def broker_deaths(h):
+    """The x-death entries for the consumer's own queue: the broker dead-lettered the letter itself
+    (its delivery limit, or a publish of ours into ryft.dlx that failed), so nothing of ours wrote
+    its Ryft-* headers. Retry tiers leave entries for their own queues, which do not count."""
+    xd = h.get("x-death")
+    return [e for e in xd if isinstance(e, dict) and e.get("queue") == consumer] if isinstance(xd, list) else []
+
+def broker_key(entries):
+    """The routing key a broker-dead-lettered letter was published to ryft.events with, from its
+    x-death entry (the entry's exchange must be ryft.events: a retry's copy came through
+    ryft.requeue, with the queue's name as key). "" when the entries do not agree on one."""
+    seen = set()
+    for e in entries:
+        rk = e.get("routing-keys")
+        seen.add((e.get("exchange"), rk[0] if isinstance(rk, list) and rk and isinstance(rk[0], str) else ""))
+    if len(seen) != 1:
+        return ""
+    exchange, key = seen.pop()
+    return key if exchange == "ryft.events" else ""
+
 new = out + ".new"
 os.mkdir(new)
+with open(os.path.join(new, "source.txt"), "w") as f:
+    f.write(os.environ["DLQ_SOURCE"] + "\n")
 manifest = []
 for i, m in enumerate(taken, 1):
     p = m.get("properties") or {}
     h = dict(p.get("headers") or {})
-    key = h.get("Ryft-Subject") or p.get("type") or ""
+    deaths = broker_deaths(h)
+    if deaths:
+        # Ignore every Ryft-* header: whoever wrote them, it was not the consumer.
+        key = broker_key(deaths)
+    else:
+        key = h.get("Ryft-Subject") or p.get("type") or ""
     typ = p.get("type") or key
     def body(k, headers):
         return {"properties": {"content_type": p.get("content_type", "application/json"), "delivery_mode": 2,
@@ -266,10 +313,13 @@ for i, m in enumerate(taken, 1):
     with open(os.path.join(new, name + ".back.json"), "w") as f:
         json.dump(body(consumer, h), f)
     what = "message_id %s, key %s" % (json.dumps(p.get("message_id", "")), json.dumps(key))
-    if key not in keys:
-        verdict, what = "refused", what + ": not a key %s's consumer is bound for" % consumer
+    hand = "; dead-lettered by the broker: check by hand" if deaths else ""
+    if not key:
+        verdict, what = "refused", what + ": its x-death does not say it was published to ryft.events with one key" + hand
+    elif key not in keys:
+        verdict, what = "refused", what + ": not a key %s's consumer is bound for" % consumer + hand
     elif typ != key:
-        verdict, what = "refused", what + ": its type %s is not its key" % json.dumps(typ)
+        verdict, what = "refused", what + ": its type %s is not its key" % json.dumps(typ) + hand
     else:
         verdict = "replay"
         clean = {k: v for k, v in h.items() if not k.startswith("Ryft-") and k not in death}
@@ -307,5 +357,18 @@ PY
     [ "$answer" = PURGE ] || { echo "nothing deleted"; exit 1; }
     api DELETE "/api/queues/$VHOST/$q/contents" && echo "$q purged" ;;
   put-back)
-    put_back_dir "$dir" ;;
+    put_back_dir "$dir" || exit 1
+    # Nothing left in it: remove it, and the temp directory a replay kept it in, when that holds
+    # nothing else of use (a taken.json, the raw answer of a failed take, stays: see OPERATIONS).
+    rm -rf "$dir"
+    parent=$(dirname "$dir")
+    case $(basename "$parent") in
+      dlq.??????)
+        other=
+        for f in "$parent"/* "$parent"/.[!.]*; do
+          [ -e "$f" ] || continue
+          case ${f##*/} in ca.crt | get.json) ;; *) other=1 ;; esac
+        done
+        [ -n "$other" ] || rm -rf "$parent" ;;
+    esac ;;
 esac

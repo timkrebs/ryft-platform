@@ -10,7 +10,7 @@
 #   kube_context [--local] [name]  name (default $KUBE_CONTEXT) must be set, a plain context name and
 #                                  listed; then KUBE_CONTEXT is it and "→ <name>" goes to stderr
 #                                  (not with KUBE_QUIET set). --local also refuses a context that
-#                                  reaches EKS (kube_refuse_eks). Returns 2 otherwise, before any
+#                                  looks like EKS by the signs kube_refuse_eks reads (a heuristic). Returns 2 otherwise, before any
 #                                  kubectl call when no name is set.
 #   k <kubectl args>               kubectl --context "$KUBE_CONTEXT" <args>, only after kube_context
 #   kube_refuse_eks <name>         returns 1 (and says why) when the context reaches EKS, or when its
@@ -56,7 +56,10 @@ k() {
 
 # EKS, by any of four signs: the name (ryft-prod-*, an EKS ARN), the cluster entry's name (an
 # EKS ARN, as `aws eks update-kubeconfig` writes it), the API server (*.eks.amazonaws.com) or
-# the sign-in (an `aws … eks get-token` or aws-iam-authenticator exec). One is enough.
+# the sign-in (an `aws … eks get-token` or aws-iam-authenticator exec). One is enough. A
+# heuristic, not a proof: a context that reaches EKS by none of these signs (a proxy URL, a
+# renamed token helper, a name that hides it) is taken for a local one. The local targets are
+# for a cluster you know is local; this stops the mistakes that leave a trace in the config.
 kube_refuse_eks() {
   _kube_why=$(kubectl config view -o json 2>/dev/null | KUBE_CHECK=$1 python3 -c '
 import json, os, sys

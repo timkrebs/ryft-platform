@@ -30,6 +30,12 @@ case $DAYS in '' | 0* | *[!0-9]* | ?????*) usage ;; esac
 [ "$DAYS" -le 400 ] || usage
 VERSION=$(sed -n 's/^const ModelVersion = "\(.*\)"$/\1/p' "$(dirname "$0")/../backend/internal/scoring/version.go")
 if [ "${RESCORE_LOCAL:-}" = 1 ]; then
+  # The compose stack is not a cluster: a named context would be ignored, and an operator who
+  # named one meant a cluster.
+  if [ -n "$ctx" ] || [ -n "${KUBE_CONTEXT:-}" ]; then
+    echo "✗ RESCORE_LOCAL=1 rescores the compose stack and ignores a context: drop KUBE_CONTEXT/--context, or drop RESCORE_LOCAL" >&2
+    exit 2
+  fi
   echo "rescoring the last $DAYS days of every user to model $VERSION on the compose stack" >&2
   exec ${CONTAINER:-podman} compose exec -T scoring /app rescore -days "$DAYS"
 fi

@@ -47,8 +47,10 @@ this machine; check with `kubectl config current-context`):
    Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
    (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
    (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
-4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
-   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+4. **Rescore:** `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. It runs
+   `kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app rescore -days 400` in the context
+   you name (never the current one; the name from `kubectl config get-contexts -o name`, if your alias differs)
+   and prints the model first. Worked: the last line names `2026.10.2` and
    no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
 5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
    allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
@@ -931,14 +933,17 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 (cd infra/vault && export VAULT_TOKEN=… && \
   terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
-make k8s-validate && make k8s-apply-eks
-make monitoring-apply                                  # Grafana Cloud collector, after infra/vault has the token
+# Every cluster command names its cluster, per command (D150). ryft-prod-euc1 is the alias the
+# `aws eks update-kubeconfig` above wrote (the name from `kubectl config get-contexts -o name`, if yours differs).
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=ryft-prod-euc1
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1      # Grafana Cloud collector, after infra/vault has the token
 make smoke-prod                                        # after every deploy (OPERATIONS.md → Deploy and roll back)
 make alerts-apply                                      # alert rules into Grafana Cloud (OBSERVABILITY.md → Alerts)
-scripts/rescore_all.sh                                 # after a deploy that changed scoring rules or the model version (Beta: yes)
-kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
+KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh     # after a deploy that changed scoring rules or the model version (Beta: yes)
+kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
 ```
 
 Run `make smoke-supabase` only with the dedicated test user.
 
-Self-hosted (k3s etc.): `make k8s-apply-local` (`OPERATIONS.md` → Self-hosted).
+Self-hosted (k3s etc.): `make k8s-apply-local KUBE_CONTEXT=<your local context>` (`OPERATIONS.md` → Self-hosted); it refuses a
+context that looks like EKS (a heuristic).

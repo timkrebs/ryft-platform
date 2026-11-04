@@ -7,7 +7,7 @@
 # What the collector gathers is configured remotely in Grafana Cloud (Fleet
 # Management). RYFT's pod logs must stay out of it (they carry users' daily scores;
 # they go to CloudWatch instead): see docs/OBSERVABILITY.md → Grafana Cloud.
-#   make monitoring-apply
+#   make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   (the context is always named, D150)
 cluster:
   name: ryft-prod-euc1
 

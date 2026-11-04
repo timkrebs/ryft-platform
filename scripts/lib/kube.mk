@@ -9,7 +9,8 @@
 #   - the context reaches a recipe only through the environment ("$$KUBE_CONTEXT"), never
 #     pasted into it, so no value can break out of its quoting (the guard refuses odd
 #     names anyway).
-# KUBECTL_LOCAL and the local guard also refuse any context that reaches EKS.
+# KUBECTL_LOCAL and the local guard also refuse a context that looks like EKS (a heuristic: scripts/lib/kube.sh
+# kube_refuse_eks reads the name, the cluster, the server and the token helper).
 export KUBE_CONTEXT
 override KUBE_MISSING := KUBE_CONTEXT is not set: name the cluster, e.g. make $(MAKECMDGOALS) KUBE_CONTEXT=<context> (kubectl config get-contexts -o name); kubectl's current context is never used (scripts/lib/kube.sh)
 override KUBE_REQUIRED = $(if $(KUBE_CONTEXT),,$(error $(KUBE_MISSING)))

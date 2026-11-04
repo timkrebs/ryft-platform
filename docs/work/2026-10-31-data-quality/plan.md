@@ -81,7 +81,8 @@ The app ignores unknown fields; the platform ignores a missing `deleted`. A fold
 ## Needs the user
 
 - Merge order and the production run of `scoring fold-workouts` (reporter's account `-dry-run` first), then
-  `scripts/rescore_all.sh` (runs in the *current* kubectl context: set `ryft-prod-euc1` deliberately, then reset).
+  `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` (it runs only in the context you name, D150; kubectl's current
+  context is never used).
 - Grafana alert rules: confirm they load (rules are in git; provisioning path per OPERATIONS).
 - No Terraform, no secrets, no GitHub settings in this work.
 

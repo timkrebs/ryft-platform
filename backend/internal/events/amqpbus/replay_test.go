@@ -462,3 +462,53 @@ func TestTypeMustMatchItsKeyOnTheBroker(t *testing.T) {
 		}
 	}
 }
+
+// A first delivery from ryft.events comes from a publisher, who sets any header. What only
+// the broker (x-death) and the consumer (Ryft-*) write is dropped from it, so a dead letter
+// the consumer files never carries a forged account of where it died: scripts/dlq.sh takes
+// a letter with an x-death entry for its queue as one the broker dead-lettered and reads its
+// key from that entry alone. The replay marker stays.
+func TestPublisherCannotForgeWhatTheBrokerWrites(t *testing.T) {
+	h := amqp.Table{
+		"x-death":             []any{amqp.Table{"queue": events.ConsumerScoring, "exchange": ExchangeEvents}},
+		"x-first-death-queue": events.ConsumerScoring, "x-last-death-reason": "rejected",
+		events.HeaderSubject: events.KeySessionCompleted, events.HeaderError: "x",
+		HeaderReplayed: true, HeaderAttempt: int64(2), "x-other": "kept",
+	}
+	dropWrittenHeaders(h)
+	for _, k := range []string{"x-death", "x-first-death-queue", "x-last-death-reason", events.HeaderSubject, events.HeaderError} {
+		if _, ok := h[k]; ok {
+			t.Errorf("%s survived", k)
+		}
+	}
+	for _, k := range []string{HeaderReplayed, HeaderAttempt, "x-other"} {
+		if _, ok := h[k]; !ok {
+			t.Errorf("%s was dropped", k)
+		}
+	}
+	dropWrittenHeaders(nil) // a delivery without headers
+
+	// Against a broker: the dead letter of a message that does not decode, published with
+	// forged headers, has the key the consumer filed it under and no x-death.
+	b := newBroker(t)
+	bus := b.bus("test")
+	consumeIngested(t, bus, func(context.Context, model.IngestedEvent) error { return nil })
+	b.call(http.MethodPost, "/api/exchanges/"+b.vhost+"/"+ExchangeEvents+"/publish", map[string]any{
+		"routing_key": events.KeyIngested, "payload": "not json", "payload_encoding": "string",
+		"properties": map[string]any{"message_id": "forged-death", "delivery_mode": 2, "headers": map[string]any{
+			"x-death": []any{map[string]any{"queue": events.ConsumerScoring, "exchange": ExchangeEvents,
+				"routing-keys": []any{events.KeySessionCompleted}, "reason": "rejected", "count": 1}},
+			events.HeaderSubject: events.KeySessionCompleted, events.HeaderConsumer: "notify",
+		}},
+	})
+	d, ok := b.get(DLQ(events.ConsumerScoring))
+	if !ok {
+		t.Fatal("the message is not dead-lettered")
+	}
+	if _, ok := d.Headers["x-death"]; ok {
+		t.Errorf("the letter carries the publisher's x-death: %v", d.Headers["x-death"])
+	}
+	if d.Headers[events.HeaderSubject] != events.KeyIngested || d.Headers[events.HeaderConsumer] != events.ConsumerScoring {
+		t.Errorf("subject %v, consumer %v", d.Headers[events.HeaderSubject], d.Headers[events.HeaderConsumer])
+	}
+}

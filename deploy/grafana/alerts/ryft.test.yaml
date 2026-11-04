@@ -40,7 +40,7 @@ tests:
         alertname: DeadLetters
         exp_alerts:
           - exp_labels: { severity: warning, subject: ingested }
-            exp_annotations: { summary: "ingested: an event was dead-lettered (KUBE_CONTEXT=<context> scripts/dlq.sh list)" }
+            exp_annotations: { summary: "ingested: an event was dead-lettered (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
       - eval_time: 5m
         alertname: DatabaseDown
         exp_alerts:
@@ -188,7 +188,7 @@ tests:
         alertname: RabbitMQDeadLetters
         exp_alerts:
           - exp_labels: { severity: warning, queue: dlq.notify }
-            exp_annotations: { summary: "RabbitMQ dlq.notify holds dead letters (KUBE_CONTEXT=<context> scripts/dlq.sh list)" }
+            exp_annotations: { summary: "RabbitMQ dlq.notify holds dead letters (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
       - eval_time: 5m
         alertname: RabbitMQAlarm
         exp_alerts:

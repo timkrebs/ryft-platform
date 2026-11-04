@@ -73,6 +73,9 @@ jobs:
               - '.golangci.yml'
               - 'docs/API.md'
               - 'scripts/coverage.sh'
+              # amqpbus's replay tests run the script against the broker.
+              - 'scripts/dlq.sh'
+              - 'scripts/lib/kube.sh'
               - '.github/workflows/ci.yml'
             # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
             # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
@@ -80,9 +83,6 @@ jobs:
               - 'docs/ARCHITECTURE.md'
               - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
-              # amqpbus's replay tests run the script against the broker.
-              - 'scripts/dlq.sh'
-              - 'scripts/lib/kube.sh'
             smoke:
               - 'backend/**'
               - 'scripts/**'

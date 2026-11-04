@@ -13,6 +13,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -503,11 +504,17 @@ func (b *Bus) subscribe(ctx context.Context, log *slog.Logger, conn *amqp.Connec
 // limit (and then dead-letters itself). A retry tier's copy, the broker's redelivery and
 // a replayed dead letter (HeaderReplayed) reach the handler as a redelivery.
 func (b *Bus) handle(ctx context.Context, log *slog.Logger, queue string, d amqp.Delivery, h handler) {
+	if d.Exchange == ExchangeEvents {
+		dropWrittenHeaders(d.Headers)
+	}
 	attempt := attemptOf(d)
 	replayed, malformed := replayOf(d)
 	if malformed {
 		log.Warn("amqp: ignoring "+HeaderReplayed+", it is not the boolean true", "queue", queue, "key", keyOf(d),
 			"type", fmt.Sprintf("%T", d.Headers[HeaderReplayed]))
+	}
+	if replayed {
+		log.Info("amqp: handling a replayed dead letter", "queue", queue, "key", keyOf(d), "message_id", d.MessageId)
 	}
 	if attempt > 0 || d.Redelivered || replayed {
 		metrics.Redeliveries.WithLabelValues(queue).Inc()
@@ -614,6 +621,21 @@ func copyOf(d amqp.Delivery, h amqp.Table) amqp.Publishing {
 	}
 	return amqp.Publishing{Headers: h, ContentType: d.ContentType, DeliveryMode: amqp.Persistent, MessageId: d.MessageId,
 		Type: typ, Timestamp: d.Timestamp, Body: d.Body}
+}
+
+// dropWrittenHeaders removes from a delivery's headers what only the broker (x-death and
+// its x-first-death-*, x-last-death-*) and deadLetter (the Ryft-* of events) write. A first
+// delivery from ryft.events comes from a publisher, who sets any header: a copy of its
+// message into a delay tier or the dead-letter queue must not carry a forged account of
+// where it died, which scripts/dlq.sh reads to tell a letter the broker dead-lettered
+// (its key then comes from x-death alone).
+func dropWrittenHeaders(h amqp.Table) {
+	for k := range h {
+		if strings.HasPrefix(k, "Ryft-") || k == "x-death" || strings.HasPrefix(k, "x-first-death-") ||
+			strings.HasPrefix(k, "x-last-death-") {
+			delete(h, k)
+		}
+	}
 }
 
 // replayOf reads HeaderReplayed strictly: replayed only for the boolean true under exactly

@@ -123,6 +123,11 @@ KUBE_CONTEXT=kind-ryft rescore || fail "rescore_all.sh with KUBE_CONTEXT: $(cat 
 calls | grep -qx -- '--context kind-ryft -n ryft-scoring exec deploy/scoring -- /app rescore -days 400' || fail "default days: $(calls)"
 RESCORE_LOCAL=1 CONTAINER=podman rescore 7 || fail "RESCORE_LOCAL: $(cat "$t/err")"
 [ "$(calls)" = "podman compose exec -T scoring /app rescore -days 7" ] || fail "RESCORE_LOCAL calls: $(calls)"
+# The compose stack is not a cluster: a context named with it is a mistake, not ignored.
+rc=0; RESCORE_LOCAL=1 CONTAINER=podman rescore 7 --context kind-ryft || rc=$?
+[ "$rc" = 2 ] && [ -z "$(calls)" ] && grep -q 'RESCORE_LOCAL=1' "$t/err" || fail "RESCORE_LOCAL with --context: $rc $(calls) $(cat "$t/err")"
+rc=0; KUBE_CONTEXT=kind-ryft RESCORE_LOCAL=1 CONTAINER=podman rescore 7 || rc=$?
+[ "$rc" = 2 ] && [ -z "$(calls)" ] || fail "RESCORE_LOCAL with KUBE_CONTEXT: $rc $(calls)"
 
 # The Makefile, dry (`make -n` prints and does not run; its sub-make is dry too). Without a
 # context every cluster target stops. With one, every kubectl and helm call that reaches a
@@ -166,6 +171,14 @@ check_make eks kind-ryft k8s-rabbitmq RABBITMQ=deploy/rabbitmq/ KUBE_CONTEXT=kin
 check_make local kind-ryft k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres KUBE_CONTEXT=kind-ryft
 rc=0; make -s -n -C "$ROOT" k8s-rabbitmq KUBE_CONTEXT=kind-ryft > "$t/out" 2>&1 || rc=$?
 if [ "$rc" = 0 ] || ! grep -q 'RABBITMQ is not set' "$t/out"; then fail "k8s-rabbitmq without RABBITMQ: $rc $(cat "$t/out")"; fi
+# RABBITMQ is exactly one of the two values (a trailing / allowed): anything else, or two words,
+# stops before the first cluster call.
+for bad in "deploy/rabbitmq/ deploy/k8s/overlays/local-postgres" "deploy/rabbitmq deploy/rabbitmq" "deploy/k8s/overlays/eks" \
+           "deploy/rabbitmq//" "deploy/rabbitmq/operators" "./deploy/rabbitmq"; do
+  rc=0; make -s -n -C "$ROOT" k8s-rabbitmq "RABBITMQ=$bad" KUBE_CONTEXT=kind-ryft > "$t/out" 2>&1 || rc=$?
+  if [ "$rc" = 0 ] || ! grep -q 'RABBITMQ must be' "$t/out"; then fail "k8s-rabbitmq RABBITMQ=$bad: $rc $(cat "$t/out")"; fi
+  if grep -q -- '--context' "$t/out"; then fail "k8s-rabbitmq RABBITMQ=$bad reached a cluster call: $(cat "$t/out")"; fi
+done
 # A quote in the value stays in the environment (the guard refuses it when it runs, above).
 check_make local "kind-ryft'x" k8s-delete-local "KUBE_CONTEXT=kind-ryft'x"
 # make -e with the variables in the environment, or on the command line, swaps nothing in.
@@ -196,5 +209,11 @@ if [ -e "$t/pwned" ] || grep -q -- '--context' "$t/calls"; then fail "a quote in
 scratch scratch-local KUBE_CONTEXT=kind-ryft
 [ "$(grep -- '--context' "$t/calls")" = "--context kind-ryft delete -k deploy/k8s/overlays/local-postgres
 --context kind-ryft apply -f -" ] || fail "the scratch calls on kind-ryft: $(calls) $(cat "$t/out")"
+
+# k8s-check-auth: a guard that refuses is not reported as an expired login (make -i goes on after a failed prerequisite).
+rm -f "$t/calls"; touch "$t/calls"
+rc=0; make -i -s -C "$ROOT" k8s-check-auth KUBE_CONTEXT=nope > "$t/out" 2>&1 || rc=$?
+if grep -q 'missing or expired' "$t/out" || ! grep -q 'no such context' "$t/out"; then fail "k8s-check-auth with a refused context: $rc $(cat "$t/out")"; fi
+if grep -q -- '--context' "$t/calls"; then fail "k8s-check-auth reached a cluster call on a refused context: $(calls)"; fi
 
 echo "✓ kube_test: no context no call, a listed context on every call, EKS refused by name, cluster, server or token (and with no cluster entry or server) for the local targets, rescore_all.sh, the Makefile's cluster targets (dry; -e, -i and a quote in the value)"

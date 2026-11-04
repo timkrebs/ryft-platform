@@ -1736,6 +1736,8 @@ sent, and whether a second account shares its phone.
 
 ## D99 — The broker's topology, retries and rights, defined once in Go
 
+- **Amended by D150:** a replayed dead letter is marked `x-ryft-replayed` and handled as a redelivery; the
+  key of a delivery from `ryft.events` is its routing key; `dlq.sh` replays only bound keys.
 - **One source:** `internal/events/amqpbus/topology.go`. `go run ./cmd/rabbitmq-topology`
   writes the Topology Operator's objects (`deploy/rabbitmq/topology/topology.yaml`, 63
   objects in sync waves after the cluster) and the definitions compose and the tests
@@ -3007,6 +3009,20 @@ Engine, and fails with the changed fields grouped by field.
   is handled and filed by its routing key (topic permissions constrain it); a type that is neither
   empty nor that key is a bad event. So a forged type can't be laundered past the permissions by
   the operator's replay, nor reach another handler.
+- **Letters the broker dead-lettered** (its delivery limit, or the consumer's own copy into the DLQ
+  failed) carry no `Ryft-*` the consumer wrote, so a replay ignores any such header on a letter with an
+  `x-death` entry for the consumer's own queue: the key is that entry's routing key, taken only when the
+  entry's exchange is `ryft.events`, and the type must be empty or equal it; else "dead-lettered by the
+  broker: check by hand". amqpbus drops `x-death`, its `x-first-death-*`/`x-last-death-*` and `Ryft-*` from a
+  first delivery from `ryft.events`, because a publisher sets any header and a forged `x-death` would
+  otherwise pick the key.
+- **Residual:** a letter dead-lettered by an image from before this has `Ryft-Subject` = the type its
+  publisher set, not the routing key it arrived with, and (consumer-filed) no `x-death` entry for the
+  consumer's queue, so the script cannot tell it from a good one. If that type is a bound key and the
+  letter's own type equals it, it is replayed under it: ingest, which may publish only `ingested`, could
+  have sent a `session.completed` under `ingested`, which the old image filed as `session.completed`.
+  OPERATIONS asks for `show` or `purge` before the first replay after the rollout; the DLQ's 14-day
+  TTL ends the window.
 - **No letter lost:** each taken letter is written to its own files, put back on any failure or
   signal (an uninterruptible way out), or kept with its path printed (`dlq.sh put-back <dir>`);
   credentials sit in a mode-600 curl config, never in argv; bodies go from files.
@@ -3014,8 +3030,13 @@ Engine, and fails with the changed fields grouped by field.
   target that reaches a cluster require `KUBE_CONTEXT` (checked against the kubeconfig, announced,
   passed as `--context` on every call; `scripts/lib/kube.sh`, `kube.mk` with `override`s and the
   guard in each call's own shell line, so `make -e`/`-i` can't skip it). `k8s-apply-local`,
-  `k8s-delete-local` and a non-production `k8s-rabbitmq` refuse any context that reaches EKS (name,
-  cluster ARN, server, token exec). Arguments are checked before any cluster access.
+  `k8s-delete-local` and a non-production `k8s-rabbitmq` refuse a context that looks like EKS (name,
+  cluster ARN, server, token exec: a heuristic, not a proof; a context that reaches EKS by none of these
+  signs is taken for a local one). `k8s-rabbitmq` takes exactly `deploy/rabbitmq` or the local overlay.
+  A directory a failed replay kept records its source (context or broker URL) and `put-back` refuses
+  another. Arguments are checked before any cluster access.
 - **Consequences:** no `POST /v1/recompute` after a replay once scoring runs an image with this
-  (OPERATIONS says so for the window before). Plain `kubectl` lines in the runbooks still use the
+  (OPERATIONS says so for the window before). A replay can cost up to six full catch-up re-scores per
+  letter that keeps failing; OPERATIONS has the checklist (one letter first, 16 minutes, the alerts).
+  Plain `kubectl` lines in the runbooks still use the
   current context: the user's kubeconfig default should not be production (STATUS).

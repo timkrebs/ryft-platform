@@ -65,8 +65,10 @@ Argo CD deploys the app (step 8; **Deploy and roll back**). Its waves keep the o
 the break-glass `make k8s-apply-eks KUBE_CONTEXT=<context>` enforces by hand, which runs
 these steps, waiting at each one. Every Makefile target and operator script that talks to
 a cluster needs it named (`KUBE_CONTEXT=<context>`, one of `kubectl config get-contexts -o
-name`) and refuses to start without it; kubectl's current context is never used
-(`scripts/lib/kube.sh`), and the self-hosted targets refuse an EKS context.
+name`; production's is `ryft-prod-euc1` if you kept the alias `aws eks update-kubeconfig
+--alias` wrote) and refuses to start without it; kubectl's current context is never used
+(`scripts/lib/kube.sh`), and the self-hosted targets refuse a context that looks like EKS
+(its name, cluster, server or token helper: a heuristic, not a proof).
 
 0. It checks that kubectl is logged in (`k8s-check-auth`): kubectl takes its EKS
    token from `aws eks get-token`, so expired AWS credentials fail every call with
@@ -160,7 +162,7 @@ their history`;
 `ryft_days_rescored_total`, `OBSERVABILITY.md`). A user whose re-score there failed is
 left until their next local day (the error is logged). Only users who synced in the
 last 48 hours get the pass; the others get it with their next sync, or now with
-`POST /v1/recompute` or `scripts/rescore_all.sh`. A scoring letter replayed from
+`POST /v1/recompute` or `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. A scoring letter replayed from
 `dlq.scoring` (`scripts/dlq.sh replay`, RabbitMQ → Dead letters) arrives as a redelivery:
 like a retry, it re-scores the days after its days and finishes what its failed attempts
 began, so no recompute is needed after a replay (once scoring runs an image that reads
@@ -249,7 +251,7 @@ break-glass below.
 4. **Watch:** `kubectl -n argocd get applications`, the UI, or the alerts
    (`ArgoSyncFailed`, `ArgoAppDegraded`, `ArgoAppOutOfSync`). From outside, `make
    smoke-prod` still checks the edge and probes the gates. After a model bump,
-   `scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
+   `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
    did not happen.
 
 **The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
@@ -802,49 +804,105 @@ evaluates every script in Argo CD's own library set; add cases there with every 
 **Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
 failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
 management API itself, on the cluster you name (`KUBE_CONTEXT=<context>` or `--context
-<context>`; it never uses kubectl's current context, `scripts/lib/kube.sh`):
+<context>`; it never uses kubectl's current context, `scripts/lib/kube.sh`). Name it per
+command, as below; do not `export` it, or the next script in that shell runs against it too:
 
 ```bash
-export KUBE_CONTEXT=<context>             # kubectl config get-contexts -o name
-scripts/dlq.sh list                       # per queue, one line per letter: subject, attempts, error
-scripts/dlq.sh show dlq.scoring 5         # in full (n: 1 to 1000, or all)
-scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key, as a redelivery
-scripts/dlq.sh purge dlq.notify           # notify's: a push hours late is wrong (replay refuses without --force)
-scripts/dlq.sh put-back <dir>             # letters a failed replay kept in <dir>, back into their DLQ
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list                  # per queue, one line per letter: subject, attempts, error
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh show dlq.scoring 5    # in full (n: 1 to 1000, or all)
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh replay dlq.scoring 1  # after fixing the cause: back on ryft.events with its key, as a redelivery
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh purge dlq.notify      # notify's: a push hours late is wrong (replay refuses without --force)
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh put-back <dir>        # letters a failed replay kept in <dir>, back into their DLQ
 ```
 
+(`ryft-prod-euc1`: the name from `kubectl config get-contexts -o name`, if your alias differs.)
+`list` and `show` read at most 1000 letters a queue, so a DLQ with more shows 1000.
+
+**Before a replay**, all of these:
+
+1. The cause is fixed and **scoring runs the image that fixed it** (and reads the marker: check the
+   pin in `overlays/eks` and that no hold keeps the services back). A deploy or rollout is not in
+   progress: a restart interrupts a handling, and a surge runs two consumers for 10 to 30 s.
+2. scoring's `ryft_amqp_connected` is 1, there is no `RabbitMQAlarm`, and the queue itself
+   (`scoring`) is near empty, so the replay is not behind a backlog.
+3. If the letters came from a crash, `kubectl --context ryft-prod-euc1 -n ryft-scoring get pods` shows no
+   restart climbing and no `OOMKilled`: a letter that crashed the pod will crash it again.
+4. `list` shows the letters you expect (count, subjects, the same error); `show` a few. **The first
+   replay after this change is rolled out starts with `show` (or `purge`)**: a letter dead-lettered
+   by an image from before D150 carries Ryft-Subject = the type its publisher set, which
+   the script cannot tell from a real one (a letter of type `session.completed` published under
+   the key `ingested` was filed under `session.completed`). The 14-day TTL empties these by itself.
+5. Start with `replay dlq.scoring 1`, watch it succeed (below), then the rest.
+
+**While it runs.** A replayed letter that fails again needs six handlings (at 0, +5 s, +30 s,
+then +5 min three times), so about 16 minutes pass before it is back in the DLQ, and each
+handling is a full catch-up re-score of the user's days after the letter's days: up to six re-scores
+per failing letter, and fifty failing letters is 300. Hence one letter first.
+
+- **Do not call it done** until `list` is empty 20 minutes later. `ryft_events_handled_total{result="retry"}`
+  rising means a replayed letter is failing again; `failed` is it going back.
+- Alerts: `RabbitMQDeadLetters` resolves as soon as the letters are taken off and fires again
+  about 20 minutes later (16 minutes of attempts, then its 5 minutes) if they come back;
+  `DeadLetters` counts dead-letterings over 1 hour, so after a successful replay it keeps firing
+  for up to an hour on the dead-letterings that came before. The first dead letter after a
+  scoring pod restarted is invisible to `DeadLetters` (its counter starts at 1, and `increase()`
+  does not count the first sample); `RabbitMQDeadLetters` sees it.
+
 A replay publishes each letter to `ryft.events` with its key, marked `x-ryft-replayed:
-true` and without the `Ryft-*`, `x-death` and `x-ryft-attempt` headers. Its consumer
-handles it as a redelivery (`events.Redelivered`), so a scoring letter re-scores the 30
+true` and without the `Ryft-*`, `x-death`, `x-delivery-count` and `x-ryft-attempt` headers. Its
+consumer handles it as a redelivery (`events.Redelivered`), so a scoring letter re-scores the 30
 days after its days and finishes a re-score its attempts left half-done (D112); it is
-counted in `ryft_nats_redeliveries_total`. A scoring image from before the marker
-ignores it: until scoring runs an image with it (check the pin in `overlays/eks`, and
-that no hold keeps the services back), follow a replay with `POST /v1/recompute` of its
+counted in `ryft_nats_redeliveries_total`, and scoring logs `handling a replayed dead letter` with
+the key and message id. A scoring image from before the marker
+ignores it: until scoring runs an image with it, follow a replay with `POST /v1/recompute` of its
 days. It gets all six attempts again; if it fails them, it is back in the DLQ and `list`
 shows it with `"replayed_before": true` (replaying it again before the cause is fixed
 only repeats that).
 
-A replay republishes only the keys its queue's consumer is bound for (`dlq.scoring`:
-`ingested`, `session.completed`; `dlq.notify`: `scored`, `session.scored`, `refresh`) and
-only a letter whose type is its key. Any other letter (a forged type: the broker's
-administrator would otherwise send it where its publisher may not) goes back into its
-DLQ as it was and is named on stderr, as is a letter the broker does not route; the
-script then exits 1. Taking letters off and republishing them are separate calls, so a
+**Which letters are replayed** (D150). Only the keys the queue's consumer is bound for
+(`dlq.scoring`: `ingested`, `session.completed`; `dlq.notify`: `scored`, `session.scored`,
+`refresh`), and a letter's key is read from where the publisher cannot write it:
+
+- A letter the consumer filed carries `Ryft-Subject`, the routing key it arrived with; its type
+  must equal that key.
+- A letter **the broker dead-lettered** (its delivery limit, or the consumer's own copy into the
+  DLQ failed: an `x-death` entry for the consumer's queue, `list` says `"dead_lettered_by_broker":
+  true`) has no `Ryft-*` the consumer wrote, so any it carries is ignored. Its key is the routing
+  key of that `x-death` entry, and only when the entry says the exchange was `ryft.events`; its
+  type must be empty or equal that key. Anything else (a retry's copy, entries that disagree, a
+  type that says otherwise) is refused as "dead-lettered by the broker: check by hand": `show`
+  it and decide.
+
+Any other letter (a forged type: the broker's administrator would otherwise send it where its
+publisher may not) goes back into its DLQ as it was and is named on stderr, as is a letter the
+broker does not route; the script then exits 1. amqpbus drops `x-death` and `Ryft-*` from a first
+delivery from `ryft.events` (a publisher sets any header), so a letter the consumer files never
+carries a forged account of where it died.
+
+**Nothing is lost.** Taking letters off and republishing them are separate calls, so a
 dropped port-forward can strand letters half-way: the script puts back what is left on
 its way out, and if even that fails it keeps them in a directory it names (mode 700,
-without the credentials). Put them back with `scripts/dlq.sh put-back <dir>` once the
-cluster answers again. A second Ctrl-C, a TERM or a dropped session (SIGHUP) does not
-stop that way out, and it names the directory before it starts; after a dropped session
+without the credentials), with `source.txt` saying which cluster (or broker URL) they came from.
+Put them back with `KUBE_CONTEXT=… scripts/dlq.sh put-back <dir>` once the cluster answers
+again: it refuses a directory from another cluster or broker, and removes the directory (and its
+`dlq.*` parent) when nothing is left in it. A second Ctrl-C, a TERM or a dropped session (SIGHUP)
+does not stop that way out, and it names the directory before it starts; after a dropped session
 the message may not have reached you, so look for a `dlq.*` directory in `$TMPDIR` (or
-`/tmp`) with a `pending/` in it, and put back what it holds. The take itself may run for
+`/tmp`) with a `pending/` in it, and put back what it holds. A `dlq.*` directory with a
+`taken.json` is different: the take's answer could not be read, and the letters are only in that
+file. Read it, republish what matters by hand (the management API's publish, or `put-back` after
+splitting it into `*.back.json` files), then delete the directory; `taken.json` holds message
+bodies, which name users and days. A kept directory must not outlive the DLQ's 14 days: after that
+the letters would be older than any copy of them, and the replay's premise (the cause fixed) is stale.
+The take itself may run for
 half an hour (its letters are gone from the queue before the answer arrives); every other
 call gives up after two minutes. A letter can then be in its DLQ twice (put back after a publish
 whose answer was lost); handlers are idempotent (D100). Every argument is checked first,
 and without a named context the script reaches no cluster; credentials go to `curl` in a
-config file, never on its command line.
+config file, never on its command line, and `curl -q` never reads `~/.curlrc`.
 
 Re-drive after fixing the cause (a deploy, a data fix). scoring's letters only name a
-user and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same if a
+user and days, so `POST /v1/recompute` or `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` repair the same if a
 letter is gone; notify's are listed and purged, never re-sent late.
 
 **The outbox** (D101): events waiting for the broker are rows of `outbox` in Postgres
@@ -982,8 +1040,8 @@ accounts. `scripts/local-secrets.sh` writes one env file per namespace with rand
 passwords (git-ignored, refuses to overwrite; a directory from the NATS days only gets
 the RabbitMQ users added). Needs cert-manager; `make k8s-apply-local` puts in the
 internal CA (`helm template` of the same chart as on EKS) and the RabbitMQ operators
-first. It and `make k8s-delete-local` need the cluster named and refuse any EKS context
-(by its name, `ryft-prod-*` or an EKS ARN; its cluster's ARN; an `*.eks.amazonaws.com`
+first. It and `make k8s-delete-local` need the cluster named and refuse a context that looks
+like EKS, a heuristic (by its name, `ryft-prod-*` or an EKS ARN; its cluster's ARN; an `*.eks.amazonaws.com`
 server; or an EKS token in its user), since on EKS they would change or delete the
 service namespaces and the broker's volumes.
 
@@ -1363,7 +1421,7 @@ Feature flags); the app hides the import while it is off, and the endpoint check
 (`403 import_not_enabled`), so the kill switch does not wait for the app's cached config.
 A resend never overwrites what the user changed in the app since (`newer_on_server`, D141).
 
-`scripts/trace.sh <request id>` shows the access line and the import's one line
+`KUBE_CONTEXT=ryft-prod-euc1 scripts/trace.sh <request id>` shows the access line and the import's one line
 (`msg="train import"`: `result`, the items sent and their statuses, the days queued;
 never a title, a value, an id list or the source app), then scoring's lines for the same id.
 

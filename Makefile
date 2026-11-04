@@ -78,7 +78,7 @@ check-swift:
 
 # The cluster every target below talks to is named: KUBE_CONTEXT=<context>. Every kubectl
 # and helm call goes through $(KUBECTL), $(KUBECTL_LOCAL) or $(HELM), which run the guard
-# right before it (scripts/lib/kube.mk); the local targets refuse any EKS context.
+# right before it (scripts/lib/kube.mk); the local targets refuse a context that looks like EKS (a heuristic, scripts/lib/kube.sh).
 include scripts/lib/kube.mk
 
 # One namespace per service (docs/ARCHITECTURE.md → Namespaces).
@@ -171,22 +171,26 @@ k8s-apply-local: k8s-context-local
 	$(KUBECTL_LOCAL) -n ryft-migrate delete job migrate --ignore-not-found
 	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres
 
-# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ) (the broker,
+# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ_DIR) (the broker,
 # its topology; for local-postgres everything), then wait for the broker. Server-side
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
-# deploy/rabbitmq is the EKS broker; anything else (local-postgres) uses the local guard.
-override RABBITMQ_EKS = $(filter deploy/rabbitmq,$(RABBITMQ:%/=%))
-override RABBITMQ_KUBECTL = $(if $(RABBITMQ),,$(error RABBITMQ is not set: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(RABBITMQ_EKS),$(KUBECTL),$(KUBECTL_LOCAL))
+# RABBITMQ is exactly one of two values: deploy/rabbitmq is the EKS broker (the EKS guard);
+# deploy/k8s/overlays/local-postgres uses the local guard. A trailing / is allowed. Anything
+# else, or more than one word, stops before the first cluster call.
+override RABBITMQ_DIR = $(RABBITMQ:%/=%)
+override RABBITMQ_EKS = $(filter deploy/rabbitmq,$(RABBITMQ_DIR))
+override RABBITMQ_CHECK = $(if $(RABBITMQ),,$(error RABBITMQ is not set: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter 1,$(words $(RABBITMQ))),,$(error RABBITMQ must be one word: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter deploy/rabbitmq deploy/k8s/overlays/local-postgres,$(RABBITMQ_DIR)),,$(error RABBITMQ must be deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres, not $(RABBITMQ)))
+override RABBITMQ_KUBECTL = $(RABBITMQ_CHECK)$(if $(RABBITMQ_EKS),$(KUBECTL),$(KUBECTL_LOCAL))
 k8s-rabbitmq: $(if $(RABBITMQ_EKS),k8s-context,k8s-context-local)
 	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | { $(RABBITMQ_KUBECTL) apply -f -; }
 	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k deploy/rabbitmq/operators
 	for d in rabbitmq-cluster-operator messaging-topology-operator; do $(RABBITMQ_KUBECTL) -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
-	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ)
+	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ_DIR)
 	$(RABBITMQ_KUBECTL) -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
 
 # On EKS this would delete the service namespaces and the broker's volumes: the local guard
-# refuses any EKS context, in the same shell line as the call.
+# refuses a context that looks like EKS (a heuristic), in the same shell line as the call.
 k8s-delete-local: k8s-context-local
 	$(KUBECTL_LOCAL) delete -k deploy/k8s/overlays/local-postgres
 
@@ -314,7 +318,8 @@ argocd-luatest:
 # make every call fail with "the server has asked for the client to provide
 # credentials" (2026-10-20). Say so before applying anything.
 k8s-check-auth: k8s-context
-	@if ! { $(KUBECTL) auth whoami; } >/dev/null 2>&1; then \
+	@$(KUBE_GUARD) || exit 1; \
+	if ! { $(KUBECTL) auth whoami; } >/dev/null 2>&1; then \
 	  echo "✗ kubectl's login to $$KUBE_CONTEXT is missing or expired."; \
 	  aws sts get-caller-identity --query Arn --output text 2>&1 | sed '/^$$/d; s/^/  aws sts: /' | head -2; \
 	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \

@@ -43,7 +43,7 @@ while time.time() < end:
   *) echo "fake kubectl: unexpected: $*" >&2; exit 3 ;;
 esac
 K
-# curl: the management API. Records each call (argv, method, path, the body from its file, the
+# curl: the management API (FAKE_SET=-broker answers <queue>-broker.json instead). Records each call (argv, method, path, the body from its file, the
 # curl config's mode and user) and answers /get from <queue>.json, a publish to ryft.events with
 # FAKE_ROUTED (default true), any other publish routed (but not the call numbers in
 # FAKE_UNROUTED_DLX), compact as RabbitMQ writes it. FAKE_FAIL (call numbers) and FAKE_FAIL_FROM
@@ -86,7 +86,7 @@ for a in args:
             sys.stderr.write("curl: (7) Failed to connect: the port-forward is gone\n"); sys.exit(7)
 if path.endswith("/get"):
     sys.stdout.write("not json" if os.environ.get("FAKE_BAD_TAKE") else "[]" if os.environ.get("FAKE_EMPTY")
-                     else open(os.path.join(d, path.split("/")[-2] + ".json")).read())
+                     else open(os.path.join(d, path.split("/")[-2] + os.environ.get("FAKE_SET", "") + ".json")).read())
 elif path.endswith("/ryft.events/publish"):
     print('{"routed":%s}' % ("false" if os.environ.get("FAKE_ROUTED") == "false" else "true"))
 elif path.endswith("/publish"):
@@ -101,7 +101,7 @@ chmod +x "$t/bin/kubectl" "$t/bin/curl"
 FAKE_PW=$PW python3 - "$t" <<'PY'
 import base64, json, os, sys
 d = sys.argv[1]
-death = {"x-ryft-attempt": 5, "x-death": [{"count": 1, "exchange": "ryft.retry", "queue": "scoring.retry.5m",
+death = {"x-ryft-attempt": 5, "x-delivery-count": 2, "x-acquired-count": 3, "x-death": [{"count": 1, "exchange": "ryft.retry", "queue": "scoring.retry.5m",
          "reason": "expired", "routing-keys": ["scoring.retry.5m"], "time": 1761200000}],
          "x-first-death-exchange": "ryft.retry", "x-first-death-queue": "scoring.retry.5s", "x-first-death-reason": "expired",
          "x-last-death-exchange": "ryft.retry", "x-last-death-queue": "scoring.retry.5m", "x-last-death-reason": "expired"}
@@ -118,6 +118,36 @@ json.dump([letter("first", "ingested", "ingested", "scoring", {"trace": "kept"})
            letter("forged", "ingested", "scored", "scoring", {}),
            letter("unbound", "scored", "scored", "scoring", {})], open(os.path.join(d, "dlq.scoring.json"), "w"))
 json.dump([letter("push", "scored", "scored", "notify", {})], open(os.path.join(d, "dlq.notify.json"), "w"))
+# Letters the broker dead-lettered itself (its delivery limit): an x-death entry for the consumer's
+# own queue, and no Ryft-* header the consumer wrote (a forged one may be there). The key is the
+# entry's routing key, taken only when its exchange is ryft.events. The last one is a letter of a
+# pre-D150 image: Ryft-Subject is the publisher's type, and no entry names the consumer's queue.
+def broker(mid, typ, entry, extra):
+    h = {"x-delivery-count": 10}
+    h.update(extra)
+    if entry is not None:
+        h["x-death"] = [{"count": 1, "exchange": "ryft.retry", "queue": "scoring.retry.5s", "reason": "expired",
+                         "routing-keys": ["scoring.retry.5s"], "time": 1761200000}]
+        for n, e in enumerate(entry if isinstance(entry, list) else [entry]):
+            h["x-death"].append(dict(e, queue="scoring", reason=("delivery_limit", "rejected")[n % 2], count=1, time=1761200100))
+    body = json.dumps({"user_id": "00000000-0000-0000-0000-000000000001", "days": ["2026-10-20"], "reason": "sync"})
+    props = {"message_id": mid, "delivery_mode": 2, "content_type": "application/json", "headers": h}
+    if typ is not None:
+        props["type"] = typ
+    return {"payload_bytes": len(body), "redelivered": False, "exchange": "ryft.dlx", "routing_key": "scoring", "message_count": 0,
+            "properties": props, "payload": body, "payload_encoding": "string"}
+ev = {"exchange": "ryft.events", "routing-keys": ["ingested"]}
+json.dump([broker("b-ok", "ingested", ev, {}),
+           broker("b-forged-type", "session.completed", ev, {}),
+           broker("b-forged-subject", "ingested", ev, {"Ryft-Subject": "session.completed", "Ryft-Consumer": "scoring"}),
+           broker("b-no-type", None, ev, {}),
+           broker("b-requeued", "ingested", {"exchange": "ryft.requeue", "routing-keys": ["scoring"]}, {}),
+           broker("b-requeue-key", "ingested", {"exchange": "ryft.requeue", "routing-keys": ["ingested"]}, {}),
+           broker("b-unbound", "scored", {"exchange": "ryft.events", "routing-keys": ["scored"]}, {}),
+           broker("b-two-keys", "ingested", [ev, {"exchange": "ryft.events", "routing-keys": ["session.completed"]}], {}),
+           broker("pre-d150", "session.completed", None, {"Ryft-Subject": "session.completed", "Ryft-Deliveries": "6"})],
+          open(os.path.join(d, "dlq.scoring-broker.json"), "w"))
+json.dump([], open(os.path.join(d, "dlq.notify-broker.json"), "w"))
 b64 = lambda s: base64.b64encode(s.encode()).decode()
 json.dump({"kind": "Secret", "data": {"username": b64("dlq-user"), "password": b64(os.environ["FAKE_PW"])}},
           open(os.path.join(d, "user-secret.json"), "w"))
@@ -128,7 +158,7 @@ run() { # mgmt|cluster <args>: dlq.sh with the fakes; mgmt against the fake API,
   rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n" "$t/events"; touch "$t/kubectl.calls" "$t/curl.calls" "$t/events"
   local mode=$1; shift
   if [ "$mode" = mgmt ]; then
-    PATH="$t/bin:$PATH" RABBITMQ_MGMT_URL=http://dlq-test.invalid RABBITMQ_USER=dlq-user RABBITMQ_PASSWORD=$PW \
+    PATH="$t/bin:$PATH" RABBITMQ_MGMT_URL=${MGMT_URL:-http://dlq-test.invalid} RABBITMQ_USER=dlq-user RABBITMQ_PASSWORD=$PW \
       bash "$ROOT/scripts/dlq.sh" "$@"
   else
     PATH="$t/bin:$PATH" bash "$ROOT/scripts/dlq.sh" "$@"
@@ -140,7 +170,7 @@ import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 kcalls = open(sys.argv[2]).read().splitlines()
 letters = json.load(open(sys.argv[3]))
-exec(sys.argv[4])' "$t/curl.calls" "$t/kubectl.calls" "$t/dlq.scoring.json" "$1"
+exec(sys.argv[4])' "$t/curl.calls" "$t/kubectl.calls" "$t/dlq.scoring${FAKE_SET:-}.json" "$1"
 }
 no_calls() { [ ! -s "$t/kubectl.calls" ] && [ ! -s "$t/curl.calls" ] || fail "$1: called kubectl ($(cat "$t/kubectl.calls")) or curl ($(cat "$t/curl.calls"))"; }
 refused() { # <mode> <args>: exit 2, and neither kubectl nor curl ran
@@ -228,7 +258,8 @@ assert mt(gets[0]) == "1800" and {mt(c) for c in calls if c is not gets[0]} == {
 pubs = [c for c in calls if c["path"].endswith("/publish")]
 assert [p["path"].split("/")[-2] for p in pubs] == ["ryft.events"] * 3 + ["ryft.dlx"] * 2, pubs
 death = ("x-death", "x-ryft-attempt", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason",
-         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason")
+         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason", "x-delivery-count", "x-acquired-count")
+assert all(c["argv"][0] == "-q" for c in calls), [c["argv"][:2] for c in calls]  # no ~/.curlrc
 for p, m, own in zip(pubs[:3], letters, [{"trace": "kept"}, {}, {}]):
     b, h = p["data"], p["data"]["properties"]["headers"]
     assert h.get("x-ryft-replayed") is True and not [k for k in h if k.startswith("Ryft-") or k in death], h
@@ -274,6 +305,33 @@ done
 out=$(run mgmt replay notify --force 2>"$t/err") || fail "replay notify --force: $(cat "$t/err")"
 check 'assert [c["data"]["count"] for c in calls if c["path"].endswith("/get")] == [1000], calls' || fail "--force taken as the count"
 
+# 4b. Letters the broker dead-lettered (an x-death entry for the consumer's own queue): the key
+# comes from that entry alone and only when its exchange is ryft.events; every Ryft-* header is
+# ignored (a forged Ryft-Subject changes nothing); the type must be empty or the key; the rest
+# (a retry's copy, an unbound key, entries that disagree, a forged type) is put back and named
+# "check by hand". A letter of a pre-D150 image (no entry for the consumer's queue) keeps the
+# Ryft-Subject rule: bound key, type equal to it.
+rc=0; out=$(FAKE_SET=-broker run mgmt replay dlq.scoring all 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 4, put back 5" ] || fail "broker letters: $rc $out $(cat "$t/err")"
+for id in b-forged-type b-requeued b-requeue-key b-unbound b-two-keys; do
+  grep -q "! not replayed, put back: message_id \"$id\".*dead-lettered by the broker: check by hand" "$t/err" || fail "$id is not named for a check by hand: $(cat "$t/err")"
+done
+grep -q 'message_id "b-forged-type", key "ingested": its type "session.completed" is not its key; dead' "$t/err" || fail "the forged type is not said: $(cat "$t/err")"
+check '
+pubs = [c for c in calls if c["path"].endswith("/publish")]
+events = [p["data"] for p in pubs if p["path"].split("/")[-2] == "ryft.events"]
+ids = [e["properties"]["message_id"] for e in events]
+assert ids == ["b-ok", "b-forged-subject", "b-no-type", "pre-d150"], ids
+# Each under its x-death routing key (the forged Ryft-Subject, session.completed, is not used), typed
+# with it, marked, and without anything the broker or the consumer wrote.
+assert [e["routing_key"] for e in events] == ["ingested", "ingested", "ingested", "session.completed"], events
+assert [e["properties"]["type"] for e in events] == ["ingested", "ingested", "ingested", "session.completed"], events
+for e in events:
+    assert e["properties"]["headers"] == {"x-ryft-replayed": True}, e
+back = [p["data"]["properties"]["message_id"] for p in pubs if p["path"].split("/")[-2] == "ryft.dlx"]
+assert back == ["b-forged-type", "b-requeued", "b-requeue-key", "b-unbound", "b-two-keys"], back
+' || fail "the broker letters (above)"
+
 # 5. Nothing is lost. The connection drops after the first replay: the publish of the second
 # letter and its put-back fail, the put-back on the way out too, so the four letters left stay
 # in a kept directory (mode 700, no credentials), named on stderr; put-back brings them home.
@@ -290,16 +348,26 @@ mode=$(stat -c %a "$kept" 2>/dev/null || stat -f %Lp "$kept")
   || fail "kept: $(find "$kept")"
 [ ! -e "$kept/curl.conf" ] || fail "the kept directory holds the credentials"
 grep -rqF -- "$PW" "$kept" && fail "the kept directory holds the password"
+[ "$(cat "$kept/pending/source.txt")" = "url http://dlq-test.invalid" ] || fail "the kept directory does not record where it is from: $(cat "$kept/pending/source.txt")"
+# Only where the letters came from: another broker, or a cluster, is refused before any call.
+rc=0; MGMT_URL=http://elsewhere.invalid run mgmt put-back "$kept/pending" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 2 ] && grep -q 'holds letters from url http://dlq-test.invalid, not from url http://elsewhere.invalid' "$t/err" && [ ! -s "$t/curl.calls" ] \
+  || fail "put-back into another broker: $rc $(cat "$t/err")"
+rc=0; KUBE_CONTEXT=test-ctx run cluster put-back "$kept/pending" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 2 ] && grep -q 'not from context test-ctx' "$t/err" && [ ! -s "$t/curl.calls" ] || fail "put-back into a cluster: $rc $(cat "$t/err")"
+mkdir "$t/nosrc"; cp "$kept/pending/0002.back.json" "$t/nosrc/"
+rc=0; run mgmt put-back "$t/nosrc" >/dev/null 2>"$t/err" || rc=$?
+[ "$rc" = 2 ] && grep -q 'has no source.txt' "$t/err" || fail "put-back without a source: $rc $(cat "$t/err")"
+rm -rf "$t/nosrc"
 rc=0; out=$(run mgmt put-back "$kept/pending" 2>"$t/err") || rc=$?
 [ "$rc" = 0 ] || fail "put-back: $rc $(cat "$t/err")"
+[ ! -e "$kept" ] || fail "put-back left $(ls -A "$kept")"
 check '
 back = [c["data"] for c in calls if c["path"] == "/api/exchanges/ryft/ryft.dlx/publish"]
 assert [b["properties"]["message_id"] for b in back] == ["again", "odd", "forged", "unbound"], back
 for b, m in zip(back, letters[1:]):
     assert b["routing_key"] == "scoring" and b["properties"]["headers"] == m["properties"]["headers"], b
 ' || fail "put-back (above)"
-compgen -G "$kept/pending/*.json" >/dev/null && fail "put-back left $(ls "$kept/pending")"
-rm -rf "$kept"
 echo '{"routing_key": "ryft.events", "properties": {}}' > "$t/x.back.json"; mkdir -p "$t/odd"; mv "$t/x.back.json" "$t/odd/"
 refused mgmt put-back "$t/odd"
 
@@ -386,8 +454,16 @@ lines = sys.stdin.read().splitlines()
 assert lines[0] == "dlq.scoring: 5" and lines[6] == "dlq.notify: 1", lines
 rows = [json.loads(l) for l in lines[1:6]]
 assert [r["replayed_before"] for r in rows] == [False, True, False, False, False], rows
-assert all(r["attempts"] == "6" and r["dead_lettered_by_broker"] for r in rows), rows
+assert all(r["attempts"] == "6" and r["dead_lettered_by_broker"] is False for r in rows), rows  # tier entries do not count
 ' || fail "list printed: $out"
+out=$(FAKE_SET=-broker run mgmt list 2>"$t/err") || fail "list (broker): $(cat "$t/err")"
+echo "$out" | python3 -c '
+import json, sys
+lines = sys.stdin.read().splitlines()
+assert lines[0] == "dlq.scoring: 9" and lines[10] == "dlq.notify: 0", lines
+rows = [json.loads(l) for l in lines[1:10]]
+assert [r["dead_lettered_by_broker"] for r in rows] == [True] * 8 + [False], rows
+' || fail "list (broker) printed: $out"
 check '
 assert {c["data"]["ackmode"] for c in calls if c["path"].endswith("/get")} == {"ack_requeue_true"}, calls
 assert not [c for c in calls if c["path"].endswith("/publish")], calls

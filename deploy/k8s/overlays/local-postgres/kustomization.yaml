@@ -6,7 +6,7 @@
 # (namespaces, service accounts) and the per-namespace Secrets, from env files
 # written by scripts/local-secrets.sh. Needs cert-manager; `make k8s-apply-local`
 # adds the internal CA and the RabbitMQ operators first (their CRDs), then this.
-#   make k8s-apply-local
+#   make k8s-apply-local KUBE_CONTEXT=<your local context>   (a local cluster; the target refuses one that looks like EKS)
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
