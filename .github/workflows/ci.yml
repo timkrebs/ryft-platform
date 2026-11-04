@@ -71,7 +71,9 @@ jobs:
               - 'backend/**'
               - '.golangci.yml'
               - 'docs/API.md'
+              - 'docs/ARCHITECTURE.md'
               - 'scripts/coverage.sh'
+              - 'scripts/pkgmap.sh'
               - '.github/workflows/ci.yml'
             smoke:
               - 'backend/**'
@@ -229,10 +231,14 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      # The version is also GOLANGCI_LINT_VERSION in the Makefile (`make lint` runs this job locally).
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           working-directory: backend
+      # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
+      # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
+      - run: ./scripts/pkgmap.sh --check
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a

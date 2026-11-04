@@ -1,12 +1,14 @@
 REGISTRY ?= ghcr.io/timkrebs/ryft
 TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SERVICES := ingest scoring api notify migrate
+# The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
+GOLANGCI_LINT_VERSION := v2.15.0
 
 # Docker if it is installed, otherwise Podman (its `compose` runs the same file).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -214,6 +216,22 @@ coverage:
 # unless LOAD_ALLOW_REMOTE=1; never aim it at production (docs/OBSERVABILITY.md -> Baselines).
 load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
+
+# What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
+# map check. The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
+# report different findings, so a mismatch is said out loud before the run.
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
+	@have=$$(golangci-lint version 2>&1 | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1); \
+	if [ "$$have" != "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))" ]; then \
+	  echo "lint: WARNING: golangci-lint $${have:-of unknown version} found, CI pins $(GOLANGCI_LINT_VERSION); findings can differ from CI's" >&2; \
+	fi
+	cd backend && golangci-lint run
+	./scripts/pkgmap.sh --check
+
+# docs/ARCHITECTURE.md -> Package map is generated; fails (1) when it is stale, `scripts/pkgmap.sh` rewrites it.
+pkgmap-check:
+	./scripts/pkgmap.sh --check
 
 # Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
 # ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and

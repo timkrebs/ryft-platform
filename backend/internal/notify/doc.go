@@ -1,6 +1,7 @@
-// Package notify decides what RYFT pushes, to whom and when: the morning score,
-// a scored strength session or its records, a silent refresh, and a reminder
-// when no data has arrived. cmd/notify runs it.
+// Package notify decides what RYFT pushes, to whom and when.
+//
+// The pushes are the morning score, a scored strength session or its records, a
+// silent refresh, and a reminder when no data has arrived. cmd/notify runs it.
 //
 // It must not write anything but notifications_sent and push_tokens (dead
 // tokens are deleted, last_success_at is updated): the ryft_notify role allows
