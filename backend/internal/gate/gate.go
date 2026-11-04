@@ -1,8 +1,3 @@
-// Package gate is how a service acts on an account a gate would refuse (D87): the
-// beta invite gate (BETA_GATE) and the consent to the current privacy policy
-// (CONSENT_ENFORCE, D78). ingest's POST /v1/sync and the api's POST
-// /v1/train/import share the consent rule (D129); the api's invite gate and
-// GET /v1/me/sync use the same pieces.
 package gate
 
 import (

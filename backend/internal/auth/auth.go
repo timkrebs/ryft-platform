@@ -1,13 +1,3 @@
-// Package auth authenticates /v1 requests. In production the bearer is a
-// Supabase access token (a JWT) verified against the project's JWKS; for local
-// development a shared API key can stand in (AUTH_MODE=apikey). The verified
-// Principal — and whatever OnAuth adds, such as the user row — travels in the
-// request context.
-//
-// Status codes matter to the app: it refreshes its token once on a 401 and
-// signs the user out if the retry fails too. So 401 means only "this token is
-// not acceptable"; anything that stops us from checking a token (JWKS
-// unreachable, database down) is a 503 the app simply retries.
 package auth
 
 import (
@@ -41,6 +31,8 @@ type Principal struct {
 type principalKey struct{}
 type userKey struct{}
 
+// WithPrincipal stores the verified caller. Middleware calls it before OnAuth runs, so
+// OnAuth and every handler see the same Principal.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
 	return context.WithValue(ctx, principalKey{}, p)
 }

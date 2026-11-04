@@ -1,6 +1,3 @@
-// api is the side the iOS app talks to apart from uploads: daily scores,
-// trends, workouts, user settings, a recompute trigger, and Train (exercises,
-// plans, logged sessions).
 package main
 
 import (
