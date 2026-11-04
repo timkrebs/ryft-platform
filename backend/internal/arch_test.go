@@ -111,6 +111,11 @@ var denyRules = []denyRule{
 		Deny: []string{"internal/store", "internal/db", "internal/events/..."},
 	},
 	{
+		ID: "R7", Why: "internal/app holds the pool and nothing else of the driver: SQL stays in store, db and the outbox",
+		From: []string{"internal/app"}, Deny: []string{"github.com/jackc/..."},
+		Except: []string{"github.com/jackc/pgx/v5/pgxpool"},
+	},
+	{
 		ID: "R9", Why: "leaf packages import nothing of ours, so cycles stay impossible (each one's doc.go)",
 		From: []string{
 			"internal/config", "internal/logx", "internal/logx/logcheck", "internal/metrics", "internal/retry",
@@ -139,6 +144,7 @@ var onlyRules = []onlyRule{
 		Target: []string{"github.com/jackc/pgx/v5/pgxpool"},
 		Importers: []allowed{
 			{Pkg: "internal/db"}, {Pkg: "internal/store"}, {Pkg: "internal/events/outbox"},
+			{Pkg: "internal/app", Reason: "opens and closes the services' pool and hands it to Build (services start and stop through internal/app)"},
 		},
 	},
 	{
@@ -149,12 +155,20 @@ var onlyRules = []onlyRule{
 			{Pkg: "internal/testsupport", Reason: "test helper that opens the throwaway database"},
 			{Pkg: "cmd/api", Reason: "pgx.Tx for the outbox callback (D101)"},
 			{Pkg: "cmd/ingest", Reason: "pgx.Tx for the outbox callback (D101) and pgconn.PgError codes in fail"},
+			{Pkg: "internal/app", Reason: "the pgxpool.Pool it opens and closes; no other pgx type (the deny rule above)"},
 		},
 	},
 	{
 		ID: "R10", Why: "DATA_ENCRYPTION_KEY exists only in api's namespace (D48)",
 		Target:    []string{"internal/sealed"},
 		Importers: []allowed{{Pkg: "cmd/api"}},
+	},
+	{
+		ID: "R13", Why: "app owns a service's lifecycle; subcommands and migrate are one-shot and stay outside it (services start and stop through internal/app)",
+		Target: []string{"internal/app"},
+		Importers: []allowed{
+			{Pkg: "cmd/api"}, {Pkg: "cmd/ingest"}, {Pkg: "cmd/scoring"}, {Pkg: "cmd/notify"},
+		},
 	},
 }
 
@@ -458,8 +472,9 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		"internal/events":             {Path: "internal/events", Imports: []string{"internal/events/amqpbus"}},
 		"internal/auth":               {Path: "internal/auth", Imports: []string{"internal/db"}},
 		"internal/config":             {Path: "internal/config", Imports: []string{"internal/model"}},
-		"internal/notify":             {Path: "internal/notify", Imports: []string{"internal/events/amqpbus", "internal/sealed", "github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5"}},
+		"internal/notify":             {Path: "internal/notify", Imports: []string{"internal/events/amqpbus", "internal/sealed", "github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5", "internal/app"}},
 		"cmd/api":                     {Path: "cmd/api", Imports: []string{"internal/sealed", "github.com/jackc/pgx/v5"}},
+		"internal/app":                {Path: "internal/app", Imports: []string{"github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5"}},
 	}
 	want := []string{
 		"R1: internal/model imports internal/store",
@@ -474,9 +489,11 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		"R9: internal/config imports internal/model",
 		"R5: internal/notify imports internal/events/amqpbus, which only internal/eventbus, cmd/rabbitmq-topology may import",
 		"R10: internal/notify imports internal/sealed, which only cmd/api may import",
-		"R7: internal/notify imports github.com/jackc/pgx/v5/pgxpool, which only internal/db, internal/store, internal/events/outbox may import",
+		"R7: internal/notify imports github.com/jackc/pgx/v5/pgxpool, which only internal/db, internal/store, internal/events/outbox, internal/app may import",
 		"R7: internal/notify imports github.com/jackc/pgx/v5/pgxpool, which only internal/db, internal/store, internal/events/outbox, internal/testsupport",
 		"R7: internal/notify imports github.com/jackc/pgx/v5,",
+		"R7: internal/app imports github.com/jackc/pgx/v5.",
+		"R13: internal/notify imports internal/app, which only cmd/api, cmd/ingest, cmd/scoring, cmd/notify may import",
 	}
 	got := checkImports(g, denyRules, onlyRules)
 	for _, w := range want {
