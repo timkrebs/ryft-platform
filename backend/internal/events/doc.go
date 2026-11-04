@@ -2,7 +2,8 @@
 // encoding, and what a handler's error means.
 //
 // That is Permanent and Defer; the Redelivered flag on a handler's context is
-// how a transport says a message came before.
+// how a transport says a message came before (a retry, the broker's redelivery or
+// a dead letter replayed with scripts/dlq.sh).
 //
 // It must not know a transport or a table: it imports no amqpbus, store or db,
 // and the outbox and the broker client both meet it through Sender and Bus.

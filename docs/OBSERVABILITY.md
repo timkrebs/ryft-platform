@@ -9,7 +9,7 @@ on stdout and shipped to CloudWatch; see **Logs** below.
 
 Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
 `k8s-monitoring` chart (`deploy/monitoring/k8s-monitoring.yaml`, `make
-monitoring-apply`) in namespace `monitoring`: two Alloy collectors named as the
+monitoring-apply KUBE_CONTEXT=<context>`) in namespace `monitoring`: two Alloy collectors named as the
 onboarding names them, `alloy-daemonset` (one per node, host network) and
 `alloy-deployment` (one replica, cluster-wide work and the OTLP receiver), plus
 node-exporter, kube-state-metrics, Beyla, Kepler (energy), OpenCost (cost) and
@@ -36,6 +36,12 @@ CloudWatch instead (D52). The collector can read every container's log file
 exclude namespaces matching `ryft-.*` from pod-log collection. Check in Explore that
 `{namespace=~"ryft-.*"}` returns nothing.
 
+Two scrapes are the chart's own, not Fleet's (T12-e, D120; **Admission** below): the API
+servers' admission metrics (job `ryft/kube-apiserver-admission`) and kube-state-metrics'
+series for the admission bindings (job `ryft/admission-bindings`). They write through a
+destination of their own with the `PROM_USERNAME` and `GC_TOKEN` of `ryft-secrets`, the
+token the Fleet pipelines write with.
+
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
 
@@ -47,7 +53,7 @@ container would be refused, and the services emit their own metrics. The chart e
 by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
 every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
 default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
-Management log setting above are unaffected. Apply with `make monitoring-apply`, then
+Management log setting above are unaffected. Apply with `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
 check read-only:
 
 ```bash
@@ -106,6 +112,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`. The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. |
+| `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines (consumers, timers, the outbox relay, the servers). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a `/readyz` check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. Not in the `Panics` alert yet. |
 | `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
 | `ryft_http_nul_stripped_total` | counter | `route` | ingest | Syncs accepted after the NULs were removed from their strings (`POST /v1/sync` does not refuse them: the app would never resend the page). One per request, however many NULs; never the text. A steady rate points at a source or device name the app should clean. |
 | `ryft_auth_failures_total` | counter | `reason` | ingest, api | Rejected `/v1` requests. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed). |
@@ -116,7 +123,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_workouts_fold_skipped_total` | counter | `reason` | ingest | Syncs whose same-source fold did nothing: `too_many` (more than 5 000 workouts of the request's sources in its range). Log line `workout fold skipped`. |
 | `ryft_events_published_total` | counter | `reason`, `result` | ingest, api, scoring | Sends to the broker (by the outbox relay, D101), `ok`/`error`, on RabbitMQ also `unroutable` (no queue bound for the key: a topology change missed): `ingested` with `sync` (ingest), `recompute` and `session` (an edited or deleted completed session; api), `session.completed` as `session_completed` (api), and scoring's `scored`, `session_scored`, `refresh`. An `error` here is retried by the relay; an event is lost only if its outbox row could not be written (also `error`, and the sync or completion answers `503`). |
 | `ryft_events_handled_total` | counter | `reason`, `result` | scoring, notify | Consumed events: `ok`, `retry` (to the next retry tier: 5 s, 30 s, 5 min), `failed` (the sixth attempt failed — dead-lettered), `bad` (unparseable — dead-lettered), `dropped` (cannot succeed, e.g. the user was deleted), `deferred` (notify: held until quiet hours end). notify's reasons are `scored`, `session_scored` and `refresh`. |
-| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received again, `consumer` the queue: redelivered by the broker (a consumer died holding it) or a retry tier's copy (`x-ryft-attempt` > 1). The name is from NATS, kept for the dashboards and the history (D102). |
+| `ryft_nats_redeliveries_total` | counter | `consumer` | scoring, notify | Messages received again, `consumer` the queue: redelivered by the broker (a consumer died holding it), a retry tier's copy (`x-ryft-attempt` 1 or more), or a dead letter replayed with `scripts/dlq.sh` (`x-ryft-replayed`: a replay of 50 letters adds one per letter as the consumer handles them, one after another, not 50 at once). Each delivery counts once. The name is from NATS, kept for the dashboards and the history (D102). |
 | `ryft_days_scored_total` | counter | `result` | scoring | Days scored (`ok`/`error`; `no_consent`: skipped, consent withdrawn, D78), from events and the 15-minute timer. |
 | `ryft_scoring_duration_seconds` | histogram | `result` | scoring | Time to score one day: load, compute, write (including its strength sessions). |
 | `ryft_days_rescored_total` | counter | `reason` | scoring | Stored days scored again beyond the days an event or the timer asked for, because their history changed (they are in `ryft_days_scored_total` too). `history`: scoring a day wrote a new row or changed one of the inputs the next 30 scored days are computed from (HRV, resting HR, respiratory rate, strain, sleep need and actual, sleep times, naps, whether steps and active energy are there), or a retried event re-scored its days, so those days were scored again in the same pass, in order, never past today: a backfill that arrived newest first, a late sample, a recompute, a retry. At most 400 per event; hitting that logs `rescore after history change capped`. `behind`: the 15-minute pass found days (within the last 400) whose `baseline_days` (or its HRV or resting-HR count) is below what their stored history now holds, or whose HRV or resting-HR baseline is missing although the history has such nights, and scored them again (about 50 days a pass, the days their re-score reaches included, which count as `history`): what the in-pass re-score could not see (two consumers at once, the cap, rows from before it existed). It compares counts and missing baselines, not values. After a deploy `behind` works off old rows, then stays near 0; a steady rate means the re-score misses something. |
@@ -128,7 +135,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync or, `service="api"`, a training import, or in scoring a day, without consent, D78, D129). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. The training import's consent refusals count as `mode="on"` also under `CONSENT_ENFORCE=warn`: on that route warn acts as on (D141). (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
 | `ryft_invite_redemptions_total` | counter | `result` | api | `POST /v1/me/invite`: `ok` (a use spent), `already` (the account had access), `invalid`. Many `invalid` from one place is someone guessing (5 an hour per user). |
-| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), by routing key, into `dlq.scoring`/`dlq.notify` (D99): `ok`, or `error` (the publish failed; the message was rejected, and the broker's delivery limit dead-letters it). Before the cutover, `subject` was the NATS subject (`ryft.ingested`). |
+| `ryft_events_dlq_total` | counter | `subject`, `result` | scoring, notify | Events dead-lettered (unparseable, or failed on the last attempt), into `dlq.scoring`/`dlq.notify` (D99), by `subject`: the routing key for a delivery from `ryft.events` (what the publisher's topic permission limits; the type a publisher sets never becomes a label), the type only for a retry tier's copy (it comes back with the queue's name as routing key, so the type its first delivery was checked with is the key) and only when the queue's consumer is bound for it, else the routing key; so the label values are the topology's keys and queue names; then `result`: `ok`, or `error` (the publish failed; the message was rejected, and the broker's delivery limit dead-letters it). Before the cutover, `subject` was the NATS subject (`ryft.ingested`). |
 | `ryft_sync_to_score_seconds` | histogram | — | scoring | From ingest accepting a sync to scoring finishing one of the days it queued (`score_queue`, D91; an import's days too: they share the queue, so a large import shows as a short rise, and `expected_within_sec`, the queue's p95 of the last 6 hours, rises with it, D141). The p95 is what testers wait for their scores; `SyncResponse.scoring.expected_within_sec` tells the app the same from the table. |
 | `ryft_event_handler_panics_total` | counter | `subject` | scoring, notify | Event handlers that panicked: the message is retried and, at its last delivery, dead-lettered, instead of the service crashing (D92). Any is a bug. |
 | `ryft_amqp_connected` | gauge | — | ingest, api, scoring, notify | 1 while the connection to RabbitMQ is up, 0 while it reconnects (backoff 1 s → 30 s with jitter). Registered when the service connects (migrate has none). |
@@ -155,6 +162,12 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_train_import_seconds` | histogram | — | api | Duration of an import that took the lease: the items, the records and the queueing. The budget is 50 s (the items stop 10 s before it so the finish fits); p95 above ~20 s means the per-item reads (D131's note) need batching. |
 | `argocd_app_info` | gauge | `name`, `sync_status`, `health_status`, `autosync_enabled`, … | Argo CD (controller, :8082) | One series per application, value 1; the alerts below read `sync_status` (`Synced`, `OutOfSync`, `Unknown` when manifests do not render) and `health_status` (`Healthy`, `Progressing`, `Degraded`, `Missing`). |
 | `argocd_app_sync_total` | counter | `name`, `phase` | Argo CD | Sync operations by outcome: `Succeeded`, `Failed`, `Error` (a PreSync migration, a refused apply, the PostSync smoke), `Running`, `Terminating`. |
+| `apiserver_validating_admission_policy_check_total` | counter | `policy`, `policy_binding`, `enforcement_action`, `error_type` | EKS API servers (one scrape per endpoint, job `ryft/kube-apiserver-admission`) | Policy checks that found something, by binding: a violation counts once per action of the binding (`warn` and `audit` in Warn+Audit, `deny` and `audit` in Deny+Audit); `error_type` is `no_error` unless the expression could not be evaluated (`compile_error`, `invalid_error`, `out_of_budget`). **Clean passes are not counted** (design claim e was wrong): a policy that is never violated has no series, so the series is absent, not zero, and never a liveness signal. A child is created at 1 by its first event, which `increase()` cannot see: the rules add series that are new (see Admission). Only `policy=~"ryft-.*"` is used by the alerts. |
+| `apiserver_validating_admission_policy_check_duration_seconds_sum`, `_count` | counter | as above | EKS API servers | Check latency as a mean only: the buckets are dropped to save series. Nothing alerts on it (kept for the dashboard; it can go if the budget tightens). |
+| `pod_security_evaluations_total` | counter | `decision`, `mode`, `resource`, `policy_level`, `request_operation`, … | EKS API servers | Pod Security Admission decisions. Only `decision="deny"` is kept (the relabel drops `allow` and `exempt`). `mode` is `enforce` (refused), `warn` or `audit`. Enforce is live today, so `AdmissionPodDenied` watches it without any binding. |
+| `kube_validatingadmissionpolicybinding_info` | gauge | `validatingadmissionpolicybinding`, `policy_name` (+ `param_*`, empty) | kube-state-metrics, native collector `validatingadmissionpolicybindings` (job `ryft/admission-bindings`) | One series per binding, value 1. 12 `ryft-*` bindings once the chart is enabled, none before. kube-state-metrics v2.20 does not export a binding's labels, so the committed action is not here (see `ryft:admission_binding_intended`). Custom-resource-state cannot be used: it resolves kinds from CRDs only and skips built-in ones (design claim m was wrong). |
+| `kube_validatingadmissionpolicybinding_validation_action` | gauge | `validatingadmissionpolicybinding`, `action` | kube-state-metrics | One series, value 1, for each of the binding's live `validationActions` (`Deny`, `Warn`, `Audit`); an action it lacks has no series. |
+| `ryft:admission_binding_intended` | recording rule | `validatingadmissionpolicybinding`, `intended_action` | Grafana ruler (`deploy/grafana/alerts/admission-intended.yaml`) | 1 per binding, `audit` or `deny`, generated from `actions:` in `infra/aws/kubernetes/admission-values.yaml` by `scripts/admission_intended.sh`. `make alerts-check` fails when the file and the values differ. It exists whether or not the chart is enabled. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -245,7 +258,7 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Sync to score p50 / p95 | time series | `histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[15m])))` (repeat for 0.5) |
 | Dead letters | stacked bars, 1 h buckets | `sum by (subject, result) (increase(ryft_events_dlq_total[1h]))` |
 | Queue depths (RabbitMQ) | time series | `max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft"})`, `max by (queue) (rabbitmq_queue_messages_unacked{vhost="ryft"})` |
-| Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `scripts/dlq.sh list`) |
+| Dead-letter queues | stat | `max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"})` (above 0: `KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list`) |
 | Broker nodes and alarms | state timeline | `count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"})`, `max by (instance) (rabbitmq_alarms_memory_used_watermark + rabbitmq_alarms_free_disk_space_watermark)` |
 | Broker memory per node | time series | `max by (instance) (rabbitmq_process_resident_memory_bytes)` (the alarm at about 520 MB) |
 | Connected to RabbitMQ | state timeline | `min by (namespace) (ryft_amqp_connected)`, and `sum by (namespace) (increase(ryft_amqp_reconnects_total[1h]))` |
@@ -293,11 +306,11 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
 | RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
 | SyncToScoreSlow | warning | p95 from sync to score over 2 min, 15 min | scoring's CPU and database time, the backlog, a large backfill |
-| DeadLetters | warning | an event was dead-lettered | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
+| DeadLetters | warning | an event was dead-lettered | `KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
 | DeadLetterPublishFailing | critical | not even the dead-letter publish worked | the broker, the consumer's rights |
 | PublishFailing | warning | the relay's sends fail, 10 min | the broker; the outbox keeps the events (OutboxBacklog follows) |
 | RabbitMQBacklog | warning | > 100 events ready in `scoring` or `notify`, 15 min | is the consumer connected (`ryft_amqp_connected`), its logs |
-| RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
+| RabbitMQDeadLetters | warning | a dead-letter queue holds a letter, 5 min | `KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list` (OPERATIONS → RabbitMQ) |
 | RabbitMQAlarm | critical | a node's memory or disk alarm, 2 min (publishers are blocked) | queue depths (a consumer that stopped), `rabbitmq-diagnostics -q alarms` |
 | RabbitMQNodeDown | warning | fewer than three nodes report, 5 min | `kubectl -n ryft-rabbitmq get pods`, a node drain, the PDB |
 | AMQPDisconnected | warning | a service's connection to RabbitMQ is down, 5 min | its log (`amqp` lines: TLS, password, the broker); scoring's and notify's `/readyz` |
@@ -319,7 +332,62 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
+| AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny. Info, not warning: findings that repeat on every Argo CD refresh would page all day | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
+| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
+| AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`: step C and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
+| AdmissionPolicyError | critical / warning | a policy's CEL could not be evaluated in the last 10 min (`error_type` not `no_error`): critical when the binding refuses (the request fails under `Fail`), warning under Warn+Audit | the expression meets an unexpected object shape; break-glass, then fix the chart |
+| AdmissionBindingMissing | critical | fewer than 12 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
+| AdmissionBindingNotDenying | warning | a binding committed as deny has no `Deny` while other bindings do, 10 min | a fast-path patch left in place; the `[0]` replace apply |
+| AdmissionBindingDrift | warning | the other mismatches with the committed action (deny without Audit; audit with Deny or without Warn or Audit), 2 h | the same |
+| AdmissionBreakGlass | warning | no `ryft-*` binding has `Deny` while at least one is committed as deny, 4 h | end it with `admission_break_glass=false` |
+| AdmissionSignalsMissing | warning | no `up` for the API-server scrape or the bindings scrape for 15 min (also before the monitoring values are applied) | `kubectl -n monitoring get pods`, the collector log |
+| AdmissionScrapeDown | warning | `up == 0` for an admission target, 15 min | the same; remote_write errors in the collector log |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
+
+### Admission
+
+The `Admission*` alerts (group `ryft-admission` in `ryft.yaml`) read the metrics above. Every
+selector is pinned by `job`. Properties that are deliberate:
+
+- **Counter alerts need no gate on the bindings.** They match `policy=~"ryft-.*"`, which only
+  exists once the chart is enabled, and Pod Security's enforce mode is live today, so its
+  refusals page now. The binding alerts (Missing, NotDenying, Drift, BreakGlass) are quiet in
+  Phase 0 because they join on bindings that do not exist. `AdmissionBindingMissing` looks back
+  a day, so a chart switched off on purpose raises it for up to a day (silence it), and one that
+  never ran does not.
+- **The first-event gap.** A counter child is created at 1 by its first event, so
+  `increase()` is empty for the first violation, denial or error of a policy and binding.
+  Two recording rules (`ryft:apiserver_admission_policy_check:fresh10m`,
+  `ryft:pod_security_evaluations:fresh10m`) add the series that have no sample in the hour
+  before the last 10 minutes (`unless last_over_time(... [1h] offset 10m)`), but only on an
+  endpoint whose scrape was up 12 minutes ago (`up offset 12m == 1`), so turning the scrape
+  on, or recovering it after an outage, does not make every old counter look new. A single
+  event fires for 10 minutes and resolves. A new API-server endpoint (EKS replaces
+  control-plane instances) is blind for its first 12 minutes.
+- **The committed action is a recording rule.** kube-state-metrics cannot export a binding's
+  labels, so `deploy/grafana/alerts/admission-intended.yaml` (namespace `ryft-admission` in the
+  ruler) holds `ryft:admission_binding_intended` per binding, generated from
+  `infra/aws/kubernetes/admission-values.yaml`. When a step changes `actions:`, regenerate it
+  (`scripts/admission_intended.sh`) in the same PR; `make alerts-check` fails otherwise. Load
+  the rules after the Terraform apply (the other order raises `NotDenying`; this one a
+  Drift that waits two hours and clears when the rules load).
+- **Break-glass is seen from the live actions.** A binding committed as deny without `Deny`
+  while others deny is `AdmissionBindingNotDenying` (10 min); when no binding denies it is
+  `AdmissionBreakGlass` (4 h) instead. `AdmissionBindingDrift` covers the rest, after 2 h.
+- **Liveness is not gated.** `AdmissionSignalsMissing` and `AdmissionScrapeDown` fire when a
+  scrape is gone or failing; the clean-pass counter is not a liveness signal (it does not
+  exist).
+
+Series budget (free tier, 10k active series): the three API-server families are about 200
+series at most (12 bindings x 3 or 4 action and error children x 2 API servers, the latency
+as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 12 (`info`) + at most
+24 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 12 recorded
+intended series, and `up` plus `scrape_samples_scraped` per target; about 300 in total. Deny
+and error children appear only after their first event.
+
+To confirm in the kind e2e before Phase 1: the `enforcement_action` and `error_type` label
+values on EKS's Kubernetes minor (which of them an evaluation error carries), that
+`policy_binding` is the binding's name, and that Pod refusals carry `resource="pod"`.
 
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday

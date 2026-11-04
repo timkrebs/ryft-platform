@@ -58,7 +58,7 @@ spec:
       reason: Forbidden
     # An allowlist: the only key spec.secretBackend may hold is externalSecret, and only as the
     # Cluster Operator's defaulting webhook writes it into every RabbitmqCluster (found by the kind
-    # run, D150): {"externalSecret":{"name":""}}. Vault, a named external secret and any key a later
+    # run, D151): {"externalSecret":{"name":""}}. Vault, a named external secret and any key a later
     # CRD version adds are refused.
     - expression: |-
         variables.reqKind != 'RabbitmqCluster' || !has(variables.spec.secretBackend) ||

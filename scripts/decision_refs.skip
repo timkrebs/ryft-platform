@@ -1,0 +1,13 @@
+# Decisions with no code consequence to link, for scripts/decision_refs.sh: `D<n> reason`, one per line.
+# A reason is required. A decision that gets mentioned in code or config is reported as stale; remove it here then.
+
+# Superseded in full: the code it governed is gone or rewritten under a later decision.
+D15 manifest layout superseded by D44 (base/, services/, overlays/); no flat default overlay remains
+D54 S3 remote state, superseded by D56
+
+# A Terraform root applied by the user. The script scans .tf files too; they are left without decision comments in
+# this PR as a scope choice (the user's roots), and nothing in Go, shell or YAML follows from it.
+D23 Route 53 zone in its own root (infra/aws/dns)
+
+# Operator one-off.
+D49 recreate the Supabase project in Frankfurt; a runbook step in docs/SUPABASE.md, no code change

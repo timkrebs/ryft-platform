@@ -810,7 +810,7 @@ func (s *Store) ScoreHistory(ctx context.Context, userID uuid.UUID, day string, 
 // ---- daily scores ----------------------------------------------------------
 
 // SleepNight is the stored summary of the night that ended on Day. Pointers
-// are nil for rows scored before migration 0003.
+// are nil for rows scored before migration 0003 (D8: typed columns, not the free-form details).
 type SleepNight struct {
 	Day         string
 	Start, End  *time.Time
@@ -890,7 +890,8 @@ func inputColumns(inputs []string) []string {
 // single statement (a workout's own load is stored apart, by SetWorkoutLoad), and
 // reports in ScoreWrite whether it was the day's first recovery (the morning push)
 // and whether an input of a later day's history changed (a re-score of the days
-// after follows, D112).
+// after follows, D112). The baselines are stored with the day (D11), so trends and insights read the one
+// definition recovery scored against.
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
 	d, n, l := row.DailyScore, row.Sleep, row.Load

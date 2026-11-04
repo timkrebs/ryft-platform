@@ -72,6 +72,17 @@ var (
 		Help: "Handler panics recovered (answered 500), by route pattern.",
 	}, []string{"route"})
 
+	// GoroutinePanics counts panics that internal/app recovered in a service's own
+	// goroutines (consumers, timers, the outbox relay, the HTTP servers). The service
+	// then shuts down in order and exits 2, as an unrecovered panic does. A panic in a
+	// /readyz check is counted too, and the service keeps running. Any increase is a
+	// bug to fix. It has no label: the log line "panic" names the task or the check,
+	// and a handler's panic is counted by Panics or ConsumerPanics instead.
+	GoroutinePanics = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_goroutine_panics_total",
+		Help: "Panics recovered in a service's own goroutines (consumers, timers, relay, servers); the service then shuts down and exits 2 (a /readyz check's panic does not stop it).",
+	})
+
 	// RateLimited counts requests answered 429 by the per-pod, per-user token bucket
 	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -109,7 +120,7 @@ var (
 	// NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
-		Help: "Messages received again, per queue: redelivered by the broker, or a retry tier's copy.",
+		Help: "Messages received again, per queue: redelivered by the broker, a retry tier's copy, or a dead letter replayed by hand.",
 	}, []string{"consumer"})
 
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{

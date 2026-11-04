@@ -111,7 +111,8 @@ func TestEngineRescoreFollowsEveryInput(t *testing.T) {
 // broker's retry of the same event finds the day unchanged; on a redelivery
 // it re-scores the days after anyway and finishes the job. Without the
 // redelivery mark it would stop, and the safety net cannot see it (the night
-// counts are right, a value is not).
+// counts are right, a value is not). A dead letter replayed with scripts/dlq.sh
+// carries the same mark (amqpbus TestReplayedLetterIsARedelivery).
 func TestEngineRetryFinishesAHalfDoneRescore(t *testing.T) {
 	st, engine, user := engineStore(t)
 	ctx := context.Background()

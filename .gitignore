@@ -1,4 +1,5 @@
 deploy/k8s/secrets.yaml
+# A secrets.yaml sits next to its overlay, as kustomize refuses files outside the overlay root (D27).
 deploy/k8s/**/secrets.yaml
 backend/bin/
 .env

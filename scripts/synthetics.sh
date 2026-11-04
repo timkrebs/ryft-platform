@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Synthetic Monitoring checks as code (deploy/grafana/synthetics/ryftapp.json).
+# Synthetic Monitoring checks as code (deploy/grafana/synthetics/ryftapp.json; D109: applied by hand, not Terraform).
 #   scripts/synthetics.sh check     validate the file offline (no credentials, no network): structure,
 #                                   RE2 regexps, the body markers against the site's own sources,
 #                                   the free-tier execution budget

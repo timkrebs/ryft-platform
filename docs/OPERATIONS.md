@@ -56,14 +56,19 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 6. Vault | `cd infra/vault && terraform apply` (values in `terraform.tfvars`) | `terraform output secret_keys` lists the keys per namespace; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows six |
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha> services`) |
 | 8. App | Argo CD from step 4; `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml` | **Deploy and roll back** → Cutover to Argo CD |
-| 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply` | see **Monitoring** below |
+| 9. Metrics | rotate the Grafana Cloud token, put it into `infra/vault`, `make monitoring-apply KUBE_CONTEXT=<context>` | see **Monitoring** below |
 
 Every Terraform root keeps its state in its HCP Terraform workspace (execution mode
 Local): `terraform init` in a fresh checkout connects to it after `terraform login`.
 
 Argo CD deploys the app (step 8; **Deploy and roll back**). Its waves keep the order
-the break-glass `make k8s-apply-eks` enforces by hand, which runs these steps, waiting
-at each one:
+the break-glass `make k8s-apply-eks KUBE_CONTEXT=<context>` enforces by hand, which runs
+these steps, waiting at each one. Every Makefile target and operator script that talks to
+a cluster needs it named (`KUBE_CONTEXT=<context>`, one of `kubectl config get-contexts -o
+name`; production's is `ryft-prod-euc1` if you kept the alias `aws eks update-kubeconfig
+--alias` wrote) and refuses to start without it; kubectl's current context is never used
+(`scripts/lib/kube.sh`), and the self-hosted targets refuse a context that looks like EKS
+(its name, cluster, server or token helper: a heuristic, not a proof).
 
 0. It checks that kubectl is logged in (`k8s-check-auth`): kubectl takes its EKS
    token from `aws eks get-token`, so expired AWS credentials fail every call with
@@ -72,7 +77,7 @@ at each one:
 1. It applies the operator objects for every namespace and waits until each
    `ryft-secrets` (and in `ryft-rabbitmq` each `amqp-user-<service>`) exists; it stops
    at the first one that fails.
-2. RabbitMQ (`make k8s-rabbitmq`): the operators, then `deploy/rabbitmq`, and waits until
+2. RabbitMQ (`make k8s-rabbitmq KUBE_CONTEXT=<context>`): the operators, then `deploy/rabbitmq`, and waits until
    all three nodes are ready.
 3. It deletes the finished migrate Job, since a Job's pod template is immutable, applies
    the first stage, the migrate Job (label `ryft.dev/stage=first`), and waits for it.
@@ -101,7 +106,7 @@ database and RabbitMQ with backoff (5 s doubling to 60 s, jittered) instead of e
 and wait up to 10 minutes (startup probe).
 
 ```bash
-make k8s-validate && make k8s-apply-eks
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=<context>
 kubectl -n ryft-migrate logs job/migrate                     # "role password set" ×4, "schema current"
 for s in ingest scoring api notify migrate; do kubectl -n ryft-$s get vaultstaticsecret,secret ryft-secrets; done
 kubectl -n ryft-rabbitmq get vaultstaticsecret,secret,rabbitmqcluster          # amqp-user-*, ALLREPLICASREADY
@@ -142,10 +147,11 @@ The email-confirmation link itself is tested by hand from the app. Don't run pla
 `make smoke` against the public host: it is for apikey mode.
 
 **Rescoring** after a scoring rule or constant changed (`SCORING.md`):
-`scripts/rescore_all.sh [days]` (default 400) runs `scoring rescore` inside the scoring
-pod. Each user's last *days* days are rescored, oldest first, with scoring's own role;
-the log shows `user rescored … n of N`, then `rescore done`. Locally:
-`RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
+`KUBE_CONTEXT=<context> scripts/rescore_all.sh [days]` (1 to 400, default 400; or
+`--context <context>`) runs `scoring rescore` inside the scoring pod of the cluster it
+names; without a context it runs nothing. Each user's last *days* days are rescored,
+oldest first, with scoring's own role; the log shows `user rescored … n of N`, then
+`rescore done`. Locally: `RESCORE_LOCAL=1 scripts/rescore_all.sh 30`.
 
 Days scored before their history (a backfill newest first, a late sample) need no
 rescore by hand: scoring re-scores the days after a changed day itself, a retried
@@ -156,9 +162,11 @@ their history`;
 `ryft_days_rescored_total`, `OBSERVABILITY.md`). A user whose re-score there failed is
 left until their next local day (the error is logged). Only users who synced in the
 last 48 hours get the pass; the others get it with their next sync, or now with
-`POST /v1/recompute` or `scripts/rescore_all.sh`. A scoring letter replayed from
-`dlq.scoring` arrives as a first delivery: follow it with a `POST /v1/recompute` of its
-days if late data was involved.
+`POST /v1/recompute` or `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. A scoring letter replayed from
+`dlq.scoring` (`scripts/dlq.sh replay`, RabbitMQ → Dead letters) arrives as a redelivery:
+like a retry, it re-scores the days after its days and finishes what its failed attempts
+began, so no recompute is needed after a replay (once scoring runs an image that reads
+the marker; until then follow a replay with `POST /v1/recompute`).
 
 **Learned sleep baseline** (`SCORING.md` → Sleep): scoring estimates it every Sunday from
 04:00 local on its own. To run it for every user now (after a deploy, or after changing
@@ -243,7 +251,7 @@ break-glass below.
 4. **Watch:** `kubectl -n argocd get applications`, the UI, or the alerts
    (`ArgoSyncFailed`, `ArgoAppDegraded`, `ArgoAppOutOfSync`). From outside, `make
    smoke-prod` still checks the edge and probes the gates. After a model bump,
-   `scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
+   `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
    did not happen.
 
 **The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
@@ -408,7 +416,7 @@ red, which is why you are rolling back, the rest still holds):
 | Before the merge | a local check or CI is red, no approval | Close the PR, delete the branch. |
 | PreSync | migrate fails or hangs | Nothing rolled; Argo retries twice; then the undo. |
 | Rollout | a pod crash-loops or stays unready for 3 minutes, or api or ingest has fewer than one ready | The old ReplicaSet keeps serving; the undo. |
-| PostSync / verify | the smoke fails, `/v1/me` is not 401, dead letters grow (`scripts/dlq.sh list`), `ArgoSyncFailed` | The undo. |
+| PostSync / verify | the smoke fails, `/v1/me` is not 401, dead letters grow (`KUBE_CONTEXT=<context> scripts/dlq.sh list`), `ArgoSyncFailed` | The undo. |
 | Hold window | a deploy PR appears | Close it, then the undo; find out why promote ran. |
 
 1. Find the last "deploy: images" merge that moved the group, and the pins before it.
@@ -522,7 +530,7 @@ the rollback PR rolls nothing: web shares the `ryft-platform` application with m
 Follow "Lockouts" first. A broken manifest change is reverted like code.
 
 **Break-glass** (Argo CD itself is down): pause it if it is half up, then `make
-k8s-apply-eks` (prints a warning; applies the Vault objects, RabbitMQ, migrate, then the
+k8s-apply-eks KUBE_CONTEXT=<context>` (prints a warning; applies the Vault objects, RabbitMQ, migrate, then the
 services, without the PostSync smoke; checks the registry first). Afterwards make git
 hold exactly what you applied, and resume.
 
@@ -706,7 +714,7 @@ binary from `scripts/install_yq.sh` (version and sha256 in that file; `manifests
 `scripts/tests/check_kustomize_refs_test.sh` in the same PR as its first use; a new path-carrying key
 is a `Path(kind)` there, so its references are followed automatically.
 
-### Admission policies: the kind run (D120, D150, D151, T12-d)
+### Admission policies: the kind run (D120, D151, D152, T12-d)
 
 The policies of `infra/aws/kubernetes/charts/admission-policy` are tried against a real API server
 in kind before they reach `ryft-prod-euc1`: in CI on every change, and by hand before an apply and on
@@ -716,7 +724,7 @@ send (Argo CD's controller, the operators, their webhooks), and the design's cla
 
 **CI: the `admission` job** (required in `ci-ok` when it ran). It runs on a change to `deploy/**`,
 `infra/aws/kubernetes/**`, `ci.yml`, the Makefile or the scripts of the job, on a push to main, and by
-hand. It is skipped for a promote PR **and for its merge to main** (D150: `changes` asks
+hand. It is skipped for a promote PR **and for its merge to main** (D151: `changes` asks
 `scripts/promote_only.sh`, the base branch's copy, whether the diff is only the EKS overlay's pins,
 holds and privacy-version literals; any doubt, and a base without the script, runs the job). It is
 `scripts/admission_e2e.sh --mode ci`, about 5 minutes:
@@ -816,7 +824,7 @@ ever created in your local image store; the Job specs of the hooks are the real 
 sleeps 15 s so `terminate-op` has something to terminate), the git remote (Argo CD reads the tree from
 `git.gitsrv.svc` and the served Applications and project name that URL; P7's `argocd.repoURL` follows),
 Ingress addresses, and the broker's size (1 replica, default StorageClass). **Not tried:** a node drain,
-three workers, Traefik, the Vault auth, the real images, claims f, j and l (D150).
+three workers, Traefik, the Vault auth, the real images, claims f, j and l (D151).
 
 **What a failure means**
 
@@ -864,8 +872,8 @@ again each time; the table is in the design too):
 | g: P7's whole-`spec` equality type-checks | holds (`status.typeChecking` empty; the project as committed passes, a widened one is refused) |
 | h: escalate/bind by `resourceNames` | the negative test: without policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it, then may write the bindings; with P6 in Deny both steps are refused. Positive: the narrowed role syncs the operators' ClusterRoles, Roles, bindings and webhooks |
 | i: `respectRBAC: strict` without cluster-wide Secrets | holds, **after** one added rule: the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its children for ever (#47 lacks it) |
-| k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D150) |
-| m: kube-state-metrics exports the bindings | **no**: custom-resource-state exports CustomResourceDefinitions only (v2.20.0); T12-e needs another binding-state signal (D150) |
+| k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D151) |
+| m: kube-state-metrics exports the bindings | **no**: custom-resource-state exports CustomResourceDefinitions only (v2.20.0); T12-e needs another binding-state signal (D151) |
 | f, j, l | not tried here (f: a refusal under server-side diff; j: `terraform validate`; l: the VPC) |
 
 **Upgrading it.** The EKS minor: change the node image (tag and index digest) in
@@ -964,17 +972,127 @@ evaluates every script in Argo CD's own library set; add cases there with every 
 
 **Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
 failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
-management API itself:
+management API itself, on the cluster you name (`KUBE_CONTEXT=<context>` or `--context
+<context>`; it never uses kubectl's current context, `scripts/lib/kube.sh`). Name it per
+command, as below; do not `export` it, or the next script in that shell runs against it too:
 
 ```bash
-scripts/dlq.sh list                       # per queue, one line per letter: subject, attempts, error
-scripts/dlq.sh show dlq.scoring 5         # in full
-scripts/dlq.sh replay dlq.scoring all     # after fixing the cause: back on ryft.events with its key
-scripts/dlq.sh purge dlq.notify           # notify's: a push hours late is wrong (replay refuses without --force)
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list                  # per queue, one line per letter: subject, attempts, error
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh show dlq.scoring 5    # in full (n: 1 to 1000, or all)
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh replay dlq.scoring 1  # after fixing the cause: back on ryft.events with its key, as a redelivery
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh purge dlq.notify      # notify's: a push hours late is wrong (replay refuses without --force)
+KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh put-back <dir>        # letters a failed replay kept in <dir>, back into their DLQ
 ```
 
+(`ryft-prod-euc1`: the name from `kubectl config get-contexts -o name`, if your alias differs.)
+`list` and `show` read at most 1000 letters a queue, so a DLQ with more shows 1000.
+
+**Before a replay**, all of these:
+
+1. The cause is fixed and **scoring runs the image that fixed it** (and reads the marker: check the
+   pin in `overlays/eks` and that no hold keeps the services back). A deploy or rollout is not in
+   progress: a restart interrupts a handling, and a surge runs two consumers for 10 to 30 s.
+2. scoring's `ryft_amqp_connected` is 1, there is no `RabbitMQAlarm`, and the queue itself
+   (`scoring`) is near empty, so the replay is not behind a backlog.
+3. If the letters came from a crash, `kubectl --context ryft-prod-euc1 -n ryft-scoring get pods` shows no
+   restart climbing and no `OOMKilled`: a letter that crashed the pod will crash it again.
+4. `list` shows the letters you expect (count, subjects, the same error); `show` a few. **The first
+   replay after this change is rolled out starts with `show` (or `purge`)**: a letter dead-lettered
+   by an image from before D150 carries Ryft-Subject = the type its publisher set, which
+   the script cannot tell from a real one (a letter of type `session.completed` published under
+   the key `ingested` was filed under `session.completed`). The 14-day TTL empties these by itself.
+5. Start with `replay dlq.scoring 1`, watch it succeed (below), then the rest.
+
+**While it runs.** A replayed letter that fails again needs six handlings (at 0, +5 s, +30 s,
+then +5 min three times), so about 16 minutes pass before it is back in the DLQ, and each
+handling is a full catch-up re-score of the user's days after the letter's days: up to six re-scores
+per failing letter, and fifty failing letters is 300. Hence one letter first.
+
+- **Do not call it done** until `list` is empty 20 minutes later. `ryft_events_handled_total{result="retry"}`
+  rising means a replayed letter is failing again; `failed` is it going back.
+- Alerts: `RabbitMQDeadLetters` resolves as soon as the letters are taken off and fires again
+  about 20 minutes later (16 minutes of attempts, then its 5 minutes) if they come back;
+  `DeadLetters` counts dead-letterings over 1 hour, so after a successful replay it keeps firing
+  for up to an hour on the dead-letterings that came before. The first dead letter after a
+  scoring pod restarted is invisible to `DeadLetters` (its counter starts at 1, and `increase()`
+  does not count the first sample); `RabbitMQDeadLetters` sees it.
+
+A replay publishes each letter to `ryft.events` with its key, marked `x-ryft-replayed:
+true` and without the `Ryft-*`, `x-death`, `x-delivery-count` and `x-ryft-attempt` headers. Its
+consumer handles it as a redelivery (`events.Redelivered`), so a scoring letter re-scores the 30
+days after its days and finishes a re-score its attempts left half-done (D112); it is
+counted in `ryft_nats_redeliveries_total`, and scoring logs `handling a replayed dead letter` with
+the key and message id. A scoring image from before the marker
+ignores it: until scoring runs an image with it, follow a replay with `POST /v1/recompute` of its
+days. It gets all six attempts again; if it fails them, it is back in the DLQ and `list`
+shows it with `"replayed_before": true` (replaying it again before the cause is fixed
+only repeats that).
+
+**Which letters are replayed** (D150). Only the keys the queue's consumer is bound for
+(`dlq.scoring`: `ingested`, `session.completed`; `dlq.notify`: `scored`, `session.scored`,
+`refresh`), and a letter's key is read from where the publisher cannot write it:
+
+- A letter the consumer filed carries `Ryft-Subject`, the routing key it arrived with; its type
+  must equal that key.
+- A letter **the broker dead-lettered** (its delivery limit, or the consumer's own copy into the
+  DLQ failed: an `x-death` entry for the consumer's queue, `list` says `"dead_lettered_by_broker":
+  true`) has no `Ryft-*` the consumer wrote, so any it carries is ignored. The entries for the
+  consumer's queue must agree, and then its key is:
+  - for an entry from exchange `ryft.events`, that entry's routing key (the publisher's, limited
+    by topic permissions); the letter's type must be empty or equal it;
+  - for an entry from `ryft.requeue` with routing keys `[<consumer>]` (the letter had been retried:
+    a retry's copy has the queue's name as routing key), the letter's **type**, when that is a key
+    the consumer is bound for: the consumer wrote it and checked it against the routing key on the
+    first delivery, and only consumers may publish into the retry tiers.
+
+  Anything else (an entry from another exchange or with other routing keys, entries that disagree, a
+  retry's copy whose type is empty, not a key or not text, a type that says otherwise) is refused as
+  "dead-lettered by the broker: check by hand", with what is wrong named.
+
+Any other letter (a forged type: the broker's administrator would otherwise send it where its
+publisher may not) goes back into its DLQ as it was and is named on stderr, as is a letter the
+broker does not route; the script then exits 1. amqpbus drops `x-death`, `x-ryft-attempt` and
+`Ryft-*` from a first delivery from `ryft.events` (a publisher sets any header, and a forged attempt
+count would skip the retries), so a letter the consumer files never carries a forged account of
+where it died.
+
+**A letter that is refused and must go through** (`show` it first, and be sure of its key): publish
+it by hand through the management API (UI or `POST /api/exchanges/ryft/ryft.events/publish`) with
+`routing_key` the key, the same payload and `message_id`, `type` the key, `delivery_mode` 2 and the
+header `x-ryft-replayed: true` (boolean). Leave out every other header the letter carries: `Ryft-*`,
+`x-death`, `x-first-death-*`, `x-last-death-*`, `x-delivery-count`, `x-acquired-count` and
+`x-ryft-attempt`. The original stays in the DLQ (`purge` deletes every letter of the queue, so purge only
+when the rest are dealt with; otherwise the 14-day TTL removes it).
+
+**Nothing is lost.** Taking letters off and republishing them are separate calls, so a
+dropped port-forward can strand letters half-way: the script puts back what is left on
+its way out, and if even that fails it keeps them in a directory it names (mode 700,
+without the credentials), with `source.txt` saying which cluster (or broker URL) they came from.
+Put them back with `KUBE_CONTEXT=… scripts/dlq.sh put-back <dir>` once the cluster answers
+again: it refuses a directory from another cluster or broker, or one without a `source.txt`, and
+afterwards removes what it wrote there (`source.txt` and the like) and the directory, with `rmdir`,
+when that leaves it empty; it never removes the current directory, a `taken.json` or anything of yours.
+Give the broker's login as `RABBITMQ_USER` and `RABBITMQ_PASSWORD`, not inside `RABBITMQ_MGMT_URL`
+(the URL is recorded, minus everything before its last `@`). A second Ctrl-C, a TERM or a dropped session (SIGHUP)
+does not stop that way out, and it names the directory before it starts; after a dropped session
+the message may not have reached you, so look for a `dlq.*` directory in `$TMPDIR` (or
+`/tmp`) with a `pending/` in it, and put back what it holds. A `dlq.*` directory with a
+`taken.json` is different: the take's answer could not be read, and the letters are only in that
+file, and the directory has a `source.txt` from the start of the take. Read it, then either publish
+what matters by hand (as above), or split it into one `*.back.json` per letter in that directory
+(`{"routing_key": "<consumer: scoring or notify>", "properties": {…the letter's properties…},
+"payload": …, "payload_encoding": …}`) and run `put-back` on it; then delete the directory; `taken.json` holds message
+bodies, which name users and days. A kept directory must not outlive the DLQ's 14 days: after that
+the letters would be older than any copy of them, and the replay's premise (the cause fixed) is stale.
+The take itself may run for
+half an hour (its letters are gone from the queue before the answer arrives); every other
+call gives up after two minutes. A letter can then be in its DLQ twice (put back after a publish
+whose answer was lost); handlers are idempotent (D100). Every argument is checked first,
+and without a named context the script reaches no cluster; credentials go to `curl` in a
+config file, never on its command line, and `curl -q` never reads `~/.curlrc`.
+
 Re-drive after fixing the cause (a deploy, a data fix). scoring's letters only name a
-user and days, so `POST /v1/recompute` or `scripts/rescore_all.sh` repair the same if a
+user and days, so `POST /v1/recompute` or `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh` repair the same if a
 letter is gone; notify's are listed and purged, never re-sent late.
 
 **The outbox** (D101): events waiting for the broker are rows of `outbox` in Postgres
@@ -1073,7 +1191,7 @@ because the Roles live there.
 
 **Backups:** none beyond git. Messages are triggers, the topology and users are in git
 and Vault, Postgres is the truth. A broker rebuilt from nothing comes back through Argo
-CD; then `scripts/rescore_all.sh 3` covers what was in flight.
+CD; then `KUBE_CONTEXT=<context> scripts/rescore_all.sh 3` covers what was in flight.
 
 **Credentials:** a user's password: `terraform -chdir=infra/vault apply
 -replace='random_password.amqp["api"]'`, restart the Vault Secrets Operator; it rewrites
@@ -1093,7 +1211,7 @@ next (the record of each: `STATUS.md`):
 | R1 | `infra/vault` (namespace `ryft-rabbitmq`, users), `infra/aws/kubernetes` (Argo CD's RabbitMQ health checks, the internal CA), `project.yaml` applied; then the merge adds the applications `vault-rabbitmq`, `rabbitmq-operators`, `broker-rabbitmq` | healthy as above; three voters per queue; no alarms |
 | R2 | scoring and notify consume both brokers (`EVENTS_CONSUME=nats,amqp`); publishers still on NATS | `ryft_amqp_connected` 1 in both, `make smoke-prod`, nothing waiting in the queues |
 | R3 | ingest, api and scoring publish to RabbitMQ (`EVENTS_BACKEND=amqp`) | a day: `ryft_sync_to_score_seconds` p95 as before, queue depths, dead letters 0, the outbox empty |
-| R4 | NATS goes: once stream `RYFT` has 0 pending for both consumers and `RYFT_DLQ` was looked at | `make smoke-prod`; then `infra/vault` without NATS, `scripts/rescore_all.sh 3` |
+| R4 | NATS goes: once stream `RYFT` has 0 pending for both consumers and `RYFT_DLQ` was looked at | `make smoke-prod`; then `infra/vault` without NATS, `KUBE_CONTEXT=<context> scripts/rescore_all.sh 3` |
 
 Before R4, on NATS, with the R3 images (R4's have no NATS client): `kubectl -n
 ryft-scoring exec deploy/scoring -- /app dlq` (re-drive or delete each letter), and the
@@ -1112,10 +1230,13 @@ accounts. `scripts/local-secrets.sh` writes one env file per namespace with rand
 passwords (git-ignored, refuses to overwrite; a directory from the NATS days only gets
 the RabbitMQ users added). Needs cert-manager; `make k8s-apply-local` puts in the
 internal CA (`helm template` of the same chart as on EKS) and the RabbitMQ operators
-first.
+first. It and `make k8s-delete-local` need the cluster named and refuse a context that looks
+like EKS, a heuristic (by its name, `ryft-prod-*` or an EKS ARN; its cluster's ARN; an `*.eks.amazonaws.com`
+server; or an EKS token in its user), since on EKS they would change or delete the
+service namespaces and the broker's volumes.
 
 ```bash
-make k8s-apply-local          # the secrets once, the CA, the operators, then everything
+make k8s-apply-local KUBE_CONTEXT=<context>   # the secrets once, the CA, the operators, then everything
 kubectl -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
 grep API_KEY deploy/k8s/overlays/local-postgres/secrets/api.env   # the bearer
 ```
@@ -1318,7 +1439,7 @@ defaults to production.
 **Tracing a request** a tester reports by its id:
 
 ```bash
-scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4        # also with a lost hyphen, as the app once showed it
+KUBE_CONTEXT=<context> scripts/trace.sh 01a15a69-7142-7a8b-aba2-c099a5fcd1e4   # also with a lost hyphen, as the app once showed it
 ```
 
 It reads every pod of api, ingest, scoring and notify (`--tail=-1`, `--since 48h`), prints
@@ -1466,7 +1587,7 @@ the days still queued and how long scoring takes now (`expected_within_sec`, the
 the last 6 hours). The operator sees the same and more:
 
 ```bash
-scripts/trace.sh <request id>        # the sync: status, code, gate; then scoring's lines for the same id
+KUBE_CONTEXT=<context> scripts/trace.sh <request id>   # the sync: status, code, gate; then scoring's lines for the same id
 scripts/user.sh <id>                 # devices, what the last sync carried and ignored, days, duplicates
 ```
 
@@ -1490,7 +1611,7 @@ Feature flags); the app hides the import while it is off, and the endpoint check
 (`403 import_not_enabled`), so the kill switch does not wait for the app's cached config.
 A resend never overwrites what the user changed in the app since (`newer_on_server`, D141).
 
-`scripts/trace.sh <request id>` shows the access line and the import's one line
+`KUBE_CONTEXT=ryft-prod-euc1 scripts/trace.sh <request id>` shows the access line and the import's one line
 (`msg="train import"`: `result`, the items sent and their statuses, the days queued;
 never a title, a value, an id list or the source app), then scoring's lines for the same id.
 
@@ -1592,7 +1713,7 @@ restarts both collectors when it changes. It is never passed on a command line:
 3. `terraform plan` and `apply` in `infra/vault`. This creates the Vault namespace, its
    auth role, `kv/config {GC_TOKEN}`, the namespace `monitoring` (Pod Security
    privileged) and `deploy/k8s/overlays/vault-namespaces/monitoring`.
-4. `make monitoring-apply`: it applies the operator objects, waits for
+4. `make monitoring-apply KUBE_CONTEXT=<context>`: it applies the operator objects, waits for
    `monitoring/ryft-secrets`, then runs
    `helm upgrade --install grafana-cloud grafana/k8s-monitoring --version 4.5.3`.
 5. **In Grafana Cloud:**
@@ -1668,6 +1789,229 @@ The free tier is "limited to" 100k API test executions a month (grafana.com/pric
 reporting, `SyntheticsMissing` (one alert per job) is the alert. Menu names in Grafana's
 app move now and then: what you need is the Config page of the Synthetics app, which
 shows the backend address and the access tokens.
+
+## Admission policy signals
+
+The admission policies (D120, `docs/work/2026-10-23-admission/design.md`) write what they
+decide into two places: the API servers' counters and the audit log. Alerts watch them
+(OBSERVABILITY → Admission). The data path is `deploy/monitoring/k8s-monitoring.yaml`: Alloy
+scrapes each API server endpoint (job `ryft/kube-apiserver-admission`; three metric
+families, Pod Security refusals only), and kube-state-metrics' own collector exports the
+chart's bindings (job `ryft/admission-bindings`). What each binding was committed as
+comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
+`infra/aws/kubernetes/admission-values.yaml`.
+
+**Turn it on (once, before Phase 1; yours, nothing here is applied by Git):**
+
+```bash
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
+make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
+```
+
+Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMissing` fires
+(that is its job). Then check in Grafana Explore (the Prometheus data source):
+
+- `up{job=~"ryft/kube-apiserver-admission|ryft/admission-bindings"}` is 1: one series for
+  each API server endpoint (EKS runs at least two) and one for kube-state-metrics. If the
+  API server targets are missing, the collector pod's log says why (`kubectl -n monitoring
+  logs deploy/grafana-cloud-alloy-deployment | grep -i apiserver`).
+- If remote_write answers 401 or 403: check that the access policy of `GC_TOKEN` has
+  `metrics:write`. The Fleet pipelines write with the same token, so a token that cannot
+  write breaks them too; do not widen a shared token for this.
+- `pod_security_evaluations_total{decision="deny"}` and
+  `apiserver_validating_admission_policy_check_total` have series only after the first
+  refusal or finding: absent is normal, there is no series for a clean pass.
+  `kube_validatingadmissionpolicybinding_info` has 12 `ryft-*` series once the chart is enabled,
+  `kube_validatingadmissionpolicybinding_validation_action` one per live action, and
+  `ryft:admission_binding_intended` 12 whether or not the chart is enabled.
+- The binding alerts are quiet until bindings exist; the counter alerts are quiet until a
+  `ryft-*` policy finds something.
+
+**A step change** (a reviewed PR edits `actions:` in `admission-values.yaml`): regenerate
+`scripts/admission_intended.sh` in the same PR (`make alerts-check` fails otherwise; the
+generator also fails when the keys of `actions:` differ from the chart's). After the merge,
+do the Terraform apply first, then `make alerts-apply`. In between, the live actions are
+ahead of the committed ones, which shows as `AdmissionBindingDrift` with its two-hour wait
+(a deny that went live) and clears when the rules load; the other order would raise
+`AdmissionBindingNotDenying` after ten minutes. A one-plan `-var` override of
+`admission_actions` is not mirrored in the rules: expect Drift or NotDenying for it until it
+is committed in the values file.
+
+**Reading a finding.** Every alert names a `policy` (the policy object, e.g.
+`ryft-workloads`) and a `policy_binding` (e.g. `ryft-workloads-pods`); P-numbers and steps
+are labels on the bindings:
+
+```bash
+kubectl get validatingadmissionpolicybindings \
+  -L admission.ryft.dev/policy,admission.ryft.dev/step,admission.ryft.dev/intended-action,admission.ryft.dev/break-glass
+kubectl get validatingadmissionpolicybinding <binding> -o jsonpath='{.spec.validationActions}'
+```
+
+The audit log has the objects. CloudWatch Logs Insights, log group
+`/aws/eks/ryft-prod-euc1/cluster` (confirm the field names once in the console), a day of
+findings counted by distinct object and split by dry runs from real writes (an Argo CD diff
+or `kubectl --dry-run=server` is a dry run and writes nothing; a real write is the one
+that matters):
+
+```bash
+aws logs start-query --region eu-central-1 --log-group-name /aws/eks/ryft-prod-euc1/cluster \
+  --start-time $(( $(date +%s) - 86400 )) --end-time "$(date +%s)" \
+  --query-string 'filter @logStream like /kube-apiserver-audit/
+    | filter ispresent(`annotations.validation.policy.admission.k8s.io/validation_failure`) or ispresent(`annotations.pod-security.kubernetes.io/audit-violations`)
+    | fields strcontains(requestURI, "dryRun") as dryRun
+    | stats count(*) as evaluations, count_distinct(objectRef.name) as objects by dryRun, user.username, objectRef.namespace, objectRef.resource'
+aws logs get-query-results --region eu-central-1 --query-id <queryId>
+```
+
+`evaluations` counts audit events (a controller that retries counts every try); `objects`
+is the number of different objects, the one to read. For one object's message, keep the two
+`filter` lines and end the query with plain named fields instead of `stats`:
+
+```
+fields @timestamp, user.username, verb, objectRef.resource, objectRef.namespace, objectRef.name, requestURI, `annotations.validation.policy.admission.k8s.io/validation_failure`
+| sort @timestamp desc | limit 20
+```
+
+Do not display `@message`: an audit event can carry the request body (a Secret's data).
+
+**AdmissionPolicyViolation** (info). A binding in Warn+Audit flagged a request that was
+admitted, or Pod Security's warn or audit mode did. In Phase 1 this is the whole point:
+read the day's query, and for each `user.username` and `objectRef` decide whether the
+object or the policy is wrong. Findings that repeat on every Argo CD refresh (P6 on the two
+vendored operator ClusterRoles until T12-g has synced) keep it firing; that is expected, not
+an incident. A binding's findings must be gone before it goes to Deny. Once a binding
+denies, its refusals are AdmissionPolicyDenied's and this alert leaves that binding alone.
+
+**AdmissionPolicyDenied** (warning). A Deny+Audit binding refused a request: an Argo CD
+sync of a changed manifest, or a `kubectl`. The requester got the policy's message.
+```bash
+argocd app get <name> | head -40                                  # the refused object and the message
+kubectl -n argocd get application <name> -o jsonpath='{.status.conditions}'
+```
+Fix the object in Git (the usual case: the message says what the policy wants). If the
+policy is wrong, either set that binding back to audit through `admission-values.yaml`
+(a reviewed PR, the regenerated rules, then your `terraform apply`), or, when a deploy is
+blocked now, the fast path under **Break-glass** below. With server-side diff the app also
+turns OutOfSync (`ArgoAppOutOfSync`); this alert names the policy minutes earlier.
+
+**AdmissionPodDenied** (critical). A Pod, or what looks like one, was refused: by
+`ryft-workloads-pods` (P2), `ryft-operator-reach` (P8) or `ryft-auth-env` (P5), the design's
+step C class plus P5, or by Pod Security's enforce mode (live today, with or without the
+chart). The check counter has no resource label, so a P5 or P8 refusal of a Secret or a Role
+pages too. A Pod refused now means a node loss, a rollout or a scale-up cannot re-create it:
+treat it as an outage in waiting.
+```bash
+kubectl get events -A --field-selector reason=FailedCreate --sort-by=.lastTimestamp | tail -20
+kubectl get validatingadmissionpolicybindings -o custom-columns='NAME:.metadata.name,ACTIONS:.spec.validationActions'
+```
+The ReplicaSet's or StatefulSet's `FailedCreate` event carries the message; a Pod Security
+refusal (`source: Pod Security`) names the namespace's level. If workloads are down and the
+cause is not a quick fix in Git, drop the binding to Warn+Audit first (Break-glass, fast
+path), then fix.
+
+**AdmissionPolicyError** (critical when the binding refuses, warning under Warn+Audit). A
+policy's CEL could not be evaluated (`error_type` is `compile_error`, `invalid_error` or
+`out_of_budget`). Under a Deny binding with `failurePolicy: Fail` the request was refused;
+under Warn+Audit it was admitted and the policy judged nothing. The cause is the
+expression meeting an object shape it did not expect, so the fix is the chart, not the
+object: for the critical one bring the binding to audit through the Break-glass fast path to
+restore writes, then correct the expression (`admission-celtest` reproduces it) and apply.
+
+**AdmissionBindingMissing** (critical). Fewer than 12 `ryft-*` bindings exist for 10 minutes
+while bindings existed within the last day. A binding that is gone means its policy judges
+nothing (silently open). Compare with what is live, and check that the metric is not the
+blind one:
+```bash
+kubectl get validatingadmissionpolicybindings -o name | sort
+kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics
+```
+Helm does not see out-of-band changes (a deleted binding is not a diff to it), so a plain
+apply restores nothing. The restore is the replace under **Restore** below. All 12 gone with
+the chart switched off on purpose (back to Phase 0) raises this for up to a day: silence it
+in Grafana Alerting.
+
+**AdmissionBindingNotDenying** (warning, after 10 minutes). A binding committed as deny has
+no `Deny` while other bindings still do: a fast-path patch that was never undone, or a hand
+edit. That binding is not protecting anything.
+```bash
+kubectl get validatingadmissionpolicybindings \
+  -o custom-columns='NAME:.metadata.name,ACTIONS:.spec.validationActions'
+```
+Restore (below). If the rules were loaded before a step's Terraform apply (or the other way
+round), it fires until both have happened.
+
+**AdmissionBindingDrift** (warning, after 2 hours). The other mismatches between the live
+actions and the committed ones: a deny binding without Audit, an audit binding with Deny
+or without Warn or Audit. Same look, same restore.
+
+**AdmissionBreakGlass** (warning, after 4 hours). No `ryft-*` binding has `Deny` while at
+least one is committed as deny: the chart's break-glass (`admission_break_glass=true`) is on,
+or every binding was patched. Nothing is refused. Planned maintenance ends with the same
+apply and `admission_break_glass=false`:
+```bash
+terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -out=admission.tfplan -var='admission_break_glass=false'
+terraform -chdir=infra/aws/kubernetes apply admission.tfplan
+```
+
+**AdmissionSignalsMissing / AdmissionScrapeDown** (warning). The API-server scrape or the
+bindings scrape reports nothing for 15 minutes, or `up` is 0. The alerts above are blind
+meanwhile. Not gated, so they also fire before the monitoring values are applied.
+```bash
+kubectl -n monitoring get pods
+kubectl -n monitoring logs deploy/grafana-cloud-alloy-deployment --tail=100 | grep -i -E "apiserver|admission|remote_write"
+```
+
+**Break-glass** (fast path, yours only; the design's section 3 has the rest). Per
+binding, takes effect at once; pause Argo CD first for an Argo-synced object:
+```bash
+kubectl patch validatingadmissionpolicybinding <binding> --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'
+```
+Expect `AdmissionBindingNotDenying` after 10 minutes if you forget; when every binding is
+patched, `AdmissionBreakGlass` after 4 hours.
+
+**Restore** (undo a patch, recreate a lost binding). Helm does not see out-of-band changes,
+so a plain apply changes nothing; replace the release:
+```bash
+terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' -out=admission.tfplan
+terraform -chdir=infra/aws/kubernetes apply admission.tfplan
+```
+A replace uninstalls the release and installs it again: every policy and binding is gone for
+a moment, so the cluster is unprotected (and with `Fail` policies and no bindings, nothing is
+refused) until the install finishes. Do it in a quiet minute, not mid-incident. A release stuck
+in `pending-upgrade`: `helm -n kube-system history admission-policy`, then `rollback`.
+
+**Not built: who writes the admission objects.** The signals above say what the policies
+decide; none says who changed a policy or binding (they are exempt from admission, RBAC
+guards them). A CloudWatch metric filter and alarm on the audit stream would, in
+`infra/aws` (your Terraform and your apply; this is a design note, not code in the repo).
+Config to start from, with the principal a placeholder to fill from one audit event of
+your own apply:
+```hcl
+resource "aws_cloudwatch_log_metric_filter" "admission_writes" {
+  name           = "ryft-admission-object-writes"
+  log_group_name = "/aws/eks/ryft-prod-euc1/cluster"
+  pattern        = "{ $.objectRef.apiGroup = \"admissionregistration.k8s.io\" && ($.verb = \"create\" || $.verb = \"update\" || $.verb = \"patch\" || $.verb = \"delete\") && $.user.username != \"<the IAM role your Terraform and Helm run as>\" }"
+  metric_transformation {
+    name      = "AdmissionObjectWrites"
+    namespace = "RYFT/Admission"
+    value     = "1"
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "admission_writes" {
+  alarm_name          = "ryft-admission-object-writes"
+  namespace           = "RYFT/Admission"
+  metric_name         = "AdmissionObjectWrites"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn] # the topic your other alarms use
+}
+```
+Restrict to the audit stream if the filter matches too much (the group also holds the
+API server and authenticator logs, which are not JSON audit events and never match).
 
 ## Terraform state
 
@@ -2092,7 +2436,7 @@ kubectl -n ryft-postgres exec pg-restore -- sh -c 'psql "$DATABASE_URL" -v ON_ER
 
 # 4. clean up; re-run migrate (grants and role passwords), restart; the HPAs take api/ingest back to 2
 kubectl -n ryft-postgres delete pod pg-restore
-make k8s-apply-local
+make k8s-apply-local KUBE_CONTEXT=<context>
 for s in api ingest scoring; do kubectl -n ryft-$s scale deploy/$s --replicas=1; done
 ```
 

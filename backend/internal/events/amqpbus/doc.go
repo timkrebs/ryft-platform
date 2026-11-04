@@ -18,8 +18,17 @@
 //     published is the delivery rejected WITH requeue; after DeliveryLimit (10)
 //     redeliveries the broker dead-letters it itself, and those letters carry
 //     x-death, not the Ryft-* headers.
+//   - A letter replayed by scripts/dlq.sh carries x-ryft-replayed (the boolean true,
+//     nothing else counts): its handler sees it as a redelivery (events.Redelivered),
+//     the attempts before the dead letter may have left work half done, and it gets
+//     all its attempts again. A delivery from ryft.events is handled and filed by its
+//     routing key, not by the type a publisher set; a type that is neither empty nor
+//     the key is a bad event (D150). x-death, x-ryft-attempt and Ryft-* on such a first
+//     delivery are dropped: only the broker and this package write them (a retry's copy
+//     returns through ryft.requeue), dlq.sh reads them, and a forged attempt count must
+//     not skip the retries or index past the tiers; attemptOf clamps as well.
 //   - The connection is kept up with backoff and jitter while the service runs;
 //     Ready reports why it is down, and the outbox keeps events meanwhile (D101).
 //
-// See docs/MESSAGING_DESIGN.md; docs/OPERATIONS.md → RabbitMQ; D47, D97, D99, D100, D101, D102.
+// See docs/MESSAGING_DESIGN.md; docs/OPERATIONS.md → RabbitMQ; D47, D97, D99, D100, D101, D102, D150.
 package amqpbus

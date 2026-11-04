@@ -56,7 +56,7 @@ const MaxRangeDays = 400
 
 // RangeDays is the number of calendar days from `from` to `to` (YYYY-MM-DD).
 // It counts dates, not hours, so a range across a DST change is not off by
-// one hour — the api and scoring must agree exactly on MaxRangeDays.
+// one hour — the api and scoring must agree exactly on MaxRangeDays (D22).
 func RangeDays(from, to string) (int, error) {
 	a, err := time.Parse("2006-01-02", from)
 	if err != nil {
@@ -127,10 +127,11 @@ func (e *Engine) ComputeDay(ctx context.Context, userID uuid.UUID, day string) e
 // at most 30 more, not 400×30, and a re-score that changes nothing goes no
 // further than the days asked for; at most MaxRangeDays beyond them.
 //
-// On a redelivered event (events.Redelivered: a retry, or the broker's
-// redelivery) "nothing changed" proves nothing: the attempt before may have
-// written the change and failed before the days after. Then every asked-for
-// day counts as changed, so the retry finishes what the attempt began (D100).
+// On a redelivered event (events.Redelivered: a retry, the broker's
+// redelivery, or a dead letter replayed with scripts/dlq.sh) "nothing
+// changed" proves nothing: the attempt before may have written the change and
+// failed before the days after. Then every asked-for day counts as changed, so
+// the retry finishes what the attempt began (D100).
 func (e *Engine) ComputeDays(ctx context.Context, userID uuid.UUID, days []string) error {
 	_, err := e.computeDays(ctx, userID, days)
 	return err
@@ -427,7 +428,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	}
 	for _, w := range workouts {
 		// Each workout loads its own window rather than filtering the day's
-		// samples: a 23:20–00:40 run must count its minutes after midnight too,
+		// samples (D22): a 23:20–00:40 run must count its minutes after midnight too,
 		// and match the curve GET /v1/workouts/{id} draws (same whole-hour
 		// window, same source per hour).
 		from, to := SampleWindow(w.Start, WorkoutWindowEnd(w))

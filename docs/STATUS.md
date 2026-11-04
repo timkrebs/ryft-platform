@@ -47,8 +47,10 @@ this machine; check with `kubectl config current-context`):
    Worked: the migrate Job's log says `migration applied 0028_train_import.sql`, `GET /v1/model`
    (api.ryftapp.de) returns `2026.10.2`, `make smoke-prod` passes, and `GET /v1/admin/flags`
    (OPERATIONS → Feature flags) lists `train.import` with `enabled: true, rollout_pct: 0` (dark).
-4. **Rescore:** `scripts/rescore_all.sh`. It runs `kubectl -n ryft-scoring exec deploy/scoring -- /app rescore -days 400`
-   in the *current* context and prints the model first. Worked: the last line names `2026.10.2` and
+4. **Rescore:** `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. It runs
+   `kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app rescore -days 400` in the context
+   you name (never the current one; the name from `kubectl config get-contexts -o name`, if your alias differs)
+   and prints the model first. Worked: the last line names `2026.10.2` and
    no failed users. Needed because the model moved (assisted sets, the 90-day e1RM reference).
 5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
    allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
@@ -289,7 +291,7 @@ contract checks in `make smoke`, Swift-side contract checks (`make check-swift`)
 | The site from this repository (2026-10-22, D107) | Before: PR #9's own run (every job, the workflow changed): web-checks, web-e2e (the nginx image, 150 Playwright/axe pages, links, Lighthouse), secrets, manifests, smoke, test, lint, terraform ×4, `ci-ok`, `pr-title` green; `ci-ok` red on the first run (actionlint, `GITHUB_BASE_REF` in a test), as designed. After: `web-image` built amd64, checked `/beta` for the address, Trivy, pushed both architectures (provenance, SBOM), Trivy on the digest; `ghcr.io/timkrebs/ryft/web:bfc51b8` exists. #18 changed only web's `newTag` (`f437747` → `bfc51b8`), authored by `app/ryft-deploy`, auto-merged after `changes`, `manifests`, `secrets`, `pr-title`, `ci-ok` (everything else skipped). Live from 06:32:14 UTC (2:50 after the merge): `/`, `/privacy`, `/terms`, `/support`, `/impressum`, `/de/privacy`, `/de/impressum`, `/privacy/2026-10-20`, `/day/2026-10-19`, `/auth/callback`, `/invite/TEST`, `/beta`, `/de/beta`, `/science` 200 `text/html`; the AASA 200 `application/json`, no redirect, appID `M77SKHKG63.dev.timkrebs.ryft`, the ten paths, `webcredentials`, and Apple's CDN copy identical; `/beta` links `mailto:support@ryftapp.de` with no TODO marker; the CSP's hashes match every inline script on `/`, `/privacy`, `/beta`, no external script; `www` → apex, `/privacy/` → 301 `/privacy`, HSTS; the 2026-10-21 legal texts (#10 of ryft-web) served; `api.ryftapp.de/v1/me` 401. Not checked: the pods' image and Argo CD's state through kubectl (the session's AWS login had expired) — the served text proves the new image; check `kubectl -n argocd get applications ryft-platform` once. |
 | Web follow-ups (2026-10-22/23, D108–D111, D115) | Every PR reviewed by code and security (SRE where runtime changed); findings fixed and re-verified before merge (`docs/work/2026-10-22-followups/review.md`). Deploys watched read-only: web `332c252` (#19 → #23, the first build with #17's actions); F1 (#22: four ConfigMaps renamed, migrate and smoke Succeeded, then #25 — the first promote in environment `deploy` with the rotated key); the drill (#26 rollback with a hold, promote held, the watch OK, #27 release, #28 deploy; Argo pickup 2–6 min); #31 (web image `a4ad9f7`, #36). |
 | The calibrating report (2026-10-22/23, D112–D114) | Root cause from admin aggregates (the reporter has 0 HRV nights) and your SQL (0 stale rows); #29 and #30 reviewed by code, scoring and database, #35 by security and code; migration 0027 applied (`migration applied 0027_calibrating_reason.sql`); `scripts/rescore_all.sh 30` (2 users, 0 failed, model 2026.10.1); a fresh production `scored day` line carries only `day, inputs_changed, model_version, request_id, user_id` and the standard fields (`docs/work/2026-10-22-calibrating/review.md`). |
-| Admission kind run (2026-10-26, T12-d, D150, D151) | Podman, kind v0.33.0, node `kindest/node:v1.36.4`, kubectl 1.36.5, helm 4.3.1. `--mode ci` on the branch: 29 checks passed, 1 skipped (`argo-rbac`: the branch has no T12-f); the API server held exactly the 11 policies and 12 bindings `helm template` renders, in Audit and in Deny, with `status.typeChecking` empty and a canary fixture answered within 2 s; 218 objects of the 10 apps, the root and the projects dry-run applied as Argo CD's controller (2 refused/warned by P6 for the vendored operator roles, explained by the missing T12-g); 48 generated and 30 manual fixtures; claims a, b, c, d and the negative test of h. `--mode full` on a git worktree of the branch merged with #47 (plus the `applications` rule), #51: 62 checks passed, 0 failed: cert-manager, Argo CD from `argocd.tf`'s values (narrowed ClusterRoles, `respectRBAC: strict`), 11 Applications Synced and Healthy in Audit and again after a manual sync of every app in Deny, PreSync migrate and PostSync smoke Succeeded, the broker Ready with 63 topology objects, no validation failure logged, the D98 restart, `terminate-op`, both operators' `can-i` answers, claims i, k (the full SHA) and m (disproved). `--mode ci --kubeconfig` on a kind cluster of its own (compared with `kind get kubeconfig`; 28 passed, claim d skipped for want of an audit log), an interruption (SIGTERM deletes the cluster and keeps the logs), and no `ghcr.io/timkrebs/ryft` tag left in the local image store. `make test-scripts` (kind guard with 17 hostile server URLs, links and a fake `kind`, tracked copy, tf_values refusals, chart bump, ref policy, promote_only, audit findings, tree values), `make admission-celtest` (690 cases), `make k8s-validate`, shellcheck, actionlint, `check_workflows.sh`. Not verified: a node drain, three workers, claims f, j and l, the CI job on GitHub (it has not run there), the `admission-e2e` workflow, the install scripts on a runner (their sha256 were checked against the published files and the downloaded bytes). |
+| Admission kind run (2026-10-26, T12-d, D151, D152) | Podman, kind v0.33.0, node `kindest/node:v1.36.4`, kubectl 1.36.5, helm 4.3.1. `--mode ci` on the branch: 29 checks passed, 1 skipped (`argo-rbac`: the branch has no T12-f); the API server held exactly the 11 policies and 12 bindings `helm template` renders, in Audit and in Deny, with `status.typeChecking` empty and a canary fixture answered within 2 s; 218 objects of the 10 apps, the root and the projects dry-run applied as Argo CD's controller (2 refused/warned by P6 for the vendored operator roles, explained by the missing T12-g); 48 generated and 30 manual fixtures; claims a, b, c, d and the negative test of h. `--mode full` on a git worktree of the branch merged with #47 (plus the `applications` rule), #51: 62 checks passed, 0 failed: cert-manager, Argo CD from `argocd.tf`'s values (narrowed ClusterRoles, `respectRBAC: strict`), 11 Applications Synced and Healthy in Audit and again after a manual sync of every app in Deny, PreSync migrate and PostSync smoke Succeeded, the broker Ready with 63 topology objects, no validation failure logged, the D98 restart, `terminate-op`, both operators' `can-i` answers, claims i, k (the full SHA) and m (disproved). `--mode ci --kubeconfig` on a kind cluster of its own (compared with `kind get kubeconfig`; 28 passed, claim d skipped for want of an audit log), an interruption (SIGTERM deletes the cluster and keeps the logs), and no `ghcr.io/timkrebs/ryft` tag left in the local image store. `make test-scripts` (kind guard with 17 hostile server URLs, links and a fake `kind`, tracked copy, tf_values refusals, chart bump, ref policy, promote_only, audit findings, tree values), `make admission-celtest` (690 cases), `make k8s-validate`, shellcheck, actionlint, `check_workflows.sh`. Not verified: a node drain, three workers, claims f, j and l, the CI job on GitHub (it has not run there), the `admission-e2e` workflow, the install scripts on a runner (their sha256 were checked against the published files and the downloaded bytes). |
 | Accounts and sync (2026-10-20) | `go test -race ./...` with Postgres and NATS: migrations 0022–0025 on plain Postgres and the Supabase shape (grants, RLS), gate modes in api, ingest and scoring (the warn header and metric, scoring's consent mode), the audit middleware (written after the call, short ids, `409` when ambiguous), the admin detail with a fake Supabase admin API (identities, relay emails, masking), the merge over every table (dry run equal to the real run, conflicts kept, children of dropped parents not copied, a second run `404`, `from` deletable afterwards), the score queue (queued, marked, pruned, the p95), the sync screen (unknown types, window, duplicates), today's state, the refresh throttle shared with the morning push, a panicking handler retried, the NATS permissions for `ryft.refresh` and its dead letters; `golangci-lint` 0 issues. `make up && make smoke` over the existing volume with 0022–0025 applied: the admin detail and short ids, two accounts on one phone merged (plan first, `404` the second time), `account_hint` (and none without the device header or for the account itself), `GET /v1/me/sync` with nothing pending once scored, `scoring_state`, the `SyncResponse` counts (a re-send and an unknown type ignored), and the refresh path (sync → scoring → `ryft.refresh` → notify, counted without a key). `scripts/smoke_prod.sh` against compose with and without the admin key; its key lookup with a fake `terraform` (found for production, never for another URL). `make test-scripts` (trace with a fake kubectl). `make check-swift`: the mirror decodes `SyncStatus` and the new fields; the app's current models still decode everything. `make alerts-check`: 21 rules with `SyncToScoreSlow`'s unit test. `infra/vault` `terraform test` 18 runs. `make k8s-validate`. `scripts/trace.sh` against production found the incident's line. A rollback past the refresh subject on a throwaway NATS 2.11. Not verified: anything else against production (not deployed), a merge on real accounts, a refresh push reaching a device. |
 | `make k8s-validate` | base, Vault, EKS and local-postgres overlays render and validate with kubeconform (103 resources; VSO CRD schemas included) |
 | Terraform roots `infra/aws`, `dns`, `kubernetes` | `fmt`, `validate`, `terraform test` (mocked: 8 + 2 + 7 runs), tflint clean, trivy: no findings in `dns`/`kubernetes` |
@@ -438,6 +440,9 @@ record: `docs/work/2026-10-22-followups/review.md`, `docs/work/2026-10-22-calibr
   lock (D116; OPERATIONS → Deploy and roll back: a migration that hit the lock timeout).
 - **Log tests** pin each value's kind, find duplicate keys and cover notify; GoTrue, Apple and
   APNs refusals log a status code and a bare code only (D117).
+- **`dlq.sh` replay** marks a replay as a redelivery (no recompute needed once scoring runs it),
+  replays only bound keys, loses no letter; every operator script and cluster Makefile target
+  needs `KUBE_CONTEXT`, the local targets refuse EKS (D150).
 - **NUL and non-UTF-8 text** gets a `422`/`400` instead of a 500; the sync strips U+0000 and
   accepts the page; raw JSON fields are normalised; a database refusal is alerted (D118).
 
@@ -454,6 +459,10 @@ Yours:
 - **`infra/vault`**: a validation that refuses `config.env` keys (`PRIVACY_POLICY_VERSION`,
   `CONSENT_ENFORCE`, `BETA_GATE`, …) in `service_secrets` — the secret comes after the
   ConfigMap in `envFrom` and would override the version in force.
+- **kubectl's default context is production** on your machine (it made the 2026-10-23 incident
+  possible, D150): point the default at something harmless, or keep production in its own
+  `KUBECONFIG` file. The RabbitMQ default user's rotation is not required by that incident (the
+  security review); check the EKS audit log query in the PR if you want certainty.
 - **Postgres version:** confirm the hosted major version once (`select version();` in the
   Supabase SQL editor); the repo targets 17 (SUPABASE.md → Postgres version).
 - **Argo CD** reports `OrphanedResourceWarning: 1 orphaned resource` on ryft-platform:
@@ -469,7 +478,7 @@ Technical:
   Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
   required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
   in progress; nothing reaches the cluster before your applies (the note's §5 commands).
-  **T12-d (the kind run) is done** on `ci/admission-kind` (D150, D151): CI's required job `admission`
+  **T12-d (the kind run) is done** on `ci/admission-kind` (D151, D152): CI's required job `admission`
   (`scripts/admission_e2e.sh --mode ci`, ~5 min; skipped for promote PRs and their merge) and the
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11
@@ -487,8 +496,9 @@ Technical:
   images; the services' `images` still use the GHA cache.
 - **scoring** runs two consumers for 10–30 s during a rollout surge: confirm its timer is
   safe, or `maxSurge: 0` for scoring.
-- **`dlq.sh` replay** keeps no redelivery marker, so a replayed letter doesn't finish a
-  half-done re-score: until fixed, follow a replay with `POST /v1/recompute`.
+- **The rest of D150's guard:** plain `kubectl` lines in the OPERATIONS runbooks and `CLAUDE.md`'s
+  `make k8s-apply-eks` example still use the current context; the guard covers the scripts and the
+  Makefile targets.
 - **Alerts miss a counter's first event:** `Panics`, `DeadLetters`, `DeadLetterPublishFailing`,
   `NewFeedback`, `PushFailing`, `APNsRejectsOurKey`, `AccountDeletionIncomplete` and
   `EventsUnroutable` use `increase()` on CounterVecs created at 1, so the first event per label
@@ -934,14 +944,17 @@ aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ry
 (cd infra/vault && export VAULT_TOKEN=… && \
   terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
 # newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
-make k8s-validate && make k8s-apply-eks
-make monitoring-apply                                  # Grafana Cloud collector, after infra/vault has the token
+# Every cluster command names its cluster, per command (D150). ryft-prod-euc1 is the alias the
+# `aws eks update-kubeconfig` above wrote (the name from `kubectl config get-contexts -o name`, if yours differs).
+make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=ryft-prod-euc1
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1      # Grafana Cloud collector, after infra/vault has the token
 make smoke-prod                                        # after every deploy (OPERATIONS.md → Deploy and roll back)
 make alerts-apply                                      # alert rules into Grafana Cloud (OBSERVABILITY.md → Alerts)
-scripts/rescore_all.sh                                 # after a deploy that changed scoring rules or the model version (Beta: yes)
-kubectl -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
+KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh     # after a deploy that changed scoring rules or the model version (Beta: yes)
+kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
 ```
 
 Run `make smoke-supabase` only with the dedicated test user.
 
-Self-hosted (k3s etc.): `make k8s-apply-local` (`OPERATIONS.md` → Self-hosted).
+Self-hosted (k3s etc.): `make k8s-apply-local KUBE_CONTEXT=<your local context>` (`OPERATIONS.md` → Self-hosted); it refuses a
+context that looks like EKS (a heuristic).

@@ -77,6 +77,9 @@ jobs:
               - '.golangci.yml'
               - 'docs/API.md'
               - 'scripts/coverage.sh'
+              # amqpbus's replay tests run the script against the broker.
+              - 'scripts/dlq.sh'
+              - 'scripts/lib/kube.sh'
               - '.github/workflows/ci.yml'
             # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
             # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
@@ -149,6 +152,11 @@ jobs:
               - 'scripts/synthetics.sh'
               - 'scripts/synthetics_re2.go'
               - 'scripts/tests/synthetics_test.sh'
+              # the committed actions of the admission bindings (a step-change PR edits only the values)
+              - 'infra/aws/kubernetes/admission-values.yaml'
+              - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
+              - 'scripts/admission_intended.sh'
+              - 'scripts/tests/admission_intended_test.sh'
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
@@ -299,6 +307,14 @@ jobs:
           persist-credentials: false
       - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
         run: ./scripts/check_bytes.sh
+      # D-numbers in docs/DECISIONS.md that no source or config file mentions and scripts/decision_refs.skip does not
+      # excuse: one ::warning annotation, the list in the log. Here, not in `lint`: this job has no path filter, so a
+      # PR that only edits docs/DECISIONS.md (or the skip list) runs it, and a renumbered D shows up on the PR that
+      # did it instead of on someone else's Go PR. It needs only git and awk. Exit 0 on warnings, so it never fails
+      # the job; it fails only when the script cannot work (which would also stop images, web-image and ci-ok on
+      # main; the PR's own run catches it first). `--strict` is the later promotion to a failure.
+      - name: Decisions are referenced from code, or skipped with a reason (warnings only)
+        run: ./scripts/decision_refs.sh
 
   manifests:
     needs: [changes]
@@ -433,7 +449,7 @@ jobs:
           persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: 1.16.6
+          terraform_version: 1.16.6 # pinned exactly, as in the code and the workspaces (D56)
           terraform_wrapper: false
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
         with:
@@ -444,7 +460,7 @@ jobs:
           path: ${{ github.workspace }}/.terraform-plugin-cache
           key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.root)) }}
       - run: terraform fmt -check -recursive
-      # -backend=false: never touch the HCP Terraform workspace from CI.
+      # -backend=false: never touch the HCP Terraform workspace from CI (D56).
       - run: terraform init -backend=false -input=false
       - run: terraform validate
       - run: tflint --init && tflint --format compact
@@ -489,6 +505,7 @@ jobs:
       - run: make alerts-check CONTAINER=docker
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
+      - run: bash scripts/tests/admission_intended_test.sh
 
   # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
   # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the

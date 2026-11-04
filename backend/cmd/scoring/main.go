@@ -211,9 +211,9 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 	}
 	// The sync's (or an import's, D128: an explicit list, which may hold two days) days,
 	// then the stored days after them whose history changed, in this handler: a
-	// duplicate finds nothing changed and stops there, a retry (events.Redelivered in
-	// ctx) re-scores the days after its days anyway, finishing what the failed attempt
-	// began (D100).
+	// duplicate finds nothing changed and stops there, a retry or a replayed dead letter
+	// (events.Redelivered in ctx) re-scores the days after its days anyway, finishing
+	// what the failed attempt began (D100).
 	return engine.ComputeDays(ctx, ev.UserID, days)
 }
 

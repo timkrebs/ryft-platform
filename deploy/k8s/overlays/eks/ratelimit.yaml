@@ -1,4 +1,4 @@
-# Per-IP limit at the edge, before any token is checked: 20 requests/s on average,
+# Per-IP limit at the edge (D53), before any token is checked: 20 requests/s on average,
 # bursts of 50, per client address (the NLB preserves it; infra/aws/kubernetes).
 # The services' own per-user limit (D36) only starts after a valid token. Each
 # Traefik replica counts on its own, so the effective limit is up to 2x. Over it,
