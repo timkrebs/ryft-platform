@@ -1,0 +1,51 @@
+{{- /*
+P9 ryft-traefik (C, U in ryft-*). Traefik objects and the middleware annotation of
+Ingresses. Key allowlists (no Traefik CRD in use defaults a key):
+ - Middleware spec: only rateLimit, redirectRegex or headers;
+ - ServersTransport: only rootCAs and serverName, never insecureSkipVerify;
+ - an Ingress's traefik.ingress.kubernetes.io/router.middlewares names only middlewares of
+   its own namespace, exactly <namespace>-<name>@kubernetescrd with a name from
+   traefik.middlewareNames (a prefix test could not tell ryft-api's "x-y" from ryft-api-x's "y").
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-traefik" "id" "P9" "summary" "Traefik Middleware, ServersTransport and the Ingress middleware annotation") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["traefik.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["middlewares", "serverstransports"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["ingresses"]
+  matchConditions:
+    - name: ryft-namespace
+      expression: request.namespace.startsWith('ryft-')
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: o
+      expression: dyn(object)
+  validations:
+    - expression: |-
+        variables.reqKind != 'Middleware' ||
+        variables.o.spec.all(k, k in ['rateLimit', 'redirectRegex', 'headers'])
+      message: "P9: a Middleware may only be a rateLimit, redirectRegex or headers."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ServersTransport' ||
+        variables.o.spec.all(k, k in ['rootCAs', 'serverName'])
+      message: "P9: a ServersTransport may only set rootCAs and serverName (never insecureSkipVerify)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Ingress' || !has(variables.o.metadata.annotations) ||
+        !('traefik.ingress.kubernetes.io/router.middlewares' in variables.o.metadata.annotations) ||
+        variables.o.metadata.annotations['traefik.ingress.kubernetes.io/router.middlewares'].split(',').all(m,
+          {{ .Values.traefik.middlewareNames | toJson }}.exists(n, m.trim() == request.namespace + '-' + n + '@kubernetescrd'))
+      message: "P9: an Ingress may name only middlewares of its own namespace."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "traefik" "policy" "ryft-traefik" "id" "P9" "step" "B") }}

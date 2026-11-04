@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "base": {
+      "type": "integer"
+    },
+    "debt": {
+      "type": "integer"
+    },
+    "nap_credit": {
+      "type": "integer"
+    },
+    "strain": {
+      "type": "integer"
+    },
+    "total": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "base",
+    "debt",
+    "nap_credit",
+    "strain",
+    "total"
+  ],
+  "title": "SleepNeed",
+  "type": "object"
+}

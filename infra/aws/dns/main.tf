@@ -37,3 +37,42 @@ resource "aws_route53_record" "caa_wildcard" {
   ttl     = 3600
   records = [for ca in var.caa_issuers : "0 issuewild \"${ca}\""]
 }
+
+# Mail for the domain: Google Workspace (D142). The records were first created by hand
+# in the console and are imported (docs/OPERATIONS.md, "Mail for ryftapp.de").
+resource "aws_route53_record" "mx" {
+  zone_id = aws_route53_zone.this.zone_id
+  name    = var.domain
+  type    = "MX"
+  ttl     = 3600
+  records = var.mx_records
+}
+
+# One record set, two values (verification and SPF). The hand-made record had both
+# inside one string; a TXT value is one string, so they are separate values here.
+resource "aws_route53_record" "apex_txt" {
+  zone_id = aws_route53_zone.this.zone_id
+  name    = var.domain
+  type    = "TXT"
+  ttl     = 3600
+  records = [var.google_site_verification, var.spf]
+}
+
+# Route 53 takes strings of at most 255 characters; a longer value is several strings in
+# one value, which resolvers join again. The AWS provider wraps the value in quotes itself,
+# so only the joints carry quotes: chunk1" "chunk2, no outer quotes (the state holds it so).
+resource "aws_route53_record" "dkim" {
+  zone_id = aws_route53_zone.this.zone_id
+  name    = "${var.dkim_selector}._domainkey.${var.domain}"
+  type    = "TXT"
+  ttl     = 3600
+  records = [join("\" \"", regexall(".{1,255}", var.dkim_record))]
+}
+
+resource "aws_route53_record" "dmarc" {
+  zone_id = aws_route53_zone.this.zone_id
+  name    = "_dmarc.${var.domain}"
+  type    = "TXT"
+  ttl     = 3600
+  records = [var.dmarc]
+}

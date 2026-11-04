@@ -244,6 +244,19 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
     condition     = can(yamldecode(helm_release.argocd.values[0]).configs.cm["resource.customizations.health.argoproj.io_Application"])
     error_message = "Application health must be restored, or the app-of-apps sync waves do not wait for each other"
   }
+  # D121: Argo CD's Lua VM has no string library; `make argocd-luatest` runs the scripts in it.
+  assert {
+    condition = alltrue([for k, v in yamldecode(helm_release.argocd.values[0]).configs.cm :
+      !strcontains(v, "string.") && !strcontains(v, ":find(") && !strcontains(v, ":match(") && !strcontains(v, ":gsub(")
+    if startswith(k, "resource.customizations.health.")])
+    error_message = "a health script must not use the string library (Argo CD does not open it, D121)"
+  }
+  assert {
+    condition = length([for k, v in yamldecode(helm_release.argocd.values[0]).configs.cm : k
+      if startswith(k, "resource.customizations.health.rabbitmq.com_")]) == 9 && !anytrue([for k, v in yamldecode(helm_release.argocd.values[0]).configs.cm : true
+    if startswith(k, "resource.customizations") && (strcontains(k, "useOpenLibs") || strcontains(tostring(v), "useOpenLibs"))])
+    error_message = "one health check per RabbitMQ kind, and no useOpenLibs, as a key or inside a resource.customizations YAML block (D121)"
+  }
   assert {
     condition     = kubernetes_namespace_v1.argocd.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted"
     error_message = "the argocd namespace enforces Pod Security restricted"

@@ -43,3 +43,9 @@ needed.
 
 ## Bedtime & wake
 1–4 (sleep schedule on the account, planned vs actual, `BEDTIME` push, `day=` / `tz=`) — queued as one sleep batch.
+
+## NUL in requests (2026-10-23, D118)
+Strings must not contain U+0000. The platform now answers a NUL in user-entered text (feedback,
+journal, Train names and notes, profile) with `422` and stores nothing; strip U+0000 from what the
+user types or pastes before sending (low priority). `POST /v1/sync` removes it itself from every
+string and accepts the page, so HealthKit-derived names need no app change. No model changes.

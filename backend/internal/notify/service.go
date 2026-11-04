@@ -53,11 +53,16 @@ const (
 	Refresh = "REFRESH"
 	// StaleAfter without a heart-rate or step sample, a user gets SYNC_STALE,
 	// in the daytime only (StaleFromHour to StaleToHour local).
-	StaleAfter    = 20 * time.Hour
+	StaleAfter = 20 * time.Hour
+	// StaleFromHour is the first local hour (inclusive) a SYNC_STALE reminder
+	// may go out; before it the check waits.
 	StaleFromHour = 9
-	StaleToHour   = 21
-	// SessionFresh: a session that ended longer ago (an offline queue
-	// replayed days later) is scored, not announced.
+	// StaleToHour is the local hour (exclusive) after which no SYNC_STALE
+	// reminder goes out, so nobody is woken by a reminder to sync.
+	StaleToHour = 21
+	// SessionFresh is how recently a session must have ended to be announced;
+	// one that ended longer ago (an offline queue replayed days later) is
+	// scored, not announced.
 	SessionFresh = 12 * time.Hour
 )
 
@@ -139,7 +144,8 @@ func (s *Service) morning(ctx context.Context, ev model.ScoredEvent) error {
 }
 
 // session: SESSION_SCORED, or PR when the user wants records but not session
-// summaries. Quiet hours drop it (it would be stale by morning).
+// summaries. Quiet hours drop it (it would be stale by morning); an imported
+// session never gets one.
 func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) error {
 	r, ok, err := s.recipient(ctx, ev.UserID, model.NotifySessionScored)
 	if !ok {
@@ -154,6 +160,12 @@ func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) erro
 	}
 	if err != nil {
 		return err
+	}
+	if n.Origin == model.OriginImport {
+		// Imported history is silent (D125): scoring sends no session.scored for an
+		// import, and a re-complete of an imported session is not announced either.
+		count(model.NotifySessionScored, "import")
+		return nil
 	}
 	category := ""
 	switch {

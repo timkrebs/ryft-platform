@@ -1,0 +1,69 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "consistency": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "day": {
+      "type": "string"
+    },
+    "efficiency": {
+      "type": "integer"
+    },
+    "end": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "has_stages": {
+      "type": "boolean"
+    },
+    "in_bed_min": {
+      "type": "integer"
+    },
+    "nap_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "quality": {
+      "type": "integer"
+    },
+    "quality_label": {
+      "type": "string"
+    },
+    "restorative": {
+      "type": "integer"
+    },
+    "stages": {
+      "items": {
+        "$ref": "SleepStage"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "start": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "total_min": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "consistency",
+    "day",
+    "efficiency",
+    "end",
+    "has_stages",
+    "in_bed_min",
+    "nap_min",
+    "quality",
+    "quality_label",
+    "restorative",
+    "stages",
+    "start",
+    "total_min"
+  ],
+  "title": "SleepDay",
+  "type": "object"
+}

@@ -1,0 +1,94 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "app_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "beta_access": {
+      "type": "boolean"
+    },
+    "calibrating": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "consent_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "days_scored_14d": {
+      "type": "integer"
+    },
+    "days_with_hrv_14d": {
+      "type": "integer"
+    },
+    "dup": {
+      "type": "integer"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "max_hr_source": {
+      "type": "string"
+    },
+    "nights_with_stages_14d": {
+      "type": "integer"
+    },
+    "open_feedback": {
+      "type": "integer"
+    },
+    "os_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "short_id": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "AdminSource"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "app_version",
+    "beta_access",
+    "calibrating",
+    "consent_version",
+    "created_at",
+    "days_scored_14d",
+    "days_with_hrv_14d",
+    "dup",
+    "id",
+    "last_sync_at",
+    "max_hr_source",
+    "nights_with_stages_14d",
+    "open_feedback",
+    "os_version",
+    "provider",
+    "short_id",
+    "sources"
+  ],
+  "title": "AdminUser",
+  "type": "object"
+}

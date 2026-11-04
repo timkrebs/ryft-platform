@@ -91,3 +91,40 @@ telemetryServices:
   sdkInjector:
     deploy: true
     allowedConfigMapWriters: system:serviceaccount:monitoring:grafana-cloud-alloy-daemonset,system:serviceaccount:monitoring:grafana-cloud-alloy-deployment
+    # The injector is a pod-mutating webhook (chart k8s-injection-controller, failurePolicy
+    # Ignore, all namespaces but the excluded ones). RYFT's pods must not be mutated: the
+    # admission policies pin their images and commands (an injected init container would
+    # be refused), and the services export their own metrics. The chart excludes by exact
+    # namespace name (a NotIn on kubernetes.io/metadata.name), not by prefix, so every
+    # ryft-* namespace is listed. A list value replaces the chart's default list, so the
+    # defaults are repeated first. A new ryft-* namespace is added here too
+    # (docs/OBSERVABILITY.md -> Grafana Cloud).
+    webhook:
+      excludedNamespaces:
+        # chart defaults (4.5.3)
+        - kube-system
+        - kube-public
+        - kube-node-lease
+        - cert-manager
+        - monitoring
+        - local-path-storage
+        - grafana-alloy
+        - gke-connect
+        - gke-gmp-system
+        - gke-managed-cim
+        - gke-managed-filestorecsi
+        - gke-managed-metrics-server
+        - gke-managed-system
+        - gke-system
+        - gke-managed-volumepopulator
+        - gatekeeper-system
+        # RYFT
+        - ryft-api
+        - ryft-ingest
+        - ryft-scoring
+        - ryft-notify
+        - ryft-migrate
+        - ryft-smoke
+        - ryft-web
+        - ryft-rabbitmq
+        - ryft-postgres

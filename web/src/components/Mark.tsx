@@ -3,6 +3,7 @@ import { markGeometry } from '@/lib/mark';
 type Props = {
   /** CSS size in px (width = height). */
   size?: number;
+  /** Overrides the size rule (the inner ring is dropped below 22 px). */
   showsInnerOrbit?: boolean;
   className?: string;
   /** Accessible name; decorative (hidden) when omitted. */
@@ -10,8 +11,8 @@ type Props = {
 };
 
 /** The orbit mark (RyftMark.swift), in the current text colour. */
-export function Mark({ size = 24, showsInnerOrbit = true, className, title }: Props) {
-  const g = markGeometry(showsInnerOrbit);
+export function Mark({ size = 24, showsInnerOrbit, className, title }: Props) {
+  const g = markGeometry(size, showsInnerOrbit);
   return (
     <svg
       viewBox={`0 0 ${g.size} ${g.size}`}

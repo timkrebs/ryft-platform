@@ -113,6 +113,9 @@ type supabaseClaims struct {
 	} `json:"user_metadata"`
 }
 
+// Verify checks token and returns its Principal. A bad token is a 401 (Unauthorized). One
+// that cannot be checked right now, because no signing keys are loaded or an unknown key
+// cannot be fetched, is a 503 (Unavailable), so an outage never signs a user out (D29).
 func (s *Supabase) Verify(ctx context.Context, token string) (Principal, error) {
 	if !s.hasKeys(ctx) {
 		return Principal{}, Unavailable("jwks_unavailable", errors.New("no signing keys loaded"))

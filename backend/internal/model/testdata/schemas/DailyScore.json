@@ -1,0 +1,182 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "active_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "baseline_days": {
+      "type": "integer"
+    },
+    "baseline_hrv_days": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "baseline_rhr_days": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "calibrating": {
+      "type": "boolean"
+    },
+    "calibrating_reason": {
+      "nullable": true,
+      "type": "string"
+    },
+    "computed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "day": {
+      "type": "string"
+    },
+    "details": {
+      "additionalProperties": {
+        "description": "any JSON value"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "hrv_baseline_ms": {
+      "nullable": true,
+      "type": "number"
+    },
+    "hrv_ms": {
+      "nullable": true,
+      "type": "number"
+    },
+    "model_version": {
+      "nullable": true,
+      "type": "string"
+    },
+    "nap_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "readiness": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "recovery": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "resp_rate": {
+      "nullable": true,
+      "type": "number"
+    },
+    "rhr": {
+      "nullable": true,
+      "type": "number"
+    },
+    "rhr_baseline": {
+      "nullable": true,
+      "type": "number"
+    },
+    "scoring_state": {
+      "type": "string"
+    },
+    "sleep_actual_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_consistency": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_debt_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_need_base_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_need_debt_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_need_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_need_nap_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_need_strain_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_performance": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "sleep_quality": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "spo2": {
+      "nullable": true,
+      "type": "number"
+    },
+    "state": {
+      "type": "string"
+    },
+    "steps": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "strain": {
+      "nullable": true,
+      "type": "number"
+    },
+    "strength_min": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "volume_kg": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "active_kcal",
+    "baseline_days",
+    "baseline_hrv_days",
+    "baseline_rhr_days",
+    "calibrating",
+    "calibrating_reason",
+    "computed_at",
+    "day",
+    "details",
+    "hrv_baseline_ms",
+    "hrv_ms",
+    "model_version",
+    "nap_min",
+    "readiness",
+    "recovery",
+    "resp_rate",
+    "rhr",
+    "rhr_baseline",
+    "scoring_state",
+    "sleep_actual_min",
+    "sleep_consistency",
+    "sleep_debt_min",
+    "sleep_need_base_min",
+    "sleep_need_debt_min",
+    "sleep_need_min",
+    "sleep_need_nap_min",
+    "sleep_need_strain_min",
+    "sleep_performance",
+    "sleep_quality",
+    "spo2",
+    "state",
+    "steps",
+    "strain",
+    "strength_min",
+    "volume_kg"
+  ],
+  "title": "DailyScore",
+  "type": "object"
+}

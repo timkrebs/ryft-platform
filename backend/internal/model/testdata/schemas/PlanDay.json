@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "day_index": {
+      "type": "integer"
+    },
+    "exercises": {
+      "items": {
+        "$ref": "PlanExercise"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "week": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "day_index",
+    "exercises",
+    "id",
+    "name",
+    "week"
+  ],
+  "title": "PlanDay",
+  "type": "object"
+}

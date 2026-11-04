@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "answered": {
+      "type": "boolean"
+    },
+    "answered_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "day": {
+      "type": "string"
+    },
+    "editable": {
+      "type": "boolean"
+    },
+    "entries": {
+      "items": {
+        "$ref": "JournalEntry"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "answered",
+    "answered_at",
+    "day",
+    "editable",
+    "entries"
+  ],
+  "title": "JournalDay",
+  "type": "object"
+}

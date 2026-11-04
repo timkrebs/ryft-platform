@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "no": {
+      "type": "integer"
+    },
+    "yes": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "no",
+    "yes"
+  ],
+  "title": "ImpactNeeded",
+  "type": "object"
+}

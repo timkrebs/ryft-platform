@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "$ref": "SyncCounts"
+    },
+    "days_touched": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "deleted": {
+      "$ref": "SyncDeleted"
+    },
+    "ignored": {
+      "$ref": "SyncIgnored"
+    },
+    "samples": {
+      "type": "integer"
+    },
+    "scoring": {
+      "$ref": "SyncScoring"
+    },
+    "sleep": {
+      "type": "integer"
+    },
+    "workouts": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "accepted",
+    "days_touched",
+    "deleted",
+    "ignored",
+    "samples",
+    "scoring",
+    "sleep",
+    "workouts"
+  ],
+  "title": "SyncResponse",
+  "type": "object"
+}

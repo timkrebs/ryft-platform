@@ -1,9 +1,3 @@
-// Package amqpbus is events.Bus on RabbitMQ (AMQP 0-9-1, github.com/rabbitmq/amqp091-go;
-// D97, D99). One connection per service, reconnected with backoff and jitter while the
-// service keeps running (/readyz says why, D47); publishes wait for the broker's
-// confirm and are mandatory (an unroutable event is an error, not a silent drop);
-// consumers acknowledge by hand, and a failure is a copy into a delay tier (TTL queue,
-// then back to the queue) instead of a requeue, so retries are spaced and counted.
 package amqpbus
 
 import (
@@ -41,11 +35,14 @@ const HeaderAttempt = "x-ryft-attempt"
 // delay tier or the dead-letter queue keeps it.
 const HeaderReplayed = "x-ryft-replayed"
 
-// ErrUnroutable: the broker had no queue for the event's routing key (a topology
-// that lacks a binding), so nothing would ever handle it.
+// ErrUnroutable is a publish the broker returned because no queue is bound to the
+// event's routing key (a topology that lacks a binding), so nothing would ever
+// handle it. It is an error, not a drop: the outbox keeps the row and alerts when
+// it reaches outbox.MaxAttempts.
 var ErrUnroutable = errors.New("amqp: unroutable (no queue bound for this key)")
 
-// ErrDisconnected: no connection to the broker right now.
+// ErrDisconnected is returned when there is no connection to the broker right now.
+// Publishers surface it so the outbox retries; consumers resubscribe on their own.
 var ErrDisconnected = errors.New("amqp: not connected")
 
 // Options for Open.

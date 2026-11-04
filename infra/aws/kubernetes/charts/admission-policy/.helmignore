@@ -1,0 +1,14 @@
+# Only the chart ships in the Helm release (its Secret is limited to 1 MiB). The offline CEL
+# harness lives outside the chart, in infra/aws/kubernetes/admission-celtest.
+.git*
+.DS_Store
+*.swp
+*.tmp
+*.go
+go.mod
+go.sum
+testdata/
+celtest/
+*.test
+*.out
+*.tgz

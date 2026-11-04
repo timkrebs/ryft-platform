@@ -1,17 +1,3 @@
-// Package scoring implements RYFT's Recovery / Strain / Sleep model as
-// pure functions over already-loaded data. Nothing in this file touches the
-// database, so every formula is unit-testable (see algorithms_test.go) and
-// swappable without touching the service wiring in compute.go.
-//
-// The model, in one paragraph: every night produces an HRV, a resting heart
-// rate and a respiratory rate. Each is compared to your own rolling 30-day
-// baseline as a z-score and mapped through a logistic curve to 0..100.
-// Recovery is a weighted blend of those plus last night's sleep performance.
-// Strain integrates heart-rate-reserve over the day with Banister's TRIMP
-// weighting and compresses it onto a 0..21 logarithmic scale, so the last few
-// points are much harder to earn than the first. Sleep need is a personal
-// baseline plus yesterday's strain plus accumulated debt; performance is
-// actual / need.
 package scoring
 
 import (
@@ -38,6 +24,9 @@ type Baseline struct {
 	N    int
 }
 
+// NewBaseline builds a Baseline from previous days. Below MinBaselineDays the
+// SD is fallbackSD, not the sample SD, so two similar days cannot make the next
+// z-score explode; an exactly flat series gets it too (SD 0 would divide by 0).
 func NewBaseline(values []float64, fallbackSD float64) Baseline {
 	b := Baseline{N: len(values)}
 	if b.N == 0 {
@@ -107,6 +96,10 @@ func clamp(v, lo, hi float64) float64 {
 
 // ---- Recovery ----------------------------------------------------------------
 
+// RecoveryInputs are one night's signals and the baselines they are compared
+// to. HRVms, RHR and RespRate are missing when nil or not above 0, not zero;
+// SleepPerformance is missing only when nil, a 0 counts as 0. Recovery
+// re-weights what is present.
 type RecoveryInputs struct {
 	HRVms    *float64 // overnight HRV (SDNN from HealthKit); compared in log space
 	RHR      *float64
@@ -119,6 +112,9 @@ type RecoveryInputs struct {
 	SleepPerformance *int // 0..100 from last night
 }
 
+// RecoveryResult is what Recovery stores and the UI explains. Calibrating marks
+// a score built on too little history (docs/SCORING.md → Calibrating and its
+// reason), so the app can say so.
 type RecoveryResult struct {
 	Score       int                // 1..100
 	Calibrating bool               // fewer than MinBaselineDays of history
@@ -134,6 +130,10 @@ const (
 	wResp  = 0.05
 )
 
+// Recovery blends the signals present by the weights above into 1..100 (0 when
+// no signal is present). The
+// weights are calibration constants: moving one moves stored numbers, so it
+// bumps ModelVersion (docs/SCORING.md → Model version).
 func Recovery(in RecoveryInputs) RecoveryResult {
 	comp := map[string]float64{}
 	var score, weightSum float64
@@ -229,6 +229,8 @@ type HRPoint struct {
 	BPM float64
 }
 
+// StrainResult is a day's or a workout's load. Minutes is the usable heart-rate
+// time, so a low Score on little data can be told from a rest day.
 type StrainResult struct {
 	TRIMP       float64    // Banister training impulse, unbounded
 	Score       float64    // 0..21
@@ -293,6 +295,9 @@ func trimpPerMinute(hrr float64) float64 {
 	return i * 0.64 * math.Exp(1.92*i)
 }
 
+// StrainFromTRIMP compresses an unbounded TRIMP onto 0..21, rounded to one
+// decimal (the precision the app shows). The curve flattens, so the last points
+// are harder to earn; trimpScale pins where it bends.
 func StrainFromTRIMP(trimp float64) float64 {
 	return math.Round(21*(1-math.Exp(-trimp/trimpScale))*10) / 10
 }
@@ -322,6 +327,9 @@ func LoadFromAverage(avgHR, rhr, maxHR float64, dur time.Duration) StrainResult 
 
 // ---- Sleep -------------------------------------------------------------------
 
+// SleepTotals is one night's sleep from the one source picked for it (D40).
+// HasStages says whether the segments carry stages: without it the stage
+// minutes are zero because they are unknown, not because the night had none.
 type SleepTotals struct {
 	Start, End                                    time.Time
 	InBedMin, AsleepMin, DeepMin, REMMin, CoreMin int
@@ -395,6 +403,9 @@ func SleepDebt(prevNeedMin, prevActualMin []int) int {
 	return int(math.Round(debt))
 }
 
+// SleepPerformance is actual sleep as a percentage of need, capped at 100 so
+// oversleeping does not read as a better night. No need (0) gives 0, not a
+// division by zero.
 func SleepPerformance(actualMin, needMin int) int {
 	if needMin <= 0 {
 		return 0

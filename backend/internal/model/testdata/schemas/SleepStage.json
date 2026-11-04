@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "min": {
+      "type": "integer"
+    },
+    "pct": {
+      "type": "integer"
+    },
+    "stage": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "min",
+    "pct",
+    "stage"
+  ],
+  "title": "SleepStage",
+  "type": "object"
+}

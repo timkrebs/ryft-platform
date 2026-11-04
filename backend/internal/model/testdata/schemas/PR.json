@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "achieved_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "exercise_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "set_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "value": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "achieved_at",
+    "exercise_id",
+    "kind",
+    "session_id",
+    "set_id",
+    "value"
+  ],
+  "title": "PR",
+  "type": "object"
+}

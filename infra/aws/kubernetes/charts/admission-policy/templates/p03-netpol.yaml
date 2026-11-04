@@ -1,0 +1,94 @@
+{{- /*
+P3 ryft-netpol (C, U in ryft-*; D only for default-deny). default-deny stays the empty
+podSelector with Ingress+Egress and no rules, and cannot be deleted unless its namespace
+is terminating. Every other rule has ports (each with a port) and a peer; a
+namespaceSelector is matchLabels with the one key kubernetes.io/metadata.name; ipBlock has
+two shapes (the VPC CIDR for ingress on 9090/15692 and for ryft-rabbitmq's egress on 443,
+and 0.0.0.0/0 with the five private ranges excepted for egress on 443/5432); endPort only
+for 35672-35682 on the podSelector rules of ryft-rabbitmq (never next to an ipBlock). rabbitmq-system has no NetworkPolicy and is outside (a follow-up).
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-netpol" "id" "P3" "summary" "NetworkPolicy shapes in RYFT namespaces") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["networkpolicies"]
+  matchConditions:
+    - name: ryft-namespace
+      expression: request.namespace.startsWith('ryft-')
+    - name: delete-only-default-deny
+      expression: request.operation != 'DELETE' || oldObject.metadata.name == 'default-deny'
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: spec
+      expression: dyn(object).spec
+    - name: isDefaultDeny
+      expression: dyn(object).metadata.name == 'default-deny'
+    - name: ingress
+      expression: |-
+        has(variables.spec.ingress) ? variables.spec.ingress : []
+    - name: egress
+      expression: |-
+        has(variables.spec.egress) ? variables.spec.egress : []
+    - name: broker
+      expression: request.namespace == {{ .Values.broker.namespace | toJson }}
+  validations:
+    - expression: request.operation != 'DELETE' || has(namespaceObject.metadata.deletionTimestamp)
+      message: "P3: default-deny can be deleted only together with its namespace."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' || !variables.isDefaultDeny ||
+        (!has(variables.spec.podSelector.matchLabels) && !has(variables.spec.podSelector.matchExpressions) &&
+         has(variables.spec.policyTypes) && size(variables.spec.policyTypes) == 2 &&
+         'Ingress' in variables.spec.policyTypes && 'Egress' in variables.spec.policyTypes &&
+         size(variables.ingress) == 0 && size(variables.egress) == 0)
+      message: "P3: default-deny must select every pod, list Ingress and Egress and hold no rules."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' ||
+        (variables.ingress.all(r, has(r.ports) && size(r.ports) > 0 && r.ports.all(p, has(p.port)) && has(r.from) && size(r.from) > 0) &&
+         variables.egress.all(r, has(r.ports) && size(r.ports) > 0 && r.ports.all(p, has(p.port)) && has(r.to) && size(r.to) > 0))
+      message: "P3: every NetworkPolicy rule needs ports (each with a port) and a peer."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' ||
+        (variables.ingress.all(r, !has(r.from) || r.from.all(q,
+            !has(q.namespaceSelector) || (!has(q.namespaceSelector.matchExpressions) && has(q.namespaceSelector.matchLabels) &&
+              size(q.namespaceSelector.matchLabels) == 1 && 'kubernetes.io/metadata.name' in q.namespaceSelector.matchLabels))) &&
+         variables.egress.all(r, !has(r.to) || r.to.all(q,
+            !has(q.namespaceSelector) || (!has(q.namespaceSelector.matchExpressions) && has(q.namespaceSelector.matchLabels) &&
+              size(q.namespaceSelector.matchLabels) == 1 && 'kubernetes.io/metadata.name' in q.namespaceSelector.matchLabels))))
+      message: "P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' ||
+        variables.ingress.all(r, !has(r.from) || r.from.all(q, !has(q.ipBlock) ||
+          (q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }} && !has(q.ipBlock.except) &&
+           has(r.ports) && r.ports.all(p, has(p.port) && p.port in [9090, 15692]))))
+      message: "P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' ||
+        variables.egress.all(r, !has(r.to) || r.to.all(q, !has(q.ipBlock) ||
+          (q.ipBlock.cidr == '0.0.0.0/0' && has(q.ipBlock.except) && size(q.ipBlock.except) == {{ len .Values.netpol.privateRanges }} &&
+           {{ .Values.netpol.privateRanges | toJson }}.all(x, x in q.ipBlock.except) &&
+           has(r.ports) && r.ports.all(p, has(p.port) && p.port in [443, 5432])) ||
+          (variables.broker && !has(q.ipBlock.except) && has(r.ports) && r.ports.all(p, has(p.port) && p.port == 443) &&
+           (q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }}{{ if .Values.netpol.brokerEgressPublic }} || q.ipBlock.cidr == '0.0.0.0/0'{{ end }}))))
+      message: "P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule."
+      reason: Forbidden
+    - expression: |-
+        request.operation == 'DELETE' ||
+        (variables.ingress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort) ||
+            (variables.broker && p.port == {{ .Values.netpol.brokerPortRange.port }} && p.endPort == {{ .Values.netpol.brokerPortRange.endPort }} &&
+             has(r.from) && r.from.all(q, has(q.podSelector) && !has(q.ipBlock) && !has(q.namespaceSelector))))) &&
+         variables.egress.all(r, !has(r.ports) || r.ports.all(p, !has(p.endPort) ||
+            (variables.broker && p.port == {{ .Values.netpol.brokerPortRange.port }} && p.endPort == {{ .Values.netpol.brokerPortRange.endPort }} &&
+             has(r.to) && r.to.all(q, has(q.podSelector) && !has(q.ipBlock) && !has(q.namespaceSelector))))))
+      message: "P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "netpol" "policy" "ryft-netpol" "id" "P3" "step" "B") }}

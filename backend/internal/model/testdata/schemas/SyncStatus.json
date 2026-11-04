@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "expected_within_sec": {
+      "type": "integer"
+    },
+    "gate": {
+      "nullable": true,
+      "type": "string"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "last_sync_device": {
+      "nullable": true,
+      "type": "string"
+    },
+    "latest": {
+      "additionalProperties": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "pending_days": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "resync_requested_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "today": {
+      "$ref": "TodayState"
+    }
+  },
+  "required": [
+    "expected_within_sec",
+    "gate",
+    "last_sync_at",
+    "last_sync_device",
+    "latest",
+    "pending_days",
+    "resync_requested_at",
+    "today"
+  ],
+  "title": "SyncStatus",
+  "type": "object"
+}

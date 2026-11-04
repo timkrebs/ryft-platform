@@ -17,10 +17,15 @@ type APIKey struct {
 	userID uuid.UUID
 }
 
+// NewAPIKey returns the local-development verifier: key is the shared secret and userID the
+// user a bare key acts as. config.LoadAuth refuses this mode without
+// ALLOW_INSECURE_APIKEY_AUTH.
 func NewAPIKey(key string, userID uuid.UUID) *APIKey {
 	return &APIKey{key: []byte(key), userID: userID}
 }
 
+// Verify accepts "<key>" (the default user) or "<key>:<uuid>" (that user; D32), comparing
+// the key in constant time. Anything else is a 401.
 func (a *APIKey) Verify(_ context.Context, token string) (Principal, error) {
 	key, user, hasUser := strings.Cut(token, ":")
 	if subtle.ConstantTimeCompare([]byte(key), a.key) != 1 {
@@ -36,4 +41,5 @@ func (a *APIKey) Verify(_ context.Context, token string) (Principal, error) {
 	return Principal{UserID: id, Provider: "apikey"}, nil
 }
 
+// Ready is always nil: a shared key has nothing to fetch.
 func (a *APIKey) Ready(context.Context) error { return nil }

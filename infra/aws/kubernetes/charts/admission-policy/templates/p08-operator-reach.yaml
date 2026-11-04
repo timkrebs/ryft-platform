@@ -1,0 +1,71 @@
+{{- /*
+P8 ryft-operator-reach (C, U, CONNECT; the two operator service accounts). Where the
+operators may write: the Cluster Operator in ryft-rabbitmq only, and there Secrets,
+StatefulSets, Services, ConfigMaps, PVCs, ServiceAccounts, Roles, RoleBindings, Pod
+UPDATEs (never a Pod CREATE) and pods/exec; of the Roles and RoleBindings only the broker's peer-discovery Role and server RoleBinding; the Topology Operator Secrets only, in
+ryft-rabbitmq only. Their reads are T12-g's (admission cannot see reads).
+*/ -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-operator-reach" "id" "P8" "summary" "where the RabbitMQ operators may write") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["secrets", "services", "configmaps", "persistentvolumeclaims", "serviceaccounts", "pods"]
+      - apiGroups: ["apps"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["statefulsets"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["roles", "rolebindings"]
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CONNECT"]
+        resources: ["pods/exec"]
+  matchConditions:
+    - name: requester-is-an-operator
+      expression: request.userInfo.username in {{ include "admission.cel.operatorUsers" . }}
+  variables:
+    - name: isCluster
+      expression: request.userInfo.username == {{ include "admission.user.clusterOperator" . | toJson }}
+    - name: res
+      expression: |-
+        request.resource.resource + (has(request.subResource) && request.subResource != '' ? '/' + request.subResource : '')
+  validations:
+    - expression: request.namespace == {{ .Values.broker.namespace | toJson }}
+      message: "P8: the operators write only in ryft-rabbitmq."
+      reason: Forbidden
+    - expression: |-
+        variables.isCluster ?
+          (variables.res in ['secrets', 'statefulsets', 'services', 'configmaps', 'persistentvolumeclaims', 'serviceaccounts', 'roles', 'rolebindings'] ||
+           (variables.res == 'pods' && request.operation == 'UPDATE') ||
+           (variables.res == 'pods/exec' && request.operation == 'CONNECT')) :
+          (variables.res == 'secrets')
+      message: "P8: this operator may not write this resource."
+      reason: Forbidden
+    - expression: |-
+        !(variables.res in ['roles', 'rolebindings']) ||
+        (variables.res == 'roles' ? dyn(object).metadata.name == {{ .Values.broker.peerDiscoveryRole | toJson }} :
+          dyn(object).metadata.name == {{ .Values.broker.serverRoleBinding | toJson }})
+      message: "P8: the Cluster Operator may write only its nodes' peer-discovery Role and server RoleBinding, not the operators' own Roles."
+      reason: Forbidden
+    - expression: |-
+        variables.res != 'roles' ||
+        (has(dyn(object).rules) && dyn(object).rules.all(r,
+          has(r.apiGroups) && r.apiGroups == [''] && has(r.resources) && has(r.verbs) &&
+          ((r.resources == ['endpoints'] && r.verbs == ['get']) || (r.resources == ['events'] && r.verbs == ['create']))))
+      message: "P8: the peer-discovery Role may hold only endpoints get and events create."
+      reason: Forbidden
+    - expression: |-
+        variables.res != 'rolebindings' ||
+        (dyn(object).roleRef.kind == 'Role' && dyn(object).roleRef.name == {{ .Values.broker.peerDiscoveryRole | toJson }} &&
+         has(dyn(object).subjects) && dyn(object).subjects.all(s, s.kind == 'ServiceAccount' && s.name == {{ .Values.broker.serverServiceAccount | toJson }} &&
+           (!has(s.namespace) || s.namespace == {{ .Values.broker.namespace | toJson }})))
+      message: "P8: the server RoleBinding must bind the peer-discovery Role to the broker's own service account."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "operator-reach" "policy" "ryft-operator-reach" "id" "P8" "step" "C") }}

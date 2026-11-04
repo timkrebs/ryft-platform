@@ -231,7 +231,7 @@ func TestPlansAndEnrollment(t *testing.T) {
 		t.Fatalf("summaries: %d %d %v", len(builtin), len(mine), err)
 	}
 
-	e, created, err := st.Enroll(ctx, a, p.ID)
+	e, created, err := st.Enroll(ctx, a, p.ID, nil)
 	if err != nil || !created || e.CurrentWeek != 1 || e.CurrentDayIndex != 0 {
 		t.Fatalf("enroll: %+v %v", e, err)
 	}
@@ -257,14 +257,14 @@ func TestPlansAndEnrollment(t *testing.T) {
 		t.Fatalf("after the last day the enrolment is completed: %+v", cur)
 	}
 	// A new enrolment in a built-in pauses nothing (none active) and starts at day 0.
-	e2, _, err := st.Enroll(ctx, a, train.BuiltinPlanID("full-body-3x"))
+	e2, _, err := st.Enroll(ctx, a, train.BuiltinPlanID("full-body-3x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PauseEnrollment(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	e3, created, err := st.Enroll(ctx, a, train.BuiltinPlanID("full-body-3x"))
+	e3, created, err := st.Enroll(ctx, a, train.BuiltinPlanID("full-body-3x"), nil)
 	if err != nil || created || e3.ID != e2.ID {
 		t.Fatalf("enrolling again resumes the paused enrolment: %+v created=%v %v", e3, created, err)
 	}
@@ -336,7 +336,7 @@ func TestSessionWorkoutsAndAccountDeletion(t *testing.T) {
 	if _, err := st.SavePlan(ctx, a, p); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.Enroll(ctx, a, p.ID); err != nil {
+	if _, _, err := st.Enroll(ctx, a, p.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DeleteUser(ctx, a); err != nil {

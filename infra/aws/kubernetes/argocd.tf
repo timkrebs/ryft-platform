@@ -42,6 +42,28 @@ locals {
   # operator reconciled it; a topology object (vhost, queue, user, ...) when the
   # Topology Operator reports it Ready. The broker's sync waves wait on these. One key
   # per kind: a ConfigMap key cannot hold the wildcard rabbitmq.com_*.
+  #
+  # No string library (D121): Argo CD's Lua VM opens only package, base and table
+  # (util/lua/lua.go, runLua), plus a safe os that exists only through require("os");
+  # string.find and s:find fail with "attempt to index a non-table object(nil)" and the
+  # app goes to ComparisonError. So no pattern matching, and no useOpenLibs.<group_kind>
+  # (it would open the whole standard library for each kind to save an equality test).
+  #
+  # Degraded: ReconcileSuccess=False on a RabbitmqCluster, Ready=False on a topology
+  # object, whatever the reason (Argo CD's own built-in check does the same for the
+  # cluster). Cluster Operator v2.23.1 sets ReconcileSuccess=False only on a failed
+  # reconcile (internal/controller/rabbitmqcluster_controller.go: 211, 252, 268, 271,
+  # 297, 306; reconcile_tls.go: 24, 30; reconcile_scale_down.go: 30; reconcile_scale_zero.go:
+  # 50, 60), mostly permanent problems. Messaging Topology Operator v1.20.4 writes
+  # Ready=False with the one reason FailedCreateOrUpdate for every failed declare
+  # (api/v1beta1/conditions.go: NotReady, 44), transient ones included; the sync's retry
+  # and the ArgoAppDegraded delay absorb those. AllReplicasReady=False (NotAllPodsReady
+  # during a node roll, ScaledToZero, MissingStatefulSet; internal/status/all_replicas_ready.go)
+  # is never a failure: Progressing, with the condition's message.
+  #
+  # A spec change leaves the old conditions True until the operator has reconciled the new
+  # generation: while status.observedGeneration is behind metadata.generation the object is
+  # Progressing (both operators set observedGeneration on success only).
   argocd_rabbitmq_health = { for kind in ["RabbitmqCluster", "Vhost", "Exchange", "Queue", "Binding", "Policy", "User", "Permission", "TopicPermission"] :
     "resource.customizations.health.rabbitmq.com_${kind}" => <<-LUA
       hs = { status = "Progressing", message = "waiting for the RabbitMQ operators" }
@@ -49,26 +71,48 @@ locals {
         return hs
       end
       local want = { Ready = true }
+      local degrades = { Ready = true }
       if obj.kind == "RabbitmqCluster" then
         want = { AllReplicasReady = true, ReconcileSuccess = true }
+        degrades = { ReconcileSuccess = true }
       end
-      local ok = 0
       local total = 0
       for _ in pairs(want) do total = total + 1 end
+      local seen = {}
+      local ok = 0
+      local pending = nil
       for _, c in ipairs(obj.status.conditions) do
         if want[c.type] then
           if c.status == "True" then
-            ok = ok + 1
-          elseif c.status == "False" and c.reason ~= nil and string.find(c.reason, "Fail") then
-            hs.status = "Degraded"
-            hs.message = c.type .. ": " .. (c.message or c.reason)
-            return hs
+            if not seen[c.type] then
+              seen[c.type] = true
+              ok = ok + 1
+            end
+          else
+            local detail = c.message
+            if detail == nil or detail == "" then detail = c.reason end
+            if detail == nil or detail == "" then detail = "not ready" end
+            local msg = c.type .. ": " .. detail
+            if c.status == "False" and degrades[c.type] then
+              hs.status = "Degraded"
+              hs.message = msg
+              return hs
+            end
+            pending = pending or msg
           end
         end
+      end
+      local gen = nil
+      if obj.metadata ~= nil then gen = obj.metadata.generation end
+      if gen ~= nil and (obj.status.observedGeneration == nil or obj.status.observedGeneration < gen) then
+        hs.message = "waiting for the operator to reconcile generation " .. gen
+        return hs
       end
       if ok == total then
         hs.status = "Healthy"
         hs.message = ""
+      elseif pending ~= nil then
+        hs.message = pending
       end
       return hs
     LUA
