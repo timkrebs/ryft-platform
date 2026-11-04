@@ -4,7 +4,7 @@ SERVICES := ingest scoring api notify migrate
 # The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
 GOLANGCI_LINT_VERSION := v2.15.0
 
-# Docker if it is installed, otherwise Podman (its `compose` runs the same file).
+# Docker if it is installed, otherwise Podman (its `compose` runs the same file; D1).
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
@@ -123,6 +123,7 @@ monitoring-apply: k8s-check-auth
 # (.terraform/terraform.tfstate: the S3 settings, no resources) is moved next to the
 # copy instead: init then starts fresh and offers no migration from S3. After the
 # push the workspace must hold as many resources as the local state.
+# D56: state lives in HCP Terraform, one workspace per root, runs stay local.
 TF_ORG   := tim-krebs-org
 TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
             infra/aws/kubernetes:ryft-prod-euc1-kubernetes infra/vault:ryft-prod-euc1-vault
@@ -195,11 +196,13 @@ PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a6
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
+	scripts/admission_intended.sh --check; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
+	sed '/^namespace:/d' deploy/grafana/alerts/admission-intended.yaml > "$$d/admission-intended.rules.yaml"; \
 	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml /rules/admission-intended.rules.yaml; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml /alerts/admission-intended.yaml
 
 # Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
 # profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
@@ -218,8 +221,10 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check. The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can
-# report different findings, so a mismatch is said out loud before the run.
+# map check. Then the decision references, which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
+# exits 0 unless it cannot work).
+# The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
+# different findings, so a mismatch is said out loud before the run.
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "lint: golangci-lint is not installed; CI pins $(GOLANGCI_LINT_VERSION) (https://golangci-lint.run/welcome/install/)" >&2; exit 1; }
 	@have=$$(golangci-lint version 2>&1 | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1); \
@@ -228,6 +233,7 @@ lint:
 	fi
 	cd backend && golangci-lint run
 	./scripts/pkgmap.sh --check
+	./scripts/decision_refs.sh
 
 # After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
 # docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.
@@ -254,7 +260,7 @@ alerts-apply: alerts-check
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
 
 # External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name

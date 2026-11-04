@@ -9,7 +9,7 @@
 #   scripts/dlq.sh purge <queue>           delete every letter (asks first)
 #
 # <queue> is dlq.scoring or dlq.notify (or scoring / notify). notify's letters are not
-# replayed without --force: a push hours late is wrong (list and purge them).
+# replayed without --force: a push hours late is wrong (list and purge them; D84).
 #
 # By default it port-forwards to the cluster's management API (svc/rabbitmq, 15671),
 # verifies the broker's certificate against the internal CA (Secret rabbitmq-tls) and

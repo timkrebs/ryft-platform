@@ -1,5 +1,5 @@
-# Fully self-hosted variant: in-cluster Postgres (ryft-postgres) instead of
-# Supabase, and the shared API key instead of Supabase Auth (local development or
+# Fully self-hosted variant (D33: Postgres and the API key only here, never in base): in-cluster Postgres
+# (ryft-postgres) instead of Supabase, and the shared API key instead of Supabase Auth (local development or
 # a single user on a home cluster; nothing here is safe to expose to the
 # internet). Same namespaces, roles, RabbitMQ users and policies as EKS, with one
 # RabbitMQ node instead of three. Kustomize creates what infra/vault creates there

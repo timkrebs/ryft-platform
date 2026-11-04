@@ -31,7 +31,7 @@ type Config struct {
 	MetricsPort string // METRICS_PORT, default 9090: /metrics only
 	DatabaseURL string
 	AMQP        AMQP
-	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection
+	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection (D34)
 }
 
 // AMQP is how a service reaches RabbitMQ: its URL, its own user, and its TLS identity
@@ -119,7 +119,7 @@ func LoadAuth() (Auth, error) {
 	switch a.Mode {
 	case AuthSupabase:
 		if a.Issuer == "" || a.JWKSURL == "" {
-			if !projectRef.MatchString(a.ProjectRef) {
+			if !projectRef.MatchString(a.ProjectRef) { // D33: the services refuse to start on the placeholder
 				return a, fmt.Errorf("SUPABASE_PROJECT_REF must be your project reference (Supabase → Project Settings), got %q", a.ProjectRef)
 			}
 		}

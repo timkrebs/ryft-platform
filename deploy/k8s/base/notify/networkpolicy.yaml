@@ -1,7 +1,7 @@
 # In: the metrics collector only (9090). Out: RabbitMQ, the Supavisor pooler and
 # APNs (api.push.apple.com / api.sandbox.push.apple.com on 443). NetworkPolicy
 # cannot match host names, so APNs is any public address on 443, like the
-# others' egress (D34).
+# others' egress (D33, D44).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
