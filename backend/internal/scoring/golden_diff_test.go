@@ -507,8 +507,12 @@ func goldenCommitted(head, disk []byte) error {
 // and as the disk has it (nil: absent). An update needs a git checkout.
 func goldenHEADManifest() (head, disk []byte, err error) {
 	rel := "./" + filepath.ToSlash(filepath.Join(goldenDir, "manifest.json"))
-	if out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
-		return nil, nil, fmt.Errorf("an update needs a git checkout to compare the manifest with HEAD's: %v", err)
+	out, err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Output()
+	if err != nil {
+		return nil, nil, fmt.Errorf("an update needs a git checkout to compare the manifest with HEAD's: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return nil, nil, errors.New("an update needs a git work tree to compare the manifest with HEAD's")
 	}
 	if exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD:"+rel).Run() == nil {
 		if head, err = exec.Command("git", "show", "HEAD:"+rel).Output(); err != nil {
