@@ -710,6 +710,15 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 refuses entries out of order, an unknown metric, an unsorted or a missing `affects` (`[]` is a version that moves
 stored numbers but no trend metric).
 
+**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`): five synthetic users × 30 days
+(2026-08-03 .. 2026-09-01; Apple Watch, Garmin without HRV, Watch + Garmin overlapping, naps and split nights,
+strength sessions with an import), fixed seed, no wall clock, scored through the real Engine; every stored
+`daily_scores` column but `user_id` and `computed_at` is pinned as canonical JSON (sorted keys, numbers rounded to
+1e-6). `go test ./internal/scoring/... -run Golden` (with `RYFT_TEST_POSTGRES_URL`) prints the changed fields per
+day; a refactor must pass it unchanged. A model change bumps the version first, then `make golden-update`
+regenerates (refused while `ModelVersion` equals the manifest's) and the reviewed diff goes into the PR;
+`TestGoldenManifest` (no database) fails when `ModelVersion` moved without it.
+
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
 | 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |

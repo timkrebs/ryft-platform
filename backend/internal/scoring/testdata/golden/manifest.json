@@ -1,0 +1,42 @@
+{
+  "days": 30,
+  "excluded_columns": ["user_id", "computed_at"],
+  "first_day": "2026-08-03",
+  "inputs": {
+    "user-a": {
+      "samples": 11936,
+      "sessions": 0,
+      "sleep_segments": 447,
+      "workouts": 13
+    },
+    "user-b": {
+      "samples": 21703,
+      "sessions": 0,
+      "sleep_segments": 194,
+      "workouts": 12
+    },
+    "user-c": {
+      "samples": 34098,
+      "sessions": 0,
+      "sleep_segments": 969,
+      "workouts": 26
+    },
+    "user-d": {
+      "samples": 11144,
+      "sessions": 0,
+      "sleep_segments": 481,
+      "workouts": 8
+    },
+    "user-e": {
+      "samples": 11365,
+      "sessions": 40,
+      "sleep_segments": 500,
+      "workouts": 9
+    }
+  },
+  "model_version": "2026.10.3",
+  "numbers": "rounded to 1e-6, printed shortest",
+  "regenerate": "make golden-update (refused while model_version equals ModelVersion)",
+  "seed": 20261104,
+  "users": ["user-a", "user-b", "user-c", "user-d", "user-e"]
+}
