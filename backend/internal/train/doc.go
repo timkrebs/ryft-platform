@@ -1,5 +1,6 @@
-// Package train holds the pure rules of the Train feature that are not
-// scoring: fixed ids for built-in content, slugs, an exercise's name per
+// Package train holds the pure rules of the Train feature that are not scoring.
+//
+// They are fixed ids for built-in content, slugs, an exercise's name per
 // language, request validation, and the session merge and conflict rule.
 //
 // It must not do I/O. The store persists what these rules accept and the api

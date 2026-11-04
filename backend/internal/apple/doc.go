@@ -1,7 +1,8 @@
 // Package apple talks to Sign in with Apple's REST API: it exchanges the
-// authorization code the app gets at sign-in for a refresh token, and revokes
-// that token when the account is deleted. It also parses the .p8 key, which
-// apns reuses.
+// authorization code for a refresh token and revokes that token on deletion.
+//
+// The code is the one the app gets at sign-in. The package also parses the .p8
+// key, which apns reuses.
 //
 // It must not log the authorization code or a token.
 //
