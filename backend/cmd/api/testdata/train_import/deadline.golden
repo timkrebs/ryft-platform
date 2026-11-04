@@ -1,0 +1,36 @@
+case deadline
+
+== items out of time
+status: 503
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Retry-After: 5
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"request timed out","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+stored session session:early origin=import day=D-9 sets=1
+stored plan plan:p
+outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
+pending D-9
+lease held: false
+record exercise:squat e1rm=110.8 from session:early
+record exercise:squat max_reps=5 from session:early
+record exercise:squat max_volume=475 from session:early
+record exercise:squat max_weight=95 from session:early
+
+== metrics moved
+imports/timeout +1
+items/plan/created +1
+items/session/created +1
+
+== log lines
+train import result=timeout plans=1 sessions=2 created=2 unchanged=0 updated=0 rejected=0 days=1 level=INFO
+request failed status=503 level=ERROR
+http status=503 code=<nil> route=POST /v1/train/import

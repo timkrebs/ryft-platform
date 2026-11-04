@@ -1,0 +1,78 @@
+case id_taken
+
+== a imports
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"fd4e5875-7244-543a-aa74-873f0fa37a12","status":"created"},{"kind":"session","id":"9f79f8e1-80f0-5d32-a83d-07345d93da22","status":"created"}],"days_touched":["D-4"],"scoring":{"queued_days":["D-4"],"expected_within_sec":32}}
+<eof>
+
+== x imports what is a's, a built-in's, the app's
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"fd4e5875-7244-543a-aa74-873f0fa37a12","status":"rejected","code":"id_taken","message":"the plan id, or the id of one of its days or exercises, is already in use"},{"kind":"plan","id":"58f0d1ad-9c48-5917-9770-df62caae3f91","status":"rejected","code":"id_taken","message":"the plan id, or the id of one of its days or exercises, is already in use"},{"kind":"session","id":"9f79f8e1-80f0-5d32-a83d-07345d93da22","status":"created"},{"kind":"session","id":"36f4ca1e-8d2b-54cd-a02f-4cfc9ffe1170","status":"rejected","code":"id_taken","message":"the session id belongs to a session logged in the app"},{"kind":"session","id":"bbbc7609-caa2-590c-b0cf-ec00d2e43cee","status":"created"}],"days_touched":["D-5","D-4"],"scoring":{"queued_days":["D-5","D-4"],"expected_within_sec":34}}
+<eof>
+
+== x reuses its own set id
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"session","id":"2fc498fe-338d-5d47-ab3f-56468c21bb0d","status":"rejected","code":"id_taken","message":"an exercise or set id belongs to another of your sessions"}],"days_touched":[],"scoring":{"queued_days":[],"expected_within_sec":30}}
+<eof>
+
+== state of user:a
+stored session session:shared origin=import day=D-4 sets=4
+stored plan plan:shared
+outbox ingested reason=import days=D-4 request_id_set=true session_id_set=false
+pending D-4
+lease held: false
+record exercise:squat e1rm=116.7 from session:shared
+record exercise:squat max_reps=5 from session:shared
+record exercise:squat max_volume=500 from session:shared
+record exercise:squat max_weight=100 from session:shared
+
+== state of user:x
+stored session session:appmade origin=app day=D-7 sets=1
+stored session session:own origin=import day=D-5 sets=1
+stored session session:shared origin=import day=D-4 sets=4
+outbox ingested reason=import days=D-5,D-4 request_id_set=true session_id_set=false
+pending D-5,D-4
+lease held: false
+record exercise:squat e1rm=116.7 from session:shared
+record exercise:squat max_reps=5 from session:own
+record exercise:squat max_volume=500 from session:shared
+record exercise:squat max_weight=100 from session:shared
+
+== metrics moved
+imports/ok +3
+items/plan/created +1
+items/plan/rejected +2
+items/session/created +3
+items/session/rejected +2
+
+== log lines
+train import result=ok plans=1 sessions=1 created=2 unchanged=0 updated=0 rejected=0 days=1 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
+train import result=ok plans=2 sessions=3 created=2 unchanged=0 updated=0 rejected=3 days=2 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
+train import result=ok plans=0 sessions=1 created=0 unchanged=0 updated=0 rejected=1 days=0 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import

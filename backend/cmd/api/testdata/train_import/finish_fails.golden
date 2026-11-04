@@ -1,0 +1,69 @@
+case finish_fails
+
+== records held
+status: 503
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Retry-After: 5
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"request timed out","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+stored session session:x origin=import day=D-8 sets=1
+stored session session:y origin=import day=D-5 sets=1
+outbox ingested reason=import days=D-8,D-5 request_id_set=true session_id_set=false
+pending D-8,D-5
+lease held: false
+
+== metrics moved
+imports/timeout +1
+items/session/created +2
+
+== log lines
+train import result=timeout plans=0 sessions=2 created=2 unchanged=0 updated=0 rejected=0 days=0 level=INFO
+request failed status=503 level=ERROR
+http status=503 code=<nil> route=POST /v1/train/import
+
+== resend
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"session","id":"3d7eaa96-35bc-5cd9-b1a1-dd51b2345367","status":"unchanged"},{"kind":"session","id":"049bdb93-1413-5aab-af6a-86ce773cb21c","status":"unchanged"}],"days_touched":["D-8","D-5"],"scoring":{"queued_days":["D-8","D-5"],"expected_within_sec":34}}
+<eof>
+
+== state of user:a
+stored session session:x origin=import day=D-8 sets=1
+stored session session:y origin=import day=D-5 sets=1
+outbox ingested reason=import days=D-8,D-5 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-8,D-5 request_id_set=true session_id_set=false
+pending D-8,D-5
+lease held: false
+record exercise:squat e1rm=122.5 from session:y
+record exercise:squat max_reps=5 from session:x
+record exercise:squat max_volume=525 from session:y
+record exercise:squat max_weight=105 from session:y
+
+== metrics moved
+imports/ok +1
+imports/timeout +1
+items/session/created +2
+items/session/unchanged +2
+
+== log lines
+train import result=timeout plans=0 sessions=2 created=2 unchanged=0 updated=0 rejected=0 days=0 level=INFO
+request failed status=503 level=ERROR
+http status=503 code=<nil> route=POST /v1/train/import
+train import result=ok plans=0 sessions=2 created=0 unchanged=2 updated=0 rejected=0 days=2 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import

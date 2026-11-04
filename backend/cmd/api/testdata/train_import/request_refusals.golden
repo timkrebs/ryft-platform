@@ -1,0 +1,178 @@
+case request_refusals
+
+== unknown source
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"source must be one of: alpha_progression","request_id":"<rid>"}
+<eof>
+
+== no source
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"source must be one of: alpha_progression","request_id":"<rid>"}
+<eof>
+
+== malformed json
+status: 400
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"bad json: unexpected EOF","request_id":"<rid>"}
+<eof>
+
+== unknown field
+status: 400
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"bad json: json: unknown field \"extra\"","request_id":"<rid>"}
+<eof>
+
+== origin on a session
+status: 400
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"bad json: json: unknown field \"origin\"","request_id":"<rid>"}
+<eof>
+
+== over 1 MiB
+status: 413
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"request body over 1048576 bytes","request_id":"<rid>"}
+<eof>
+
+== 6 plans
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"at most 5 plans per request","request_id":"<rid>"}
+<eof>
+
+== 51 sessions
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"at most 50 sessions per request","request_id":"<rid>"}
+<eof>
+
+== a plan twice
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"plan becf77f4-bcc4-5902-a8d7-7102582f75c0 is in the request twice","request_id":"<rid>"}
+<eof>
+
+== a session twice
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"session d2253b05-fe8e-50fb-8dc5-254b02f10db6 is in the request twice","request_id":"<rid>"}
+<eof>
+
+== a NUL
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"strings must not contain the NUL character (\\u0000)","request_id":"<rid>"}
+<eof>
+
+== over 2500 sets
+status: 422
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"at most 2500 sets per request","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+pending 
+lease held: false
+
+== metrics moved
+imports/invalid +12
+
+== log lines
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=400 code=<nil> route=POST /v1/train/import
+http status=400 code=<nil> route=POST /v1/train/import
+http status=400 code=<nil> route=POST /v1/train/import
+http status=413 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import
+http status=422 code=<nil> route=POST /v1/train/import

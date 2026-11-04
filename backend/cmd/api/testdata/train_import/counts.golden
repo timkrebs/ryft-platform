@@ -1,0 +1,59 @@
+case counts
+
+== first (the baseline)
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"bc13a05b-7f82-5b40-872e-d7975e68f6a4","status":"created"},{"kind":"plan","id":"2c67165c-c936-5b38-9d5b-3b47178e22b3","status":"created"},{"kind":"session","id":"3096ba1a-264b-57b8-be91-df0402edb19e","status":"created"},{"kind":"session","id":"43b6a6a6-86cf-52c4-bcc0-5c8386c6d439","status":"created"},{"kind":"session","id":"d2e5158e-857b-5455-85b4-03f8e21a60f4","status":"created"}],"days_touched":["D-12","D-10","D-8"],"scoring":{"queued_days":["D-12","D-10","D-8"],"expected_within_sec":36}}
+<eof>
+
+== one of each
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"bc13a05b-7f82-5b40-872e-d7975e68f6a4","status":"unchanged"},{"kind":"plan","id":"2c67165c-c936-5b38-9d5b-3b47178e22b3","status":"updated"},{"kind":"session","id":"3096ba1a-264b-57b8-be91-df0402edb19e","status":"unchanged"},{"kind":"session","id":"43b6a6a6-86cf-52c4-bcc0-5c8386c6d439","status":"updated"},{"kind":"session","id":"ce8aa3aa-89e3-5d9f-9fb9-11706d61d993","status":"created"},{"kind":"session","id":"ada77909-e604-521f-86c3-d7adad214b3d","status":"rejected","code":"invalid","message":"set aeaaed4d-ee9b-5565-9b8d-cee8a54025ce: completed_at is required (an import sends only sets that were done)"}],"days_touched":["D-10","D-8","D-4"],"scoring":{"queued_days":["D-10","D-8","D-4"],"expected_within_sec":36}}
+<eof>
+
+== state of user:a
+stored session session:one origin=import day=D-12 sets=3
+stored session session:three origin=import day=D-8 sets=1
+stored session session:two origin=import day=D-10 sets=1
+stored session session:fresh origin=import day=D-4 sets=1
+stored plan plan:keep
+stored plan plan:change
+outbox ingested reason=import days=D-12,D-10,D-8 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-10,D-8,D-4 request_id_set=true session_id_set=false
+pending D-10,D-8,D-4
+lease held: false
+record exercise:squat e1rm=140 from session:fresh
+record exercise:squat max_reps=7 from session:two
+record exercise:squat max_volume=630 from session:two
+record exercise:squat max_weight=120 from session:fresh
+
+== metrics moved
+imports/ok +2
+items/plan/created +2
+items/plan/unchanged +1
+items/plan/updated +1
+items/session/created +4
+items/session/rejected +1
+items/session/unchanged +1
+items/session/updated +1
+
+== log lines
+train import result=ok plans=2 sessions=3 created=5 unchanged=0 updated=0 rejected=0 days=3 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
+train import result=ok plans=2 sessions=4 created=1 unchanged=2 updated=2 rejected=1 days=3 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
