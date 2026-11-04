@@ -51,6 +51,26 @@ else
 fi
 out=$(cd "$(dirname "$out")" && pwd)/$(basename "$out")
 
+# Terraform's file functions (file, templatefile, fileset, ...) read any file the user can read into a
+# value. Where may a tree use them? On the host only when the tree is this checkout, or the file is
+# byte-identical to this checkout's (below); in a container that sees only the work directory, and on a
+# GitHub runner (no credentials of yours), yes. Any other tree on the host needs the container, or
+# TF_VALUES_FORCE=1 (admission_e2e.sh --force), which says so and still refuses a changed file that uses them.
+scan_opts=()
+if [ -n "$engine" ]; then
+  scan_opts=(--allow-files)
+elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+  scan_opts=(--allow-files)
+  echo "tf_values: notice: in GitHub Actions the file functions of the tree are allowed (the runner holds none of your credentials)" >&2
+elif [ "$(cd "$tree" 2>/dev/null && pwd -P)" != "$(cd "$root" && pwd -P)" ]; then
+  if [ "${TF_VALUES_FORCE:-}" = 1 ]; then
+    echo "tf_values: !!!! $tree is not this checkout and no TF_VALUES_CONTAINER is set: its Terraform runs on this machine with your user's reach (--force)" >&2
+  else
+    echo "tf_values: $tree is not this checkout: set TF_VALUES_CONTAINER=<terraform image pinned by digest> (docker or podman) to evaluate its Terraform, or --force / FORCE=1 on a machine with no production credentials" >&2
+    exit 2
+  fi
+fi
+
 work=$(mktemp -d)
 work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
@@ -65,12 +85,16 @@ find "$mod" \( -name '*.tftest.hcl' -o -name '*.tftest.json' -o -name '*.tfmock.
 # tree's providers.tf is skipped only when it is this checkout's, byte for byte.
 trusted=()
 if [ -f "$mod/providers.tf" ] && cmp -s "$mod/providers.tf" "$root/infra/aws/kubernetes/providers.tf"; then trusted=(--trusted "$mod/providers.tf"); fi
+# A file that uses the file functions is exempt from that one check when it is this checkout's, byte for byte.
+while IFS= read -r f; do
+  if [ -f "$root/infra/aws/kubernetes/${f#"$mod"/}" ] && cmp -s "$f" "$root/infra/aws/kubernetes/${f#"$mod"/}"; then trusted+=(--files-ok "$f"); fi
+done < <(find "$mod" -type f -name '*.tf')
 refuse_hcl() { # <dir> <what>: exit 2 with the findings when tf_scan.py finds any
   local found rc=0
-  found=$(python3 -I "$here/tf_scan.py" ${trusted[@]+"${trusted[@]}"} "$1") || rc=$?
+  found=$(python3 -I "$here/tf_scan.py" ${scan_opts[@]+"${scan_opts[@]}"} ${trusted[@]+"${trusted[@]}"} "$1") || rc=$?
   [ "$rc" != 0 ] || return 0
   printf '%s\n' "$found" >&2
-  echo "tf_values: $2 holds something that can run a program or read a credential file (provisioner, alias, exec, config_path, shared_config_files, credential_process, postrender, local-exec, data \"external\"/\"http\", a .tf.json): refused (this script runs terraform on it)" >&2
+  echo "tf_values: $2 holds something that can run a program or read a credential file (provisioner, alias, exec, config_path, shared_config_files, credential_process, postrender, local-exec, data \"external\"/\"http\"/\"local_file\", file functions, a .tf.json): refused (this script runs terraform on it)" >&2
   exit 2
 }
 refuse_hcl "$mod" "the tree's module"
@@ -141,7 +165,7 @@ tf init "${init_args[@]}" >"$work/init.log" 2>&1 || { cat "$work/init.log" >&2; 
 
 # After init: the modules it downloaded and the providers it locked.
 if [ -d "$mod/.terraform/modules" ]; then
-  trusted=()
+  trusted=() scan_opts=()
   refuse_hcl "$mod/.terraform/modules" "a downloaded module"
 fi
 unknown=$(sed -nE 's/^provider "([^"]+)".*/\1/p' "$mod/.terraform.lock.hcl" | grep -vxE 'registry\.terraform\.io/hashicorp/(aws|helm|kubernetes|random)' || true)

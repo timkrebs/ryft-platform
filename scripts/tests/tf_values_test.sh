@@ -40,7 +40,8 @@ sed -i.bak -e "s|@LOG@|$STUB_LOG|" -e "s|@MOD@|$STUB_MOD|g" -e "s|@SEEN@|$STUB_S
 chmod +x "$tmp/bin/terraform"
 : > "$STUB_MOD"
 
-run() { PATH="$tmp/bin:$PATH" "$HERE/scripts/lib/tf_values.sh" "$T" argocd_values "$tmp/o.json" >"$tmp/run.out" 2>&1; }
+# GITHUB_ACTIONS and FORCE are the environment's: pinned here (the tree is not this checkout, so the host needs --force)
+run() { env -u GITHUB_ACTIONS TF_VALUES_FORCE="${RUN_FORCE-1}" PATH="$tmp/bin:$PATH" "$HERE/scripts/lib/tf_values.sh" "$T" argocd_values "$tmp/o.json" >"$tmp/run.out" 2>&1; }
 setmain() { rm -f "$T/$MOD"/*.tf "$T/$MOD"/*.tf.json; printf '%s\n' "$2" > "$T/$MOD/main.tf"; g add -A >/dev/null; g commit -qm "$1" --allow-empty; : > "$STUB_LOG"; rm -f "$tmp/o.json"; }
 # refused <name> <main.tf>: exit 2, terraform never ran.
 refused() {
@@ -146,6 +147,51 @@ g add -A >/dev/null; g commit -qm tests
 cmp -s "$tmp/o.json" <(printf '{"a":1}') || fail "the export did not reach the output file"
 git -C "$T" rm -rq --cached "$MOD/tests" "$MOD/evil.tftest.json" "$MOD/evil.tfmock.hcl" "$MOD/evil.tfmock.json"; rm -rf "$T/$MOD/tests" "$T/$MOD"/evil.*; g commit -qm "drop test files"
 
+# --- what reads a local file into a value is refused on the host, unless the file is this checkout's
+refused file-func 'locals { a = file("/etc/passwd") }'
+refused file-func-space 'locals { a = file ("/etc/passwd") }'
+refused templatefile 'locals { a = templatefile("/etc/hosts", {}) }'
+refused filebase64 'locals { a = filebase64("/etc/hosts") }'
+refused filesha256 'locals { a = filesha256("/etc/hosts") }'
+refused fileset 'locals { a = fileset("/", "*") }'
+refused fileexists 'locals { a = fileexists("/etc/hosts") }'
+refused pathexpand 'locals { a = pathexpand("~/.aws/credentials") }'
+refused abspath 'locals { a = abspath("../../..") }'
+refused core-namespace 'locals { a = core::file("/etc/hosts") }'
+refused provider-function 'locals { a = provider::local::read("/etc/hosts") }'
+refused path-cwd 'locals { a = path.cwd }'
+refused data-local-file 'data "local_file" "x" { filename = "/etc/hosts" }'
+refused data-local-sensitive-file 'data "local_sensitive_file" "x" { filename = "/etc/hosts" }'
+refused data-remote-state 'data "terraform_remote_state" "x" { backend = "local" }'
+accepted file-in-text '# file("/etc/hosts") and fileset() in a comment
+locals {
+  a = "file(/etc/hosts) provider::x"
+  profile_file = "x"
+  arn = "arn:aws:iam::123:role/x"
+}'
+# byte-identical to this checkout's: exempt for the file functions only; edited: refused
+setmain files-identical 'locals {}'
+cp "$HERE/$MOD/admission.tf" "$HERE/$MOD/variables.tf" "$T/$MOD/"; g add -A >/dev/null; g commit -qm "admission.tf"; : > "$STUB_LOG"
+run || fail "this checkout's own admission.tf and variables.tf were refused: $(cat "$tmp/run.out")"
+printf '# edited\n' >> "$T/$MOD/admission.tf"; g add -A >/dev/null; g commit -qm "admission.tf edited"; : > "$STUB_LOG"
+if run; then fail "an edited admission.tf that reads files was accepted"; fi
+[ ! -s "$STUB_LOG" ] || fail "terraform ran on an edited admission.tf"
+setmain plain 'locals {}'
+# a tree that is not this checkout needs the container or --force on the host; this checkout needs neither
+: > "$STUB_LOG"
+if RUN_FORCE='' run; then fail "another tree ran on the host without a container or --force"; fi
+grep -q 'TF_VALUES_CONTAINER' "$tmp/run.out" || fail "the refusal does not name TF_VALUES_CONTAINER: $(cat "$tmp/run.out")"
+[ ! -s "$STUB_LOG" ] || fail "terraform ran for a tree that was refused"
+RUN_FORCE=1 run || fail "--force did not let another tree run: $(cat "$tmp/run.out")"
+grep -q '!!!!' "$tmp/run.out" || fail "--force without the loud warning: $(cat "$tmp/run.out")"
+: > "$STUB_LOG"
+env -u GITHUB_ACTIONS PATH="$tmp/bin:$PATH" "$HERE/scripts/lib/tf_values.sh" "$HERE" argocd_values "$tmp/o3.json" >"$tmp/run.out" 2>&1 || fail "this checkout (with its file functions) was refused: $(cat "$tmp/run.out")"
+grep -q '^test' "$STUB_LOG" || fail "this checkout: terraform test did not run"
+# on a GitHub runner the file functions are allowed, with a notice
+setmain actions 'locals { a = file("/etc/hosts") }'
+GITHUB_ACTIONS=true PATH="$tmp/bin:$PATH" "$HERE/scripts/lib/tf_values.sh" "$T" argocd_values "$tmp/o4.json" >"$tmp/run.out" 2>&1 || fail "GITHUB_ACTIONS: file() was refused: $(cat "$tmp/run.out")"
+grep -q 'notice' "$tmp/run.out" || fail "GITHUB_ACTIONS: no notice"
+
 # --- providers.tf: the real exec is allowed only as this checkout's own file, byte for byte
 setmain providers 'locals {}'
 cp "$HERE/$MOD/providers.tf" "$T/$MOD/providers.tf"; g add -A >/dev/null; g commit -qm providers; : > "$STUB_LOG"
@@ -183,7 +229,7 @@ exit 0
 FAKE
 chmod +x "$tmp/fakebin/docker"
 export DOCKER_LOG="$tmp/docker.log" IMAGE='example.invalid/terraform@sha256:0000000000000000000000000000000000000000000000000000000000000000'
-setmain container 'locals {}'; : > "$DOCKER_LOG"
+setmain container 'locals { a = file("x") }'; : > "$DOCKER_LOG"   # the container sees only the work directory: file functions are fine there
 PATH="$tmp/fakebin:$tmp/bin:$PATH" TF_VALUES_CONTAINER="$IMAGE" "$HERE/scripts/lib/tf_values.sh" "$T" argocd_values "$tmp/o.json" >"$tmp/run.out" 2>&1 || fail "the container run failed: $(cat "$tmp/run.out")"
 [ ! -s "$STUB_LOG" ] || fail "the container run used the host's terraform"
 [ "$(wc -l < "$DOCKER_LOG" | tr -d ' ')" = 2 ] || fail "expected two container runs (init, test): $(cat "$DOCKER_LOG")"

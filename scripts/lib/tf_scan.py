@@ -2,7 +2,7 @@
 """The tripwire of scripts/lib/tf_values.sh: refuse a Terraform module that can run a program or read
 a credential file when `terraform test` evaluates it.
 
-  scripts/lib/tf_scan.py [--trusted FILE]... DIR      exit 0: nothing found; 1: findings (printed
+  scripts/lib/tf_scan.py [--trusted F]... [--files-ok F]... [--allow-files] DIR   exit 0: nothing found; 1: findings (printed
                                                        as file:line: reason); 2: usage or read error
 
 It reads every *.tf under DIR with a small HCL lexer: comments (#, //, /* */) are removed and string
@@ -15,6 +15,11 @@ does not hide anything and one inside a string is not a block. It refuses
     credential_process, postrender, web_identity_token_file;
   - the string labels "local-exec", "remote-exec", data "external", data "http";
   - a \\u or \\U escape in a string (it could spell any of those labels);
+  - the functions that read a local file (file, templatefile, filebase64, filemd5, filesha*, fileset,
+    fileexists, pathexpand, abspath), path.cwd, path.root, any `::` function (provider::, core::) and
+    data "local_file", "local_sensitive_file", "terraform_remote_state": unless the file is named by
+    --files-ok (byte-identical to this checkout's, decided by the caller) or --allow-files is given
+    (the caller runs Terraform in a container that sees only the work directory, or on a runner);
   - any *.tf.json (not read by this lexer), and a file it cannot lex (an unterminated string or comment).
 
 A --trusted FILE (byte-identical to the file of the checkout that runs the script, decided by the
@@ -35,6 +40,17 @@ TOKENS = (
 )
 TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(TOKENS) + r")(?![A-Za-z0-9_])")
 LABEL_RE = re.compile(r'"(local-exec|remote-exec)"|(?<![A-Za-z0-9_])data\s+"(external|http)"')
+# What reads a local file into a value (an output, a log): the built-in functions (as an identifier
+# followed by `(`, outside strings and comments), path.cwd / path.root, any namespaced function
+# (provider::x::f(), core::file()) and the data sources that read one. A file that is byte-identical to
+# this checkout's (--files-ok) or any file with --allow-files (the caller runs in a container that sees
+# only the work directory) may use them.
+FILE_FUNCS = (
+    "file", "templatefile", "filebase64", "filemd5", "filesha1", "filesha256", "filesha512",
+    "filebase64sha256", "filebase64sha512", "fileset", "fileexists", "pathexpand", "abspath",
+)
+FILE_RE = re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(FILE_FUNCS) + r")\s*\(|(?<![A-Za-z0-9_])(path\s*\.\s*(?:cwd|root))(?![A-Za-z0-9_])|::")
+FILE_LABEL_RE = re.compile(r'(?<![A-Za-z0-9_])data\s+"(local_file|local_sensitive_file|terraform_remote_state)"')
 HEREDOC_RE = re.compile(r"<<-?([A-Za-z_][A-Za-z0-9_-]*)[ \t]*\r?\n")
 
 
@@ -138,7 +154,7 @@ def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
-def scan_file(path):
+def scan_file(path, files_ok=False):
     with open(path, "rb") as f:
         text = f.read().decode("utf-8", "replace")
     out = []
@@ -150,21 +166,30 @@ def scan_file(path):
         out.append((line_of(code, m.start()), "'%s' can run a program or read a credential file" % m.group(1)))
     for m in LABEL_RE.finditer(kept):
         out.append((line_of(kept, m.start()), "%s is refused" % m.group(0).strip()))
+    if not files_ok:
+        for m in FILE_RE.finditer(code):
+            out.append((line_of(code, m.start()), "'%s' can read a local file (not this checkout's file, not in a container)" % re.sub(r"\s+", "", m.group(0))))
+        for m in FILE_LABEL_RE.finditer(kept):
+            out.append((line_of(kept, m.start()), "%s can read a local file" % m.group(0).strip()))
     if escapes:
         out.append((1, "a \\u or \\U escape in a string (it could spell a refused label)"))
     return out
 
 
 def main(argv):
-    trusted, args = set(), []
+    trusted, files_ok, allow_files, args = set(), set(), False, []
     it = iter(argv)
     for a in it:
         if a == "--trusted":
             trusted.add(os.path.realpath(next(it, "")))
+        elif a == "--files-ok":
+            files_ok.add(os.path.realpath(next(it, "")))
+        elif a == "--allow-files":
+            allow_files = True
         else:
             args.append(a)
     if len(args) != 1 or not os.path.isdir(args[0]):
-        print("usage: tf_scan.py [--trusted FILE]... DIR", file=sys.stderr)
+        print("usage: tf_scan.py [--trusted F]... [--files-ok F]... [--allow-files] DIR", file=sys.stderr)
         return 2
     bad = 0
     for dirpath, dirnames, filenames in os.walk(args[0]):
@@ -178,7 +203,7 @@ def main(argv):
                 if os.path.realpath(path) in trusted:
                     continue
                 try:
-                    found = scan_file(path)
+                    found = scan_file(path, allow_files or os.path.realpath(path) in files_ok)
                 except OSError as e:
                     print("tf_scan: %s: %s" % (path, e), file=sys.stderr)
                     return 2
