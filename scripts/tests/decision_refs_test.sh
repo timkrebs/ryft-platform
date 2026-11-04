@@ -6,6 +6,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+unset GITHUB_ACTIONS  # CI sets it; only the annotation case below turns it on
 fail() { echo "✗ decision_refs_test: $*" >&2; exit 1; }
 
 repo="$tmp/repo"
