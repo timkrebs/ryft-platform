@@ -17,7 +17,7 @@ func WorkoutWindowEnd(w model.Workout) time.Time { return w.End.Add(time.Microse
 
 // WorkoutDetail assembles the workout screen from the stored row and the
 // heart-rate samples inside its window (WorkoutSamples). Average and max HR
-// come from the app when it sent them, otherwise from the samples.
+// come from the app when it sent them (HealthKit's statistics win), otherwise from the samples (D9).
 func WorkoutDetail(w store.WorkoutRow, hr []model.Sample) model.WorkoutDetail {
 	pts := make([]HRPoint, 0, len(hr))
 	var sum, peak float64
@@ -48,7 +48,7 @@ func WorkoutDetail(w store.WorkoutRow, hr []model.Sample) model.WorkoutDetail {
 
 // DayStrainFrom turns a stored day load into the API object; nil exactly when
 // the day has no strain (no HR data and no strength session), so it is non-null
-// whenever score.strain is. The api adds the day's sessions.
+// whenever score.strain is (D10, D22). The api adds the day's sessions.
 func DayStrainFrom(l store.DayLoad) *model.DayStrain {
 	hr := l.TRIMP != nil && l.HRMin != nil
 	if !hr && l.MuscularTRIMP == nil {
@@ -80,7 +80,8 @@ func zoneInts(z []float64) []int {
 // DownsampleHR reduces time-sorted points to at most limit with
 // Largest-Triangle-Three-Buckets, which keeps the curve's visual shape — peaks
 // and troughs survive instead of being averaged away. The first and last points
-// are always kept; every returned point is an original sample.
+// are always kept; every returned point is an original sample. Bucket means would flatten the sprint peak the
+// user looks for (D9).
 func DownsampleHR(pts []HRPoint, limit int) []HRPoint {
 	if limit < 3 || len(pts) <= limit {
 		return pts

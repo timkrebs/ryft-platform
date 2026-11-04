@@ -1,3 +1,4 @@
+# A local chart, not kubernetes_manifest: that needs the cert-manager CRDs at plan time (D25).
 apiVersion: v2
 name: cluster-issuers
 description: Let's Encrypt ClusterIssuers (staging and prod) solving DNS-01 in Route 53, and the internal CA ryft-internal, for RYFT

@@ -542,14 +542,14 @@ func (f *foldEnv) legacy(u model.User, id uuid.UUID, activity, source string, st
 		id, u.ID, activity, start, end, source, created)
 }
 
-// oneOff is the data of the subcommand tests: a user with a 3-copy cluster (D1), a 2-copy
-// cluster with a session (D2), a lone workout, ryft-session rows and a different-source copy;
+// oneOff is the data of the subcommand tests: a user with a 3-copy cluster (day d1), a 2-copy
+// cluster with a session (day d2), a lone workout, ryft-session rows and a different-source copy;
 // another user with a pair whose created_at is equal (higher id stays).
 type oneOff struct {
 	u1, u2                           model.User
 	d1, d2                           time.Time
-	a1, a2, a3                       uuid.UUID // D1: a3 is the newest upload
-	b1, b2                           uuid.UUID // D2: b2 is the newest upload; b1 carries the session
+	a1, a2, a3                       uuid.UUID // d1: a3 is the newest upload
+	b1, b2                           uuid.UUID // d2: b2 is the newest upload; b1 carries the session
 	lone, garmin, sess1, sess2, ride uuid.UUID
 	x, y                             uuid.UUID // u2: same created_at
 	session                          uuid.UUID

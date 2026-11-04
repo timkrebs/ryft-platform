@@ -6,7 +6,7 @@ password from Vault, gives it beta access and consent, and fills it like a few w
 real use, so Today, Sleep, Strain, Train and Insights all have something to show: 60 days
 of synthetic HealthKit data through POST /v1/sync (scripts/synth.py --demo: an Apple Watch
 and an iPhone, three workouts a week), two logged strength sessions, a week of journal.
-Re-runnable before every review submission: an existing demo account is deleted first
+Re-runnable before every review submission (D86: recreated, not topped up): an existing demo account is deleted first
 (DELETE /v1/me, which removes its Supabase sign-in too) and created again.
 
 The password goes into App Store Connect (App Review Information), never into the repo.

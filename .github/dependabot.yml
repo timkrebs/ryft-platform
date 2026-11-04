@@ -11,7 +11,7 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
-    # Version policy (docs/DECISIONS.md): Node moves as one unit (Docker build stage tag and
+    # Version policy (D108): Node moves as one unit (Docker build stage tag and
     # digest, .nvmrc, engines, @types/node), by hand, and only onto an LTS line (Node 26 from
     # 2026-10-28). So no Node-major PRs for @types/node or the node image; these rules stay.
     # TypeScript 7 waits for typescript-eslint, whose peer range stops below 6.1.

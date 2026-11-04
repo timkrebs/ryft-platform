@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The daily deploy watch (.github/workflows/deploy-watch.yml; docs/OPERATIONS.md → Deploy
+# The daily deploy watch (D110; .github/workflows/deploy-watch.yml; docs/OPERATIONS.md → Deploy
 # and roll back → The deploy watch). Read-only: it looks at the overlay, at git and at the
 # open pull requests, and exits 1 with findings in $GITHUB_STEP_SUMMARY when
 #   a. a `# hold:` line in deploy/k8s/overlays/eks/kustomization.yaml is older than

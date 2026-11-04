@@ -25,6 +25,7 @@ ryft_admin_key() {
     fi
   fi
   if command -v vault >/dev/null 2>&1; then
+    # On HCP the namespace carries the admin/ parent prefix (D45).
     key=$(VAULT_NAMESPACE=${ADMIN_VAULT_NAMESPACE:-admin/ryft/api} vault kv get -mount=kv -field=ADMIN_API_KEY config 2>/dev/null || true)
     if [ -n "$key" ]; then
       export ADMIN_API_KEY=$key

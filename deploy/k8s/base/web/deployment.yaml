@@ -26,6 +26,7 @@ spec:
         - name: nginx
           # The whole site (pages, nginx config, AASA) is one image, built from web/ and pushed
           # by this repository's CI (ghcr.io/timkrebs/ryft/web:<short sha>). The tag is pinned in overlays/eks.
+          # The image is public and pulled anonymously, so there is no pull secret (D106).
           image: ghcr.io/timkrebs/ryft/web
           ports: [{ containerPort: 8080, name: http }]
           volumeMounts:

@@ -1,7 +1,7 @@
 // Package model owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants.
 //
 // It is the shared vocabulary of every service and is mirrored by the iOS app
-// (../app/Ryft/Networking/Models.swift), so it imports nothing internal and does
+// (../app/Ryft/Networking/Models.swift; D2: the app lives in ../app/Ryft/), so it imports nothing internal and does
 // no I/O. Server-only fields carry json:"-".
 //
 // Invariants:
