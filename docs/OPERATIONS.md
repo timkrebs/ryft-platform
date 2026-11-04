@@ -539,19 +539,29 @@ hold exactly what you applied, and resume.
 A service started through `internal/app` (scoring and notify since the PR that moved them;
 api and ingest follow) logs its shutdown. On every deploy, every old pod of such a service
 writes, in this order (CloudWatch, log group `/ryft/ryft-prod-euc1/containers`, fields under
-`data.`): `shutting down` (`reason` `signal`), one `shutdown step` per step (`jobs`,
-`consumers`, `http`, `relay`, `broker`, `pool`; `dur_ms` each), and `shut down` with `exit`
-0. A pod that logs `shutting down` but never `shut down` was killed (SIGKILL after the 30 s
-grace, exit 137): the last `shutdown step` line says which step it was in. The bounds add
-up to under 26 s (`internal/app/app.go`); past 26 s a watchdog logs `shutdown overdue` and
-exits 1 itself. Exit codes: 0 clean; 1 a start failed, a task failed or a step overran its
-bound; 2 a task panicked (recovered, then a normal shutdown); 137 killed.
+`data.`): `shutting down` (`reason` `signal`), one `shutdown step` per step in this order
+(`consumers`, `http`, `jobs`, `relay`, `broker`, `pool`; `dur_ms` each; `drain` first when a
+drain delay is set, and `metrics` last only when its stop fails), and `shut down` with `exit`
+0. A pod that logs `shutting down` but never `shut down` was either killed (SIGKILL after the
+30 s grace, exit 137) or ended by the watchdog (a `shutdown overdue` line, then exit 1, or 2
+after a panic): the last `shutdown step` line, or the `step` of `shutdown overdue`, says which
+step it was in. The bounds add up to under 26 s (`internal/app/app.go`); past 26 s the
+watchdog exits the process itself. Exit codes: 0 clean; 1 a start failed, a task failed or a
+step overran its bound; 2 a task panicked (recovered, then a normal shutdown); 137 killed.
+A SIGTERM while the service still waits for the database or the broker is a clean stop: it
+logs `start interrupted by the signal` (info, `step` `db` or `events`), then `shutting down`
+and `shut down`, and exits 0 (it is not a `db` error line).
+
+`/readyz` answers 503 `draining` from the start of the shutdown; the liveness probe's
+`/healthz` stays 200 until the listener closes. scoring and notify have no Service traffic,
+so nobody sees it.
 
 Not changed by this: an event a consumer is handling when SIGTERM arrives is still cut
-(`handle event failed, will retry`, then `could not retry, rejecting for redelivery`, one
-delivery of the queue's 10 used). The delivery in hand finishes only after the amqpbus drain
-PR; until then those two lines on a scoring or notify deploy are expected, and are what
-that PR is measured against.
+(`handle event failed, will retry`, then `amqp: could not retry, rejecting for redelivery`,
+one delivery of the queue's 10 used). The delivery in hand finishes only after the amqpbus
+drain PR (A4); until then those two lines on a scoring or notify deploy are expected, and are
+what that PR is measured against. The last query below also matches `delivery requeued at
+shutdown`; that line does not exist before A4.
 
 ```text
 # the shutdown timeline of one deploy
@@ -583,17 +593,20 @@ a container that restarted inside a living pod (ServiceExited, next section).
 ### A service exited (ServiceExited)
 
 `ServiceExited` (critical) fires when a container of api, ingest, scoring or notify has
-restarted in the last 15 minutes and its last exit was not 0. It is the trace of what a
-metric cannot show: a goroutine panic ends the process before a scrape sees
-`ryft_goroutine_panics_total` rise, and a failed start leaves no counter at all.
+restarted in the last 15 minutes. Zero restarts is normal for these four, so any restart
+pages; the exit code is not part of the rule. The services handle SIGTERM and exit 0 on a
+clean stop, so a container the kubelet killed for a failed liveness or startup probe (a hang,
+a deadlock) can end with exit 0, and kube-state-metrics may not send the exit code series. A
+restart is also the trace of what a metric cannot show: a goroutine panic ends the process
+before a scrape sees `ryft_goroutine_panics_total` rise, and a failed start leaves no counter.
 
 1. Which pod and why: `kubectl --context ryft-prod-euc1 -n ryft-<service> describe pod <pod>`
-   (read-only): *Last State: Terminated*, its *Exit Code* and *Reason* (`OOMKilled` is
-   137; a failed liveness or startup probe is 137 or 143 with `Killing` in the events).
+   (read-only): *Last State: Terminated*, its *Exit Code* and *Reason* (`OOMKilled`), and the
+   events (`Unhealthy` and `Killing` mean a probe failed: a hang, not a crash).
 2. The previous container's log: `kubectl --context ryft-prod-euc1 -n ryft-<service> logs
    <pod> --previous`, or CloudWatch (`filter data.service = "<service>" and data.level =
    "ERROR"`, newest first).
-3. By exit code:
+3. By exit code (from step 1):
    - **2**: a recovered panic. The `msg="panic"` line names the `task` and has the stack.
      It is a bug: reproduce it with a test, fix it, and mind that the pod restarted and the
      work resumes by itself (events are redelivered, D100; timers run again).
@@ -603,17 +616,40 @@ metric cannot show: a goroutine panic ends the process before a scrape sees
      port would not bind), `consume`/`job` (a task gave up), or a `shutdown step` with `err`
      (a step overran its bound; `shutdown overdue` means the watchdog ended it).
    - **137**: killed. `OOMKilled`: the memory limit (Scaling and disruptions). Else the
-     kubelet's SIGKILL after the grace period or a probe: no `shut down` line; the last
-     `shutdown step` says where it was.
-   - **143**: SIGTERM not handled. Not expected from these services.
+     kubelet's SIGKILL after the grace period: no `shut down` line; the last `shutdown step`
+     says where it was.
+   - **0 or 143** with `Unhealthy`/`Killing` events: a probe killed a container that was
+     still running but not answering `/healthz` (the process exited cleanly on the kubelet's
+     SIGTERM). Look for what hung: the last lines before the restart, goroutine or
+     connection-pool exhaustion, a dependency that stopped answering.
 4. A crash loop is also PodRestarting (more than three restarts in 30 minutes).
 
 If the alert never fires although a pod restarted, check in Grafana Explore that
 `kube_pod_container_status_restarts_total{namespace="ryft-scoring"}` exists for the pod
 (Fleet Management's allow-list decides what kube-state-metrics sends). The exit code series
-`kube_pod_container_status_last_terminated_exitcode` may be missing: the rule then treats
-every restart as a bad exit instead of staying silent, and the exit code is read from
-`describe pod`.
+`kube_pod_container_status_last_terminated_exitcode` is not needed by the rule.
+
+### A panic (Panics)
+
+`Panics` (critical) fires when a handler (`ryft_http_panics_total`), an event handler
+(`ryft_event_handler_panics_total`) or a service's own goroutine (`ryft_goroutine_panics_total`)
+panicked in the last 15 minutes. Find the line, which has the stack (the one place a stack is
+logged, Data protection (logs)):
+
+```text
+fields @timestamp, data.service, data.task, data.check, data.route, data.panic, data.stack
+| filter data.msg = "panic"
+| sort @timestamp desc
+```
+
+`task` or `check` is set for a goroutine panic, `route` for a handler's. After a goroutine
+panic the pod has restarted (exit 2, ServiceExited fires too): read the previous container's
+log, `kubectl --context ryft-prod-euc1 -n ryft-<service> logs <pod> --previous | grep
+'"msg":"panic"'`. A handler panic answered `500` and the pod runs on; an event handler's
+message is retried and, at the last delivery, dead-lettered (DeadLetters). Reproduce with a
+test, then fix. The alert can miss a first panic that follows a collector outage of about an
+hour, or a second one within about an hour of a pod restart (a counter born at 1 looks like
+an old series there); the CloudWatch query does not.
 
 ### The deploy watch
 

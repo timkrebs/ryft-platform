@@ -3,6 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"log/slog"
 	"os"
@@ -12,9 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/model"
 )
 
 // Half an APNs key ends the process before anything connects, under the message it
@@ -87,13 +95,88 @@ func TestBuildRefusesAKeyThatDoesNotParse(t *testing.T) {
 	}
 }
 
+// The Spec's flags decide how app wires the service: notify publishes nothing (no
+// outbox), and the queue it consumes is its work, so the broker gates /readyz.
+func TestSpecFlags(t *testing.T) {
+	s := spec()
+	if s.Name != "notify" || !s.BrokerRequired || s.Outbox || s.Edge {
+		t.Fatalf("Name %q, BrokerRequired %v, Outbox %v, Edge %v: want notify, true, false, false", s.Name, s.BrokerRequired, s.Outbox, s.Edge)
+	}
+	if s.Load == nil || s.Build == nil {
+		t.Fatal("notify needs its Load and its Build")
+	}
+}
+
+// Load reads the APNs key: none is fine, a half is a ConfigError under "apns config".
+func TestSpecLoadReadsTheAPNsKey(t *testing.T) {
+	for _, k := range []string{"APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8"} {
+		t.Setenv(k, "")
+	}
+	log := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	if err := spec().Load(log); err != nil {
+		t.Fatalf("no key is a valid setting: %v", err)
+	}
+	t.Setenv("APNS_KEY_ID", "ABC1234567")
+	var ce app.ConfigError
+	if err := spec().Load(log); !errors.As(err, &ce) || ce.Msg != "apns config" {
+		t.Fatalf("Load = %v, want a ConfigError under \"apns config\"", err)
+	}
+}
+
+// With a key that parses the service sends: APNs is set. (A mutant that builds the
+// client and drops it would leave notify counting "unconfigured" in production.)
+func TestNewServiceWithAKeySends(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p8 := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	var logs bytes.Buffer
+	d := app.Deps{Log: slog.New(slog.NewJSONHandler(&logs, nil))}
+
+	svc, err := newService(d, pushSettings{on: true, cfg: config.APNs{KeyID: "ABC1234567", TeamID: "DEF1234567", PrivateKey: p8, Topic: config.DefaultAPNsTopic}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.APNs == nil || !strings.Contains(logs.String(), `"msg":"apns configured"`) {
+		t.Fatalf("APNs %v, log %s: a configured key sends", svc.APNs, logs.String())
+	}
+	if svc, err = newService(d, pushSettings{}); err != nil || svc.APNs != nil {
+		t.Fatalf("no key: APNs %v, err %v: nothing is sent", svc.APNs, err)
+	}
+}
+
+func TestFieldsOfTheEvent(t *testing.T) {
+	user := uuid.New()
+	for _, tc := range []struct {
+		name string
+		m    events.NotifyMessage
+	}{
+		{"scored", events.NotifyMessage{Scored: &model.ScoredEvent{UserID: user, RequestID: "r1"}}},
+		{"refresh", events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: user, RequestID: "r1"}}},
+		{"session scored", events.NotifyMessage{SessionScored: &model.SessionScoredEvent{UserID: user, RequestID: "r1"}}},
+	} {
+		if f := fieldsOf(tc.m); f.UserID != user.String() || f.RequestID != "r1" {
+			t.Errorf("%s: %+v", tc.name, f)
+		}
+	}
+	if f := fieldsOf(events.NotifyMessage{}); f.UserID != "" || f.RequestID != "" {
+		t.Errorf("an empty message: %+v", f)
+	}
+}
+
 func TestEveryRunsThePassUntilTheContextEnds(t *testing.T) {
 	var passes atomic.Int32
+	var last atomic.Pointer[context.Context]
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- every(2*time.Millisecond, func(context.Context) { passes.Add(1) })(ctx)
+		done <- every(2*time.Millisecond, func(c context.Context) { last.Store(&c); passes.Add(1) })(ctx)
 	}()
 	for deadline := time.Now().Add(5 * time.Second); passes.Load() < 3; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -108,6 +191,9 @@ func TestEveryRunsThePassUntilTheContextEnds(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the job did not end with its context")
+	}
+	if c := last.Load(); c == nil || (*c).Err() == nil {
+		t.Fatal("the pass got a context that does not end with the job's: a pass in flight at SIGTERM would outlive the jobs step")
 	}
 	after := passes.Load()
 	time.Sleep(20 * time.Millisecond)

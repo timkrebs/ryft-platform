@@ -23,6 +23,9 @@ import (
 // goes through d.Outbox (D101): written to the database, sent once the broker
 // confirms it, so a broker outage loses no morning push.
 func build(d app.Deps, beta config.Beta) (app.Parts, error) {
+	if d.Outbox == nil { // a nil one would panic on the first publish, in every handler and in the timer
+		return app.Parts{}, errors.New("scoring needs the outbox (Spec.Outbox)")
+	}
 	st := store.New(d.Pool)
 	engine := scoring.NewEngine(st, d.Log)
 	engine.SetConsentMode(beta.Consent)
@@ -40,8 +43,12 @@ func build(d app.Deps, beta config.Beta) (app.Parts, error) {
 		}
 	})
 	handle := ingestHandler(d.Log, engine, pub)
+	pass := timerPass(&learner{tried: map[uuid.UUID]string{}}, &catchUp{failed: map[uuid.UUID]string{}},
+		func(ctx context.Context, learn *learner, behind *catchUp) {
+			refreshActive(ctx, d.Log, st, engine, learn, behind)
+		}, housekeeping(d.Log, st))
 	return app.Parts{
-		Jobs: []app.Task{{Name: "scoring pass", Run: every(refreshEvery, timerPass(d.Log, st, engine))}},
+		Jobs: []app.Task{{Name: "scoring pass", Run: every(refreshEvery, pass)}},
 		Consumers: []app.Task{{Name: "ingested events", Run: func(ctx context.Context) error {
 			d.Log.Info("consuming ingest events")
 			return d.Bus.ConsumeIngested(ctx, d.Log, handle)
@@ -76,17 +83,23 @@ func ingestHandler(log *slog.Logger, engine *scoring.Engine, pub events.Publishe
 	}
 }
 
-// timerPass is one pass of the timer: the active users, the score queue's pruning
-// and the sync-age gauges. The learner and the catch-up keep their memory between
-// passes. Every error is logged and the next pass runs.
-func timerPass(log *slog.Logger, st *store.Store, engine *scoring.Engine) func(ctx context.Context) {
-	learn := learner{tried: map[uuid.UUID]string{}}
-	behind := catchUp{failed: map[uuid.UUID]string{}}
+// timerPass is one pass of the timer: refresh the active users, then the housekeeping
+// (unless the shutdown has begun). The learner and the catch-up are the job's memory
+// between passes: it is handed the same two every time, never new ones. Every error is
+// logged by the steps, and the next pass runs.
+func timerPass(learn *learner, behind *catchUp, refresh func(context.Context, *learner, *catchUp), after func(context.Context)) func(context.Context) {
 	return func(ctx context.Context) {
-		refreshActive(ctx, log, st, engine, &learn, &behind)
+		refresh(ctx, learn, behind)
 		if ctx.Err() != nil {
 			return // the shutdown: pruning and the gauges wait for the next pod
 		}
+		after(ctx)
+	}
+}
+
+// housekeeping prunes the score queue and sets the sync-age gauges.
+func housekeeping(log *slog.Logger, st *store.Store) func(context.Context) {
+	return func(ctx context.Context) {
 		if err := st.PruneScoreQueue(ctx); err != nil {
 			log.Warn("prune score queue", "err", err)
 		}

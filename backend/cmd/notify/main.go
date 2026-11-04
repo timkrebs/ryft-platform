@@ -8,11 +8,15 @@ import (
 	"github.com/timkrebs/ryft/internal/config"
 )
 
-func main() {
+func main() { app.Main(spec()) }
+
+// spec is what notify asks app for: no Outbox (it publishes nothing), and the broker
+// gates /readyz because the queue it consumes is its work.
+func spec() app.Spec {
 	var push pushSettings
-	app.Main(app.Spec{
+	return app.Spec{
 		Name:           "notify",
-		BrokerRequired: true, // /readyz needs the queue it consumes
+		BrokerRequired: true,
 		// The APNs key is read before anything connects (D78); without one the service
 		// runs and counts what it would have sent.
 		Load: func(*slog.Logger) (err error) {
@@ -22,5 +26,5 @@ func main() {
 			return nil
 		},
 		Build: func(_ context.Context, d app.Deps) (app.Parts, error) { return build(d, push) },
-	})
+	}
 }

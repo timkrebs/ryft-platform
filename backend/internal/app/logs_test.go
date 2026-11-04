@@ -142,6 +142,17 @@ func TestLifecycleLogsKeepToTheirKeys(t *testing.T) {
 	for _, p := range problems {
 		t.Error(p)
 	}
+	// logcheck.Standard allows a user and a request on every line, but a lifecycle line
+	// belongs to no user and no request: none may carry one.
+	for msg, recs := range lines {
+		for _, rec := range recs {
+			for _, key := range []string{"user_id", "request_id", "client_request_id", "route"} {
+				if _, ok := rec[key]; ok {
+					t.Errorf("%q carries %q: %v", msg, key, rec)
+				}
+			}
+		}
+	}
 	// The lines the runbooks and the Insights queries are written for were all seen.
 	for _, msg := range []string{"shutting down", "shutdown step", "shut down", "shutdown overdue", "panic", "consume", "listening", "metrics listening", "serve", "db", "events", "build"} {
 		if len(lines[msg]) == 0 {

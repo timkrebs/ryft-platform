@@ -39,8 +39,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "learn-baselines" {
 		os.Exit(learnBaselines(os.Args[2:]))
 	}
+	app.Main(spec())
+}
+
+// spec is what scoring asks app for. Outbox is not optional: build refuses a Deps
+// without one, and BrokerRequired keeps /readyz honest about the queue it consumes.
+func spec() app.Spec {
 	var beta config.Beta
-	app.Main(app.Spec{
+	return app.Spec{
 		Name:           "scoring",
 		BrokerRequired: true, // /readyz needs the queue it consumes
 		Outbox:         true, // what scoring tells notify goes through the outbox (D101)
@@ -54,7 +60,7 @@ func main() {
 			return nil
 		},
 		Build: func(_ context.Context, d app.Deps) (app.Parts, error) { return build(d, beta) },
-	})
+	}
 }
 
 // announce is what scoring tells notify once an event's days are scored:
@@ -108,7 +114,9 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner, behind *catchUp) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
 	if err != nil {
-		log.Error("periodic: active users", "err", err)
+		if ctx.Err() == nil { // a query cut by the shutdown is not an error
+			log.Error("periodic: active users", "err", err)
+		}
 		return
 	}
 	users = behind.order(users)
@@ -117,7 +125,9 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		ctx = logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
 		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
-			log.ErrorContext(ctx, "periodic: user", "err", err)
+			if ctx.Err() == nil {
+				log.ErrorContext(ctx, "periodic: user", "err", err)
+			}
 			return
 		}
 		if !engine.Admits(user) {
@@ -126,12 +136,12 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")
 		yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
-		if err := engine.ComputeDays(ctx, id, []string{yesterday, today}); err != nil {
+		if err := engine.ComputeDays(ctx, id, []string{yesterday, today}); err != nil && ctx.Err() == nil {
 			log.ErrorContext(ctx, "periodic recompute", "err", err)
 		}
 		if budget > 0 && behind.failed[id] != today {
 			n, err := engine.RescoreBehind(ctx, id, today, budget)
-			if err != nil {
+			if err != nil && ctx.Err() == nil { // cut by the shutdown: not the day's fault, tried again next pass
 				log.ErrorContext(ctx, "periodic: days behind their history", "err", err)
 				behind.failed[id] = today
 			}
@@ -194,7 +204,7 @@ func (l *learner) maybe(ctx context.Context, log *slog.Logger, engine *scoring.E
 		return
 	}
 	l.tried[u.ID] = day
-	if _, err := engine.LearnBaseline(ctx, u.ID, day); err != nil {
+	if _, err := engine.LearnBaseline(ctx, u.ID, day); err != nil && ctx.Err() == nil {
 		log.ErrorContext(ctx, "learn sleep baseline", "err", err)
 	}
 }

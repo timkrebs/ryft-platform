@@ -24,18 +24,18 @@ groups:
         labels: { severity: critical }
         annotations: { summary: "{{ $labels.pod }} restarted more than 3 times in 30 minutes" }
       - alert: ServiceExited
-        # A container of api, ingest, scoring or notify restarted in the last 15 minutes and
-        # its last exit was not a clean 0: a crash, a recovered panic (exit 2, the only trace
-        # a service that panics in its own goroutine leaves, because its counter dies with
-        # the process), a failed start or an HTTP port that would not bind (exit 1), an
-        # overrun shutdown (1) or the kubelet's SIGKILL (137, OOM or a step past the grace).
-        # A restart whose exit code kube-state-metrics does not report counts, so a missing
-        # series cannot silence it; only an exit of 0 is left out. A pod replaced by a
-        # rollout is a new pod, not a restart, and never fires this
-        # (OPERATIONS.md → A service exited).
+        # A container of api, ingest, scoring or notify restarted in the last 15 minutes.
+        # Zero restarts is normal for these four, so any restart pages. The exit code is
+        # not part of the rule: the services handle SIGTERM and exit 0 on a clean stop, so
+        # a container the kubelet killed for a failed liveness or startup probe (a hang, a
+        # deadlock) can end with exit 0, and kube-state-metrics may not send the exit code
+        # series at all. The code is read from `describe pod` (OPERATIONS.md → A service
+        # exited): 2 a recovered panic (the only trace a service that panics in its own
+        # goroutine leaves, because its counter dies with the process), 1 a failed start or
+        # an HTTP port that would not bind, 137 OOM or the SIGKILL after the grace period.
+        # A pod replaced by a rollout is a new pod, not a restart, and never fires this.
         expr: |
           sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-(api|ingest|scoring|notify)"}[15m])) > 0
-            unless on (namespace, pod, container) kube_pod_container_status_last_terminated_exitcode{namespace=~"ryft-(api|ingest|scoring|notify)"} == 0
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.namespace }} {{ $labels.pod }}: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
@@ -50,7 +50,10 @@ groups:
         # TextRefusedByDatabase's: a series with no sample in the hour before the last 15
         # minutes is new (a scrape gap shorter than an hour is not a birth). The goroutine
         # counter exists at 0 from the start of the process, and its panic ends the process
-        # before a scrape may see it, so the restart is what ServiceExited is for.
+        # before a scrape may see it, so the restart is what ServiceExited is for. Known
+        # holes until the counters are initialised at 0 (Phase 3): a first panic during a
+        # collector outage of about 75 minutes or more, and a second panic of a labelled
+        # counter within about 75 minutes of a pod restart, look like old series.
         expr: |
           sum by (namespace) (increase(ryft_http_panics_total[15m])) > 0
             or sum by (namespace) (ryft_http_panics_total
@@ -62,7 +65,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.namespace }}: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-          runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+          runbook: "docs/OPERATIONS.md → A panic (Panics)"
       - alert: TextRefusedByDatabase
         # Postgres refused a request's text (SQLSTATE 22021/22P05) that httpx's checks let
         # through: the client got a 422 and nothing was logged, where it used to be a logged

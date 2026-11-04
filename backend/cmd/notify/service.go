@@ -27,22 +27,32 @@ type pushSettings struct {
 // the stale check (a job) and the scored-events consumer. It publishes nothing, so
 // it has no outbox.
 func build(d app.Deps, push pushSettings) (app.Parts, error) {
-	svc := &notify.Service{St: store.New(d.Pool), Log: d.Log, Now: time.Now}
-	if push.on {
-		c, err := apns.New(apns.Config{KeyID: push.cfg.KeyID, TeamID: push.cfg.TeamID, PrivateKey: push.cfg.PrivateKey,
-			Topic: push.cfg.Topic}, nil)
-		if err != nil {
-			return app.Parts{}, app.ConfigError{Msg: "apns", Err: err}
-		}
-		svc.APNs = c
-		d.Log.Info("apns configured", "topic", push.cfg.Topic, "key_id", push.cfg.KeyID)
-	} else {
-		d.Log.Warn("APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_P8 not set: nothing is sent (ryft_push_notifications_total{result=\"unconfigured\"})")
+	svc, err := newService(d, push)
+	if err != nil {
+		return app.Parts{}, err
 	}
 	return app.Parts{
 		Jobs:      []app.Task{{Name: "stale check", Run: every(staleEvery, staleCheck(d.Log, svc))}},
 		Consumers: []app.Task{{Name: "scored events", Run: consume(d, svc)}},
 	}, nil
+}
+
+// newService is the push service: with an APNs key it sends, without one it counts
+// what it would have sent. A key that does not parse is a ConfigError under "apns".
+func newService(d app.Deps, push pushSettings) (*notify.Service, error) {
+	svc := &notify.Service{St: store.New(d.Pool), Log: d.Log, Now: time.Now}
+	if !push.on {
+		d.Log.Warn("APNS_KEY_ID/APNS_TEAM_ID/APNS_KEY_P8 not set: nothing is sent (ryft_push_notifications_total{result=\"unconfigured\"})")
+		return svc, nil
+	}
+	c, err := apns.New(apns.Config{KeyID: push.cfg.KeyID, TeamID: push.cfg.TeamID, PrivateKey: push.cfg.PrivateKey,
+		Topic: push.cfg.Topic}, nil)
+	if err != nil {
+		return nil, app.ConfigError{Msg: "apns", Err: err}
+	}
+	svc.APNs = c
+	d.Log.Info("apns configured", "topic", push.cfg.Topic, "key_id", push.cfg.KeyID)
+	return svc, nil
 }
 
 // staleCheck is one pass of the no-data check. A failed pass is logged and the

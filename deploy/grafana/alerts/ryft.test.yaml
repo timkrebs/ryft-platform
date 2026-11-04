@@ -32,17 +32,17 @@ tests:
   - name: a service exited and restarted
     interval: 1m
     input_series:
-      # scoring panicked in a goroutine (exit 2) at minute 5; notify was restarted by the
-      # kubelet after a clean stop (exit 0); ingest restarted and kube-state-metrics has no
-      # exit code for it yet; api and a pod of the web site restarted outside the set; a
-      # pod that was replaced by a rollout is a new series at 0 and never restarted.
+      # Any restart of the four services fires, whatever the exit code says: scoring
+      # panicked in a goroutine (exit 2); notify was killed by a failed probe and exited
+      # 0 after SIGTERM; ingest restarted and kube-state-metrics has no exit code for it;
+      # a pod of the web site restarted outside the set; a pod that a rollout replaced is
+      # a new series at 0 and never restarted.
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0x5 1x60' }
       - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '_x5 2x60' }
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '0x5 1x60' }
       - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '_x5 0x60' }
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-ingest",pod="ingest-1",container="ingest"}', values: '0x5 1x60' }
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-web",pod="web-1",container="web"}', values: '0x5 1x60' }
-      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-web",pod="web-1",container="web"}', values: '_x5 1x60' }
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-2",container="api"}', values: '_x20 0x40' }
     alert_rule_test:
       - { eval_time: 4m, alertname: ServiceExited, exp_alerts: [] }
@@ -52,6 +52,10 @@ tests:
           - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1, container: scoring }
             exp_annotations:
               summary: "ryft-scoring scoring-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
+              runbook: "docs/OPERATIONS.md → A service exited"
+          - exp_labels: { severity: critical, namespace: ryft-notify, pod: notify-1, container: notify }
+            exp_annotations:
+              summary: "ryft-notify notify-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
               runbook: "docs/OPERATIONS.md → A service exited"
           - exp_labels: { severity: critical, namespace: ryft-ingest, pod: ingest-1, container: ingest }
             exp_annotations:
@@ -82,7 +86,7 @@ tests:
           - exp_labels: { severity: critical, namespace: ryft-api }
             exp_annotations:
               summary: "ryft-api: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+              runbook: "docs/OPERATIONS.md → A panic (Panics)"
       # scoring's event handler panicked at minute 40; api's has left the window.
       - eval_time: 45m
         alertname: Panics
@@ -90,7 +94,7 @@ tests:
           - exp_labels: { severity: critical, namespace: ryft-scoring }
             exp_annotations:
               summary: "ryft-scoring: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+              runbook: "docs/OPERATIONS.md → A panic (Panics)"
       - { eval_time: 65m, alertname: Panics, exp_alerts: [] }
       # notify's goroutine counter rose from 0 to 1: increase() sees it.
       - eval_time: 82m
@@ -99,7 +103,7 @@ tests:
           - exp_labels: { severity: critical, namespace: ryft-notify }
             exp_annotations:
               summary: "ryft-notify: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-              runbook: "docs/OBSERVABILITY.md → Alerts (Panics)"
+              runbook: "docs/OPERATIONS.md → A panic (Panics)"
       - { eval_time: 105m, alertname: Panics, exp_alerts: [] }
       - { eval_time: 130m, alertname: Panics, exp_alerts: [] }
   - name: dead letters, database
