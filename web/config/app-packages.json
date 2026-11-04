@@ -4,8 +4,8 @@
     {
       "identity": "supabase-swift",
       "location": "https://github.com/supabase/supabase-swift",
-      "version": "2.55.4",
-      "revision": "fee4bd78997f8b4e919c1c9711e0cfb346fd7a55"
+      "version": "2.55.6",
+      "revision": "63fa5a8c650fad12a14543186024bd3214a65d9c"
     },
     {
       "identity": "swift-asn1",

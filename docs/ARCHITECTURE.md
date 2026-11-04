@@ -157,6 +157,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `cmd/rabbitmq-topology` | rabbitmq-topology writes the broker's topology (internal/events/amqpbus) as the Topology Operator's objects and as the definitions compose loads. | events/amqpbus | none |
 | `cmd/scoring` | scoring runs the scoring consumer and the 15-minute pass that keeps today and yesterday fresh. | config, db, eventbus, events, events/outbox, httpx, logx, metrics, model, scoring, store | 2 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
+| `internal/app` | owns a long-running service's lifecycle: it starts the pool, the broker, consumers and HTTP in order and stops them in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 3 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 3 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
@@ -172,7 +173,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
 | `internal/logx/logcheck` | owns the test-side half of "no health values in logs": it checks captured log lines against the keys each message may carry. | none | 1 file |
-| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, events/amqpbus, gate, httpx, notify, scoring |
+| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, events/amqpbus, gate, httpx, notify, scoring |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
@@ -250,9 +251,8 @@ HRV sample, a range replayed out of order). So when scoring a day writes a new r
 changes what later days are computed from (`store.historyInputs`), scoring re-scores
 the next 30 scored days after it in the same pass, oldest first, never past today,
 each day once (`Engine.ComputeDays`); a re-score that changes nothing stops there,
-except on a retried, redelivered or replayed event (a dead letter put back with
-`scripts/dlq.sh replay`, marked `x-ryft-replayed`), whose earlier attempt may have
-written the change and failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
+except on a retried event, whose earlier attempt may have written the change and
+failed before the days after (`events.Redelivered`). The 15-minute pass re-scores
 about 50 days a pass (the days their re-score reaches included) whose `baseline_days`
 (or one of its two counts, `baseline_hrv_days` / `baseline_rhr_days`) is below what
 their stored history now holds, or whose baseline is missing although the history has

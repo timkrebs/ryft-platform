@@ -341,14 +341,34 @@ func Health(mux *http.ServeMux, ready func(context.Context) error) {
 	})
 }
 
-// ServeMetrics serves Prometheus /metrics on its own port in the background.
-// Kept apart from the API port so that a collector on the node's network can
-// be let in to metrics without being let in to the API (deploy/k8s NetworkPolicy).
-func ServeMetrics(log *slog.Logger, addr string) {
+// MetricsServer is the Prometheus /metrics server for its own port. Kept apart
+// from the API port so that a collector on the node's network can be let in to
+// metrics without being let in to the API (deploy/k8s NetworkPolicy).
+func MetricsServer(log *slog.Logger, addr string) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metrics.Handler())
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 30 * time.Second,
+	return &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 30 * time.Second,
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
+}
+
+// Server is the service's HTTP server with its timeouts: read header 10 s, read
+// and write 60 s, idle 120 s, 64 KiB of headers.
+func Server(log *slog.Logger, addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+}
+
+// ServeMetrics serves MetricsServer in the background.
+func ServeMetrics(log *slog.Logger, addr string) {
+	srv := MetricsServer(log, addr)
 	go func() {
 		log.Info("metrics listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -359,16 +379,7 @@ func ServeMetrics(log *slog.Logger, addr string) {
 
 // Serve runs the server until SIGINT/SIGTERM, then drains for up to 10s.
 func Serve(log *slog.Logger, addr string, h http.Handler) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-	}
+	srv := Server(log, addr, h)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
