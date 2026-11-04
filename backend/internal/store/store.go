@@ -1,5 +1,3 @@
-// Package store is the only place SQL lives. Services call these methods;
-// nothing else touches the pool directly.
 package store
 
 import (
@@ -22,6 +20,9 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
+// Store is a service's handle on the domain tables, bound to that service's
+// database role: the role's grants, not this type, decide which methods work in
+// which service.
 type Store struct {
 	pool  *pgxpool.Pool
 	rules ImportRules // the import's comparisons (WithImportRules)
@@ -35,8 +36,11 @@ var ErrNotFound = errors.New("not found")
 // account back.
 var ErrDeleted = errors.New("account deleted")
 
+// New is a Store on pool, which the caller opened with db.Open and still owns
+// (closing it).
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
+// Ready pings the database; the services' /readyz calls it.
 func (s *Store) Ready(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ---- users / devices -------------------------------------------------------
@@ -408,6 +412,9 @@ func (s *Store) TryRequestRecompute(ctx context.Context, userID uuid.UUID, minIn
 
 // ---- ingest ----------------------------------------------------------------
 
+// UpsertSamples stores a sync's samples in one transaction and returns how many
+// rows changed. A record that carries its HealthKit id adopts it on the row with the
+// same natural key (D144); an identical re-send changes nothing and is not counted.
 func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.Sample) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
@@ -440,6 +447,9 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 	return s.runBatch(ctx, b)
 }
 
+// UpsertSleep stores a sync's sleep segments in one transaction and returns how many
+// rows changed. A duplicate is skipped, never an error; a segment with a HealthKit
+// id adopts it on the row with the same natural key (D144).
 func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.SleepSegment) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
@@ -464,6 +474,10 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 	return s.runBatch(ctx, b)
 }
 
+// UpsertWorkouts stores a sync's workouts in one transaction and returns how many
+// rows changed. A row from a Train session (model.SessionSource) is never
+// overwritten by a sync, and an identical re-send is not counted. Workouts go in
+// (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
 func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model.Workout) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
@@ -516,6 +530,9 @@ func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
 
 // ---- reads for scoring -----------------------------------------------------
 
+// SamplesBetween returns the user's samples of one type whose start falls in
+// [from,to), oldest first: the raw input scoring reads, before any de-duplication
+// across sources.
 func (s *Store) SamplesBetween(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) ([]model.Sample, error) {
 	rows, err := s.pool.Query(ctx, `SELECT type, start_at, end_at, value, unit, source FROM samples
 		WHERE user_id=$1 AND type=$2 AND start_at >= $3 AND start_at < $4 ORDER BY start_at`,
@@ -696,6 +713,9 @@ type WorkoutRow struct {
 	TRIMP       *float64
 }
 
+// Workout returns one of the user's workouts with the load scoring attached, and
+// the sources of its duplicates in AlsoRecordedBy. ErrNotFound when the id is not
+// the user's, whoever else holds it.
 func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, error) {
 	var w WorkoutRow
 	var zones []byte
@@ -866,6 +886,11 @@ func inputColumns(inputs []string) []string {
 	return cols
 }
 
+// UpsertDailyScore writes the day's row, with every score and sleep column, in a
+// single statement (a workout's own load is stored apart, by SetWorkoutLoad), and
+// reports in ScoreWrite whether it was the day's first recovery (the morning push)
+// and whether an input of a later day's history changed (a re-score of the days
+// after follows, D112).
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
 	d, n, l := row.DailyScore, row.Sleep, row.Load
@@ -1005,6 +1030,11 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 	})
 }
 
+// DailyScores returns the stored days in [from,to] (local days, YYYY-MM-DD), oldest
+// first, with the model version each was scored under. It reads what scoring stored;
+// the one thing it rewrites is the calibration fields: a row whose counts and
+// reason no longer agree (an older image wrote it after a rollback) reads as
+// "unknown" until it is scored again (knownCalibration).
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
 	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
 		strength_min, volume_kg, sleep_performance, sleep_need_min,

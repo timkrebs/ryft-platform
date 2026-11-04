@@ -325,6 +325,83 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
 is no incident.
 
+## Baselines
+
+Recorded numbers a later change is compared with. **A laptop is not production**: these come from the
+compose stack on one machine, Postgres in a container on a local disk, no network between the services, no
+Supabase pooler, no TLS at the edge, one replica of everything. Use them for "did this change get slower
+than it was", never as a capacity statement or an SLO.
+
+### Local load (`make load`, `scripts/load.sh`)
+
+What it does: k6 (`grafana/k6:2.3.0`, pinned by digest in the script, run by `$CONTAINER` on the compose network)
+drives 50 synthetic users. Each consents, syncs **one full UTC day** (about 1 250 records: heart rate every minute from
+waking to midnight, steps and active energy in 10-minute buckets with the phone's 30-minute steps beside them, a night
+of sleep with stages, overnight HRV, respiration, SpO2, resting HR, one run; the shape of `scripts/synth.py`, generated
+from a seeded PRNG so the bytes are the same every run) and then reads `GET /v1/days?from=…&to=…` over 30 days 20 times
+with 250 ms think time. The users start 100 ms apart. One warm-up run, then 3 measured runs, each with fresh accounts;
+the script waits until scoring has finished (the `ryft_sync_to_score_seconds` count stops rising) before it scrapes
+`/metrics` of ingest, api and scoring, which are not published to the host, over the compose network.
+`make up && make load`; it prints the table, writes `scripts/load/out/<UTC timestamp>/` (ignored by version control;
+`baseline.json` has every run and the median run; `out/latest` names the newest; nothing is deleted, and `LOAD_OUT` is
+refused if it is `/`, `$HOME` or a non-empty directory without the `.ryft-load-out` marker) and exits 1 when any
+route's error rate is above 1 % (`LOAD_MAX_ERROR_RATE`) or an optional k6 threshold (`LOAD_P95_SYNC_MS`,
+`LOAD_P95_DAYS_MS`) failed. In local mode `INGEST_URL` and `API_URL` are only the readiness probes from the host; k6
+talks to the services over the compose network. A plain URL on localhost is required: `LOAD_ALLOW_REMOTE=1` allows
+other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftapp.de` or
+`*.supabase.co`; never aim it at production. Each invocation leaves 200 accounts and about 250 000 samples in the dev
+database (`make down` clears it).
+
+How 50 users exist locally: `AUTH_MODE=apikey` accepts the bearer `<API_KEY>:<uuid>` as that user
+(`internal/auth/apikey.go`), so one key is enough and no auth code changes.
+
+Rate limits (`internal/ratelimit`, per user): `POST /v1/sync` 2/s with bursts of 60, everything else 10/s with bursts
+of 60. The test does one sync per user and 4 reads/s per user, so it stays under both: client-side 429s 0 and
+`ryft_rate_limited_total` 0 in every run. No override was needed or set.
+
+Metric: `ryft_sync_to_score_seconds` (histogram, scoring; buckets 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800 s) is
+taken as the difference of the buckets before and after each run and read like `histogram_quantile`. The buckets
+are coarse: a value under 1 s is interpolated inside the first bucket (read it as "under a second"), and the 2.4, 4.0,
+4.4 and 4.6 s values below are linear interpolation inside the (2, 5] s bucket: read them as "in the 2 to 5 s bucket".
+Each run observes 102 days (about two queued days per user).
+
+| | |
+| --- | --- |
+| Date | 2026-11-04 |
+| Commit | `fb7b971` (main; the load tooling is scripts only) |
+| Machine | MacBook, Apple M4 Pro, 12 cores, 48 GB, macOS 27.2; podman 6.1.4, libkrun VM of 4 vCPU and 7.9 GiB; Postgres 17-alpine and RabbitMQ 4.3.6 in that VM, volumes on the VM disk |
+| Other load | another project's throwaway Postgres ran in the same VM (about 13 % of a vCPU); the machine was otherwise in ordinary use |
+| Stack | `make up` with the default compose file; single replica of ingest, api, scoring, notify |
+
+Three measured runs (invocation 1; ms unless noted; sync→score in s from the buckets). Warm-up run before them:
+sync p50 222 / p95 465 ms.
+
+| Run | `POST /v1/sync` p50 / p95 / p99 | `GET /v1/days` p50 / p95 / p99 | errors | sync→score p50 / p95 |
+| --- | --- | --- | --- | --- |
+| 1 | 98.9 / 1 252 / 1 413 | 18.4 / 167 / 254 | 0 % | 0.5 / 0.9 s |
+| 2 | 1 573 / 4 564 / 4 607 | 16.8 / 422 / 986 | 0 % | 0.8 / 4.0 s |
+| 3 (median) | 520 / 4 275 / 4 486 | 16.5 / 221 / 652 | 0 % | 0.8 / 2.4 s |
+
+**Recorded baseline = the median run (run 3, by sync p95)**: sync p50 520 ms, p95 4.3 s, p99 4.5 s; days p50 16.5 ms,
+p95 221 ms, p99 652 ms; error rate 0 %; `ryft_sync_to_score_seconds` p95 2.4 s.
+
+The spread is wide and honest: the sync p95 over the three runs is 1.3 to 4.6 s, and a second invocation straight
+after (a fresh set of accounts, same stack) gave sync p95 of 4.4 / 0.23 / 2.5 s, days p95 of 97 / 26 / 66 ms and
+sync→score p95 of 4.4 / 0.9 / 4.6 s. The runs are bimodal: either every upload takes about 100 to 250 ms (p95 under
+0.5 s) or the burst of 50 queues behind Postgres (WAL and fsync on the VM disk, the shared VM) and takes 2 to 4 s. The
+days p50 alone moved between 7 and 18 ms. **Nothing here is stable enough to gate on except the error rate.** The later
+nightly job therefore gates only on the error rate (one failed sync of 50 is 2 %, above the 1 % limit); latency is
+reported, not gated, until a quieter runner exists. With n = 50 syncs per run the p95 sits between the 3rd and 2nd
+slowest upload and the p99 is about the maximum, so they are single events, not distributions. `GET /v1/days` reads
+one scored day each (the users have a single synced day), lighter than a tester with months of history.
+
+A check of the revised script on a quieter machine (no other database in the VM) gave sync p95 of 83 and 73 ms and days
+p95 of 8 and 6 ms over two measured runs, an order of magnitude below the table: the same code, so the table mostly
+measures the machine's state that day.
+
+The table was measured with the first version of the tooling (tree of `fb7b971` plus the first commit of the load
+scripts); the verdict, threshold, output-directory and drain logic changed afterwards (review fixes).
+
 ## Logs
 
 One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`

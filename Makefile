@@ -6,7 +6,7 @@ SERVICES := ingest scoring api notify migrate
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage
+.PHONY: test test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -168,6 +168,7 @@ k8s-apply-local:
 # apply (the CRDs are too large for the last-applied annotation), taking over fields
 # Argo CD owns: this is break-glass or a cluster without Argo CD.
 k8s-rabbitmq:
+	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | kubectl apply -f -
 	kubectl apply --server-side --force-conflicts -k deploy/rabbitmq/operators
 	for d in rabbitmq-cluster-operator messaging-topology-operator; do kubectl -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
 	kubectl apply --server-side --force-conflicts -k $(RABBITMQ)
@@ -207,11 +208,18 @@ coverage:
 	  || { echo "go test failed, tail of $$d/test.log:" >&2; tail -40 "$$d/test.log" >&2; exit 1; }; \
 	env -u GITHUB_STEP_SUMMARY ./scripts/coverage.sh report "$$d/coverage.out" "$$d"; echo "files: $$d"
 
+# Load baseline against the LOCAL compose stack (make up first): 50 synthetic users sync a full day, then read
+# 30 days, one warm-up and 3 measured runs under k6 (a container, pinned by digest). Prints a table, writes
+# scripts/load/out/ (git-ignored) and exits 1 above 1 % errors. Targets other than localhost are refused
+# unless LOAD_ALLOW_REMOTE=1; never aim it at production (docs/OBSERVABILITY.md -> Baselines).
+load:
+	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
+
 # Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
 # ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
 # GOLDEN_MODE=init makes the first set. It starts from the committed manifest and a local database
 # (GOLDEN_ALLOW_REMOTE_DB=1 for another host); the test refuses anything else (docs/SCORING.md →
-# Model version, D149; scripts/golden_guard.sh is the PR-side check, wired into CI separately).
+# Model version, D149; scripts/golden_guard.sh is the PR-side check, run by CI's golden-guard job).
 .PHONY: golden-update
 golden-update:
 	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
@@ -247,6 +255,7 @@ k8s-validate:
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh
+	@./scripts/check_operators_scope.sh
 	@./scripts/check_kustomize_refs.sh
 	@bash scripts/tests/config_rolls_test.sh
 	@cd backend && go run ./cmd/rabbitmq-topology -check

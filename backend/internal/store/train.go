@@ -20,9 +20,13 @@ import (
 // all and changed only by the seeds.
 
 var (
-	// ErrForbidden: the row is built-in and cannot be changed (403).
+	// ErrForbidden is returned for a change to a built-in row (user_id NULL), which
+	// only the seeds may change (answered 403; inside the import, the item's
+	// id_taken rejection).
 	ErrForbidden = errors.New("built-in")
-	// ErrTaken: the id belongs to a built-in or another user's row (409).
+	// ErrTaken is returned when a write's id belongs to a built-in or to another
+	// user's row, or to a discarded session (answered 409; inside the import, the
+	// item's id_taken rejection in a 200): the client must not retry the same id.
 	ErrTaken = errors.New("id taken")
 )
 

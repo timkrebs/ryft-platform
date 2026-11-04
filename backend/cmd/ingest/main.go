@@ -1,5 +1,3 @@
-// ingest accepts HealthKit batches from the iOS app, stores them idempotently
-// and tells scoring which local days changed.
 package main
 
 import (

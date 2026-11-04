@@ -1,4 +1,3 @@
-// Package config reads service configuration from the environment.
 package config
 
 import (
@@ -23,6 +22,9 @@ const (
 	AuthAPIKey   = "apikey"   // shared key, local development only
 )
 
+// Config is what every service reads: its name, ports, database URL and pool size, and how
+// it reaches the broker. The auth, beta, admin, APNs and Apple settings have their own
+// loaders, because only some services need them.
 type Config struct {
 	ServiceName string
 	Port        string
@@ -55,6 +57,10 @@ type Auth struct {
 	AllowInsecure bool
 }
 
+// Load reads the settings common to all services. It refuses what cannot run (no
+// DATABASE_URL, half an AMQP login, a leftover EVENTS_BACKEND other than amqp, D102) so the
+// pod fails at once instead of limping. service picks the pool size: scoring and notify
+// hold fewer connections.
 func Load(service string) (Config, error) {
 	c := Config{
 		ServiceName: service,
@@ -146,6 +152,8 @@ func LoadAuth() (Auth, error) {
 // Mode is how a gate acts on a request it would refuse (D87).
 type Mode string
 
+// The gate modes. off skips the check, warn serves the request and reports the code, on
+// refuses it.
 const (
 	ModeOff  Mode = "off"  // not checked
 	ModeWarn Mode = "warn" // served, with the code in X-RYFT-Gate, counted and logged

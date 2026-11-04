@@ -1,7 +1,3 @@
-// Package ratelimit is a small in-memory token-bucket limiter keyed by user.
-// Limits are per pod: with N replicas behind the load balancer a user gets up
-// to N times the configured rate, which is fine for damping runaway clients;
-// anything that needs a global limit (recompute) is gated in the database.
 package ratelimit
 
 import (

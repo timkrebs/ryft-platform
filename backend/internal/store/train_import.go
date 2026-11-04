@@ -38,7 +38,9 @@ const (
 // importRetryBackoff is the pause before the one retry of a deadlocked item.
 const importRetryBackoff = 25 * time.Millisecond
 
-// ErrImportRules: the store was built without the comparison rules of internal/train.
+// ErrImportRules is returned by the import when the Store has no ImportRules: a
+// wiring mistake in main (WithImportRules), failed loudly instead of guessing what
+// "identical" means.
 var ErrImportRules = errors.New("store: import rules not set (WithImportRules)")
 
 // ImportRules are the pure comparisons of the import (docs/work/2026-10-26-train-import/design.md
