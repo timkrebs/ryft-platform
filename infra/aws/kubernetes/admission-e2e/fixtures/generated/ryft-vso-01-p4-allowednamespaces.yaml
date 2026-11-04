@@ -1,0 +1,23 @@
+# fixture: P4 allowedNamespaces
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vso
+# message: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: api
+  namespace: ryft-api
+spec:
+  allowedNamespaces:
+  - '*'
+  kubernetes:
+    audiences:
+    - vault
+    role: api
+    serviceAccount: api
+    tokenExpirationSeconds: 600
+  method: kubernetes
+  mount: kubernetes
+  namespace: admin/ryft/api
+  vaultConnectionRef: vault

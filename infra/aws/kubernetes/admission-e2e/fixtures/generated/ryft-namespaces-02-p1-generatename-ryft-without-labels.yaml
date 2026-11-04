@@ -1,0 +1,10 @@
+# fixture: P1 generateName ryft- without labels
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-namespaces
+# message: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  generateName: ryft-
+  labels: {}

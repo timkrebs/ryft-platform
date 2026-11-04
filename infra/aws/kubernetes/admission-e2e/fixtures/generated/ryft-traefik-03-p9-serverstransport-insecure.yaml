@@ -1,0 +1,17 @@
+# fixture: P9 serverstransport insecure
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-traefik
+# message: P9: a ServersTransport may only set rootCAs and serverName (never insecureSkipVerify).
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  name: rabbitmq-management
+  namespace: ryft-rabbitmq
+spec:
+  insecureSkipVerify: true
+  rootCAs:
+  - secret: rabbitmq-tls
+  serverName: rabbitmq.ryft-rabbitmq.svc

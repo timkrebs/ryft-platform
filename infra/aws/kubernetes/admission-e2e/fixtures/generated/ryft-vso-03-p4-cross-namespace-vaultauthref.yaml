@@ -1,0 +1,26 @@
+# fixture: P4 cross-namespace vaultAuthRef
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vso
+# message: P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: ryft-secrets
+  namespace: ryft-api
+spec:
+  destination:
+    create: true
+    name: ryft-secrets
+    overwrite: true
+    transformation:
+      excludeRaw: true
+  hmacSecretData: true
+  mount: kv
+  path: config
+  refreshAfter: 1h
+  rolloutRestartTargets:
+  - kind: Deployment
+    name: api
+  type: kv-v2
+  vaultAuthRef: ryft-notify/notify

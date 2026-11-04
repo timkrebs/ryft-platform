@@ -1,0 +1,16 @@
+# fixture: P7 default project loosened
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-argocd
+# message: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  clusterResourceWhitelist: []
+  destinations: []
+  namespaceResourceWhitelist: []
+  sourceRepos:
+  - '*'

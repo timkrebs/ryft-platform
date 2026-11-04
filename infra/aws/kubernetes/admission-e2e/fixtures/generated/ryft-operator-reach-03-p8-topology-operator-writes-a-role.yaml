@@ -1,0 +1,23 @@
+# fixture: P8 topology operator writes a role
+# op: create
+# as: system:serviceaccount:rabbitmq-system:messaging-topology-operator
+# refused-by: ryft-operator-reach
+# message: P8: this operator may not write this resource.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-peer-discovery
+  namespace: ryft-rabbitmq
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create

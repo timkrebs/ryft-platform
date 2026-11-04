@@ -8,7 +8,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -306,7 +306,7 @@ k8s-validate:
 # The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with the
 # Kubernetes CEL libraries against the renders of deploy/ and the fixtures in
 # infra/aws/kubernetes/admission-celtest/testdata. Read-only: helm template and kustomize only, no cluster.
-# Not part of CI yet (T12-d wires the job).
+# CI runs it in the `admission` job.
 admission-celtest:
 	./infra/aws/kubernetes/admission-celtest/run.sh
 
@@ -315,6 +315,23 @@ admission-celtest:
 # reads argocd.tf only, no Terraform provider, no cluster. CI job argocd-luatest.
 argocd-luatest:
 	cd infra/aws/kubernetes/argocd-luatest && go vet ./... && go run .
+
+# The admission policies against a real API server in kind (T12-d, docs/OPERATIONS.md -> Admission
+# policies: the kind run): cert-manager, Argo CD with argocd.tf's values, the operators and the
+# broker synced by Argo CD from the tree REPO, the policies in Audit and then Deny, the hooks,
+# terminate-op, the broker restart, claims a-d, g-i, k and m (f, j, l are not tried). REPO is the tree
+# under test, a git checkout of a branch such as the narrowed Argo CD RBAC or the namespace-scoped
+# operators: the files git tracks under deploy/ and infra/aws/kubernetes/ are read from it (the chart and
+# the fixtures from this checkout). THE TREE IS CODE (kustomize, Terraform and Argo CD run it): an
+# untrusted one belongs in the admission-e2e workflow, not on a machine with production credentials.
+# Local kind only, and not through KUBE_CONTEXT (scripts/lib/kube.mk, D150): the target names no context from the
+# ambient kubeconfig, which may be production's. The script creates its own cluster with its own kubeconfig in a temporary directory,
+# refuses any context that is not a kind-* one at https://127.0.0.1, and deletes the cluster afterwards.
+# Needs kind and docker or podman, kubectl, helm, yq (mikefarah v4), jq, git, go and terraform.
+# About 25 minutes. MODE=ci runs only what CI's `admission` job runs (about 5 minutes).
+admission-e2e:
+	@test -n "$(REPO)" || { echo "usage: make admission-e2e REPO=<path to the tree under test> [MODE=ci|full]"; exit 2; }
+	./scripts/admission_e2e.sh --mode $(or $(MODE),full) --repo "$(REPO)" --summary "$(or $(SUMMARY),admission-e2e-summary.md)"
 
 # kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
 # make every call fail with "the server has asked for the client to provide

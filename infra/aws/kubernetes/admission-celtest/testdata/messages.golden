@@ -12,6 +12,8 @@ P1 version label pinned
     ryft-namespaces: P1: Pod Security version labels must be absent or latest.
 P10 admin sync manifests
     ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 controller sync with a source that is not the app's
+    ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
 P10 create with manifests
     ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
 P10 server sync manifests (--local)
@@ -22,6 +24,8 @@ P10 server sync source (rollback)
     ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
 P10 server sync sources
     ryft-argocd-operation: P10: a sync operation must not carry local manifests or a source of its own.
+P10 server sync with the app's source and another revision (rollback)
+    ryft-argocd-operation: P10: a sync started through the API server must use the target revision or the revision the Application is synced to.
 P11 additional plugin
     ryft-broker: P11: the broker's plugins and configuration are pinned (broker.additionalPlugins and additionalConfigLines in the chart); advancedConfig, envConfig and erlangInetConfig are refused.
 P11 additionalConfig with a new line
@@ -43,6 +47,14 @@ P11 override with containers
 P11 rabbitmqcluster elsewhere
     ryft-broker: P11: the RabbitmqCluster must live in ryft-rabbitmq and run the digest-pinned broker image.
 P11 secretBackend
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend a key the chart does not know
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend externalSecret named
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend externalSecret with another field
+    ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
+P11 secretBackend vault next to the defaulted externalSecret
     ryft-broker: P11: the broker takes no secretBackend (Vault or external secrets): its credentials come from the Secrets VSO writes.
 P11 service LoadBalancer
     ryft-broker: P11: the broker's Service must stay ClusterIP.
