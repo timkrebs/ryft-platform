@@ -72,6 +72,16 @@ var (
 		Help: "Handler panics recovered (answered 500), by route pattern.",
 	}, []string{"route"})
 
+	// GoroutinePanics counts panics that internal/app recovered in a service's own
+	// goroutines (consumers, timers, the outbox relay, the HTTP servers). The service
+	// then shuts down in order and exits 1. Any increase is a bug to fix. It has no
+	// label: the log line "panic" names the task, and a handler's panic is counted by
+	// Panics or ConsumerPanics instead.
+	GoroutinePanics = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ryft_goroutine_panics_total",
+		Help: "Panics recovered in a service's own goroutines (consumers, timers, relay, servers); the service then shuts down and exits 1.",
+	})
+
 	// RateLimited counts requests answered 429 by the per-pod, per-user token bucket
 	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
