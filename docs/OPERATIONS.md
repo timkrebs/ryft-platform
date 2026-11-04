@@ -1235,6 +1235,17 @@ metrics, so only the syncs' folds show up there) and
 `scripts/rescore_all.sh` is not needed: the queued days are rescored by the running
 scoring service.
 
+## The coverage gate went red
+
+`coverage-gate` (the `test` job of a pull request, D148) says "internal/ coverage fell from X% on main to Y%".
+The job summary lists every package; compare it with the `coverage` artifact of the latest push run on main to see
+which package lost. Usual causes: code added without a test (add the test), a test that needs Postgres or RabbitMQ
+that skipped (look for a service container that did not start, then re-run the job), or main moved: the baseline
+is main's tip, so rebase first. A drop that is really intended (code deleted together with its well-tested
+siblings) is accepted by raising `MAX_DROP` in the PR's own `ci.yml` for that PR, with the reason in the
+description; there is no other override. A warning "main's coverage is unknown" is not a failure: the gate passed
+without a baseline (artifact outage or expired); re-run once the artifact is back. Locally: `make coverage`.
+
 ## When a tester's scores do not appear
 
 What the app sees is `GET /v1/me/sync` (D91): which gate it is behind, the last sync and

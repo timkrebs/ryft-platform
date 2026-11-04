@@ -2905,3 +2905,28 @@ sent, and whether a second account shares its phone.
   `duplicate_of`) must not change under the old version. The changelog entry has an empty `affects` (no score
   metric moves; `GET /v1/model` documents that it may be empty). The coverage PR bumps again; one
   `scripts/rescore_all.sh` after the last of the two deploys covers both.
+
+## D148 — Go coverage: a relative gate on internal/, no floor
+
+The `test` job writes a coverage profile (still `-race`), prints a per-package table in the job summary and uploads
+it as the `coverage` artifact. On a pull request `coverage-gate` fails when the `internal/` total is more than
+1.0 percentage point below main's (`scripts/coverage.sh`, tests in `scripts/tests/coverage_test.sh`).
+
+- **No absolute threshold.** A floor would pin today's gaps (store, amqpbus and db only count where Postgres and
+  RabbitMQ run) and invite padding tests. The gate only stops a drop. **Honestly:** a drop of up to 1 point per PR
+  passes, so many PRs in a row can still slide coverage down; the run summary on main shows the number, and
+  `docs/STATUS.md` records it. If that happens, lower `MAX_DROP` or add a floor then.
+- **Baseline = the newest successful `push` run of `ci.yml` on main** (run by this repository), then that run's own
+  `coverage` artifact. Not the merge base of the PR: that would need the artifact of an arbitrary old commit, which
+  is often expired or never built. The cost: a PR is compared with main's tip, so a PR behind main can look worse
+  or better than it is; rebase before judging a borderline result.
+- **Only `internal/` counts** (statement-weighted). `cmd/` is thin wiring and is in the table, not in the number.
+  The module path is read from `backend/go.mod`; a profile without any `internal/` statement fails the report
+  (exit 2) instead of reading as 0 %.
+- **Infrastructure errors pass with a warning.** No successful run or no artifact yet: the gate passes and says so.
+  An API error, a failed download or an unreadable `total.txt`: it passes with `::warning`, and the reason is in
+  the log and the summary. A gate that fails on an artifact outage would block unrelated merges; the upload step is
+  `continue-on-error` for the same reason (it must not hold back `images` on main). Malformed numbers in the
+  current total or `MAX_DROP` fail (exit 2); a malformed baseline is dropped with the warning.
+- **No override** besides editing `MAX_DROP` in the PR's own `ci.yml` (visible in the diff and reviewed). The
+  `test` job has `actions: read` at job level only, to list and download main's artifact; no secret.
