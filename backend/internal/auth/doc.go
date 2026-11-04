@@ -15,8 +15,8 @@
 //   - apikey mode lets a caller act as any user (D32), so config.LoadAuth refuses
 //     it without ALLOW_INSECURE_APIKEY_AUTH=true.
 //   - Admin holds the Supabase secret key; only cmd/api builds one, for account
-//     deletion.
+//     deletion and the operator's user view.
 //
 // See docs/ARCHITECTURE.md → Services (Auth and users); docs/SUPABASE.md → What
-// the services check; D29, D30, D32, D36.
+// the services check; D29, D32, D36.
 package auth

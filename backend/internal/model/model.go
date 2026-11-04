@@ -20,9 +20,9 @@ const (
 	SampleSteps           = "steps"            // count
 )
 
-// KnownSampleTypes is the closed set of Sample.Type values ingest stores. Any other type
-// is dropped and counted (ignored.unknown_type), so an app that reads a newer HealthKit
-// type keeps syncing instead of failing.
+// KnownSampleTypes is the set of Sample.Type values ingest stores. Any other type is
+// dropped and counted (ignored.unknown_type), so an app that reads a newer HealthKit type
+// keeps syncing instead of failing.
 var KnownSampleTypes = map[string]bool{
 	SampleHeartRate: true, SampleHRVSDNN: true, SampleRestingHR: true,
 	SampleRespiratoryRate: true, SampleSpO2: true, SampleVO2Max: true,
@@ -39,7 +39,7 @@ const (
 	SleepAwake  = "awake"
 )
 
-// KnownSleepStages is the closed set of SleepSegment.Stage values ingest stores; others are
+// KnownSleepStages is the set of SleepSegment.Stage values ingest stores; others are
 // dropped and counted like unknown sample types.
 var KnownSleepStages = map[string]bool{
 	SleepInBed: true, SleepAsleep: true, SleepCore: true, SleepDeep: true, SleepREM: true, SleepAwake: true,
@@ -477,8 +477,8 @@ const (
 	MetricNapMin      = "nap_min"
 )
 
-// KnownTrendMetrics is the closed set of ?metric= values GET /v1/trends accepts; the
-// api answers 422 for any other.
+// KnownTrendMetrics is the set of ?metric= values GET /v1/trends accepts (cmd/api/trends.go
+// answers 422 for any other). It has grown additively.
 var KnownTrendMetrics = map[string]bool{
 	MetricReadiness: true, MetricRecovery: true, MetricStrain: true, MetricSleep: true,
 	MetricSleepMin: true, MetricHRV: true, MetricRHR: true, MetricSteps: true, MetricActiveKcal: true,
@@ -799,11 +799,12 @@ const (
 )
 
 var (
-	// BehaviorKinds is the closed set of Behavior.Kind; the api and the built-in seed
-	// validate against it.
+	// BehaviorKinds is the set of Behavior.Kind values that cmd/api's journal validation and
+	// the built-in seed (db.seed) accept.
 	BehaviorKinds = []string{BehaviorYesNo, BehaviorCount, BehaviorTime}
-	// BehaviorCategories is the closed set of Behavior.Category. "custom" is for the user's
-	// own behaviors; a built-in never uses it.
+	// BehaviorCategories is the set of Behavior.Category values, in display order:
+	// store.Behaviors sorts by position in this slice. "custom" is for the user's own
+	// behaviors; a built-in never uses it.
 	BehaviorCategories = []string{"substances", "sleep", "recovery", "supplements", "health", "lifestyle", "custom"}
 )
 
@@ -1105,11 +1106,12 @@ const (
 	LoadDistance   = "distance"   // distance_m
 )
 
-// KnownExerciseKinds is the closed set of Exercise.Kind values.
+// KnownExerciseKinds is the set of Exercise.Kind values internal/train validates (and the
+// api's list filter checks).
 var KnownExerciseKinds = map[string]bool{KindBarbell: true, KindDumbbell: true, KindKettlebell: true,
 	KindBodyweight: true, KindMachine: true, KindCable: true, KindCardio: true}
 
-// KnownLoadTypes is the closed set of Exercise.LoadType values.
+// KnownLoadTypes is the set of Exercise.LoadType values internal/train validates.
 var KnownLoadTypes = map[string]bool{LoadWeight: true, LoadBodyweight: true, LoadTime: true, LoadDistance: true}
 
 // Muscles is the closed muscle vocabulary of primary/secondary_muscles.
@@ -1117,7 +1119,7 @@ var Muscles = []string{"chest", "lats", "upper_back", "traps", "front_delts", "s
 	"biceps", "triceps", "forearms", "abs", "obliques", "lower_back", "glutes", "quads", "hamstrings",
 	"adductors", "calves"}
 
-// KnownPlanGoals is the closed set of Plan.Goal values.
+// KnownPlanGoals is the set of Plan.Goal values internal/train validates.
 var KnownPlanGoals = map[string]bool{"strength": true, "hypertrophy": true, "weightlifting": true, "general": true}
 
 // Plan target kinds.
@@ -1131,10 +1133,12 @@ const (
 	ProgressionNone   = "none"
 )
 
-// KnownTargetKinds is the closed set of PlanExercise.TargetKind values.
+// KnownTargetKinds lists the PlanExercise.TargetKind values. Production validation is the
+// switch in internal/train.checkTarget, which also checks each kind's range; this set is not
+// consulted there.
 var KnownTargetKinds = map[string]bool{TargetPct1RM: true, TargetRPE: true, TargetKG: true, TargetBodyweight: true}
 
-// KnownProgressions is the closed set of Progression.Type values.
+// KnownProgressions is the set of Progression.Type values internal/train validates.
 var KnownProgressions = map[string]bool{ProgressionLinear: true, ProgressionPct: true, ProgressionNone: true}
 
 // Session and enrolment states.
@@ -1152,7 +1156,8 @@ const (
 	EnrollmentCompleted = "completed"
 )
 
-// KnownSessionStatuses is the closed set of Session.Status values.
+// KnownSessionStatuses is the set of Session.Status values internal/train validates (and the
+// api's list filter checks).
 var KnownSessionStatuses = map[string]bool{SessionInProgress: true, SessionCompleted: true, SessionDiscarded: true}
 
 // Personal record kinds.
@@ -1240,7 +1245,8 @@ type Set struct {
 	UpdatedAt   time.Time  `json:"updated_at"` // the app's clock; decides conflicts
 }
 
-// SessionExercise is one exercise within a logged Session, with its sets in order.
+// SessionExercise is one exercise of a logged Session. PlanExerciseID is set when it was done
+// against a plan day's prescription; Position is its order within the session.
 type SessionExercise struct {
 	ID             uuid.UUID  `json:"id"`
 	ExerciseID     uuid.UUID  `json:"exercise_id"`
@@ -1313,7 +1319,8 @@ type ExerciseHistory struct {
 	E1RM       []TrendPoint             `json:"e1rm"`     // best per day, oldest first
 }
 
-// ExerciseHistorySession is the sets of one past session for ExerciseHistory.
+// ExerciseHistorySession is one past session's sets of an exercise, newest first in
+// ExerciseHistory, so the exercise screen shows progress without fetching whole sessions.
 type ExerciseHistorySession struct {
 	SessionID uuid.UUID `json:"session_id"`
 	Date      string    `json:"date"` // local day

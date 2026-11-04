@@ -9,13 +9,13 @@
 //     half-configured: a Supabase project reference that is none, apikey mode
 //     without ALLOW_INSECURE_APIKEY_AUTH, some but not all of a credential set
 //     (APNs, Sign in with Apple), a leftover EVENTS_BACKEND other than amqp (D102).
-//   - Gates default to the safe side: consent on, the invite gate off until
-//     the beta needs it (D87), and api and ingest refuse to start without
-//     PRIVACY_POLICY_VERSION (D78).
+//   - The gate defaults are what production runs unless the config says
+//     otherwise: consent on, the invite gate off (D87). api and ingest refuse to
+//     start without PRIVACY_POLICY_VERSION (D78).
 //
 // It is not yet the only reader of the environment: cmd/migrate reads its own
 // variables, httpx.Logger reads LOG_LEVEL, and the Postgres test helpers read
 // RYFT_TEST_POSTGRES_URL.
 //
-// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D98, D102.
+// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D102.
 package config

@@ -11,7 +11,8 @@
 //   - Idle buckets are dropped, so memory follows the active users, not every
 //     user ever seen.
 //   - The class limits (sync, session saves, invite codes, the training import,
-//     everything else) are the contract's numbers in docs/API.md → Conventions.
+//     everything else) are the contract's numbers: docs/API.md → Conventions,
+//     and for invite codes POST /v1/me/invite.
 //
 // See docs/API.md → Conventions (Rate limits); D36.
 package ratelimit

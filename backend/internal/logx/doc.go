@@ -9,9 +9,9 @@
 //   - logx does not filter. That no token, email, request body or health value is
 //     logged is the call sites' rule (D114); each service's log test lists the
 //     keys a message may carry and fails on any other (internal/logx/logcheck).
-//   - Where a decode error or an HTTP status would be logged, JSONError and
-//     StatusLine give versions that cannot quote a number from the body or the
-//     server's own words.
+//   - Where a decode error or an HTTP status would be logged, JSONError
+//     (for a type-mismatch decode error) and StatusLine give versions that cannot
+//     quote a number from the body or the server's own words.
 //
 // See docs/OPERATIONS.md → Data protection (logs); docs/OBSERVABILITY.md; D114.
 package logx

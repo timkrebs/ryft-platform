@@ -5,11 +5,13 @@
 // no I/O. Server-only fields carry json:"-".
 //
 // Invariants:
-//   - Changes are additive: a v1 field is never renamed or removed, and a closed
-//     enum (the Known* sets, the Code* constants) says so in API.md.
+//   - Changes are additive: a v1 field is never renamed or removed. An enum is
+//     closed only where API.md says so (the Code* constants, the Train enums);
+//     the Known* sets are the values the server accepts or stores on the request
+//     side, and some grow additively.
 //   - A struct change shows in testdata/schemas, and every JSON example in
-//     API.md is decoded into its type, so the contract and the code cannot
-//     drift apart unseen.
+//     API.md is decoded into its type or listed with a reason, so the contract
+//     and the code cannot drift apart unseen.
 //
 // See docs/API.md; docs/DECISIONS.md D21 (the Swift check, make check-swift).
 package model
