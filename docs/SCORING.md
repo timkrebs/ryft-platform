@@ -710,10 +710,14 @@ scripts/rescore_all.sh        # every user with consent, 400 days; the last line
 refuses entries out of order, an unknown metric, an unsorted or a missing `affects` (`[]` is a version that moves
 stored numbers but no trend metric).
 
-**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`, generator in `golden_gen_test.go`): six
-synthetic users × 30 days (2026-10-05 .. 2026-11-03, across both autumn DST changes; Apple Watch + iPhone with a
-depleted day, Garmin without HRV, Watch + Garmin overlapping, naps, split nights and a run across midnight, strength
-sessions with an import, a tracker without resting HR), fixed seed, no wall clock, scored through the real Engine.
+**Golden files** (`internal/scoring/testdata/golden`, `golden_test.go`, generator in `golden_gen_test.go`, diff and
+guard in `golden_diff_test.go`, D149): six synthetic users × 30 days (2026-10-05 .. 2026-11-03, across both autumn
+DST changes; Apple Watch + iPhone with a depleted day, Garmin without HRV and a cross-source pair at 23:58/00:01,
+Watch + Garmin overlapping with a 17-hour hike, naps, split nights and a run across midnight, strength sessions with
+an import, a strap duplicate and a watch workout that arrives late, a tracker without resting HR), fixed seed, no
+wall clock, scored through the real Engine in two phases (the late records after the first scoring), with checks
+that a second `ComputeRange` moves nothing, that the last ten days scored newest first give the same, and that no
+user's scoring wrote another's rows.
 Everything scoring writes is pinned as canonical JSON (sorted keys, numbers rounded to 1e-6, ids as readable
 labels): every `daily_scores` column but `user_id` and `computed_at`, the `workouts` (load, zones, `duplicate_of`,
 the attached session, the ones created for sessions) and the `sessions` (load, `workout_id`). Records go in through
@@ -724,8 +728,10 @@ the golden run starts after them. `go test ./internal/scoring/... -run Golden` (
 in CI it never skips) prints the changed fields grouped by field; a refactor must pass it unchanged. A model change
 bumps the version first, then `make golden-update` regenerates and the reviewed diff goes into the PR. Without a
 bump the update only takes users whose generator inputs changed (their digest in the manifest), and
-`GOLDEN_MODE=additive` only new fields and rows; `TestGoldenManifest` (no database) fails when `ModelVersion`
-moved without a regeneration.
+`GOLDEN_MODE=additive` only new fields and rows; every update starts from the committed manifest, and the first set
+needs `GOLDEN_MODE=init`. `TestGoldenManifest` (no database) fails when `ModelVersion` moved without a
+regeneration, and `scripts/golden_guard.sh <base>` fails a PR whose golden user file changed while `ModelVersion`,
+that user's input digest and the field digest did not.
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |

@@ -209,7 +209,8 @@ coverage:
 
 # Regenerate the scoring golden files (backend/internal/scoring/testdata/golden) after a
 # ModelVersion bump or a generator change; GOLDEN_MODE=additive accepts new fields only, and
-# GOLDEN_MODE=init makes the first set. The test refuses anything else (docs/SCORING.md → Model version).
+# GOLDEN_MODE=init makes the first set. It starts from the committed manifest; the test refuses
+# anything else (docs/SCORING.md → Model version, D149; scripts/golden_guard.sh checks PRs).
 .PHONY: golden-update
 golden-update:
 	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"

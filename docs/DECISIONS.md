@@ -2930,3 +2930,38 @@ it as the `coverage` artifact. On a pull request `coverage-gate` fails when the 
   current total or `MAX_DROP` fail (exit 2); a malformed baseline is dropped with the warning.
 - **No override** besides editing `MAX_DROP` in the PR's own `ci.yml` (visible in the diff and reviewed). The
   `test` job has `actions: read` at job level only, to list and download main's artifact; no secret.
+
+## D149 — Scoring golden files: what they pin, how they move, what they leave out
+
+`internal/scoring/testdata/golden` holds six synthetic users × 30 days (2026-10-05 .. 2026-11-03, both autumn DST
+changes) as everything scoring stores: every `daily_scores` column, the `workouts` and `sessions` rows (SCORING.md →
+Model version). `TestGoldenScores` regenerates them from a fixed seed through the store calls ingest and the api make
+and the real Engine, and fails with the changed fields grouped by field.
+
+- **Numbers rounded to 1e-6, printed shortest.** Postgres renders floats with `extra_float_digits = 1` (shortest
+  exact), but a last-bit difference between arm64 and amd64 (fused multiply-add, `math` on different CPUs) would
+  otherwise fail CI for a refactor that moved nothing. No stored score is shown with more than one decimal, so 1e-6
+  hides nothing a user could see; a real change moves a number by far more. Ids are replaced by readable labels
+  (`workout Garmin Connect 2026-10-18T00:01`), so the files never look like secrets to the scanner and a diff says
+  which workout moved.
+- **The update guard.** `make golden-update` (mode `1`) refuses while `ModelVersion` is the manifest's, unless the
+  generator's inputs changed; then only for those users, and every other user may only gain fields or rows. The
+  inputs' digest is a SHA-256 over canonical `field=value` lines of what the generator sets (not the JSON of the
+  model structs), so a new model field the generator leaves zero does not reopen every user. `GOLDEN_MODE=additive`
+  takes new fields and rows only; `GOLDEN_MODE=init` makes the first set and nothing else. Every update starts from
+  the committed manifest (on disk = `HEAD`'s), so two updates in a row cannot stack a model change behind a
+  generator change. `scripts/golden_guard.sh` re-checks the same rule on the PR against the merge base: a changed
+  `user-*.json` needs a `ModelVersion` bump, a moved input digest for that user, or a moved field digest (additive).
+  **Honestly:** the field digest is one value for all files, so a PR that adds a column lets every user file change
+  in the script's eyes; the Go guard's additive mode is what stops a moved value there, and review does the rest.
+- **CI fails instead of skipping.** Locally the test skips without `RYFT_TEST_POSTGRES_URL`, as every engine test.
+  With `GITHUB_ACTIONS=true` or an update mode it fails: a CI job that lost its Postgres must not read as green.
+- **Superuser pool.** The run uses the test's admin pool (migrate, seed, then a superuser `Store`), not the
+  `ryft_scoring` role. The golden files pin numbers, not grants: the roles' privileges and RLS are
+  `internal/db/roles_test.go`'s (`TestServiceRoleGrants`, `TestServiceRolesLogInAndPassRLS`), not this test's. A
+  scoring query that needs a grant the role lacks would pass here.
+- **Not covered.** HealthKit deletions (`Apply.Deleted`) are not part of the generator; the ingest handler's
+  `validate` and `screen` (its 400-day window reads the wall clock) run before the point the harness starts; the
+  apply gets no touched days because the harness scores the whole range itself. Newest-first scoring is checked on
+  the last ten days only (the whole month costs ~465 day passes a user). The generator is the coverage: a scenario
+  it does not have is not pinned.

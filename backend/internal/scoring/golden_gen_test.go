@@ -3,13 +3,11 @@ package scoring
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
-	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"math/rand/v2"
 	"strconv"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,13 +53,13 @@ var goldenUsers = []goldenUser{
 	{Name: "user-a", TZ: "Europe/Berlin", build: goldenWatchUser,
 		Scenario: "Apple Watch and iPhone (whose time in bed loses to the watch's night): runs Tue/Thu/Sat, a ride and a run on day 8, a bad night on day 11, the watch charging overnight on day 16 (the phone's night only), no resting HR on days 16-17, a sedentary DST day 20, a sick day 27 after a long run (depleted)"},
 	{Name: "user-b", TZ: "America/New_York", build: goldenGarminUser,
-		Scenario: "Garmin only, no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, rides with an average heart rate (Mondays without samples), no data on day 9, the day-16 ride re-sent with a new id (folded), DST on day 27"},
+		Scenario: "Garmin (and a phone once), no HRV, respiration or SpO2: nights without stages, heart rate every 2 min, resting HR at local midnight (none on day 28: yesterday's, from the DST day), rides with an average heart rate (Mondays without samples), no data on day 9, a walk across midnight from day 12 recorded by the phone at 23:58 and the Garmin at 00:01, the day-16 ride re-sent with a new id (folded), DST on day 27"},
 	{Name: "user-c", TZ: "Europe/Berlin", MaxHR: 186, build: goldenTwoSourceUser,
-		Scenario: "Apple Watch and Garmin worn together: both write heart rate, steps, resting HR and the night; runs recorded by both (one shown; day 10's Garmin one is 'other'); short watch-only intervals on Tuesdays in an hour the Garmin's heart rate wins; manual max HR 186; DST on day 20"},
+		Scenario: "Apple Watch and Garmin worn together: both write heart rate, steps, resting HR and the night; runs recorded by both (one shown; day 10's Garmin one is 'other'); short watch-only intervals on Tuesdays in an hour the Garmin's heart rate wins; a 17-hour hike on day 13 whose last 40 minutes the watch also recorded after midnight; manual max HR 186; DST on day 20"},
 	{Name: "user-d", TZ: "UTC", build: goldenNapUser,
 		Scenario: "Apple Watch: afternoon naps every third day (one under 20 min, one over the 90-min cap), split nights every fifth day, a morning nap on day 18, a run across midnight from day 13 into day 14"},
 	{Name: "user-e", TZ: "UTC", build: goldenStrengthUser,
-		Scenario: "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Wed without), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged"},
+		Scenario: "Apple Watch and strength: sessions Mon/Wed/Fri (Mon and Fri with a watch strength workout, Mondays also a longer strap recording the watch's hides, Wed without; day 23's watch workout arrives after the month was scored), an imported history over the 13 weeks before with a heavy single that leaves the 90-day window mid-month, and day 16's session imported instead of logged"},
 	{Name: "user-f", TZ: "Asia/Tokyo", BirthYear: 1984, build: goldenRingUser,
 		Scenario: "A ring tracker that never writes a resting heart rate (no_rhr, strain against the 60-bpm fallback): HRV, respiration, SpO2, staged nights, heart rate every 5 min, steps; max HR estimated from birth year 1984"},
 }
@@ -78,12 +76,13 @@ type goldenGen struct {
 	sleep    []model.SleepSegment
 	workouts []model.Workout
 	resends  []model.Workout // sent in a sync of their own after the month
+	late     []model.Workout // sent after the month was scored (the second phase)
 	sessions []goldenSession
 }
 
 type goldenSession struct {
-	Session  model.Session `json:"session"`
-	Imported bool          `json:"imported"`
+	Session  model.Session
+	Imported bool
 }
 
 type goldenDevice struct{ name, bundle string }
@@ -229,9 +228,13 @@ func (g *goldenGen) restingHR(dev goldenDevice, at time.Time, lo, hi int) {
 	g.add(dev, model.SampleRestingHR, "count/min", at, at, g.tenths(lo, hi))
 }
 
-func (g *goldenGen) workout(dev goldenDevice, activity string, w window, avgHR *float64) model.Workout {
-	x := model.Workout{ID: g.id("workout", dev.name, w.from.UTC().Format(time.RFC3339)),
+func (g *goldenGen) record(dev goldenDevice, activity string, w window, avgHR *float64) model.Workout {
+	return model.Workout{ID: g.id("workout", dev.name, w.from.UTC().Format(time.RFC3339)),
 		Activity: activity, Start: w.from, End: w.to, AvgHR: avgHR, Source: dev.name, SourceBundleID: &dev.bundle}
+}
+
+func (g *goldenGen) workout(dev goldenDevice, activity string, w window, avgHR *float64) model.Workout {
+	x := g.record(dev, activity, w, avgHR)
 	g.workouts = append(g.workouts, x)
 	return x
 }
@@ -327,15 +330,39 @@ func goldenWatchUser(g *goldenGen) {
 
 func goldenGarminUser(g *goldenGen) {
 	garmin := goldenDevice{"Garmin Connect", "com.garmin.connect.mobile"}
+	phone := goldenDevice{"iPhone", "com.apple.health.phone-b"}
+	late := false // the night after the walk across midnight starts late
 	for k := range goldenDays {
 		if k == 9 {
 			continue // the watch stayed at home and nothing synced
 		}
 		bed, wake := g.night(k)
+		if late {
+			bed, late = g.at(k, 1, 10), false
+		}
 		g.plainNight(garmin, bed, wake)
 		g.heart(garmin, bed, wake, 2*time.Minute, 47, 57)
-		g.restingHR(garmin, wake.Add(30*time.Minute), 505, 560)
+		// Garmin writes the day's resting HR at local midnight. Day 28's never
+		// came: its fallback is day 27's, written at the start of the 25-hour
+		// DST day, so "yesterday" must be the calendar day, not 24 hours.
+		if k != 28 {
+			g.restingHR(garmin, g.at(k, 0, 0), 505, 560)
+		}
 		end := g.at(k, 23, 58)
+		if k == 12 {
+			// A late walk across midnight, recorded twice: the phone's "other"
+			// from 23:58 and the Garmin's walk from 00:01 (with heart rate). The
+			// walk ranks first, so the phone's (day 12's row, written by day
+			// 12's pass) hides behind a workout of day 13: the pass must look
+			// past midnight, and day 13's pass (23:58 EDT is 03:58 UTC on the
+			// 13th) must leave a row of local day 12 alone.
+			walk := window{g.at(k+1, 0, 1), g.at(k+1, 0, 45)}
+			g.workout(phone, "other", window{g.at(k, 23, 58), g.at(k+1, 0, 44)}, nil)
+			avg := float64(g.between(98, 112))
+			g.workout(garmin, "walking", walk, &avg)
+			g.heart(garmin, walk.from, walk.to, 2*time.Minute, 92, 118)
+			late = true
+		}
 		if wd := k % 7; wd == 0 || wd == 2 || wd == 4 {
 			from := maxTime(g.at(k, 6, 45), wake.Add(10*time.Minute))
 			w := window{from, from.Add(goldenMin(g.between(45, 70)))}
@@ -360,8 +387,12 @@ func goldenGarminUser(g *goldenGen) {
 func goldenTwoSourceUser(g *goldenGen) {
 	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-c"}
 	garmin := goldenDevice{"Garmin Connect", "com.garmin.connect.mobile"}
+	late := false // the night after the hike starts late
 	for k := range goldenDays {
 		bed, wake := g.night(k)
+		if late {
+			bed, late = g.at(k, 1, 20), false
+		}
 		// Both trackers record the night, a few minutes apart: one source counts.
 		g.stagedNight(watch, bed, wake)
 		g.stagedNight(garmin, bed.Add(-goldenMin(g.between(0, 6))), wake.Add(goldenMin(g.between(0, 6))))
@@ -392,11 +423,30 @@ func goldenTwoSourceUser(g *goldenGen) {
 			avg := float64(g.between(145, 158))
 			g.workout(garmin, activity, window{run.from.Add(-time.Minute), run.to.Add(time.Minute)}, &avg)
 		}
+		var hike window
+		if k == 13 {
+			// Sunday: a hike of over 17 hours, the Garmin's recording from 07:15
+			// to 00:50, and the watch's own of its last 40 minutes after
+			// midnight (same activity, both with heart rate): the Garmin's is
+			// longer and wins. The watch's is day 14's row, and its match
+			// started more than 12 hours before day 14's widened window.
+			hike = window{g.at(k, 7, 15), g.at(k+1, 0, 50)}
+			avg := float64(g.between(104, 118))
+			g.workout(garmin, "hiking", hike, &avg)
+			tail := window{g.at(k+1, 0, 5), g.at(k+1, 0, 45)}
+			g.workout(watch, "hiking", tail, nil)
+			g.heart(watch, tail.from, tail.to, time.Minute, 100, 125)
+			late = true
+		}
 		// Garmin every 2 min all day (raised in the run); the watch every 5 min
 		// while awake and every minute in its workouts, so each hour has one denser source.
-		if run.from.IsZero() {
+		switch {
+		case !hike.from.IsZero():
+			g.heart(garmin, wake, hike.from, 2*time.Minute, 60, 88)
+			g.heart(garmin, hike.from, hike.to, 2*time.Minute, 95, 128)
+		case run.from.IsZero():
 			g.heart(garmin, wake, end, 2*time.Minute, 60, 88)
-		} else {
+		default:
 			g.heart(garmin, wake, run.from, 2*time.Minute, 60, 88)
 			g.heart(garmin, run.from, run.to, 2*time.Minute, 138, 160)
 			g.heart(garmin, run.to, end, 2*time.Minute, 62, 90)
@@ -510,6 +560,7 @@ func (g *goldenGen) liftDay(key string, at time.Time, a bool, w int, bw *float64
 
 func goldenStrengthUser(g *goldenGen) {
 	watch := goldenDevice{"Apple Watch", "com.apple.health.watch-e"}
+	strap := goldenDevice{"Strap", "com.example.strap"}
 	// The imported history, as an export lists it (newest first; the import
 	// stores it oldest first, train.ImportOrder): Tuesdays and Thursdays over
 	// the 13 weeks before, lighter, and a heavy single squat 75 days before day
@@ -535,10 +586,25 @@ func goldenStrengthUser(g *goldenGen) {
 			} else {
 				g.liftDay("app-"+g.day(k).Format(dayLayout), at, (k/2)%2 == 0, k/7, first, false)
 			}
-			if wd != 2 { // Mondays and Fridays the watch records the session too
+			// Mondays and Fridays the watch records the session too; day 23's
+			// (a Wednesday) reaches Health only after the month was scored, so
+			// the session leaves the workout scoring created for it.
+			if wd != 2 || k == 23 {
 				w := window{at.Add(-3 * time.Minute), at.Add(64 * time.Minute)}
-				g.workout(watch, "strength", w, nil)
 				ws = append(ws, w)
+				if k == 23 {
+					g.late = append(g.late, g.record(watch, "strength", w, nil))
+				} else {
+					g.workout(watch, "strength", w, nil)
+				}
+				if wd == 0 {
+					// Mondays a strap's app records it as well, 2 minutes longer at
+					// either end, with only an average heart rate: a cross-source
+					// duplicate the watch (which has heart rate) hides, so the
+					// session must join the watch's, which starts later.
+					avg := float64(g.between(112, 128))
+					g.workout(strap, "strength", window{w.from.Add(-2 * time.Minute), w.to.Add(2 * time.Minute)}, &avg)
+				}
 			}
 		}
 		g.stagedNight(watch, bed, wake)
@@ -576,22 +642,93 @@ type goldenInputs struct {
 	Digest   string `json:"digest"`
 }
 
-// inputs digests the canonical inputs: the first 64 bits of their SHA-256,
-// in decimal (a hex digest would look like a secret to the repository's scanner).
-func (g *goldenGen) inputs(t *testing.T, u goldenUser) goldenInputs {
-	t.Helper()
-	raw, err := json.Marshal(struct {
-		TZ                string
-		MaxHR, BirthYear  int
-		Samples           []model.Sample
-		Sleep             []model.SleepSegment
-		Workouts, Resends []model.Workout
-		Sessions          []goldenSession
-	}{u.TZ, u.MaxHR, u.BirthYear, g.samples, g.sleep, g.workouts, g.resends, g.sessions})
-	if err != nil {
-		t.Fatal(err)
+// inputs digests what the generator set, one line per record of the fields it
+// sets ("name=value", in a fixed order), not the JSON of the model structs: a
+// field added to model.Sample or model.Workout (which the generator leaves
+// zero) must not read as a generator change and reopen the regeneration of
+// every user. A generator change that sets a new field adds it here.
+func (g *goldenGen) inputs(u goldenUser) goldenInputs {
+	h := sha256.New()
+	line := func(kind string, kv ...any) {
+		var b strings.Builder
+		b.WriteString(kind)
+		for k := 0; k+1 < len(kv); k += 2 {
+			fmt.Fprintf(&b, " %s=%s", kv[k], goldenValue(kv[k+1]))
+		}
+		b.WriteString("\n")
+		h.Write([]byte(b.String()))
 	}
-	sum := sha256.Sum256(raw)
-	return goldenInputs{Samples: len(g.samples), Sleep: len(g.sleep), Workouts: len(g.workouts) + len(g.resends),
-		Sessions: len(g.sessions), Digest: strconv.FormatUint(binary.BigEndian.Uint64(sum[:8]), 10)}
+	line("user", "tz", u.TZ, "max_hr", u.MaxHR, "birth_year", u.BirthYear)
+	for _, s := range g.samples {
+		line("sample", "type", s.Type, "start", s.Start, "end", s.End, "value", s.Value, "unit", s.Unit,
+			"source", s.Source, "bundle", s.SourceBundleID)
+	}
+	for _, s := range g.sleep {
+		line("sleep", "start", s.Start, "end", s.End, "stage", s.Stage, "source", s.Source, "bundle", s.SourceBundleID)
+	}
+	for _, p := range []struct {
+		kind string
+		ws   []model.Workout
+	}{{"workout", g.workouts}, {"resend", g.resends}, {"late", g.late}} {
+		for _, w := range p.ws {
+			line(p.kind, "id", w.ID, "activity", w.Activity, "start", w.Start, "end", w.End, "avg_hr", w.AvgHR,
+				"source", w.Source, "bundle", w.SourceBundleID)
+		}
+	}
+	for _, gs := range g.sessions {
+		s := gs.Session
+		line("session", "id", s.ID, "title", s.Title, "started_at", s.StartedAt, "ended_at", s.EndedAt,
+			"bodyweight_kg", s.BodyweightKG, "updated_at", s.UpdatedAt, "imported", gs.Imported)
+		for _, se := range s.Exercises {
+			line("exercise", "id", se.ID, "exercise_id", se.ExerciseID, "position", se.Position)
+			for _, set := range se.Sets {
+				line("set", "id", set.ID, "index", set.SetIndex, "reps", set.Reps, "weight_kg", set.WeightKG,
+					"completed_at", set.CompletedAt, "updated_at", set.UpdatedAt)
+			}
+		}
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return goldenInputs{Samples: len(g.samples), Sleep: len(g.sleep), Workouts: len(g.workouts) + len(g.resends) + len(g.late),
+		Sessions: len(g.sessions), Digest: goldenDigest(sum)}
+}
+
+// goldenValue prints one input value canonically: times in UTC to the
+// nanosecond, floats shortest, nil pointers as "nil".
+func goldenValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return strconv.Quote(x)
+	case *string:
+		if x == nil {
+			return "nil"
+		}
+		return strconv.Quote(*x)
+	case int:
+		return strconv.Itoa(x)
+	case *int:
+		if x == nil {
+			return "nil"
+		}
+		return strconv.Itoa(*x)
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	case *float64:
+		if x == nil {
+			return "nil"
+		}
+		return strconv.FormatFloat(*x, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(x)
+	case time.Time:
+		return x.UTC().Format(time.RFC3339Nano)
+	case *time.Time:
+		if x == nil {
+			return "nil"
+		}
+		return x.UTC().Format(time.RFC3339Nano)
+	case uuid.UUID:
+		return x.String()
+	}
+	panic(fmt.Sprintf("golden: no canonical form for %T", v))
 }
