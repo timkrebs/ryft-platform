@@ -613,7 +613,7 @@ terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan
 kubectl -n argocd get applications
 
 # 2. Before Phase 1: the SDK injector excluded, the scrape and KSM config (T12-h, T12-e)
-make monitoring-apply
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 
 # 3. Phase 1: a reviewed PR sets enabled: true (policies in Warn+Audit, AppProjects adopted; T12-a, b)
 #    Only if the helm provider lacks take_ownership: Helm's ownership metadata (metadata only)

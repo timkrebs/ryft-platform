@@ -1614,7 +1614,7 @@ comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
 **Turn it on (once, before Phase 1; yours, nothing here is applied by Git):**
 
 ```bash
-make monitoring-apply      # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
 make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
 ```
 

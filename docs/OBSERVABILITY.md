@@ -53,7 +53,7 @@ container would be refused, and the services emit their own metrics. The chart e
 by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
 every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
 default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
-Management log setting above are unaffected. Apply with `make monitoring-apply`, then
+Management log setting above are unaffected. Apply with `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
 check read-only:
 
 ```bash
