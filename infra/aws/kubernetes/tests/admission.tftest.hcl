@@ -53,6 +53,12 @@ mock_provider "aws" {
       arn = "arn:aws:iam::123456789012:policy/mock"
     }
   }
+  # Vault's unseal key (vault.tf's check wants an ARN of this account and region).
+  mock_data "aws_kms_alias" {
+    defaults = {
+      target_key_arn = "arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+    }
+  }
 }
 
 mock_provider "helm" {}

@@ -1,0 +1,7 @@
+# A local chart, not kubernetes_manifest: that needs the cert-manager CRDs at plan time (D25). What the upstream
+# vault chart cannot render (D188): the server Certificate, the CA bundle for the operator's CLI, the NetworkPolicies.
+apiVersion: v2
+name: vault-extras
+description: The server certificate, the CA bundle and the NetworkPolicies of Vault in namespace vault, for RYFT
+type: application
+version: 0.1.0  # bump on every template change, or the Helm provider does not upgrade it

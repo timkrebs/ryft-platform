@@ -1,0 +1,23 @@
+# Set by infra/aws/kubernetes/vault.tf.
+# The VPC's CIDR: the EKS API server's private ENIs (TokenReview, service registration).
+vpcCIDR: ""
+tls:
+  # Every Service and pod name of the server (vault.tf, local.vault_dns_names), and 127.0.0.1 for the port-forward.
+  dnsNames: []
+  ipAddresses: []
+
+# The peers that may reach Vault's API (8200). The labels are the charts' own pod labels:
+# vault-secrets-operator 1.6.0 (vso.chart.selectorLabels plus control-plane) and k8s-monitoring 4.5.3's
+# alloy-deployment collector (nameOverride = the collector's name). Check against the cluster before the cutover:
+#   kubectl --context ryft-prod-euc1 -n vault-secrets-operator-system get pods --show-labels
+#   kubectl --context ryft-prod-euc1 -n monitoring get pods --show-labels
+peers:
+  vso:
+    namespace: vault-secrets-operator-system
+    podLabels:
+      app.kubernetes.io/name: vault-secrets-operator
+      control-plane: controller-manager
+  collector:
+    namespace: monitoring
+    podLabels:
+      app.kubernetes.io/name: alloy-deployment

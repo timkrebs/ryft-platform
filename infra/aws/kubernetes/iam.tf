@@ -39,6 +39,42 @@ module "external_dns_pod_identity" {
   tags = local.tags
 }
 
+# Vault's auto-unseal (vault.tf, D189). The key is infra/aws's (aws_kms_key.vault_unseal, prevent_destroy), found
+# by its alias; apply infra/aws first. The role names the key's ARN, never the alias: re-pointing the alias must not
+# move what this role may use. Nothing else: no kms:GenerateDataKey, no ReEncrypt, no other key. Bound to exactly
+# vault/vault, the chart's server service account (no eks.amazonaws.com/role-arn annotation on it: IRSA would come
+# first in the SDK's chain).
+data "aws_kms_alias" "vault_unseal" {
+  name = "alias/${var.cluster_name}-vault-unseal"
+}
+
+locals {
+  vault_unseal_policy_statements = [{
+    sid       = "AutoUnseal"
+    actions   = ["kms:Encrypt", "kms:Decrypt", "kms:DescribeKey"]
+    resources = [data.aws_kms_alias.vault_unseal.target_key_arn]
+  }]
+}
+
+module "vault_unseal_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "~> 2.10"
+
+  name                 = "${var.cluster_name}-vault-unseal"
+  attach_custom_policy = true
+  policy_statements    = local.vault_unseal_policy_statements
+
+  associations = {
+    vault = {
+      cluster_name    = var.cluster_name
+      namespace       = local.vault_namespace
+      service_account = local.vault_service_account
+    }
+  }
+
+  tags = local.tags
+}
+
 module "cert_manager_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
   version = "~> 2.10"
