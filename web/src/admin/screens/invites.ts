@@ -9,11 +9,13 @@ import {
   confirmButton,
   emailToggle,
   errorBox,
+  errorSlot,
   facts,
   field,
   Handled,
   input,
   note,
+  refocus,
   type Ctx,
   type Tone,
 } from '../ui';
@@ -23,6 +25,7 @@ const INVITE_LINK = 'https://ryftapp.de/invite/';
 const linkOk = (link: string) => typeof link === 'string' && link.startsWith(INVITE_LINK);
 
 const TONE: Record<InviteStatus, Tone> = { open: 'ok', used: 'plain', expired: 'warn', revoked: 'bad' };
+/** Expiry choices for a code anyone can redeem; 0 is "never". The first is the default. */
 const EXPIRY: [string, number][] = [
   ['14 days', 14],
   ['7 days', 7],
@@ -30,23 +33,46 @@ const EXPIRY: [string, number][] = [
   ['30 days', 30],
   ['Never', 0],
 ];
+/**
+ * A code for one email address always expires: the api makes an omitted expiry 14 days and
+ * refuses more than 90 (docs/API.md, POST /v1/admin/invites), so there is no "Never" for it.
+ */
+const EXPIRY_BOUND: [string, number][] = [
+  ['14 days', 14],
+  ['1 day', 1],
+  ['7 days', 7],
+  ['30 days', 30],
+  ['90 days', 90],
+];
+const BOUND_MAX_DAYS = 90;
 
 export function invitesScreen(ctx: Ctx): HTMLElement {
   const result = h('div', { class: 'adm-result' });
   const list = h('div', { class: 'adm-list-wrap', 'aria-busy': 'true' }, note('Loading…'));
 
-  async function load() {
+  // Each load gets a number; only the newest one's answer is drawn. Without it, switching the
+  // emails off while the ?emails=1 answer is on its way would draw that answer last.
+  let seq = 0;
+  let last: BetaInvite[] | null = null;
+  async function load(): Promise<void> {
+    const mine = ++seq;
     list.setAttribute('aria-busy', 'true');
     try {
       const q = ctx.showEmails() ? '?emails=1' : '';
       const invites = await ctx.call(() => ctx.api.get<BetaInvite[]>(`/v1/admin/invites${q}`));
-      list.replaceChildren(renderList(invites));
+      if (mine === seq) {
+        last = invites;
+        list.replaceChildren(renderList(invites));
+      }
     } catch (e) {
-      if (!(e instanceof Handled)) list.replaceChildren(errorBox(describeError(e)));
+      if (mine === seq && !(e instanceof Handled)) list.replaceChildren(errorBox(describeError(e)));
     } finally {
-      list.setAttribute('aria-busy', 'false');
+      if (mine === seq) list.setAttribute('aria-busy', 'false');
     }
   }
+
+  /** An address is drawn only while the switch is on, whatever the answer held (masked or not). */
+  const shown = (email: string | null | undefined) => (ctx.showEmails() ? (email ?? null) : null);
 
   function renderList(invites: BetaInvite[]): HTMLElement {
     if (invites.length === 0) return note('No invite codes yet.');
@@ -56,10 +82,14 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
   }
 
   function card(inv: BetaInvite): HTMLElement {
-    const whom = inv.email ?? (inv.status === 'open' ? 'Anyone with the code' : 'No address stored');
+    const whom = inv.email
+      ? (shown(inv.email) ?? 'One email address (hidden)')
+      : inv.status === 'open'
+        ? 'Anyone with the code'
+        : 'No address stored';
     const item = h(
       'li',
-      { class: 'adm-card' },
+      { class: 'adm-card', 'data-key': inv.code, tabindex: -1 },
       h(
         'div',
         { class: 'adm-card-head' },
@@ -77,13 +107,15 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
     if (inv.uses_by.length > 0 || inv.uses > 0) {
       const used = h('ul', { class: 'adm-uses', 'aria-label': `Redeemed ${inv.code}` });
       for (const u of inv.uses_by) {
+        const email = shown(u.email);
+        const relay = u.private_relay || isRelay(email);
         used.append(
           h(
             'li',
             {},
-            u.email ?? `Account ${u.short_id}`,
-            u.private_relay || isRelay(u.email) ? ' ' : null,
-            u.private_relay || isRelay(u.email) ? badge('Hide My Email', 'plain') : null,
+            email ?? `Account ${u.short_id}`,
+            relay ? ' ' : null,
+            relay ? badge('Hide My Email', 'plain') : null,
             ` · ${fmtTime(u.at)}`,
           ),
         );
@@ -94,36 +126,40 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
       item.append(h('p', { class: 'adm-sub' }, 'Redeemed by'), used);
     }
     const actions = h('div', { class: 'adm-actions' });
+    const failure = errorSlot();
     if (linkOk(inv.link)) actions.append(copyButton('Copy link', inv.link));
     actions.append(copyButton('Copy code', inv.code));
+    // Only an open code can be revoked; a used, expired or revoked one has nothing left to stop.
     if (inv.status === 'open') {
       actions.append(
         confirmButton('Revoke', 'Revoke now', async () => {
+          failure.clear();
           try {
             await ctx.call(() => ctx.api.del(`/v1/admin/invites/${encodeURIComponent(inv.code)}`));
             ctx.announce(`Revoked ${inv.code}`);
             await load();
+            refocus(list, inv.code);
           } catch (e) {
-            if (!(e instanceof Handled)) {
-              actions.append(errorBox(describeError(e)));
-            }
+            if (!(e instanceof Handled)) failure.show(describeError(e));
           }
         }),
       );
     }
-    item.append(actions);
+    item.append(actions, failure.el);
     return item;
   }
 
+  /** "Copied" for a moment; a second press while it shows starts the moment again, never sticks. */
   function copyButton(label: string, text: string): HTMLElement {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     return button(label, 'secondary', async (b) => {
       const ok = await copy(text);
       ctx.announce(ok ? 'Copied' : 'Copy failed. Select the text and copy it by hand.');
-      const before = b.textContent;
+      clearTimeout(timer);
+      b.textContent = ok ? 'Copied' : label;
       if (ok) {
-        b.textContent = 'Copied';
-        setTimeout(() => {
-          b.textContent = before;
+        timer = setTimeout(() => {
+          b.textContent = label;
         }, 1500);
       }
     });
@@ -177,15 +213,34 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
     const noteInput = input('text', 'note', { maxlength: 200, autocomplete: 'off' });
     const uses = input('number', 'max_uses', { min: 1, max: 1000, value: 1, inputmode: 'numeric' });
     const expiry = h('select', { name: 'expiry', class: 'adm-input' });
-    for (const [label, days] of EXPIRY) expiry.append(h('option', { value: days }, label));
     const err = h('div', {});
     const submit = h('button', { type: 'submit', class: 'adm-btn adm-btn-primary' }, 'Create invite');
+    const expiryField = field('Expires after', expiry, ' ');
+    const expiryHint = expiryField.querySelector('.adm-hint')!;
 
-    listen(email, 'input', () => {
-      const bound = email.value.trim() !== '';
+    // The choices for a code for anyone or for one address; the current one is kept when the
+    // other list has it, else the default (14 days).
+    let boundChoices: boolean | null = null;
+    function setChoices(bound: boolean) {
+      if (bound === boundChoices) return;
+      boundChoices = bound;
+      const was = expiry.value;
+      const choices = bound ? EXPIRY_BOUND : EXPIRY;
+      expiry.replaceChildren(...choices.map(([label, days]) => h('option', { value: days }, label)));
+      expiry.value = choices.some(([, d]) => String(d) === was) ? was : String(choices[0]![1]);
+      expiryHint.textContent = bound
+        ? `A code for one email address always expires, after ${BOUND_MAX_DAYS} days at most.`
+        : 'A code for anyone can also never expire.';
+    }
+    const isBound = () => email.value.trim() !== '';
+    function syncBound() {
+      const bound = isBound();
       uses.disabled = bound;
       if (bound) uses.value = '1';
-    });
+      setChoices(bound);
+    }
+    setChoices(false);
+    listen(email, 'input', syncBound);
 
     const f = h(
       'form',
@@ -198,14 +253,17 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
       ),
       field('Note (optional)', noteInput, 'Only you see it.'),
       field('Uses', uses, 'A code for one email address has exactly one use.'),
-      field('Expires after', expiry),
+      expiryField,
       err,
       submit,
     );
+    // One create at a time: a double click or a second Enter must not make two codes.
+    let busy = false;
     listen(f, 'submit', async (ev) => {
       ev.preventDefault();
+      if (busy) return;
       err.replaceChildren();
-      const body: InviteInput = { max_uses: email.value.trim() ? 1 : Number(uses.value) };
+      const body: InviteInput = { max_uses: isBound() ? 1 : Number(uses.value) };
       if (!Number.isInteger(body.max_uses) || body.max_uses < 1 || body.max_uses > 1000) {
         err.replaceChildren(errorBox('Uses must be a whole number from 1 to 1000.'));
         return;
@@ -213,18 +271,24 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
       if (email.value.trim()) body.email = email.value.trim();
       if (noteInput.value.trim()) body.note = noteInput.value.trim();
       const days = Number(expiry.value);
+      if (isBound() && !(days > 0 && days <= BOUND_MAX_DAYS)) {
+        err.replaceChildren(errorBox(`A code for one email address expires within ${BOUND_MAX_DAYS} days.`));
+        return;
+      }
       if (days > 0) body.expires_at = inDays(days, ctx.now());
+      busy = true;
       submit.disabled = true;
       try {
         const created = await ctx.call(() => ctx.api.post<BetaInvite>('/v1/admin/invites', body));
         f.reset();
-        uses.disabled = false;
+        syncBound();
         showResult(created);
         ctx.announce('Invite created');
         await load();
       } catch (e) {
         if (!(e instanceof Handled)) err.replaceChildren(errorBox(describeError(e)));
       } finally {
+        busy = false;
         submit.disabled = false;
       }
     });
@@ -241,7 +305,11 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
       'div',
       { class: 'adm-bar' },
       h('h2', { class: 'adm-h2' }, 'All codes'),
-      emailToggle(ctx, () => void load()),
+      emailToggle(ctx, () => {
+        // Off hides the addresses at once (the last answer drawn again), then asks again.
+        if (last && !ctx.showEmails()) list.replaceChildren(renderList(last));
+        void load();
+      }),
     ),
     list,
   );

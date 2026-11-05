@@ -10,11 +10,13 @@ import {
   confirmButton,
   emailToggle,
   errorBox,
+  errorSlot,
   facts,
   field,
   Handled,
   input,
   note,
+  refocus,
   type Ctx,
 } from '../ui';
 
@@ -28,16 +30,22 @@ export function usersScreen(ctx: Ctx): HTMLElement {
     spellcheck: 'false',
   });
 
-  async function load() {
+  // Only the newest load's answer is drawn (the email switch can start a second one).
+  let seq = 0;
+  async function load(): Promise<void> {
+    const mine = ++seq;
     list.setAttribute('aria-busy', 'true');
     try {
       const q = ctx.showEmails() ? '?emails=1' : '';
-      users = await ctx.call(() => ctx.api.get<AdminUserBrief[]>(`/v1/admin/users${q}`));
-      render();
+      const answer = await ctx.call(() => ctx.api.get<AdminUserBrief[]>(`/v1/admin/users${q}`));
+      if (mine === seq) {
+        users = answer;
+        render();
+      }
     } catch (e) {
-      if (!(e instanceof Handled)) list.replaceChildren(errorBox(describeError(e)));
+      if (mine === seq && !(e instanceof Handled)) list.replaceChildren(errorBox(describeError(e)));
     } finally {
-      list.setAttribute('aria-busy', 'false');
+      if (mine === seq) list.setAttribute('aria-busy', 'false');
     }
   }
 
@@ -58,7 +66,14 @@ export function usersScreen(ctx: Ctx): HTMLElement {
 
   function card(u: AdminUserBrief): HTMLElement {
     const actions = h('div', { class: 'adm-actions' });
-    const change = async (grant: boolean) => {
+    const failure = errorSlot();
+    // One change at a time per account: a double click must not send it twice.
+    let busy = false;
+    const change = async (grant: boolean, b?: HTMLButtonElement) => {
+      if (busy) return;
+      busy = true;
+      if (b) b.disabled = true;
+      failure.clear();
       try {
         await ctx.call(() =>
           grant
@@ -67,18 +82,22 @@ export function usersScreen(ctx: Ctx): HTMLElement {
         );
         ctx.announce(grant ? 'Access granted' : 'Access revoked');
         await load();
+        refocus(list, u.id);
       } catch (e) {
-        if (!(e instanceof Handled)) actions.append(errorBox(describeError(e)));
+        if (!(e instanceof Handled)) failure.show(describeError(e));
+      } finally {
+        busy = false;
+        if (b?.isConnected) b.disabled = false;
       }
     };
     if (u.beta_access) {
       actions.append(confirmButton('Revoke access', 'Revoke now', () => change(false)));
     } else {
-      actions.append(button('Grant access', 'primary', () => void change(true)));
+      actions.append(button('Grant access', 'primary', (b) => void change(true, b)));
     }
     return h(
       'li',
-      { class: 'adm-card' },
+      { class: 'adm-card', 'data-key': u.id, tabindex: -1 },
       h(
         'div',
         { class: 'adm-card-head' },
@@ -95,6 +114,7 @@ export function usersScreen(ctx: Ctx): HTMLElement {
         ['Created', fmtTime(u.created_at)],
       ]),
       actions,
+      failure.el,
     );
   }
 
@@ -107,7 +127,11 @@ export function usersScreen(ctx: Ctx): HTMLElement {
       'div',
       { class: 'adm-bar' },
       field('Search', filter, 'By email (when shown), ID or sign-in.'),
-      emailToggle(ctx, () => void load()),
+      emailToggle(ctx, () => {
+        // Off hides the addresses at once (render() asks the switch), then asks again.
+        render();
+        void load();
+      }),
     ),
     count,
     list,

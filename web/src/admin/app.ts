@@ -3,7 +3,8 @@
 //
 //   sign in (password) → TOTP enrol (first use) or challenge → the sections
 //   api 401  → refresh once, then sign in again       api 403 mfa_required → challenge
-//   "Sign out" ends every session of the account (scope=global)
+//   "Sign out" ends every session of the account (scope=global); a non-operator account and a
+//   second 401 end only this one (scope=local)
 import { ApiError, createApi, describeError, SessionEnded } from './api';
 import { config } from './config';
 import { h } from './dom';
@@ -57,6 +58,9 @@ export function start(els: Elements): void {
   // True between a challenge started by `mfa_required` and the next successful api answer: a second
   // `mfa_required` in that window means the second factor did not take, so sign in again.
   let mfaPending = false;
+  // True from the moment a code is asked for (set before any await) until the sections or the
+  // sign-in show: an `mfa_required` of a request that was already running is then ignored, not
+  // taken as "the code did not take".
   let challenging = false;
   let inApp = false;
   let emails = false;
@@ -66,6 +70,7 @@ export function start(els: Elements): void {
     onOk: () => {
       mfaPending = false;
     },
+    revoke: (token) => auth.signOut(token, 'local'),
   });
 
   const ctx: Ctx = {
@@ -98,6 +103,7 @@ export function start(els: Elements): void {
             throw new Handled();
           }
           mfaPending = true;
+          challenging = true;
           beginMfa(s.access_token, 'Confirm with your code to continue.').catch((err) =>
             toSignIn(describeError(err)),
           );
@@ -143,12 +149,12 @@ export function start(els: Elements): void {
   /** Enrol when the account has no verified authenticator yet, otherwise ask for a code. */
   async function beginMfa(token: string, reason?: string) {
     inApp = false;
+    challenging = true;
     const user = await auth.getUser(token);
     const totp = user.factors.filter((f) => f.factor_type === 'totp');
     const verified = totp.find((f) => f.status === 'verified');
     chrome(true, false);
     if (verified) {
-      challenging = true;
       view(
         challengeView({
           reason,
@@ -194,7 +200,8 @@ export function start(els: Elements): void {
     }
     // A hint only; the api decides. A non-operator account ends here rather than meeting 401s.
     if (claims.appRole !== 'admin') {
-      void signOut('This account is not an operator account.');
+      // Only this session: the account's app sessions are not the page's to end.
+      void signOut('This account is not an operator account.', 'local');
       return;
     }
     inApp = true;
@@ -218,7 +225,7 @@ export function start(els: Elements): void {
     view(make(ctx));
   }
 
-  async function signOut(message = 'You are signed out.') {
+  async function signOut(message = 'You are signed out.', scope: 'global' | 'local' = 'global') {
     let token: string | null = null;
     try {
       // A fresh token, so the global sign-out is not refused for an expired one.
@@ -228,7 +235,7 @@ export function start(els: Elements): void {
     }
     sessions.clear();
     mfaPending = false;
-    if (token) await auth.signOut(token).catch(() => undefined);
+    if (token) await auth.signOut(token, scope).catch(() => undefined);
     toSignIn(message);
   }
 

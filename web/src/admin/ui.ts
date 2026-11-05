@@ -71,6 +71,29 @@ export function errorBox(message: string): HTMLElement {
   return h('p', { class: 'adm-error', role: 'alert' }, message);
 }
 
+/** A place for one error: a new one replaces the last instead of piling up below it. */
+export function errorSlot(): { el: HTMLElement; show(message: string): void; clear(): void } {
+  const el = h('div', { class: 'adm-error-slot' });
+  return {
+    el,
+    show: (message) => el.replaceChildren(errorBox(message)),
+    clear: () => el.replaceChildren(),
+  };
+}
+
+/**
+ * After a list was rendered again, puts the focus back where the operator was: the first
+ * button of item `key` (a card with `data-key`), else the card itself, else the screen's heading.
+ */
+export function refocus(list: HTMLElement, key: string): void {
+  const item = [...list.querySelectorAll<HTMLElement>('[data-key]')].find((el) => el.dataset.key === key);
+  const target =
+    item?.querySelector<HTMLElement>('.adm-actions button:not([disabled])') ??
+    item ??
+    document.getElementById('adm-title');
+  target?.focus();
+}
+
 export function note(message: string): HTMLElement {
   return h('p', { class: 'adm-note' }, message);
 }
@@ -94,28 +117,31 @@ export function emailToggle(ctx: Ctx, onChange: () => void): HTMLElement {
  */
 export function confirmButton(label: string, confirmLabel: string, run: () => Promise<void>): HTMLElement {
   const holder = h('span', { class: 'adm-confirm' });
-  const reset = () => {
-    holder.replaceChildren(
-      button(label, 'danger', () => {
-        const yes = button(confirmLabel, 'danger', async (b) => {
-          b.disabled = true;
-          try {
-            await run();
-          } finally {
-            if (holder.isConnected) {
-              b.disabled = false;
-              reset();
-            }
-          }
-        });
-        holder.replaceChildren(
-          yes,
-          button('Cancel', 'secondary', () => reset()),
-        );
-        yes.focus();
-      }),
-    );
+  // `focus`: the buttons were replaced under the operator's focus, so the first one takes it.
+  const reset = (focus: boolean) => {
+    const first = button(label, 'danger', () => {
+      let busy = false;
+      const yes = button(confirmLabel, 'danger', async (b) => {
+        if (busy) return;
+        busy = true;
+        b.disabled = true;
+        try {
+          await run();
+        } finally {
+          // Still here (the action failed, or the list kept this card): back to the first step.
+          if (holder.isConnected)
+            reset(holder.contains(document.activeElement) || document.activeElement === document.body);
+        }
+      });
+      holder.replaceChildren(
+        yes,
+        button('Cancel', 'secondary', () => reset(true)),
+      );
+      yes.focus();
+    });
+    holder.replaceChildren(first);
+    if (focus) first.focus();
   };
-  reset();
+  reset(false);
   return holder;
 }

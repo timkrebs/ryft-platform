@@ -10,6 +10,7 @@ import type { Page, Route } from '@playwright/test';
 const config = JSON.parse(readFileSync('config/admin.json', 'utf8')) as {
   apiUrl: string;
   supabaseUrl: string;
+  supabaseKey: string;
 };
 export const API = config.apiUrl;
 export const AUTH = config.supabaseUrl;
@@ -18,6 +19,8 @@ export const EMAIL = 'admin@example.test';
 export const TOTP = '123456';
 
 const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const DAY = 86_400_000;
+const daysFromNow = (d: number) => new Date(Date.now() + d * DAY).toISOString();
 
 interface TokenInfo {
   aal: 'aal1' | 'aal2';
@@ -59,6 +62,12 @@ export class Stub {
   mfaSticky = false;
   /** Abort every api request (no CORS headers, an edge 429 or a 502 look like this to the page). */
   apiDown = false;
+  /** A status for every refresh_token grant (429, 503: GoTrue did not decide); null answers it. */
+  refreshStatus: number | null = null;
+  /** Answer the next N api requests matching `METHOD /path` with this status (a server refusal). */
+  failNext = new Map<string, { status: number; times: number }>();
+  /** Hold the answer to `METHOD /path?search` (api or Auth) this many ms; the request is recorded at once. */
+  delay = new Map<string, number>();
   seen: Seen[] = [];
 
   private tokens = new Map<string, TokenInfo>();
@@ -93,7 +102,7 @@ export class Stub {
       user_short_id: '9f8e7d6c',
       category: 'bug',
       message: 'Sleep stages are empty for last night.\nSecond line.',
-      created_at: '2026-11-05T07:30:00Z',
+      created_at: daysFromNow(-0.2),
       resolved_at: null as string | null,
     },
     {
@@ -101,7 +110,16 @@ export class Stub {
       user_short_id: '0a1b2c3d',
       category: 'idea',
       message: '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>',
-      created_at: '2026-11-04T07:30:00Z',
+      created_at: daysFromNow(-1.2),
+      resolved_at: null as string | null,
+    },
+    {
+      // Outside the page's 30-day window: the api leaves it out when asked with `since`.
+      id: 7,
+      user_short_id: '0a1b2c3d',
+      category: 'bug',
+      message: 'An old report from the first wave.',
+      created_at: daysFromNow(-40),
       resolved_at: null as string | null,
     },
   ];
@@ -248,6 +266,12 @@ export class Stub {
   private async auth(route: Route) {
     if (route.request().method() === 'OPTIONS') return this.preflight(route);
     const s = this.record(route);
+    const wait = this.delay.get(`${s.method} ${s.path}${s.search}`);
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    // Supabase's gateway answers this before GoTrue sees the request.
+    if (route.request().headers()['apikey'] !== config.supabaseKey) {
+      return this.reply(route, 401, { message: 'No API key found in request' });
+    }
     const bearer = s.authorization?.replace(/^Bearer /i, '') ?? null;
     const info = bearer ? this.tokens.get(bearer) : undefined;
     const body = (s.body ?? {}) as Record<string, string>;
@@ -260,6 +284,13 @@ export class Stub {
       return this.reply(route, 200, this.mint('aal1'));
     }
     if (s.path === '/auth/v1/token' && s.search === '?grant_type=refresh_token') {
+      if (this.refreshStatus !== null) {
+        return fail(
+          this.refreshStatus,
+          this.refreshStatus === 429 ? 'over_request_rate_limit' : 'unexpected_failure',
+          'try later',
+        );
+      }
       const aal = this.refreshTokens.get(body.refresh_token ?? '');
       if (!aal) return fail(400, 'refresh_token_not_found', 'Invalid Refresh Token: Refresh Token Not Found');
       this.refreshTokens.delete(body.refresh_token!); // single use
@@ -279,8 +310,17 @@ export class Stub {
       });
     }
     if (s.path === '/auth/v1/factors' && s.method === 'POST') {
-      if (info.aal !== 'aal1' || this.factors.some((f) => f.status === 'verified'))
-        return fail(422, 'mfa_enrollment_requires_aal2', 'AAL2 required to enroll a new factor');
+      // As GoTrue: with a verified factor, a new one needs an aal2 session (403 insufficient_aal,
+      // the design's V-MFA-1); with max_enrolled_factors = 1 an aal2 session cannot add one either.
+      const verified = this.factors.some((f) => f.status === 'verified');
+      if (verified && info.aal !== 'aal2')
+        return fail(403, 'insufficient_aal', 'AAL2 required to enroll a new factor');
+      if (verified)
+        return fail(
+          422,
+          'too_many_enrolled_mfa_factors',
+          'Maximum number of verified factors reached, unenroll to continue',
+        );
       if (this.factors.length > 0)
         return fail(422, 'mfa_factor_name_conflict', 'A factor with this name exists');
       const id = `factor-${++this.n}`;
@@ -291,7 +331,8 @@ export class Stub {
         friendly_name: body.friendly_name,
         totp: {
           qr_code:
-            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 8 8"><rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0z" fill="#000"/></svg>',
+            // GoTrue's SVG writer starts with an XML declaration and a comment.
+            '<?xml version="1.0"?>\n<!-- Generated by SVGo -->\n<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 8 8"><rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0z" fill="#000"/></svg>',
           secret: 'JBSWY3DPEHPK3PXP',
           uri: 'otpauth://totp/RYFT%20admin:admin@example.test?secret=JBSWY3DPEHPK3PXP&issuer=RYFT%20admin',
         },
@@ -323,6 +364,8 @@ export class Stub {
     if (route.request().method() === 'OPTIONS') return this.preflight(route);
     if (this.apiDown) return route.abort('failed');
     const s = this.record(route);
+    const wait = this.delay.get(`${s.method} ${s.path}${s.search}`);
+    if (wait) await new Promise((r) => setTimeout(r, wait));
     const bearer = s.authorization?.replace(/^Bearer /i, '') ?? null;
     const info = bearer ? this.tokens.get(bearer) : undefined;
     const err = (status: number, error: string, extra: Record<string, unknown> = {}) =>
@@ -340,6 +383,11 @@ export class Stub {
       return err(403, 'a second factor confirmed in the last 12 hours is required', { code: 'mfa_required' });
     }
 
+    const failing = this.failNext.get(`${s.method} ${s.path}`);
+    if (failing && failing.times > 0) {
+      failing.times -= 1;
+      return err(failing.status, 'the server could not do it');
+    }
     const q = new URLSearchParams(s.search);
     const emails = q.get('emails') === '1';
     const m = s.method;
@@ -364,6 +412,12 @@ export class Stub {
       const email = b.email ? b.email.trim().toLowerCase() : null;
       if (email && !/^[!-~]+@[!-~]+\.[!-~]+$/.test(email)) return err(422, 'email is not a valid address');
       if (email && (b.max_uses ?? 1) !== 1) return err(422, 'a code for one email has max_uses 1');
+      if (b.expires_at && Date.parse(b.expires_at) <= Date.now())
+        return err(422, 'expires_at must be in the future');
+      // A bound code always expires: 14 days when omitted, at most 90 (docs/API.md).
+      if (email && b.expires_at && Date.parse(b.expires_at) > Date.now() + 90 * DAY)
+        return err(422, 'expires_at is at most 90 days away for a code for one email');
+      const expires = b.expires_at ?? (email ? daysFromNow(14) : null);
       this.codes += 1;
       const code = `RYFT-7K3M-QX${String(this.codes).padStart(2, '0')}`;
       const inv: Invite = {
@@ -371,7 +425,7 @@ export class Stub {
         note: b.note ?? '',
         max_uses: b.max_uses ?? 1,
         uses: 0,
-        expires_at: b.expires_at ?? null,
+        expires_at: expires,
         created_at: new Date().toISOString(),
         email,
         created_by: { kind: 'user', id: '1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081' },
@@ -405,7 +459,19 @@ export class Stub {
       u.beta_access = m === 'POST';
       return this.reply(route, 204);
     }
-    if (p === '/v1/admin/feedback' && m === 'GET') return this.reply(route, 200, this.feedback);
+    if (p === '/v1/admin/feedback' && m === 'GET') {
+      // `since`: RFC 3339 or YYYY-MM-DD, default 7 days; newest first.
+      const since = q.get('since');
+      const from = since === null ? Date.now() - 7 * DAY : Date.parse(since);
+      if (Number.isNaN(from)) return err(422, 'since must be RFC 3339 or YYYY-MM-DD');
+      return this.reply(
+        route,
+        200,
+        this.feedback
+          .filter((f) => Date.parse(f.created_at) >= from)
+          .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)),
+      );
+    }
     const resolve = /^\/v1\/admin\/feedback\/(\d+)\/resolve$/.exec(p);
     if (resolve && m === 'POST') {
       const f = this.feedback.find((x) => x.id === Number(resolve[1]));

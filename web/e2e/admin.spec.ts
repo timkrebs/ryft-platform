@@ -330,6 +330,8 @@ test.describe('sign in', () => {
       'POST /auth/v1/factors',
     ]);
     expect(flow.filter((f) => f.endsWith('/verify'))).toHaveLength(2);
+    // Every Auth call carried the project's key (the stub, like the gateway, refuses one without).
+    expect(stub.seen.filter((s) => s.path.startsWith('/auth/v1')).length).toBeGreaterThan(4);
     expect(stub.seen.find((s) => s.path === '/v1/admin/invites')?.authorization).toMatch(/^Bearer ey/);
   });
 
@@ -358,6 +360,8 @@ test.describe('sign in', () => {
     await expect(page.getByRole('status').filter({ hasText: 'not an operator account' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: 'Sign in' })).toBeVisible();
     expect(stub.count('POST', '/auth/v1/logout')).toBe(1);
+    // Only this session ends: the account's app sessions are not the page's to end.
+    expect(stub.seen.find((s) => s.path === '/auth/v1/logout')?.search).toBe('?scope=local');
     expect(stub.seen.some((s) => s.path.startsWith('/v1/admin'))).toBe(false);
     expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
   });
@@ -396,7 +400,7 @@ test.describe('the api answers', () => {
     stub.expireAccessTokens();
     await tab(page, 'Users').click();
     await expect(page.getByRole('heading', { level: 1, name: 'Users' })).toBeVisible();
-    await expect(page.getByText('Account 9f8e7d6c')).toBeVisible();
+    await expect(page.locator('.adm-grid').getByText('Account 9f8e7d6c')).toBeVisible();
     expect(stub.seen.filter((s) => s.search === '?grant_type=refresh_token')).toHaveLength(1);
     expect(stub.count('GET', '/v1/admin/users')).toBe(2);
   });
@@ -410,6 +414,50 @@ test.describe('the api answers', () => {
     await expect(page.getByRole('status').filter({ hasText: 'Your session ended' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: 'Sign in' })).toBeVisible();
     expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
+    // The refresh token is revoked too, for this session only.
+    await expect.poll(() => stub.seen.find((s) => s.path === '/auth/v1/logout')?.search).toBe('?scope=local');
+  });
+
+  test('a refresh the sign-in service cannot answer now (503, 429) keeps the session', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    for (const status of [503, 429]) {
+      stub.expireAccessTokens();
+      stub.refreshStatus = status;
+      await tab(page, status === 503 ? 'Users' : 'Feedback').click();
+      await expect(page.getByRole('alert')).toContainText('You are still signed in; try again');
+      expect(await page.evaluate(() => Object.keys(sessionStorage))).toEqual(['ryft.admin.session']);
+      await expect(page.getByTestId('sign-out')).toBeVisible();
+    }
+    stub.refreshStatus = null;
+    await tab(page, 'Invites').click();
+    await expect(page.getByText('RYFT-H2NP-4WCX')).toBeVisible();
+    expect(stub.count('POST', '/auth/v1/logout')).toBe(0);
+  });
+
+  test('two requests that meet mfa_required at once: one code prompt, no sign-out', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    await tab(page, 'Users').click();
+    await expect(page.locator('.adm-grid').getByText('Account 9f8e7d6c')).toBeVisible();
+    stub.mfaStale = true;
+    stub.delay.set('GET /v1/admin/users?emails=1', 300);
+    stub.delay.set('GET /v1/admin/users', 600);
+    // The first mfa_required starts the challenge, which first asks GoTrue for the factors; the
+    // second arrives while that is still on its way.
+    stub.delay.set('GET /auth/v1/user', 800);
+    // The switch on and off again: two loads in flight, both answered mfa_required.
+    await page.getByLabel('Show email addresses').check();
+    await page.getByLabel('Show email addresses').uncheck();
+    await expect(page.getByRole('heading', { level: 1, name: 'Enter your code' })).toBeVisible();
+    await expect.poll(() => stub.count('GET', '/v1/admin/users')).toBe(3);
+    await expect(page.getByRole('heading', { level: 1, name: 'Enter your code' })).toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(page.getByRole('heading', { level: 1, name: 'Enter your code' })).toBeVisible();
+    expect(stub.count('POST', '/auth/v1/logout')).toBe(0);
+    await page.getByLabel('6-digit code').fill(TOTP);
+    await page.getByRole('button', { name: 'Verify' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Users' })).toBeVisible();
   });
 
   test('403 mfa_required: the code prompt, then the same screen again', async ({ page }) => {
@@ -422,7 +470,7 @@ test.describe('the api answers', () => {
     await page.getByLabel('6-digit code').fill(TOTP);
     await page.getByRole('button', { name: 'Verify' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Users' })).toBeVisible();
-    await expect(page.getByText('Account 9f8e7d6c')).toBeVisible();
+    await expect(page.locator('.adm-grid').getByText('Account 9f8e7d6c')).toBeVisible();
   });
 
   test('403 mfa_required that a code does not fix: sign in again', async ({ page }) => {
@@ -493,8 +541,13 @@ test.describe('invites', () => {
     const stub = await setup(page);
     await signIn(page, stub);
 
+    const expiry = page.getByLabel('Expires after');
+    await expect(expiry.locator('option')).toHaveText(['14 days', '7 days', '1 day', '30 days', 'Never']);
     await page.getByLabel('Email (optional)').fill('Anna@Example.com');
     await expect(page.getByLabel('Uses')).toBeDisabled();
+    // A code for one address always expires (at most 90 days): no "Never".
+    await expect(expiry.locator('option')).toHaveText(['14 days', '1 day', '7 days', '30 days', '90 days']);
+    await expect(expiry).toHaveValue('14');
     await page.getByLabel('Note (optional)').fill('Anna');
     await page.getByRole('button', { name: 'Create invite' }).click();
 
@@ -524,8 +577,12 @@ test.describe('invites', () => {
       url: `https://ryftapp.de/invite/${code}`,
     });
 
-    // The list shows it open, and the stub masks the address until the toggle asks for it.
+    // The list shows it open, and no address (not even the masked one) until the switch asks for it.
     await expect(page.locator('ul.adm-cards > li', { hasText: code })).toContainText('open');
+    await expect(page.locator('ul.adm-cards > li', { hasText: code })).toContainText(
+      'One email address (hidden)',
+    );
+    await expect(page.locator('ul.adm-cards')).not.toContainText('***');
     expect(stub.seen.filter((s) => s.method === 'GET' && s.path === '/v1/admin/invites').at(-1)?.search).toBe(
       '',
     );
@@ -543,8 +600,121 @@ test.describe('invites', () => {
     await open.getByRole('button', { name: 'Revoke now' }).click();
     await expect(open.getByText('revoked', { exact: true })).toBeVisible();
     expect(stub.count('DELETE', `/v1/admin/invites/${code}`)).toBe(1);
+    // The focus stays in the card that was drawn again, not on <body>.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.closest('li')?.textContent ?? ''))
+      .toContain(code);
     await expect(open.getByRole('button', { name: 'Revoke' })).toHaveCount(0);
     expect(errors).toEqual([]);
+  });
+
+  test('a code for one address: 90 days is the longest, the api default applies, back to Never without', async ({
+    page,
+  }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    await page.getByLabel('Email (optional)').fill('ben@example.com');
+    await page.getByLabel('Expires after').selectOption('90');
+    await page.getByRole('button', { name: 'Create invite' }).click();
+    await expect(page.locator('.adm-new').getByTestId('new-code')).toBeVisible();
+    const post = stub.seen.find((s) => s.method === 'POST' && s.path === '/v1/admin/invites')!;
+    const expires = new Date((post.body as { expires_at: string }).expires_at).getTime();
+    expect(expires - Date.now()).toBeGreaterThan(89.9 * 86_400_000);
+    expect(expires - Date.now()).toBeLessThan(90.1 * 86_400_000);
+    // The form was reset: no address, so "Never" is offered again.
+    await expect(page.getByLabel('Email (optional)')).toHaveValue('');
+    await expect(page.getByLabel('Expires after').locator('option')).toHaveText([
+      '14 days',
+      '7 days',
+      '1 day',
+      '30 days',
+      'Never',
+    ]);
+    // A choice both lists have is kept when the address comes and goes.
+    await page.getByLabel('Expires after').selectOption('30');
+    await page.getByLabel('Email (optional)').fill('c@example.com');
+    await expect(page.getByLabel('Expires after')).toHaveValue('30');
+    await page.getByLabel('Email (optional)').fill('');
+    await expect(page.getByLabel('Expires after')).toHaveValue('30');
+  });
+
+  test('Create invite once, however often it is pressed', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    stub.delay.set('POST /v1/admin/invites', 400);
+    await page.locator('form.adm-form').evaluate((f: HTMLFormElement) => {
+      f.requestSubmit();
+      f.requestSubmit();
+      f.requestSubmit();
+    });
+    await expect(page.locator('.adm-new').getByTestId('new-code')).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(stub.count('POST', '/v1/admin/invites')).toBe(1);
+  });
+
+  test('only an open code offers Revoke; a failed revoke shows one error, not a pile', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    // The seeded code is used up: nothing left to revoke.
+    const used = page.locator('ul.adm-cards > li', { hasText: 'RYFT-H2NP-4WCX' });
+    await expect(used).toContainText('used');
+    await expect(used.getByRole('button', { name: 'Revoke' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Create invite' }).click();
+    const code = (await page.locator('.adm-new').getByTestId('new-code').textContent())!;
+    const open = page.locator('ul.adm-cards > li', { hasText: code });
+    stub.failNext.set(`DELETE /v1/admin/invites/${code}`, { status: 500, times: 2 });
+    for (let i = 0; i < 2; i++) {
+      await open.getByRole('button', { name: 'Revoke', exact: true }).click();
+      await open.getByRole('button', { name: 'Revoke now' }).click();
+      await expect(open.getByRole('alert')).toContainText('the server could not do it');
+    }
+    await expect(open.getByRole('alert')).toHaveCount(1);
+    // Back to the first step, with the focus on it.
+    await expect(open.getByRole('button', { name: 'Revoke', exact: true })).toBeFocused();
+    // Cancel puts the focus back on the first step too.
+    await open.getByRole('button', { name: 'Revoke', exact: true }).click();
+    await open.getByRole('button', { name: 'Cancel' }).click();
+    await expect(open.getByRole('button', { name: 'Revoke', exact: true })).toBeFocused();
+  });
+
+  test('Copy pressed twice does not stay on "Copied"', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const stub = await setup(page);
+    await signIn(page, stub);
+    const copyCode = page.locator('ul.adm-cards > li', { hasText: 'RYFT-H2NP-4WCX' }).locator('button', {
+      hasText: /^(Copy code|Copied)$/,
+    });
+    await copyCode.click();
+    await expect(copyCode).toHaveText('Copied');
+    await copyCode.click();
+    await expect(copyCode).toHaveText('Copy code', { timeout: 3000 });
+  });
+
+  test('the email switch: a stale answer that arrives last is not drawn', async ({ page }) => {
+    const stub = await setup(page, (s) => {
+      s.invites[0]!.email = 'ben@example.com';
+      s.invites[0]!.uses_by[0]!.email = 'anna@example.com';
+    });
+    await signIn(page, stub);
+    const card = page.locator('ul.adm-cards > li', { hasText: 'RYFT-H2NP-4WCX' });
+    await expect(card).toContainText('One email address (hidden)');
+    await expect(card).toContainText('Account 9f8e7d6c');
+    await expect(card).not.toContainText('***');
+    // On: the ?emails=1 answer is slow. Off again before it lands: the plain answer comes first.
+    stub.delay.set('GET /v1/admin/invites?emails=1', 800);
+    await page.getByLabel('Show email addresses').check();
+    await page.getByLabel('Show email addresses').uncheck();
+    await expect.poll(() => stub.count('GET', '/v1/admin/invites')).toBe(3);
+    await page.waitForTimeout(1000);
+    await expect(page.locator('main')).not.toContainText('ben@example.com');
+    await expect(page.locator('main')).not.toContainText('anna@example.com');
+    await expect(card).toContainText('One email address (hidden)');
+    // And on for real shows them.
+    stub.delay.clear();
+    await page.getByLabel('Show email addresses').check();
+    await expect(card).toContainText('ben@example.com');
+    await expect(card).toContainText('anna@example.com');
   });
 
   test('without navigator.share there is no Share button and Copy stays', async ({ page, context }) => {
@@ -595,7 +765,7 @@ test.describe('users, feedback, flags, audit', () => {
     const stub = await setup(page);
     await signIn(page, stub);
     await tab(page, 'Users').click();
-    await expect(page.getByText('Account 9f8e7d6c')).toBeVisible();
+    await expect(page.locator('.adm-grid').getByText('Account 9f8e7d6c')).toBeVisible();
     await expect(page.locator('main')).not.toContainText('anna@example.com');
     expect(stub.seen.filter((s) => s.path === '/v1/admin/users').at(-1)?.search).toBe('');
 
@@ -614,9 +784,12 @@ test.describe('users, feedback, flags, audit', () => {
     await page.getByLabel('Search').fill('');
 
     const anna = page.locator('li.adm-card', { hasText: 'anna@example.com' });
-    await anna.getByRole('button', { name: 'Grant access' }).click();
+    stub.delay.set('POST /v1/admin/users/9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a/access', 300);
+    await anna.getByRole('button', { name: 'Grant access' }).dblclick();
     await expect(anna.getByText('Beta access')).toBeVisible();
     expect(stub.count('POST', '/v1/admin/users/9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a/access')).toBe(1);
+    // The focus moves to the card's new action, not to <body>.
+    await expect(anna.getByRole('button', { name: 'Revoke access' })).toBeFocused();
 
     const relay = page.locator('li.adm-card', { hasText: 'privaterelay' });
     await relay.getByRole('button', { name: 'Revoke access' }).click();
@@ -650,7 +823,22 @@ test.describe('users, feedback, flags, audit', () => {
     await expect(first.getByText('Resolved', { exact: true }).first()).toBeVisible();
     await expect(first.getByRole('button', { name: 'Resolve' })).toHaveCount(0);
     expect(stub.count('POST', '/v1/admin/feedback/42/resolve')).toBe(1);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('LI');
     expect(errors).toEqual([]);
+  });
+
+  test('feedback: the last 30 days, asked for with since', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    await tab(page, 'Feedback').click();
+    await expect(page.getByText('Sleep stages are empty for last night.')).toBeVisible();
+    await expect(page.getByText('An old report from the first wave.')).toHaveCount(0);
+    const since = new URLSearchParams(stub.seen.find((s) => s.path === '/v1/admin/feedback')!.search).get(
+      'since',
+    );
+    const days = (Date.now() - Date.parse(since!)) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThan(30.1);
   });
 
   test('flags are read-only and show a count, not ids', async ({ page }) => {

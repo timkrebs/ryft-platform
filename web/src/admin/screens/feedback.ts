@@ -4,7 +4,7 @@ import { describeError } from '../api';
 import { h } from '../dom';
 import { daysAgo, fmtTime } from '../format';
 import type { FeedbackBrief } from '../types';
-import { badge, button, errorBox, facts, Handled, note, type Ctx } from '../ui';
+import { badge, button, errorBox, errorSlot, facts, Handled, note, refocus, type Ctx } from '../ui';
 
 const WINDOW_DAYS = 30;
 
@@ -32,26 +32,30 @@ export function feedbackScreen(ctx: Ctx): HTMLElement {
 
   function card(f: FeedbackBrief): HTMLElement {
     const actions = h('div', { class: 'adm-actions' });
+    const failure = errorSlot();
     if (!f.resolved_at) {
       actions.append(
         button('Resolve', 'primary', async (b) => {
+          if (b.disabled) return;
           b.disabled = true;
+          failure.clear();
           try {
             await ctx.call(() =>
               ctx.api.post(`/v1/admin/feedback/${encodeURIComponent(String(f.id))}/resolve`),
             );
             ctx.announce('Marked as resolved');
             await load();
+            refocus(list, String(f.id));
           } catch (e) {
             b.disabled = false;
-            if (!(e instanceof Handled)) actions.append(errorBox(describeError(e)));
+            if (!(e instanceof Handled)) failure.show(describeError(e));
           }
         }),
       );
     }
     return h(
       'li',
-      { class: 'adm-card' },
+      { class: 'adm-card', 'data-key': String(f.id), tabindex: -1 },
       h(
         'div',
         { class: 'adm-card-head' },
@@ -65,6 +69,7 @@ export function feedbackScreen(ctx: Ctx): HTMLElement {
         ['Resolved', f.resolved_at ? fmtTime(f.resolved_at) : null],
       ]),
       actions,
+      failure.el,
     );
   }
 

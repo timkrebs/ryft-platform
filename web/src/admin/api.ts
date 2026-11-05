@@ -1,5 +1,6 @@
 // The api at api.ryftapp.de/v1/admin/*, called with the operator's access token.
-//   401  → refresh the session once and send again; a second 401 ends the session.
+//   401  → refresh the session once and send again; a second 401 ends the session (and revokes
+//          its refresh token, best effort).
 //   403 mfa_required → ApiError with that code (the caller shows the TOTP challenge).
 //   no answer (CORS missing, an edge 429, a 502) → ApiError.network.
 import { AuthError } from './gotrue';
@@ -36,6 +37,24 @@ export interface ApiDeps {
   fetch?: typeof fetch;
   /** Called after every successful answer. */
   onOk?: () => void;
+  /**
+   * Called with the access token when a second 401 ends the session, so its refresh token is
+   * revoked too (GoTrue's logout, scope local). Best effort: a failure is ignored.
+   */
+  revoke?: (accessToken: string) => Promise<void>;
+}
+
+const NO_ANSWER = 'No answer from api.ryftapp.de (network or edge limit). Try again.';
+
+/** The sign-in service did not decide about the refresh token: the session is kept, try again. */
+function authUndecided(e: AuthError): ApiError {
+  const message =
+    e.status === 0
+      ? e.message
+      : e.status === 429
+        ? 'The sign-in service asks to wait before renewing the session. You are still signed in; try again in a moment.'
+        : `The sign-in service could not renew the session (${e.status}). You are still signed in; try again.`;
+  return new ApiError(message, 0, null, null, null, true);
 }
 
 export type AdminApi = ReturnType<typeof createApi>;
@@ -56,14 +75,7 @@ export function createApi(deps: ApiDeps) {
         referrerPolicy: 'no-referrer',
       });
     } catch {
-      throw new ApiError(
-        'No answer from the api (network or edge limit). Try again.',
-        0,
-        null,
-        null,
-        null,
-        true,
-      );
+      throw new ApiError(NO_ANSWER, 0, null, null, null, true);
     }
   }
 
@@ -71,7 +83,7 @@ export function createApi(deps: ApiDeps) {
     try {
       return await deps.sessions.fresh();
     } catch (e) {
-      if (e instanceof AuthError) throw new ApiError(e.message, 0, null, null, null, true);
+      if (e instanceof AuthError) throw authUndecided(e);
       throw e;
     }
   }
@@ -84,13 +96,18 @@ export function createApi(deps: ApiDeps) {
       try {
         s = await deps.sessions.refresh();
       } catch (e) {
-        if (e instanceof AuthError) throw new ApiError(e.message, 0, null, null, null, true);
+        if (e instanceof AuthError) throw authUndecided(e);
         throw e;
       }
       if (!s) throw new SessionEnded();
       res = await send(method, path, s.access_token, body);
       if (res.status === 401) {
         deps.sessions.clear();
+        // Best effort and not awaited: the tab forgets the session either way.
+        const token = s.access_token;
+        void Promise.resolve()
+          .then(() => deps.revoke?.(token))
+          .catch(() => undefined);
         throw new SessionEnded();
       }
     }
@@ -122,6 +139,11 @@ function requestId(res: Response, body: Record<string, unknown> | null): string 
   return fromBody ?? res.headers.get('X-Request-ID');
 }
 
+/** The api's messages are lower-case phrases ("too many requests"); a hint after one needs a full stop. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
 async function toError(res: Response): Promise<ApiError> {
   let body: Record<string, unknown> | null = null;
   try {
@@ -146,10 +168,11 @@ export class FormError extends Error {}
 /** One line for the screen: the message, the status, the request id, the wait. All of it shown as text. */
 export function describeError(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.network) return 'No answer from api.ryftapp.de (network or edge limit). Try again.';
-    const parts = [e.message];
-    if (e.status === 429 && e.retryAfter) parts.push(`Try again in ${e.retryAfter} s.`);
-    if (e.status === 503 && e.retryAfter) parts.push(`Try again in ${e.retryAfter} s.`);
+    if (e.network) return e.message;
+    // A 429 always says when to try again: Retry-After, or 1 s when the answer had none.
+    const wait = e.status === 429 ? (e.retryAfter ?? 1) : e.status === 503 ? e.retryAfter : null;
+    const parts = [wait ? sentence(e.message) : e.message];
+    if (wait) parts.push(`Try again in ${wait} s.`);
     parts.push(`(${e.status}${e.requestId ? `, request id ${e.requestId}` : ''})`);
     return parts.join(' ');
   }
