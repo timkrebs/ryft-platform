@@ -2,9 +2,9 @@
 // The data behind /licenses, generated at build time into src/generated/licenses.json:
 //   app  — the Swift packages the iOS app ships (config/app-packages.json, a snapshot of
 //          ../../app's Package.resolved), each licence fetched from GitHub at its pinned
-//          revision, plus the Satoshi typeface;
+//          revision (the app's typeface is listed by the app itself, under Profile → About);
 //   web  — every production npm dependency of this site (npm query .prod) with the
-//          licence text from its package, plus Satoshi.
+//          licence text from its package, plus the Inter typeface (SIL OFL 1.1, web D20).
 //
 //   node scripts/licenses.mjs              generate (fetches missing texts into .cache/licenses)
 //   node scripts/licenses.mjs --if-missing only when src/generated/licenses.json is absent
@@ -20,7 +20,7 @@ const RESOLVED = join(APP, 'Ryft.xcodeproj/project.xcworkspace/xcshareddata/swif
 const SNAPSHOT = join(ROOT, 'config/app-packages.json');
 const CACHE = join(ROOT, '.cache/licenses');
 const OUT = join(ROOT, 'src/generated/licenses.json');
-const FONT_LICENSE = join(ROOT, 'src/fonts/FFL.txt');
+const FONT_LICENSE = join(ROOT, 'src/fonts/OFL.txt');
 const args = process.argv.slice(2);
 
 if (args.includes('--if-missing') && existsSync(OUT)) process.exit(0);
@@ -60,15 +60,15 @@ if (args.includes('--sync') || args.includes('--check')) {
 mkdirSync(CACHE, { recursive: true });
 mkdirSync(join(ROOT, 'src/generated'), { recursive: true });
 
-const satoshi = {
-  name: 'Satoshi',
-  version: 'Fontshare',
-  license: 'ITF Free Font License',
-  holder: 'Indian Type Foundry',
-  url: 'https://www.fontshare.com/fonts/satoshi',
+const inter = {
+  name: 'Inter',
+  version: '4.1',
+  license: 'SIL Open Font License 1.1',
+  holder: 'The Inter Project Authors',
+  url: 'https://github.com/rsms/inter/tree/v4.1',
   text: existsSync(FONT_LICENSE)
     ? readFileSync(FONT_LICENSE, 'utf8').trim()
-    : fail('src/fonts/FFL.txt missing: run `npm run fonts`'),
+    : fail('src/fonts/OFL.txt missing: it is committed next to the Inter files (web D20)'),
 };
 
 const app = [];
@@ -83,7 +83,6 @@ for (const pin of JSON.parse(readFileSync(SNAPSHOT, 'utf8')).pins) {
     text,
   });
 }
-app.push(satoshi);
 
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const devOnly = new Set(Object.keys(pkg.devDependencies ?? {}));
@@ -108,7 +107,7 @@ for (const n of nodes.sort((a, b) => a.name.localeCompare(b.name) || a.version.l
     text: file ? readFileSync(join(dir, file), 'utf8').trim() : null,
   });
 }
-web.push(satoshi);
+web.push(inter);
 
 writeFileSync(OUT, `${JSON.stringify({ app, web }, null, 1)}\n`);
 const missing = web.filter((w) => !w.text).length;

@@ -59,8 +59,10 @@ here: read from it, never write there.
 - **No medical claims.** RYFT is a wellness app, not a medical device; say so near scores.
 - **English only** (web D18). Every UI string in `messages/en.json`; `/de/…` redirects to the
   English page for the app's older builds. German may come back; the views keep `Locale`.
-- **Fonts**: Satoshi WOFF2 files are fetched by `npm run fonts`, verified by hash and never
-  committed (ITF FFL: self-hosting yes, redistribution through repositories no, no subsetting).
+- **Fonts**: Inter 4.1, Regular and Bold, committed as WOFF2 in `src/fonts/` with its licence
+  (`OFL.txt`, SIL Open Font License 1.1, which allows redistribution; D20). No fetch step.
+  Only 400 and 700 exist; a token weight of 500/600 falls to the nearest face, nothing is
+  synthesised.
 
 ## Verify before every commit
 From the repository root:

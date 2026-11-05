@@ -22,13 +22,13 @@ Then, from `web/` (or with the `make web-*` targets from the root: `web-test`, `
 `web-image`, `web-serve`, `web-e2e`, `web-tokens`):
 
 ```bash
-npm run fonts      # Satoshi from Fontshare into src/fonts/, verified by SHA-256 (git-ignored)
 npm run dev        # http://localhost:3000
 npm run build      # static site in out/ (postbuild: runtime removed, CSP hashes, brand check)
 ```
 
-`npm run dev` and `npm run build` fetch the fonts and the licence texts themselves when
-they're missing.
+`npm run dev` and `npm run build` fetch the app's licence texts themselves when they're
+missing. The typeface (Inter, SIL OFL 1.1) is committed in `src/fonts/`; nothing is fetched
+for it.
 
 ## The image
 
@@ -108,12 +108,13 @@ src/app/(admin)/…     /admin, its own root layout (the operator's page)
 src/admin/            the admin page's script (TypeScript, bundled by esbuild into one inline script)
 src/views/            page bodies
 src/components/       mark, chrome, cards, charts, screenshots, prose
-src/lib/              i18n, metadata, content loading, the mark's geometry, inline scripts
+src/lib/              i18n, metadata, content loading, the mark's geometry, fonts
 src/styles/           tokens.css (generated), globals.css
+src/fonts/            Inter Regular and Bold (WOFF2) and OFL.txt
 content/              science and legal texts (MDX)
 messages/             UI strings (en.json)
 public/               AASA, icons, the OG image, screenshots
 nginx/                server config and security headers (csp.conf is generated)
-scripts/              tokens, fonts, screenshots, licences, postbuild, CSP, brand guard
+scripts/              tokens, screenshots, licences, postbuild, CSP, brand guard
 tests/, e2e/          Vitest, Playwright
 ```

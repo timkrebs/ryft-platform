@@ -75,7 +75,7 @@ export function StyleguidePage() {
         <Section
           id="type"
           title="Type"
-          intro={<p>Satoshi, the app&apos;s scale in rem. Headings clamp between two steps.</p>}
+          intro={<p>Inter, the app&apos;s scale in rem. Headings clamp between two steps.</p>}
         >
           <dl className={styles.type}>
             {typeSamples.map(([name, sample]) => (

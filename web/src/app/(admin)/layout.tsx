@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
-import { satoshi } from '@/lib/fonts';
+import { inter } from '@/lib/fonts';
 import '@/styles/tokens.css';
 import '@/styles/globals.css';
 import '@/admin/admin.css';
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={satoshi.variable}>
+    <html lang="en" className={inter.variable}>
       <body>{children}</body>
     </html>
   );

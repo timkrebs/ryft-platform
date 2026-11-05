@@ -3,7 +3,6 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import fonts from '../config/fonts.json';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
 const OUT = 'out';
@@ -38,13 +37,22 @@ describe.skipIf(!built)('built site', () => {
     expect(gzipSync(js).length).toBeLessThan(80 * 1024);
   });
 
-  it('serves Satoshi byte-identical to the pinned files', () => {
-    const pinned = new Set(Object.values(fonts.files).map((f) => f.sha256));
+  it('serves Inter Regular and Bold byte-identical to the committed files, preloaded', () => {
+    const committed = new Set(
+      ['Inter-Regular.woff2', 'Inter-Bold.woff2'].map((f) =>
+        createHash('sha256')
+          .update(readFileSync(join('src/fonts', f)))
+          .digest('hex'),
+      ),
+    );
     const served = [...files(OUT)].filter((f) => f.endsWith('.woff2'));
-    expect(served.length).toBe(3);
+    expect(served.length).toBe(2);
     for (const f of served) {
-      expect(pinned.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
+      expect(committed.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
     }
+    const page = readFileSync(join(OUT, 'index.html'), 'utf8');
+    expect(page.match(/<link rel="preload"[^>]*as="font"/g) ?? []).toHaveLength(2);
+    expect(page).not.toMatch(/Satoshi/i);
   });
 
   it('has no inline style attributes or <style> elements', () => {
@@ -152,7 +160,7 @@ describe.skipIf(!built)('built site', () => {
       const page = readFileSync(join(OUT, f), 'utf8');
       expect(page, f).not.toMatch(/hrefLang=/i);
       expect(page, f).toContain('<html lang="en"');
-      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftapp\.de\//);
+      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftapp\.de[/"]/);
     }
     expect(readFileSync(join(OUT, 'sitemap.xml'), 'utf8')).not.toContain('/de');
   });
@@ -164,11 +172,12 @@ describe.skipIf(!built)('built site', () => {
       'swift-crypto',
       '>next<',
       '>react<',
-      'Satoshi',
-      'ITF Free Font License',
+      '>Inter<',
+      'SIL Open Font License 1.1',
     ]) {
       expect(page).toContain(name);
     }
     expect(page).toContain('Permission is hereby granted');
+    expect(page).toContain('SIL OPEN FONT LICENSE Version 1.1');
   });
 });

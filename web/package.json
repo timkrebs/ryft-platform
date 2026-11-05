@@ -9,11 +9,10 @@
     "node": ">=24.11"
   },
   "scripts": {
-    "fonts": "node scripts/fetch-fonts.mjs",
     "tokens": "node scripts/tokens.mjs",
     "tokens:check": "node scripts/tokens.mjs --check",
-    "dev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs --if-missing && node scripts/admin-bundle.mjs && next dev",
-    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/licenses.mjs && node scripts/admin-bundle.mjs",
+    "dev": "node scripts/licenses.mjs --if-missing && node scripts/admin-bundle.mjs && next dev",
+    "prebuild": "node scripts/licenses.mjs && node scripts/admin-bundle.mjs",
     "build": "next build",
     "postbuild": "node scripts/postbuild.mjs && node scripts/csp.mjs && node scripts/check-brand.mjs --out-only",
     "typecheck": "next typegen && tsc --noEmit",

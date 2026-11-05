@@ -268,3 +268,27 @@ Consequences:
 
 Would change if the app's monochrome dark pass lands and the user wants the site to follow
 the system again: the blocks come back in `renderCss`, from `tokens.json`'s `dark` values.
+
+## D20 — Inter, committed under the OFL (2026-11-05; replaces D4 and D13, closes D14's font risk)
+
+The third part of the 2026-11-05 decision: the typographic design is set in Inter. Inter 4.1
+(SIL Open Font License 1.1) allows redistribution, so `Inter-Regular.woff2`,
+`Inter-Bold.woff2` and `OFL.txt` are committed in `src/fonts/` (from
+`https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip`; SHA-256 Regular
+`e06f6b1b…ae085`, Bold `fa888127…d95ea`, LICENSE `262481e8…4935a`). `scripts/fetch-fonts.mjs`,
+`config/fonts.json` and the `fonts` step of `dev` and `prebuild` are gone: a clone builds
+offline, and the public image (D14) no longer redistributes a font whose licence forbids it.
+
+`src/lib/fonts.ts` is `localFont` with 400 and 700, `--font-inter`, `display: swap`, both
+files preloaded (two files, about 110 KB each, where D4 chose not to preload three), and
+next/font's own metric-matched fallback (D13's hand-written `Satoshi Fallback` is deleted
+with the font). Only two weights exist: the app's type scale still says 500 for display,
+titles, headlines, metrics, labels and the wordmark, and those tokens stay as they are, so
+the browser's font matching resolves 500 to Regular and 600 to Bold; `font-synthesis: none`
+makes sure no face is faked. Emphasis (`strong`, the draft title, the TODO marker) moves
+from 500 to 700, since Medium no longer exists. `/licenses` lists Inter with the OFL text
+under the website; the app lists its own typeface itself.
+
+Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
+allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
+400/700 only, which removes the question.

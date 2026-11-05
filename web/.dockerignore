@@ -5,8 +5,6 @@ node_modules
 .next
 out
 .cache
-src/fonts/*.woff2
-src/fonts/FFL.txt
 src/generated
 nginx/csp.conf
 nginx/csp-admin.conf

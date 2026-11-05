@@ -5,10 +5,7 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
-# Satoshi (ITF Free Font License): free to self-host on our own site, not to
-# redistribute through a repository. `npm run fonts` fetches and verifies them.
-src/fonts/*.woff2
-src/fonts/FFL.txt
+# Inter (SIL OFL 1.1) is committed in src/fonts/ (web D20).
 .cache/
 
 # generated at build time

@@ -1,6 +1,6 @@
 # ryftapp.de: build the static export with Node, serve it with unprivileged nginx.
-# Fonts (Fontshare) and the app's licence texts (GitHub, pinned revisions) are fetched
-# during the build; nothing else leaves the build, and the final image has no Node.
+# The app's licence texts (GitHub, pinned revisions) are fetched during the build; nothing
+# else leaves the build (the fonts are committed), and the final image has no Node.
 # The build stage runs on the builder's own architecture (the export is the same everywhere);
 # only the nginx stage is per target platform.
 
