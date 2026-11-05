@@ -422,11 +422,18 @@ off until Phase 1, `docs/OPERATIONS.md` → Admission policies):
 
 1. **Reads.** Admission sees writes only. Both Argo CD Roles in `argocd` read Secrets there, so a stolen
    controller or server token reads `server.secretkey` and can mint a UI session; that session acts as
-   argocd-server, which P7, P10 and P12 bound. The controller also reads ConfigMaps and Services
+   argocd-server, which P12 confines to Applications and events in `argocd`. What an Application may
+   contain is held by P7 and P10 only once they are in Deny (Step D): between Step B and Step D a stolen
+   server token can still write Application content (repo, destination, revision). The controller also reads ConfigMaps and Services
    cluster-wide. Closing these needs RBAC, not admission.
-2. **Writes inside the scope.** In `ryft-*` and `rabbitmq-system` a stolen controller token still writes
-   and deletes whatever RBAC allows. Nothing judges a Service selector, a ConfigMap value (beyond P5's
-   auth keys), an HPA, a PDB or a cert-manager Certificate or Issuer. A namespaced Issuer cannot use
+2. **Writes inside the scope.** In the namespaces of `argoScope.namespaces` (an explicit list of the
+   apps' namespaces, not a `ryft-` prefix) a stolen controller token still writes and deletes whatever RBAC
+   allows. Nothing judges a Service selector, a ConfigMap value (beyond P5's auth keys), an HPA, a PDB or
+   a cert-manager Certificate or Issuer. And some of these in-scope writes take effect cluster-wide while
+   all 13 bindings admit them: an Ingress for `api.ryftapp.de` carrying a Traefik `router.priority` annotation in `ryft-smoke` (or any listed namespace) takes that host's traffic; a Traefik Middleware with a `redirectRegex` on `api.ryftapp.de` redirects it to a host of the attacker's choosing; a Service with `externalIPs` in `ryft-web` captures cluster traffic to any IP (CVE-2020-8554). Follow-up T12-l6 (not built): P9 pins Ingress hosts per
+   namespace, refuses Traefik router annotations except `router.middlewares` and pins a `redirectRegex`
+   replacement to the service's own hosts; a new Service rule allows ClusterIP only, no `externalIPs` or
+   `ExternalName`, for Argo-written Services. A namespaced Issuer cannot use
    cert-manager's Pod Identity while `--issuer-ambient-credentials` stays off (the chart default).
 3. **The controller's choice of revision.** P10's revision rule binds argocd-server only. A stolen
    controller token can start a sync of any commit the repository serves (on GitHub that includes
@@ -434,7 +441,15 @@ off until Phase 1, `docs/OPERATIONS.md` → Admission policies):
    fixable at admission; accepted.
 4. **The admission objects themselves.** They are exempt from admission, so RBAC holds them. P12 removes
    the indirect routes (`kube-system/aws-auth`, a Pod running as a controller-manager or cert-manager
-   service account), not a direct write.
+   service account), not a direct write. It judges names, not what a ClusterRole or a binding grants: the
+   ClusterRole and binding route (rewriting an operators' ClusterRole to `*/*/*`, a binding to
+   `system:authenticated`) is closed when **P6 and P12 are both in Deny** (with P1 and P2), and the chart and
+   Terraform refuse `argo-scope: deny` unless `operators-cluster`, `namespaces` and `workloads-templates` are
+   deny too. And P12 in Deny protects nothing while the controller holds the chart's wildcard ClusterRole
+   (it could patch or delete the `ryft-argo-scope` binding and impersonate): Terraform refuses the deny until
+   `argocd.tf` renders a narrowed controller role (#47 merged and applied). If sync impersonation
+   (`application.sync.impersonation.enabled`) is ever turned on, Argo CD writes as other service accounts
+   and P12 matches nothing: a new decision.
 5. **Every other identity.** The operators have P8 and VSO has P4 and P5; cert-manager, Traefik,
    ExternalDNS, the nodes and the kube-controller-manager have none; the user and Terraform are
    break-glass.

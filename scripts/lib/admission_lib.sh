@@ -316,6 +316,15 @@ adm_deny_values() {
     done
     echo "netpol:"
     echo "  brokerEgressPublic: false"
+    # The chart refuses P12 in deny while P6, P1 or P2 is not (the RBAC route). The kind run holds P6 in
+    # audit until the tree has T12-g and must still try P12 in deny (claims n, o, p), so it lifts that guard
+    # here, in this run's values only; the route is not what these claims are about. Production's gate is
+    # admission.tf's precondition, which has no such switch.
+    case " $held " in
+      *" operators-cluster "*|*" namespaces "*|*" workloads-templates "*)
+        echo "argoScope:"
+        echo "  requireClosedRoutes: false" ;;
+    esac
   } > "$f"
 }
 

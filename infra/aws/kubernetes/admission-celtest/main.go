@@ -635,6 +635,21 @@ func printUnmodelled() {
 
 func runPositive(c *chart) {
 	fmt.Println("== every render of the repository passes (create and update, as Argo CD's controller)")
+	// The namespaces an Argo CD Application targets (deploy/argocd/apps). The generated Vault objects of a
+	// namespace no Application syncs (vault-namespaces/<svc> without an app vault-<svc>) are applied by the
+	// user, like the monitoring namespace: they are not Argo CD's writes.
+	appNs := map[string]bool{}
+	for _, d := range docs {
+		if d["kind"] == "Application" {
+			if sp, ok := d["spec"].(map[string]any); ok {
+				if dst, ok := sp["destination"].(map[string]any); ok {
+					if n, ok := dst["namespace"].(string); ok {
+						appNs[n] = true
+					}
+				}
+			}
+		}
+	}
 	for _, d := range docs {
 		d = defaults(deepCopy(d))
 		kind := d["kind"].(string)
@@ -648,6 +663,9 @@ func runPositive(c *chart) {
 		// (B2, deploy/argocd/project.yaml), and the generated objects of the monitoring namespace
 		// have no Argo app: the user applies them (make monitoring-apply).
 		if kind == "AppProject" || md["namespace"] == "monitoring" {
+			user = admin
+		}
+		if av, _ := d["apiVersion"].(string); strings.HasPrefix(av, "secrets.hashicorp.com/") && !appNs[fmt.Sprint(md["namespace"])] {
 			user = admin
 		}
 		label := fmt.Sprintf("%s %v/%v", kind, md["namespace"], md["name"])

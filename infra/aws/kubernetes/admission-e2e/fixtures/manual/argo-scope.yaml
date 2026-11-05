@@ -13,7 +13,7 @@
 #   r1 P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
 #   r2 P12: of Argo CD's service accounts only the application controller and the server write ...
 #   r3 P12: argocd-server writes only Applications and events in argocd ...
-#   r4 P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system ...
+#   r4 P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps ...
 #   r5 P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render ...
 # ----
 # fixture: P12 the controller patches argocd-cm
@@ -22,7 +22,7 @@
 # target: configmap argocd-cm -n argocd
 # patch: {"data":{"admin.enabled":"true"}}
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P12 the controller patches argocd-rbac-cm
 # op: patch
@@ -30,7 +30,7 @@
 # target: configmap argocd-rbac-cm -n argocd
 # patch: {"data":{"policy.default":"role:admin"}}
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P12 the server patches argocd-rbac-cm
 # op: patch
@@ -69,7 +69,7 @@
 # target: secret argocd-secret -n argocd
 # patch: {"data":{"server.secretkey":"Yw=="}}
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P12 the controller patches the image of the argocd-server Deployment
 # op: patch
@@ -78,7 +78,7 @@
 # patch-type: json
 # patch: [{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"registry.k8s.io/pause:3.9"}]
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P12 the server patches the image of the argocd-server Deployment
 # op: patch
@@ -94,7 +94,7 @@
 # as: system:serviceaccount:argocd:argocd-application-controller
 # target: deployment coredns -n kube-system
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P12 the controller deletes the Namespace rabbitmq-system (P1 refuses it too)
 # op: delete
@@ -124,7 +124,7 @@
 # op: create
 # as: system:serviceaccount:argocd:argocd-application-controller
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: aws-auth, namespace: kube-system }

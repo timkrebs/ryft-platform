@@ -14,11 +14,12 @@ docs/work/2026-10-23-admission/p12-argo-scope.md; D-entry "P12".
      1 no CONNECT and no subresource.
      2 only the controller and the server write; the one exception is the chart's
        redis-secret-init, which creates Secret argocd-redis.
-     3 the server: in argocd only, Applications and events, plus the FIRST server.secretkey of
-       argocd-secret (an UPDATE that adds that key and changes nothing else).
-     4 the controller, namespaced: any resource in a namespace with a prefix of
-       argoScope.namespacePrefixes or in argoScope.namespaces; in argocd only Applications and
-       events.
+     3 the server: in argocd only, Applications, events (create only), plus the FIRST
+       server.secretkey of argocd-secret (an UPDATE that adds that key and changes nothing else
+       but resourceVersion, managedFields and generation).
+     4 the controller, namespaced: any resource in a namespace of argoScope.namespaces (an
+       explicit list, no prefix); in argocd only Applications and events (events: create and
+       update, never delete).
      5 the controller, cluster-scoped: Namespaces argoScope.namespaceObjects (no DELETE), CRDs of
        argoScope.crdGroups (no DELETE), ClusterRoles and ClusterRoleBindings with an operators
        prefix, and the operators' webhook configurations. (No entry for access reviews:
@@ -72,8 +73,11 @@ spec:
     - name: res
       expression: |-
         request.resource.resource
-    # request.name is set for UPDATE and DELETE and, after the handler read it, for CREATE; the object
-    # is the fallback of a create (a generateName has none: '' is in no allowlist).
+    # request.name is set for UPDATE and DELETE and for CREATE: the API server generates the name of a
+    # generateName create before admission and sends it in request.name and in the object. The object is
+    # the fallback of a create; if neither carried a name, '' is in no allowlist (fail-safe either way).
+    # A DELETECOLLECTION reaches admission as a DELETE with an empty name: cluster-scoped is refused (rule 5),
+    # namespaced in scope is admitted, and no field is read that the request lacks.
     - name: name
       expression: |-
         has(request.name) && request.name != '' ? request.name :
@@ -106,10 +110,17 @@ spec:
     - name: isEvent
       expression: |-
         variables.res == 'events' && variables.grp in ['', 'events.k8s.io']
+    # Events are written, never removed: the server only creates them, the controller creates and updates
+    # (a patch is an UPDATE to admission). A DELETE of an Event, by either, is out of scope.
+    - name: serverEvent
+      expression: |-
+        variables.isEvent && request.operation == 'CREATE'
+    - name: controllerEvent
+      expression: |-
+        variables.isEvent && request.operation in ['CREATE', 'UPDATE']
     # a namespaced object in the scope of the controller (rule 4)
     - name: inScope
       expression: |-
-        {{ $s.namespacePrefixes | toJson }}.exists(p, variables.ns.startsWith(p)) ||
         variables.ns in {{ $s.namespaces | toJson }}
     # a cluster-scoped object the apps render (rule 5); the content is P1's and P6's
     - name: clusterOK
@@ -125,8 +136,11 @@ spec:
          variables.res in ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations'] &&
          variables.name in {{ .Values.operators.webhookConfigurations | toJson }})
     # the server's FIRST server.secretkey (rule 3): an UPDATE of the Secret whose old object has data
-    # without the key, whose new object adds the key and changes nothing else (no value, no label,
-    # no annotation). It cannot be used while a key exists, i.e. in steady state.
+    # without the key, whose new object adds the key and changes nothing else: no value, no other
+    # top-level field (type, immutable, ...), and every metadata field equal (labels, annotations,
+    # ownerReferences, finalizers, ...) but resourceVersion, managedFields and generation, which the
+    # API server and the field manager move on any write. It cannot be used while a key exists, i.e.
+    # in steady state.
     - name: serverKeyInit
       expression: |-
         variables.isSrv && request.operation == 'UPDATE' && variables.ns == {{ $argoNs | toJson }} &&
@@ -135,8 +149,10 @@ spec:
         has(object.data) && {{ $s.serverInitKey | toJson }} in object.data &&
         oldObject.data.all(k, k in object.data && object.data[k] == oldObject.data[k]) &&
         object.data.all(k, k in oldObject.data || k == {{ $s.serverInitKey | toJson }}) &&
-        (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
-        (has(object.metadata.annotations) ? object.metadata.annotations : {}) == (has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {})
+        object.all(k, k in ['data', 'metadata'] || (k in oldObject && object[k] == oldObject[k])) &&
+        oldObject.all(k, k in ['data', 'metadata'] || k in object) &&
+        object.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || (k in oldObject.metadata && object.metadata[k] == oldObject.metadata[k])) &&
+        oldObject.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || k in object.metadata)
   validations:
     # rule 1
     - expression: |-
@@ -151,14 +167,14 @@ spec:
     # rule 3
     - expression: |-
         !variables.isSrv ||
-        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.isEvent || variables.serverKeyInit))
+        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.serverEvent || variables.serverKeyInit))
       message: "P12: argocd-server writes only Applications and events in {{ $argoNs }} (and once the first {{ $s.serverInitKey }} of {{ $s.serverSecret }})."
       reason: Forbidden
     # rule 4
     - expression: |-
         !variables.isCtl || variables.clusterScoped || variables.inScope ||
-        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.isEvent))
-      message: "P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in {{ $argoNs }} only Applications and events."
+        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.controllerEvent))
+      message: "P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in {{ $argoNs }} only Applications and events (never a delete of an event)."
       reason: Forbidden
     # rule 5
     - expression: |-

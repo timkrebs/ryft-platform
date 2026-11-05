@@ -31,7 +31,7 @@
 # refused-by: ryft-argocd
 # message: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
 # refused-by: ryft-argo-scope
-# message: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P7 an AppProject widened to everything (by anyone)
 # op: patch

@@ -414,16 +414,34 @@ flowchart LR
 - **Matched by the username prefix** `system:serviceaccount:argocd:`, on every resource and subresource
   in every namespace. No groups, no `userInfo.extra`, no field manager.
 - **Where the writers may write** (content stays P1–P11's):
-  - the controller: any resource in `ryft-*` and `rabbitmq-system`; in `argocd` only Applications and
-    events; cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs
+  - the controller: any resource in the explicit namespace list `argoScope.namespaces` (the apps'
+    namespaces, no `ryft-` prefix); in `argocd` only Applications and events (events: create and update,
+    never delete); cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs
     `*.rabbitmq.com` (no delete), the operators' prefixed ClusterRoles and bindings, their four webhook
     configurations (access reviews are exempt from policies and webhooks by kube-apiserver's exclusion list since 1.30, claim o);
-  - argocd-server: in `argocd` only Applications and events, plus the first `server.secretkey` of
-    `argocd-secret` (an UPDATE that adds that key and changes nothing else);
+  - argocd-server: in `argocd` only Applications and events (events: create only), plus the first
+    `server.secretkey` of `argocd-secret` (an UPDATE that adds that key and changes nothing else but
+    resourceVersion, managedFields and generation);
   - the chart's `argocd-redis-secret-init`: CREATE of Secret `argocd-redis`;
   - any other `argocd` service account: nothing. No subresource and no CONNECT, whoever the account.
 - **No AppProject write** from any Argo CD identity (B2: Terraform's). No finalizer carve-out.
 - Step B, Warn+Audit in Phase 1 with the others. `admission_policy` depends on the argocd release.
+- **Deny gate (chart `fail` and `admission.tf` preconditions):** `argo-scope: deny` needs `operators-cluster`,
+  `namespaces` and `workloads-templates` in deny (P12 judges names, not what a ClusterRole or binding grants;
+  the RBAC route is closed when P6 and P12 are both in Deny), and a narrowed controller ClusterRole rendered
+  by `argocd.tf` (#47 merged and applied; with the chart's wildcard role the controller can patch the
+  binding and impersonate). The full kind mode must pass on a tree containing #47, `argo-rbac` and `claim-i`
+  not skipped, and `kubectl auth can-i patch|delete validatingadmissionpolicybindings` and `impersonate users`
+  as the controller must answer no (OPERATIONS → P12).
+- **Sync impersonation** (`application.sync.impersonation.enabled: true`) would make Argo CD apply as the
+  AppProjects' service accounts and P12 would match nothing. It stays off; turning it on is a new decision.
+- **Not covered, named plainly:** in-scope writes with cluster-wide effect, which all 13 bindings admit:
+  an Ingress for `api.ryftapp.de` with a Traefik `router.priority` annotation in `ryft-smoke`, a Middleware with a `redirectRegex` on `api.ryftapp.de`, or a Service with `externalIPs` in `ryft-web` (CVE-2020-8554). Follow-up T12-l6 (not built): P9 pins Ingress hosts per namespace, refuses Traefik router
+  annotations except `router.middlewares`, pins a `redirectRegex` replacement to the service's own hosts;
+  a new Service rule (ClusterIP only, no `externalIPs`, no `ExternalName`) for Argo-written Services.
+  Also: P7 and P10 are in Deny only at Step D, so between Step B and Step D a stolen server token (a minted
+  UI session) can still write Application content (repo, destination, revision); P12 only confines it to
+  Applications and events in `argocd`.
 
 **Where each item lands:**
 

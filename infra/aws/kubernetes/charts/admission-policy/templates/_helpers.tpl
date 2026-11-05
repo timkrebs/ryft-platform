@@ -15,9 +15,9 @@ spliced in with toJson, which gives CEL string, list and map literals.
 {{- range $known -}}
 {{- if not (hasKey $.Values.actions .) -}}{{- fail (printf "actions.%s is missing" .) -}}{{- end -}}
 {{- end -}}
-{{- /* P12: a prefix of '' would put every namespace in the controller's scope; the secret and key names are what the init exemption compares. */ -}}
-{{- range .Values.argoScope.namespacePrefixes -}}
-{{- if not . -}}{{- fail "argoScope.namespacePrefixes must not hold an empty prefix (it would put every namespace in Argo CD's scope)" -}}{{- end -}}
+{{- /* P12: the controller's namespaces are an explicit list (an empty name or a wildcard would put every namespace in scope); the secret and key names are what the init exemption compares. */ -}}
+{{- range .Values.argoScope.namespaces -}}
+{{- if or (not .) (contains "*" .) -}}{{- fail "argoScope.namespaces must hold namespace names only (an empty name or a wildcard would put every namespace in Argo CD's scope)" -}}{{- end -}}
 {{- end -}}
 {{- range list "serverSecret" "serverInitKey" -}}
 {{- if not (index $.Values.argoScope .) -}}{{- fail (printf "argoScope.%s is required" .) -}}{{- end -}}
@@ -31,6 +31,12 @@ spliced in with toJson, which gives CEL string, list and map literals.
 {{- /* Hard guards: a deny that would refuse every request of its kind, or an object the cluster has today. */ -}}
 {{- if and (eq (include "admission.mode" (dict "root" . "key" "argocd")) "deny") (not .Values.projects) -}}
 {{- fail "actions.argocd is deny but projects is empty: P7 would refuse every AppProject write (T12-b wires projects)" -}}
+{{- end -}}
+{{- /* P12 judges names, not what a ClusterRole or a binding grants: on its own in deny it leaves the RBAC route open (the controller may still rewrite an operators' ClusterRole or bind one), which P6 (operators-cluster), P1 (namespaces) and P2 (workloads-templates) close. The mode is the effective one, so break-glass (audit everywhere) passes. */ -}}
+{{- if and .Values.argoScope.requireClosedRoutes (eq (include "admission.mode" (dict "root" . "key" "argo-scope")) "deny") -}}
+{{- range list "operators-cluster" "namespaces" "workloads-templates" -}}
+{{- if ne (include "admission.mode" (dict "root" $ "key" .)) "deny" -}}{{- fail (printf "actions.argo-scope is deny while actions.%s is not: P12 alone leaves the RBAC route (a ClusterRole rewrite, a binding to system:authenticated) open. Put operators-cluster, namespaces and workloads-templates in deny first (docs/work/2026-10-23-admission/p12-argo-scope.md)" .) -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if and (eq (include "admission.mode" (dict "root" . "key" "netpol")) "deny") .Values.netpol.brokerEgressPublic -}}
 {{- fail "actions.netpol is deny while netpol.brokerEgressPublic is true: ryft-rabbitmq's open 443 egress rule would be refused (T12-k narrows it first)" -}}

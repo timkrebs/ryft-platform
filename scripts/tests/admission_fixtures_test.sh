@@ -273,6 +273,18 @@ kc_cmp "" 'kube_validatingadmissionpolicybinding_info{namespace="",validatingadm
 echo '{"items":[]}' > "$tmp/none.json"
 adm_full_ksm_compare "$tmp/ksm_good.txt" "$tmp/none.json" && fail "ksm_compare: a cluster without bindings was accepted"
 
+# ---- adm_deny_values: the kind run lifts the chart's P12 ordering guard only when P6, P1 or P2 is held --------------------------
+if command -v yq >/dev/null 2>&1; then
+  adm_deny_values "$tmp/dv-none.yaml" ""
+  grep -q 'requireClosedRoutes' "$tmp/dv-none.yaml" && fail "adm_deny_values: nothing is held, the P12 ordering guard must stay on"
+  grep -q '^  argo-scope: deny$' "$tmp/dv-none.yaml" || fail "adm_deny_values: argo-scope must be deny when nothing is held"
+  adm_deny_values "$tmp/dv-p6.yaml" "operators-cluster netpol"
+  grep -q '^  requireClosedRoutes: false$' "$tmp/dv-p6.yaml" || fail "adm_deny_values: P6 held, the kind run must lift the P12 ordering guard"
+  grep -q '^  argo-scope: deny$' "$tmp/dv-p6.yaml" || fail "adm_deny_values: argo-scope stays deny when P6 is held (claims n, o, p need it)"
+  adm_deny_values "$tmp/dv-net.yaml" "netpol"
+  grep -q 'requireClosedRoutes' "$tmp/dv-net.yaml" && fail "adm_deny_values: only netpol held, the guard must stay on"
+fi
+
 # ---- adm_full_argo_restart (claim p) ----------------------------------------------------------------------------------------------
 RV=100 RV_AFTER=100 ROLL_RC=0
 adm_full_argocd_login() { return 0; }

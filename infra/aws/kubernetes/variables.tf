@@ -71,6 +71,12 @@ variable "admission_scoped_rbac_file" {
   default     = null
 }
 
+variable "admission_argo_rbac_narrowed" {
+  description = "Stands in for the check that argocd.tf renders a narrowed controller ClusterRole (T12-f), which lets argo-scope go to deny. null reads argocd.tf; a test sets it. Never for an apply (check admission_gate_override)."
+  type        = bool
+  default     = null
+}
+
 variable "admission_enabled" {
   description = "Overrides `enabled` of admission-values.yaml for one plan (tests, a dry look at the release). null uses the file; the real switch is the reviewed file, so do not run an apply with this set."
   type        = bool

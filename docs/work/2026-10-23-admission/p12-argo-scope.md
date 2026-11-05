@@ -70,7 +70,7 @@ promise that Argo CD cannot switch off or bypass the admission layer:
 - `argocd.tf`: "Argo CD cannot switch off or bypass the admission layer";
 - OPERATIONS: "a compromised Argo CD … cannot switch off the admission layer".
 
-**That promise is false until P12 is in Deny.** Route 1 alone shows it. #47 must not merge with
+**That promise is false until P6 and P12 are both in Deny, and #47 is applied.** Route 1 alone shows it. #47 must not merge with
 those sentences unchanged (ticket T12-l4).
 
 **Aside (not P12).** The branch's controller rules still lack D151's
@@ -184,8 +184,8 @@ later hardening (see "What P12 does not cover"). It doesn't block A.
 | --- | --- | --- |
 | 1 | no CONNECT (exec, attach, port-forward, proxy) and no subresource (`status`, `scale`, `eviction`, `ephemeralcontainers`, `token`, …) | `P12: Argo CD writes no subresource and opens no connection to a pod, service or node.` |
 | 2 | only the controller and the server write. The one exception is `argocd-redis-secret-init`: CREATE of Secret `argocd-redis` in `argocd` | `P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).` |
-| 3 | the server: in `argocd` only, `applications.argoproj.io` and `events`, plus the first `server.secretkey` (below) | `P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).` |
-| 4 | the controller, namespaced: a namespace starting with `ryft-`, or in `[rabbitmq-system]`, any resource; in `argocd`, only `applications.argoproj.io` and `events` (core and `events.k8s.io`) | `P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.` |
+| 3 | the server: in `argocd` only, `applications.argoproj.io`, `events` (CREATE only), plus the first `server.secretkey` (below) | `P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).` |
+| 4 | the controller, namespaced: a namespace in the explicit list `argoScope.namespaces` (the apps' namespaces: `ryft-api`, `ryft-ingest`, `ryft-migrate`, `ryft-notify`, `ryft-rabbitmq`, `ryft-scoring`, `ryft-smoke`, `ryft-web`, `rabbitmq-system`; no `ryft-` prefix, which would also cover the import service's namespace with its own Vault credentials and every future infra namespace), any resource; in `argocd`, only `applications.argoproj.io` and `events` (core and `events.k8s.io`; CREATE and UPDATE, never a DELETE) | `P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).` |
 | 5 | the controller, cluster-scoped: only what the apps render (below) | `P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.` |
 
 **Cluster-scoped allowlist (rule 5).** Values drive it, and the lists are the ones P1 and P6 already
@@ -227,8 +227,10 @@ exemption, a server started against a recreated `argocd-secret` crash-loops unde
 - RBAC, CRDs and webhooks are P6's;
 - workloads are P2–P5, P9 and P11.
 
-`ryft-` is a prefix, as R is everywhere else. Only `infra/vault` (the user) and Argo creates `ryft-*`
-namespaces, and Argo creates only the two names (rule 5, P1).
+The controller's namespaces are an explicit list, not the prefix `ryft-` (which also covers the import
+service's namespace, with its own Vault credentials and no Argo CD app, and every future infra namespace).
+Only `infra/vault` (the user) and Argo create `ryft-*` namespaces, and Argo creates only the two names
+(rule 5, P1). `admission.tf`'s check compares the list with the destinations of `deploy/argocd/apps`.
 
 **AppProjects (decision 3).** No Argo CD identity writes an AppProject:
 - B2 makes them Terraform's;
@@ -277,9 +279,7 @@ spec:
     - name: isEvent
       expression: variables.res == 'events' && variables.grp in ['', 'events.k8s.io']
     - name: inScope
-      expression: |-
-        {{ .Values.argoScope.namespacePrefixes | toJson }}.exists(p, variables.ns.startsWith(p)) ||
-        variables.ns in {{ .Values.argoScope.namespaces | toJson }}
+      expression: variables.ns in {{ .Values.argoScope.namespaces | toJson }}
     - name: clusterOK
       expression: |-
         variables.ns == '' && (
@@ -301,8 +301,17 @@ spec:
         has(object.data) && {{ .Values.argoScope.serverInitKey | toJson }} in object.data &&
         oldObject.data.all(k, k in object.data && object.data[k] == oldObject.data[k]) &&
         object.data.all(k, k in oldObject.data || k == {{ .Values.argoScope.serverInitKey | toJson }}) &&
-        (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
-        (has(object.metadata.annotations) ? object.metadata.annotations : {}) == (has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {})
+        object.all(k, k in ['data', 'metadata'] || (k in oldObject && object[k] == oldObject[k])) &&
+        oldObject.all(k, k in ['data', 'metadata'] || k in object) &&
+        object.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || (k in oldObject.metadata && object.metadata[k] == oldObject.metadata[k])) &&
+        oldObject.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || k in object.metadata)
+        # (everything but data and the three fields the API server and the field manager move on any write
+        # is compared: labels, annotations, ownerReferences, finalizers, immutable, type ...)
+    # events: the server only creates them, the controller creates and updates, nobody deletes (rules 3, 4)
+    - name: serverEvent
+      expression: variables.isEvent && request.operation == 'CREATE'
+    - name: controllerEvent
+      expression: variables.isEvent && request.operation in ['CREATE', 'UPDATE']
   validations:   # rules 1-5 of the table, in that order
 ```
 
@@ -310,8 +319,8 @@ spec:
 
 ```yaml
 argoScope:
-  namespacePrefixes: [ryft-]
-  namespaces: [rabbitmq-system]
+  namespaces: [ryft-api, ryft-ingest, ryft-migrate, ryft-notify, ryft-rabbitmq, ryft-scoring, ryft-smoke, ryft-web, rabbitmq-system]
+  requireClosedRoutes: true   # the chart refuses argo-scope: deny unless operators-cluster, namespaces and workloads-templates are deny (kind run only: false)
   namespaceObjects: [ryft-web, rabbitmq-system]   # P1 reads this list too (today a literal in p01)
   crdGroups: [rabbitmq.com]
   serverSecret: argocd-secret
@@ -396,7 +405,7 @@ flowchart LR
 | a legitimate controller write missing from the allowlist (an upgrade's new write: a Lease, a shard ConfigMap, a new kind or namespace) | every app whose sync needs it. If the write is part of controller startup, **all syncing stops** | `AdmissionPolicyDenied` (warning), `ArgoAppOutOfSync`, comparison or sync errors naming `P12:`, controller logs | user break-glass: `kubectl patch validatingadmissionpolicybinding ryft-argo-scope --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'` (always possible, claim a). Then a chart PR (values) and the user's apply. Terraform restores the binding (`-replace=…[0]` if it was patched). **Never through Argo**: Argo can't change the chart, and a blocked Argo doesn't block the fix |
 | a server write missing (a first start without the exemption, a new Argo CD version that writes a ConfigMap) | the UI and CLI; the server crash-loops if the write is at init | `AdmissionPolicyDenied`, argocd-server not Ready, the `argocd` health of the UI | as above |
 | a CEL error (an unguarded absent request field on a cluster-scoped or DELETE request) | everything P12 matches: every Argo write | `AdmissionPolicyError` (critical when Deny) | break-glass. The harness pins cluster-scoped, DELETE and CONNECT cases so Audit and kind catch it first |
-| `redis-secret-init` refused (prefix match, a hook that changed) | `helm_release.argocd` install or upgrade fails at the pre-upgrade hook: a Terraform error | `terraform apply` error, `AdmissionPolicyDenied` | `-var='admission_break_glass=true'` on the same apply, or the binding patch; then the chart |
+| `redis-secret-init` refused (prefix match, a hook that changed), or any write of an Argo CD chart upgrade that the allowlist lacks | `helm_release.argocd` install or upgrade fails at the pre-upgrade hook: a Terraform error | `terraform apply` error, `AdmissionPolicyDenied` | **only the binding patch** (`kubectl patch validatingadmissionpolicybinding ryft-argo-scope --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'`), then the apply of the argocd release, then the chart and the restore. `-var='admission_break_glass=true'` does **not** help here: `helm_release.admission_policy` depends on `helm_release.argocd`, so the argocd release is applied first, under the live Deny binding, and the variable only reaches the policy release after it |
 | the binding deleted, patched or left in break-glass | P12 off: the finding is open again | `AdmissionBindingMissing` (now 13), `AdmissionBindingDrift`, `AdmissionBreakGlass`, the `check` block | `terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'` |
 | an attack (a stolen token) | refused | `AdmissionPolicyDenied` for `ryft-argo-scope` with a user from `argocd`; the CloudWatch query in `design.md` §5 by `user.username` | rotate: delete the SA's token Secrets if any (tokens are bound and projected, so restart the pod to rotate), review `argocd-secret` and the audit log, `terraform apply -replace=random_password.argocd_admin` if the server was involved |
 
@@ -555,7 +564,35 @@ is a finding to explain.
      counts, no `-replace` needed): no P12 finding.
    - **The daily query** in `design.md` §5, filtered on `ryft-argo-scope`: zero lines is the exit
      condition.
-4. **Deny at Step B** (decision 2).
+4. **Deny at Step B** (decision 2), only after the Deny gate below.
+
+**The Deny gate (before `argo-scope: deny`, a reviewed PR and the user's apply).** P12 is worth something
+only when two things hold, and the chart and Terraform check the first and the second:
+- **P6, P1 and P2 are in Deny** (`operators-cluster`, `namespaces`, `workloads-templates`). P12 judges names,
+  not what a ClusterRole or a binding grants: probes show an UPDATE of `rabbitmq-cluster-operator-role` to
+  `*/*/*` and a CREATE of a ClusterRoleBinding to `system:authenticated` are admitted by P12 (the names are
+  the operators' own) and refused only by P6. The route is closed when **P6 and P12 are both in Deny**. The
+  chart fails the render and `admission.tf` fails the plan (a precondition) otherwise; the chart's
+  `argoScope.requireClosedRoutes: false` exists for the kind run only (it holds P6 in audit until the tree has
+  T12-g) and `admission.tf` has no such switch.
+- **#47 is merged AND applied** (checked by Terraform: `argocd.tf` renders `controller.clusterRoleRules`
+  without a wildcard, and no `application.sync.impersonation.enabled`). This PR is not based on #47; the kind
+  run on it therefore SKIPs `argo-rbac` and `claim-i`. With the chart's wildcard ClusterRole the controller
+  can patch or delete the `ryft-argo-scope` binding (bindings are exempt from admission) and impersonate, and
+  P12's deny stops nothing. Before Deny, by hand, against the live cluster (read-only, `--context ryft-prod-euc1`),
+  each of these must answer **no**:
+  ```bash
+  kubectl --context ryft-prod-euc1 auth can-i patch  validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller
+  kubectl --context ryft-prod-euc1 auth can-i delete validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller
+  kubectl --context ryft-prod-euc1 auth can-i impersonate users                        --as=system:serviceaccount:argocd:argocd-application-controller
+  ```
+  and the full kind mode (`gh workflow run admission-e2e.yml --ref <the branch> -f ref=<the branch>`) must
+  pass **on a tree that contains #47**, with `argo-rbac` and `claim-i` not skipped.
+- **Sync impersonation stays off.** `application.sync.impersonation.enabled: true` makes Argo CD apply as the
+  service accounts of each AppProject, so P12 (which matches `system:serviceaccount:argocd:`) would match
+  nothing and the policy would be silently inert. Turning it on is a new decision, with its own policy.
+- **An `argoScope` change is applied before, and separately from, an argo-cd chart bump** (see the failure
+  table: a refused upgrade can only be unblocked by the binding patch).
 
 **Not in the same release as #47.** #47 is a change to `helm_release.argocd`, and Step 0 requires that
 its plan touch nothing else. P12 is a chart change behind `enabled: false`. Bundling them would:
@@ -569,7 +606,7 @@ Pods: Step B's class. Its failure is wider than B's (every app, not only `ryft-p
 Audit signal is clearer than any other policy's. Why not Step D: the aws-auth route stays open for
 the whole Phase 2 until D, and P12 guards the premise every other step rests on (that Argo CD can't
 turn the layer off). Step A is defined as "small apps only", and P12 isn't one. If the 7 days show
-zero P12 lines, the user may move P12 to A; the chart allows any order.
+zero P12 lines, the user may move P12 to A only with P6, P1 and P2 already in deny: the chart and Terraform refuse `argo-scope: deny` otherwise.
 
 **DR order.** `helm_release.admission_policy` gets `depends_on = [helm_release.argocd]`, so on a
 fresh cluster Argo CD has started, and written its `server.secretkey`, before any policy exists. The
@@ -595,12 +632,17 @@ exemption covers a later recreate.
 1. **Reads.** Admission sees writes only.
    - Both chart Roles in `argocd` read Secrets there. A stolen controller or server token reads
      `server.secretkey` and can mint an Argo CD session for `admin` on the public UI.
-   - That session acts as argocd-server, so P7, P10 and P12 bound it: Applications only, pinned
-     spec, no foreign revision.
+   - That session acts as argocd-server. P12 confines it to Applications and events in `argocd`; what an
+     Application may contain (repo, destination, revision) is held by P7 and P10, **which are in Deny only
+     at Step D**. Between Step B and Step D a stolen server token can still write Application content.
    - The controller also reads ConfigMaps and Services cluster-wide (`aws-auth`'s content included).
    - Closing these reads needs RBAC (option C, or a fork of the chart's Roles), not admission.
-2. **Writes inside the scope.** In `ryft-*` and `rabbitmq-system` a stolen controller token still
+2. **Writes inside the scope.** In the listed namespaces a stolen controller token still
    writes, and deletes, whatever RBAC allows.
+   - **Some of these take effect cluster-wide, and all 13 bindings admit them:** an Ingress for `api.ryftapp.de` carrying a Traefik `router.priority` annotation in `ryft-smoke` (or any listed namespace) takes that host's traffic; a Traefik Middleware with a `redirectRegex` on `api.ryftapp.de` redirects it to a host of the attacker's choosing; a Service with `externalIPs` in `ryft-web` captures cluster traffic to any IP (CVE-2020-8554).
+   - **T12-l6 (follow-up, not built):** P9 pins Ingress hosts per namespace, refuses Traefik router annotations except `router.middlewares`, and pins a `redirectRegex` replacement to the service's own hosts; a new Service rule: ClusterIP only, no `externalIPs` and no `ExternalName`, for Services written by Argo CD.
+   - A namespace is in the list only when an Application targets it (a check compares the list with
+     `deploy/argocd/apps`); a new service's namespace is added to `argoScope.namespaces` first.
    - P2–P6, P9 and P11 judge content.
    - Nothing judges a Service selector, a ConfigMap value (beyond P5's auth keys), an HPA, a PDB, or
      a cert-manager Certificate or Issuer.
@@ -616,9 +658,15 @@ exemption covers a later recreate.
      plainly.
 4. **The admission objects themselves.** They are exempt from admission (claim a), so RBAC holds
    them (#47).
-   - #47's escalate/bind limit is closed by P6 in Deny, not by P12.
+   - #47's escalate/bind limit is closed by P6 in Deny, not by P12: P12 does **not** close the
+     ClusterRole and ClusterRoleBinding route (its names are the operators' own). It is closed when P6 and
+     P12 are both in Deny, which the chart and Terraform enforce.
    - P12 removes the *indirect* routes: `aws-auth`, a Pod running as a controller-manager or
      cert-manager SA.
+   - Prune by name: rule 5 admits a DELETE of the operators' four webhook configurations and of the
+     prefixed ClusterRoles and bindings (Argo CD prunes them when they leave git), so a stolen controller
+     token can delete those (the operators' admission webhooks, their roles); it cannot delete anything
+     else cluster-scoped, and not a Namespace or a CRD.
 5. **Every other identity.** Each has its own policy, or none:
    - the operators: P8;
    - VSO: P4 and P5;
@@ -646,6 +694,7 @@ exemption covers a later recreate.
 | T12-l1 | infra-engineer | **Chart 0.3.0:**<br>- `templates/p12-argo-scope.yaml`, the `argoScope` values, `$known`, and P1 reading `argoScope.namespaceObjects`;<br>- `admission-values.yaml` (`argo-scope: audit`, the step comment);<br>- `admission.tf` (`depends_on = [helm_release.argocd]`);<br>- `tests/admission.tftest.hcl` (13 keys, a P12 binding in the drift mocks);<br>- design.md §2 (P12), the claims n–p, the step table | M (1 day) | 2, after #47 is merged |
 | T12-l2 | test-engineer | **Harness and kind:**<br>- the kinds, admin for the projects and root, `cases_argo_scope.go` (about 60), the collisions, golden, emitted fixtures (about 6);<br>- `adm_fixtures` with several `refused-by`, the baseline stand-ins, `fixtures/manual/argo-scope.yaml` (about 14);<br>- full mode: restart, `helm upgrade`, SSAR, findings;<br>- the OPERATIONS kind-run text (12 and 13) | L (1.5–2 days) | 2, same PR as T12-l1 (the job needs both) |
 | T12-l3 | sre | `AdmissionBindingMissing` `< 12` to `< 13` and its summary, the promtool test, `scripts/admission_intended.sh` regenerated (`make alerts-check`), OBSERVABILITY | S | 2, same PR (`admission_intended.sh --check` fails otherwise) |
+| T12-l6 | infra-engineer (follow-up, not built) | **In-scope routes:** P9 pins Ingress hosts per namespace, refuses Traefik router annotations except `router.middlewares`, pins a `redirectRegex` replacement to the service's own hosts; a new Service rule (ClusterIP only, no `externalIPs`, no `ExternalName`) for Argo-written Services; harness cases and a kind fixture each | M | after Phase 1, before P12's Deny is relied on for these routes |
 | T12-l5 | the user | the full kind run on the PR's tree (Actions → `admission-e2e`, `ref` = the branch); review; Phase 1 (unchanged commands, `design.md` §5) with checklist items 11 and 12; Step B with P12 | – | 3, 4 |
 
 **Risks.**
@@ -664,9 +713,9 @@ exemption covers a later recreate.
 **`OPERATIONS.md`, "What Argo CD may no longer do"** (T12-l4). Proposed text:
 > Argo CD's ClusterRoles hold no write on the admission policies or bindings, so Argo CD cannot
 > change them directly. What it may write elsewhere is held at admission by P12 (`ryft-argo-scope`):
-> the controller writes only in `ryft-*` and `rabbitmq-system`, Applications and events in `argocd`,
+> the controller writes only in the namespaces of its apps (`argoScope.namespaces`), Applications and events in `argocd`,
 > and the cluster-scoped names its apps render; argocd-server writes only Applications and events in
-> `argocd`. **Until P12 is in Deny, a stolen controller token is as strong as cluster-admin**
+> `argocd`. **Until P6 and P12 are both in Deny, a stolen controller token is as strong as cluster-admin**
 > (`kube-system/aws-auth`, or a Pod running as a `kube-system` controller service account). The chart's
 > namespaced Roles in `argocd` stay as shipped; P12 refuses their Secret, ConfigMap and AppProject
 > writes.
@@ -677,11 +726,11 @@ exemption covers a later recreate.
 - Checklist items 11 and 12.
 - "A new namespace, kind or cluster-scoped name for Argo CD: the chart (`argoScope`) and
   `argocd.tf` first, then the manifests".
-- "Adding a service: nothing, inside `ryft-`".
+- "Adding a service: its namespace into `argoScope.namespaces` first, then the manifests".
 - The break-glass line for `ryft-argo-scope`.
 - "12 policies, 13 bindings".
 - Admin password rotation stays Terraform's (`-replace=random_password.argocd_admin`); the UI's
-  password change and `argocd cert add` / `gpg add` are refused.
+  password change and `argocd cert add` / `gpg add` are refused under Deny.
 
 **Elsewhere.**
 - `ARCHITECTURE.md` "Not covered": the six items above.
@@ -704,13 +753,21 @@ exemption covers a later recreate.
   admission layer" was not true.
 - **Decision:** a twelfth ValidatingAdmissionPolicy, `ryft-argo-scope`, matched by the username
   prefix `system:serviceaccount:argocd:` (impersonation-safe; groups, `extra` and field managers are
-  not used). The controller writes namespaced objects only in `ryft-*` and `rabbitmq-system`, in
+  not used). The controller writes namespaced objects only in the explicit list `argoScope.namespaces`
+  (the apps' namespaces, not a `ryft-` prefix), in
   `argocd` only Applications and events, cluster-scoped only Namespaces `ryft-web`/`rabbitmq-system`,
   `*.rabbitmq.com` CRDs, the operators' prefixed ClusterRoles and bindings and four webhook
   configurations (access reviews are exempt from policies and webhooks by kube-apiserver's exclusion list, claim o); no Namespace or CRD delete. argocd-server writes only
   Applications and events in `argocd`, plus the first `server.secretkey` of `argocd-secret`. The
   chart's redis-secret-init may create Secret `argocd-redis`. Every other `argocd` service account
-  writes nothing. No subresource, no CONNECT. Content stays P1–P11's.
+  writes nothing. No subresource, no CONNECT. Events: the server creates, the controller creates and
+  updates, nobody deletes. Content stays P1–P11's.
+- **Deny gate:** `argo-scope: deny` requires `operators-cluster`, `namespaces` and `workloads-templates`
+  in deny (P12 judges names, not what a ClusterRole or binding grants: the RBAC route is closed when P6 and
+  P12 are both in Deny), and a narrowed controller ClusterRole rendered by `argocd.tf` (#47 merged and
+  applied: with the chart's wildcard role the controller can patch the binding and impersonate). The chart
+  fails the render, `admission.tf` fails the plan; the full kind mode must pass on a tree with #47. Sync
+  impersonation (`application.sync.impersonation.enabled`) must stay off: it would make P12 match nothing.
 - **Owner and rollout:** the admission chart (0.3.0), Terraform, the user's apply; Warn+Audit with
   Phase 1 (two checklist items: a restart of the Argo CD components, an apply of the argocd
   release), Deny at Step B. `admission_policy` depends on the argocd release. Not in #47's release.
@@ -719,10 +776,14 @@ exemption covers a later recreate.
   among them a `cert-manager` Deployment as the controller), the full run (no P12 finding through
   sync, hooks, restart and chart upgrade).
 - **Accepted:** reads (both Argo CD Roles read Secrets in `argocd`); writes inside the scope beyond
-  P2–P11's content rules; the controller's choice of revision; the admission objects stay RBAC's.
+  P2–P11's content rules, among them in-scope writes with cluster-wide effect (an Ingress with a Traefik
+  router priority, a `redirectRegex` Middleware, a Service with `externalIPs`; follow-up T12-l6); the
+  controller's choice of revision; Application content written by a stolen server token between Step B
+  and Step D; the admission objects stay RBAC's. A refused Argo CD chart upgrade is unblocked by the binding
+  patch alone (the policy release depends on the argocd release).
 - **Consequences:** a new Argo-made namespace, a new cluster-scoped kind or name, or an Argo CD
   version that writes something new needs the chart first; the kind e2e on every argo-cd chart
-  upgrade covers it. A new service inside `ryft-` needs nothing. Removing P12 is a forward change
+  upgrade covers it. A new service's namespace goes into `argoScope.namespaces` first. Removing P12 is a forward change
   (0.3.1), never a downgrade.
 ```
 

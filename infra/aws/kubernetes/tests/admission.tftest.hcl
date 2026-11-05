@@ -764,8 +764,9 @@ run "argo_scope_ships_in_audit_with_the_scope_of_the_design" {
 
   assert {
     condition = (
-      local.admission_defaults.argoScope.namespacePrefixes == ["ryft-"] &&
-      local.admission_defaults.argoScope.namespaces == ["rabbitmq-system"] &&
+      !contains(keys(local.admission_defaults.argoScope), "namespacePrefixes") &&
+      local.admission_defaults.argoScope.namespaces == ["ryft-api", "ryft-ingest", "ryft-migrate", "ryft-notify", "ryft-rabbitmq", "ryft-scoring", "ryft-smoke", "ryft-web", "rabbitmq-system"] &&
+      local.admission_defaults.argoScope.requireClosedRoutes == true &&
       local.admission_defaults.argoScope.namespaceObjects == ["ryft-web", "rabbitmq-system"] &&
       local.admission_defaults.argoScope.crdGroups == ["rabbitmq.com"] &&
       local.admission_defaults.argoScope.serverSecret == "argocd-secret" &&
@@ -787,15 +788,71 @@ run "argo_scope_ships_in_audit_with_the_scope_of_the_design" {
   }
 }
 
-run "argo_scope_deny_is_deny_and_audit_and_break_glass_wins" {
+# The namespaces of P12 are an explicit list, and every Application of deploy/argocd/apps is synced into one.
+run "argo_scope_namespaces_cover_the_apps_and_are_no_prefix" {
+  command = plan
+
+  assert {
+    condition     = length(local.admission_app_destinations) >= 8 && alltrue([for n in local.admission_app_destinations : contains(local.admission_defaults.argoScope.namespaces, n)])
+    error_message = "every destination namespace of deploy/argocd/apps must be in argoScope.namespaces (check admission_argo_scope)"
+  }
+
+  assert {
+    condition     = !contains(local.admission_defaults.argoScope.namespaces, local.admission_argocd_namespace) && alltrue([for n in local.admission_defaults.argoScope.namespaces : !strcontains(n, "*")])
+    error_message = "argoScope.namespaces holds names only, never the argocd namespace (there the controller may write Applications and events only)"
+  }
+}
+
+# argo-scope: deny needs P6, P1 and P2 in deny (the RBAC route) AND a narrowed controller role (#47).
+run "argo_scope_deny_alone_is_refused" {
   command = plan
 
   variables {
-    admission_enabled = true
-    admission_actions = { argo-scope = "deny" }
+    admission_enabled            = true
+    admission_actions            = { argo-scope = "deny" }
+    admission_argo_rbac_narrowed = true
   }
 
-  expect_failures = [check.admission_enabled_override]
+  expect_failures = [helm_release.admission_policy, check.admission_enabled_override, check.admission_gate_override]
+}
+
+run "argo_scope_deny_without_p2_is_refused" {
+  command = plan
+
+  variables {
+    admission_enabled            = true
+    admission_actions            = { argo-scope = "deny", operators-cluster = "deny", namespaces = "deny" }
+    admission_scoped_rbac_file   = "admission-values.yaml"
+    admission_argo_rbac_narrowed = true
+  }
+
+  expect_failures = [helm_release.admission_policy, check.admission_enabled_override, check.admission_gate_override]
+}
+
+run "argo_scope_deny_with_the_wildcard_controller_role_is_refused" {
+  command = plan
+
+  variables {
+    admission_enabled            = true
+    admission_actions            = { argo-scope = "deny", operators-cluster = "deny", namespaces = "deny", workloads-templates = "deny" }
+    admission_scoped_rbac_file   = "admission-values.yaml"
+    admission_argo_rbac_narrowed = false
+  }
+
+  expect_failures = [helm_release.admission_policy, check.admission_enabled_override, check.admission_gate_override]
+}
+
+run "argo_scope_deny_is_deny_and_audit_with_the_route_closed_and_rbac_narrowed" {
+  command = plan
+
+  variables {
+    admission_enabled            = true
+    admission_actions            = { argo-scope = "deny", operators-cluster = "deny", namespaces = "deny", workloads-templates = "deny" }
+    admission_scoped_rbac_file   = "admission-values.yaml"
+    admission_argo_rbac_narrowed = true
+  }
+
+  expect_failures = [check.admission_enabled_override, check.admission_gate_override]
 
   assert {
     condition     = local.admission_effective["argo-scope"] == ["Deny", "Audit"] && yamldecode(helm_release.admission_policy[0].values[0]).actions["argo-scope"] == "deny"
@@ -804,7 +861,30 @@ run "argo_scope_deny_is_deny_and_audit_and_break_glass_wins" {
 
   assert {
     condition     = length(helm_release.admission_policy) == 1
-    error_message = "no guard concerns argo-scope: its deny needs nothing the tree lacks"
+    error_message = "with P6, P1 and P2 in deny and the controller's role narrowed, the release is planned"
+  }
+}
+
+# The rendered Argo CD RBAC is what the gate reads: no clusterRoleRules, or one with a wildcard, or sync
+# impersonation, is not narrowed.
+run "the_rbac_gate_reads_argocd_tf" {
+  command = plan
+
+  assert {
+    condition = local.admission_argo_rbac_narrowed == (
+      try(local.argocd_values.controller.clusterRoleRules.enabled, false) == true &&
+      !anytrue([
+        for r in try(local.argocd_values.controller.clusterRoleRules.rules, []) :
+        anytrue([for f in [try(r.apiGroups, []), try(r.resources, []), try(r.verbs, [])] : contains(f, "*")])
+      ]) &&
+      tostring(try(local.argocd_values.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
+    )
+    error_message = "without the variable the gate is exactly the rendered RBAC of argocd.tf"
+  }
+
+  assert {
+    condition     = !contains(keys(try(local.argocd_values.configs.cm, {})), "application.sync.impersonation.enabled")
+    error_message = "application.sync.impersonation.enabled makes Argo CD write as other service accounts: P12 would match nothing (see p12-argo-scope.md)"
   }
 }
 
@@ -818,6 +898,11 @@ run "argo_scope_under_break_glass_is_warn_and_audit" {
   }
 
   expect_failures = [check.admission_enabled_override]
+
+  assert {
+    condition     = length(helm_release.admission_policy) == 1
+    error_message = "under break-glass the guards of a deny do not fire (the effective action is Warn+Audit)"
+  }
 
   assert {
     condition     = local.admission_effective["argo-scope"] == ["Warn", "Audit"] && output.admission_binding_actions["argo-scope"] == ["Warn", "Audit"]

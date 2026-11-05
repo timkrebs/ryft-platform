@@ -85,6 +85,16 @@ func runArgoScope(c *chart) {
 	crt("P12 controller writes in xryft-api", argoCtl, cm("xryft-api", "c"), r4)
 	crt("P12 controller writes in rabbitmq-system-x", argoCtl, cm("rabbitmq-system-x", "c"), r4)
 	crt("P12 controller writes in argocd-x", argoCtl, cm("argocd-x", "c"), r4)
+	// the scope is a list of namespaces, not the prefix ryft-: the import service's namespace (ryft-import
+	// here; its own Vault credentials, no Argo CD app) and a future infra namespace are none of Argo CD's
+	crt("P12 controller writes a ConfigMap in ryft-import", argoCtl, cm("ryft-import", "c"), r4)
+	crt("P12 controller writes a Secret in ryft-import", argoCtl, mk("v1", "Secret", "ryft-import", "s"), r4)
+	crt("P12 controller writes a ConfigMap in a future ryft-infra namespace", argoCtl, cm("ryft-infra", "c"), r4)
+	crt("P12 controller writes in ryft-api-x", argoCtl, cm("ryft-api-x", "c"), r4)
+	// every namespace the committed apps target or render into (deploy/argocd/apps, the eks overlay)
+	for _, n := range []string{"ryft-api", "ryft-ingest", "ryft-migrate", "ryft-notify", "ryft-rabbitmq", "ryft-scoring", "ryft-smoke", "ryft-web", "rabbitmq-system"} {
+		crt("P12 controller creates a ConfigMap in "+n+" (the list)", argoCtl, cm(n, "c"))
+	}
 	// admitted twins
 	crt("P12 controller creates a ConfigMap in ryft-api", argoCtl, cm("ryft-api", "c"))
 	crt("P12 controller creates a ConfigMap in rabbitmq-system", argoCtl, cm("rabbitmq-system", "c"))
@@ -101,6 +111,10 @@ func runArgoScope(c *chart) {
 	crt("P12 controller creates an Event in argocd", argoCtl, mk("v1", "Event", "argocd", "ev1"))
 	raw("P12 controller creates an events.k8s.io Event in argocd", Req{User: argoCtl, Op: "CREATE", ResKind: "EventsK8s", Obj: mk("events.k8s.io/v1", "Event", "argocd", "ev1")})
 	crt("P12 controller creates an Event in kube-system", argoCtl, mk("v1", "Event", "kube-system", "ev1"), r4)
+	upd("P12 controller updates an Event in argocd (a repeated event)", argoCtl, mk("v1", "Event", "argocd", "ev1"))
+	del("P12 controller deletes an Event in argocd", argoCtl, mk("v1", "Event", "argocd", "ev1"), r4)
+	raw("P12 controller deletes an events.k8s.io Event in argocd", Req{User: argoCtl, Op: "DELETE", ResKind: "EventsK8s", Old: mk("events.k8s.io/v1", "Event", "argocd", "ev1")}, r4)
+	upd("P12 controller updates an Event in ryft-api", argoCtl, mk("v1", "Event", "ryft-api", "ev1"))
 
 	// ---- the controller, cluster-scoped (rule 5)
 	web := func() map[string]any { return find("Namespace", "", "ryft-web") }
@@ -215,6 +229,8 @@ func runArgoScope(c *chart) {
 	upd("P12 server updates an Application in argocd", argoSrv, app("vault-api"))
 	crt("P12 server creates an Event in argocd", argoSrv, mk("v1", "Event", "argocd", "ev1"))
 	crt("P12 server creates an Event in kube-system", argoSrv, mk("v1", "Event", "kube-system", "ev1"), r3)
+	upd("P12 server updates an Event in argocd", argoSrv, mk("v1", "Event", "argocd", "ev1"), r3)
+	del("P12 server deletes an Event in argocd", argoSrv, mk("v1", "Event", "argocd", "ev1"), r3)
 	crt("P12 server creates an Application outside argocd", argoSrv, set(app("vault-api"), "metadata/namespace", "default"), r3)
 	upd("P12 server patches argocd-cm", argoSrv, cm("argocd", "argocd-cm"), r3)
 	upd("P12 server patches argocd-rbac-cm", argoSrv, cm("argocd", "argocd-rbac-cm"), r3)
@@ -266,6 +282,40 @@ func runArgoScope(c *chart) {
 	updTo("P12 server adds the first server.secretkey to a Secret elsewhere", argoSrv, set(sec(with(base(), "server.secretkey", "Yw=="), lbl(), nil), "metadata/namespace", "ryft-api"), set(sec(base(), lbl(), nil), "metadata/namespace", "ryft-api"), r3)
 	updTo("P12 server adds the first server.secretkey to another Secret", argoSrv, set(sec(with(base(), "server.secretkey", "Yw=="), lbl(), nil), "metadata/name", "argocd-notifications-secret"), set(sec(base(), lbl(), nil), "metadata/name", "argocd-notifications-secret"), r3)
 	del("P12 server deletes argocd-secret", argoSrv, sec(base(), lbl(), nil), r3)
+	// the exemption compares everything else: ownerReferences, finalizers, immutable, type ... (a dangling
+	// ownerReference or a finalizer on argocd-secret is a way to have it garbage-collected or held)
+	withKey := func() map[string]any { return sec(with(base(), "server.secretkey", "Yw=="), lbl(), nil) }
+	ownerRef := []any{map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "name": "gone", "uid": "00000000-0000-0000-0000-000000000000"}}
+	updTo("P12 server adds the key and a dangling ownerReference", argoSrv, set(withKey(), "metadata/ownerReferences", ownerRef), sec(base(), lbl(), nil), r3)
+	updTo("P12 server adds the key and a finalizer", argoSrv, set(withKey(), "metadata/finalizers", []any{"example.com/hold"}), sec(base(), lbl(), nil), r3)
+	updTo("P12 server adds the key and makes the Secret immutable", argoSrv, set(withKey(), "immutable", true), sec(base(), lbl(), nil), r3)
+	updTo("P12 server adds the key and changes the type", argoSrv, set(withKey(), "type", "kubernetes.io/tls"), sec(base(), lbl(), nil), r3)
+	updTo("P12 server adds the key and renames a label key", argoSrv, sec(with(base(), "server.secretkey", "Yw=="), map[string]any{"app.kubernetes.io/name": "argocd"}, nil), sec(base(), lbl(), nil), r3)
+	updTo("P12 server adds the key and drops an ownerReference", argoSrv, withKey(), set(sec(base(), lbl(), nil), "metadata/ownerReferences", ownerRef), r3)
+	updTo("P12 server adds the key and drops a finalizer", argoSrv, withKey(), set(sec(base(), lbl(), nil), "metadata/finalizers", []any{"example.com/hold"}), r3)
+	updTo("P12 server adds the key and sets deletionTimestamp", argoSrv, set(withKey(), "metadata/deletionTimestamp", "2026-11-05T00:00:00Z"), sec(base(), lbl(), nil), r3)
+	// what the API server and the field manager move on any write is not a change
+	updTo("P12 server adds the key; resourceVersion, generation and managedFields move", argoSrv,
+		set(set(set(withKey(), "metadata/resourceVersion", "2"), "metadata/generation", float64(2)), "metadata/managedFields", []any{map[string]any{"manager": "argocd-server", "operation": "Update"}}),
+		set(set(sec(base(), lbl(), nil), "metadata/resourceVersion", "1"), "metadata/generation", float64(1)))
+	updTo("P12 server adds the key to a Secret that has an ownerReference and a finalizer, unchanged", argoSrv,
+		set(set(withKey(), "metadata/ownerReferences", ownerRef), "metadata/finalizers", []any{"example.com/hold"}),
+		set(set(sec(base(), lbl(), nil), "metadata/ownerReferences", ownerRef), "metadata/finalizers", []any{"example.com/hold"}))
+
+	// DELETECOLLECTION reaches admission as a DELETE with an empty name (and no object): cluster-scoped is
+	// refused by rule 5, namespaced in scope is admitted, outside scope refused; no CEL error in any case.
+	// Judged on ryft-argo-scope alone (the other policies are not modelled for a request without an object).
+	dcol := func(name, user, kind, ns string, want ...string) {
+		raw(name, Req{User: user, Op: "DELETE", ResKind: kind, Ns: ns, Only: "ryft-argo-scope"}, want...)
+	}
+	dcol("P12 controller deletes a collection of ConfigMaps in ryft-api", argoCtl, "ConfigMap", "ryft-api")
+	dcol("P12 controller deletes a collection of Applications in argocd", argoCtl, "Application", "argocd")
+	dcol("P12 controller deletes a collection of ConfigMaps in kube-system", argoCtl, "ConfigMap", "kube-system", r4)
+	dcol("P12 controller deletes a collection of Secrets in argocd", argoCtl, "Secret", "argocd", r4)
+	dcol("P12 controller deletes a collection of ClusterRoles", argoCtl, "ClusterRole", "", r5)
+	dcol("P12 controller deletes a collection of Namespaces", argoCtl, "Namespace", "", r5)
+	dcol("P12 server deletes a collection of Applications in argocd", argoSrv, "Application", "argocd")
+	dcol("P12 server deletes a collection of ConfigMaps in argocd", argoSrv, "ConfigMap", "argocd", r3)
 
 	// ---- rule 2: the other service accounts of argocd
 	crt("P12 redis-secret-init creates Secret argocd-redis", argoRedisInit, mk("v1", "Secret", "argocd", "argocd-redis"))
