@@ -164,6 +164,7 @@ as before, and `deploy/k8s/vault` is base + VaultStaticSecret. Image tags are no
   reach Postgres.
 - Both Traefik (k3s default) and ingress-nginx are allowed out of the box, since the
   Ingress comment names both; a Cloudflare tunnel peer is provided commented out.
+- *(Superseded in part by D185: Traefik and the smoke hook only; ingress-nginx removed.)*
 
 ## D17 — HPA owns replicas; scoring stays single
 
@@ -3757,3 +3758,26 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   it is decided in #121, not here.
 - **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
   enabled, except Pod Security refusals and the liveness alerts.
+
+## D185 — Only Traefik and the smoke hook reach the services on 8080; the ingress-nginx peer is gone (supersedes D16's third bullet; #140)
+
+- **Decision:** port 8080 of the services is admitted from exactly two peers. **Traefik** in `kube-system` (pods
+  `app.kubernetes.io/name: traefik`) for api, ingest and web, and **the PostSync smoke pod** (namespace `ryft-smoke`,
+  `app: smoke`, `deploy/k8s/base/smoke`) for api, ingest, scoring and notify (`deploy/k8s/base/<service>/networkpolicy.yaml`
+  on `origin/main` at `da869d0`). No other peer reaches 8080.
+- **What changed (#140, merged 2026-11-05 17:27 UTC):** api, ingest and web also admitted 8080 from namespace
+  `ingress-nginx` / pods `app.kubernetes.io/name: ingress-nginx` ("if you run that instead"). Nothing deploys
+  ingress-nginx: the only Ingress controller is Traefik in `kube-system` (the `helm_release.traefik` in
+  `infra/aws/kubernetes/addons.tf`; k3s's default locally, D24). The peer was an unused way around Traefik: a pod in a
+  namespace named `ingress-nginx` with that label could call the services directly and set the rightmost
+  `X-Forwarded-For` entry, which `httpx.ClientIP` and the admin per-address limiter (D155) take as the one Traefik
+  appended. #140 removed that one peer from the three policies and nothing else; `grep ingress-nginx` over `deploy/` and
+  `infra/` now finds nothing.
+- **D16 is out of date elsewhere too:** its first bullet says Prometheus reaches `:8080`; the metrics collector scrapes
+  `/metrics` on **9090**, from namespace `monitoring` (base policies) and, on EKS, from the VPC range
+  (`deploy/k8s/overlays/eks/metrics-from-nodes.yaml`, the host-network collector, D51), not on 8080. Its Cloudflare tunnel
+  peer no longer exists in `deploy/`. Its backup bullet is not re-checked here.
+- **Would change:** moving to another Ingress controller changes the policies and this decision in the same PR.
+- **Verification after the sync** (#140's body, the owner's read-only checks: `grep -c ingress-nginx` on the three
+  namespaces' NetworkPolicies `0`, `argocd app get ryft-platform` Synced and Healthy, `GET /v1/me` `401` and `/` `200`
+  through Traefik, `make smoke-prod`): given to the owner; the result is **not verified**.

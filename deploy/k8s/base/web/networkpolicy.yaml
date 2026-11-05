@@ -1,4 +1,4 @@
-# In: the Ingress controller. Out: nothing but DNS.
+# In: the Ingress controller (Traefik in kube-system, the only peer on 8080, D185). Out: nothing but DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
