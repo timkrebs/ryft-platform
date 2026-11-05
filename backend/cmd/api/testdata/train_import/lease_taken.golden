@@ -39,7 +39,7 @@ body: {"results":[{"kind":"session","id":"c7d7d7da-4001-5e4f-9069-b0b822f694b8",
 
 == state of user:a
 stored session session:s origin=import day=D-3 sets=1
-outbox ingested reason=import days=D-3 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-3 user=user:a request=#2 session_id_set=false
 pending D-3
 lease held: false
 record exercise:squat e1rm=116.7 from session:s
@@ -51,6 +51,7 @@ record exercise:squat max_weight=100 from session:s
 imports/busy +1
 imports/ok +1
 items/session/created +1
+seconds/observations +1
 
 == log lines
 http status=429 code=import_in_progress route=POST /v1/train/import

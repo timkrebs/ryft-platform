@@ -33,8 +33,8 @@ stored session session:two origin=import day=D-10 sets=1
 stored session session:fresh origin=import day=D-4 sets=1
 stored plan plan:keep
 stored plan plan:change
-outbox ingested reason=import days=D-12,D-10,D-8 request_id_set=true session_id_set=false
-outbox ingested reason=import days=D-10,D-8,D-4 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-12,D-10,D-8 user=user:a request=#1 session_id_set=false
+outbox ingested reason=import days=D-10,D-8,D-4 user=user:a request=#2 session_id_set=false
 pending D-10,D-8,D-4
 lease held: false
 record exercise:squat e1rm=140 from session:fresh
@@ -51,6 +51,7 @@ items/session/created +4
 items/session/rejected +1
 items/session/unchanged +1
 items/session/updated +1
+seconds/observations +2
 
 == log lines
 train import result=ok plans=2 sessions=3 created=5 unchanged=0 updated=0 rejected=0 days=3 level=INFO
