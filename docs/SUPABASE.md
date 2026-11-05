@@ -21,7 +21,11 @@ either.
    (a JWT from the `.p8`, valid at most six months) are only needed if a web sign-in
    is added later.
    - **Email accounts** (Authentication → Sign In / Providers → Email): enable *Email*,
-     turn on *Confirm email* and *Secure email change*. Under *Password*, set the
+     turn on *Confirm email* and *Secure email change* (**security-critical** for invites bound to an email:
+     with *Confirm email* off Supabase marks a sign-up's address confirmed at once, so anyone with a leaked invite link
+     could register the tester's address and redeem the code; the api also reads `mailer_autoconfirm` from the public
+     auth settings and refuses bound invites while it is on, D159; record the state in STATUS.md before the first
+     bound code). Under *Password*, set the
      minimum length to 10 and require letters and digits. Turn on *Leaked password
      protection* where the plan offers it.
    - **Redirects** (Authentication → URL Configuration): *Site URL*

@@ -1553,7 +1553,7 @@ curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=2026-10-21"
 ```bash
 # A code for one person (or max_uses for a group), optionally expiring:
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
-  -d '{"note": "Anna", "max_uses": 1, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
+  -d '{"note": "TestFlight wave 2", "max_uses": 20, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
 curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # status and uses so far, emails masked
 curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/invites?emails=1" | jq '.[] | {code, status, email, uses_by}'   # who, with addresses
 # REVOKE (since 2026-11-05 DELETE no longer removes the row): the code stays listed as "revoked", nobody redeems it
@@ -1561,18 +1561,49 @@ curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/invites?emails=1" | jq 
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites/RYFT-7K3M-QX9P
 ```
 
-**A code for one person (bound to an email).** `-d '{"note": "Anna", "email": "anna@example.com"}'` makes a
-single-use code that only the account whose **Supabase-confirmed** email is that address can redeem (D159). Use the
-address the tester signs in with; a Sign in with Apple "Hide My Email" address matches only a code made for exactly that
-relay address, so leave `email` out when you do not have it. Everyone else gets the same `422 "invalid or used code"`
-as for a wrong code, and a tester whose account lookup fails at Supabase gets `503` and sends again (a log line
-`invite email lookup failed`; unbound codes never depend on it). The address is cleared 30 days after the code stopped
-being redeemable (D161). **Do not create bound codes in production until the privacy text names the stored address
-(PRIVACY_POLICY_VERSION, a separate PR, decision U3).**
+**A code for one person (bound to an email).**
 
-**Rollback of 0033** (re-pinning the images from before): bound codes then act like unbound ones (the old image reads
-no `email`), revoked codes stay refused (a revoke also sets `expires_at`), and redemptions in the window get no
-`beta_invite_uses` row. After rolling forward, add the missing rows (safe to repeat):
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
+  -d '{"note": "Anna", "email": "anna@example.com", "expires_at": "2026-11-19T10:00:00Z"}' | jq '{code, link, expires_at}'
+```
+
+It is single use, **expires** (14 days when `expires_at` is left out, at most 90 days away) and only the account whose
+**Supabase-confirmed** email is that address can redeem it (D159). Use the address the tester signs in with; a Sign
+in with Apple "Hide My Email" address matches only a code made for exactly that relay address, so leave `email` out
+when you do not have it. Everyone else gets the same `422 "invalid or used code"` as for a wrong code, and a tester
+whose account lookup fails at Supabase gets `503` and sends again (a log line `invite email lookup failed`; unbound
+codes never depend on it). The address and the note are cleared 30 days after the code stopped being redeemable (D161;
+`ryft_invite_email_purge_total`, alert `InviteEmailPurgeFailing`); a person's name does not belong in the note of an
+unbound code, which is never cleared and has no hard delete (SQL: `UPDATE beta_invite_codes SET note = '' WHERE
+code = 'RYFT…'`).
+
+**Before the first bound code (security-critical, two checks).**
+
+1. **Supabase → Authentication → Sign In / Providers → Email: *Confirm email* ON and *Secure email change* ON**
+   (SUPABASE.md → checklist 3). With *Confirm email* off, Supabase marks a sign-up's address confirmed at once, and
+   anyone who has a leaked link could sign up with the tester's address and redeem the code. Record the state you saw
+   and the date in STATUS.md.
+2. **The api agrees:** `ryft_invite_binding_available` is 1 and the first `invite binding` line after the deploy says
+   `state: ok` (`kubectl -n ryft-api logs -l app=api | grep '"invite binding"'`, read-only). The api reads the
+   project's public setting `mailer_autoconfirm` at start and every hour, and while it is true, unreadable or the api
+   has no Supabase admin key, `POST /v1/admin/invites` with an `email` answers `422` with the reason and a bound code
+   cannot be redeemed (the same single `422`; `503` while the setting is unreadable). That is a safety net, not the
+   check: do check 1 yourself.
+3. **The privacy text names the stored address** (PRIVACY_POLICY_VERSION, a separate PR, decision U3): until it is
+   published, no bound codes in production.
+
+**Rollback of 0033** (re-pinning the images from before). **First, before the images are re-pinned, in the SQL
+editor as owner:** the old image reads no `email`, so every open bound code would otherwise be a code anyone can
+use. This revokes them (the old image refuses a revoked code through `expires_at`):
+
+```sql
+UPDATE beta_invite_codes SET revoked_at = now(), expires_at = LEAST(COALESCE(expires_at, now()), now())
+WHERE email IS NOT NULL AND revoked_at IS NULL;
+```
+
+Then re-pin. Revoked codes stay refused, and redemptions in the window get no `beta_invite_uses` row. After rolling
+forward, make new bound codes (the revoked ones stay revoked) and add the missing rows (safe to repeat):
 
 ```sql
 INSERT INTO beta_invite_uses (code, user_id, at)

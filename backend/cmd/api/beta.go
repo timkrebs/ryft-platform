@@ -101,6 +101,10 @@ func (a *accounts) VerifiedEmail(ctx context.Context, id uuid.UUID) (string, err
 		return "", err
 	case info.EmailConfirmedAt == nil:
 		return "", nil
+	case !store.PrintableASCII(info.Email):
+		// An address with a space, a control character or a non-ASCII byte is never the stored form: refused
+		// as it is, not trimmed into a match.
+		return "", nil
 	}
 	return info.Email, nil
 }
@@ -124,12 +128,22 @@ func (h *handler) redeemInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if bound {
-			if verified, err = h.verifiedEmail(r.Context(), u.ID); err != nil {
-				// Not the error: it comes from the Supabase client and is for the operator's logs only.
-				h.log.WarnContext(r.Context(), "invite email lookup failed", "err", err)
-				w.Header().Set("Retry-After", "5")
-				httpx.WriteError(w, http.StatusServiceUnavailable, "the invite could not be checked right now")
+			switch h.bindingState() {
+			case bindOK:
+				if verified, err = h.verifiedEmail(r.Context(), u.ID); err != nil {
+					// The error is the Supabase client's (a status and GoTrue's error_code, or the transport's
+					// cause; never the URL, which holds the user id) and is for the operator's logs only.
+					h.log.WarnContext(r.Context(), "invite email lookup failed", "err", err)
+					h.cannotCheck(w)
+					return
+				}
+			case bindUnknown:
+				// The project's sign-up settings cannot be read: not known whether a "confirmed" address is one.
+				h.cannotCheck(w)
 				return
+			default:
+				// Confirm email is off, or the api cannot ask Supabase: no address counts as confirmed, so the
+				// statement below refuses the bound code with the one 422.
 			}
 		}
 	}
@@ -151,6 +165,12 @@ func (h *handler) redeemInvite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// cannotCheck is the 503 for a bound code whose account's email cannot be checked now.
+func (h *handler) cannotCheck(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	httpx.WriteError(w, http.StatusServiceUnavailable, "the invite could not be checked right now")
+}
+
 func (h *handler) verifiedEmail(ctx context.Context, id uuid.UUID) (string, error) {
 	if h.emails == nil {
 		return "", nil
@@ -168,15 +188,22 @@ const purgeInviteEmailsAfter = 30 * 24 * time.Hour
 func purgeInviteEmailsEvery(ctx context.Context, st *store.Store, log *slog.Logger, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	// Both series exist at 0, so increase() sees the first pass of a pod's life.
+	metrics.InviteEmailPurges.WithLabelValues("ok")
+	metrics.InviteEmailPurges.WithLabelValues("error")
 	for {
 		n, err := st.PurgeInviteEmails(ctx, purgeInviteEmailsAfter)
 		switch {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
+			metrics.InviteEmailPurges.WithLabelValues("error").Inc()
 			log.WarnContext(ctx, "invite email purge failed", "err", err)
-		case n > 0:
-			log.InfoContext(ctx, "invite emails purged", "n", n)
+		default:
+			metrics.InviteEmailPurges.WithLabelValues("ok").Inc()
+			if n > 0 {
+				log.InfoContext(ctx, "invite emails purged", "n", n)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -235,6 +262,12 @@ func createdBy(r *http.Request) string {
 	return model.ActorKey // unreachable behind adminAuth; the column's default form
 }
 
+// A code for one email expires: 14 days when the caller names no time, and never more than 90 days away.
+const (
+	boundInviteDefaultExpiry = 14 * 24 * time.Hour
+	boundInviteMaxExpiry     = 90 * 24 * time.Hour
+)
+
 func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 	var in model.BetaInviteInput
 	if err := httpx.ReadJSON(w, r, &in, httpx.MaxBodyDefault); err != nil {
@@ -256,24 +289,39 @@ func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 		}
 		email = &e
 	}
+	now := time.Now()
 	msg := ""
 	switch {
 	case maxUses < 1 || maxUses > 1000:
 		msg = "max_uses must be 1-1000"
 	case len(in.Note) > 200:
 		msg = "note has at most 200 characters"
-	case in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now()):
+	case in.ExpiresAt != nil && !in.ExpiresAt.After(now):
 		msg = "expires_at must be in the future"
 	case email != nil && maxUses != 1:
 		msg = "a code for one email has max_uses 1"
+	case email != nil && in.ExpiresAt != nil && in.ExpiresAt.After(now.Add(boundInviteMaxExpiry)):
+		msg = "expires_at is at most 90 days away for a code for one email"
+	}
+	if msg == "" && email != nil {
+		// A bound code is only made while it can be redeemed safely (D159).
+		if state := a.h.bindingState(); state != bindOK {
+			msg = bindingMessage(state)
+		}
 	}
 	if msg != "" {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()
 		httpx.WriteError(w, 422, msg)
 		return
 	}
+	expiresAt := in.ExpiresAt
+	if email != nil && expiresAt == nil {
+		// The address of someone who may never sign up is not kept without an end: a bound code expires.
+		e := now.Add(boundInviteDefaultExpiry).UTC().Truncate(time.Second)
+		expiresAt = &e
+	}
 	inv, err := a.h.st.CreateInvite(r.Context(), store.NewInvite{Note: strings.TrimSpace(in.Note), MaxUses: maxUses,
-		ExpiresAt: in.ExpiresAt, Email: email, CreatedBy: createdBy(r)})
+		ExpiresAt: expiresAt, Email: email, CreatedBy: createdBy(r)})
 	if err != nil {
 		metrics.AdminRequests.WithLabelValues("error").Inc()
 		httpx.Fail(w, r, err)
@@ -311,6 +359,10 @@ func (a admin) invites(w http.ResponseWriter, r *http.Request) {
 // revokeInvite is DELETE /v1/admin/invites/{code}: the code stays listed and redeems nothing any more.
 // 204 also when it was revoked already; 404 for a code that does not exist.
 func (a admin) revokeInvite(w http.ResponseWriter, r *http.Request) {
+	// The access line logs the path, and this path ends in the code: log the pattern instead (D160).
+	if ri := httpx.Info(r.Context()); ri != nil {
+		ri.LogPath = "/v1/admin/invites/{code}"
+	}
 	err := a.h.st.RevokeInvite(r.Context(), r.PathValue("code"))
 	if errors.Is(err, store.ErrNotFound) {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()

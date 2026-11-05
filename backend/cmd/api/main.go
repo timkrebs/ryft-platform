@@ -101,6 +101,19 @@ func main() {
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
 		emails: acct, webURL: adminCfg.PublicWebURL}
+	// Email-bound invites need the Supabase project to confirm emails (D159): read its public setting now
+	// and hourly. Until it is known to be on, bound codes are neither made nor redeemed.
+	var settings autoconfirmSource
+	if acct.admin != nil {
+		settings = acct.admin
+	}
+	guard := newConfirmGuard(settings, log)
+	h.binding = guard
+	if settings == nil {
+		log.Warn("email-bound invites are unavailable: the api has no Supabase admin client (SUPABASE_SERVICE_ROLE_KEY unset, or apikey mode)")
+	}
+	guard.Refresh(ctx)
+	go guard.Run(ctx, time.Hour)
 	go purgeInviteEmailsEvery(ctx, st, log, time.Hour)
 
 	mux := http.NewServeMux()
@@ -238,6 +251,8 @@ type handler struct {
 	beta     config.Beta
 	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
 	emails inviteEmails
+	// binding says whether email-bound invites work now (the Supabase project confirms emails); nil: they do not.
+	binding bindingGate
 	// webURL is PUBLIC_WEB_URL, the base of an invite link; "" is config.DefaultPublicWebURL.
 	webURL string
 	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests

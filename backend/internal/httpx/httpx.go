@@ -252,7 +252,11 @@ func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 		}
 		metrics.HTTPRequests.WithLabelValues(route, strconv.Itoa(sw.status)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(dur.Seconds())
-		attrs := []any{"method", r.Method, "path", r.URL.Path, "status", sw.status, "bytes", sw.bytes, "dur_ms", dur.Milliseconds()}
+		path := r.URL.Path
+		if f.LogPath != "" {
+			path = f.LogPath
+		}
+		attrs := []any{"method", r.Method, "path", path, "status", sw.status, "bytes", sw.bytes, "dur_ms", dur.Milliseconds()}
 		if f.Code != "" {
 			attrs = append(attrs, "code", f.Code)
 		}

@@ -24,7 +24,8 @@ ALTER TABLE beta_invite_codes
     ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
 
 -- email: stored lower-cased and printable ASCII (cmd/api validates and normalises before the INSERT;
--- this is the backstop). A code for one email is single use. The purge (PurgeInviteEmails) sets email to
+-- this is the backstop). A code for one email is single use and expires (the address of a non-user is not
+-- kept for ever: cmd/api defaults it to 14 days and refuses more than 90). The purge (PurgeInviteEmails) sets email to
 -- NULL, which both CHECKs allow.
 DO $$
 BEGIN
@@ -44,10 +45,16 @@ BEGIN
         ALTER TABLE beta_invite_codes ADD CONSTRAINT beta_invite_codes_bound_single_use
             CHECK (email IS NULL OR max_uses = 1) NOT VALID;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'beta_invite_codes_bound_expires' AND conrelid = 'beta_invite_codes'::regclass) THEN
+        ALTER TABLE beta_invite_codes ADD CONSTRAINT beta_invite_codes_bound_expires
+            CHECK (email IS NULL OR expires_at IS NOT NULL) NOT VALID;
+    END IF;
 END $$;
 ALTER TABLE beta_invite_codes VALIDATE CONSTRAINT beta_invite_codes_email_form;
 ALTER TABLE beta_invite_codes VALIDATE CONSTRAINT beta_invite_codes_created_by_form;
 ALTER TABLE beta_invite_codes VALIDATE CONSTRAINT beta_invite_codes_bound_single_use;
+ALTER TABLE beta_invite_codes VALIDATE CONSTRAINT beta_invite_codes_bound_expires;
 
 -- Who redeemed which code. A code is redeemed at most once per account (the primary key).
 CREATE TABLE IF NOT EXISTS beta_invite_uses (

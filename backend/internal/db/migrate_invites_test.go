@@ -51,7 +51,7 @@ func testMigrateInvitesForEmail(t *testing.T, supabase bool) {
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatalf("a second run is a no-op: %v", err)
 	}
-	for _, c := range []string{"beta_invite_codes_email_form", "beta_invite_codes_created_by_form", "beta_invite_codes_bound_single_use"} {
+	for _, c := range []string{"beta_invite_codes_email_form", "beta_invite_codes_created_by_form", "beta_invite_codes_bound_single_use", "beta_invite_codes_bound_expires"} {
 		if scalar[bool](t, pool, `SELECT NOT convalidated FROM pg_constraint WHERE conname = $1`, c) {
 			t.Errorf("%s must be validated", c)
 		}
@@ -79,7 +79,7 @@ func testMigrateInvitesForEmail(t *testing.T, supabase bool) {
 		t.Errorf("a rerun of the backfill adds nothing: %d", n)
 	}
 	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_constraint WHERE conname LIKE 'beta_invite_codes_%' AND conname IN
-		('beta_invite_codes_email_form', 'beta_invite_codes_created_by_form', 'beta_invite_codes_bound_single_use')`); n != 3 {
+		('beta_invite_codes_email_form', 'beta_invite_codes_created_by_form', 'beta_invite_codes_bound_single_use', 'beta_invite_codes_bound_expires')`); n != 4 {
 		t.Errorf("want one of each CHECK after a rerun, got %d", n)
 	}
 	// Existing rows read as unbound, not revoked, created by the key.
@@ -105,8 +105,8 @@ func testMigrateInvitesForEmail(t *testing.T, supabase bool) {
 	}
 	// The new image's inserts, bound and by an actor.
 	okInserts := []string{
-		`INSERT INTO beta_invite_codes (code, email, created_by) VALUES ('RYFT4444CCCC', 'anna@example.com', 'key:3fa1c2d9')`,
-		`INSERT INTO beta_invite_codes (code, email, created_by) VALUES ('RYFT5555DDDD', 'a.b+c@sub.example.co.uk', 'user:1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081')`,
+		`INSERT INTO beta_invite_codes (code, email, created_by, expires_at) VALUES ('RYFT4444CCCC', 'anna@example.com', 'key:3fa1c2d9', now() + interval '14 days')`,
+		`INSERT INTO beta_invite_codes (code, email, created_by, expires_at) VALUES ('RYFT5555DDDD', 'a.b+c@sub.example.co.uk', 'user:1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081', now() + interval '1 day')`,
 		`INSERT INTO beta_invite_codes (code, created_by) VALUES ('RYFT6666EEEE', 'key')`,
 	}
 	for _, q := range okInserts {
@@ -115,16 +115,17 @@ func testMigrateInvitesForEmail(t *testing.T, supabase bool) {
 		}
 	}
 	for _, q := range []string{
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'Anna@Example.com')`,           // not lower-cased
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'anna@@example.com')`,          // two @
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'anna@example')`,               // no dot in the domain
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'an na@example.com')`,          // a space
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'änna@example.com')`,           // not ASCII
-		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', '@example.com')`,               // no name
-		`INSERT INTO beta_invite_codes (code, email, max_uses) VALUES ('RYFT7777FFFF', 'a@example.com', 2)`, // a bound code is single use
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', 'Anna@Example.com', now() + interval '1 day')`,           // not lower-cased
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', 'anna@@example.com', now() + interval '1 day')`,          // two @
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', 'anna@example', now() + interval '1 day')`,               // no dot in the domain
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', 'an na@example.com', now() + interval '1 day')`,          // a space
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', 'änna@example.com', now() + interval '1 day')`,           // not ASCII
+		`INSERT INTO beta_invite_codes (code, email, expires_at) VALUES ('RYFT7777FFFF', '@example.com', now() + interval '1 day')`,               // no name
+		`INSERT INTO beta_invite_codes (code, email, max_uses, expires_at) VALUES ('RYFT7777FFFF', 'a@example.com', 2, now() + interval '1 day')`, // a bound code is single use
 		`INSERT INTO beta_invite_codes (code, created_by) VALUES ('RYFT7777FFFF', 'user')`,
 		`INSERT INTO beta_invite_codes (code, created_by) VALUES ('RYFT7777FFFF', 'key:3FA1C2D9')`,
 		`INSERT INTO beta_invite_codes (code, created_by) VALUES ('RYFT7777FFFF', 'someone')`,
+		`INSERT INTO beta_invite_codes (code, email) VALUES ('RYFT7777FFFF', 'a@example.com')`, // a bound code expires
 	} {
 		if _, err := api.Exec(ctx, q); err == nil {
 			t.Errorf("must be refused: %s", q)

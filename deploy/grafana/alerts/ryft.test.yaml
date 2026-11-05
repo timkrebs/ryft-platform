@@ -1009,6 +1009,27 @@ tests:
               runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
       # The window moves on: 10 minutes after the use nothing is left to fire.
       - { eval_time: 25m, alertname: AdminWebUsed, exp_alerts: [] }
+  - name: the invite email purge keeps failing
+    interval: 10m
+    input_series:
+      # One pod fails every hourly pass for three hours; a second pod is fine.
+      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19' }
+      - { series: 'ryft_invite_email_purge_total{result="ok",pod="api-2"}', values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
+      - eval_time: 150m
+        alertname: InviteEmailPurgeFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+              runbook: "docs/OPERATIONS.md → Beta → A code for one person"
+  - name: one failed purge pass is not an alert
+    interval: 10m
+    input_series:
+      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1' }
+    alert_rule_test:
+      - { eval_time: 150m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
   - name: the admin page is not used, only the key
     interval: 1m
     input_series:

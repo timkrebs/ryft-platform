@@ -19,7 +19,7 @@ import (
 func TestFoldEmail(t *testing.T) {
 	for in, want := range map[string]string{
 		"Anna@Example.COM":    "anna@example.com",
-		"  anna@example.com":  "anna@example.com",
+		"  anna@example.com":  "  anna@example.com",  // nothing but ASCII letters changes: a space is not trimmed away
 		"a.b+tag@example.com": "a.b+tag@example.com", // no dot or plus-address folding
 		"\u212a@example.com":  "\u212a@example.com",  // the Kelvin sign is not an ASCII k
 		"":                    "",
@@ -92,6 +92,9 @@ func (h inviteHarness) code(in NewInvite) string {
 	if in.CreatedBy == "" {
 		in.CreatedBy = "key"
 	}
+	if in.Email != nil && in.ExpiresAt == nil { // a bound code expires (CHECK beta_invite_codes_bound_expires)
+		in.ExpiresAt = ptr(time.Now().Add(14 * 24 * time.Hour))
+	}
 	inv, err := h.st.CreateInvite(context.Background(), in)
 	if err != nil {
 		h.t.Fatal(err)
@@ -155,6 +158,10 @@ func TestBoundInviteRedemption(t *testing.T) {
 		{"the address with a suffix", "anna@example.com.evil"},
 		{"a relay address", "x7k2m9q4@privaterelay.appleid.com"},
 		{"an address with a space", "anna@example.com x"},
+		{"the address with a trailing space (not trimmed into a match)", "anna@example.com "},
+		{"the address with a leading space", " anna@example.com"},
+		{"the address with a newline", "anna@example.com\n"},
+		{"the address with a non-ASCII byte", "anna@example.com\u00a0"},
 	}
 	for _, c := range refused {
 		id := h.user()
@@ -169,9 +176,9 @@ func TestBoundInviteRedemption(t *testing.T) {
 		t.Fatalf("a refusal spends nothing: uses %d, rows %d", uses, rows)
 	}
 
-	// The address matches however its case and surrounding spaces were written, nothing else.
+	// The address matches however its ASCII letters are cased, nothing else.
 	anna := h.user()
-	if used, err := h.redeem(anna, code, "  Anna@EXAMPLE.com "); err != nil || !used {
+	if used, err := h.redeem(anna, code, "Anna@EXAMPLE.com"); err != nil || !used {
 		t.Fatalf("matching email: %v %v", used, err)
 	}
 	if !h.hasAccess(anna) {
@@ -834,5 +841,97 @@ func TestRedeemRollsBackWhenTheAccessUpdateFails(t *testing.T) {
 	}
 	if used, err := h.redeem(id, code, ""); err != nil || !used {
 		t.Fatalf("the code is still good: %v %v", used, err)
+	}
+}
+
+// The purge also clears the note of a bound code (it may name the person) and sets revoked_at on a code that is
+// not used up, so a purged code stays dead if expires_at is edited later; a used-up code keeps its status; the
+// note of an unbound code is the operator's label and stays.
+func TestPurgeInviteEmailsClearsNoteAndKeepsTheCodeDead(t *testing.T) {
+	h := newInviteHarness(t)
+	ctx := context.Background()
+	old := time.Now().Add(-31 * 24 * time.Hour)
+	expired := h.code(NewInvite{Note: "Anna from the gym", Email: ptr("anna@example.com")})
+	used := h.code(NewInvite{Note: "Ben", Email: ptr("ben@example.com")})
+	unbound := h.code(NewInvite{Note: "wave 2", MaxUses: 3, ExpiresAt: ptr(time.Now().Add(time.Hour))})
+	if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = $2 WHERE code IN ($1, $3)`, NormalizeInvite(expired), old, NormalizeInvite(unbound)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.redeem(h.user(), used, "ben@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_uses SET at = $2 WHERE code = $1`, NormalizeInvite(used), old); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := h.st.PurgeInviteEmails(ctx, 30*24*time.Hour); err != nil || n != 2 {
+		t.Fatalf("purge: %d %v", n, err)
+	}
+	row := func(code string) (email *string, note string, revoked *time.Time) {
+		t.Helper()
+		if err := h.pool.QueryRow(ctx, `SELECT email, note, revoked_at FROM beta_invite_codes WHERE code=$1`, NormalizeInvite(code)).Scan(&email, &note, &revoked); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if e, n, r := row(expired); e != nil || n != "" || r == nil {
+		t.Errorf("expired bound code: email %v note %q revoked %v", e, n, r)
+	}
+	if e, n, r := row(used); e != nil || n != "" || r != nil {
+		t.Errorf("used-up bound code keeps its status: email %v note %q revoked %v", e, n, r)
+	}
+	if _, n, r := row(unbound); n != "wave 2" || r != nil {
+		t.Errorf("an unbound code is untouched: %q %v", n, r)
+	}
+	// Someone edits expires_at in SQL: the purged code stays dead.
+	if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = now() + interval '30 days' WHERE code = $1`, NormalizeInvite(expired)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.redeem(h.user(), expired, ""); !errors.Is(err, ErrInvalidCode) {
+		t.Errorf("a purged code redeems nothing: %v", err)
+	}
+	list, _ := h.st.Invites(ctx)
+	for _, i := range list {
+		if i.Code == used && i.RevokedAt != nil {
+			t.Errorf("used-up code reads revoked: %+v", i)
+		}
+	}
+}
+
+// DeleteUser clears the bound email and the note of a code the account redeemed (they identify the person),
+// together with the redemption row; another account's bound code is untouched.
+func TestDeleteUserClearsTheBoundEmailOfItsCode(t *testing.T) {
+	h := newInviteHarness(t)
+	ctx := context.Background()
+	mine := h.code(NewInvite{Note: "Anna", Email: ptr("anna@example.com")})
+	theirs := h.code(NewInvite{Note: "Ben", Email: ptr("ben@example.com")})
+	pending := h.code(NewInvite{Note: "Carl", Email: ptr("carl@example.com")})
+	anna := h.user()
+	if _, err := h.redeem(anna, mine, "anna@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.redeem(h.user(), theirs, "ben@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.DeleteUser(ctx, anna); err != nil {
+		t.Fatal(err)
+	}
+	read := func(code string) (email *string, note string) {
+		t.Helper()
+		if err := h.pool.QueryRow(ctx, `SELECT email, note FROM beta_invite_codes WHERE code=$1`, NormalizeInvite(code)).Scan(&email, &note); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if e, n := read(mine); e != nil || n != "" {
+		t.Errorf("the deleted account's code: email %v note %q", e, n)
+	}
+	if e, n := read(theirs); e == nil || n != "Ben" {
+		t.Errorf("another account's code is untouched: %v %q", e, n)
+	}
+	if e, n := read(pending); e == nil || n != "Carl" {
+		t.Errorf("an unredeemed code is untouched: %v %q", e, n)
+	}
+	if uses, rows := h.uses(mine); uses != 1 || rows != 0 {
+		t.Errorf("uses stays the count, the row is gone: %d %d", uses, rows)
 	}
 }

@@ -107,7 +107,7 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	}
 
 	forbid := logcheck.Forbidden{Texts: []string{tokOp, tokNoRow, tokAAL1, tokStale, tokApp, tokExpired, "garbage", testAdminKey,
-		ip, "198.51.100.1", mail, "operator@example.test", "from the page", "Authorization", "Bearer"}}
+		ip, "198.51.100.1", mail, "RYFT-2222-2222", "RYFT2222", "operator@example.test", "from the page", "Authorization", "Bearer"}}
 	out, problems := logcheck.Check(buf.String(), logcheck.Standard("api"), adminLogKeys, forbid)
 	for _, p := range problems {
 		t.Error(p)

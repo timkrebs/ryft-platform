@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -98,7 +99,7 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %w", err)
+		return AdminUserInfo{}, fmt.Errorf("supabase admin: get user: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
@@ -146,7 +147,7 @@ func (a *Admin) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("supabase admin: delete user: %w", err)
+		return fmt.Errorf("supabase admin: delete user: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 == 2 || resp.StatusCode == http.StatusNotFound {
@@ -171,4 +172,45 @@ func adminError(op string, resp *http.Response) error {
 	// The status is the code and our own reason phrase: resp.Status echoes the
 	// server's status line, whose text is as third-party as the body.
 	return fmt.Errorf("supabase admin: %s: %s: %s", op, logx.StatusLine(resp.StatusCode), code)
+}
+
+// EmailAutoconfirm reports the project's public auth setting mailer_autoconfirm: true when Supabase marks a
+// new sign-up's email confirmed at once (Authentication → Providers → Email → *Confirm email* off). Then
+// email_confirmed_at proves nothing about the mailbox, and an invite bound to an address could be redeemed by
+// anyone who signs up with it. A missing or unreadable field is an error, never false: the caller treats
+// unknown like true (fail closed). GET {auth}/settings answers without a user; the project's key is the apikey.
+func (a *Admin) EmailAutoconfirm(ctx context.Context) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.base+"/settings", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("apikey", a.key)
+	if a.jwt {
+		req.Header.Set("Authorization", "Bearer "+a.key)
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("supabase settings: %w", withoutURL(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, adminError("settings", resp)
+	}
+	var s struct {
+		Autoconfirm *bool `json:"mailer_autoconfirm"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&s); err != nil || s.Autoconfirm == nil {
+		return false, errors.New("supabase settings: no mailer_autoconfirm in the answer")
+	}
+	return *s.Autoconfirm, nil
+}
+
+// withoutURL drops the request URL from a transport error: net/http's *url.Error quotes it, and the admin
+// API's URL holds the user id. The cause (a timeout, a refused connection) stays.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }

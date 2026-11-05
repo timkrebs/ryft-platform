@@ -33,6 +33,9 @@ type Fields struct {
 	// The answer's error code (model.Code*) or, for a 401 or an auth 503, the
 	// reason; only the access line carries it.
 	Code string
+	// LogPath, when set, is what the access line says for "path" instead of the URL's: for a route whose path
+	// holds a secret (an invite code in DELETE /v1/admin/invites/{code}), the route pattern.
+	LogPath string
 }
 
 type fieldsKey struct{}

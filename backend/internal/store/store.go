@@ -162,6 +162,8 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
 			`DELETE FROM consents WHERE user_id=$1`,
+			// A code bound to this account's email and the note that may name them go with the account (D159).
+			`UPDATE beta_invite_codes SET email = NULL, note = '' WHERE email IS NOT NULL AND code IN (SELECT code FROM beta_invite_uses WHERE user_id=$1)`,
 			`DELETE FROM beta_invite_uses WHERE user_id=$1`,
 			`DELETE FROM user_sources WHERE user_id=$1`,
 			`DELETE FROM feedback WHERE user_id=$1`,

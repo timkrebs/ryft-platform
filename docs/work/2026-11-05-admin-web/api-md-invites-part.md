@@ -1,5 +1,9 @@
 # API.md: the invite part of the admin-web contract (for PR2)
 
+> Status: the text as cut out of #125. Where `docs/API.md` differs, API.md wins (PR2 fix round 1 added the 14-day
+> default and 90-day maximum expiry of a bound code, the `422` while bound invites are unavailable and the retention
+> of the note).
+
 Source: PR #125 (`docs/admin-web-contract`, d6284d7), the hunks that PR1 (`feat/admin-web-auth`) left out because
 PR1 implements none of them. PR2 (`api/db: invites for a person, revoke, who redeemed`, migration 0033) re-adds them
 to `docs/API.md` **verbatim**, at the places named below. Every JSON example is typed against the models PR2 adds

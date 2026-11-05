@@ -28,6 +28,11 @@ import (
 // cases). The redeem tests run the handler on a real Postgres with a fake of the Supabase admin lookup; the
 // admin tests run the real chain (CORS, limit, bearer check, audit) with the key and with an operator's token.
 
+// fixedBinding is a bindingGate in one state (the settings guard without Supabase).
+type fixedBinding string
+
+func (f fixedBinding) State() string { return string(f) }
+
 // fakeEmails is the Supabase admin lookup: the confirmed email per account ("" for none or unconfirmed), and
 // an error for an outage. It counts the lookups, which is how the tests see when Supabase is asked.
 type fakeEmails struct {
@@ -71,7 +76,7 @@ func newRedeemer(t *testing.T) redeemer {
 	pool := testPool(t)
 	st := store.New(pool)
 	r := redeemer{t: t, st: st, pool: pool, emails: newFakeEmails()}
-	r.h = &handler{st: st, log: quietHandler().log, cache: newInsightCache(), emails: r.emails}
+	r.h = &handler{st: st, log: quietHandler().log, cache: newInsightCache(), emails: r.emails, binding: fixedBinding(bindOK)}
 	return r
 }
 
@@ -90,6 +95,9 @@ func (r redeemer) code(in store.NewInvite) string {
 		in.MaxUses = 1
 	}
 	in.CreatedBy = "key"
+	if in.Email != nil && in.ExpiresAt == nil {
+		in.ExpiresAt = ptrTo(time.Now().Add(14 * 24 * time.Hour))
+	}
 	inv, err := r.st.CreateInvite(context.Background(), in)
 	if err != nil {
 		r.t.Fatal(err)
@@ -399,6 +407,9 @@ func TestAccountsVerifiedEmail(t *testing.T) {
 		fail   bool
 	}{
 		{"confirmed", 200, `{"email":"Anna@example.com","email_confirmed_at":"2026-11-01T08:00:00Z"}`, "Anna@example.com", false},
+		{"confirmed, but with a trailing space (refused, not trimmed)", 200, `{"email":"anna@example.com ","email_confirmed_at":"2026-11-01T08:00:00Z"}`, "", false},
+		{"confirmed, but with a newline", 200, `{"email":"anna@example.com\n","email_confirmed_at":"2026-11-01T08:00:00Z"}`, "", false},
+		{"confirmed, but not ASCII", 200, `{"email":"annä@example.com","email_confirmed_at":"2026-11-01T08:00:00Z"}`, "", false},
 		{"unconfirmed", 200, `{"email":"anna@example.com"}`, "", false},
 		{"unconfirmed, null", 200, `{"email":"anna@example.com","email_confirmed_at":null}`, "", false},
 		{"no email (phone account)", 200, `{"email":"","email_confirmed_at":"2026-11-01T08:00:00Z"}`, "", false},
@@ -792,7 +803,7 @@ func TestInviteEndToEnd(t *testing.T) {
 	d := newAdminDB(t)
 	ctx := context.Background()
 	fake := newFakeEmails()
-	h := &handler{st: d.st, log: quietHandler().log, cache: newInsightCache(), emails: fake}
+	h := &handler{st: d.st, log: quietHandler().log, cache: newInsightCache(), emails: fake, binding: fixedBinding(bindOK)}
 	tok := d.token(d.op, nil)
 
 	inv := decodeInvite(t, do(d.srv, "POST", "/v1/admin/invites", tok, `{"note": "Anna", "email": "anna@example.com"}`))

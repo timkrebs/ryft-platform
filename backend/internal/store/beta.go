@@ -84,16 +84,29 @@ func newInviteCode() (string, error) {
 	return "RYFT" + string(out), nil
 }
 
-// FoldEmail is the form an address is compared in: trimmed, with the ASCII letters lower-cased and nothing
-// else changed. No plus-address or dot folding (both would widen who may redeem a bound code), and no Unicode
-// case folding: the Kelvin sign would otherwise lower-case to an ASCII k and match a mailbox it is not.
+// FoldEmail is the form an address is compared in: the ASCII letters lower-cased and nothing else changed, not
+// even whitespace (an address Supabase holds with a space around it is not the stored one). No plus-address or
+// dot folding (both would widen who may redeem a bound code), and no Unicode case folding: the Kelvin sign
+// would otherwise lower-case to an ASCII k and match a mailbox it is not.
 func FoldEmail(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'A' && r <= 'Z' {
 			return r + ('a' - 'A')
 		}
 		return r
-	}, strings.TrimSpace(s))
+	}, s)
+}
+
+// PrintableASCII says whether every byte of s is a visible ASCII character: no space, no control character, no
+// DEL and nothing outside ASCII. It is the byte rule of an address in a bound code, on both sides: the operator's
+// input (ParseInviteEmail) and the email Supabase holds for the account (a different byte string never matches).
+func PrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseInviteEmail validates the address an invite is made for and returns it in the stored form: printable
@@ -105,10 +118,8 @@ func ParseInviteEmail(s string) (string, bool) {
 	if len(s) < 5 || len(s) > 254 {
 		return "", false
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] <= ' ' || s[i] > '~' { // control characters, space, DEL and everything that is not ASCII
-			return "", false
-		}
+	if !PrintableASCII(s) {
+		return "", false
 	}
 	e := FoldEmail(s)
 	name, domain, ok := strings.Cut(e, "@")
@@ -310,12 +321,16 @@ func (s *Store) RevokeInvite(ctx context.Context, code string) error {
 	return err
 }
 
-// PurgeInviteEmails clears the email of every code that has not been redeemable for longer than age
-// (revoked, expired, or used up that long ago): the address of someone who only asked for an invite is not
-// kept for good. Idempotent. A used-up code whose account is gone has no use time left, so its creation
-// time stands in. Clearing is safe: a code that cannot be redeemed cannot be widened by losing its binding.
+// PurgeInviteEmails clears the email and the note of every bound code that has not been redeemable for longer
+// than age (revoked, expired, or used up that long ago): the address of someone who only asked for an invite
+// (and a note that may name them) is not kept for good. Idempotent. A used-up code whose account is gone has
+// no use time left, so its creation time stands in. Clearing is safe: a code that cannot be redeemed cannot
+// be widened by losing its binding. It also sets revoked_at on a code that is not used up, so a purged code
+// stays dead even if someone later edits expires_at in SQL (a used-up code stays used up by itself and keeps
+// its status). The note of an unbound code is the operator's label for a group and is not touched.
 func (s *Store) PurgeInviteEmails(ctx context.Context, age time.Duration) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE beta_invite_codes c SET email = NULL
+	tag, err := s.pool.Exec(ctx, `UPDATE beta_invite_codes c SET email = NULL, note = '',
+		  revoked_at = CASE WHEN c.uses >= c.max_uses THEN c.revoked_at ELSE COALESCE(c.revoked_at, now()) END
 		WHERE c.email IS NOT NULL AND (
 		  c.revoked_at < now() - $1::interval
 		  OR c.expires_at < now() - $1::interval
