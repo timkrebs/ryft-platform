@@ -301,16 +301,17 @@ server. To regenerate: download Inter 4.1, then
 (the exact lists are in the commit that introduced them).
 
 **Loading (measured, not guessed).** Lighthouse's mobile run (simulated slow 4G, `lighthouserc.json`)
-treats the repaint of text when its web font arrives as the LCP whenever that repaint changes the
-text's size. With both files *preloaded*, that repaint lands at exactly 1.50 s on every page (the
-preload joins the critical chain), and with next/font's computed fallback but no preload at
-1.65 s. The recipe that D13 used for the previous typeface wins again: **no preload**, next/font's
-fallback off, and a hand-written metric-matched `'Inter Fallback'` in `globals.css` (Arial-class
-local fonts with Inter's ascent/descent/size-adjust). Text paints at FCP in the fallback with
-Inter's metrics (CLS ≤ 0.001 on every page), Inter swaps in a moment later; LCP is 1.35 s on `/`
-and 1.5–1.65 s on the long-text pages, where the swap still reflows a paragraph by a line. The LCP
-budget moves from 1.5 s to **1.8 s** for that reason only — the first paint is 1.2–1.35 s on every
-page and the performance score is 1.0; the real-user LCP is the first paint, not the swap.
+counts the repaint of a text block when its web font arrives as the LCP whenever that repaint
+changes the block's size, so the font recipe decides the LCP figure more than the bytes do. Measured
+on this branch: full 111 KB files preloaded with next/font's computed fallback → LCP 2.25 s; 19 KB
+subsets preloaded, same fallback → 1.50 s flat; subsets not preloaded, next/font fallback → 1.65 s;
+not preloaded with a hand-written metric-matched fallback → 1.35 s on `/` but 1.5–1.8 s on the long
+pages, swinging run to run. The recipe kept: **subsets preloaded + the hand-written `'Inter
+Fallback'`** in `globals.css` (Arial-class local fonts with Inter's ascent/descent/size-adjust, as D13
+did before) and next/font's fallback off — LCP 1.5–1.65 s on every page, FCP 1.2 s, CLS 0. The LCP
+budget moves from 1.5 s to **1.8 s** for that reason only: first paint is 1.2 s everywhere, the
+performance score is 1.0, and the swap is what the number measures. The hero's two lines and the
+meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift.
 
 Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
