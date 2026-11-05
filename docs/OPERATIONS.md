@@ -254,6 +254,25 @@ break-glass below.
    `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
    did not happen.
 
+**Staging a backend change (D175).** An open promote PR holds nothing: it merges itself once its checks pass, and
+when the next promote PR opens, promote closes every older open `deploy/*` PR as superseded (step 2). On 2026-11-05 the
+promote PR #124 (the scoring and notify lifecycle change) was left unmerged; the next one, #130, closed it with
+"Superseded by deploy: images dc1fcd4" (and merged when its checks passed, 3 minutes after it opened). So to make a change wait for a step of yours
+(alert rules loaded, a soak after the previous stage), **hold the image group, not one promote PR**:
+
+1. One stage per image group and per rollout: the five services images roll together (D107), so a services change that
+   needs a soak is its own rollout; do not merge the next stage's change into that window.
+2. Before the merge that builds the change, merge a PR with `./scripts/hold.sh add services "<reason>"` (the reason is public:
+   an issue number and nothing else, see the rollback steps below). While the hold stands CI builds no services images and
+   no promote PR opens for the group ("Proof that the hold works", below). The deploy watch fails a hold older than 7 days.
+3. Merge the change. The group does not deploy. Do your steps now (for example `make alerts-apply` from an up-to-date main,
+   then confirm in Grafana that the rules are listed).
+4. Release the hold with `./scripts/hold.sh rm services`: two merges, the second being the promote PR (below, "Release a
+   hold"). Watch the rollout as that change's PR asks. Rollback is the same hold mechanism (`pin_images.sh` and
+   `hold.sh add` in one commit).
+
+Closing a promote PR, or switching its auto-merge off, is not a hold: a newer promote PR is a new PR.
+
 **The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
 
 ```bash

@@ -3336,3 +3336,389 @@ Engine, and fails with the changed fields grouped by field.
   cleared something.
 - **Why:** the privacy text (once U3 is decided) can state a retention that is enforced, instead of "until the
   operator remembers", and a failing job is seen, not silent.
+
+<!-- D163-D183 were written at the close-out of the 2026-11 production hardening run (docs/work/2026-11-04-production-hardening/),
+from the "Decision text" sections and descriptions of the pull requests named in each entry. The decision was taken in
+the cited PR; the number was given here. D162 is reserved for the /admin page (#128, open). -->
+
+## D163 — Import rules are a test over `go list`; one owner per rule (R1–R13) (hardening Phase 1; #99, #105)
+
+- **Decision:** `backend/internal/arch_test.go` (stdlib only, `go list`) checks the non-test import graph, and a
+  failure names the rule, the offending edge and why the rule exists. R1: `model` imports nothing internal. R2: `store`
+  imports no `scoring/...`, `notify`, `httpx`, `auth`, `gate`, `eventbus`, `amqpbus`, `apns`, `apple`, with
+  `scoring/workoutdup` the one exception (D146). R3: `cmd/*` importing each other is not encoded (the compiler refuses
+  it). R4: the pure rule packages do no I/O and import no internal package but `model` and `train`. R5: only
+  `eventbus` and `cmd/rabbitmq-topology` import `amqpbus`; only `amqpbus` imports amqp091. R6: `events` and `outbox`
+  know no transport, store or db. R7: `pgxpool` only in `db`, `store`, `outbox` and (since #105) `internal/app`, `pgx`
+  only there plus `testsupport` and the named entries `cmd/api` and `cmd/ingest` (`pgx.Tx`, `pgconn`), each with a
+  reason. R8: `auth`, `httpx`, `gate` hold no storage. R9: the eight leaf packages import nothing internal. R10:
+  `sealed` is imported by `cmd/api` only. R11 (`testsupport` is tests-only) is a depguard rule next to
+  `logcheck-tests-only` (D114). R12: the documentation shape (D164). R13 (#105): only the four service commands import
+  `internal/app`.
+- **To allow an edge, add an entry with a reason; do not loosen a pattern.** A rule whose pattern matches no package
+  of the module and nothing it imports fails (a rename, a pgx v6 or amqp091-go v2 bump cannot leave a vacuous rule); a
+  self-test feeds the checkers a graph that breaks each rule.
+- **`scripts/pkgmap.sh`** generates the package table (package, owns, depends on, tested by) between markers in
+  `docs/ARCHITECTURE.md`; `--check` exits 1 with a diff when it is stale and 2 when it cannot work. "Depends on" lists
+  **direct** imports (`go list -deps` would change on every edit). `make lint` runs golangci-lint, then the check, and
+  warns instead of failing on a golangci-lint other than the CI pin; the CI check is a step of the `lint` job, and a
+  `pkgmap` path filter selects only that job for a doc-only edit.
+- **Rejected:** a new linter (go-arch-lint) or one depguard rule per edge: a new dependency, or one YAML list per edge
+  without a reason column.
+- **Not proven by it:** that the edge is a good one. Every rule held against the graph before it was encoded (#99).
+
+## D164 — Package docs live in `doc.go`; its first sentence is the package map (hardening Phase 1; #94, #95, #96, #99)
+
+- **Decision:** every package with Go files has exactly one `doc.go` holding the only package comment and no
+  declaration. Its first paragraph is one sentence ending in a period, at most 160 characters; `scripts/pkgmap.sh`
+  puts it into the "owns" cell (D163, R12). revive `exported` and `package-comments` are on in `.golangci.yml` with
+  the stutter check **off**, so `model.ModelInfo` and `model.ModelChangeEntry` keep the names API.md and the Swift
+  mirror use. No `//nolint:revive`, `//nolint:all` or bare `//nolint` anywhere (the arch test reads the comments;
+  nolintlint `require-specific` is on too).
+- **Why:** the old package comments were stale in places the review found by checking each claim against the code
+  (`scoring` said "pure functions" while only the formulas are; `workoutdup` said ingest uses it while only `store`
+  and `scoring` import it, D146; `store` claimed RLS as a second line for the service roles, D42). Comments only: the
+  diff of #94 stripped of comments, blank lines and package clauses is one trailing comment.
+- **Cost:** 43, 39 and 23 exported identifiers got a why-comment in #96, #94 and #95.
+
+## D165 — Every decision is findable from the code it governs; the check warns (hardening Phase 1; #102)
+
+- **Decision:** `scripts/decision_refs.sh` lists the `D<n>` of this file that no tracked source or config file
+  mentions. Markdown, `docs/`, test data, lock files, generated outputs, the vendored operator releases and `web/` (the
+  site numbers its own decisions in `web/docs/DECISIONS.md`) do not count; a range counts for each member. It is
+  **warning-only** (exit 0; `--strict` exits 1 for a later promotion; exit 2 only when the script itself cannot work, so
+  a broken check never reads as "all linked"). `scripts/decision_refs.skip` holds the decisions without a code
+  consequence, one reason each; a skipped decision that later gets mentioned is reported as stale.
+- **Where it runs:** `make lint`, and in CI as a step of the unfiltered `bytes` job (not the path-filtered `lint` job),
+  so a PR that only edits this file or the skip list runs it and a renumbered `D` shows up on the PR that renumbered it.
+  One `::warning` summary annotation, not one per decision.
+- **Result at #102:** 40 unreferenced before, 0 after (33 linked or already cited, 7 skipped with a reason); 34
+  decisions got a one-line link. Comments that cited the wrong decision were corrected. A first scan without the `web/`
+  exclusion said 37: D1, D2 and D4 only looked linked because the site's decisions and test labels matched.
+- **Consequence:** a new entry in this file is reported until code or config cites it or the skip list gives a
+  reason. D163–D183 were added without a code change (documentation only) and are reported by the script until then.
+
+## D166 — The load baseline is local, recorded, and gated on the error rate only (hardening Phase 0; #97)
+
+- **Decision:** `scripts/load.sh` / `make load` runs k6 (`grafana/k6:2.3.0`, pinned by tag and index digest) in a
+  container on the compose network against the local stack: 50 synthetic users, each syncs one full day (about 1 250
+  records, seeded) and reads `GET /v1/days` over 30 days 20 times; one warm-up run, 3 measured. It refuses any target
+  that is not localhost unless `LOAD_ALLOW_REMOTE=1`, and never `*.ryftapp.de` or `*.supabase.co`. It uses
+  `AUTH_MODE=apikey`'s `<API_KEY>:<uuid>` bearer, so no auth code changed. It exits 1 above 1 % errors.
+- **The numbers are not a capacity statement.** `docs/OBSERVABILITY.md` → Baselines records the median run and says why
+  a laptop is not production; the runs are bimodal (sync p95 1.3 to 4.6 s over three runs of one invocation, and 83 and
+  73 ms on a quieter machine), so **only the error rate is a gate**; latency is reported until a quieter runner exists.
+  The nightly job is not built (`verdict()` is where a later `--compare` goes).
+- **Rate limits were checked:** the test stays under them (0 client `429`, 0 `ryft_rate_limited_total`), no override.
+
+## D167 — The contract is tested against the code: schema snapshots, API.md examples, error tables (hardening Phase 0 and 1; #87, #100)
+
+- **Decision:** 104 schema snapshots of the `model` types (reflection; `go test ./internal/model -run TestSchemaSnapshots
+  -update`); `TestAPIDocExamples` decodes the json blocks of `docs/API.md` (45 blocks at #87: 39 tied by
+  `<!-- type: model.X -->`, 23 of them decoded strictly and 16 field-checked, 6 allow-listed with reasons; a failure
+  names the API.md line). #100 adds tests that tie the Errors tables of API.md (status, `code`, the **Do** column) to
+  the `model.Code*` constants, the Swift `APIErrorCode` cases and the `WriteError`/`WriteCodedError`/`gate.Apply` calls,
+  and every message API.md quotes verbatim to what the code answers; `make check-api-doc` runs them uncached (the test
+  cache does not see edits of `docs/API.md`).
+- **Known drift is recorded, not hidden:** `docDrift` in the test lists what API.md documents and the Go types lack
+  (`User.sources[].samples_7d`, `DailyScore.coverage` / `ScoreCoverage`), as TODOs for the api-contract-owner. A symlink
+  to API.md is refused by `check_bytes.sh`, so there is no `testdata/API.md`. The Do wording itself is only checked for
+  being present.
+
+## D168 — Services start and stop through `internal/app` (hardening Phase 2, A1; #105)
+
+- **Decision:** `app.Run(ctx, Spec)` / `app.Main(Spec)` owns a long-running service's lifecycle: the settings
+  (`Spec.Load`, before any connection), the pool and its watch, the broker, `/metrics`, what the service builds on them
+  (`Build` returns routes, checks, consumers and timers), the outbox relay, the timers, the consumers and the HTTP
+  server last, so the start-up probe still covers the database wait. `/metrics` stays after the broker as today
+  (moving it first is A5's behaviour change). `app` may import `pgxpool` (R7, no other driver package) and `eventbus`;
+  only the four service commands import it (R13, D163). Subcommands and `migrate` stay outside.
+- **A signal while the start waits** (database, broker, `Build`) is a clean stop (reason `signal`, exit 0); a start
+  failure without a signal stays exit 1. A `Build` that ignores its context ends at the kubelet's SIGKILL.
+  `ConfigError{Msg, Err}` keeps today's messages. The contexts `Build` and every task get end with the shutdown's own
+  steps, not at the signal, **except that until A4 a consumer's context still ends when its own step begins**.
+- **Rejected:** static `Spec` fields for routes and consumers (they need the opened pool); the mains opening the
+  dependencies and handing them in (each main stays over 40 lines).
+- **Status:** scoring and notify run through it since #117 (D174). api and ingest (A3) do not yet.
+
+## D169 — Shutdown order and a budget that a test pins (hardening Phase 2, A1; #105)
+
+- **Decision:** on the first signal or a failing part: `/readyz` reports `draining`; timers stop; an optional drain
+  delay (`Spec.DrainDelay`, default none; A7 would make it 5 s for api and ingest); consumers (`Deps.ConsumerDrain`,
+  15 s, the step waits it plus 1 s); HTTP `Shutdown` (10 s for an Edge service, 1 s for health-only), then `Close`
+  and carry on; timers waited; relay and db watch; broker; pool; `/metrics`. Every step is bounded, all bounds live in
+  one struct, and a step's bound includes the waits after it. One `shutdown step` line per step with `dur_ms`.
+- **The watchdog** logs `shutdown overdue` (`step`, `elapsed_ms`) and exits at `Spec.Grace` (default 30 s) minus 4 s:
+  exit 1, or 2 if a panic was recorded. **Worst case** of the bounds: api and ingest 18 s (23 s with A7), scoring and
+  notify 25 s, against 26 s; `TestShutdownStaysInBudget` fails unless each is strictly below the watchdog's time. The
+  design's earlier numbers (27, 32 and 29 s) did not count the waits after `Close` or the metrics stop.
+- **A request still running after its HTTP budget is cut.** That is safe because syncs, imports and deletions are
+  idempotent or transactional (D39, D126, D131, D144, D145), not because it is waited for.
+- **Rejected:** a grace period long enough for D129's 50 s (about 75 s on every rollout, drain and scale-down, to save
+  one retry); a `preStop` sleep (an exec hook in four manifests and the admission policy, where a constant in the
+  process does the same).
+
+## D170 — `/readyz` names its dependencies (hardening Phase 2, A1; #105)
+
+- **Decision:** the body gains `checks` (one string per dependency named `db`, `auth`, `broker`: `"ok"`, `"stale 3m"` or
+  `"down: <short reason>"`; a stale check counts as ok) and `status` (`ready`, `unready`, `draining`); `error` keeps its
+  meaning. Status codes are exactly today's, 503 while draining, `/healthz` stays 200 until the listener closes. A check is
+  required or reported: the broker is **reported, not required**, in api and ingest (D101). Checks that are not required
+  wait at most 500 ms. A panic in a check is counted and logged (stack at most once a minute per check) and the service
+  keeps running. Probes, the PostSync smoke and the scripts read the status code only.
+- **Rejected:** a separate `/livez` or `/drainz` (a second endpoint for the same state); an object per check (no reader
+  needs more than the reason).
+- **Where it is live:** scoring and notify since #117 (they serve health only). api and ingest keep today's body until A3.
+
+## D171 — `errgroup` and `goleak` (hardening Phase 2, A1; #105)
+
+- **Decision:** `golang.org/x/sync` becomes a direct requirement for `errgroup` (one group per shutdown tier); it is
+  already compiled into every binary through pgxpool's puddle. `go.uber.org/goleak` becomes a test-only requirement
+  (depguard `goleak-tests-only` enforces it); it was already in `go.sum` through amqp091-go's and client_golang's tests.
+  No new module in the graph.
+- **Rejected:** a home-made WaitGroup supervisor (an idiom reviewers know beats 20 lines they must read); goroutine
+  counts through `runtime.NumGoroutine` (flaky).
+
+## D172 — Shutdown is measured in the log, not in a metric (hardening Phase 2, A1; #105)
+
+- **Decision:** the `shutdown step`, `shutdown overdue` and `shut down` lines (CloudWatch, D52; the last carries `exit`)
+  are the record. A histogram observed by a pod that exits seconds later is almost never scraped, and the exit code of
+  a rolled pod is not a Grafana signal either: kube-state-metrics drops deleted pods. The queries are in OPERATIONS →
+  "A deploy: what the old pod logs".
+- **Rejected:** `ryft_shutdown_seconds` (from the brief).
+
+## D173 — A recovered task panic exits 2; the log line and the restart are the signal (hardening Phase 2, A1; #105)
+
+- **Decision:** a panic in a service's own goroutine (a `Task`) is recovered so the shutdown runs in order, logged as
+  `panic` with `task`, `panic` and `stack` (the documented exception in OPERATIONS → Data protection (logs)), counted in
+  `ryft_goroutine_panics_total` (no label), and the process exits 2, as an unrecovered panic does; the watchdog exits 2
+  too after a recorded panic. The counter is best effort (the process is about to exit), so an alert rests on the log
+  line and on a restart (`ServiceExited`, D174). A Job or Consumer must log and swallow a transient error and return
+  only a fatal one, because a returned error stops the whole service.
+- **Rejected:** exit 1 for a panic (it would hide a bug among ordinary failures).
+
+## D174 — scoring and notify start through `app.Run`: four behaviour changes accepted, two alerts (hardening Phase 2, A2; #117)
+
+- **Decision:** `cmd/scoring` and `cmd/notify` hand `app.Main` a `Spec` (`Name`, `BrokerRequired`, `Outbox` for scoring,
+  `Load`, `Build`) and keep no lifecycle code (`main()` 132 to 24 lines and 81 to 16); the engine, handler, timer and
+  consumer live in `service.go`. Subcommands stay outside. Four behaviour changes, titled in the PR and accepted:
+  (1) an HTTP port that cannot be bound ends the service with exit 1 (it was logged, and the service ran without probes
+  until the start-up probe killed the pod); (2) one ordered signal handler replaces two, and the event in hand is **not**
+  yet protected from the signal (A4), so `handle event failed, will retry` and `amqp: could not retry, rejecting for
+  redelivery` on a deploy are still expected; (3) the shutdown lines and `ryft_goroutine_panics_total` exist here, and
+  a recovered panic exits 2; (4) `/readyz` answers 503 `draining` from the start of the shutdown.
+- **Loops check the context:** scoring's `refreshActive` logged one `periodic: user` error per remaining user after a
+  SIGTERM; it now stops between two users (`eachUser`) and skips the queue pruning and the gauges once the context has
+  ended. notify's `CheckStale` does the same and returns the context's error.
+- **Alerts (the gate):** `Panics` now covers `ryft_http_panics_total`, `ryft_event_handler_panics_total{subject}` and
+  `ryft_goroutine_panics_total` joined with `or` (a `+` empties the sum when one series is absent); the two labelled
+  counters get TextRefusedByDatabase's `unless last_over_time(... offset)` term for their first panic. New
+  `ServiceExited` (critical): any restart of a container in `ryft-(api|ingest|scoring|notify)` over 15 minutes. It does
+  not look at the exit code: the services exit 0 on SIGTERM, a probe kill can end with exit 0, and the exit-code series
+  may not be in Fleet's allow-list. Known holes until the counters are created at 0 (Phase 3): a first panic during a
+  collector outage of about 75 minutes, and a second within about 75 minutes of a pod restart.
+- **Rejected:** a label on the goroutine counter (the log line names the task); an exit-code condition on `ServiceExited`.
+- **Rules reach Grafana only through `make alerts-apply`** (the user's step). See D175 for the order and for what
+  happened on 2026-11-05.
+
+## D175 — A change to shutdown or alerts is staged by holding its image group, not by leaving one promote PR open (hardening Phase 2, A2; #117; amended by #124, #130, #131)
+
+- **The order #117 asked for:** merge the PR alone and **do not** merge the promote PR; load the alert rules
+  (`make alerts-apply`) and check them; read the restarts (`kubectl --context ryft-prod-euc1 get pods -A`); merge the
+  promote PR; watch 30 minutes after Healthy (restarts, `ryft_amqp_connected`, `ryft_db_up`, queue depth under 100,
+  `increase(ryft_goroutine_panics_total[30m]) == 0`, sync-to-score p95 under 120 s, PostSync smoke); look at the
+  shutdown lines in CloudWatch; soak at least 1 hour before A3. Rollback: `./scripts/pin_images.sh 10bc4d0 services` and
+  `./scripts/hold.sh add services "A2 rollback"` in one commit (10bc4d0 is after the D144/D145 one-way door).
+- **What happened (timestamps from GitHub):** the promote PR #124 `deploy: images ab87021` (services `10bc4d0` to
+  `ab87021`, whose only backend commit was A2, #117) was open and unmerged. At 10:19:28 UTC on 2026-11-05 promote closed it
+  with the comment "Superseded by deploy: images dc1fcd4" and, 4 seconds later, opened #130, which pinned the same A2 commit
+  and nothing else from `backend/`; #130 merged itself at 10:22:25 UTC when its checks passed. That is what the
+  deploy flow does (OPERATIONS → Deploy and roll back: promote "closes every older open `deploy/*` PR as superseded", and
+  the newest merges itself): **one unmerged promote PR is not a hold.** At 10:47 UTC #131 recorded that `make alerts-apply`
+  had been refused by Grafana Cloud's 20-rule group limit (D179), so `ServiceExited` and the extended `Panics` were **not
+  live** while the A2 images were already pinned. Whether the rules were applied afterwards, and what the 30-minute watch
+  showed, is not recorded in any PR and is **not verified** here.
+- **Rule (set after that supersede; it replaces #117's step "do not merge the promote PR"):** to stage a backend change whose promote must wait, hold the
+  group **before** the merge that would build it: `./scripts/hold.sh add services "<reason>"` in a PR that reaches main
+  first. While the hold stands CI builds nothing for the group and no promote PR opens; the change merges; the user does
+  the steps that must come first; then the hold is released (`hold.sh rm`, two merges, OPERATIONS → Release a hold). A
+  newer promote PR supersedes an older one and merges itself; the staging must not depend on someone not merging it.
+- **One group at a time:** the five service images roll together (D107). Stage A3 (api and ingest through `app.Run`)
+  and A4 (the in-hand delivery) as separate rollouts with the soak between them.
+- **Consequences:** the checks above are a precondition of the pin moving, not a watch after it, for any change that
+  adds an alert the change needs. The alert-rule load can fail for reasons unrelated to the change (D179).
+
+## D176 — A pure move is exempt from the ~600-line limit when a tool proves it (hardening Phase 2, B1; #110)
+
+- **Decision:** a PR that only moves declarations between files of one package is exempt from the ~600-line size rule
+  (the design's J8) when `scripts/check_pure_move.sh <base> <package>` exits 0 and its output is in the PR. The tool
+  (`scripts/pure_move.go`, tested by `scripts/tests/check_pure_move_test.sh` in `make test-scripts`) proves that every
+  top-level declaration has the same exact source text including its doc comment, the comments attached to each
+  declaration and before the package clause, the imports and what each selector resolves to, the declarations in four
+  build contexts (linux/amd64, darwin/arm64, windows/amd64, linux/amd64 with cgo), the order of initialisers that run
+  code, the multiset of lines outside package clauses and imports, the same for the `_test.go` files as a second set,
+  the non-Go files of the directory, `go test -list .` and `go doc -all -u` (const and var entries sorted, because a
+  split necessarily changes their source order). Exit 1 is not a pure move, 2 is cannot tell.
+- **What it does not prove:** that the code type-checks (the compiler and the tests do), the meaning of a name through a
+  package whose name differs from the last element of its path (the import set still covers the path), and whether a
+  reordering of initialisers matters (it flags one). It does not replace review.
+- **First use:** `model/model.go` (1 453 lines) became 14 files of 13 to 250 lines (`sync`, `train`, `plans`, `admin`,
+  `sleep`, `journal`, `days`, `account`, `push`, `events`, `trends`, `beta`, `config`, `common`); a const or var block that
+  mixes two domains moved whole with its first use. Rejected: fourteen 300-line move PRs. Follow-ups a pure move cannot
+  do are listed in the PR (grouping of `ModelInfo`, `Base*`, `HRSource*`, `InvitePost`).
+
+## D177 — A refactor of numbers or stored state is two PRs: characterisation tests on the old code, then the steps (hardening Phase 2, C1, C2, C4; #111, #112, #119, #120, #122, #123)
+
+- **Decision:** when a function split and its tests together exceed the size rule, the tests come first as their own PR,
+  recorded on the **unsplit** code, and the refactor is stacked on it with the recorded files unchanged
+  (`git diff` of `testdata` empty). The proof is: the characterisation and the golden fixtures (D149) pass unchanged,
+  and a table of hand-made mutants each killed by a named test. A surviving mutant is stated.
+  - **C1 `computeDay`** (#111, #112): 13 cases pinned on what the engine stores; `computeDay` 278 lines to a 28-line
+    runbook over named steps in `compute_steps.go` (I/O in `Engine` methods, the rest pure), store reads and writes in the
+    same order (the strength pass still follows the duplicate pass, D147/D60). Golden unchanged three times;
+    `ModelVersion` stays 2026.10.3; no rescore. The brief's `pickSources` step was **dropped**: source picking happens
+    inside the steps that read the data. **`scoring rescore -dry-run` does not exist** (`rescore` takes `-days` only), so
+    the golden comparison of every stored column stands in. Observed, unchanged and pre-existing: `mean` and `last` read a
+    store error as a missing value in `loadNight` (HRV, respiratory rate, SpO2, resting HR); changing that is its own PR.
+  - **C4 `trainImport`** (#119, #120): 15 golden cases plus a lease test (status, headers, raw body, stored state,
+    outbox rows, metrics, log lines), `trainImport` 101 to 45 lines and `finishImport` 69 to 21; the goldens of #119 pass
+    unchanged. `sync.Once` was restored after the first version used `sync.OnceFunc` (it re-panics).
+  - **C2 `ApplySync`** (#122, #123): tests plus a statement trace of 16 scenarios (`testdata/applysync_trace.golden`,
+    `RYFT_UPDATE_TRACE=1` regenerates); `ApplySync` 136 to 14 lines, longest step 27. The trace and the lock-first
+    checks pass against the golden recorded on the old code. One mutant survived and is equivalent (duplicate ids not
+    skipped in `dedupeDeletions`: `= ANY($2)` deletes the row once).
+- **Why:** golden fixtures catch a moved number, not a moved statement order or a moved lock; the characterisation catches
+  those.
+- **Remaining long functions** are not decided here (L1, see STATUS).
+
+## D178 — The clock-change days are characterised as they are, not fixed (hardening Phase 2, C2; #122)
+
+- **Finding (pre-existing, found while characterising `ApplySync`):** the next day and the day before of a row are
+  computed as the start plus or minus 24 absolute hours, in `ApplySync`'s deletions (`store/apply.go`), `planFold`
+  (`store/fold.go`) and the ingest handler's `touchedDays` (`cmd/ingest/main.go`). On a day with a clock change that is
+  not the neighbouring local day, so a neighbouring day is not queued. Four shapes in Europe/Berlin 2026: autumn next day
+  (00:30 CEST 10-25, +24 h = 23:30 CET 10-25, so 10-26 is not queued); autumn day before (23:30 CET 10-25, -24 h = 00:30
+  CEST 10-25, so 10-24); spring next day (23:30 CET 03-28, +24 h = 00:30 CEST 03-30, so 03-29 is skipped); spring day
+  before (00:30 CEST 03-30, -24 h = 23:30 CET 03-28, so 03-29). The day before applies to a workout with a session; the
+  autumn next-day shape is also pinned for a night HRV sample. Effect: a score is not recalculated after a deletion or an
+  upload on the neighbouring day until something else queues it.
+- **Decision:** #122 and #123 are refactors and pin the behaviour **as it is** in `TestApplySyncDeletedRowsDays`; the pins
+  do not endorse it. The code at `origin/main` d924dd7 still has `Add(24 * time.Hour)` in the three places (checked).
+- **Follow-up, not built:** one helper that computes the neighbouring local date from the date (`AddDate(0, 0, ±1)` on
+  the local date), used in `touchedDays`, `deleteSamples`/`deleteWorkouts` and `planFold` together, with its own `D`
+  entry; the pinned autumn case then flips to two days and the others to the full set. The `touchedDays` table of C3 pins
+  the same four shapes so the three places cannot drift apart.
+
+## D179 — A Grafana alert rule group holds at most 20 rules; a script guards it (#131)
+
+- **Why (2026-11-05):** `make alerts-apply` was refused by Grafana Cloud's ruler: `per-user rules per rule group limit
+  (limit: 20 actual: 39)` for group `ryft`. mimirtool rejected the load, so nothing was written and the live group
+  stayed the older, smaller set (D175).
+- **Decision:** `deploy/grafana/alerts/ryft.yaml` is three groups along the file's own section comments: `ryft` (11
+  rules), `ryft-pipeline` (14), `ryft-ops` (14 in #131; 17 on main now, with the admin and invite alerts of #126 and #127, checked with
+  `scripts/check_rule_groups.sh`: `ryft-ops` has room for one more under the 18 guidance). Only
+  `- name:` / `rules:` header lines were inserted; no rule moved or changed, and the first group keeps the name `ryft`,
+  so the load replaces the live group with a disjoint subset and adds two. `scripts/check_rule_groups.sh` counts `alert:`
+  and `record:` items per group (block and flow style, comments ignored) and fails above 20 (`RULE_GROUP_LIMIT`) and on a
+  group named twice in a file; `make alerts-check` runs it on `ryft.yaml` and `admission-intended.yaml` before promtool,
+  so the CI `monitoring` job fails too. `docs/OBSERVABILITY.md` → Alerts: keep a group at 18 or fewer.
+- **Consequences:** a renamed or dropped group stays live in Grafana until it is deleted there. Nothing is deployed to the
+  cluster by the change; the rules reach Grafana only through the user's `make alerts-apply`.
+
+## D180 — Argo CD's ClusterRoles are an allowlist, and everything else that decides what it may do is guarded (T12-f; amends D120; #47, merged 2026-11-05, **not applied**)
+
+- **Decision:** the application controller's and argocd-server's ClusterRoles in `infra/aws/kubernetes/argocd.tf` are
+  explicit rules derived from every synced render (25 controller rules, 13 server rules at merge; server read-only
+  cluster-wide), not the chart's `*`. No `escalate` on any ClusterRole, `bind` on one name only
+  (`messaging-topology-metrics-auth-role`), `escalate`/`bind` on the four operator Roles by name, nothing on VAP/VAPB,
+  `secrets`, `pods/exec`, `impersonate` or `deletecollection`; `resource.respectRBAC: strict`, `exec.enabled: false`,
+  the ApplicationSet controller at 0 replicas.
+- **Amends D120** (the rules-only allowlist is not the whole surface): `extraObjects`, `controller.roleRules`,
+  `createClusterRoles`, Argo CD's own RBAC and login settings, any `{{`, non-ASCII or control character in a value (the
+  chart renders values with `tpl`, and a line break, U+2028, U+2029 or U+0085 starts another YAML document), a `set` or a
+  second values document, and role bindings written in Terraform all decide what Argo CD may do. They are guarded by
+  `modules/argocd-values-guard` as a **precondition** of `helm_release.argocd` (an error of plan and apply; a `check` block
+  only warns); the release takes the guard's output as its only values, and a postcondition requires that (a plan-time check
+  only while its inputs are known: no computed value in the release's values or `set*`). The kind run adds `argo-bindings`,
+  `argo-extra-objects`, `argo-inventory` (the whole render counted by kind and namespace) and `argo-tf-bindings` (a
+  tripwire, not a guard). The key allowlist is two levels deep plus a few listed maps; the dangerous variants are canned
+  test cases, so a variant nobody wrote down is not tested for, and the guard edited together with its tests is caught only
+  by review (`.github/CODEOWNERS`).
+- **Update/patch/delete on the four RBAC kinds stays without `resourceNames`** (a fresh cluster needs `create`): limiting
+  them narrows but does not close the route of a written ClusterRole bound to `system:serviceaccounts` or
+  `system:authenticated` (or an aggregation-labelled ClusterRole). Not applying it is a scoping choice, not a proof of
+  unsafety; it is documented as open (OPERATIONS → "What stays open", item 6).
+- **What is true after this alone:** a stolen controller token can no longer grant itself write on the admission policies
+  through RBAC. "Argo CD cannot switch off the admission layer" is **not** true until P6 and P12 are both in Deny and this
+  change is applied (P12 is #121, open; P12 judges names only, so the RBAC route needs P6 and P12 together). With
+  authentication mode `API` (#118, open) the `aws-auth` route closes too.
+- **Rollback** is `git revert <squash-sha>` (this repository squash-merges), which also removes the guard; a partial hand
+  rollback is refused by it on purpose. A new operator Role needs Server-Side Apply; the UI no longer shows the live
+  manifest of a webhook configuration. The plan's human view hides the values but the saved plan holds them in clear (the
+  admin password's bcrypt hash): never commit or paste `argocd-rbac.tfplan`, delete it after the apply.
+- **State:** merged; `terraform apply` of `infra/aws/kubernetes` is the user's Step 0 (OPERATIONS → Deploy and roll back →
+  "What Argo CD may no longer do", and the PR body). The PR was a draft until a full-mode kind run passed on its final
+  head; whether that run was repeated before the merge is **not verified** here.
+
+## D181 — The Terraform scan of the kind run is a tripwire, and a foreign tree needs its provenance (amends D152; #114, #116)
+
+- **Amends D152's wording** "refuses a module with a provisioner, `data "external"`, `data "http"` or a `*.tf.json`":
+  `scripts/lib/tf_scan.py` is a small HCL lexer (comments removed, strings and heredocs blanked) that stops at
+  `provisioner`, `alias`, `exec`, `config_path(s)`, `shared_config_files`, `shared_credentials_files`,
+  `credential_process`, `postrender`, `web_identity_token_file`, `local-exec`/`remote-exec`, `data "external"`,
+  `data "http"`, a `\u` escape, any `*.tf.json`, and (#116) the file-reading functions (`file`, `templatefile`,
+  `filebase64`, `filemd5`, `filesha*`, `fileset`, `fileexists`, `pathexpand`, `abspath`), `path.cwd`, `path.root`, any `::`
+  function and the data sources `local_file`, `local_sensitive_file`, `terraform_remote_state`, also in downloaded
+  modules. `*.tftest.hcl`, `*.tftest.json`, `*.tfmock.*` and tfvars of the tree are deleted. A file is exempt from the
+  function check only when byte-identical to this checkout's; in GitHub Actions the file functions are allowed with a
+  logged notice (the runner holds none of the user's credentials) and the downloaded modules' `examples/`, `tests/` and
+  `test/` directories are not scanned (Terraform does not load them).
+- **This is a tripwire, not a refusal to rely on:** an aliased provider is not mocked by the test header, `env -i` does not
+  stop an absolute-path read of `~/.aws` or `~/.kube`, and HCL is a language. What contains the risk is a runner or a
+  machine without credentials (D152's "Not a sandbox").
+- **Provenance:** a `--repo` that is not the running checkout is refused unless its HEAD commit is on an `origin/*` branch
+  of this checkout (`origin/pr/*` and `origin/pull/*` never count; a `remote.origin.fetch` other than the default refspec
+  is refused) and its tracked files are unmodified; the copy is made with `git archive` from that commit. `--force` /
+  `FORCE=1` overrides with a loud warning. `TF_VALUES_CONTAINER=<terraform image by digest>` optionally runs Terraform in a
+  container that mounts only the work directory (`--cap-drop ALL`, `no-new-privileges`, `--network none` for the test); that
+  path is tested with a fake engine only and has **not** been run against a real container (#114).
+- **`scripts/promote_only.sh`** (the predicate that can skip the required `admission` job) reads the diff in two states
+  (the four exact header lines of a plain change of the one overlay file, then content lines checked against fixed shapes),
+  balances each hunk's pins and policy literals, and answers no on more than one merge base, an invalid calendar date, more
+  than one hold per group, or `$(` or a backtick in a reason.
+
+## D182 — The RabbitMQ operators are namespace-scoped by kustomize patches over the vendored release (T12-g; implements D120; #51)
+
+- **Decision:** `OPERATOR_SCOPE_NAMESPACE=ryft-rabbitmq` on both Deployments (Cluster Operator 2.23.1, Messaging Topology
+  Operator 1.20.4) as strategic-merge patches keyed by container name; their cluster-wide ClusterRole and
+  ClusterRoleBinding (`rabbitmq-cluster-operator-role`, `messaging-topology-manager-role`) are deleted by kustomize patches
+  and replaced by Roles and RoleBindings with the same rules in `ryft-rabbitmq` (`scoped-rbac.yaml`). The vendored files
+  and `SHA256SUMS` are untouched (D97: an upgrade stays a file swap). Neither operator can then read Secrets
+  (`DATA_ENCRYPTION_KEY`, database URLs, `ADMIN_API_KEY`) or update or exec pods outside `ryft-rabbitmq`; admission cannot
+  see reads, so this is the only control for them.
+- **A check, because kustomize does not fail on an unmatched patch target:** `scripts/check_operators_scope.sh` in
+  `make k8s-validate` fails if a ClusterRole grants `secrets`, `pods`, `pods/exec` or `*`, if any ClusterRoleBinding other
+  than the metrics token-review one remains, if either Role or RoleBinding is missing, or if a manager container lacks the
+  scope. `ryft-rabbitmq` became a destination of the `ryft-operators` project. Rollback: revert and let Argo sync it
+  first; leave the project's extra destination in place.
+- **Needed live:** each Role carrying every verb the operators need is visible only in a running cluster (symptom:
+  `forbidden` in an operator log); OPERATIONS → RabbitMQ has the post-sync checks.
+
+## D183 — T12-e's binding-state signal is kube-state-metrics' native collector; claims m and o (amends D151; #55, #121)
+
+- **Amends D151's "Claim m disproved" bullet,** whose consequence "T12-e needs another binding-state signal" no longer
+  holds: T12-e shipped in #55 (merged 2026-11-04) with kube-state-metrics' **native** `validatingadmissionpolicybindings`
+  collector (existence and live actions; the chart adds the RBAC), which is what `deploy/monitoring/k8s-monitoring.yaml`
+  enables and what `AdmissionBindingMissing`, `AdmissionBindingNotDenying`, `AdmissionBindingDrift` and
+  `AdmissionBreakGlass` read (D120's "Signals" bullet already says so). What D151 recorded stays true: custom-resource-state
+  exports CustomResourceDefinitions only.
+- **Measured on the open #121** (draft; kind run 42004326289, workflow `admission-e2e`, mode full, head 4b9f739: 83 pass,
+  0 fail, 2 skipped): `claim-m-native` passes (for each of the 13 `ryft-*` bindings the info series exists and the
+  `validation_action` series are exactly one per entry of `spec.validationActions`, value 1); **claim o is disproved**:
+  neither the controller's nor argocd-server's SelfSubjectAccessReview was refused by a policy built to refuse it, because
+  the review kinds (`selfsubjectaccessreviews`, `subjectaccessreviews`, `localsubjectaccessreviews`,
+  `selfsubjectrulesreviews`, `tokenreviews`, `selfsubjectreviews`) are on kube-apiserver's hard-coded exclusion list, which
+  the policy plugin consults, since Kubernetes 1.30 (read in the sources of release-1.30 and v1.36.0 and measured by the
+  run). So no policy can match access reviews. This is a measurement; what P12 does with it is decided in #121, not here.
+- **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
+  enabled, except Pod Security refusals and the liveness alerts.
