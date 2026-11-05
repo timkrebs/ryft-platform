@@ -162,6 +162,8 @@ jobs:
               - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
               - 'scripts/admission_intended.sh'
               - 'scripts/tests/admission_intended_test.sh'
+              - 'scripts/check_rule_groups.sh'
+              - 'scripts/tests/check_rule_groups_test.sh'
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
@@ -514,6 +516,7 @@ jobs:
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
       - run: bash scripts/tests/admission_intended_test.sh
+      - run: bash scripts/tests/check_rule_groups_test.sh
 
   # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
   # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the
