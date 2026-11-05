@@ -171,6 +171,12 @@ func TestApplySyncStatementTrace(t *testing.T) {
 			tr.mu.Unlock()
 			_, _ = tst.ApplySync(ctx, u, a) // the failing scenarios fail on purpose
 			tr.mu.Lock()
+			// Lock first, asserted here and not only by the golden (which RYFT_UPDATE_TRACE
+			// regenerates): the transaction begins, then the user's apply lock, then anything.
+			if len(tr.stmts) < 2 || !strings.HasPrefix(tr.stmts[0], "begin ") ||
+				!strings.HasPrefix(tr.stmts[1], "SELECT pg_advisory_xact_lock(") {
+				t.Errorf("the statements must be begin, then the apply lock; got %q", tr.stmts)
+			}
 			fmt.Fprintf(&b, "\n## %s\n", sc.name)
 			for i, s := range tr.stmts {
 				fmt.Fprintf(&b, "%d. %s\n", i+1, s)
