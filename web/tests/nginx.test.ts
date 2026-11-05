@@ -74,6 +74,18 @@ describe('nginx locations and the two security-header snippets', () => {
     expect(locations.find((l) => l.name === '= /admin.html')!.body).toContain('return 301 /admin;');
   });
 
+  it('answers 404 for the precompressed *.gz files, as the first regex location, without its own headers', () => {
+    const names = locations.map((l) => l.name);
+    const gz = names.indexOf('~ \\.gz$');
+    expect(gz).toBeGreaterThan(-1);
+    expect(names.slice(0, gz).filter((n) => n.startsWith('~'))).toEqual([]);
+    const body = locations[gz]!.body;
+    expect(body).toMatch(/return 404;/);
+    // No add_header: the server-level headers (CSP included) are inherited.
+    expect(body).not.toMatch(/add_header/);
+    expect(conf).toMatch(/gzip_static on;/);
+  });
+
   it('keeps the policies apart: each header file includes only its own', () => {
     const read = (f: string) => readFileSync(`nginx/${f}`, 'utf8');
     expect(read('headers.conf')).toMatch(/include \/etc\/nginx\/snippets\/csp\.conf;/);

@@ -29,8 +29,9 @@ here: read from it, never write there.
   `robots.txt`) with ONE inline hashed script bundled by esbuild from `src/admin` (no framework,
   no supabase-js, no client components: it is a server component that inlines the bundle). It
   has forms (sign-in, TOTP), talks to exactly two origins (`config/admin.json`: the api and the
-  Supabase project; `connect-src` in its own CSP, `nginx/headers-admin.conf`) and keeps the
-  session in `sessionStorage` (never `localStorage`, never a cookie). Its UI strings are
+  Supabase project, path-scoped to `/v1/admin/` and `/auth/v1/` in `connect-src` of its own CSP, `nginx/headers-admin.conf`) and keeps the
+  session in `sessionStorage` (never `localStorage`, never a cookie; it is per tab but readable by every
+  page of the origin in that tab, so it is cleared when the tab leaves `/admin`, `src/admin/leave.ts`). Its UI strings are
   English-only and live in the bundle, outside `messages/`. Everything the api returns is
   rendered with `textContent` (no HTML sink; `trusted-types 'none'`; ESLint and
   `tests/admin-source.test.ts` enforce it). A location includes exactly one of `headers.conf`

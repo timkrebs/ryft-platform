@@ -92,7 +92,7 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
     const csps = res.headersArray().filter((h) => h.name.toLowerCase() === 'content-security-policy');
     expect(csps, 'exactly one Content-Security-Policy').toHaveLength(1);
     const csp = csps[0]!.value;
-    expect(directive(csp, 'connect-src')).toBe(`${API} ${AUTH}`);
+    expect(directive(csp, 'connect-src')).toBe(`${AUTH}/auth/v1/ ${API}/v1/admin/`);
     expect(directive(csp, 'trusted-types')).toBe("'none'");
     expect(directive(csp, 'require-trusted-types-for')).toBe("'script'");
     expect(directive(csp, 'frame-ancestors')).toBe("'none'");
@@ -209,6 +209,86 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
     expect(new Set(foreign)).toEqual(new Set([API, AUTH]));
     expect(await context.cookies()).toEqual([]);
   });
+
+  test('/admin reaches only the Auth API and the admin routes: user routes and PostgREST are blocked', async ({
+    page,
+  }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    const outcome = await page.evaluate(
+      async ([api, auth]) => {
+        const violations: string[] = [];
+        document.addEventListener('securitypolicyviolation', (e) => violations.push(e.blockedURI));
+        const tried = async (u: string) =>
+          fetch(u, { mode: 'no-cors' }).then(
+            () => 'ok',
+            () => 'blocked',
+          );
+        const blocked = await Promise.all(
+          [
+            `${api}/v1/me`,
+            `${api}/v1/config`,
+            `${api}/v1/adminx`,
+            `${auth}/rest/v1/users`,
+            `${auth}/storage/v1/b`,
+          ].map(tried),
+        );
+        const allowed = await Promise.all([`${api}/v1/admin/flags`, `${auth}/auth/v1/health`].map(tried));
+        await new Promise((r) => setTimeout(r, 50));
+        return { blocked, allowed, violations };
+      },
+      [API, AUTH],
+    );
+    expect(outcome.blocked).toEqual(['blocked', 'blocked', 'blocked', 'blocked', 'blocked']);
+    expect(outcome.allowed).toEqual(['ok', 'ok']);
+    expect(outcome.violations).toHaveLength(5);
+    expect(stub.seen.some((s) => s.path === '/v1/me' || s.path.startsWith('/rest/'))).toBe(false);
+  });
+
+  test('leaving /admin ends the session: other pages of the origin never see the refresh token', async ({
+    page,
+  }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    expect(await page.evaluate(() => sessionStorage.getItem('ryft.admin.session'))).toContain(
+      'refresh_token',
+    );
+    await page.goto('/privacy');
+    expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
+    await page.goto('/admin');
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in' })).toBeVisible();
+  });
+
+  test('changing section (a fragment change) keeps the session; a reload ends it', async ({ page }) => {
+    const stub = await setup(page);
+    await signIn(page, stub);
+    await tab(page, 'Users').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Users' })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.length)).toBe(1);
+    // A browser reload fires no `navigate` event, so it looks like leaving: the operator signs in again.
+    await page.reload();
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in' })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
+  });
+
+  test('the image serves the precompressed pages, and the .gz files themselves are 404', async ({
+    request,
+  }) => {
+    for (const path of ['/', '/privacy', '/admin']) {
+      const res = await request.get(path, { headers: { 'accept-encoding': 'gzip' } });
+      expect(res.status(), path).toBe(200);
+      expect(res.headers()['content-encoding'], path).toBe('gzip');
+      expect(res.headers()['content-security-policy'], path).toBeTruthy();
+      expect(await res.text(), path).toContain('<html');
+    }
+    const css = (await (await request.get('/admin')).text()).match(/\/_next\/static\/[^"]+\.css/)![0];
+    for (const path of ['/privacy.html.gz', '/admin.html.gz', `${css}.gz`, '/sitemap.xml.gz']) {
+      const res = await request.get(path, { maxRedirects: 0 });
+      expect(res.status(), path).toBe(404);
+      expect(res.headers()['content-security-policy'], path).toMatch(/connect-src 'none'/);
+      expect(res.headers()['x-content-type-options'], path).toBe('nosniff');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -221,6 +301,12 @@ test.describe('sign in', () => {
     await password(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Set up your authenticator' })).toBeVisible();
     await expect(page.getByTestId('totp-secret')).toHaveText('JBSWY3DPEHPK3PXP');
+    // The seed is not offered to the clipboard; the authenticator app gets it through the otpauth link.
+    await expect(page.getByRole('button', { name: /copy/i })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Open in your authenticator app' })).toHaveAttribute(
+      'href',
+      /^otpauth:\/\/totp\/RYFT%20admin:/,
+    );
     // The QR code is an SVG data URL: it loads under img-src data: and shows.
     await expect
       .poll(() =>
@@ -276,10 +362,7 @@ test.describe('sign in', () => {
     expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
   });
 
-  test('the session is in sessionStorage only: no localStorage, no cookie, and a reload keeps it', async ({
-    page,
-    context,
-  }) => {
+  test('the session is in sessionStorage only: no localStorage, no cookie', async ({ page, context }) => {
     const stub = await setup(page);
     await signIn(page, stub);
     const stored = await page.evaluate(() => ({
@@ -288,9 +371,7 @@ test.describe('sign in', () => {
     }));
     expect(stored).toEqual({ session: ['ryft.admin.session'], local: 0 });
     expect(await context.cookies()).toEqual([]);
-    await page.reload();
-    await expect(page.getByRole('heading', { level: 1, name: 'Invites' })).toBeVisible();
-    expect(stub.count('POST', '/auth/v1/factors')).toBe(1); // no second enrolment
+    expect(stub.count('POST', '/auth/v1/factors')).toBe(1);
   });
 
   test('Sign out ends every session of the account and clears the tab', async ({ page }) => {

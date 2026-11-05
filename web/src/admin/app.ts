@@ -8,6 +8,7 @@ import { ApiError, createApi, describeError, SessionEnded } from './api';
 import { config } from './config';
 import { h } from './dom';
 import { createAuthClient } from './gotrue';
+import { clearOnLeave, type WindowLike } from './leave';
 import { decodeClaims } from './jwt';
 import { createSessions } from './sessions';
 import { auditScreen } from './screens/audit';
@@ -164,6 +165,7 @@ export function start(els: Elements): void {
       enrolView({
         qr: enrol.qr,
         secret: enrol.secret,
+        uri: enrol.uri,
         onSubmit: (code) => verifyCode(enrol.id, code),
         onCancel: () => void signOut(),
       }),
@@ -229,6 +231,9 @@ export function start(els: Elements): void {
     if (token) await auth.signOut(token).catch(() => undefined);
     toSignIn(message);
   }
+
+  // Other pages of this origin can read sessionStorage: end the session when the tab leaves /admin.
+  clearOnLeave(window as unknown as WindowLike, () => sessions.clear());
 
   window.addEventListener('hashchange', () => {
     if (inApp) showTab();

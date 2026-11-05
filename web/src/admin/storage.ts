@@ -1,6 +1,9 @@
-// The operator's session lives in sessionStorage: per tab, gone when the tab closes, and
-// unreadable from any other page of the origin. Nothing else is stored, and nothing goes
-// to localStorage or a cookie (web D16).
+// The operator's session lives in sessionStorage: it is gone when the tab closes and is not
+// shared with other tabs. It is NOT hidden from other pages of the origin: every page of
+// ryftapp.de loaded in this same tab (or in a duplicate of it) can read it. That is why
+// src/admin/leave.ts clears it when the tab leaves /admin, and why the marketing pages run
+// no dynamic code (hashed CSP, Trusted Types). Nothing else is stored, and nothing goes to
+// localStorage or a cookie (web D16).
 import type { Session } from './types';
 
 export const SESSION_KEY = 'ryft.admin.session';

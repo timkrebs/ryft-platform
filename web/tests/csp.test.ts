@@ -80,7 +80,7 @@ describe('the two policies', () => {
   });
 
   it('gives the admin page exactly the api and the Supabase project to talk to', () => {
-    expect(directive(admin, 'connect-src')).toBe(`${config.apiUrl} ${config.supabaseUrl}`);
+    expect(directive(admin, 'connect-src')).toBe(`${config.supabaseUrl}/auth/v1/ ${config.apiUrl}/v1/admin/`);
     expect(directive(admin, 'script-src')).toBe(cspHash(ADMIN_JS));
     expect(directive(admin, 'img-src')).toBe("'self' data:");
     expect(directive(admin, 'trusted-types')).toBe("'none'");
@@ -89,6 +89,15 @@ describe('the two policies', () => {
     expect(directive(admin, 'form-action')).toBe("'none'");
     expect(directive(admin, 'default-src')).toBe("'none'");
     expect(directive(admin, 'base-uri')).toBe("'none'");
+  });
+
+  it('scopes connect-src to paths: the Auth API and the admin routes, not the whole origins', () => {
+    const sources = directive(admin, 'connect-src')!.split(' ');
+    expect(sources).toHaveLength(2);
+    for (const s of sources) expect(new URL(s).pathname, s).toMatch(/^\/[a-z0-9/]+\/$/);
+    expect(sources).not.toContain(config.apiUrl);
+    expect(sources).not.toContain(config.supabaseUrl);
+    expect(directive(admin, 'connect-src')).not.toMatch(/rest\/v1|storage|realtime|v1\/me/);
   });
 
   it("allows no unsafe source, wildcard, 'self' or strict-dynamic for scripts or connections", () => {

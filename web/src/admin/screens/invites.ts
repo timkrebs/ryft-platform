@@ -18,6 +18,10 @@ import {
   type Tone,
 } from '../ui';
 
+/** A link is shared or copied only when it is a RYFT invite link: whatever the api sent. */
+const INVITE_LINK = 'https://ryftapp.de/invite/';
+const linkOk = (link: string) => typeof link === 'string' && link.startsWith(INVITE_LINK);
+
 const TONE: Record<InviteStatus, Tone> = { open: 'ok', used: 'plain', expired: 'warn', revoked: 'bad' };
 const EXPIRY: [string, number][] = [
   ['14 days', 14],
@@ -90,7 +94,8 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
       item.append(h('p', { class: 'adm-sub' }, 'Redeemed by'), used);
     }
     const actions = h('div', { class: 'adm-actions' });
-    actions.append(copyButton('Copy link', inv.link), copyButton('Copy code', inv.code));
+    if (linkOk(inv.link)) actions.append(copyButton('Copy link', inv.link));
+    actions.append(copyButton('Copy code', inv.code));
     if (inv.status === 'open') {
       actions.append(
         confirmButton('Revoke', 'Revoke now', async () => {
@@ -126,7 +131,7 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
 
   function showResult(inv: BetaInvite) {
     const share =
-      typeof navigator.share === 'function'
+      typeof navigator.share === 'function' && linkOk(inv.link)
         ? button('Share', 'primary', async () => {
             try {
               await navigator.share({
@@ -151,7 +156,7 @@ export function invitesScreen(ctx: Ctx): HTMLElement {
           'div',
           { class: 'adm-actions' },
           share,
-          copyButton('Copy link', inv.link),
+          linkOk(inv.link) ? copyButton('Copy link', inv.link) : null,
           copyButton('Copy code', inv.code),
           button('Done', 'secondary', () => result.replaceChildren()),
         ),

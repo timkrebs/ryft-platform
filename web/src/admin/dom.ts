@@ -6,6 +6,13 @@
 export type Child = Node | string | number | null | undefined | false;
 export type AttrValue = string | number | boolean | null | undefined;
 
+/** The only links the page builds: in-page (#view) and the authenticator's otpauth://totp/ URI. */
+export function isAllowedHref(value: unknown): boolean {
+  return (
+    typeof value === 'string' && (/^#[a-z]*$/.test(value) || /^otpauth:\/\/totp\/[^\s<>"']+$/.test(value))
+  );
+}
+
 const NAME = /^[a-z][a-z0-9-]*$/;
 const FORBIDDEN = new Set(['style', 'srcdoc', 'formaction', 'action', 'xlink:href']);
 
@@ -20,8 +27,8 @@ export function h<K extends keyof HTMLElementTagNameMap>(
     if (!NAME.test(name) || name.startsWith('on') || FORBIDDEN.has(name)) {
       throw new Error(`attribute not allowed: ${name}`);
     }
-    if (name === 'href' && !(typeof value === 'string' && value.startsWith('#'))) {
-      throw new Error('href is only allowed for in-page links');
+    if (name === 'href' && !isAllowedHref(value)) {
+      throw new Error('href is only allowed for in-page links and the TOTP otpauth:// link');
     }
     if (name === 'src' && !(typeof value === 'string' && value.startsWith('data:image/svg+xml'))) {
       throw new Error('src is only allowed for the QR code');

@@ -1,9 +1,8 @@
 // Sign in, enrol the authenticator app (first use), enter the code. Plain <form>s so a
 // password manager can fill them; submission is handled here (the CSP says form-action 'none').
 import { describeError, FormError } from '../api';
-import { h, listen } from '../dom';
+import { h, isAllowedHref, listen } from '../dom';
 import { button, errorBox, field, input } from '../ui';
-import { copy } from './invites';
 
 type Submit<T extends unknown[]> = (...args: T) => Promise<void>;
 
@@ -100,11 +99,12 @@ export function challengeView(opts: {
 export function enrolView(opts: {
   qr: string | null;
   secret: string;
+  /** otpauth://totp/… for a link that opens the authenticator app; no link when it is not that. */
+  uri: string;
   onSubmit: Submit<[code: string]>;
   onCancel: () => void;
 }) {
   const code = codeInput();
-  const live = h('span', { class: 'adm-note', role: 'status' });
   return h(
     'div',
     { class: 'adm-narrow' },
@@ -125,14 +125,11 @@ export function enrolView(opts: {
       : null,
     h('p', { class: 'adm-sub' }, 'Secret'),
     h('p', { class: 'adm-secret', 'data-testid': 'totp-secret' }, opts.secret),
-    h(
-      'div',
-      { class: 'adm-actions' },
-      button('Copy secret', 'secondary', async () => {
-        live.textContent = (await copy(opts.secret)) ? 'Copied' : 'Copy failed. Select the secret by hand.';
-      }),
-      live,
-    ),
+    // No "copy" button: the seed would sit on the clipboard (shared with other apps, and with
+    // other devices through Universal Clipboard). The link hands it to the authenticator app.
+    isAllowedHref(opts.uri)
+      ? h('p', {}, h('a', { href: opts.uri, class: 'adm-link-btn' }, 'Open in your authenticator app'))
+      : null,
     form('Authenticator code', [field('6-digit code', code)], 'Verify and continue', async () => {
       let value: string;
       try {

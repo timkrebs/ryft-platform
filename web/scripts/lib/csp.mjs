@@ -41,10 +41,13 @@ export function httpsOrigin(value, what) {
 }
 
 /**
- * The admin page's policy. Like the marketing one, but: connect-src is exactly the api and the
- * Supabase project (no 'self', no wss:), img-src gains data: for the TOTP QR code (an SVG in an
- * <img> runs no script), and Trusted Types is 'none' (the page has no HTML sink). `config` is
- * config/admin.json, the same file the bundle is built from.
+ * The admin page's policy. Like the marketing one, but: connect-src is path-scoped to what the
+ * page uses: the project's Auth API (`<supabase>/auth/v1/`) and the api's admin routes
+ * (`<api>/v1/admin/`), so no PostgREST, no storage, no realtime and no user route (`/v1/me`)
+ * is reachable from it; no 'self', no wss:. A source path ending in "/" is a prefix match.
+ * img-src gains data: for the TOTP QR code (an SVG in an <img> runs no script), and Trusted
+ * Types is 'none' (the page has no HTML sink). `config` is config/admin.json, the same file
+ * the bundle is built from.
  */
 export function adminPolicy(hashes, config) {
   const api = httpsOrigin(config.apiUrl, 'config/admin.json apiUrl');
@@ -55,7 +58,7 @@ export function adminPolicy(hashes, config) {
     "style-src 'self'",
     "img-src 'self' data:",
     "font-src 'self'",
-    `connect-src ${api} ${supabase}`,
+    `connect-src ${supabase}/auth/v1/ ${api}/v1/admin/`,
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",

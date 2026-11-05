@@ -63,6 +63,18 @@ describe('src/admin source', () => {
     expect(hits).toEqual([]);
   });
 
+  it('uses the Navigation API and pagehide only in leave.ts (the session ends when the tab leaves /admin)', () => {
+    const hits = SRC.filter((f) => !f.endsWith('leave.ts')).flatMap((f) =>
+      [...text[f]!.matchAll(/\bnavigation\b|\bpagehide\b|\bbeforeunload\b|\bunload\b/g)].map(
+        (m) => `${f}: ${m[0]}`,
+      ),
+    );
+    expect(hits).toEqual([]);
+    expect(text['src/admin/app.ts']).toMatch(
+      /clearOnLeave\(window as unknown as WindowLike, \(\) => sessions\.clear\(\)\)/,
+    );
+  });
+
   it('builds DOM through dom.ts only: no createElement outside it', () => {
     const hits = SRC.filter((f) => !f.endsWith('dom.ts')).filter((f) => /\bcreateElement\b/.test(text[f]!));
     expect(hits).toEqual([]);
@@ -152,9 +164,24 @@ describe('the admin bundle', async () => {
 
   it('holds no third-party code and no URL but the two configured origins', () => {
     expect(bundle).not.toMatch(/supabase-js|auth-js|gotrue-js|@supabase/);
+    // The two origins, plus the constant prefix of an invite link (a link is shared only if it starts so).
+    const allowed = new Set([config.apiUrl, config.supabaseUrl, 'https://ryftapp.de']);
     const urls = new Set([...bundle.matchAll(/https?:\/\/[^"'`\s\\)]+/g)].map((m) => m[0]));
-    const allowed = new Set([config.apiUrl, config.supabaseUrl]);
     expect([...urls].filter((u) => !allowed.has(u) && !allowed.has(new URL(u).origin))).toEqual([]);
+  });
+
+  it('reads the URL only for #view and uses the Navigation API only for the leave guard', () => {
+    // Every `location` is `location.hash`; no other way to learn the URL or the referrer.
+    expect([...bundle.matchAll(/\blocation\b(?!\.hash\b)/g)]).toEqual([]);
+    expect(bundle).toContain('location.hash');
+    const stripped = bundle.replace(/referrerPolicy|no-referrer/g, '');
+    for (const re of [/document\.URL/, /\bbaseURI\b/, /\bdocumentURI\b/, /\breferrer\b/, /\bhistory\b/]) {
+      expect(stripped, String(re)).not.toMatch(re);
+    }
+    // Exactly the one use in leave.ts: window.navigation, its navigate event and pagehide.
+    expect(bundle.match(/\bnavigation\b/g)).toHaveLength(2);
+    expect(bundle.match(/\bpagehide\b/g)).toHaveLength(1);
+    expect(bundle.match(/["']navigate["']/g)).toHaveLength(1);
   });
 
   it('keeps the session in sessionStorage and uses no other store', () => {

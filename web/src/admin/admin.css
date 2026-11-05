@@ -353,3 +353,9 @@
 .adm-badge-bad {
   color: var(--alert);
 }
+
+.adm-link-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
