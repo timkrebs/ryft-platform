@@ -1,12 +1,14 @@
 {{- /*
-P1 ryft-namespaces (C, U; D for Argo CD). Namespaces ryft-*, rabbitmq-system and argocd
-keep the Pod Security labels (enforce, warn, audit = restricted, versions only "latest"),
-whoever writes them (infra/vault included). Argo CD may write only ryft-web and
-rabbitmq-system and deletes no Namespace. monitoring is outside by name (D51).
+P1 ryft-namespaces (C, U; D for Argo CD). Namespaces ryft-*, rabbitmq-system, argocd and
+vault (the in-cluster Vault, vault.namespace) keep the Pod Security labels (enforce, warn,
+audit = restricted, versions only "latest"), whoever writes them (infra/vault and
+infra/aws/kubernetes included). Argo CD may write only ryft-web and rabbitmq-system (so never
+vault) and deletes no Namespace. monitoring is outside by name (D51).
 */ -}}
 {{- /* name: the Namespace's name; request.name is empty for generateName and request fields are omitted when empty, so the object is read. */ -}}
 {{- $name := "(request.operation == 'DELETE' ? oldObject.metadata.name : (has(object.metadata.name) ? object.metadata.name : ''))" -}}
-{{- $inScope := printf "(%s.startsWith('ryft-') || %s in ['rabbitmq-system', 'argocd'] || (request.operation == 'CREATE' && has(object.metadata.generateName) && object.metadata.generateName.startsWith('ryft-')))" $name $name -}}
+{{- $others := list "rabbitmq-system" "argocd" .Values.vault.namespace -}}
+{{- $inScope := printf "(%s.startsWith('ryft-') || %s in %s || (request.operation == 'CREATE' && has(object.metadata.generateName) && object.metadata.generateName.startsWith('ryft-')))" $name $name ($others | toJson) -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-namespaces" "id" "P1" "summary" "Pod Security labels on RYFT namespaces; what Argo CD may do to Namespaces") }}
 spec:
   failurePolicy: Fail
@@ -36,7 +38,7 @@ spec:
         ['enforce', 'warn', 'audit'].all(l,
           ('pod-security.kubernetes.io/' + l) in variables.labels &&
           variables.labels['pod-security.kubernetes.io/' + l] == 'restricted')
-      message: "P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted."
+      message: "P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted."
       reason: Forbidden
     - expression: |-
         request.operation == 'DELETE' || !variables.inScope ||

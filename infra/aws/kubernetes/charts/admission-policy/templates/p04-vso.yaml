@@ -3,7 +3,17 @@ P4 ryft-vso (C, U; all namespaces, any writer). The Vault Secrets Operator objec
 held to the shape infra/vault generates: keys are allowlisted per kind (the CRD-defaulted
 ones included: skipTLSVerify, kubernetes.tokenExpirationSeconds, destination.create and
 overwrite, hmacSecretData). Other secrets.hashicorp.com kinds are refused.
+
+Both shapes infra/vault generates are admitted while the namespaces move from HCP Vault to the
+in-cluster Vault, one cutover PR at a time: HCP (address HCP's, no CA, VaultAuth namespace
+under admin/ryft/, mount kv) and in-cluster (address https://vault.vault.svc:8200,
+caCertSecretRef vault-ca, no Vault namespace, mount kv-<service>, the service being the
+namespace without ryft-). Each object is judged alone, so a mix of the two in one namespace
+is not refused (it fails at login instead). The decommission sets vso.kvMount and
+vso.vaultNamespacePrefix to "" and leaves one address: then only the in-cluster shape passes.
 */ -}}
+{{- $kvMounts := list -}}
+{{- if .Values.vso.kvMount -}}{{- $kvMounts = append $kvMounts .Values.vso.kvMount -}}{{- end -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-vso" "id" "P4" "summary" "Vault Secrets Operator objects keep the shape infra/vault generates") }}
 spec:
   failurePolicy: Fail
@@ -20,16 +30,21 @@ spec:
       expression: request.kind.kind
     - name: spec
       expression: dyn(object).spec
+    # The in-cluster Vault's mount of this namespace's service: kv-api in ryft-api, kv-monitoring in monitoring.
+    - name: serviceMount
+      expression: |-
+        {{ .Values.vso.kvMountPrefix | toJson }} + (request.namespace.startsWith('ryft-') ? request.namespace.substring(5) : request.namespace)
   validations:
     - expression: variables.reqKind in ['VaultConnection', 'VaultAuth', 'VaultStaticSecret']
       message: "P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultConnection' ||
-        (variables.spec.all(k, k in ['address', 'skipTLSVerify']) &&
-         has(variables.spec.address) && variables.spec.address == {{ .Values.vaultAddress | toJson }} &&
-         (!has(variables.spec.skipTLSVerify) || variables.spec.skipTLSVerify == false))
-      message: "P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout."
+        (variables.spec.all(k, k in ['address', 'skipTLSVerify', 'caCertSecretRef']) &&
+         has(variables.spec.address) && variables.spec.address in {{ .Values.vaultAddresses | toJson }} &&
+         (!has(variables.spec.skipTLSVerify) || variables.spec.skipTLSVerify == false) &&
+         (!has(variables.spec.caCertSecretRef) || variables.spec.caCertSecretRef == {{ .Values.vault.caCertificate | toJson }}))
+      message: "P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultAuth' ||
@@ -37,20 +52,24 @@ spec:
          has(variables.spec.method) && variables.spec.method == 'kubernetes' &&
          has(variables.spec.mount) && variables.spec.mount == {{ .Values.vso.authMount | toJson }} &&
          has(variables.spec.vaultConnectionRef) && variables.spec.vaultConnectionRef == {{ .Values.vso.connectionName | toJson }} &&
+         {{- if .Values.vso.vaultNamespacePrefix }}
          (!has(variables.spec.namespace) || variables.spec.namespace.startsWith({{ .Values.vso.vaultNamespacePrefix | toJson }})) &&
+         {{- else }}
+         !has(variables.spec.namespace) &&
+         {{- end }}
          has(variables.spec.kubernetes) &&
          variables.spec.kubernetes.all(k, k in ['role', 'serviceAccount', 'audiences', 'tokenExpirationSeconds']) &&
          has(variables.spec.kubernetes.audiences) && variables.spec.kubernetes.audiences == [{{ .Values.vso.audience | toJson }}])
-      message: "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces."
+      message: {{ if .Values.vso.vaultNamespacePrefix }}"P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces."{{ else }}"P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace, and no allowedNamespaces."{{ end }}
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultStaticSecret' ||
         (variables.spec.all(k, k in ['vaultAuthRef', 'mount', 'type', 'path', 'refreshAfter', 'hmacSecretData', 'destination', 'rolloutRestartTargets']) &&
          has(variables.spec.vaultAuthRef) && !variables.spec.vaultAuthRef.contains('/') &&
-         has(variables.spec.mount) && variables.spec.mount == {{ .Values.vso.kvMount | toJson }} &&
+         has(variables.spec.mount) && (variables.spec.mount in {{ $kvMounts | toJson }} || variables.spec.mount == variables.serviceMount) &&
          has(variables.spec.type) && variables.spec.type == 'kv-v2' &&
          (!has(variables.spec.rolloutRestartTargets) || variables.spec.rolloutRestartTargets.all(t, t.all(k, k in ['kind', 'name']))))
-      message: "P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys."
+      message: {{ if .Values.vso.kvMount }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service>, and set only the allowed keys."{{ else }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service>, and set only the allowed keys."{{ end }}
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultStaticSecret' ||

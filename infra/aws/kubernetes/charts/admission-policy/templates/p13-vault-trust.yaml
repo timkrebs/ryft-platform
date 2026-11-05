@@ -1,0 +1,93 @@
+{{- /*
+P13 ryft-vault-trust (C, U; all namespaces, any writer): what the cert-manager ClusterIssuer
+ryft-vault (vault.issuer) may issue. That CA is the trust of every VaultConnection of the
+in-cluster Vault, so a leaf it signs for vault.vault.svc is a Vault server to VSO. Matched:
+every Certificate and CertificateRequest whose issuerRef names the issuer (whatever kind and
+group it claims: the shape below pins them, so a namespaced Issuer of the same name is refused
+too, never ignored). An Ingress or Gateway annotated with the issuer ends here as well: the
+Certificate cert-manager's ingress-shim writes is judged like any other.
+
+- A Certificate is either the server's, `<vault.namespace>/<serverCertificate>` (dnsNames and
+  ipAddresses only from the lists, usages only server auth and digital signature, its own
+  Secret), or `<namespace>/<caCertificate>` in any namespace (commonName vso.<namespace>, no
+  dnsNames, ipAddresses, URIs or e-mail addresses, no server auth, its own Secret: only the
+  Secret's ca.crt is used, the leaf is inert). Both are allowlists of spec keys, so isCA,
+  subject, literalSubject, uris, keystores, secretTemplate and any key a later CRD version adds
+  are refused. issuerRef is exactly the ClusterIssuer of cert-manager.io.
+- A CertificateRequest for the issuer comes only from cert-manager's controller (it creates one
+  for each judged Certificate). CEL cannot read the names inside a CSR, so a hand-made request
+  is refused whatever it asks for. Status (approval, the signed certificate) is a subresource
+  and not matched.
+
+Not covered here: another Issuer or ClusterIssuer that names the same CA Secret (cert-manager
+namespace), and Kubernetes CertificateSigningRequests for signer
+clusterissuers.cert-manager.io/ryft-vault (cert-manager's CSR controllers are off unless their
+feature gate is set). Argo CD writing a well-shaped Certificate in vault is P12's (#121).
+*/ -}}
+{{- $v := .Values.vault -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-vault-trust" "id" "P13" "summary" "what the ryft-vault issuer (the in-cluster Vault's CA) may issue") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["cert-manager.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["certificates", "certificaterequests"]
+  matchConditions:
+    - name: names-the-vault-issuer
+      expression: |-
+        has(object.spec) && has(object.spec.issuerRef) && has(object.spec.issuerRef.name) &&
+        object.spec.issuerRef.name == {{ $v.issuer | toJson }}
+    {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
+  variables:
+    - name: reqKind
+      expression: request.kind.kind
+    - name: ns
+      expression: request.namespace
+    - name: name
+      expression: |-
+        has(object.metadata.name) ? object.metadata.name : ''
+    - name: spec
+      expression: dyn(object).spec
+    - name: isServer
+      expression: |-
+        variables.ns == {{ $v.namespace | toJson }} && variables.name == {{ $v.serverCertificate | toJson }}
+    - name: isCA
+      expression: |-
+        variables.name == {{ $v.caCertificate | toJson }}
+  validations:
+    - expression: |-
+        variables.reqKind != 'CertificateRequest' || request.userInfo.username == {{ $v.certManagerUser | toJson }}
+      message: "P13: only cert-manager's controller may create or update a CertificateRequest for the issuer ryft-vault (CEL cannot read the names in a CSR)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' ||
+        (variables.spec.issuerRef.all(k, k in ['name', 'kind', 'group']) &&
+         has(variables.spec.issuerRef.kind) && variables.spec.issuerRef.kind == 'ClusterIssuer' &&
+         (!has(variables.spec.issuerRef.group) || variables.spec.issuerRef.group == 'cert-manager.io'))
+      message: "P13: a Certificate for ryft-vault must name the ClusterIssuer ryft-vault of cert-manager.io."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' || variables.isServer || variables.isCA
+      message: "P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' || !variables.isServer ||
+        (variables.spec.all(k, k in ['secretName', 'duration', 'renewBefore', 'privateKey', 'usages', 'dnsNames', 'ipAddresses', 'issuerRef']) &&
+         has(variables.spec.secretName) && variables.spec.secretName == {{ $v.serverCertificate | toJson }} &&
+         (!has(variables.spec.dnsNames) || variables.spec.dnsNames.all(n, n in {{ $v.serverDNSNames | toJson }})) &&
+         (!has(variables.spec.ipAddresses) || variables.spec.ipAddresses.all(a, a in {{ $v.serverIPAddresses | toJson }})) &&
+         (!has(variables.spec.usages) || variables.spec.usages.all(u, u in {{ $v.serverUsages | toJson }})))
+      message: "P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' || variables.isServer || !variables.isCA ||
+        (variables.spec.all(k, k in ['secretName', 'commonName', 'duration', 'renewBefore', 'privateKey', 'usages', 'issuerRef']) &&
+         has(variables.spec.secretName) && variables.spec.secretName == {{ $v.caCertificate | toJson }} &&
+         has(variables.spec.commonName) && variables.spec.commonName == {{ $v.caCommonNamePrefix | toJson }} + variables.ns &&
+         (!has(variables.spec.usages) || variables.spec.usages.all(u, u in {{ $v.caUsages | toJson }})))
+      message: "P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no names, no server auth, no CA, subject or other field."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "vault-trust" "policy" "ryft-vault-trust" "id" "P13" "step" "A") }}

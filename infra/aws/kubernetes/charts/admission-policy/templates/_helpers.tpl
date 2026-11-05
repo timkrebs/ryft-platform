@@ -5,9 +5,25 @@ spliced in with toJson, which gives CEL string, list and map literals.
 
 {{- /* Fails the render on a value the chart cannot honour. */ -}}
 {{- define "admission.validate" -}}
-{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" -}}
-{{- if not .Values.vaultAddress -}}{{- fail "vaultAddress is required (admission-values.yaml)" -}}{{- end -}}
-{{- if not (hasPrefix "https://" .Values.vaultAddress) -}}{{- fail "vaultAddress must be an https:// URL" -}}{{- end -}}
+{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" "vault-trust" -}}
+{{- if hasKey .Values "vaultAddress" -}}{{- fail "vaultAddress is now vaultAddresses, a list (admission-values.yaml)" -}}{{- end -}}
+{{- if not .Values.vaultAddresses -}}{{- fail "vaultAddresses is required (admission-values.yaml)" -}}{{- end -}}
+{{- if not (kindIs "slice" .Values.vaultAddresses) -}}{{- fail "vaultAddresses must be a list" -}}{{- end -}}
+{{- range .Values.vaultAddresses -}}
+{{- if not (and (kindIs "string" .) (hasPrefix "https://" .) (not (hasSuffix "/" .))) -}}{{- fail "every vaultAddresses entry must be an https:// URL without a trailing slash" -}}{{- end -}}
+{{- end -}}
+{{- /* Namespace vault: a name of its own (the ryft-* and operator branches would shadow it), and digest-pinned, anchored image patterns (an empty pattern matches every image). */ -}}
+{{- $vns := .Values.vault.namespace -}}
+{{- if or (not $vns) (hasPrefix "ryft-" $vns) (eq $vns .Values.operators.namespace) (eq $vns .Values.argocd.namespace) -}}{{- fail "vault.namespace must be set and must not be a ryft-* namespace, the operators' or Argo CD's" -}}{{- end -}}
+{{- if not .Values.images.vault -}}{{- fail "images.vault is required (the Vault server's pinned image)" -}}{{- end -}}
+{{- range $k := list "vault" "awsCli" -}}
+{{- $re := index $.Values.images $k -}}
+{{- if and $re (not (and (hasPrefix "^" $re) (hasSuffix "$" $re) (contains "@sha256:" $re))) -}}{{- fail (printf "images.%s must be an anchored pattern (^...$) of an image pinned by @sha256:" $k) -}}{{- end -}}
+{{- end -}}
+{{- if not (and .Values.vault.issuer .Values.vault.serverCertificate .Values.vault.caCertificate .Values.vault.caCommonNamePrefix .Values.vault.certManagerUser .Values.vault.serverDNSNames) -}}{{- fail "vault.issuer, serverCertificate, serverDNSNames, caCertificate, caCommonNamePrefix and certManagerUser are required (P13)" -}}{{- end -}}
+{{- if not .Values.vso.kvMountPrefix -}}{{- fail "vso.kvMountPrefix is required (P4: the in-cluster Vault's kv-<service> mounts)" -}}{{- end -}}
+{{- if has "server auth" .Values.vault.caUsages -}}{{- fail "vault.caUsages must not hold server auth: a vault-ca leaf is inert" -}}{{- end -}}
+{{- if not .Values.netpol.podIdentityAgentCIDR -}}{{- fail "netpol.podIdentityAgentCIDR is required (P3, namespace vault)" -}}{{- end -}}
 {{- range $k, $v := .Values.actions -}}
 {{- if not (has $k $known) -}}{{- fail (printf "actions.%s is not a binding of this chart" $k) -}}{{- end -}}
 {{- if not (has $v (list "audit" "deny")) -}}{{- fail (printf "actions.%s must be audit or deny" $k) -}}{{- end -}}
@@ -122,6 +138,14 @@ strings is an error), so every map value and list element goes through dyn().
 {{- /* CEL list literal of both Argo CD identities */ -}}
 {{- define "admission.cel.argoUsers" -}}
 {{- list (include "admission.user.argoController" .) (include "admission.user.argoServer" .) | toJson -}}
+{{- end -}}
+
+{{- /* CEL: c.image matches one of the patterns namespace vault may run (constant patterns, one
+matches() each; an empty one is left out, because an empty pattern matches anything). */ -}}
+{{- define "admission.cel.vaultImages" -}}
+{{- $out := list -}}
+{{- range $k := list "vault" "awsCli" -}}{{- with index $.Values.images $k -}}{{- $out = append $out (printf "c.image.matches(%s)" (. | toJson)) -}}{{- end -}}{{- end -}}
+{{- join " || " $out -}}
 {{- end -}}
 
 {{- /* CEL list literal of both operator identities */ -}}

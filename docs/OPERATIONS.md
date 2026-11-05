@@ -2552,9 +2552,9 @@ Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMi
 - `pod_security_evaluations_total{decision="deny"}` and
   `apiserver_validating_admission_policy_check_total` have series only after the first
   refusal or finding: absent is normal, there is no series for a clean pass.
-  `kube_validatingadmissionpolicybinding_info` has 12 `ryft-*` series once the chart is enabled,
+  `kube_validatingadmissionpolicybinding_info` has 13 `ryft-*` series once the chart is enabled,
   `kube_validatingadmissionpolicybinding_validation_action` one per live action, and
-  `ryft:admission_binding_intended` 12 whether or not the chart is enabled.
+  `ryft:admission_binding_intended` 13 whether or not the chart is enabled.
 - The binding alerts are quiet until bindings exist; the counter alerts are quiet until a
   `ryft-*` policy finds something.
 
@@ -2648,7 +2648,7 @@ expression meeting an object shape it did not expect, so the fix is the chart, n
 object: for the critical one bring the binding to audit through the Break-glass fast path to
 restore writes, then correct the expression (`admission-celtest` reproduces it) and apply.
 
-**AdmissionBindingMissing** (critical). Fewer than 12 `ryft-*` bindings exist for 10 minutes
+**AdmissionBindingMissing** (critical). Fewer than 13 `ryft-*` bindings exist for 10 minutes
 while bindings existed within the last day. A binding that is gone means its policy judges
 nothing (silently open). Compare with what is live, and check that the metric is not the
 blind one:

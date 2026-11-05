@@ -52,6 +52,7 @@ var kinds = map[string]kindInfo{
 	"ApplicationSet":  {"argoproj.io", "v1alpha1", "applicationsets"},
 	"RabbitmqCluster": {"rabbitmq.com", "v1beta1", "rabbitmqclusters"}, "Shovel": {"rabbitmq.com", "v1beta1", "shovels"},
 	"Federation": {"rabbitmq.com", "v1beta1", "federations"}, "Queue": {"rabbitmq.com", "v1beta1", "queues"},
+	"Certificate": {"cert-manager.io", "v1", "certificates"}, "CertificateRequest": {"cert-manager.io", "v1", "certificaterequests"},
 }
 
 type compiled struct {
@@ -543,6 +544,7 @@ func main() {
 	runNegative(c)
 	runArgo(c)
 	runHardening(c)
+	runVault(c)
 	checkGolden()
 	writeFixtures()
 	fmt.Println("cases:", len(results), "failures:", failures)

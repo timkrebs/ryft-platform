@@ -356,7 +356,7 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
 | AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`: step C and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
 | AdmissionPolicyError | critical / warning | a policy's CEL could not be evaluated in the last 10 min (`error_type` not `no_error`): critical when the binding refuses (the request fails under `Fail`), warning under Warn+Audit | the expression meets an unexpected object shape; break-glass, then fix the chart |
-| AdmissionBindingMissing | critical | fewer than 12 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
+| AdmissionBindingMissing | critical | fewer than 13 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
 | AdmissionBindingNotDenying | warning | a binding committed as deny has no `Deny` while other bindings do, 10 min | a fast-path patch left in place; the `[0]` replace apply |
 | AdmissionBindingDrift | warning | the other mismatches with the committed action (deny without Audit; audit with Deny or without Warn or Audit), 2 h | the same |
 | AdmissionBreakGlass | warning | no `ryft-*` binding has `Deny` while at least one is committed as deny, 4 h | end it with `admission_break_glass=false` |
@@ -399,9 +399,9 @@ selector is pinned by `job`. Properties that are deliberate:
   exist).
 
 Series budget (free tier, 10k active series): the three API-server families are about 200
-series at most (12 bindings x 3 or 4 action and error children x 2 API servers, the latency
-as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 12 (`info`) + at most
-24 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 12 recorded
+series at most (13 bindings x 3 or 4 action and error children x 2 API servers, the latency
+as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 13 (`info`) + at most
+26 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 13 recorded
 intended series, and `up` plus `scrape_samples_scraped` per target; about 300 in total. Deny
 and error children appear only after their first event.
 

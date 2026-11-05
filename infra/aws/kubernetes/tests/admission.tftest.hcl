@@ -65,7 +65,7 @@ mock_provider "random" {
 mock_provider "kubernetes" {}
 
 # The cluster as it should look after a Phase 1 apply, and the chart's render of it: the
-# same eleven policies and twelve bindings, every binding Warn+Audit. The drift checks compare
+# same twelve policies and thirteen bindings (P13 included), every binding Warn+Audit. The drift checks compare
 # the two; a run that wants to see a drift overrides one side.
 override_data {
   target = data.helm_template.admission
@@ -293,6 +293,26 @@ override_data {
 
         ---
         apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: ryft-vault-trust
+        spec:
+          failurePolicy: Fail
+          matchConstraints:
+            resourceRules:
+              - resources: [things]
+                operations: [CREATE]
+          matchConditions:
+            - name: m
+              expression: "true"
+          variables:
+            - name: v
+              expression: "true"
+          validations:
+            - expression: "true"
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
         kind: ValidatingAdmissionPolicyBinding
         metadata:
           name: ryft-vso
@@ -406,6 +426,15 @@ override_data {
         spec:
           policyName: ryft-argocd-operation
           validationActions: [Warn, Audit]
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-vault-trust
+        spec:
+          policyName: ryft-vault-trust
+          validationActions: [Warn, Audit]
       EOT
     }
   }
@@ -426,6 +455,7 @@ override_data {
       { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
     ]
   }
 }
@@ -446,6 +476,7 @@ override_data {
       { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+      { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
     ]
   }
 }
@@ -473,8 +504,8 @@ run "the_committed_file_names_every_binding_of_the_chart" {
   command = plan
 
   assert {
-    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 12
-    error_message = "admission-values.yaml must set an action for each of the chart's twelve bindings (P1-P11, P2 twice)"
+    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 13
+    error_message = "admission-values.yaml must set an action for each of the chart's thirteen bindings (P1-P11 and P13, P2 twice)"
   }
 
   assert {
@@ -498,7 +529,7 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 12
+    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 13
     error_message = "by default every binding is Warn+Audit"
   }
 
@@ -528,8 +559,8 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = length(local.admission_rendered_policies) == 11 && length(local.admission_rendered_bindings) == 12
-    error_message = "the mocked render holds the eleven policies and twelve bindings the drift checks compare"
+    condition     = length(local.admission_rendered_policies) == 12 && length(local.admission_rendered_bindings) == 13
+    error_message = "the mocked render holds the twelve policies and thirteen bindings the drift checks compare"
   }
 }
 
@@ -681,13 +712,39 @@ run "vault_address_matches_the_generated_vault_yaml" {
   }
 
   assert {
-    condition     = length(local.vault_addresses) == 1 && local.vault_addresses[0] == local.admission_file.vaultAddress
-    error_message = "vaultAddress in admission-values.yaml must equal the address in every generated vault.yaml (infra/vault); P4 pins it"
+    condition     = length(local.vault_addresses) > 0 && alltrue([for a in local.vault_addresses : contains(local.admission_file.vaultAddresses, a)])
+    error_message = "every address in a generated vault.yaml (infra/vault) must be one of vaultAddresses in admission-values.yaml; P4 admits only those"
   }
 
   assert {
-    condition     = startswith(local.admission_file.vaultAddress, "https://") && !endswith(local.admission_file.vaultAddress, "/")
-    error_message = "the address is an https URL without a trailing slash, as infra/vault writes it"
+    condition     = !contains(keys(local.admission_file), "vaultAddress")
+    error_message = "vaultAddress is now vaultAddresses (a list); the chart refuses the old key"
+  }
+
+  assert {
+    condition     = alltrue([for a in local.admission_file.vaultAddresses : startswith(a, "https://") && !endswith(a, "/")]) && length(distinct(local.admission_file.vaultAddresses)) == length(local.admission_file.vaultAddresses)
+    error_message = "every address is an https URL without a trailing slash, as infra/vault writes it, and none is listed twice"
+  }
+
+  assert {
+    condition     = contains(local.admission_file.vaultAddresses, "https://vault.vault.svc:8200") && length(local.admission_file.vaultAddresses) <= 2
+    error_message = "during the cutover vaultAddresses holds HCP's address and the in-cluster Vault's (https://vault.vault.svc:8200, design section 5), nothing else; P4 must admit the in-cluster shape before the first cutover PR"
+  }
+}
+
+# The cutover: a generated vault.yaml that names the in-cluster Vault passes the check while HCP's
+# files remain; an address in no list fails it.
+run "vault_address_check_admits_both_targets_during_the_cutover" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for a in ["https://vault.vault.svc:8200", local.admission_file.vaultAddresses[0]] : contains(local.admission_vault_allowed, a)])
+    error_message = "both the HCP address and the in-cluster address must be admitted while namespaces move one by one"
+  }
+
+  assert {
+    condition     = !contains(local.admission_vault_allowed, "https://vault.vault.svc.cluster.local:8200") && !contains(local.admission_vault_allowed, "http://vault.vault.svc:8200")
+    error_message = "only the exact in-cluster address infra/vault generates is admitted (not another spelling, never plain http)"
   }
 }
 
@@ -760,6 +817,7 @@ run "drift_a_missing_binding" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
       ]
     }
   }
@@ -790,6 +848,7 @@ run "drift_a_binding_left_in_the_wrong_action" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
       ]
     }
   }
@@ -820,6 +879,7 @@ run "drift_a_binding_pointed_at_another_policy" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
       ]
     }
   }
@@ -850,6 +910,7 @@ run "drift_a_binding_patched_with_a_namespace_selector" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
       ]
     }
   }
@@ -880,6 +941,7 @@ run "server_defaults_are_not_drift" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
       ]
     }
   }
@@ -950,6 +1012,7 @@ run "drift_a_missing_policy" {
         { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       ]
     }
   }
@@ -979,6 +1042,7 @@ run "drift_an_edited_policy" {
         { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       ]
     }
   }

@@ -484,6 +484,35 @@ flowchart LR
 - **Shovel, Federation and SchemaReplication are refused cluster-wide** (recommended), from every writer:
   they move messages off the cluster.
 
+**The namespace `vault` (Vault CE, chart 0.4.0)**
+- **P1:** `vault` is in scope like `rabbitmq-system` and `argocd`: the PSA labels stay `restricted`.
+- **P2:** in `vault` only `images.vault` (the release's exact digest) and `images.awsCli` (the
+  snapshot CronJob, empty until that image is pinned, so the CronJob is refused until then). Both
+  patterns are anchored and digest-pinned (chart guard). The ryft-* command, args and token rules do
+  not apply in `vault`; the Vault image is refused in ryft-*.
+- **P3:** no ingress ipBlock in `vault`. Egress ipBlocks: the public shape on 443 only (no 5432), the
+  VPC CIDR on 443 (the API server, for the token review) and the Pod Identity agent
+  `169.254.170.23/32` on 80.
+- **P4, during the cutover:** both shapes infra/vault generates pass, each object judged alone. HCP:
+  HCP's address, no CA, a Vault namespace under `admin/ryft/`, mount `kv`. In-cluster:
+  `https://vault.vault.svc:8200`, `caCertSecretRef: vault-ca`, no Vault namespace, mount
+  `kv-<service>` (the namespace without `ryft-`). The decommission empties `vso.kvMount` and
+  `vso.vaultNamespacePrefix` and leaves one address; then only the in-cluster shape passes.
+
+**P13 `ryft-vault-trust`** (C, U on cert-manager `certificates` and `certificaterequests` naming the
+issuer `ryft-vault`, whatever kind or group; step A)
+- A CertificateRequest only from cert-manager's own service account (no hand-made CSR, no
+  ingress-shim).
+- A Certificate's `issuerRef` is the ClusterIssuer (`kind: ClusterIssuer`, group absent or
+  `cert-manager.io`, no other key).
+- Only two Certificates: `vault-tls` in `vault` (keys allowlisted, `secretName` its name, DNS names,
+  IPs and usages a subset of the committed lists, never `isCA`) and `vault-ca` in any namespace
+  (keys allowlisted, `secretName` its name, `commonName: vso.<namespace>`, usages without
+  `server auth`).
+- Not held by P13: another Issuer naming the same CA Secret, Kubernetes CSRs for the signer
+  `clusterissuers.cert-manager.io/ryft-vault` (RBAC: only cert-manager approves), and Argo CD
+  writing in `vault` (P12).
+
 **Where each item lands:**
 
 | Item | Held by |
@@ -550,7 +579,7 @@ T12-k (the broker's egress) lands before Step B.
 
 | Step | Policies | Why here |
 | --- | --- | --- |
-| A | P4, P6, P11 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`) |
+| A | P4, P6, P11, P13 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`; P13 only the Vault add-on's Certificates) |
 | B | P1, P2 `templates`, P3, P5, P9 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods |
 | C | P2 `pods`, P8 | runtime: Pods for rollouts, scale-ups and drains, and the broker's reconcile; critical alert |
 | D | P7, P10 | Argo CD's own objects, last |
@@ -689,6 +718,7 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 | --- | --- | --- | --- |
 | P4 refuses | one `vault-<svc>` app and that namespace's Secret refresh; the root's later waves when it syncs | `ArgoAppOutOfSync`, VaultStaticSecret Degraded, `AdmissionPolicyDenied` | fix git, Vault or the chart |
 | P6 / P11 refuse | `rabbitmq-operators` / `broker-rabbitmq` (topology changes wait) | `ArgoAppOutOfSync` | chart first for upgrades |
+| P13 refuses | a `vault-tls` or `vault-ca` issue or renewal; the old certificate stays valid until it expires | the Certificate not Ready, a Terraform error, `AdmissionPolicyDenied` | fix the Certificate or the chart's `vault.*` values |
 | P1, P2 `templates`, P3, P5, P9 refuse | all of `ryft-platform` (every service and web deploy) or the broker app; P1 also an `infra/vault` apply | `ArgoAppOutOfSync`, a Terraform error | fix git or the chart; break-glass if a fix must ship |
 | P2 `pods` / P8 refuse | new Pods: rollouts, HPA scale-ups, drains, the broker's reconcile. Capacity can drop | `AdmissionPodDenied` (critical), `FailedCreate`, `ReconcileSuccess=False` | break-glass at once, then fix |
 | P7 refuses | Argo spec writes: root sync, UI edits. Status and auto-sync go on (carve-out) | the root's sync fails | break-glass, fix the chart |

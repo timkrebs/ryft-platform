@@ -15,7 +15,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 values=${ADMISSION_VALUES:-$root/infra/aws/kubernetes/admission-values.yaml}
 out=${ADMISSION_INTENDED_OUT:-$root/deploy/grafana/alerts/admission-intended.yaml}
 chart_values=${ADMISSION_CHART_VALUES:-$root/infra/aws/kubernetes/charts/admission-policy/values.yaml}
-want_bindings=12  # the 12 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml)
+want_bindings=13  # the 13 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml)
 
 action_keys() { # the keys under `actions:`, one per line, duplicates kept
   awk '

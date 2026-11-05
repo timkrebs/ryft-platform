@@ -52,6 +52,9 @@ var notEmitted = map[string]string{
 	"P2 image volume":                                    "the volume mount names a volume the case replaced",
 	"P2 projected token":                                 "the volume mount names a volume the case replaced",
 	"P6 crd of another group":                            "a CRD's name must be its plural.group",
+	// Whether the API server keeps an image volume source depends on the ImageVolume feature gate of
+	// kind's release; the harness pins the rule (in ryft-* and in vault).
+	"vault: P2 an image volume": "an image volume source depends on kind's ImageVolume feature gate",
 	// The broker's NetworkPolicy carries the open 443 egress rule the committed values admit
 	// (brokerEgressPublic); the kind run's Deny variant closes it (the chart's guard), so the
 	// object would be refused for that rule first.

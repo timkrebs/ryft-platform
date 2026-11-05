@@ -3,9 +3,12 @@
 # sets breakGlass, actions and vpcCIDR from its variables. `helm template` in CI uses the
 # same file.
 
-# The Vault address every VaultConnection must carry (P4). Required: the chart refuses to
-# render without it. A test compares it with the generated vault.yaml of infra/vault.
-vaultAddress: ""
+# The Vault addresses a VaultConnection may carry (P4): a list while the namespaces move from
+# HCP Vault to the in-cluster Vault (HCP's and https://vault.vault.svc:8200; the decommission
+# leaves the second). Required: the chart refuses to render without one. A test checks that
+# every generated vault.yaml of infra/vault names one of them. (Was `vaultAddress`, a single
+# string: the chart refuses that key, so an old values file cannot be ignored silently.)
+vaultAddresses: []
 
 # The VPC's CIDR (infra/aws vpc_cidr): the only ipBlock a NetworkPolicy may admit besides
 # the public-egress shape (P3).
@@ -31,6 +34,7 @@ actions:
   operator-reach: audit       # P8  step C
   argocd: audit               # P7  step D
   argocd-operation: audit     # P10 step D
+  vault-trust: audit          # P13 step A
 
 # Argo CD: the identities P1, P6, P7 and P10 judge and the shapes P7 holds Applications to.
 argocd:
@@ -142,6 +146,14 @@ images:
   # RE2, no escapes (a bracket expression is a literal dot)
   broker: '^docker[.]io/library/rabbitmq:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$'
   operators: '^ghcr[.]io/rabbitmq/(cluster-operator|messaging-topology-operator):[0-9]+[.][0-9]+[.][0-9]+$'
+  # Namespace vault (vault.namespace) runs exactly these two images, each pinned by its index
+  # digest: the Vault server (also the snapshot job's init container) and the AWS CLI that
+  # uploads the snapshot. Anchored, with @sha256: (the chart refuses anything else: an empty
+  # regex would match every image). A Vault upgrade changes this value first, in the same PR
+  # as the release's pin. awsCli stays empty until the snapshot job's PR verifies its version
+  # and digest; until then nothing in vault may run the AWS CLI (fail closed).
+  vault: '^docker[.]io/hashicorp/vault:2[.]2[.]1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2$'
+  awsCli: ""
 
 # NetworkPolicy shapes (P3).
 netpol:
@@ -152,6 +164,10 @@ netpol:
   # The one endPort range, on the broker's podSelector rules in broker.namespace (Erlang
   # distribution between the nodes). No endPort on any rule with an ipBlock peer.
   brokerPortRange: { port: 35672, endPort: 35682 }
+  # Namespace vault only: the EKS Pod Identity agent on the node (KMS unseal and the snapshot
+  # upload get their credentials from it), on port 80. Vault also reaches the API server
+  # through the VPC CIDR on 443 (vpcCIDR above).
+  podIdentityAgentCIDR: 169.254.170.23/32
 
 # Traefik (P9): the middlewares an Ingress may name, each as <its namespace>-<name>@kubernetescrd.
 traefik:
@@ -162,8 +178,53 @@ vso:
   connectionName: vault
   authMount: kubernetes
   audience: vault
+  # A VaultStaticSecret reads the mount kvMount (HCP Vault: one `kv` per Vault namespace) or
+  # kvMountPrefix + the namespace's service (the in-cluster Vault: kv-api in ryft-api,
+  # kv-monitoring in monitoring). The decommission sets kvMount to "".
   kvMount: kv
+  kvMountPrefix: kv-
   secretNames: [ryft-secrets]
   secretNamePrefixes: [amqp-user-]
-  # A VaultAuth's Vault namespace starts with this (infra/vault: admin/ryft/<service>)
+  # A VaultAuth's Vault namespace is absent (the in-cluster Vault has none) or starts with this
+  # (HCP Vault: admin/ryft/<service>). The decommission sets "": then it must be absent.
   vaultNamespacePrefix: admin/ryft/
+
+# Namespace vault: the in-cluster Vault (a Terraform add-on, not an Argo CD app). P1 holds the
+# Namespace to Pod Security restricted, P2 to the two images above, P3 judges its
+# NetworkPolicies (with the egress shapes the server needs), P4 admits caCertSecretRef
+# `caCertificate`, and P13 limits what the cert-manager ClusterIssuer `issuer` may issue: the
+# server's Certificate `serverCertificate` in this namespace with names from serverDNSNames
+# and serverIPAddresses only, and per namespace one `caCertificate` (commonName
+# vso.<namespace>, no names: its Secret's ca.crt is the VaultConnection's trust, the leaf is
+# inert). CertificateRequests for the issuer come from cert-manager's controller only.
+vault:
+  namespace: vault
+  issuer: ryft-vault
+  serverCertificate: vault-tls
+  serverDNSNames:
+    - vault
+    - vault.vault
+    - vault.vault.svc
+    - vault.vault.svc.cluster.local
+    - vault-active
+    - vault-active.vault.svc
+    - vault-active.vault.svc.cluster.local
+    - vault-standby
+    - vault-standby.vault.svc
+    - vault-internal
+    - vault-internal.vault.svc
+    - vault-0.vault-internal
+    - vault-1.vault-internal
+    - vault-2.vault-internal
+    - vault-0.vault-internal.vault.svc
+    - vault-1.vault-internal.vault.svc
+    - vault-2.vault-internal.vault.svc
+    - localhost
+  serverIPAddresses: ["127.0.0.1"]
+  serverUsages: [server auth, digital signature]
+  caCertificate: vault-ca
+  caCommonNamePrefix: vso.
+  caUsages: [digital signature, key encipherment]
+  # Who may create and update a CertificateRequest that names the issuer (the request's names
+  # are inside the CSR, which CEL cannot read): cert-manager's controller (addons.tf).
+  certManagerUser: system:serviceaccount:cert-manager:cert-manager

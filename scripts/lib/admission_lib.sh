@@ -132,7 +132,8 @@ EOF
 
 # The namespaces, labelled as infra/vault (kubernetes_namespace_v1.service), argocd.tf and the
 # overlays create them: ryft-<service> and monitoring from the generated vault-namespaces
-# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd.
+# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd, and
+# vault (the in-cluster Vault's, created by infra/aws/kubernetes; the P2, P3 and P13 fixtures act there).
 adm_create_namespaces() {
   local out="$WORK/namespaces.yaml" d svc ns level sa line
   : > "$out"
@@ -171,6 +172,15 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 EOF
   { echo ---; cat "$REPO/deploy/k8s/services/web/namespace.yaml"; } >> "$out"
   { echo ---; kubectl kustomize "$REPO/deploy/rabbitmq/operators" | yq 'select(.kind == "Namespace")'; } >> "$out"
@@ -187,7 +197,7 @@ EOF
     done < <(yq 'select(.kind == "VaultAuth") | .spec.kubernetes.serviceAccount + " " + .metadata.namespace' "$d")
   done
   if kc apply -f "$out" >"$WORK/log/namespaces.out" 2>&1; then
-    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, monitoring)"
+    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, vault, monitoring)"
   else
     rec "namespaces" FAIL "$(tail -3 "$WORK/log/namespaces.out")"
   fi

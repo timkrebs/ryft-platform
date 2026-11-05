@@ -25,7 +25,7 @@ infra/aws/
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
-    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11 + bindings (D120)
+    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11, P13 + bindings (D120)
     ├── admission.tf admission-values.yaml   the release (off), its committed values, the checks
     └── tests/addons.tftest.hcl tests/admission.tftest.hcl
 ```
@@ -108,17 +108,21 @@ the name at the NLB within a minute or two.
 
 ## Admission policies (D120)
 
-`infra/aws/kubernetes/admission.tf` installs eleven built-in ValidatingAdmissionPolicies
-(P1–P11) and twelve bindings (P2 has one for templates and one for Pods) from the local
+`infra/aws/kubernetes/admission.tf` installs twelve built-in ValidatingAdmissionPolicies
+(P1–P11, P13) and thirteen bindings (P2 has one for templates and one for Pods) from the local
 chart `charts/admission-policy`, as the release `admission-policy` in `kube-system`. They
 judge what PSA cannot: images per namespace, commands and service account tokens, the
 auth-mode keys, NetworkPolicy and Traefik shapes, the Vault Secrets Operator objects, the
-RabbitMQ operators' cluster power and reach, the broker, and Argo CD's own objects. No pods
+RabbitMQ operators' cluster power and reach, the broker, Argo CD's own objects, and what the
+`ryft-vault` issuer may sign (P13). The namespace `vault` is in scope for P1–P3 (PSA
+restricted labels, the pinned Vault image only, and egress to the VPC CIDR on 443 and the Pod
+Identity agent on 80). No pods
 run for them and no webhook can be down; the cost is nil (API server CPU only).
 
 **It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.
-It also holds the Vault address P4 pins (a test compares it with the generated
-`deploy/k8s/overlays/vault-namespaces/*/vault.yaml`), Argo CD's service account names and
+It also holds the Vault addresses P4 admits, `vaultAddresses` (HCP's and the in-cluster
+`https://vault.vault.svc:8200` while the namespaces move; a check requires every generated
+`deploy/k8s/overlays/vault-namespaces/*/vault.yaml` to carry one of them), Argo CD's service account names and
 the action of each binding, `audit` or `deny`:
 
 | `actions` value | `validationActions` | Meaning |
@@ -171,7 +175,15 @@ Chart values worth knowing (`charts/admission-policy/values.yaml`):
   the `argocd` binding on `audit` until then.
 - `netpol.brokerEgressPublic`: `true` while `ryft-rabbitmq` still has its 443 egress rule
   open to `0.0.0.0/0`; the PR that narrows it (T12-k) sets it to `false`.
-- `breakGlass`, `actions`, `vpcCIDR`, `vaultAddress`: set from the file and the variables.
+- `images.vault`, `images.awsCli`: the anchored, digest-pinned image patterns P2 admits in
+  `vault`. `awsCli` is empty until the snapshot CronJob's image is pinned, so that CronJob is
+  refused until then.
+- `vault.*`: what P13 lets the `ryft-vault` issuer sign (the server Certificate `vault-tls`
+  with its DNS names, IPs and usages; the per-namespace CA Certificate `vault-ca` with the
+  common name `vso.<namespace>`), and the one user that may create a CertificateRequest.
+- `vso.kvMountPrefix`: the in-cluster Vault's mount per service (`kv-<service>`); `vso.kvMount`
+  and `vso.vaultNamespacePrefix` hold the HCP shape until the decommission empties them.
+- `breakGlass`, `actions`, `vpcCIDR`, `vaultAddresses`: set from the file and the variables.
 
 Render and check the chart without a cluster (the values file is the CI input too):
 
