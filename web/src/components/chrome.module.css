@@ -86,17 +86,17 @@
 
 .footerGrid {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr;
+  grid-template-columns: 1.4fr 1fr;
   grid-template-areas:
-    'brand nav controls'
-    'meta meta meta';
+    'brand nav'
+    'meta meta';
   gap: calc(var(--section-spacing) * 1.5) var(--section-spacing);
 }
 
 @media (max-width: 48rem) {
   .footerGrid {
     grid-template-columns: 1fr;
-    grid-template-areas: 'brand' 'nav' 'controls' 'meta';
+    grid-template-areas: 'brand' 'nav' 'meta';
   }
 }
 
@@ -136,14 +136,6 @@
   color: var(--text-primary);
 }
 
-.footerControls {
-  grid-area: controls;
-  display: grid;
-  gap: 16px;
-  align-content: start;
-  justify-items: start;
-}
-
 .footerMeta {
   grid-area: meta;
   display: flex;
@@ -158,32 +150,4 @@
 
 .footerMeta p {
   margin: 0;
-}
-
-/* Theme switch: the app's SegmentedPicker in miniature. */
-.theme {
-  display: inline-flex;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.theme button {
-  min-height: 36px;
-  padding: 6px 14px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--type-caption);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-quick) ease-out,
-    color var(--motion-quick) ease-out;
-}
-
-.theme button[aria-pressed='true'] {
-  background: var(--surface-raised);
-  color: var(--text-primary);
 }

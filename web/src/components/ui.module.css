@@ -15,8 +15,10 @@
   color: var(--accent);
 }
 
+/* The light Warning (#8A8A8A) is a mark colour, 3.3:1 on white: as text the tone reads in
+   text-secondary (tests/contrast.test.ts); the restyle decides how a warning looks (web D19). */
 .tone-warning {
-  color: var(--warning);
+  color: var(--text-secondary);
 }
 
 .tone-alert {

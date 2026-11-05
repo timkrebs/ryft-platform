@@ -243,3 +243,28 @@ Consequences:
 
 Would change if the user wants German back: `messages/de.json`, `content/legal/de` and a
 `[locale]` segment again, from this PR's parent commit.
+
+## D19 — Light only; no theme, no script on the site's pages (2026-11-05; replaces D5, amends D2)
+
+The same decision as D18: the new design is monochrome and light. There is one appearance,
+so there is nothing to switch. `tokens.css` carries the light value of every colour set in
+`:root` with `color-scheme: light`; the `[data-theme]` and `prefers-color-scheme` blocks are
+gone (`tokens.json` keeps both appearances, for the icon and OG scripts and for the day the
+app's dark pass lands). The theme switch, its two inline scripts (`src/lib/inline-scripts.ts`),
+the `ryft.theme` key in `localStorage` and the second `theme-color` meta are deleted; the
+screenshots show the light captures only, and the dark files leave `public/screenshots`.
+
+Consequences:
+- The site's pages ship no JavaScript at all. The marketing CSP says `script-src 'none'`; the
+  admin page keeps its one hash in its own policy (D15). D2's budget holds trivially.
+- Nothing is stored in the browser any more; the privacy texts still mention "your choice of
+  appearance", which is harmless over-disclosure and changes only with a new version (the
+  user's call).
+- The app's light `Warning` is `#8A8A8A`: 3.3:1 on white, enough for a mark (bars, borders,
+  fills), not for text. The warning tone of `Label` and the admin badge read in
+  `text-secondary`; `tests/contrast.test.ts` checks the light values, `warning` among the
+  marks at 3:1. The restyle decides how a warning looks.
+- `e2e/site.spec.ts` and `e2e/admin.spec.ts` run once per page, not per appearance.
+
+Would change if the app's monochrome dark pass lands and the user wants the site to follow
+the system again: the blocks come back in `renderCss`, from `tokens.json`'s `dark` values.

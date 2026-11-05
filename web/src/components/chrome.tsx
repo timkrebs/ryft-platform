@@ -1,4 +1,4 @@
-// The frame around every page: skip link, header, footer and the theme switch.
+// The frame around every page: skip link, header, footer.
 import type { ReactNode } from 'react';
 import { Logo, Lockup } from './Brand';
 import { Container } from './ui';
@@ -91,37 +91,11 @@ function Footer({ locale, path }: Omit<ShellProps, 'children'>) {
             ))}
           </ul>
         </nav>
-        <div className={styles.footerControls}>
-          <ThemeSwitch locale={locale} />
-        </div>
         <div className={styles.footerMeta}>
           <p>{format(t.footer.copyright, { year: BUILD_YEAR })}</p>
           <p>{t.footer.noTracking}</p>
         </div>
       </Container>
     </footer>
-  );
-}
-
-/**
- * System / Light / Dark, like the app's Appearance setting. Hidden until the inline
- * script (src/lib/inline-scripts.ts) shows it: without JavaScript the site follows the
- * system setting and offers no control that can't work.
- */
-export function ThemeSwitch({ locale }: { locale: Locale }) {
-  const t = messages(locale);
-  const options = [
-    ['system', t.theme.system],
-    ['light', t.theme.light],
-    ['dark', t.theme.dark],
-  ] as const;
-  return (
-    <div className={styles.theme} role="group" aria-label={t.a11y.theme} data-theme-switch hidden>
-      {options.map(([value, label]) => (
-        <button key={value} type="button" data-theme-option={value} aria-pressed={value === 'system'}>
-          {label}
-        </button>
-      ))}
-    </div>
   );
 }

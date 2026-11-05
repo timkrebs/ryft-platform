@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // After the build: hash every inline <script> in out/**/*.html into the CSP that nginx
 // sends. Two snippets: nginx/csp.conf for every page except the admin page (included by
-// nginx/headers.conf), and nginx/csp-admin.conf for out/admin.html alone (included by
+// nginx/headers.conf; those pages carry no script since web D19, so it says script-src
+// 'none'), and nginx/csp-admin.conf for out/admin.html alone (included by
 // nginx/headers-admin.conf). No 'unsafe-inline' for scripts in either.
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
@@ -21,7 +22,8 @@ writeFileSync(join(ROOT, 'nginx/csp.conf'), nginxSnippet(hashes, pages.length));
 console.log(
   `csp: ${hashes.length} script hash(es) from ${bodiesOf(pages).length} inline scripts on ${pages.length} pages → nginx/csp.conf.`,
 );
-if (hashes.length > 8) console.warn('csp: more distinct inline scripts than expected; check the postbuild.');
+if (hashes.length > 0)
+  console.warn('csp: the marketing pages carry an inline script; check the postbuild (web D19).');
 
 // Admin: the one page, exactly one script.
 const adminFiles = files.filter((f) => relative(OUT, f) === ADMIN_PAGE);

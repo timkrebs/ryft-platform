@@ -7,9 +7,9 @@
 //   2. the RSC payload files (*.txt next to each page, __next.*) are deleted;
 //   3. JavaScript under _next/ is deleted (nothing references it any more);
 //   4. the check fails if anything still points at a removed file.
-// What stays: the HTML, CSS and fonts under _next/static, public/, our two inline
-// scripts (src/lib/inline-scripts.ts) and, on /admin only, the admin bundle
-// (src/admin, web D15); scripts/csp.mjs hashes them into the CSPs.
+// What stays: the HTML, CSS and fonts under _next/static, public/ and, on /admin only, the
+// admin bundle (src/admin, web D15), the site's one inline script since the theme scripts
+// went (web D19); scripts/csp.mjs hashes it into its CSP.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { inlineScripts, stripRuntime } from './lib/html.mjs';
@@ -65,8 +65,8 @@ for (const file of walk(OUT)) {
   }
   if (/<script(?![^>]*data-ryft)/.test(html))
     broken.push(`${relative(OUT, file)} still has a runtime script`);
-  // The one exception to "only the theme scripts" (web D15): /admin carries its own bundle, as
-  // exactly one script, and no other page may carry it.
+  // The one script of the site (web D15, D19): /admin carries its own bundle, as exactly one
+  // script, and no other page may carry it.
   const own = [...html.matchAll(/<script\b[^>]*\bdata-ryft="admin"[^>]*>/g)].length;
   const all = inlineScripts(html).length;
   if (relative(OUT, file) === 'admin.html') {

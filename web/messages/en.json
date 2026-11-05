@@ -9,7 +9,6 @@
     "home": "RYFT, home",
     "mainNav": "Main",
     "footerNav": "Legal and support",
-    "theme": "Colour theme",
     "sampleData": "Sample data"
   },
   "nav": {
@@ -17,11 +16,6 @@
     "science": "Science",
     "beta": "Beta",
     "menu": "Menu"
-  },
-  "theme": {
-    "system": "System",
-    "light": "Light",
-    "dark": "Dark"
   },
   "footer": {
     "privacy": "Privacy",

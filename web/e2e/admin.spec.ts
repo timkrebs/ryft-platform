@@ -859,8 +859,8 @@ test.describe('users, feedback, flags, audit', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// axe on every screen, both appearances; a screenshot each (phone and desktop projects).
-for (const scheme of ['dark', 'light'] as const) {
+// axe on every screen; a screenshot each (phone and desktop projects). Light only (web D19).
+for (const scheme of ['light'] as const) {
   test.describe(`accessibility (${scheme})`, () => {
     test.beforeEach(async ({ page }) => {
       await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });

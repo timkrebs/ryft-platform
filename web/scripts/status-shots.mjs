@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Screenshots for docs/STATUS.md from the running image (npm run image && npm run serve):
-// every page's first screen in dark and light, the home page on a phone, and the app-vs-web comparisons (the app's capture next to the site in
-// the same appearance). JPEG to keep the repository small. BASE_URL overrides :8080.
+// every page's first screen, the home page on a phone and in full, and the app-vs-web
+// comparison (the app's light capture next to the site; the site is light only, web D19).
+// JPEG to keep the repository small. BASE_URL overrides :8080.
 import { mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
@@ -31,42 +32,30 @@ mkdirSync(OUT, { recursive: true });
 const browser = await chromium.launch();
 const name = (p) => (p === '/' ? 'home' : p.slice(1).replace(/\//g, '-'));
 
-async function shoot(path, scheme, file, viewport = { width: 1280, height: 900 }, fullPage = false) {
-  const ctx = await browser.newContext({
-    viewport,
-    colorScheme: scheme,
-    deviceScaleFactor: 1,
-    reducedMotion: 'reduce',
-  });
+async function shoot(path, file, viewport = { width: 1280, height: 900 }, fullPage = false) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, reducedMotion: 'reduce' });
   const page = await ctx.newPage();
   await page.goto(BASE + path, { waitUntil: 'networkidle' });
   await page.screenshot({ path: join(OUT, file), type: 'jpeg', quality: 78, fullPage });
   await ctx.close();
 }
 
-for (const p of PAGES) for (const s of ['dark', 'light']) await shoot(p, s, `${name(p)}-${s}.jpg`);
-for (const s of ['dark', 'light']) {
-  await shoot('/', s, `home-phone-${s}.jpg`, { width: 390, height: 844 });
-  await shoot('/', s, `home-full-${s}.jpg`, { width: 1280, height: 900 }, true);
-}
+for (const p of PAGES) await shoot(p, `${name(p)}.jpg`);
+await shoot('/', 'home-phone.jpg', { width: 390, height: 844 });
+await shoot('/', 'home-full.jpg', { width: 1280, height: 900 }, true);
 
-// The app's capture (left) next to the site in the same appearance (right).
-for (const s of ['dark', 'light']) {
+// The app's light capture (left) next to the site (right).
+{
   const height = 900;
-  const app = await sharp(join(APP, `docs/screenshots/strain-${s}.png`))
-    .resize({ height })
-    .toBuffer();
+  const app = await sharp(join(APP, 'docs/screenshots/strain-light.png')).resize({ height }).toBuffer();
   const appWidth = (await sharp(app).metadata()).width;
-  const web = join(OUT, `home-${s}.jpg`);
-  await sharp({
-    create: { width: appWidth + 1280 + 40, height, channels: 3, background: s === 'dark' ? '#000' : '#fff' },
-  })
+  await sharp({ create: { width: appWidth + 1280 + 40, height, channels: 3, background: '#fff' } })
     .composite([
       { input: app, left: 0, top: 0 },
-      { input: web, left: appWidth + 40, top: 0 },
+      { input: join(OUT, 'home.jpg'), left: appWidth + 40, top: 0 },
     ])
     .jpeg({ quality: 78 })
-    .toFile(join(OUT, `compare-${s}.jpg`));
+    .toFile(join(OUT, 'compare.jpg'));
 }
 await browser.close();
-console.log(`status shots: docs/screenshots/ (${PAGES.length * 2 + 6} images).`);
+console.log(`status shots: docs/screenshots/ (${PAGES.length + 3} images).`);

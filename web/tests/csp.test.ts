@@ -10,15 +10,19 @@ import {
   policy,
 } from '../scripts/lib/csp.mjs';
 import { cspHash, inlineScripts, stripRuntime } from '../scripts/lib/html.mjs';
-import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
+
+// Two stand-ins for inline scripts a page may keep (`data-ryft`): the site's pages carry none
+// since web D19, the admin page one (web D15); the mechanics are the same.
+const OWN_A = `document.documentElement.dataset.a='1'`;
+const OWN_B = `(function(){document.documentElement.dataset.b='2'})();`;
 
 const page = `<!DOCTYPE html><html><head>
-<script data-ryft="theme-init">${THEME_INIT}</script>
+<script data-ryft="a">${OWN_A}</script>
 <script src="/_next/static/chunks/a.js" async=""></script>
 <link rel="preload" as="script" fetchPriority="low" href="/_next/static/chunks/b.js"/>
 </head><body><p>Hi</p>
 <script>self.__next_f=self.__next_f||[]</script>
-<script data-ryft="theme-switch">${THEME_SWITCH}</script>
+<script data-ryft="b">${OWN_B}</script>
 </body></html>`;
 
 describe('postbuild and CSP', () => {
@@ -27,7 +31,7 @@ describe('postbuild and CSP', () => {
     expect(removed).toBe(3);
     expect(html).not.toContain('__next_f');
     expect(html).not.toContain('/_next/static/chunks/');
-    expect(inlineScripts(html).map((s) => s.body)).toEqual([THEME_INIT, THEME_SWITCH]);
+    expect(inlineScripts(html).map((s) => s.body)).toEqual([OWN_A, OWN_B]);
   });
 
   it('hashes a script body the way browsers do (SHA-256, base64, exact bytes)', () => {
@@ -37,11 +41,11 @@ describe('postbuild and CSP', () => {
   });
 
   it('collects one hash per distinct script', () => {
-    expect(hashesOf([THEME_INIT, THEME_SWITCH, THEME_INIT])).toHaveLength(2);
+    expect(hashesOf([OWN_A, OWN_B, OWN_A])).toHaveLength(2);
   });
 
   it('allows no inline script without a hash and nothing from other origins', () => {
-    const p = policy(hashesOf([THEME_INIT]));
+    const p = policy(hashesOf([OWN_A]));
     expect(p).toContain("script-src 'sha256-");
     expect(p).not.toContain('unsafe-inline');
     expect(p).not.toContain('unsafe-eval');
@@ -51,7 +55,7 @@ describe('postbuild and CSP', () => {
   });
 
   it('writes an nginx directive that sends the header on every status', () => {
-    const snippet = nginxSnippet(hashesOf([THEME_INIT]), 1);
+    const snippet = nginxSnippet(hashesOf([OWN_A]), 1);
     expect(snippet).toMatch(/^add_header Content-Security-Policy ".*" always;$/m);
     expect(snippet.split('"')).toHaveLength(3);
   });
@@ -61,7 +65,7 @@ describe('postbuild and CSP', () => {
 // and must not learn the admin script's hash or the Supabase host.
 describe('the two policies', () => {
   const ADMIN_JS = 'document.title="admin"';
-  const marketing = policy(hashesOf([THEME_INIT, THEME_SWITCH]));
+  const marketing = policy([]);
   const admin = adminPolicy(hashesOf([ADMIN_JS]), config);
   const directive = (p: string, name: string) =>
     p
@@ -69,7 +73,8 @@ describe('the two policies', () => {
       .find((d) => d.startsWith(`${name} `))
       ?.slice(name.length + 1);
 
-  it('keeps connect-src none, no data: and no admin hash or origin on the marketing pages', () => {
+  it('keeps script-src and connect-src none, no data: and no admin hash or origin on the marketing pages', () => {
+    expect(directive(marketing, 'script-src')).toBe("'none'");
     expect(directive(marketing, 'connect-src')).toBe("'none'");
     expect(directive(marketing, 'img-src')).toBe("'self'");
     expect(marketing).not.toContain(cspHash(ADMIN_JS));

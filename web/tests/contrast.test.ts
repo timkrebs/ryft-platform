@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import tokens from '../src/styles/tokens.json';
 
-// WCAG 2.2 AA against the generated tokens, in both appearances: every text colour the
-// site uses on every surface it sits on reaches 4.5:1; chart and gauge marks reach 3:1.
-type Scheme = 'dark' | 'light';
+// WCAG 2.2 AA against the generated tokens, in the light appearance the site ships (web D19;
+// tokens.json still carries the dark values for the scripts): every text colour the site
+// uses on every surface it sits on reaches 4.5:1; chart, gauge and notice marks reach 3:1.
+type Scheme = 'light';
 type Color = keyof typeof tokens.colors;
 
 function parse(value: string): [number, number, number, number] {
@@ -50,21 +51,22 @@ const text: [Color, Color][] = [
   ['text-tertiary', 'surface'],
   ['accent', 'background'],
   ['accent', 'surface'],
-  ['warning', 'background'],
-  ['warning', 'surface'],
   ['alert', 'background'],
   ['alert', 'surface'],
   ['on-accent', 'accent'],
 ];
 
+// Warning is a mark colour only (bars, borders, fills); as text the tone reads in text-secondary.
 const marks: [Color, Color][] = [
   ['accent', 'surface'],
+  ['warning', 'background'],
+  ['warning', 'surface'],
   ['metric-strain', 'surface'],
   ['metric-sleep', 'surface'],
   ['accent-secondary', 'surface'],
 ];
 
-describe.each(['dark', 'light'] as const)('contrast in %s', (scheme) => {
+describe.each(['light'] as const)('contrast in %s', (scheme) => {
   it.each(text)('%s on %s is at least 4.5:1', (fg, bg) => {
     expect(contrast(fg, bg, scheme)).toBeGreaterThanOrEqual(4.5);
   });

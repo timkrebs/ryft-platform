@@ -52,16 +52,21 @@ export function StyleguidePage() {
           <Lockup tagline="Your whole health." />
         </Section>
 
-        <Section id="colors" title="Colours" intro={<p>{colors.length} colour sets from Assets.xcassets.</p>}>
+        <Section
+          id="colors"
+          title="Colours"
+          intro={
+            <p>
+              {colors.length} colour sets from Assets.xcassets, the light appearance (the site is light only).
+            </p>
+          }
+        >
           <ul className={styles.swatches}>
             {colors.map(([name, value]) => (
               <li key={name} className={styles.swatch}>
                 <span className={`${styles.chip} swatch-${name}`} aria-hidden="true" />
                 <span className={styles.swatchName}>--{name}</span>
-                <span className={styles.swatchValue}>
-                  dark {value.dark}
-                  {value.light !== value.dark && <> · light {value.light}</>}
-                </span>
+                <span className={styles.swatchValue}>{value.light}</span>
               </li>
             ))}
           </ul>

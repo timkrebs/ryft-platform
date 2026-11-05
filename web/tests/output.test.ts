@@ -4,8 +4,6 @@ import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import fonts from '../config/fonts.json';
-import { cspHash } from '../scripts/lib/html.mjs';
-import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
 const OUT = 'out';
@@ -25,13 +23,11 @@ const isAdminPage = (f: string) => relative(OUT, f) === 'admin.html';
 describe.skipIf(!built)('built site', () => {
   const html = built ? [...files(OUT)].filter((f) => f.endsWith('.html')) : [];
 
-  it('ships no script except our own inline ones', () => {
+  it('ships no script at all, except the admin bundle (web D15, D19)', () => {
     for (const f of html) {
       const scripts = [...readFileSync(f, 'utf8').matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]);
-      for (const attrs of scripts) {
-        expect(attrs, f).toMatch(/data-ryft/);
-        expect(attrs, f).not.toMatch(/\bsrc=/);
-      }
+      if (isAdminPage(f)) continue;
+      expect(scripts, f).toEqual([]);
     }
     expect([...files(OUT)].filter((f) => f.endsWith('.js'))).toEqual([]);
   });
@@ -69,13 +65,26 @@ describe.skipIf(!built)('built site', () => {
     }
   });
 
-  it('pins the marketing CSP: script-src is exactly the hashes of the two theme scripts', () => {
+  it("pins the marketing CSP: script-src 'none'", () => {
     // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
     // (or the admin bundle leaking into this policy) would widen it; this fails instead.
     const csp = readFileSync('nginx/csp.conf', 'utf8');
-    const scriptSrc = /script-src ([^;]*);/.exec(csp)![1]!;
-    expect(scriptSrc.split(' ').sort()).toEqual([cspHash(THEME_INIT), cspHash(THEME_SWITCH)].sort());
+    expect(csp).toContain("script-src 'none'");
     expect(csp).toContain("connect-src 'none'");
+  });
+
+  it('is light only: one theme-color, no theme attribute, no dark screenshot (web D19)', () => {
+    for (const f of html.filter((f) => !isAdminPage(f))) {
+      const page = readFileSync(f, 'utf8');
+      expect(page.match(/<meta name="theme-color"/g) ?? [], f).toHaveLength(1);
+      expect(page, f).not.toMatch(/data-theme|prefers-color-scheme|-dark(-\d+)?\.(png|avif|webp)/);
+    }
+    const css = [...files(OUT)]
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('');
+    expect(css).not.toMatch(/data-theme|prefers-color-scheme/);
+    expect(css).toContain('color-scheme:light');
   });
 
   describe('the admin page (the /admin exception, web D15)', () => {
@@ -90,10 +99,9 @@ describe.skipIf(!built)('built site', () => {
       for (const f of otherPages()) expect(readFileSync(f, 'utf8'), f).not.toContain('data-ryft="admin"');
     });
 
-    it('is noindex by meta tag and its own document: no theme scripts, no alternates', () => {
+    it('is noindex by meta tag and its own document: no alternates', () => {
       const p = page();
       expect(p).toMatch(/<meta name="robots" content="noindex, nofollow"/);
-      expect(p).not.toMatch(/data-ryft="theme-/);
       expect(p).not.toMatch(/<link rel="(alternate|canonical)"/);
       expect(p).toContain('<html lang="en"');
     });

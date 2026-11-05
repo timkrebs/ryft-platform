@@ -17,13 +17,16 @@ here: read from it, never write there.
   CI); rules in `config/brand-denylist.json`. Refer to it as "the denylisted brand".
 - **Tokens come from the app.** Colours, radii, spacing, type scale and motion are
   generated from `../../app/Ryft` by `npm run tokens` into `src/styles/tokens.{css,json}`.
-  Never hard-code a colour in CSS or components; CI fails when the tokens drift.
+  The site is light only (D19): `tokens.css` carries the light values, no `[data-theme]`,
+  no `prefers-color-scheme`. Never hard-code a colour in CSS or components; CI fails when
+  the tokens drift.
 - **Static export only.** `output: 'export'`, no API routes, no proxy/middleware, no server
   runtime, no database. Pages render to HTML at build time; the postbuild removes the
-  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the only
-  client JS is `src/lib/inline-scripts.ts`. Every inline script is hashed into the CSP.
+  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the site's pages
+  ship no JavaScript at all (D19; `script-src 'none'`); the admin bundle is the one inline
+  script, hashed into its own CSP.
 - **No tracking.** No cookies, no analytics, no third-party requests (fonts self-hosted,
-  no CDNs), no forms. `localStorage` holds the theme choice and nothing else.
+  no CDNs), no forms, nothing in `localStorage` (the theme switch went with D19).
 - **The one exception: `/admin`** (the operator's page; web D15–D17). It is its own document
   (`src/app/(admin)`, a separate root layout, `noindex`, not linked, not in the sitemap or
   `robots.txt`) with ONE inline hashed script bundled by esbuild from `src/admin` (no framework,

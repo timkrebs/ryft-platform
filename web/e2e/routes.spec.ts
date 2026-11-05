@@ -92,7 +92,8 @@ test.describe('routes the app depends on', () => {
   test('security headers and the CSP on pages and errors', async ({ request }) => {
     for (const path of ['/', '/privacy', '/nope', '/auth/callback']) {
       const h = (await request.get(path)).headers();
-      expect(h['content-security-policy'], path).toMatch(/script-src 'sha256-[^']+'/);
+      // No script on these pages (web D19), so no hash either.
+      expect(h['content-security-policy'], path).toContain("script-src 'none'");
       expect(h['content-security-policy'], path).not.toContain('unsafe-inline');
       expect(h['strict-transport-security'], path).toContain('max-age=31536000');
       expect(h['x-content-type-options'], path).toBe('nosniff');
