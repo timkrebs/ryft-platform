@@ -237,7 +237,25 @@ commands, NetworkPolicies, VSO or Argo objects.
     delete on all Secrets, ConfigMaps, AppProjects, ApplicationSets). P7 refuses only Secrets labelled
     `secret-type`, so a leaked token of the public UI can rewrite `argocd-secret`, `argocd-cm` and
     `argocd-rbac-cm` today.
+  - **Open, no policy covers it: RBAC objects that outlive a stolen controller token.** The controller
+    creates, updates, patches and deletes ClusterRoles, ClusterRoleBindings, Roles and RoleBindings with no
+    `resourceNames` (a fresh cluster needs `create`). Kubernetes' escalation check bounds what a written
+    role may hold (a subset of the controller's rights), not who it is bound to: with a stolen token one
+    writes a ClusterRole of that subset (ConfigMaps, Deployments, Jobs in every namespace) and binds it to
+    `system:unauthenticated`, `system:authenticated` or `system:serviceaccounts`; the grant outlives the
+    token. `delete` of any binding or ClusterRole is open too, and P6 matches only CREATE and UPDATE of the
+    operators' objects. Evaluated: `update`/`patch`/`delete` limited by `resourceNames` to the operators' 12
+    RBAC objects (create stays open). That narrows the rewrite and the delete but not a created ClusterRole
+    and binding of another name, and it needs the `full` kind run (the operators' sync with escalate, bind
+    and server-side apply of existing objects), which a pull request does not run: not applied in #47; its
+    own change, with that run. The route closes with an extended P12 (refuse a binding by Argo CD's
+    identities whose subjects are not the operators' service accounts).
   - argocd-server cannot add RBAC (no write on RBAC kinds).
+  - **Beside the rules (guards added with #47):** `modules/argocd-values-guard` (`extraObjects` kinds, no
+    `controller.roleRules`, `createClusterRoles` not false, no `configs.rbac`/anonymous login/disabled auth,
+    no unexpected chart value), the kind run's `argo-bindings` and `argo-tf-bindings`: a ClusterRoleBinding
+    to `cluster-admin` shipped as an extra object, or written in Terraform, passes every check on the two
+    ClusterRoles' rules.
 - **Structural options (future D97/D120 decisions, for you; not implemented).** (1) Move the operators'
   ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons: Argo CD
   then needs no `escalate` and no `bind` at all. (2) Keep Argo CD as it is but move the `escalate`/`bind`
@@ -688,7 +706,8 @@ kubectl get mutatingwebhookconfigurations \
   -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
 
 # 1. Step 0, T12-f alone (kind e2e passed; admission-values.yaml has enabled: false for both new releases)
-terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes
+terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes; anything else in the plan: stop
+#    the release's values show as (sensitive value): the RBAC diff is not readable in the plan; the evidence is the kind run and helm template
 terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan
 #    then watch one full deploy (promote PR → sync → PreSync migrate → PostSync smoke) before going on
 kubectl -n argocd get applications
