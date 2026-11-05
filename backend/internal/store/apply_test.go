@@ -14,7 +14,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -97,18 +99,13 @@ func seedWorkout(t *testing.T, pool *pgxpool.Pool, user uuid.UUID, w seedW) uuid
 	return id
 }
 
-func countRows(t *testing.T, q Querier, query string, args ...any) int {
+func countRows(t *testing.T, q querier, query string, args ...any) int {
 	t.Helper()
 	var n int
 	if err := q.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
-}
-
-// Querier is what countRows needs of a pool or a transaction.
-type Querier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 func queuedDays(t *testing.T, pool *pgxpool.Pool, user uuid.UUID) []string {
@@ -194,12 +191,36 @@ func TestApplySyncDeletedRowsDays(t *testing.T) {
 		{"workout with a session: the day before too", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
 			return del(model.DeletedWorkout, seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-01-12T10:00:00Z"), session: true}))
 		}, []string{"2026-01-11", "2026-01-12", "2026-01-13"}},
-		// Characterisation, not endorsement: the next day is the start plus 24 absolute hours.
-		// 00:30 CEST on the day the clocks go back is 23:30 CET the same local day, so only
-		// one day is queued.
-		{"workout on the 25-hour day queues one day", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
+		// Characterisation, not endorsement. The next and the previous day are the start +-24
+		// absolute hours, which on a day with a clock change is not the neighbouring local day.
+		// This is pre-existing (ApplySync's apply.go, planFold in fold.go and touchedDays in
+		// cmd/ingest compute it the same way), it is symmetrical, and it also hits the night
+		// samples (hrv, respiratory rate, SpO2). Four shapes in Europe/Berlin 2026, each missing
+		// a neighbouring day, each pinned as the code behaves today. Follow-up: one helper that
+		// derives the next and previous local date from the date (AddDate(0, 0, +-1)), used by
+		// touchedDays, the deletions and planFold together; these cases then flip to the full
+		// day set, and the touchedDays table (C3) should pin the same shapes.
+		//
+		// The night sample has the same quirk: 00:30 CEST 10-25 + 24 h is 23:30 CET 10-25.
+		{"25-hour day, night sample at 00:30: the next day is missed", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
+			return del(model.DeletedSample, seedSample(t, pool, u, model.SampleHRVSDNN, utc("2026-10-24T22:30:00Z")))
+		}, []string{"2026-10-25"}},
+		// Autumn, next day: 00:30 CEST 10-25 + 24 h = 23:30 CET 10-25, so 10-26 is not queued.
+		{"25-hour day, workout at 00:30: the next day is missed", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
 			return del(model.DeletedWorkout, seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-10-24T22:30:00Z")}))
 		}, []string{"2026-10-25"}},
+		// Autumn, day before: 23:30 CET 10-25 - 24 h = 00:30 CEST 10-25, so 10-24 is not queued.
+		{"25-hour day, workout at 23:30 with a session: the day before is missed", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
+			return del(model.DeletedWorkout, seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-10-25T22:30:00Z"), session: true}))
+		}, []string{"2026-10-25", "2026-10-26"}},
+		// Spring, next day: 23:30 CET 03-28 + 24 h = 00:30 CEST 03-30, so 03-29 is skipped.
+		{"23-hour day, workout at 23:30 the day before: the day after it is skipped", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
+			return del(model.DeletedWorkout, seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-03-28T22:30:00Z")}))
+		}, []string{"2026-03-28", "2026-03-30"}},
+		// Spring, day before: 00:30 CEST 03-30 - 24 h = 23:30 CET 03-28, so 03-29 is lost.
+		{"23-hour day, workout at 00:30 the day after with a session: the day between is lost", func(t *testing.T, u uuid.UUID) model.DeletedRecord {
+			return del(model.DeletedWorkout, seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-03-29T22:30:00Z"), session: true}))
+		}, []string{"2026-03-28", "2026-03-30", "2026-03-31"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -504,7 +525,7 @@ func TestApplySyncRollsBackWhenAStepFails(t *testing.T) {
 			if c.prefix == "" && err.Error() != errEmit.Error() {
 				t.Fatalf("Emit's error was wrapped: %q", err)
 			}
-			if !reflectZero(out) {
+			if !zeroApplied(out) {
 				t.Fatalf("out = %+v on error, want zero", out)
 			}
 			if n := countRows(t, pool, `SELECT (SELECT count(*) FROM samples WHERE user_id=$1) + (SELECT count(*) FROM sleep_segments WHERE user_id=$1)
@@ -518,8 +539,61 @@ func TestApplySyncRollsBackWhenAStepFails(t *testing.T) {
 	}
 }
 
-func reflectZero(a Applied) bool {
+// zeroApplied reports whether a is the zero Applied (what a failed apply returns).
+func zeroApplied(a Applied) bool {
 	return a.Days == nil && a.Deleted == (model.SyncDeleted{}) && a.Unknown == (model.SyncDeleted{}) && a.Folded == 0 && !a.FoldSkipped
+}
+
+// The fold metrics count what committed: an apply that folds (or skips the fold) and then
+// fails a later step is rolled back and counts nothing; the same apply that commits counts
+// once (the control, so the rolled-back half is not vacuous).
+func TestApplySyncFoldMetricsCountOnlyCommittedApplies(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	at := utc("2026-01-12T10:00:00Z")
+	folded := func() float64 { return testutil.ToFloat64(metrics.WorkoutsFolded.WithLabelValues("same_source")) }
+	skipped := func() float64 { return testutil.ToFloat64(metrics.WorkoutsFoldSkipped.WithLabelValues("too_many")) }
+	cases := []struct {
+		name             string
+		bound            bool // true: more than FoldMaxRows rows in scope, the fold is skipped
+		wantFold, wantSk float64
+	}{
+		{"a fold of one workout", false, 1, 0},
+		{"a skipped fold", true, 0, 1},
+	}
+	for _, c := range cases {
+		for _, commit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, commit=%v", c.name, commit), func(t *testing.T) {
+				u := applyUser(t, st)
+				if c.bound {
+					if _, err := pool.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source)
+						SELECT gen_random_uuid(), $1, 'running', $2::timestamptz + n * interval '1 day', $2::timestamptz + n * interval '1 day' + interval '1 h', 'Garmin'
+						FROM generate_series(1, $3) AS n`, u, at, FoldMaxRows+1); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					seedWorkout(t, pool, u, seedW{source: "Garmin", start: at, created: at.Add(-time.Hour)})
+					seedWorkout(t, pool, u, seedW{source: "Garmin", start: at, created: at})
+				}
+				if !commit {
+					failTrigger(t, pool, "score_queue", "INSERT") // after the fold, before the commit
+				}
+				f0, s0 := folded(), skipped()
+				_, err := st.ApplySync(ctx, u, Apply{Days: []string{"2026-01-12"}, Loc: berlin,
+					Fold: &FoldScope{Sources: []string{"Garmin"}, From: at, To: at.AddDate(30, 0, 0)}})
+				if commit != (err == nil) {
+					t.Fatalf("commit=%v but err = %v", commit, err)
+				}
+				wantF, wantS := c.wantFold, c.wantSk
+				if !commit {
+					wantF, wantS = 0, 0
+				}
+				if df, ds := folded()-f0, skipped()-s0; df != wantF || ds != wantS {
+					t.Fatalf("counted folded %v skipped %v, want %v and %v", df, ds, wantF, wantS)
+				}
+			})
+		}
+	}
 }
 
 // Two syncs of one user serialise on the apply lock (D145, class 7419005): while another
@@ -527,39 +601,20 @@ func reflectZero(a Applied) bool {
 // wait.
 func TestApplySyncSerialisesPerUserOnTheApplyLock(t *testing.T) {
 	st, pool := testStore(t)
-	ctx := context.Background()
+	// A deadline on every call: if the lock ever serialises more than one user (keyed on the
+	// class alone, say), the other user's apply blocks behind the holder and would hang the
+	// whole test binary until go test's timeout instead of failing this test.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	u, other := applyUser(t, st), applyUser(t, st)
 
-	holder, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A failing assertion must not leave the lock held: the pool's Close would wait for it.
-	defer func() { _ = holder.Rollback(context.Background()) }()
-	if _, err := holder.Exec(ctx, lockApply, u); err != nil {
-		t.Fatal(err)
-	}
+	holder := holdApplyLock(t, pool, u)
 	done := make(chan error, 1)
 	go func() {
 		_, err := st.ApplySync(ctx, u, Apply{Days: []string{"2026-01-12"}, Loc: berlin})
 		done <- err
 	}()
-	waiting := func() int {
-		return countRows(t, pool, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid=7419005
-			AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for waiting() == 0 {
-		select {
-		case err := <-done:
-			t.Fatalf("ApplySync finished while the lock was held: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("ApplySync never waited on the apply lock")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForApplyLockWaiter(t, pool, done)
 	if _, err := st.ApplySync(ctx, other, Apply{Days: []string{"2026-01-12"}, Loc: berlin}); err != nil {
 		t.Fatalf("another user's apply: %v", err)
 	}
@@ -576,6 +631,83 @@ func TestApplySyncSerialisesPerUserOnTheApplyLock(t *testing.T) {
 	}
 	if got := queuedDays(t, pool, u); !slices.Equal(got, []string{"2026-01-12"}) {
 		t.Fatalf("queue = %v", got)
+	}
+}
+
+// holdApplyLock opens a transaction that holds the user's apply lock; the test's cleanup
+// rolls it back, so a failing assertion does not leave the lock held (the pool's Close
+// would wait for it).
+func holdApplyLock(t *testing.T, pool *pgxpool.Pool, user uuid.UUID) pgx.Tx {
+	t.Helper()
+	ctx := context.Background() // nobody holds the lock yet: this does not wait
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, lockApply, user); err != nil {
+		t.Fatal(err)
+	}
+	return holder
+}
+
+// waitForApplyLockWaiter polls until a session waits on the apply lock (class 7419005),
+// failing if the apply behind done finishes first or nobody waits within 10 s.
+func waitForApplyLockWaiter(t *testing.T, pool *pgxpool.Pool, done <-chan error) {
+	t.Helper()
+	waiting := func() int {
+		return countRows(t, pool, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid=7419005
+			AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for waiting() == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("ApplySync finished while the lock was held: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ApplySync never waited on the apply lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// "Lock first", behaviourally and independent of the statement trace: while another
+// transaction holds the user's apply lock, a waiting ApplySync has not yet touched a row.
+// If the lock moved behind the deletions, the waiting call would hold the workout's row
+// lock and the NOWAIT probe below would fail with 55P03 (lock_not_available).
+func TestApplySyncTakesNoRowLockBeforeTheApplyLock(t *testing.T) {
+	st, pool := testStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	u := applyUser(t, st)
+	w := seedWorkout(t, pool, u, seedW{source: "W", start: utc("2026-01-12T10:00:00Z")})
+
+	holder := holdApplyLock(t, pool, u)
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.ApplySync(ctx, u, Apply{Loc: berlin, Deleted: []model.DeletedRecord{del(model.DeletedWorkout, w)}})
+		done <- err
+	}()
+	waitForApplyLockWaiter(t, pool, done)
+	if _, err := holder.Exec(ctx, `SAVEPOINT probe`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT id FROM workouts WHERE id=$1 FOR UPDATE NOWAIT`, w); err != nil {
+		t.Errorf("the ApplySync waiting on the apply lock already holds a row lock: %v", err)
+		if _, err := holder.Exec(ctx, `ROLLBACK TO SAVEPOINT probe`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM workouts WHERE id=$1`, w); n != 0 {
+		t.Fatal("the deletion did not happen once the lock was released")
 	}
 }
 
