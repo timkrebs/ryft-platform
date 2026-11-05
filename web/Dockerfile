@@ -24,8 +24,11 @@ USER root
 RUN apk upgrade --no-cache brotli-libs
 RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf && mkdir -p /etc/nginx/snippets
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+COPY nginx/headers-common.conf /etc/nginx/snippets/headers-common.conf
 COPY nginx/headers.conf /etc/nginx/snippets/headers.conf
+COPY nginx/headers-admin.conf /etc/nginx/snippets/headers-admin.conf
 COPY --from=build /web/nginx/csp.conf /etc/nginx/snippets/csp.conf
+COPY --from=build /web/nginx/csp-admin.conf /etc/nginx/snippets/csp-admin.conf
 COPY --from=build /web/out /usr/share/nginx/html
 # Runs as nginx (101). Read-only root filesystem: mount writable /tmp and /var/cache/nginx.
 USER 101
