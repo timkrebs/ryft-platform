@@ -44,7 +44,7 @@ service_secrets = {
   }
   # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…),
   # and the stack's Prometheus user (a number, not a secret) OpenCost reads with it.
-  monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }
+  monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "1234567" }
   # coach  = { ANTHROPIC_API_KEY = "sk-ant-…" }
   # Push (docs/OPERATIONS.md → Push): Apple Developer → Keys → a key with "Apple Push
   # Notifications service"; all three or none (without them notify sends nothing).

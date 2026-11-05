@@ -1966,7 +1966,7 @@ restarts both collectors when it changes. It is never passed on a command line:
    in a chat): Grafana Cloud → your stack → Access policies → the Kubernetes Monitoring
    policy → create a new token, then delete the old one.
 2. **Vault:** put the new token into `infra/vault/terraform.tfvars` as
-   `service_secrets.monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "3085952" }`. Remove the hand-made secret
+   `service_secrets.monitoring = { GC_TOKEN = "glc_…", PROM_USERNAME = "1234567" }`. Remove the hand-made secret
    (`vault kv metadata delete …` under `admin/ryft/…/grafana-cloud`). If you created
    the Vault namespace `admin/ryft/monitoring` by hand, import it instead of
    deleting it: `terraform import 'vault_namespace.service["monitoring"]' ryft/monitoring`.
