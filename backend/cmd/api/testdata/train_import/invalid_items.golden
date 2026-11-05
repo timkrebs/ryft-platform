@@ -1,0 +1,53 @@
+case invalid_items
+
+== mixed
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"6e5c5545-a9e2-5fb2-9e1f-9df1405b8153","status":"created"},{"kind":"plan","id":"65b4348c-d548-520a-aa73-76815f040e2c","status":"rejected","code":"invalid","message":"goal must be strength, hypertrophy, weightlifting or general"},{"kind":"plan","id":"00000000-0000-0000-0000-000000000000","status":"rejected","code":"invalid","message":"id is required"},{"kind":"session","id":"699349d1-4526-5b13-9674-4640eec9a41a","status":"created"},{"kind":"session","id":"ac5acf3f-7059-5272-be48-2b1d14d72251","status":"rejected","code":"unknown_exercise","message":"exercise 582c3da7-0374-5f44-b8b1-e5a11bb208be is neither built-in nor yours"},{"kind":"session","id":"ed999273-1b22-5fa7-93b7-f0bd21de4370","status":"rejected","code":"unknown_plan_reference","message":"plan_day_id is neither a built-in plan's nor one of yours"},{"kind":"session","id":"c4019ee0-8ff0-5551-8990-1e3a9d9bc3d0","status":"rejected","code":"invalid","message":"set 6263ba3d-e064-573e-a8a6-95fcc31ac2de: completed_at is required (an import sends only sets that were done)"},{"kind":"session","id":"f0f51f90-6806-5cda-9671-59d738fb6e80","status":"rejected","code":"invalid","message":"set 1685a486-0614-5154-9296-64c6acd2d4ea: assist_kg is only for bodyweight exercises"},{"kind":"session","id":"1d6f690c-e52f-5164-b383-8c966546fe70","status":"created"},{"kind":"session","id":"00000000-0000-0000-0000-000000000000","status":"rejected","code":"invalid","message":"id is required"}],"days_touched":["D-5","D-3"],"scoring":{"queued_days":["D-5","D-3"],"expected_within_sec":34}}
+<eof>
+
+== every item rejected
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"plan","id":"65b4348c-d548-520a-aa73-76815f040e2c","status":"rejected","code":"invalid","message":"goal must be strength, hypertrophy, weightlifting or general"},{"kind":"session","id":"ac5acf3f-7059-5272-be48-2b1d14d72251","status":"rejected","code":"unknown_exercise","message":"exercise 582c3da7-0374-5f44-b8b1-e5a11bb208be is neither built-in nor yours"}],"days_touched":[],"scoring":{"queued_days":[],"expected_within_sec":30}}
+<eof>
+
+== state of user:a
+stored session session:planned origin=import day=D-5 sets=1
+stored session session:newest origin=import day=D-3 sets=2
+stored plan plan:good
+outbox ingested reason=import days=D-5,D-3 user=user:a request=#1 session_id_set=false
+pending D-5,D-3
+lease held: false
+record exercise:squat e1rm=122.5 from session:newest
+record exercise:squat max_reps=5 from session:planned
+record exercise:squat max_volume=525 from session:newest
+record exercise:squat max_weight=105 from session:newest
+
+== metrics moved
+imports/ok +2
+items/plan/created +1
+items/plan/rejected +3
+items/session/created +2
+items/session/rejected +6
+seconds/observations +2
+
+== log lines
+train import result=ok plans=3 sessions=7 created=3 unchanged=0 updated=0 rejected=7 days=2 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
+train import result=ok plans=1 sessions=1 created=0 unchanged=0 updated=0 rejected=2 days=0 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import
