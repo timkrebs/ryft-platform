@@ -1,6 +1,10 @@
 {
   "additionalProperties": false,
   "properties": {
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
     "expires_at": {
       "format": "date-time",
       "nullable": true,
@@ -15,6 +19,7 @@
     }
   },
   "required": [
+    "email",
     "expires_at",
     "max_uses",
     "note"

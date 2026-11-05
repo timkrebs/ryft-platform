@@ -99,7 +99,9 @@ func main() {
 	go ob.Run(ctx)
 
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
-		engine: scoring.NewEngine(st, log), beta: beta}
+		engine: scoring.NewEngine(st, log), beta: beta,
+		emails: acct, webURL: adminCfg.PublicWebURL}
+	go purgeInviteEmailsEvery(ctx, st, log, time.Hour)
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -234,6 +236,10 @@ type handler struct {
 	accounts *accounts
 	engine   *scoring.Engine // pure scoring with store lookups, for session completion
 	beta     config.Beta
+	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
+	emails inviteEmails
+	// webURL is PUBLIC_WEB_URL, the base of an invite link; "" is config.DefaultPublicWebURL.
+	webURL string
 	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
 	// shorten it to make a slow finish fail fast).
 	importFinish time.Duration

@@ -78,6 +78,7 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM score_queue WHERE user_id=$1) + (SELECT count(*) FROM outbox WHERE user_id=$1) +
 		(SELECT count(*) FROM sessions WHERE user_id=$1) + (SELECT count(*) FROM session_exercises WHERE user_id=$1) +
 		(SELECT count(*) FROM session_sets WHERE user_id=$1) + (SELECT count(*) FROM personal_records WHERE user_id=$1) +
+		(SELECT count(*) FROM beta_invite_uses WHERE user_id=$1) +
 		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +126,14 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 		t.Fatal(err)
 	}
 	if _, err := st.ClaimNotification(ctx, id, now.Format("2006-01-02"), model.NotifyMorningScore); err != nil {
+		t.Fatal(err)
+	}
+	// A code the account redeemed (0033).
+	inv, err := st.CreateInvite(ctx, NewInvite{MaxUses: 5, CreatedBy: "key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO beta_invite_uses (code, user_id) VALUES ($1, $2)`, NormalizeInvite(inv.Code), id); err != nil {
 		t.Fatal(err)
 	}
 	seedImport(t, pool, id)

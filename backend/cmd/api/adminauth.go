@@ -339,7 +339,7 @@ func (a admin) routes() []adminRoute {
 		{"DELETE /v1/admin/flags/{key}", false, a.deleteFlag},
 		{"POST /v1/admin/invites", true, a.createInvite},
 		{"GET /v1/admin/invites", true, a.invites},
-		{"DELETE /v1/admin/invites/{code}", true, a.deleteInvite},
+		{"DELETE /v1/admin/invites/{code}", true, a.revokeInvite},
 		{"GET /v1/admin/feedback", true, a.feedback},
 		{"POST /v1/admin/feedback/{id}/resolve", true, a.resolveFeedback},
 		{"GET /v1/admin/users", true, a.users},

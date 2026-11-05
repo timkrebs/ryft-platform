@@ -48,7 +48,7 @@ so is the operator routes' `actor.kind` (`key` or `user`, Admin routes → The a
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | Strain — Train: import | plans and workout history from another training app's export; label imported sessions; start the imported plan where the user is | `POST /v1/train/import`, `Session.origin` / `import_source`, `POST /v1/plans/{id}/enroll` (optional position) |
 | (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`) |
-| Operator web page `https://ryftapp.de/admin` (not an app screen; Supabase sign-in with TOTP) | invites, users (beta access), feedback, flags (read-only) | **Admin routes** below: `POST`/`GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}`, `GET /v1/admin/users`, `POST`/`DELETE /v1/admin/users/{id}/access`, `GET /v1/admin/feedback`, `POST /v1/admin/feedback/{id}/resolve`, `GET /v1/admin/flags` |
+| Operator web page `https://ryftapp.de/admin` (not an app screen; Supabase sign-in with TOTP) | invites for a person (create, copy and share the link, list, revoke, who redeemed), users (beta access), feedback, flags (read-only) | **Admin routes** below: `POST`/`GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}`, `GET /v1/admin/users`, `POST`/`DELETE /v1/admin/users/{id}/access`, `GET /v1/admin/feedback`, `POST /v1/admin/feedback/{id}/resolve`, `GET /v1/admin/flags` |
 
 ## Conventions
 
@@ -115,7 +115,7 @@ not keeps working. `GET /v1/me/sync` → `gate` says the same.
 | `422` | — | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`; an enum parameter holding `%00` is `400`: the URL is refused before the parameter is read), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`); `POST /v1/train/import`: an unknown `source`, over 5 plans, 50 sessions or 2 500 sets, the same id twice in the request | Do not resend unchanged: show the problem to the user (a field error) or correct the value. A string with `\u0000`: strip it and send again (Errors → NUL). Not transient. |
 | `429` | `import_in_progress`, or none | The per-user rate limit (see **Conventions**), a second `POST /v1/recompute` within a minute, the limits of `POST /v1/feedback` (10 a day) and `POST /v1/me/invite` (5 an hour), or a second import while one runs (`code` `import_in_progress`); `/v1/admin/*` is limited per client address instead of per user (Admin routes). The edge also limits each client IP (20/s, bursts of 50) before any token is checked; its `429` has the plain-text body `Too Many Requests`, so do not require JSON on a `429`. | Wait `Retry-After` seconds, then send the same request again. The edge's `429` sends `Retry-After` too (the delay rounded up, usually 1) and `X-Retry-In`; a `429` without `Retry-After`: wait 1 s. If the wait is longer than the app will hold (`POST /v1/feedback` after 10 in a day: up to 24 h; `POST /v1/me/invite`: up to about 12 minutes), stop and tell the user. `import_in_progress`: wait `Retry-After` (10 s) and resend unchanged. |
 | `500` | — | Unexpected server error. The message is always `"internal error"`; the details are in the server log under `request_id`. A database call that fails in the middle of a request is a `500`, except where the `503` row says otherwise. | Not the user's fault, maybe transient: retry later with jittered backoff, a few times at most (the first retry may be immediate), and show `request_id` if it persists. |
-| `503` | — | The server cannot answer now, always with `Retry-After` except for `GET /readyz`: the token or the account could not be loaded at the start of the request (Supabase keys or the database unreachable — **not** a sign-in problem; `Retry-After: 5`); the request ran out of time (`"request timed out"`; 5); `POST /v1/sync` could not apply its page (the database, or a concurrent sync of the same account; 5) or `POST /v1/train/import` could not finish (5); the queue is down (`POST /v1/recompute`, or the completion or edit of a session, which is already stored; 30); Apple is unreachable (`POST /v1/me/apple-authorization`; 5); on `/v1/admin/*` the signing keys or the database for an admin token (5). `GET /readyz` answers `503` without `Retry-After` when a dependency is down. | Wait `Retry-After` seconds and send the same request again (a sync and an import are idempotent; after a `POST /v1/recompute` `503` the retry can get `429` with `Retry-After: 60`, since the minute is already used); keep the session. The `503` of `GET /readyz` is for probes, not the app. |
+| `503` | — | The server cannot answer now, always with `Retry-After` except for `GET /readyz`: the token or the account could not be loaded at the start of the request (Supabase keys or the database unreachable — **not** a sign-in problem; `Retry-After: 5`); the request ran out of time (`"request timed out"`; 5); `POST /v1/sync` could not apply its page (the database, or a concurrent sync of the same account; 5) or `POST /v1/train/import` could not finish (5); the queue is down (`POST /v1/recompute`, or the completion or edit of a session, which is already stored; 30); Apple is unreachable (`POST /v1/me/apple-authorization`; 5); the account lookup for a code bound to an email is unavailable (`POST /v1/me/invite`; 5); on `/v1/admin/*` the signing keys or the database for an admin token (5). `GET /readyz` answers `503` without `Retry-After` when a dependency is down. | Wait `Retry-After` seconds and send the same request again (a sync and an import are idempotent; after a `POST /v1/recompute` `503` the retry can get `429` with `Retry-After: 60`, since the minute is already used); keep the session. The `503` of `GET /readyz` is for probes, not the app. |
 
 Endpoint-specific statuses (`501` on `POST /v1/me/apple-authorization`, for one) are in the endpoint's own table; `499` is logged by the server and never reaches a client. A status this table does not list: `408` and a `5xx` other than `501` are transient like `503`; any other `4xx` (`405`, `431`, from the HTTP server before a handler runs) is like `400`: do not resend unchanged. Do not branch on the text.
 
@@ -659,8 +659,12 @@ is kept with its time, policy version and app version.
 
 `{"code": "RYFT-7K3M-QX9P"}` → `204`, and `User.beta_access` becomes `true`. Case,
 spaces and dashes do not matter. `422 "invalid or used code"` for an unknown, expired or
-used-up code (one message for all three). At most 5 attempts per user and hour (`429`).
-An account that already has access gets `204` without using the code.
+used-up code (one message for all three), and, since 2026-11-05, for a **revoked** code and for a code
+**bound to an email address** that is not the account's confirmed email: one message and one status for every
+refusal, so the answer reveals nothing about a code. At most 5 attempts per user and hour (`429`).
+An account that already has access gets `204` without using the code. Only for a bound code, `503` with
+`Retry-After: 5` (and no `code`) when the account's email cannot be checked right now: send the same request
+again. The request and the app's handling do not change (Admin routes → Invites for a person has the rules).
 
 ### `GET /v1/me/sync` — what the server has, and what it is doing with it
 
@@ -1984,7 +1988,7 @@ answer a token with `403` (no `code`); the attempt is audited.
 | --- | --- | --- | --- |
 | `GET /v1/admin/flags` | yes | yes | Flags, read-only |
 | `PUT`, `DELETE /v1/admin/flags/{key}` | yes | **403** | no |
-| `POST /v1/admin/invites`, `GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}` | yes | yes | Invites |
+| `POST /v1/admin/invites`, `GET /v1/admin/invites[?emails=1]`, `DELETE /v1/admin/invites/{code}` | yes | yes | Invites |
 | `GET /v1/admin/feedback[?since=]`, `POST /v1/admin/feedback/{id}/resolve` | yes | yes | Feedback |
 | `GET /v1/admin/users[?emails=1]` | yes | yes | Users |
 | `POST`, `DELETE /v1/admin/users/{id}/access` | yes | yes | Users: grant, revoke |
@@ -2039,13 +2043,14 @@ Every authorized admin call writes an audit row (`GET /v1/admin/audit`) that nam
 | `key` | the key's fingerprint (8 hex digits, the same value as `key_fingerprint`) | a call with `ADMIN_API_KEY` |
 | `user` | the admin's user id (UUID, lower case) | a call with an admin token |
 
-`kind` is a **closed** enum. `id` is `string?`: it is always set on an audit row. An attempt on a
+`kind` is a **closed** enum. `id` is `string?`: it is `null` only in the `created_by` of an invite created
+before 2026-11-05 by the key (the fingerprint was not kept: `{"kind": "key", "id": null}`). An attempt on a
 key-only route is audited too, with status `403`. `GET /v1/admin/audit?since=` takes RFC 3339 or `YYYY-MM-DD`
 (default 7 days), newest first, at most 1 000 rows; another format is `422`.
 
 `AuditRecord.actor` is new. `key_fingerprint` stays (a string; never removed) and is `""` on rows whose actor is a
-user. `details` is an open object (the route adds a few values, never an email): a list of users
-or feedback holds `emails` (whether the addresses were asked for) and `n`, an access change `grant`.
+user. `details` is an open object (the route adds a few values, never an email): a create or revoke of an invite holds
+its `code`, a list of users or invites holds `emails` (whether the addresses were asked for).
 
 <!-- type: []model.AuditRecord -->
 ```json
@@ -2053,7 +2058,7 @@ or feedback holds `emails` (whether the addresses were asked for) and `n`, an ac
   { "id": 9142, "at": "2026-11-05T18:02:44Z", "key_fingerprint": "",
     "actor": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
     "action": "POST /v1/admin/invites", "target_user": null, "status": 201,
-    "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c", "details": {} },
+    "request_id": "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c", "details": { "code": "RYFT-7K3M-QX9P" } },
   { "id": 9141, "at": "2026-11-05T17:58:03Z", "key_fingerprint": "",
     "actor": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
     "action": "PUT /v1/admin/flags/{key}", "target_user": null, "status": 403,
@@ -2065,28 +2070,121 @@ or feedback holds `emails` (whether the addresses were asked for) and `n`, an ac
 ]
 ```
 
-### Invite codes (existing shapes)
+### Invites for a person
 
-| Route | Answer |
-| --- | --- |
-| `POST /v1/admin/invites` | `201` `BetaInvite`. Body: `note` (string, at most 200 characters, `422 "note has at most 200 characters"`), `max_uses` (int, 1 to 1000, default 1, `422 "max_uses must be 1-1000"`), `expires_at` (RFC 3339, must be in the future, `422 "expires_at must be in the future"`; omitted: never) |
-| `GET /v1/admin/invites` | `200` `[BetaInvite]`, newest first, every code |
-| `DELETE /v1/admin/invites/{code}` | `204`: removes the code (who redeemed it keeps access); `404 "no such code"`. `{code}` may be written with or without dashes |
+An invite code (`RYFT-7K3M-QX9P`; case, spaces and dashes never matter where a code is read) is either
+**unbound** (anyone with the code, today's behaviour) or **bound to an email address**. The tester opens the
+universal link `https://ryftapp.de/invite/RYFT-7K3M-QX9P` (the `link` field) or types the code in the app
+(`POST /v1/me/invite`).
+
+#### `POST /v1/admin/invites` — create a code
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `note` | string | optional, at most 200 characters (`422 "note has at most 200 characters"`); may name the person; never shown to the tester |
+| `max_uses` | int? | 1 to 1000, default 1 (`422 "max_uses must be 1-1000"`) |
+| `expires_at` | RFC 3339? | must be in the future (`422 "expires_at must be in the future"`); **omitted means it never expires** (the page sends 14 days) |
+| `email` | string? (**new**) | the address this code is for. Trimmed and lower-cased; ASCII printable, at most 254 characters, one `@`, a dot in the domain, else `422 "email is not a valid address"`. A bound code has `max_uses` 1: a larger value is `422 "a code for one email has max_uses 1"`. `null` or omitted: an unbound code. The api never looks the address up |
 
 <!-- type: model.BetaInviteInput -->
 ```json
-{ "note": "Anna", "max_uses": 1, "expires_at": "2026-11-19T10:00:00Z" }
+{ "note": "Anna", "email": "Anna@Example.com", "max_uses": 1, "expires_at": "2026-11-19T10:00:00Z" }
 ```
+
+`201` with the new `BetaInvite`. In this answer `email` is the address **as stored** (lower case, not masked:
+the caller just sent it), `uses_by` is `[]` and `created_by` is the caller's actor.
+
+<!-- type: model.BetaInvite -->
+```json
+{ "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 0,
+  "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
+  "email": "anna@example.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
+  "revoked_at": null, "status": "open", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+  "uses_by": [] }
+```
+
+#### `GET /v1/admin/invites[?emails=1]` — the list
+
+Still a JSON **array** of `BetaInvite`, newest first, without pagination (beta size). Every code is listed,
+revoked and used-up ones too. The new fields are all additive:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `code`, `note`, `max_uses`, `uses`, `expires_at`, `created_at` | as before | unchanged |
+| `email` | string? | the bound address; `null` for an unbound code. **Masked** (`a***@e***.com`) unless `?emails=1`. The api clears it 30 days after the code could no longer be redeemed (revoked, expired or used up), so `null` on a code that is not `open` does **not** mean "anyone with the code" |
+| `created_by` | `Actor` | who created it; `{"kind": "key", "id": null}` for codes from before 2026-11-05 |
+| `revoked_at` | RFC 3339? | set by `DELETE`; `null` otherwise |
+| `status` | string | **closed** enum, the first match wins: `revoked` (`revoked_at` set), `used` (`uses` ≥ `max_uses`), `expired` (`expires_at` not in the future), `open` |
+| `link` | string | `<PUBLIC_WEB_URL>/invite/<code with dashes>`, i.e. `https://ryftapp.de/invite/RYFT-7K3M-QX9P`. Always present |
+| `uses_by` | `[InviteUse]` | the accounts that redeemed the code, oldest first |
+
+`InviteUse`: `user_id` (uuid), `short_id` (its first 8 hex digits), `email` (string?, the account's email, masked unless
+`?emails=1`; `null` when the account has none), `private_relay` (bool, an Apple "Hide My Email" address) and `at`
+(RFC 3339). `uses_by` lists only accounts that still exist: `uses` stays the count, so `uses > len(uses_by)` means
+"redeemed by an account deleted since". Codes redeemed before 2026-11-05 are listed with `at` = the account's
+`beta_access_at`. The call is audited with `emails` true or false. The page passes `?emails=1`:
 
 <!-- type: []model.BetaInvite -->
 ```json
 [
-  { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 0,
-    "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z" },
+  { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 1,
+    "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
+    "email": "anna@example.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
+    "revoked_at": null, "status": "used", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+    "uses_by": [ { "user_id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", "short_id": "9f8e7d6c", "email": "anna@example.com",
+                   "private_relay": false, "at": "2026-11-05T18:02:11Z" } ] },
+  { "code": "RYFT-H2NP-4WCX", "note": "Ben", "max_uses": 1, "uses": 0,
+    "expires_at": "2026-10-30T12:00:00Z", "created_at": "2026-10-21T09:00:00Z",
+    "email": "ben@example.com", "created_by": { "kind": "key", "id": null },
+    "revoked_at": "2026-10-30T12:00:00Z", "status": "revoked", "link": "https://ryftapp.de/invite/RYFT-H2NP-4WCX",
+    "uses_by": [] },
   { "code": "RYFT-A9KT-3DMF", "note": "TestFlight wave 2", "max_uses": 20, "uses": 3,
-    "expires_at": null, "created_at": "2026-10-20T08:00:00Z" }
+    "expires_at": null, "created_at": "2026-10-20T08:00:00Z",
+    "email": null, "created_by": { "kind": "key", "id": "3fa1c2d9" },
+    "revoked_at": null, "status": "open", "link": "https://ryftapp.de/invite/RYFT-A9KT-3DMF",
+    "uses_by": [ { "user_id": "0a1b2c3d-4e5f-4061-8283-949a5b6c7d8e", "short_id": "0a1b2c3d", "email": "mia@icloud.com",
+                   "private_relay": false, "at": "2026-10-22T07:41:00Z" },
+                 { "user_id": "7c6b5a49-3827-4160-8f0e-1d2c3b4a5968", "short_id": "7c6b5a49", "email": "x7k2m9q4@privaterelay.appleid.com",
+                   "private_relay": true, "at": "2026-10-23T19:05:30Z" } ] }
 ]
 ```
+
+Without `?emails=1` the same first entry reads:
+
+<!-- type: []model.BetaInvite -->
+```json
+[
+  { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 1,
+    "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
+    "email": "a***@e***.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
+    "revoked_at": null, "status": "used", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+    "uses_by": [ { "user_id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", "short_id": "9f8e7d6c", "email": "a***@e***.com",
+                   "private_relay": false, "at": "2026-11-05T18:02:11Z" } ] }
+]
+```
+
+#### `DELETE /v1/admin/invites/{code}` — revoke
+
+**The meaning of this route changes.** `DELETE` no longer removes the row: it **revokes** the code. The row stays
+in the list with `status: "revoked"`; a hard delete is not offered. A revoked code redeems nothing, and accounts that
+already redeemed it keep their access. `204` with no body, also when the code was already revoked (idempotent; the
+first revoke time is kept); `404 "no such code"` for a code that does not exist. `{code}` may be written with or
+without dashes. A revoke also sets `expires_at` to the revoke time (an earlier value is kept), so the listed
+`expires_at` of a revoked code is not the one it was created with: read `status`.
+
+#### Redeeming: `POST /v1/me/invite`
+
+The request and the answers are unchanged: `{"code": "…"}` → `204`, and **one** `422 "invalid or used code"` for
+every refusal (unknown, expired, used up, and now also **revoked**, **bound to another email**, and bound while the
+account's email is not confirmed). The binding compares the email address Supabase holds for the account, and only
+when Supabase has confirmed it (not the token's `email` claim, not the app's stored copy), trimmed and lower-cased,
+with no plus-address or dot folding. A Sign in with Apple "Hide My Email" address matches only a code made for exactly
+that relay address: when the tester used it and the operator does not have it, the operator leaves `email` empty.
+A bound code has one use, so an account cannot redeem it twice (a second attempt is the `422`; an account that already
+has access still gets `204` without using the code). New for **bound** codes only: when Supabase's account lookup is
+unavailable the answer is `503` with `Retry-After: 5` and no `code` (`"the invite could not be checked right now"`);
+send the same request again. Unbound codes never depend on that lookup. The 5 attempts an hour apply as before. The
+app's `InvitePost` and its handling of this route do not change.
 
 ### Users, feedback, flags (existing shapes)
 
@@ -2976,6 +3074,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-05 | **Invites for a person** (the operator's page; the app is not involved): `POST /v1/admin/invites` takes an optional `email` (a bound code has `max_uses` 1; `422` otherwise); `BetaInvite` gains `email` (masked unless `?emails=1`), `created_by` (`Actor`), `revoked_at`, `status` (`open` \| `used` \| `expired` \| `revoked`, closed), `link` and `uses_by`; `GET /v1/admin/invites` is still an array; `DELETE /v1/admin/invites/{code}` now **revokes** (`204`, idempotent; the row stays listed) instead of deleting; `POST /v1/me/invite` refuses a revoked code and a bound code whose email is not the account's confirmed one, with the same single `422 "invalid or used code"`, and answers `503` with `Retry-After: 5` for a bound code when the account's email cannot be checked. **Behaviour:** nothing changes for the app, except that `DELETE /v1/admin/invites/{code}` no longer removes the row; codes created before this entry are unbound and list as created by `{"kind": "key", "id": null}`. Old clients ignore every new field. **Swift:** none (`InvitePost` is unchanged and the admin types are not mirrored). |
 | 2026-11-05 | **Admin sign-in** (the api side of the operator's page at `https://ryftapp.de/admin`; the app is not involved, so no `API_REQUESTS.md` entry answers to this): a new section [Admin routes (operator only)](#admin-routes-operator-only) documents `/v1/admin/*`, which API.md did not cover before. **Auth:** `/v1/admin/*` accepts the admin key (unchanged) **or** a Supabase access token with `app_metadata.role` `admin`, an allow-list row and a TOTP (`aal2`, `amr` `totp`) at most 12 h old; every other bearer gets one identical `401`; a valid, allow-listed admin without a fresh second factor gets `403` with the new `code` **`mfa_required`** (Errors → `code` table and the `403` row); merge, flag writes, user detail and resync-hint stay key-only (`403` for a token, no `code`); a token whose signing keys or database check is unavailable gets `503` with `Retry-After: 5`; `/v1/admin/*` has a per-address limit (10/s, bursts of 20, `429` with `Retry-After`). **CORS:** only `/v1/admin/*`, only for the origins in `ADMIN_WEB_ORIGINS` (empty = none), `GET, POST, DELETE`, `Authorization`, `Content-Type`, preflight answered without auth, `Max-Age` 600, no credentials, `X-Request-ID` and `Retry-After` exposed. **Audit:** `AuditRecord.actor` (`{kind: key | user, id}`, `Actor`, closed `kind`); `key_fingerprint` stays and is `""` for a user actor. **Token answers:** the users list and the feedback are projections for an operator's token (`AdminUserBrief`, `FeedbackBrief`: no health-derived, device or diagnostic fields); the key's answers are unchanged. **Behaviour:** nothing changes for the app or for key-based scripts, except that a key caller can now get `429` above 10 requests a second per address, the `401` message is `admin key or admin sign-in required`, and the scheme `bearer` in lower case is accepted. Old clients ignore every new field. **Swift:** the closed `code` enum gains `mfa_required` in so many words, but only on `/v1/admin/*`, routes the app never calls, so no app request can receive it; the mirror gains `APIErrorCode.mfaRequired` for completeness; the app needs no change, it never calls `/v1/admin/*` (`APIErrorBody` is unchanged, and the admin types are not mirrored). |
 | 2026-11-04 | **Errors: what the client does** (documentation only, behaviour unchanged): Errors → the status table gains a `code` column (the `code`s a status can carry) and a **Do** column with one line per status (`400`, `401`, `403`, `404`, `409`, `413`, `422`, `429`, `500`, `503`), consistent with the app's retry rules (`408`, `429` and `5xx` but `501` are transient; a `4xx` is not retried unchanged). The `When` cells state conditions only; the instructions moved to `Do`. `409` on `PUT /v1/sessions/{id}`: merge the returned `Session` with the local copy by set id (the later `updated_at` wins) and `PUT` the result. `503` When names its causes; a database failure mid-request is a `500`. `429` notes that the edge sends `Retry-After` too and names the feedback and invite limits. No status, `code` or field changed; the `code` enum is still the four values. The sample consent error body shows the real message (`consent to the privacy policy … is required before uploading health data`; it read `consent required`), and the `GET /v1/config` example shows the policy version in force (`2026-10-26`); the messages Errors quotes verbatim are fixed text, every other message stays free text: branch on the status and `code`. Tests check the `code` table, the status table and the quoted messages against the code (the Do wording only for being present). Swift: none (`APIErrorCode`, `APIErrorBody` unchanged). |
 | 2026-10-31 | **Coverage and provisional scores** (answers the app's data-quality D2 and D4, `API_REQUESTS.md` → Sync and performance): `DailyScore.coverage` (`ScoreCoverage?`: `sleep_hr_minutes`, `hrv_readings`, `sleep_source`, `hr_source_hours`, `night_complete`, `status` `provisional` \| `final`, closed); `User.sources[].samples_7d` (sample counts per `Sample.type` over the last 7 days, all eight keys on every source). `details.hr_minutes` stays. **Behaviour:** a night is complete on wake evidence or at 10:00 local; a day is `provisional` until then and `final` after, sticky; scoring gains two floors (sleep heart rate < 120 min drops the resting-HR input of Recovery, which is renormalised, `rhr` itself stays; < 60 min of sleep from the winning source makes `sleep_performance` `null`), so stored numbers change for thin nights and the model version is bumped (`GET /v1/model`; rescore history to fill `coverage` on old rows); `MORNING_SCORE` now waits for the first `final` scoring of the day with recovery and sleep, the silent refresh still follows every scoring. Old clients ignore the new fields. Swift: `ScoreStatus`, `ScoreCoverage`, `DailyScore.coverage`, `UserSource.samples7D` (wire key `samples_7d`; the app's `.convertFromSnakeCase` maps it to `samples7D`, capital D). |

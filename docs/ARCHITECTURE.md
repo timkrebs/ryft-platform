@@ -166,7 +166,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 29 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 30 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 7 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its queue and a 15-minute timer. | apns, app, config, events, logx, notify, store | 1 file |
@@ -178,7 +178,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 4 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 1 file |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 8 files (Postgres) |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 9 files (Postgres) |
 | `internal/eventbus` | owns opening a service's events.Bus from its configuration. | config, events, events/amqpbus | none |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
 | `internal/events/amqpbus` | owns events.Bus on RabbitMQ (AMQP 0-9-1) and the broker's topology as Go, from which the manifests and the dev definitions are generated. | events, metrics, model, retry | 4 files (RabbitMQ) |
@@ -198,7 +198,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the production smoke after a deploy, run from inside the cluster. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 19 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 20 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 
@@ -215,7 +215,7 @@ tests import it. `make smoke` and the golden fixtures are not attributed to a pa
 - `users` — `id` = Supabase user ID; `name`, `email`, `provider` from the token; `tz` (the local day boundary), `max_hr` (for heart-rate reserve) with `max_hr_source` (`default`, `estimated` from `birth_year`, `manual`), `sleep_base_min` with `sleep_base_source` (`default`, `learned`, `manual`), `sleep_base_manual` and the weekly estimate `sleep_base_learned_min` / `_at` (scoring may write only these baseline columns); `last_seen_at`, `recompute_requested_at`.
 - `deleted_users` — tombstones (UUID only) of deleted accounts.
 - `devices` — one row per user and app install (`(user_id, id)`), `last_sync_at`, the `app_version` and `os_version` the app last sent.
-- `consents` — every grant and withdrawal of consent to health-data processing, with the policy and app version (D78); `beta_invite_codes` — invite codes with their uses (D79); `users.beta_access_at` / `beta_invite_code`.
+- `consents` — every grant and withdrawal of consent to health-data processing, with the policy and app version (D78); `beta_invite_codes` — invite codes with their uses (D79), optionally bound to an email, revoked not deleted, created by an actor (migration 0033, D159); `beta_invite_uses` — which account redeemed which code (deleted with the account; D159); `users.beta_access_at` / `beta_invite_code`.
 - `feedback` — reports from the app with versions, request ids and diagnostics; `resolved_at` is set by the operator (D83). Deleted with the account.
 - `score_queue` — the days a sync queued for scoring, and when scoring finished each (`GET /v1/me/sync` → `pending_days`, the sync-to-score latency; D91). `users.resync_requested_at`: the operator's request for a full re-sync.
 - **Training import** (0028, D125-D133): `sessions.origin` (`app` | `import`, closed) and `import_source` (set exactly for imports); `session_sets.assist_kg` (0-200, stored, no score reads it yet); `users.import_lease_until` (one import per user at a time, an expiring lease on the database's clock). `ryft_api` also writes `score_queue` now (it queues an import's days), `ryft_notify` reads `sessions.origin`. Each import item is its own transaction (D131).

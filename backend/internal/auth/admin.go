@@ -70,9 +70,12 @@ func jwtRole(key string) (string, bool) {
 // AdminUserInfo is what the Supabase admin API says about a user: how they
 // sign in. Emails as Supabase holds them; the caller masks them.
 type AdminUserInfo struct {
-	Email        string
-	LastSignInAt *time.Time
-	Identities   []AdminIdentity
+	Email string
+	// EmailConfirmedAt is when Supabase confirmed Email (nil: never). An unconfirmed address is the
+	// account holder's claim, not proof, so an invite bound to it does not match (VerifiedEmail).
+	EmailConfirmedAt *time.Time
+	LastSignInAt     *time.Time
+	Identities       []AdminIdentity
 }
 
 // AdminIdentity is one way into the account (an Apple id, an email password).
@@ -105,9 +108,10 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 		return AdminUserInfo{}, adminError("get user", resp)
 	}
 	var u struct {
-		Email        string     `json:"email"`
-		LastSignInAt *time.Time `json:"last_sign_in_at"`
-		Identities   []struct {
+		Email            string     `json:"email"`
+		EmailConfirmedAt *time.Time `json:"email_confirmed_at"`
+		LastSignInAt     *time.Time `json:"last_sign_in_at"`
+		Identities       []struct {
 			Provider     string         `json:"provider"`
 			IdentityData map[string]any `json:"identity_data"`
 			LastSignInAt *time.Time     `json:"last_sign_in_at"`
@@ -117,7 +121,7 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 		// Not %w: a decode error quotes the value ("parsing time "tim@..."").
 		return AdminUserInfo{}, errors.New("supabase admin: get user: undecodable response")
 	}
-	out := AdminUserInfo{Email: u.Email, LastSignInAt: u.LastSignInAt}
+	out := AdminUserInfo{Email: u.Email, EmailConfirmedAt: u.EmailConfirmedAt, LastSignInAt: u.LastSignInAt}
 	for _, i := range u.Identities {
 		email, _ := i.IdentityData["email"].(string)
 		out.Identities = append(out.Identities, AdminIdentity{Provider: i.Provider, Email: email, LastSignInAt: i.LastSignInAt})

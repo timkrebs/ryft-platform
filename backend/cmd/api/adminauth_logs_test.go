@@ -40,7 +40,9 @@ var adminLogKeys = logcheck.Lines{
 		"admin_key": logcheck.Pattern(shortHex)},
 	"admin users read": {"emails": logcheck.Bool, "n": logcheck.Count, "admin_actor": logcheck.Pattern(actorLabel),
 		"admin_key": logcheck.Pattern(shortHex)},
-	"invite created": {"max_uses": logcheck.Count, "admin_actor": logcheck.Pattern(actorLabel)},
+	"invite created":     {"max_uses": logcheck.Count, "bound": logcheck.Bool, "admin_actor": logcheck.Pattern(actorLabel)},
+	"admin invites read": {"emails": logcheck.Bool, "n": logcheck.Count, "admin_actor": logcheck.Pattern(actorLabel)},
+	"invite revoked":     {"admin_actor": logcheck.Pattern(actorLabel)},
 	"beta access set by the operator": {"grant": logcheck.Bool, "target_user": logcheck.Pattern(shortHex), "admin_actor": logcheck.Pattern(actorLabel),
 		"admin_key": logcheck.Pattern(shortHex)},
 	// The JWKS client's own line when the keys cannot be fetched (the outage below): the URL is the public key set's.
@@ -87,6 +89,9 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	send("GET", "/v1/admin/users", testAdminKey, "", 200)
 	send("GET", "/v1/admin/feedback", tokOp, "", 200)
 	send("POST", "/v1/admin/invites", tokOp, `{"note": "for `+mail+`", "max_uses": 1}`, 201)
+	send("POST", "/v1/admin/invites", tokOp, `{"email": "`+mail+`"}`, 201)
+	send("GET", "/v1/admin/invites?emails=1", tokOp, "", 200)
+	send("DELETE", "/v1/admin/invites/RYFT-2222-2222", tokOp, "", 404)
 	send("POST", "/v1/admin/users/"+d.target.ID.String()[:8]+"/access", testAdminKey, "", 204)
 	send("PUT", "/v1/admin/flags/zz.logs", tokOp, `{"enabled": true, "rollout_pct": 1}`, 403)
 

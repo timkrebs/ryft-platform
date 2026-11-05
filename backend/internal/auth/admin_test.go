@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -84,7 +85,7 @@ func TestAdminGetUser(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"id":"` + id.String() + `","email":"x7k2@privaterelay.appleid.com",
-			"last_sign_in_at":"2026-10-20T17:40:00Z",
+			"email_confirmed_at":"2026-10-20T17:40:00Z", "last_sign_in_at":"2026-10-20T17:40:00Z",
 			"identities":[{"provider":"apple","identity_data":{"email":"x7k2@privaterelay.appleid.com"},"last_sign_in_at":"2026-10-20T17:40:00Z"},
 			              {"provider":"email","identity_data":{"email":"tim@example.com"}}]}`))
 	}))
@@ -95,11 +96,29 @@ func TestAdminGetUser(t *testing.T) {
 	}
 	u, err := a.GetUser(context.Background(), id)
 	if err != nil || u.Email != "x7k2@privaterelay.appleid.com" || u.LastSignInAt == nil || len(u.Identities) != 2 ||
+		u.EmailConfirmedAt == nil || !u.EmailConfirmedAt.Equal(time.Date(2026, 10, 20, 17, 40, 0, 0, time.UTC)) ||
 		u.Identities[0].Provider != "apple" || u.Identities[1].Email != "tim@example.com" || u.Identities[1].LastSignInAt != nil {
 		t.Fatalf("user: %+v %v", u, err)
 	}
 	if _, err := a.GetUser(context.Background(), uuid.New()); !errors.Is(err, ErrNoAuthUser) {
 		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+// An address Supabase has not confirmed has no email_confirmed_at: the invite binding must not trust it.
+func TestAdminGetUserUnconfirmedEmail(t *testing.T) {
+	for body, confirmed := range map[string]bool{
+		`{"email":"anna@example.com"}`:                                             false,
+		`{"email":"anna@example.com","email_confirmed_at":null}`:                   false,
+		`{"email":"anna@example.com","email_confirmed_at":"2026-11-01T08:00:00Z"}`: true,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+		u, err := a.GetUser(context.Background(), uuid.New())
+		srv.Close()
+		if err != nil || u.Email != "anna@example.com" || (u.EmailConfirmedAt != nil) != confirmed {
+			t.Errorf("%s: %+v %v", body, u, err)
+		}
 	}
 }
 

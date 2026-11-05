@@ -1554,8 +1554,31 @@ curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=2026-10-21"
 # A code for one person (or max_uses for a group), optionally expiring:
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
   -d '{"note": "Anna", "max_uses": 1, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
-curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # uses so far
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # status and uses so far, emails masked
+curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/invites?emails=1" | jq '.[] | {code, status, email, uses_by}'   # who, with addresses
+# REVOKE (since 2026-11-05 DELETE no longer removes the row): the code stays listed as "revoked", nobody redeems it
+# any more, accounts that used it keep their access. 204 again if it was revoked already; 404 for an unknown code.
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites/RYFT-7K3M-QX9P
+```
+
+**A code for one person (bound to an email).** `-d '{"note": "Anna", "email": "anna@example.com"}'` makes a
+single-use code that only the account whose **Supabase-confirmed** email is that address can redeem (D159). Use the
+address the tester signs in with; a Sign in with Apple "Hide My Email" address matches only a code made for exactly that
+relay address, so leave `email` out when you do not have it. Everyone else gets the same `422 "invalid or used code"`
+as for a wrong code, and a tester whose account lookup fails at Supabase gets `503` and sends again (a log line
+`invite email lookup failed`; unbound codes never depend on it). The address is cleared 30 days after the code stopped
+being redeemable (D161). **Do not create bound codes in production until the privacy text names the stored address
+(PRIVACY_POLICY_VERSION, a separate PR, decision U3).**
+
+**Rollback of 0033** (re-pinning the images from before): bound codes then act like unbound ones (the old image reads
+no `email`), revoked codes stay refused (a revoke also sets `expires_at`), and redemptions in the window get no
+`beta_invite_uses` row. After rolling forward, add the missing rows (safe to repeat):
+
+```sql
+INSERT INTO beta_invite_uses (code, user_id, at)
+SELECT u.beta_invite_code, u.id, COALESCE(u.beta_access_at, now())
+FROM users u JOIN beta_invite_codes c ON c.code = u.beta_invite_code
+ON CONFLICT DO NOTHING;
 ```
 
 **Whose data is broken.** `scripts/beta_report.sh` prints one line per tester from

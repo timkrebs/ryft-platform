@@ -8,9 +8,19 @@
       "format": "date-time",
       "type": "string"
     },
+    "created_by": {
+      "$ref": "Actor"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
     "expires_at": {
       "format": "date-time",
       "nullable": true,
+      "type": "string"
+    },
+    "link": {
       "type": "string"
     },
     "max_uses": {
@@ -19,17 +29,38 @@
     "note": {
       "type": "string"
     },
+    "revoked_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
     "uses": {
       "type": "integer"
+    },
+    "uses_by": {
+      "items": {
+        "$ref": "InviteUse"
+      },
+      "nullable": true,
+      "type": "array"
     }
   },
   "required": [
     "code",
     "created_at",
+    "created_by",
+    "email",
     "expires_at",
+    "link",
     "max_uses",
     "note",
-    "uses"
+    "revoked_at",
+    "status",
+    "uses",
+    "uses_by"
   ],
   "title": "BetaInvite",
   "type": "object"

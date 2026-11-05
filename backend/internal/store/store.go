@@ -162,6 +162,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
 			`DELETE FROM consents WHERE user_id=$1`,
+			`DELETE FROM beta_invite_uses WHERE user_id=$1`,
 			`DELETE FROM user_sources WHERE user_id=$1`,
 			`DELETE FROM feedback WHERE user_id=$1`,
 			`DELETE FROM score_queue WHERE user_id=$1`,

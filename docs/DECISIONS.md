@@ -3205,3 +3205,65 @@ Engine, and fails with the changed fields grouped by field.
   because `increase()` of a counter born at 1 would miss the first use of a pod's life.
 - **The rules reach Grafana only through `make alerts-apply`** (the user's manual step), which therefore comes
   before the first `admin_accounts` row: `AdminWebUsed` is the lost-phone detection.
+
+## D159 — Invites for a person: bound to a confirmed email, revoked not deleted, with who redeemed (admin web, PR2; the design's D-F)
+
+- **Decision:** migration 0033 adds to `beta_invite_codes` `email` (lower-case, printable ASCII; a code for one email
+  has `max_uses` 1), `created_by` (`key`, `key:<fingerprint>` or `user:<uuid>`; `DEFAULT 'key'`) and `revoked_at`, and
+  the table `beta_invite_uses (code, user_id, at)` with primary key `(code, user_id)`, backfilled from
+  `users.beta_invite_code` (`at` = `beta_access_at`). Redeeming is one transaction under the account's row lock and
+  one statement that spends the use and records it; **every** refusal (unknown, expired, used up, revoked, another
+  email, an unconfirmed email, redeemed by this account before) is the same `422 "invalid or used code"`. A bound code
+  is compared with the email **Supabase** holds for the account (admin API `GET /auth/v1/admin/users/{id}`), and only
+  when `email_confirmed_at` is set; never the token's `email` claim, never `users.email` (a copy of that claim), never
+  `user_metadata`. The comparison is the trimmed address with ASCII letters lower-cased: no plus-address or dot
+  folding, and no Unicode case folding (a Kelvin sign would otherwise match an ASCII `k`). Supabase is asked only for
+  a code that exists, is open and is bound, outside any transaction; if it cannot answer, `503` with `Retry-After: 5`
+  and no `code`, for that case only. An account that already has access gets `204` first and nothing is looked up.
+  `DELETE /v1/admin/invites/{code}` **revokes** (idempotent `204`, `404` for an unknown code) and caps `expires_at`
+  at the revoke time. A hard delete is not offered.
+- **Why:** a code in a chat can be forwarded; a binding to an address the tester has proven makes a forwarded code
+  useless to anyone else, without a new service. One status for every refusal leaves a guesser nothing to tell codes
+  apart by; the lookup runs only after a correct guess of a live bound code (about 10^-10 per guess, 5 an hour per
+  account). Revoke keeps the row so that `uses_by` and the audit still say what happened.
+- **Rollback stays safe:** `created_by` has a default, so an older image's `INSERT` works; a revoke sets
+  `expires_at`, so an older image refuses a revoked code too; `ON DELETE CASCADE` on `code` keeps an older image's
+  hard `DELETE` working. **Deviation from the design text:** `user_id` cascades too. The design relied on
+  `DeleteUser` removing the rows first, but an older image's `DeleteUser` does not know the table, and the backfill
+  gives every account that redeemed a code a row, so after a rollback their erasure (`DELETE /v1/me`) would fail on
+  the foreign key. The current `DeleteUser` still deletes the rows explicitly.
+- **Known and accepted:** an account whose access the operator took away cannot redeem the same code again (it
+  already used it); the operator grants access by hand or makes a new code. `uses_by` lists accounts that still
+  exist, `uses` stays the count. A Sign in with Apple relay address matches only a code made for exactly that
+  address; the page says so and recommends an unbound code when unsure.
+- **Needs the user (U3):** a bound email is data about someone who may never become a user. The privacy text needs a
+  sentence and a new `PRIVACY_POLICY_VERSION` (a separate PR, the user's decision on timing); **bound codes are not
+  to be created in production before it is published.** The api does not enforce this: a flag would be one more
+  moving part for a single operator, and the operator decides who gets a bound code.
+- Design: `docs/work/2026-11-05-admin-web/design.md` §6.1–§6.3; contract `docs/API.md` → Invites for a person.
+  The design's D-G (the page) and D-H (sending the invite by email) take the numbers of the PRs that implement them.
+
+## D160 — Emails in the invite answers: masked unless `?emails=1`, whichever bearer asks
+
+- **Decision:** `GET /v1/admin/invites` shows the bound `email` and every `uses_by[].email` masked
+  (`a***@e***.com`, the `maskEmail` of `/v1/admin/users`) unless the request says `?emails=1` (exactly `1`), for the
+  admin key **and** for an operator's token. `uses_by` keeps `user_id`, `short_id`, `private_relay` and `at` either
+  way. The call is audited with `emails`. Unlike users and feedback there is no second view for the token: the
+  invite answer holds no health-derived, device or diagnostic field, so the only sensitive field is the address, and
+  the one switch covers it. The create answer shows the address **as the caller sent it** (stored form); nothing
+  else about an address is returned by `POST`.
+- **Why:** the token path is the browser, and an address that is not on the screen cannot be shoulder-surfed or
+  left in a screenshot; the page asks for `?emails=1` because the operator needs the address to match a tester. A
+  test pins that the default answer of both bearers has no `@` outside a mask.
+- **Audit and logs:** the audit `details` of a create or revoke hold the `code` (the database only, for the
+  operator), never an address; the log lines say `bound: true|false` and carry no code, note or address.
+
+## D161 — A bound email is kept for 30 days after the code stopped being redeemable
+
+- **Decision:** an hourly, idempotent job in each api pod (`PurgeInviteEmails`) sets `email` to NULL on every code
+  that has not been redeemable for 30 days (revoked, expired, or used up; a used-up code whose account is gone uses
+  the creation time). Clearing is safe: a code that cannot be redeemed cannot be widened by losing its binding. An
+  open code keeps its address.
+- **Why:** the privacy text (once U3 is decided) can state a retention that is enforced, instead of "until the
+  operator remembers". No alert: a pass that clears nothing is normal; a failed pass is a warning line and the next
+  tick retries.
