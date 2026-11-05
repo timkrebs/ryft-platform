@@ -1950,7 +1950,9 @@ the role, a user without a row), so the answer is no oracle for the key or for w
 exception, said plainly:** a token signed with a key id the api does not know, while it fetched the signing
 keys less than a minute ago, answers `503` with `Retry-After: 5` (the refresh limit: it cannot tell a key
 rotation from a forged id yet), not `401`. Anyone can send such a token, so a `503` on an admin route does not
-by itself mean an outage; send the request again.
+by itself mean an outage; send the request again. In general the `503` says that the api could not complete
+a key fetch or the database check for this token (the signing keys unreachable, a fetch that did not finish
+within its 1 s, or the refresh limit), not that an outage is proven.
 
 | Situation | Status | Body and headers |
 | --- | --- | --- |

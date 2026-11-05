@@ -20,21 +20,38 @@ import (
 
 const testIssuer = "https://testref.supabase.co/auth/v1"
 
-// jwksServer serves a mutable JWK Set and can be switched to failing.
+// jwksServer serves a mutable JWK Set and can be switched to failing, to a 200
+// whose body is not a key set (garbage), or to answering slowly (delay).
 type jwksServer struct {
 	*httptest.Server
 	mu      sync.Mutex
 	keys    map[string]*ecdsa.PrivateKey
 	failing bool
+	garbage bool
+	delay   time.Duration
 }
 
 func newJWKSServer(t *testing.T) *jwksServer {
 	s := &jwksServer{keys: map[string]*ecdsa.PrivateKey{}}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
+		delay := s.delay
+		s.mu.Unlock()
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.failing {
+		switch {
+		case s.failing:
 			http.Error(w, "down", http.StatusBadGateway)
+			return
+		case s.garbage:
+			_, _ = w.Write([]byte("<html>not a key set</html>"))
 			return
 		}
 		var set struct {
@@ -64,6 +81,12 @@ func (s *jwksServer) addKey(t *testing.T, kid string) *ecdsa.PrivateKey {
 func (s *jwksServer) setFailing(v bool) {
 	s.mu.Lock()
 	s.failing = v
+	s.mu.Unlock()
+}
+
+func (s *jwksServer) set(f func(*jwksServer)) {
+	s.mu.Lock()
+	f(s)
 	s.mu.Unlock()
 }
 

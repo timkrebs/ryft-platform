@@ -195,6 +195,8 @@ func deleteRows(ctx context.Context, tx pgx.Tx, what, sql string, args, dest []a
 
 // deleteSamples: a night sample (hrv, respiration, SpO2) also belongs to the next
 // morning's score, so its next day is touched too (model.SampleSpillsToNextDay).
+// The next day is +24 absolute hours, not the next local date, so a clock-change
+// day can miss it; pinned as it is, not fixed (D178), here and in deleteWorkouts.
 func deleteSamples(ctx context.Context, tx pgx.Tx, userID uuid.UUID, ids []uuid.UUID, days *daySet) (int, error) {
 	var typ string
 	var at time.Time

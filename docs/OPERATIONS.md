@@ -1976,7 +1976,10 @@ token is `aal2` with a TOTP at most 12 hours old. Everything else is one identic
 One exception, plainly: a token whose key id the api does not know, while the signing keys were
 fetched less than a minute ago, answers `503` (`jwks_refresh_limited`, `Retry-After: 5`), not `401`.
 Anyone can send such a token, so a `503` on an admin route can be provoked and is not by itself an
-outage. A real operator without a fresh second factor gets `403 mfa_required` (and an audit row);
+outage: it means the api could not complete a key fetch (or the allow-list check) for that token,
+which includes a fetch that ran past its 1 s. It is kept on purpose (D184: a `401` there was
+considered and rejected). A client that hangs up no longer counts as a failed fetch (D184), so it
+cannot turn later answers into `jwks_unavailable`. A real operator without a fresh second factor gets `403 mfa_required` (and an audit row);
 an operator's token on merge, flag writes, user detail or resync-hint gets `403` (key-only routes,
 audited). The token's answers for the users list and the feedback are a projection without the
 health-derived, device and diagnostic fields (API.md); the key gets the whole answers.
@@ -2105,8 +2108,10 @@ guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sig
 `AdminWebUsed` (info): the page was used; if it was not you, act (below). A real operator refused
 for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
 audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
-is Supabase's keys or the database being unreachable (`Retry-After: 5`, `AuthUnavailable` pages for
-it) or a forged key id (above); the key keeps working. CloudWatch Logs Insights, log group
+means the api could not complete the check: a signing-key fetch that failed or took longer than a
+second, the allow-list lookup in the database, or an unknown key id inside the refresh limit
+(above). It is not proof of an outage (`Retry-After: 5`; `AuthUnavailable` pages for a failed fetch,
+D184); the key keeps working. CloudWatch Logs Insights, log group
 `/ryft/ryft-prod-euc1/containers` (OBSERVABILITY → In CloudWatch):
 
 ```text

@@ -3759,6 +3759,38 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
   enabled, except Pod Security refusals and the liveness alerts.
 
+## D184 — A client that hangs up no longer fails the JWKS fetch; the admin `503` for an unknown key id stays (amends D153)
+
+- **Considered and rejected: the admin routes answering an unknown key id inside the refresh limit with the generic
+  `401`** (D153's "Known and accepted" bullet; built in the first version of #141 and withdrawn after its security
+  review). Two reasons:
+  - **Its premise was false.** It assumed that with the mapping a `503` on `/v1/admin/*` proves an outage. It does not:
+    the key lookup ran on the request's context, jwkset fetches an unknown key id on `context.WithTimeout(requestCtx,
+    1 s)`, and the transport recorded the cancelled fetch of a client that hung up as a failed fetch. Anyone could so make
+    the last fetch "failed", get the `503` back, and count `jwks_unavailable`, which `AuthUnavailable` pages on (true on
+    every route on main before this entry).
+  - **It is worse in the case it is for.** During a key rotation the operator was not told about, a flood of forged key
+    ids holds the global refresh limiter, so the operator's own token with the new key id would get `401`, refresh,
+    `401` again, and the page signs out (a local revoke), where the `503` asks for a retry.
+- **The `503` stays** on the admin routes as on the user routes. It means "the api could not complete a key fetch (or the
+  database check) for this token", not that an outage is proven; API.md, OPERATIONS and OBSERVABILITY say so.
+- **Decision instead, the root cause in `internal/auth` (api and ingest):**
+  - `Supabase.Verify` calls the keyfunc with `context.WithoutCancel(ctx)`: a fetch an unknown key id starts no longer
+    ends with the client. It stays bounded by jwkset's 1 s (`RateLimitWaitMax`, which also bounds the fetch) and the
+    HTTP client's 10 s; the context's values stay. A request whose client left may finish its key lookup (at most 1 s).
+  - The transport records only a `200`. A failure is recorded by jwkset's refresh error handler
+    (`RefreshErrorHandlerFunc`, keyfunc's log line kept word for word), which sees the whole refresh: no answer, another
+    status, or a `200` whose body is not a key set (that was counted as a working fetch). A refresh cut short by its
+    own context being cancelled (the service stopping) is not recorded. One that ran out of its time is: after the
+    detach that can only be the fetch's own bound, a JWKS slower than 1 s, and treating it as healthy would answer a
+    real rotation with `401 unknown_key` on the user routes (a sign-out).
+  - Behaviour change: a client that disconnects mid-refresh no longer makes later unknown key ids `jwks_unavailable`,
+    and a `200` with an undecodable key set now makes an unknown key id a `503` instead of `401 unknown_key`. Nothing
+    changes for a valid token, an expired one, an unknown key id inside the limit (`503 jwks_refresh_limited`) or an
+    outage (`503 jwks_unavailable`). `AuthUnavailable` and its test are unchanged.
+- **Not done:** a refresh limiter per caller (the limiter stays global, so a flood of forged key ids still delays a
+  rotated key by up to a minute, answered with retryable `503`s); JWKS stale-while-revalidate (STATUS, Phase 3).
+
 ## D185 — Only Traefik and the smoke hook reach the services on 8080; the ingress-nginx peer is gone (supersedes D16's third bullet; #140)
 
 - **Decision:** port 8080 of the services is admitted from exactly two peers. **Traefik** in `kube-system` (pods
