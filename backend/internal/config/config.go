@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -217,15 +219,98 @@ func (b Beta) RequirePolicy() error {
 	return nil
 }
 
-// LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin
-// routes (api only; infra/vault generates it). Empty disables them; a short key
-// is refused rather than guessable.
-func LoadAdmin() (string, error) {
-	key := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
-	if key != "" && len(key) < 32 {
-		return "", fmt.Errorf("ADMIN_API_KEY must have at least 32 characters")
+// Admin configures the operator's /v1/admin routes (api only).
+type Admin struct {
+	Key          string   // ADMIN_API_KEY; empty: the routes are off
+	WebOrigins   []string // ADMIN_WEB_ORIGINS: the origins of the operator's page; empty: no CORS at all
+	PublicWebURL string   // PUBLIC_WEB_URL: the site's origin, the base of an invite link
+}
+
+// DefaultPublicWebURL is the site that serves the invite link and the operator's page.
+const DefaultPublicWebURL = "https://ryftapp.de"
+
+// maxWebOrigins bounds ADMIN_WEB_ORIGINS: the page and a development origin or two.
+const maxWebOrigins = 5
+
+// LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin routes (api only; infra/vault
+// generates it). Empty disables them; a short key is refused rather than guessable.
+//
+// ADMIN_WEB_ORIGINS is a comma-separated list of the exact origins whose pages may read the admin
+// routes' answers (CORS); unset or empty means none. An entry that is not a bare origin stops the
+// api at start-up (a typo must not silently open or close the page): see parseOrigin.
+// PUBLIC_WEB_URL defaults to DefaultPublicWebURL and must be one origin of the same form.
+func LoadAdmin() (Admin, error) {
+	a := Admin{Key: strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))}
+	if a.Key != "" && len(a.Key) < 32 {
+		return Admin{}, fmt.Errorf("ADMIN_API_KEY must have at least 32 characters")
 	}
-	return key, nil
+	var err error
+	if a.WebOrigins, err = parseOrigins(os.Getenv("ADMIN_WEB_ORIGINS")); err != nil {
+		return Admin{}, fmt.Errorf("ADMIN_WEB_ORIGINS: %w", err)
+	}
+	a.PublicWebURL = strings.TrimSpace(getenv("PUBLIC_WEB_URL", DefaultPublicWebURL))
+	if err := parseOrigin(a.PublicWebURL); err != nil {
+		return Admin{}, fmt.Errorf("PUBLIC_WEB_URL: %w", err)
+	}
+	return a, nil
+}
+
+// parseOrigins reads a comma-separated list of at most 5 origins, trimmed and deduplicated. Blank
+// means none; an empty entry inside a list is an error.
+func parseOrigins(list string) ([]string, error) {
+	if strings.TrimSpace(list) == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, entry := range strings.Split(list, ",") {
+		entry = strings.TrimSpace(entry)
+		if err := parseOrigin(entry); err != nil {
+			return nil, err
+		}
+		if !slices.Contains(out, entry) {
+			out = append(out, entry)
+		}
+	}
+	if len(out) > maxWebOrigins {
+		return nil, fmt.Errorf("at most %d origins, got %d", maxWebOrigins, len(out))
+	}
+	return out, nil
+}
+
+// parseOrigin accepts a bare origin exactly as a browser writes it in the Origin header: scheme
+// https (http only for localhost, 127.0.0.1 and [::1]), a lower-case host, an explicit port only when
+// it is not the scheme's default, and nothing else: no userinfo, path (a trailing slash included),
+// query or fragment. CORS compares these strings for equality, so what the browser would not send
+// can never match, and it is refused here instead of failing silently in production.
+func parseOrigin(s string) error {
+	if s == "" {
+		return errors.New("empty origin")
+	}
+	if strings.ContainsAny(s, " \t\r\n\"'`\\*") {
+		return fmt.Errorf("origin %q holds a space, quote, backslash or wildcard", s)
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("origin %q is not a URL", s)
+	}
+	host := u.Hostname()
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1"):
+	default:
+		return fmt.Errorf("origin %q: scheme must be https (http only for localhost, 127.0.0.1 and [::1])", s)
+	}
+	switch {
+	case host == "" || host != strings.ToLower(host):
+		return fmt.Errorf("origin %q: the host must be present and lower case", s)
+	case u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || u.Opaque != "":
+		return fmt.Errorf("origin %q: no userinfo, path, trailing slash, query or fragment", s)
+	case (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80"):
+		return fmt.Errorf("origin %q: a browser leaves the default port out of the origin", s)
+	case u.Scheme+"://"+u.Host != s || strings.HasSuffix(u.Host, ":"):
+		return fmt.Errorf("origin %q is not written the way a browser sends it (%s://%s)", s, u.Scheme, u.Host)
+	}
+	return nil
 }
 
 // APNs configures notify's push sending: the APNs key (Apple Developer → Keys,

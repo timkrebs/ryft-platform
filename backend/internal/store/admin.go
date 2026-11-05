@@ -62,9 +62,12 @@ func (s *Store) SetBetaAccess(ctx context.Context, id uuid.UUID, grant bool) err
 	return err
 }
 
-// AuditEntry is one admin_audit row (D88).
+// AuditEntry is one admin_audit row (D88). The caller is an admin key (KeyFingerprint) or an
+// admin's Supabase account (ActorUser), never both: the CHECK admin_audit_one_actor refuses it
+// (migration 0032).
 type AuditEntry struct {
 	KeyFingerprint string
+	ActorUser      *uuid.UUID
 	Action         string // the route pattern
 	TargetUser     *uuid.UUID
 	Status         int
@@ -82,27 +85,51 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO admin_audit (key_fingerprint, action, target_user, status, request_id, details)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6::jsonb)`, e.KeyFingerprint, e.Action, e.TargetUser, e.Status, e.RequestID, string(raw))
+	_, err = s.pool.Exec(ctx, `INSERT INTO admin_audit (key_fingerprint, actor_user, action, target_user, status, request_id, details)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7::jsonb)`,
+		e.KeyFingerprint, e.ActorUser, e.Action, e.TargetUser, e.Status, e.RequestID, string(raw))
 	return err
+}
+
+// IsAdminAccount says whether user may use an admin token: it has a row in admin_accounts (written
+// only by the owner, in SQL) and no tombstone in deleted_users. One query, so deleting the row and a
+// deleted account both take effect on the next request.
+func (s *Store) IsAdminAccount(ctx context.Context, user uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM admin_accounts a WHERE a.user_id = $1)
+		AND NOT EXISTS (SELECT 1 FROM deleted_users d WHERE d.id = $1)`, user).Scan(&ok)
+	return ok, err
+}
+
+// actorOf names the caller of an audit row: the admin's user id when the row has one, else the key's
+// fingerprint.
+func actorOf(fingerprint string, user *uuid.UUID) model.Actor {
+	if user != nil {
+		id := user.String()
+		return model.Actor{Kind: model.ActorUser, ID: &id}
+	}
+	return model.Actor{Kind: model.ActorKey, ID: &fingerprint}
 }
 
 // AuditSince lists admin calls at or after since, newest first, at most limit.
 func (s *Store) AuditSince(ctx context.Context, since time.Time, limit int) ([]model.AuditRecord, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, at, key_fingerprint, action, target_user, status, COALESCE(request_id, ''), details
+	rows, err := s.pool.Query(ctx, `SELECT id, at, key_fingerprint, actor_user, action, target_user, status, COALESCE(request_id, ''), details
 		FROM admin_audit WHERE at >= $1 ORDER BY at DESC, id DESC LIMIT $2`, since, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := []model.AuditRecord{}
 	var a model.AuditRecord
+	var actor *uuid.UUID
 	var details []byte
-	_, err = pgx.ForEachRow(rows, []any{&a.ID, &a.At, &a.KeyFingerprint, &a.Action, &a.TargetUser, &a.Status, &a.RequestID, &details},
+	_, err = pgx.ForEachRow(rows, []any{&a.ID, &a.At, &a.KeyFingerprint, &actor, &a.Action, &a.TargetUser, &a.Status, &a.RequestID, &details},
 		func() error {
 			a.At = a.At.UTC()
 			a.Details = append(json.RawMessage(nil), details...)
+			a.Actor = actorOf(a.KeyFingerprint, actor)
 			out = append(out, a)
 			a = model.AuditRecord{}
+			actor = nil
 			return nil
 		})
 	return out, err

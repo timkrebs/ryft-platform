@@ -1,0 +1,326 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/store"
+)
+
+// An operator's token gets a server-side projection of the users list and of the feedback: the account and
+// its access state, the message and where it stands. None of the health-derived, device or diagnostic
+// fields leave the server for a browser; the key gets the whole answers (docs/API.md → Admin routes).
+func TestAdminTokenGetsAProjection(t *testing.T) {
+	d := newAdminDB(t)
+	ctx := context.Background()
+	email := "tester.private@example.test"
+	u, err := d.st.EnsureUser(ctx, store.Identity{ID: uuid.New(), Email: email, Provider: "apple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := func(s string) *string { return &s }
+	fid, err := d.st.AddFeedback(ctx, u.ID, model.FeedbackPost{Message: "Sleep stages are empty", AppVersion: str("0.9.0"),
+		Build: str("41"), DeviceModel: str("iPhone17,1"), OSVersion: str("26.1"), RequestIDs: []string{"01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c"},
+		Diagnostics: json.RawMessage(`{"hrv_ms": 61.7}`)}, "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := d.token(d.op, nil)
+
+	// The fields only the key sees (health-derived data quality, device, consent, feedback counts).
+	droppedUser := []string{"days_scored_14d", "nights_with_stages_14d", "days_with_hrv_14d", "calibrating", "sources", "max_hr_source",
+		"consent_version", "app_version", "os_version", "open_feedback", "dup"}
+	droppedFeedback := []string{"diagnostics", "request_ids", "device_model", "os_version", "app_version", "build", "user_id"}
+
+	asKey := do(d.srv, "GET", "/v1/admin/users?emails=1", testAdminKey, "")
+	asTok := do(d.srv, "GET", "/v1/admin/users?emails=1", tok, "")
+	if asKey.status != 200 || asTok.status != 200 {
+		t.Fatalf("%d %d", asKey.status, asTok.status)
+	}
+	for _, k := range droppedUser {
+		if !bytes.Contains([]byte(asKey.body), []byte(`"`+k+`"`)) {
+			t.Errorf("the key's users answer has %q", k)
+		}
+		if bytes.Contains([]byte(asTok.body), []byte(`"`+k+`"`)) {
+			t.Errorf("the token's users answer must not carry %q: %s", k, asTok.body)
+		}
+	}
+	// Decoding strictly into the brief type proves there is nothing else in it.
+	var users []model.AdminUserBrief
+	dec := json.NewDecoder(strings.NewReader(asTok.body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&users); err != nil {
+		t.Fatalf("the token's answer is the brief shape and nothing more: %v %s", err, asTok.body)
+	}
+	found := false
+	for _, b := range users {
+		if b.ID == u.ID {
+			found = b.Email != nil && *b.Email == email && b.ShortID == u.ID.String()[:8] && b.Provider != nil && !b.BetaAccess
+		}
+	}
+	if !found {
+		t.Errorf("the brief keeps id, short id, email (asked for), provider and access state: %+v", users)
+	}
+	// Without ?emails=1 the brief has no email at all, as for the key.
+	if a := do(d.srv, "GET", "/v1/admin/users", tok, ""); strings.Contains(a.body, `"email"`) || strings.Contains(a.body, email) {
+		t.Errorf("no email unless asked: %s", a.body)
+	}
+
+	kf := do(d.srv, "GET", "/v1/admin/feedback", testAdminKey, "")
+	tf := do(d.srv, "GET", "/v1/admin/feedback", tok, "")
+	if kf.status != 200 || tf.status != 200 {
+		t.Fatalf("%d %d", kf.status, tf.status)
+	}
+	for _, k := range droppedFeedback {
+		if !bytes.Contains([]byte(kf.body), []byte(`"`+k+`"`)) {
+			t.Errorf("the key's feedback answer has %q", k)
+		}
+		if bytes.Contains([]byte(tf.body), []byte(`"`+k+`"`)) {
+			t.Errorf("the token's feedback answer must not carry %q: %s", k, tf.body)
+		}
+	}
+	for _, leak := range []string{"iPhone17,1", "61.7", "01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c", u.ID.String()} {
+		if strings.Contains(tf.body, leak) {
+			t.Errorf("the token's feedback answer leaks %q: %s", leak, tf.body)
+		}
+	}
+	var fb []model.FeedbackBrief
+	dec = json.NewDecoder(strings.NewReader(tf.body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&fb); err != nil || len(fb) != 1 || fb[0].ID != fid || fb[0].Message != "Sleep stages are empty" ||
+		fb[0].Category != "bug" || fb[0].UserShortID != u.ID.String()[:8] || fb[0].ResolvedAt != nil {
+		t.Fatalf("the brief keeps id, short user ref, category, message, times: %v %+v", err, fb)
+	}
+	// The key's answers decode into the whole types, unchanged.
+	var whole []model.Feedback
+	if err := json.Unmarshal([]byte(kf.body), &whole); err != nil || len(whole) != 1 || whole[0].DeviceModel == nil || whole[0].Diagnostics == nil {
+		t.Errorf("the key's feedback is whole: %v %+v", err, whole)
+	}
+	// An actor-less call (never through the chain) gets the projection too.
+	if wholeView(httptest.NewRequest(http.MethodGet, "/v1/admin/users", nil)) {
+		t.Error("an unknown actor must not get the whole view")
+	}
+}
+
+// A refusal of a real operator for want of a fresh second factor is audited: who, which route, 403, no
+// details; the rows are bounded; a stranger's refusal writes none.
+func TestAdminAuditsMFARefusals(t *testing.T) {
+	d := newAdminDB(t)
+	aal1 := d.token(d.op, func(c jwt.MapClaims) { c["aal"] = "aal1"; delete(c, "amr") })
+	stale := d.token(d.op, func(c jwt.MapClaims) {
+		c["amr"] = []map[string]any{{"method": "totp", "timestamp": time.Now().Add(-30 * time.Hour).Unix()}}
+	})
+	// Strangers: no row, no claim, no allow-list entry. Nothing is written for them.
+	for _, b := range []string{"garbage", d.token(d.noRow, func(c jwt.MapClaims) { c["aal"] = "aal1" }), d.jwks.sign(t, appClaims(uuid.New()))} {
+		if a := do(d.srv, "GET", "/v1/admin/invites", b, ""); a.status != 401 {
+			t.Fatalf("%d", a.status)
+		}
+	}
+	if rows := d.audit(); len(rows) != 0 {
+		t.Fatalf("a refused stranger is not audited: %+v", rows)
+	}
+	if a := do(d.srv, "DELETE", "/v1/admin/invites/RYFT-2222-2222", aal1, ""); a.status != 403 || a.code() != model.CodeMFARequired {
+		t.Fatalf("%d %s", a.status, a.body)
+	}
+	if a := do(d.srv, "PUT", "/v1/admin/flags/zz.x", stale, `{}`); a.status != 403 || a.code() != model.CodeMFARequired {
+		t.Fatalf("%d %s", a.status, a.body)
+	}
+	rows := d.audit()
+	if len(rows) != 2 {
+		t.Fatalf("two refusals, two rows: %+v", rows)
+	}
+	for i, want := range []string{"PUT /v1/admin/flags/{key}", "DELETE /v1/admin/invites/{code}"} { // newest first
+		r := rows[i]
+		if r.Action != want || r.Status != 403 || r.Actor.Kind != "user" || r.Actor.ID == nil || *r.Actor.ID != d.op.String() ||
+			r.KeyFingerprint != "" || string(r.Details) != "{}" || r.RequestID == "" {
+			t.Errorf("row %d: %+v (details %s), want %s", i, r, r.Details, want)
+		}
+	}
+	// A stale session that keeps retrying writes exactly the burst of 3 rows per operator and pod (two are
+	// already there), however often it retries.
+	for i := 0; i < 20; i++ {
+		do(d.srv, "GET", "/v1/admin/invites", aal1, "")
+	}
+	byActor := func() map[string]int {
+		n := map[string]int{}
+		for _, r := range d.audit() {
+			if r.Actor.ID != nil {
+				n[*r.Actor.ID]++
+			}
+		}
+		return n
+	}
+	if n := byActor(); n[d.op.String()] != 3 || len(n) != 1 {
+		t.Errorf("after 22 refusals of one operator: %v, want exactly 3 rows for it", n)
+	}
+	// A second operator has a bucket of its own: its refusal is audited while the first is rate-limited.
+	aal1b := d.token(d.op2, func(c jwt.MapClaims) { c["aal"] = "aal1"; delete(c, "amr") })
+	if a := do(d.srv, "GET", "/v1/admin/users", aal1b, ""); a.status != 403 || a.code() != model.CodeMFARequired {
+		t.Fatalf("%d %s", a.status, a.body)
+	}
+	if n := byActor(); n[d.op.String()] != 3 || n[d.op2.String()] != 1 {
+		t.Errorf("the second operator's refusal is audited and the first stays at 3: %v", n)
+	}
+}
+
+// Nothing is registered on the admin mux except through the classified table (adminRoute.tokenOK, zero value
+// key-only), apart from the catch-all that mounts the chain. A route added by a direct HandleFunc would reach
+// a token without anyone having classified it.
+//
+// The scan's limit: it sees a Handle or HandleFunc call whose first argument is a string literal. A pattern
+// built from a constant or a variable is not seen (adminauth.go's own registration of the table, which
+// passes r.pattern, is the one such call and is meant to be). Review a new Handle or HandleFunc on an admin
+// mux by eye.
+func TestAdminRoutesAreOnlyRegisteredThroughTheTable(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	seenCatchAll := false
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			pattern, _ := strconv.Unquote(lit.Value)
+			if !strings.Contains(pattern, "/v1/admin") {
+				return true
+			}
+			if pattern == "/v1/admin/" {
+				seenCatchAll = true
+				return true
+			}
+			t.Errorf("%s: %s registers %q directly: put an admin route in admin.routes() with its class", fset.Position(call.Pos()), sel.Sel.Name, pattern)
+			return true
+		})
+	}
+	if !seenCatchAll {
+		t.Error("the scan found no /v1/admin/ registration at all: it is broken")
+	}
+}
+
+// A malformed ADMIN_WEB_ORIGINS must stop the api before it waits for any dependency: LoadAdmin is called
+// in main before db.Open, eventbus.Open and auth.FromConfig.
+func TestMainLoadsAdminConfigBeforeDependencies(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos := map[string]token.Pos{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if fn, ok := n.(*ast.FuncDecl); ok && fn.Name.Name != "main" {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				name := id.Name + "." + sel.Sel.Name
+				if _, seen := pos[name]; !seen {
+					pos[name] = call.Pos()
+				}
+			}
+		}
+		return true
+	})
+	admin, ok := pos["config.LoadAdmin"]
+	if !ok {
+		t.Fatal("main does not call config.LoadAdmin")
+	}
+	for _, later := range []string{"db.Open", "eventbus.Open", "auth.FromConfig"} {
+		p, ok := pos[later]
+		if !ok {
+			t.Fatalf("main does not call %s: the check is stale", later)
+		}
+		if admin > p {
+			t.Errorf("config.LoadAdmin must come before %s in main, so a malformed value fails before any dependency wait", later)
+		}
+	}
+}
+
+// The admin series exist at 0 as soon as the admin chain is built: increase() of a counter born at 1 shows
+// nothing, so AdminWebUsed would miss the first use of a pod's life. The metrics are process-wide, so the
+// check runs in a fresh process (this test binary, running only TestAdminSeriesChild) where nothing has
+// touched them before.
+func TestAdminSeriesExistAtZero(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAdminSeriesChild$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), "RYFT_ADMIN_SERIES_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("a fresh api process does not export the admin series at 0:\n%s", out)
+	}
+	// "no tests to run" exits 0: require that the child really ran and passed.
+	if !strings.Contains(string(out), "--- PASS: TestAdminSeriesChild") {
+		t.Fatalf("the child test did not run (renamed?):\n%s", out)
+	}
+}
+
+func TestAdminSeriesChild(t *testing.T) {
+	if os.Getenv("RYFT_ADMIN_SERIES_CHILD") != "1" {
+		t.Skip("runs inside TestAdminSeriesExistAtZero")
+	}
+	adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Accounts: newFakeAccounts(), Timeout: time.Second})
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]float64{}
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				have[mf.GetName()+"{"+l.GetName()+"="+l.GetValue()+"}"] = m.GetCounter().GetValue()
+			}
+		}
+	}
+	for _, series := range []string{
+		"ryft_admin_authorized_total{actor=key}", "ryft_admin_authorized_total{actor=user}",
+		"ryft_admin_requests_total{result=ok}", "ryft_admin_requests_total{result=invalid}", "ryft_admin_requests_total{result=error}",
+		"ryft_admin_requests_total{result=unauthorized}", "ryft_admin_requests_total{result=mfa_required}",
+		"ryft_admin_requests_total{result=forbidden}",
+	} {
+		if v, ok := have[series]; !ok || v != 0 {
+			t.Errorf("%s: present %v, value %v, want present at 0", series, ok, v)
+		}
+	}
+}

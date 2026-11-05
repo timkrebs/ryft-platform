@@ -32,6 +32,26 @@ type AdminUser struct {
 	Duplicates int `json:"dup"`
 }
 
+// AdminUserBrief is what an operator's Supabase token gets of an AdminUser in GET /v1/admin/users: the
+// account and its access state, none of the health-derived data-quality fields (days scored, nights
+// with stages, days with HRV, calibrating, sources, max-HR source), device fields, consent or
+// feedback counts. The admin key gets the whole AdminUser. The projection is made on the server.
+type AdminUserBrief struct {
+	ID         uuid.UUID  `json:"id"`
+	ShortID    string     `json:"short_id"`
+	CreatedAt  time.Time  `json:"created_at"`
+	Provider   *string    `json:"provider"`
+	Email      *string    `json:"email,omitempty"` // only with ?emails=1
+	BetaAccess bool       `json:"beta_access"`
+	LastSyncAt *time.Time `json:"last_sync_at"`
+}
+
+// Brief is the token caller's view of u.
+func (u AdminUser) Brief() AdminUserBrief {
+	return AdminUserBrief{ID: u.ID, ShortID: u.ShortID, CreatedAt: u.CreatedAt, Provider: u.Provider, Email: u.Email,
+		BetaAccess: u.BetaAccess, LastSyncAt: u.LastSyncAt}
+}
+
 // AdminUserDetail is GET /v1/admin/users/{id}: the account, its devices, its
 // data and other accounts on its devices (D89). Emails are masked unless asked.
 type AdminUserDetail struct {
@@ -111,11 +131,29 @@ type AdminDuplicate struct {
 	NewestRecord *time.Time `json:"newest_record"`
 }
 
+// Actor kinds, a closed enum.
+const (
+	ActorKey  = "key"  // a call with ADMIN_API_KEY; ID is the key's fingerprint
+	ActorUser = "user" // a call with an admin's Supabase token; ID is the user id
+)
+
+// CodeMFARequired is the 403 on /v1/admin/* only, for an allow-listed admin whose token has no second
+// factor or one older than 12 hours. Operator surface only: the app never calls these routes and
+// never receives it; the operator's page runs a TOTP challenge and sends again (D156).
+const CodeMFARequired = "mfa_required"
+
+// Actor is who made an admin call.
+type Actor struct {
+	Kind string  `json:"kind"` // ActorKey or ActorUser
+	ID   *string `json:"id"`   // the key's fingerprint or the user id
+}
+
 // AuditRecord is one admin call as GET /v1/admin/audit shows it.
 type AuditRecord struct {
 	ID             int64           `json:"id"`
 	At             time.Time       `json:"at"`
-	KeyFingerprint string          `json:"key_fingerprint"`
+	KeyFingerprint string          `json:"key_fingerprint"` // "" when the actor is a user
+	Actor          Actor           `json:"actor"`
 	Action         string          `json:"action"` // the route pattern
 	TargetUser     *uuid.UUID      `json:"target_user"`
 	Status         int             `json:"status"`

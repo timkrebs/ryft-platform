@@ -49,6 +49,13 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
+	// Also before any connection: a malformed ADMIN_WEB_ORIGINS must fail at once, not behind the
+	// database and broker waits (a test pins that this stays above db.Open).
+	adminCfg, err := config.LoadAdmin()
+	if err != nil {
+		log.Error("admin config", "err", err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -78,11 +85,6 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("auth", "mode", authCfg.Mode)
-	adminKey, err := config.LoadAdmin()
-	if err != nil {
-		log.Error("admin config", "err", err)
-		os.Exit(1)
-	}
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
@@ -97,7 +99,22 @@ func main() {
 	go ob.Run(ctx)
 
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
-		engine: scoring.NewEngine(st, log), beta: beta}
+		engine: scoring.NewEngine(st, log), beta: beta,
+		emails: acct, webURL: adminCfg.PublicWebURL}
+	// Email-bound invites need the Supabase project to confirm emails (D159): read its public setting now
+	// and hourly. Until it is known to be on, bound codes are neither made nor redeemed.
+	var settings autoconfirmSource
+	if acct.admin != nil {
+		settings = acct.admin
+	}
+	guard := newConfirmGuard(settings, log)
+	h.binding = guard
+	if settings == nil {
+		log.Warn("email-bound invites are unavailable: the api has no Supabase admin client (SUPABASE_SERVICE_ROLE_KEY unset, or apikey mode)")
+	}
+	guard.Refresh(ctx)
+	go guard.Run(ctx, time.Hour)
+	go purgeInviteEmailsEvery(ctx, st, log, time.Hour)
 
 	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
@@ -174,11 +191,15 @@ func main() {
 	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(beta.Gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, beta.Gate, h.trainImport))
-	// The operator's routes: ADMIN_API_KEY instead of a user token; absent
-	// without a key.
-	if adminKey != "" {
-		mux.Handle("/v1/admin/", adminRoutes(h, adminKey, readTimeout))
-		log.Info("admin routes enabled")
+	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
+	// Supabase auth: a local apikey stack admits the key alone); absent without a key.
+	if adminCfg.Key != "" {
+		opts := adminOptions{Key: adminCfg.Key, Origins: adminCfg.WebOrigins, Timeout: readTimeout}
+		if authCfg.Mode == config.AuthSupabase {
+			opts.Verifier = verifier
+		}
+		mux.Handle("/v1/admin/", adminRoutes(h, opts))
+		log.Info("admin routes enabled", "token_sign_in", opts.Verifier != nil, "web_origins", len(adminCfg.WebOrigins))
 	} else {
 		mux.HandleFunc("/v1/admin/", httpx.NotFound)
 	}
@@ -228,6 +249,12 @@ type handler struct {
 	accounts *accounts
 	engine   *scoring.Engine // pure scoring with store lookups, for session completion
 	beta     config.Beta
+	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
+	emails inviteEmails
+	// binding says whether email-bound invites work now (the Supabase project confirms emails); nil: they do not.
+	binding bindingGate
+	// webURL is PUBLIC_WEB_URL, the base of an invite link; "" is config.DefaultPublicWebURL.
+	webURL string
 	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
 	// shorten it to make a slow finish fail fast).
 	importFinish time.Duration

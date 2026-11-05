@@ -888,6 +888,155 @@ tests:
             exp_annotations:
               summary: "The admission scrape ryft/admission-bindings of 10.0.3.3:8080 has been down for 15 minutes"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
+  - name: refused admin requests, a scanner
+    interval: 1m
+    input_series:
+      # Two pods refuse 5 a minute each (100 in 10 minutes). Granted requests, a missing second factor and a
+      # key-only route are other results and must not count.
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+5x30' }
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-2"}', values: '0+5x30' }
+      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+100x30' }
+      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+30x30' }
+      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+30x30' }
+    alert_rule_test:
+      - { eval_time: 1m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: refused admin requests, a trickle and other results
+    interval: 1m
+    input_series:
+      # One refusal a minute is exactly 10 in any ten-minute window, under 20 (a 30-minute window would
+      # reach 29). A real operator without a second factor, forbidden routes and granted calls are other
+      # results and must not count, however many (a result filter that is lost or widened fires here).
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+1x30' }
+      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+50x30' }
+      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+50x30' }
+      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+50x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - { eval_time: 30m, alertname: AdminUnauthorized, exp_alerts: [] }
+  # The threshold is "more than 20 in ten minutes". A counter that starts at 0 and jumps inside the window
+  # is not extrapolated (promtool clamps at zero), so 21 and 20 are exactly 21 and 20.
+  - name: 21 refused admin requests in ten minutes fire
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 21' }
+    alert_rule_test:
+      - { eval_time: 9m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - eval_time: 10m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: 20 refused admin requests in ten minutes do not
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 20' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: AdminUnauthorized, exp_alerts: [] }
+  - name: refused admin requests spread over the whole ten minutes fire
+    interval: 1m
+    input_series:
+      # Three a minute: 30 in ten minutes, but only about 15 in the last five (a shorter window misses it).
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+3x12' }
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: a forged key id is not an auth outage
+    interval: 1m
+    input_series:
+      # Anyone can send a token with an unknown key id: the refresh limit answers 503 jwks_refresh_limited,
+      # a retry and not an outage. It must not page.
+      - { series: 'ryft_auth_failures_total{reason="jwks_refresh_limited",pod="api-1"}', values: '0+10x30' }
+      - { series: 'ryft_auth_failures_total{reason="expired",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AuthUnavailable, exp_alerts: [] }
+  - name: signing keys or a lookup unreachable is an auth outage
+    interval: 1m
+    input_series:
+      - { series: 'ryft_auth_failures_total{reason="jwks_unavailable",pod="api-1"}', values: '0+1x30' }
+    alert_rule_test:
+      - { eval_time: 3m, alertname: AuthUnavailable, exp_alerts: [] }
+      - eval_time: 12m
+        alertname: AuthUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+  - name: a failed lookup behind an auth decision is an auth outage (the admin allow-list check counts as internal)
+    interval: 1m
+    input_series:
+      - { series: 'ryft_auth_failures_total{reason="internal",pod="api-2"}', values: '0+1x30' }
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuthUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+  - name: the admin page is used
+    interval: 1m
+    input_series:
+      # A pod that started at 0 (the api creates the series at start) and is used once at 5 minutes. The
+      # key's calls are another actor and do not fire it. A second pod saw nothing.
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x5 1x25' }
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-2"}', values: '0x30' }
+      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 3m, alertname: AdminWebUsed, exp_alerts: [] }
+      - eval_time: 8m
+        alertname: AdminWebUsed
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      # Seven minutes after the use it still fires: a window shorter than ten minutes would have let go.
+      - eval_time: 12m
+        alertname: AdminWebUsed
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      # The window moves on: 10 minutes after the use nothing is left to fire.
+      - { eval_time: 25m, alertname: AdminWebUsed, exp_alerts: [] }
+  - name: the invite email purge keeps failing
+    interval: 10m
+    input_series:
+      # One pod fails every hourly pass for three hours; a second pod is fine.
+      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19' }
+      - { series: 'ryft_invite_email_purge_total{result="ok",pod="api-2"}', values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
+      - eval_time: 150m
+        alertname: InviteEmailPurgeFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+              runbook: "docs/OPERATIONS.md → Beta → A code for one person"
+  - name: one failed purge pass is not an alert
+    interval: 10m
+    input_series:
+      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1' }
+    alert_rule_test:
+      - { eval_time: 150m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
+  - name: the admin page is not used, only the key
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x30' }
+      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AdminWebUsed, exp_alerts: [] }
   - name: admission scrapes, nothing reports the bindings
     interval: 1m
     input_series:

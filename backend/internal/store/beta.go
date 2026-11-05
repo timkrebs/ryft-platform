@@ -4,18 +4,20 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// ErrInvalidCode is an invite redemption refused because the code is unknown,
-// expired or used up. It is one error for all three (answered 422), so a caller
-// cannot probe which codes exist.
+// ErrInvalidCode is an invite redemption refused: the code is unknown, expired, used up, revoked, bound to
+// another email than the account's confirmed one, or already redeemed by this account. It is one error for
+// all of them (answered 422), so a caller cannot probe which codes exist or why one fails.
 var ErrInvalidCode = errors.New("invalid or used code")
 
 // GrantConsent records the user's consent to policyVersion. A current consent
@@ -82,9 +84,108 @@ func newInviteCode() (string, error) {
 	return "RYFT" + string(out), nil
 }
 
-// RedeemInvite gives the user beta access with code. used says whether a use
-// of the code was spent (false for an account that already had access).
-func (s *Store) RedeemInvite(ctx context.Context, userID uuid.UUID, code string) (used bool, err error) {
+// FoldEmail is the form an address is compared in: the ASCII letters lower-cased and nothing else changed, not
+// even whitespace (an address Supabase holds with a space around it is not the stored one). No plus-address or
+// dot folding (both would widen who may redeem a bound code), and no Unicode case folding: the Kelvin sign
+// would otherwise lower-case to an ASCII k and match a mailbox it is not.
+func FoldEmail(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
+// PrintableASCII says whether every byte of s is a visible ASCII character: no space, no control character, no
+// DEL and nothing outside ASCII. It is the byte rule of an address in a bound code, on both sides: the operator's
+// input (ParseInviteEmail) and the email Supabase holds for the account (a different byte string never matches).
+func PrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseInviteEmail validates the address an invite is made for and returns it in the stored form: printable
+// ASCII without spaces, at most 254 characters, one @, a name, and a domain of at least two non-empty labels.
+// It matches the CHECK of beta_invite_codes.email (migration 0033), which is the backstop. The address is
+// never looked up.
+func ParseInviteEmail(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 5 || len(s) > 254 {
+		return "", false
+	}
+	if !PrintableASCII(s) {
+		return "", false
+	}
+	e := FoldEmail(s)
+	name, domain, ok := strings.Cut(e, "@")
+	if !ok || name == "" || strings.Contains(domain, "@") {
+		return "", false
+	}
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	for _, l := range labels {
+		if l == "" {
+			return "", false
+		}
+	}
+	return e, true
+}
+
+// openInvite is the condition for a code that can be redeemed now (used by the lookup and by the
+// statement that spends the use, so the two cannot drift). $1 is the stored code.
+const openInvite = `code = $1 AND revoked_at IS NULL AND uses < max_uses AND (expires_at IS NULL OR expires_at > now())`
+
+// BoundInviteEmail says whether code can be redeemed now and is bound to an email, and to which one. The
+// caller asks Supabase for the account's confirmed email only then, so an unbound code never depends on
+// that lookup and nothing is asked for a code that does not exist. A bound code that is not open reads
+// as ("", false), like an unknown one: RedeemInvite refuses both the same way.
+func (s *Store) BoundInviteEmail(ctx context.Context, code string) (email string, bound bool, err error) {
+	norm := NormalizeInvite(code)
+	if norm == "" {
+		return "", false, nil
+	}
+	var e *string
+	err = s.pool.QueryRow(ctx, `SELECT email FROM beta_invite_codes WHERE `+openInvite, norm).Scan(&e)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case e == nil:
+		return "", false, nil
+	}
+	return *e, true, nil
+}
+
+// spendInvite uses one use of a code for an account and records who: one statement decides, so a use is
+// never spent without its row and two accounts cannot both take the last one (the row lock of the UPDATE
+// serialises them, and READ COMMITTED re-evaluates uses < max_uses and revoked_at for the second).
+// $3 is the account's confirmed email, NULL when it has none: a bound code then never matches.
+const spendInvite = `WITH spent AS (
+	UPDATE beta_invite_codes SET uses = uses + 1
+	WHERE ` + openInvite + `
+	  AND (email IS NULL OR email = $3::text)
+	  AND NOT EXISTS (SELECT 1 FROM beta_invite_uses WHERE code = $1 AND user_id = $2::uuid)
+	RETURNING code)
+INSERT INTO beta_invite_uses (code, user_id) SELECT code, $2::uuid FROM spent RETURNING code`
+
+// RedeemInvite gives the user beta access with code. used says whether a use of the code was spent (false
+// for an account that already had access, which is checked first and spends nothing). verifiedEmail is the
+// email Supabase holds for the account and has confirmed ("" when it has none, it is not confirmed, or
+// Supabase was not asked): a bound code is spent only for the same address, trimmed and lower-cased, with no
+// plus-address or dot folding. Every refusal is ErrInvalidCode.
+func (s *Store) RedeemInvite(ctx context.Context, userID uuid.UUID, code, verifiedEmail string) (used bool, err error) {
+	var verified *string
+	if e := FoldEmail(verifiedEmail); e != "" {
+		verified = &e
+	}
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var has bool
 		if err := tx.QueryRow(ctx, `SELECT beta_access_at IS NOT NULL FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&has); err != nil {
@@ -97,13 +198,16 @@ func (s *Store) RedeemInvite(ctx context.Context, userID uuid.UUID, code string)
 		if norm == "" {
 			return ErrInvalidCode
 		}
-		tag, err := tx.Exec(ctx, `UPDATE beta_invite_codes SET uses = uses + 1
-			WHERE code=$1 AND uses < max_uses AND (expires_at IS NULL OR expires_at > now())`, norm)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
+		var spent string
+		err := tx.QueryRow(ctx, spendInvite, norm, userID, verified).Scan(&spent)
+		var pgErr *pgconn.PgError
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
 			return ErrInvalidCode
+		case errors.As(err, &pgErr) && pgErr.Code == "23505": // the primary key: this account has used the code
+			return ErrInvalidCode
+		case err != nil:
+			return err
 		}
 		used = true
 		_, err = tx.Exec(ctx, `UPDATE users SET beta_access_at = now(), beta_invite_code = $2 WHERE id=$1`, userID, norm)
@@ -112,24 +216,47 @@ func (s *Store) RedeemInvite(ctx context.Context, userID uuid.UUID, code string)
 	return used, err
 }
 
-const inviteColumns = `code, note, max_uses, uses, expires_at, created_at`
+// NewInvite is what CreateInvite stores.
+type NewInvite struct {
+	Note      string
+	MaxUses   int
+	ExpiresAt *time.Time
+	Email     *string // lower-cased and validated by the caller; nil: anyone with the code
+	CreatedBy string  // "key:3fa1c2d9" or "user:<uuid>"
+}
+
+const inviteColumns = `code, note, max_uses, uses, expires_at, created_at, email, created_by, revoked_at`
 
 func scanInvite(r pgx.Row) (model.BetaInvite, error) {
 	var i model.BetaInvite
-	err := r.Scan(&i.Code, &i.Note, &i.MaxUses, &i.Uses, &i.ExpiresAt, &i.CreatedAt)
+	var createdBy string
+	err := r.Scan(&i.Code, &i.Note, &i.MaxUses, &i.Uses, &i.ExpiresAt, &i.CreatedAt, &i.Email, &createdBy, &i.RevokedAt)
 	i.Code = ShowInvite(i.Code)
+	i.CreatedBy = actorFromCreatedBy(createdBy)
+	i.UsesBy = []model.InviteUse{}
 	return i, err
 }
 
+// actorFromCreatedBy reads beta_invite_codes.created_by: "key" (the fingerprint was not kept: no id),
+// "key:3fa1c2d9" or "user:<uuid>".
+func actorFromCreatedBy(s string) model.Actor {
+	kind, id, has := strings.Cut(s, ":")
+	if !has || id == "" {
+		return model.Actor{Kind: kind}
+	}
+	return model.Actor{Kind: kind, ID: &id}
+}
+
 // CreateInvite makes a new code (retrying the rare collision).
-func (s *Store) CreateInvite(ctx context.Context, note string, maxUses int, expiresAt *time.Time) (model.BetaInvite, error) {
+func (s *Store) CreateInvite(ctx context.Context, in NewInvite) (model.BetaInvite, error) {
 	for attempt := 0; ; attempt++ {
 		code, err := newInviteCode()
 		if err != nil {
 			return model.BetaInvite{}, err
 		}
-		inv, err := scanInvite(s.pool.QueryRow(ctx, `INSERT INTO beta_invite_codes (code, note, max_uses, expires_at)
-			VALUES ($1,$2,$3,$4) ON CONFLICT (code) DO NOTHING RETURNING `+inviteColumns, code, note, maxUses, expiresAt))
+		inv, err := scanInvite(s.pool.QueryRow(ctx, `INSERT INTO beta_invite_codes (code, note, max_uses, expires_at, email, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (code) DO NOTHING RETURNING `+inviteColumns,
+			code, in.Note, in.MaxUses, in.ExpiresAt, in.Email, in.CreatedBy))
 		if errors.Is(err, pgx.ErrNoRows) && attempt < 5 {
 			continue
 		}
@@ -137,20 +264,77 @@ func (s *Store) CreateInvite(ctx context.Context, note string, maxUses int, expi
 	}
 }
 
-// Invites lists every code, newest first.
+// Invites lists every code, newest first, each with the accounts that redeemed it (oldest first) and still
+// exist. Emails are as stored; the caller masks them. One snapshot, so a use is never listed without the
+// code's count.
 func (s *Store) Invites(ctx context.Context) ([]model.BetaInvite, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+inviteColumns+` FROM beta_invite_codes ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.BetaInvite, error) { return scanInvite(r) })
+	out := []model.BetaInvite{}
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+inviteColumns+` FROM beta_invite_codes ORDER BY created_at DESC, code`)
+		if err != nil {
+			return err
+		}
+		if out, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.BetaInvite, error) { return scanInvite(r) }); err != nil {
+			return err
+		}
+		at := make(map[string]int, len(out))
+		for k, inv := range out {
+			at[NormalizeInvite(inv.Code)] = k
+		}
+		rows, err = tx.Query(ctx, `SELECT i.code, i.user_id, u.email, i.at FROM beta_invite_uses i JOIN users u ON u.id = i.user_id
+			ORDER BY i.at, i.user_id`)
+		if err != nil {
+			return err
+		}
+		var code string
+		var u model.InviteUse
+		_, err = pgx.ForEachRow(rows, []any{&code, &u.UserID, &u.Email, &u.At}, func() error {
+			if k, ok := at[code]; ok {
+				u.ShortID = u.UserID.String()[:8]
+				u.At = u.At.UTC()
+				out[k].UsesBy = append(out[k].UsesBy, u)
+			}
+			u = model.InviteUse{}
+			return nil
+		})
+		return err
+	})
+	return out, err
 }
 
-// DeleteInvite removes a code (who redeemed it keeps access); ErrNotFound when unknown.
-func (s *Store) DeleteInvite(ctx context.Context, code string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM beta_invite_codes WHERE code=$1`, NormalizeInvite(code))
+// RevokeInvite revokes a code: it stays listed and nobody redeems it any more; accounts that redeemed it
+// keep their access. Idempotent (the first revoke time is kept). It also caps expires_at at the revoke
+// time, so an image from before migration 0033, which reads no revoked_at, refuses the code too.
+// ErrNotFound when the code is unknown.
+func (s *Store) RevokeInvite(ctx context.Context, code string) error {
+	norm := NormalizeInvite(code)
+	if norm == "" {
+		return ErrNotFound
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE beta_invite_codes
+		SET revoked_at = COALESCE(revoked_at, now()),
+		    expires_at = CASE WHEN revoked_at IS NULL THEN LEAST(COALESCE(expires_at, now()), now()) ELSE expires_at END
+		WHERE code = $1`, norm)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return err
+}
+
+// PurgeInviteEmails clears the email and the note of every bound code that has not been redeemable for longer
+// than age (revoked, expired, or used up that long ago): the address of someone who only asked for an invite
+// (and a note that may name them) is not kept for good. Idempotent. A used-up code whose account is gone has
+// no use time left, so its creation time stands in. Clearing is safe: a code that cannot be redeemed cannot
+// be widened by losing its binding. It also sets revoked_at on a code that is not used up, so a purged code
+// stays dead even if someone later edits expires_at in SQL (a used-up code stays used up by itself and keeps
+// its status). The note of an unbound code is the operator's label for a group and is not touched.
+func (s *Store) PurgeInviteEmails(ctx context.Context, age time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE beta_invite_codes c SET email = NULL, note = '',
+		  revoked_at = CASE WHEN c.uses >= c.max_uses THEN c.revoked_at ELSE COALESCE(c.revoked_at, now()) END
+		WHERE c.email IS NOT NULL AND (
+		  c.revoked_at < now() - $1::interval
+		  OR c.expires_at < now() - $1::interval
+		  OR (c.uses >= c.max_uses AND COALESCE((SELECT max(i.at) FROM beta_invite_uses i WHERE i.code = c.code), c.created_at)
+		      < now() - $1::interval))`, fmt.Sprintf("%d seconds", int64(age.Seconds())))
+	return tag.RowsAffected(), err
 }

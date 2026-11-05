@@ -1,0 +1,59 @@
+case lease_taken
+
+== lease taken
+status: 429
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Retry-After: 10
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"code":"import_in_progress","error":"an import is already running","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+pending 
+lease held: true
+
+== metrics moved
+imports/busy +1
+
+== log lines
+http status=429 code=import_in_progress route=POST /v1/train/import
+
+== lease free
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"session","id":"c7d7d7da-4001-5e4f-9069-b0b822f694b8","status":"created"}],"days_touched":["D-3"],"scoring":{"queued_days":["D-3"],"expected_within_sec":32}}
+<eof>
+
+== state of user:a
+stored session session:s origin=import day=D-3 sets=1
+outbox ingested reason=import days=D-3 user=user:a request=#2 session_id_set=false
+pending D-3
+lease held: false
+record exercise:squat e1rm=116.7 from session:s
+record exercise:squat max_reps=5 from session:s
+record exercise:squat max_volume=500 from session:s
+record exercise:squat max_weight=100 from session:s
+
+== metrics moved
+imports/busy +1
+imports/ok +1
+items/session/created +1
+seconds/observations +1
+
+== log lines
+http status=429 code=import_in_progress route=POST /v1/train/import
+train import result=ok plans=0 sessions=1 created=1 unchanged=0 updated=0 rejected=0 days=1 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import

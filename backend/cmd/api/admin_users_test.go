@@ -59,7 +59,7 @@ func TestAdminUserDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "test-admin-key-0123456789abcdef0123456789"
-	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, key, 5*time.Second))
+	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, adminOptions{Key: key, Timeout: 5 * time.Second}))
 	get := func(path string) (int, model.AdminUserDetail) {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.Header.Set("Authorization", "Bearer "+key)

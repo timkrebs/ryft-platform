@@ -83,3 +83,15 @@ condition = "AND"
 paths = ['''(?:^|/)infra/vault/(?:variables\.tf|terraform\.tfvars\.example|tests/[^/]+\.tftest\.hcl)$''']
 regexTarget = "line"
 regexes = ['''^(?:[^A-Za-z0-9+/=]|[A-Za-z0-9+/=]{1,31}[^A-Za-z0-9+/=]|\\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgA{43}\\nA{87}\\n)*-----END PRIVATE KEY-----[^\n]{0,8}$''']
+
+# The admin page's Supabase publishable key (web/config/admin.json). It is public by design:
+# the app binary ships the same key (app/Config/Production.xcconfig), it is meant for clients,
+# and it grants no more than the anon role plus what Row Level Security allows. The service-role
+# key and the legacy JWT secret are different values and stay covered. Only this exact value,
+# in this file, under this rule.
+[[allowlists]]
+description = "Supabase publishable key of the admin page (public by design, also in the app)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)web/config/admin\.json$''']
+regexes = ['''^sb_publishable_naDyZ9ZtrYe_VDcNx62sTw_KzybSx4r$''']

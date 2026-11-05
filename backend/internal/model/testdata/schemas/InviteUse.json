@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "private_relay": {
+      "type": "boolean"
+    },
+    "short_id": {
+      "type": "string"
+    },
+    "user_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "at",
+    "email",
+    "private_relay",
+    "short_id",
+    "user_id"
+  ],
+  "title": "InviteUse",
+  "type": "object"
+}

@@ -15,9 +15,10 @@
 //     (AdminUserDetail, JournalDay, Trend, SyncStateOf) read without one
 //     snapshot. The import writes its outbox row in its own transaction under
 //     publisher "api" (FinishImport).
-//   - Of the 133 exported methods, 106 take the user id first after ctx and scope
+//   - Of the 136 exported methods, 107 take the user id first after ctx and scope
 //     by it. Not every WHERE names it: RedeemInvite matches the global invite by
-//     code, a statement that looks a row up by its own id (ArchiveBehavior,
+//     code, IsAdminAccount looks the id up in the operators' allow-list (admin_accounts,
+//     operator configuration that account deletion does not touch), a statement that looks a row up by its own id (ArchiveBehavior,
 //     UpdateCustomExercise, Enroll) checks ownership around the lookup, and
 //     built-in rows are read with user_id IS NULL OR user_id = $1.
 //   - The service roles' RLS policies admit every row (USING (true), migration
@@ -26,12 +27,12 @@
 //     RESTRICTIVE per source (ryft_scoring may write only ryft-session workouts,
 //     0011; ryft_ingest may not delete them, 0029). anon and authenticated are
 //     kept out by REVOKE ALL, and authenticated sees only its own rows (0007, D28).
-//   - The other 27 take no user id or take another key. Operator and admin:
-//     AdminUsers, Audit, AuditSince, CreateInvite, DeleteInvite, Invites,
+//   - The other 29 take no user id or take another key. Operator and admin:
+//     AdminUsers, Audit, AuditSince, CreateInvite, RevokeInvite, Invites, BoundInviteEmail (the redeem path, by code),
 //     ResolveFeedback, FeedbackSince, ResolveUser, MergeUsers, PutFlag,
 //     DeleteFlag. Timers and reconcilers: ActiveUsers, SyncAges, StaleCandidates,
 //     ResurrectedUsers, PendingAppleRevocations, PendingAuthDeletions,
-//     PruneScoreQueue. One-off commands (rescore, fold-workouts): UserIDs. Keyed
+//     PruneScoreQueue, PurgeInviteEmails. One-off commands (rescore, fold-workouts): UserIDs. Keyed
 //     by a push token: PushDelivered, DropPushToken. Global reads called on user
 //     request paths (api and ingest): Flags (GET /v1/config, the import) and
 //     ExpectedScoreSec. Wiring: Ready, WithImportRules. EnsureUser is

@@ -1864,9 +1864,63 @@ curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=2026-10-21"
 ```bash
 # A code for one person (or max_uses for a group), optionally expiring:
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
-  -d '{"note": "Anna", "max_uses": 1, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
-curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # uses so far
+  -d '{"note": "TestFlight wave 2", "max_uses": 20, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # status and uses so far, emails masked
+curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/invites?emails=1" | jq '.[] | {code, status, email, uses_by}'   # who, with addresses
+# REVOKE (since 2026-11-05 DELETE no longer removes the row): the code stays listed as "revoked", nobody redeems it
+# any more, accounts that used it keep their access. 204 again if it was revoked already; 404 for an unknown code.
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites/RYFT-7K3M-QX9P
+```
+
+**A code for one person (bound to an email).**
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
+  -d '{"note": "Anna", "email": "anna@example.com", "expires_at": "2026-11-19T10:00:00Z"}' | jq '{code, link, expires_at}'
+```
+
+It is single use, **expires** (14 days when `expires_at` is left out, at most 90 days away) and only the account whose
+**Supabase-confirmed** email is that address can redeem it (D159). Use the address the tester signs in with; a Sign
+in with Apple "Hide My Email" address matches only a code made for exactly that relay address, so leave `email` out
+when you do not have it. Everyone else gets the same `422 "invalid or used code"` as for a wrong code, and a tester
+whose account lookup fails at Supabase gets `503` and sends again (a log line `invite email lookup failed`; unbound
+codes never depend on it). The address and the note are cleared 30 days after the code stopped being redeemable (D161;
+`ryft_invite_email_purge_total`, alert `InviteEmailPurgeFailing`); a person's name does not belong in the note of an
+unbound code, which is never cleared and has no hard delete (SQL: `UPDATE beta_invite_codes SET note = '' WHERE
+code = 'RYFT…'`).
+
+**Before the first bound code (security-critical, two checks).**
+
+1. **Supabase → Authentication → Sign In / Providers → Email: *Confirm email* ON and *Secure email change* ON**
+   (SUPABASE.md → checklist 3). With *Confirm email* off, Supabase marks a sign-up's address confirmed at once, and
+   anyone who has a leaked link could sign up with the tester's address and redeem the code. Record the state you saw
+   and the date in STATUS.md.
+2. **The api agrees:** `ryft_invite_binding_available` is 1 and the first `invite binding` line after the deploy says
+   `state: ok` (`kubectl -n ryft-api logs -l app=api | grep '"invite binding"'`, read-only). The api reads the
+   project's public setting `mailer_autoconfirm` at start and every hour, and while it is true, unreadable or the api
+   has no Supabase admin key, `POST /v1/admin/invites` with an `email` answers `422` with the reason and a bound code
+   cannot be redeemed (the same single `422`; `503` while the setting is unreadable). That is a safety net, not the
+   check: do check 1 yourself.
+3. **The privacy text names the stored address** (PRIVACY_POLICY_VERSION, a separate PR, decision U3): until it is
+   published, no bound codes in production.
+
+**Rollback of 0033** (re-pinning the images from before). **First, before the images are re-pinned, in the SQL
+editor as owner:** the old image reads no `email`, so every open bound code would otherwise be a code anyone can
+use. This revokes them (the old image refuses a revoked code through `expires_at`):
+
+```sql
+UPDATE beta_invite_codes SET revoked_at = now(), expires_at = LEAST(COALESCE(expires_at, now()), now())
+WHERE email IS NOT NULL AND revoked_at IS NULL;
+```
+
+Then re-pin. Revoked codes stay refused, and redemptions in the window get no `beta_invite_uses` row. After rolling
+forward, make new bound codes (the revoked ones stay revoked) and add the missing rows (safe to repeat):
+
+```sql
+INSERT INTO beta_invite_uses (code, user_id, at)
+SELECT u.beta_invite_code, u.id, COALESCE(u.beta_access_at, now())
+FROM users u JOIN beta_invite_codes c ON c.code = u.beta_invite_code
+ON CONFLICT DO NOTHING;
 ```
 
 **Whose data is broken.** `scripts/beta_report.sh` prints one line per tester from
@@ -1890,6 +1944,112 @@ from the environment, else `terraform -chdir=infra/vault output -raw admin_api_k
 Vault (`VAULT_NAMESPACE=admin/ryft/api vault kv get -mount=kv -field=ADMIN_API_KEY
 config`); they say which one they used, and what to log in to when none works. `API_URL`
 defaults to production.
+
+### Admin sign-in
+
+`/v1/admin/*` takes two bearers (docs/API.md → Admin routes): the key above (scripts, smoke;
+compared first, in constant time, independent of Supabase), or the Supabase access token of
+an operator, for the operator's web page. A token is accepted only when **all** of these
+hold: `app_metadata.role` is `"admin"` (never the top-level `role`, never `user_metadata`,
+which the user can write), the user has a row in `admin_accounts` and no tombstone, and the
+token is `aal2` with a TOTP at most 12 hours old. Everything else is one identical `401`
+(the reason is only in the log: `admin auth rejected`, `reason` and the access line's `code`).
+One exception, plainly: a token whose key id the api does not know, while the signing keys were
+fetched less than a minute ago, answers `503` (`jwks_refresh_limited`, `Retry-After: 5`), not `401`.
+Anyone can send such a token, so a `503` on an admin route can be provoked and is not by itself an
+outage. A real operator without a fresh second factor gets `403 mfa_required` (and an audit row);
+an operator's token on merge, flag writes, user detail or resync-hint gets `403` (key-only routes,
+audited). The token's answers for the users list and the feedback are a projection without the
+health-derived, device and diagnostic fields (API.md); the key gets the whole answers.
+
+**What changes on deploy, and for whom.** The token path admits nobody until an `admin_accounts`
+row exists *and* the account has the role, and CORS is off while `ADMIN_WEB_ORIGINS` is empty.
+For key callers (scripts, `make smoke-prod`) three small things change: more than 10 requests a
+second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
+and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
+SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
+row exists so that revoking takes effect at once, not so that two parties must agree. **Before the
+first row, run `make alerts-apply`** (the user's step; it needs `GRAFANA_PROM_URL`,
+`GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN`): alert rules reach Grafana only through that manual
+apply, and `AdminWebUsed` is how a use you did not make is noticed (the lost-phone detection), so
+the token path must not be opened before it is loaded.
+
+```sql
+update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
+insert into public.admin_accounts (user_id, note) values ('<admin uuid>', 'operator') on conflict do nothing;
+```
+
+A role set this way appears only in tokens issued after the update: sign in again on the page.
+The api only reads `admin_accounts`; it is operator configuration, not user data (account
+deletion does not touch it; a deleted account's tombstone refuses the row). Which pages may
+read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
+list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page can, scripts are
+unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
+test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
+second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
+never logged; the map is bounded only by evicting a bucket idle for 10 minutes and needs a cap
+before IPv6 clients arrive), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
+the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
+
+**Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
+a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
+guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sign-in attacks.
+`AdminWebUsed` (info): the page was used; if it was not you, act (below). A real operator refused
+for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
+audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
+is Supabase's keys or the database being unreachable (`Retry-After: 5`, `AuthUnavailable` pages for
+it) or a forged key id (above); the key keeps working. CloudWatch Logs Insights, log group
+`/ryft/ryft-prod-euc1/containers` (OBSERVABILITY → In CloudWatch):
+
+```text
+# refused bearers, by reason (missing, not_a_token, expired, signature, unknown_key, not_admin, not_allowed, …)
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth rejected"
+| stats count() by data.reason, bin(10m)
+
+# who passed with a token (the page was used): every admin line names its actor; the access line
+# carries the operator's user_id and the route
+fields @timestamp, data.admin_actor, data.msg, data.route
+| filter data.service = "api" and data.admin_actor like /^user:/
+
+# a real operator without a fresh second factor (a stolen password with no second factor looks like this)
+fields @timestamp, data.admin_actor, data.reason
+| filter data.service = "api" and data.msg = "admin second factor required"
+
+# signing keys or the allow-list check unreachable
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth unavailable"
+
+# the audit row could not be written (the call was answered; GET /v1/admin/audit lacks it)
+fields @timestamp, data.action, data.err
+| filter data.service = "api" and data.msg = "admin audit write failed"
+
+# the api refused to start over its admin settings (a malformed ADMIN_WEB_ORIGINS)
+fields @timestamp, data.err
+| filter data.service = "api" and data.msg = "admin config"
+```
+
+**The api crash-loops after an `ADMIN_WEB_ORIGINS` change** (the `admin config` line above, `level`
+ERROR): revert the `config.env` line in git (a PR); the new ConfigMap hash rolls the api again. Pods
+that are still ready keep serving while the new ones fail, so check `argocd app get` and the
+rollout before anything else. **A flood of `429`s on `/v1/admin/*`:** look at
+`ryft_rate_limited_total{class="admin_ip"}` and `AdminUnauthorized`; the limit already caps what one
+address costs (no token check, no database call). If it persists, a Traefik IP deny is a change to
+the Argo-managed Middleware in git; nothing does it automatically.
+
+**Lost phone, or any doubt about the admin account** (immediate, in this order):
+
+1. SQL editor, as owner: `delete from admin_accounts where user_id = '<admin uuid>';` — takes
+   effect on the next request, whatever the token's lifetime.
+2. Supabase → Authentication → Users → the admin account: *Ban user*, so no new token is issued
+   (verify in the dashboard that the ban is shown; tokens already issued live out their hour, which
+   is why step 1 comes first). Ending its sessions as the owner is `delete from auth.sessions
+   where user_id = '<admin uuid>';` — check the table and the column in the dashboard's schema view
+   first. Then remove the MFA factor and change the password (also in the dashboard).
+3. What happened since: `curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=<day of the loss>" | jq '.[] | select(.actor.kind=="user")'`
+   (the rows with status `403` and a user actor are refusals for want of a second factor).
+4. To restore: lift the ban, enrol again from a trusted device, sign in again (a new `app_metadata.role` only
+   appears in tokens issued after the update), then insert the row again.
 
 **Tracing a request** a tester reports by its id:
 
@@ -2176,7 +2336,10 @@ restarts both collectors when it changes. It is never passed on a command line:
      `ryft-.*`; RYFT's logs go to CloudWatch.
    - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
      point (email and the Grafana mobile app) and a notification policy for
-     `severity` `critical`, `warning` and `info`.
+     `severity` `critical`, `warning` and `info`. If the load fails with
+     `per-user rules per rule group limit (limit: 20 actual: N) exceeded`, a group holds more
+     than the stack's 20 rules and nothing was loaded: split it in `ryft.yaml` (OBSERVABILITY
+     → Alerts; `make alerts-check` catches this before the load) and run it again from main.
    - Create the external site checks (**Synthetic Monitoring, once**, below).
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      single `alloy` collector before 2026-10-19).
@@ -2260,7 +2423,7 @@ comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
 
 ```bash
 make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
-make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
+make alerts-apply          # both rule files: ryft (groups ryft, ryft-pipeline, ryft-ops, ryft-admission) and ryft-admission (the committed actions)
 ```
 
 Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMissing` fires

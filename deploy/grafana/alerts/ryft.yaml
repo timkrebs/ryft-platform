@@ -5,6 +5,10 @@
 # notification policy for severity critical, warning and info. Expressions, thresholds
 # and what to do: docs/OBSERVABILITY.md → Alerts. Labels namespace and pod come from the
 # collector's pod discovery.
+# Grafana Cloud takes at most 20 rules per group (alerts and recording rules); keep a group
+# at 18 or fewer and start a new one by theme (scripts/check_rule_groups.sh fails above 20;
+# OBSERVABILITY.md → Alerts). A load replaces each named group whole, and a group not in the
+# file stays live: rename or drop one only with its live copy in mind.
 namespace: ryft
 groups:
   - name: ryft
@@ -90,7 +94,10 @@ groups:
         for: 10m
         labels: { severity: warning }
       - alert: AuthUnavailable
-        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_.*|internal"}[5m])) > 0
+        # The signing keys or a user/allow-list lookup cannot be reached. jwks_refresh_limited is left out:
+        # it is a token with an unknown key id inside the refresh limit (a rotation, or a forged kid that
+        # anyone can send), retryable and not an outage.
+        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[5m])) > 0
         for: 5m
         labels: { severity: critical }
       - alert: DatabaseDown
@@ -111,6 +118,8 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 14 days" }
 
+  - name: ryft-pipeline
+    rules:
       # ---- events -----------------------------------------------------------------
       - alert: DeadLetters
         # An event could not be handled and was dead-lettered (OPERATIONS.md → RabbitMQ).
@@ -195,6 +204,8 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "No RYFT sync for over six hours" }
 
+  - name: ryft-ops
+    rules:
       # ---- push -------------------------------------------------------------------
       - alert: APNsFailing
         # More than 10 % of APNs requests failed over 30 minutes (at least 5 requests).
@@ -227,6 +238,42 @@ groups:
         expr: sum(increase(ryft_feedback_received_total[10m])) > 0
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
+      # The admin alerts (D158): no personal data in a label, and they only reach Grafana through
+      # `make alerts-apply`, which comes before the first admin_accounts row (OPERATIONS.md -> Beta ->
+      # Admin sign-in).
+      - alert: AdminUnauthorized
+        # More than 20 /v1/admin requests with a bad bearer in 10 minutes: a scanner, a guessed key, a
+        # stale or foreign token. The api never sees a guessed password (that is Supabase Auth: Supabase ->
+        # Logs -> Auth). The answer is the same 401 for every reason; the reason is the api's "admin auth
+        # rejected" log line and the access line's code. The per-address limit
+        # (ryft_rate_limited_total{class="admin_ip"}) caps what one address can send. A real operator
+        # refused for want of a fresh second factor (result="mfa_required") is in neither alert, on
+        # purpose: it is in the audit and the log (OPERATIONS.md -> Beta -> Admin sign-in).
+        expr: sum(increase(ryft_admin_requests_total{result="unauthorized"}[10m])) > 20
+        labels: { severity: warning }
+        annotations:
+          summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+          runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+      - alert: AdminWebUsed
+        # The operator's page (an admin Supabase token) was used. Who is in GET /v1/admin/audit, not in a
+        # label: a user id in a metric is personal data in Grafana Cloud. A use you did not make is the signal.
+        expr: sum(increase(ryft_admin_authorized_total{actor="user"}[10m])) > 0
+        labels: { severity: info }
+        annotations:
+          summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+          runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      - alert: InviteEmailPurgeFailing
+        # The hourly job that clears the email (and note) of an invite code 30 days after it stopped being
+        # redeemable (D161) keeps failing: three failed passes in three hours is one pod failing every time
+        # (each api pod runs it). The address of someone who only asked for an invite then stays longer than
+        # the privacy text says. Nothing user-visible breaks, so a warning. The api logs "invite email purge
+        # failed" with the cause. Like the admin alerts it reaches Grafana only through the user's manual
+        # alerts apply.
+        expr: sum(increase(ryft_invite_email_purge_total{result="error"}[3h])) >= 3
+        labels: { severity: warning }
+        annotations:
+          summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+          runbook: "docs/OPERATIONS.md → Beta → A code for one person"
 
       # ---- deploys (Argo CD, D94) ---------------------------------------------------
       - alert: ArgoAppDegraded

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -102,8 +103,16 @@ type supabaseClaims struct {
 	Email       string `json:"email"`
 	Role        string `json:"role"`
 	IsAnonymous bool   `json:"is_anonymous"`
+	// aal and amr are the session's assurance level and authentication methods. They stay raw and
+	// are read leniently (claims.go): a typed field would make one unexpected shape a parse error,
+	// and with it a 401 for every app user.
+	AAL         json.RawMessage `json:"aal"`
+	AMR         json.RawMessage `json:"amr"`
 	AppMetadata struct {
 		Provider string `json:"provider"`
+		// Role is the operator role. app_metadata is writable only with the service key; the
+		// top-level role and user_metadata (which the user can write) never count.
+		Role json.RawMessage `json:"role"`
 	} `json:"app_metadata"`
 	UserMetadata struct {
 		FullName   string `json:"full_name"`
@@ -148,6 +157,9 @@ func (s *Supabase) Verify(ctx context.Context, token string) (Principal, error) 
 		Provider:     clip(c.AppMetadata.Provider, 64),
 		Name:         clip(strings.TrimSpace(name), 200),
 		AppleSubject: appleSub,
+		AppRole:      parseAppRole(c.AppMetadata.Role),
+		AAL:          parseAAL(c.AAL),
+		MFAAt:        parseTOTPAt(c.AMR),
 	}, nil
 }
 
