@@ -230,6 +230,9 @@ groups:
         expr: sum(increase(ryft_feedback_received_total[10m])) > 0
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
+      # The admin alerts (D158): no personal data in a label, and they only reach Grafana through
+      # `make alerts-apply`, which comes before the first admin_accounts row (OPERATIONS.md -> Beta ->
+      # Admin sign-in).
       - alert: AdminUnauthorized
         # More than 20 /v1/admin requests with a bad bearer in 10 minutes: a scanner, a guessed key, a
         # stale or foreign token. The api never sees a guessed password (that is Supabase Auth: Supabase ->

@@ -907,16 +907,53 @@ tests:
             exp_annotations:
               summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
               runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
-  - name: refused admin requests, just under the threshold
+  - name: refused admin requests, a trickle and other results
     interval: 1m
     input_series:
-      # One refusal a minute and a second pod with one in ten minutes: about 11 in a window, under 20.
+      # One refusal a minute is exactly 10 in any ten-minute window, under 20 (a 30-minute window would
+      # reach 29). A real operator without a second factor, forbidden routes and granted calls are other
+      # results and must not count, however many (a result filter that is lost or widened fires here).
       - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+1x30' }
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-2"}', values: '0x9 1x21' }
       - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+50x30' }
+      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+50x30' }
+      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+50x30' }
     alert_rule_test:
       - { eval_time: 20m, alertname: AdminUnauthorized, exp_alerts: [] }
       - { eval_time: 30m, alertname: AdminUnauthorized, exp_alerts: [] }
+  # The threshold is "more than 20 in ten minutes". A counter that starts at 0 and jumps inside the window
+  # is not extrapolated (promtool clamps at zero), so 21 and 20 are exactly 21 and 20.
+  - name: 21 refused admin requests in ten minutes fire
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 21' }
+    alert_rule_test:
+      - { eval_time: 9m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - eval_time: 10m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: 20 refused admin requests in ten minutes do not
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 20' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: AdminUnauthorized, exp_alerts: [] }
+  - name: refused admin requests spread over the whole ten minutes fire
+    interval: 1m
+    input_series:
+      # Three a minute: 30 in ten minutes, but only about 15 in the last five (a shorter window misses it).
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+3x12' }
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
   - name: a forged key id is not an auth outage
     interval: 1m
     input_series:
@@ -956,6 +993,14 @@ tests:
     alert_rule_test:
       - { eval_time: 3m, alertname: AdminWebUsed, exp_alerts: [] }
       - eval_time: 8m
+        alertname: AdminWebUsed
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      # Seven minutes after the use it still fires: a window shorter than ten minutes would have let go.
+      - eval_time: 12m
         alertname: AdminWebUsed
         exp_alerts:
           - exp_labels: { severity: info }

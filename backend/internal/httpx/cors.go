@@ -19,6 +19,8 @@ import (
 //   - Any other request passes on; with an allowed Origin its answer gains Allow-Origin and
 //     Expose-Headers. Every answer carries Vary: Origin.
 //   - Credentials are never allowed.
+//
+// See docs/API.md → Admin routes (CORS); D154.
 type CORS struct {
 	Origins []string
 	Methods []string      // allowed request methods, e.g. GET, POST, DELETE

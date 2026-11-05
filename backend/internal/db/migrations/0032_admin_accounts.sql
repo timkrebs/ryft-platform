@@ -1,4 +1,4 @@
--- Admin sign-in by Supabase token (docs/work/2026-11-05-admin-web/design.md §3.3, §4.4; D-A, D-E).
+-- Admin sign-in by Supabase token (docs/work/2026-11-05-admin-web/design.md §3.3, §4.4; D153, D157).
 -- Additive: one new table and one nullable column with a CHECK that every row an image from before
 -- this migration writes already satisfies; nothing is renamed, retyped or dropped, so rollback is
 -- re-pinning the old images (the table and the column stay and nothing reads them).

@@ -28,7 +28,7 @@ type Principal struct {
 	AppleSubject string
 
 	// What the token says about operator access. It never grants anything on its own: cmd/api's
-	// admin check also needs an admin_accounts row and a recent second factor (D-A). All three
+	// admin check also needs an admin_accounts row and a recent second factor (D153). All three
 	// are read leniently and stay empty when a claim has an unexpected shape (claims.go).
 	AppRole string    // app_metadata.role when it is a JSON string of at most 32 bytes; else ""
 	AAL     string    // exactly "aal1" or "aal2"; anything else ""

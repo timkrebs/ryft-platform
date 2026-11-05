@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -250,6 +252,47 @@ func TestMainLoadsAdminConfigBeforeDependencies(t *testing.T) {
 		}
 		if admin > p {
 			t.Errorf("config.LoadAdmin must come before %s in main, so a malformed value fails before any dependency wait", later)
+		}
+	}
+}
+
+// The admin series exist at 0 as soon as the admin chain is built: increase() of a counter born at 1 shows
+// nothing, so AdminWebUsed would miss the first use of a pod's life. The metrics are process-wide, so the
+// check runs in a fresh process (this test binary, running only TestAdminSeriesChild) where nothing has
+// touched them before.
+func TestAdminSeriesExistAtZero(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAdminSeriesChild$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "RYFT_ADMIN_SERIES_CHILD=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("a fresh api process does not export the admin series at 0:\n%s", out)
+	}
+}
+
+func TestAdminSeriesChild(t *testing.T) {
+	if os.Getenv("RYFT_ADMIN_SERIES_CHILD") != "1" {
+		t.Skip("runs inside TestAdminSeriesExistAtZero")
+	}
+	adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Accounts: newFakeAccounts(), Timeout: time.Second})
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]float64{}
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				have[mf.GetName()+"{"+l.GetName()+"="+l.GetValue()+"}"] = m.GetCounter().GetValue()
+			}
+		}
+	}
+	for _, series := range []string{
+		"ryft_admin_authorized_total{actor=key}", "ryft_admin_authorized_total{actor=user}",
+		"ryft_admin_requests_total{result=ok}", "ryft_admin_requests_total{result=invalid}", "ryft_admin_requests_total{result=error}",
+		"ryft_admin_requests_total{result=unauthorized}", "ryft_admin_requests_total{result=mfa_required}",
+		"ryft_admin_requests_total{result=forbidden}",
+	} {
+		if v, ok := have[series]; !ok || v != 0 {
+			t.Errorf("%s: present %v, value %v, want present at 0", series, ok, v)
 		}
 	}
 }

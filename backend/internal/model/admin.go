@@ -139,7 +139,7 @@ const (
 
 // CodeMFARequired is the 403 on /v1/admin/* only, for an allow-listed admin whose token has no second
 // factor or one older than 12 hours. Operator surface only: the app never calls these routes and
-// never receives it; the operator's page runs a TOTP challenge and sends again.
+// never receives it; the operator's page runs a TOTP challenge and sends again (D156).
 const CodeMFARequired = "mfa_required"
 
 // Actor is who made an admin call.

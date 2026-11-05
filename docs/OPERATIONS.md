@@ -1603,7 +1603,11 @@ For key callers (scripts, `make smoke-prod`) three small things change: more tha
 second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
 and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
 SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
-row exists so that revoking takes effect at once, not so that two parties must agree:
+row exists so that revoking takes effect at once, not so that two parties must agree. **Before the
+first row, run `make alerts-apply`** (the user's step; it needs `GRAFANA_PROM_URL`,
+`GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN`): alert rules reach Grafana only through that manual
+apply, and `AdminWebUsed` is how a use you did not make is noticed (the lost-phone detection), so
+the token path must not be opened before it is loaded.
 
 ```sql
 update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
@@ -1618,7 +1622,8 @@ list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page ca
 unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
 test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
 second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
-never logged), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
+never logged; the map is bounded only by evicting a bucket idle for 10 minutes and needs a cap
+before IPv6 clients arrive), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
 the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
 
 **Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,

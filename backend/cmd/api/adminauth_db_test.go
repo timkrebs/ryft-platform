@@ -236,7 +236,7 @@ func sameShape(pattern, path string) bool {
 	return true
 }
 
-// The audit names who acted (D-E): the user id for a token, the fingerprint for the key; a refused
+// The audit names who acted (D157): the user id for a token, the fingerprint for the key; a refused
 // key-only attempt is recorded, a refused bearer is not.
 func TestAdminAuditNamesTheActor(t *testing.T) {
 	d := newAdminDB(t)

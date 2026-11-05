@@ -76,6 +76,9 @@ jobs:
               - 'backend/**'
               - '.golangci.yml'
               - 'docs/API.md'
+              # internal/config tests parse the committed config.env of the services (ADMIN_WEB_ORIGINS):
+              # a config-only change must run them.
+              - 'deploy/k8s/base/*/config.env'
               - 'scripts/coverage.sh'
               # amqpbus's replay tests run the script against the broker.
               - 'scripts/dlq.sh'

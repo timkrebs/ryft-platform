@@ -314,3 +314,16 @@ var (
 func UseAMQP() {
 	amqpOnce.Do(func() { prometheus.MustRegister(AMQPConnected, AMQPReconnects) })
 }
+
+// InitAdminSeries creates the admin series at 0. increase() over a counter that is born at 1 sees no
+// increase, so without it the first use of a pod's life would never fire AdminWebUsed (a use you did not make
+// is the signal). The api calls it when it builds the /v1/admin chain, so a service without admin routes
+// exports none.
+func InitAdminSeries() {
+	for _, actor := range []string{"key", "user"} {
+		AdminAuthorized.WithLabelValues(actor)
+	}
+	for _, result := range []string{"ok", "invalid", "error", "unauthorized", "mfa_required", "forbidden"} {
+		AdminRequests.WithLabelValues(result)
+	}
+}

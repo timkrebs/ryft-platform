@@ -17,7 +17,9 @@ import (
 // therefore the one our own proxy wrote, and anything left of it is the client's claim. The
 // api's NetworkPolicy admits only Traefik (and our smoke pod) to the port, so a request cannot
 // bypass the proxy. Never use the leftmost entry or X-Real-Ip. The value is a map key in memory:
-// do not log it and do not use it as a metric label.
+// do not log it and do not use it as a metric label. The limiter that keys by it evicts a bucket after
+// 10 idle minutes and has no cap on the map: fine for IPv4 clients, it needs one before IPv6 ones arrive.
+// See D155.
 func ClientIP(r *http.Request) string {
 	var last string
 	for _, line := range r.Header.Values("X-Forwarded-For") {

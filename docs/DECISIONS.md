@@ -3123,3 +3123,85 @@ Engine, and fails with the changed fields grouped by field.
 - **Pinned:** kind, kubectl (the EKS minor), helm and yq by version and sha256 in `scripts/install_*.sh`;
   their versions are printed in the summary. The chart's `version:` must go up when its templates or values
   change (`scripts/check_chart_bump.sh`, a pull request).
+
+## D153 — Admin sign-in by Supabase token: claim, allow-list and fresh MFA (admin web, PR1)
+
+- **Decision:** `/v1/admin/*` accepts `ADMIN_API_KEY` (compared first, SHA-256 then constant time) or a Supabase
+  access token that verifies like every `/v1/*` token **and** carries `app_metadata.role == "admin"` (never the
+  top-level `role`, never `user_metadata`, which the user can write) **and** whose user has a row in
+  `admin_accounts` and no tombstone in `deleted_users` **and** has `aal == "aal2"` with a `totp` `amr` entry at
+  most 12 h old (30 s of skew). Every other bearer gets one identical `401`; a real admin without a fresh second
+  factor gets `403 mfa_required` (and an audit row); a token that cannot be checked now gets `503` with
+  `Retry-After: 5`. The new claims are parsed leniently (`Principal.AppRole`, `AAL`, `MFAAt`): a claim of an odd
+  shape reads as empty and never rejects an app user's token.
+- **Why:** a JWT cannot be revoked before `exp` (1 h), and a Supabase session never expires by itself. Granting is
+  two statements in one trust domain (the Supabase project owner), not two parties that must agree; the
+  owner-written, api-readable row exists so that revoking takes effect on the next request, whatever the token's
+  lifetime. The 12 h rule bounds what a stolen refresh token is worth without the second factor.
+- **`admin_accounts` is operator configuration, not user data:** no foreign key, deliberately not part of account
+  deletion (the tombstone check covers a deleted admin); the api role can only `SELECT` it (migration 0032).
+- **Least privilege for the browser:** a token reaches only the routes the page needs and gets a server-side
+  projection of the users list and the feedback (`AdminUserBrief`, `FeedbackBrief`: no health-derived, device,
+  consent, request-id or diagnostic fields). Merge, flag writes, user detail and resync-hint stay key-only (`403`,
+  audited). The routes are classified in one table (`admin.routes()`, zero value key-only), pinned by tests.
+- **Known and accepted:** a token with an unknown key id inside the one-a-minute JWKS refresh limit answers `503`
+  (`jwks_refresh_limited`) instead of `401`, because `auth.classify` cannot tell a rotation from a forged id; it is
+  kept out of `AuthUnavailable` and documented (API.md), and fixing the classification is a follow-up.
+- **Would change with:** a second admin (then flag writes for tokens), or Supabase session introspection.
+- Design: `docs/work/2026-11-05-admin-web/design.md` §2.1, §3, §4.2–§4.3.
+
+## D154 — CORS on the admin routes only, from `ADMIN_WEB_ORIGINS`
+
+- **Decision:** `httpx.CORS` wraps `/v1/admin/` and nothing else: exact origins (no `*`, no `null`, no wildcards),
+  methods `GET, POST, DELETE`, headers `Authorization, Content-Type`, exposes `X-Request-ID, Retry-After`,
+  `Max-Age 600`, `Vary: Origin`, no credentials. A preflight is answered before any auth, limiter, audit or metric;
+  a refused one is `204` without any `Access-Control-*`.
+- **Config:** `ADMIN_WEB_ORIGINS` is a comma-separated list of at most five bare origins in
+  `deploy/k8s/base/api/config.env` (public, reviewable, the hashed ConfigMap of D111), not Vault. Empty means no
+  CORS; a malformed value stops the api at start-up (before it waits for any dependency), and a test parses the
+  committed line so it cannot merge. `PUBLIC_WEB_URL` has its default in code.
+- CORS is not the access control; the bearer is. There are no cookies, so no CSRF.
+
+## D155 — A per-address limiter on `/v1/admin/*`, keyed by the address Traefik appends
+
+- **Decision:** 10 requests a second, bursts of 20, per api pod, before the bearer check (so a flood of bad
+  credentials costs no token verification and no database call); over the limit `429` with `Retry-After`. The key
+  is `httpx.ClientIP`: the rightmost `X-Forwarded-For` entry, IPv6 masked to /64, else the peer.
+- **Why the rightmost entry is the client:** the NLB keeps the client address (`preserve_client_ip`), Traefik
+  trusts no forwarded header (no `trustedIPs`) so it drops what a client sent and appends the peer it saw, and the
+  api's NetworkPolicy admits only Traefik and the smoke pod. Never the leftmost entry or `X-Real-Ip`.
+- **The address lives in memory only** (a map key, evicted after 10 idle minutes): never logged, never a metric
+  label. The map has no cap, which is fine for IPv4 and needs one before IPv6 clients arrive.
+- It is the documented exception to D36's per-user keys: before the bearer check there is no user.
+
+## D156 — `mfa_required` is an operator-only `403` code
+
+- **Decision:** `model.CodeMFARequired` is in the Errors `code` table of `docs/API.md` and in its Swift mirror
+  (`APIErrorCode.mfaRequired`), which the doc test ties to the code. The app never calls `/v1/admin/*` and never
+  receives it, so the closed `code` enum grows only on routes the app does not use and the app needs no change.
+- **Rejected:** exempting operator codes from the doc test (more test machinery for no gain).
+
+## D157 — The admin actor: who made an admin call
+
+- **Decision:** `admin_audit.actor_user` (migration 0032) next to `key_fingerprint`; a key call stores its
+  fingerprint, a token call `''` and the user id, and one CHECK (`admin_audit_one_actor`) pins exactly one actor.
+  `GET /v1/admin/audit` gains `actor {kind: key | user, id}` (closed `kind`); `key_fingerprint` stays. Log lines
+  carry `admin_actor` (`key:3fa1c2d9`, `user:1b2c3d4e`, the first 8 hex digits), `admin_key` stays on the key's
+  lines. A real operator's `mfa_required` refusal is audited too (user actor, `403`, route pattern, no details),
+  bounded to a burst of 3 and then one a minute per operator and pod.
+- **`key_fingerprint` was not made nullable:** an image from before 0032 scans it into a Go `string`, and a NULL
+  would break `GET /v1/admin/audit` after a rollback. The migration is additive; the old image's inserts satisfy
+  the CHECK.
+
+## D158 — Admin alerts without personal data
+
+- **Decision:** `AdminUnauthorized` (warning: more than 20 requests with a bad bearer in 10 minutes) and
+  `AdminWebUsed` (info: any token-authorized request in 10 minutes) replace a per-user digest. No metric or label
+  holds a user id or an address; who acted is in `GET /v1/admin/audit`, not in Grafana Cloud. The api never sees a
+  guessed password (that is Supabase Auth, read in Supabase → Logs → Auth), and `mfa_required` is deliberately in
+  neither alert (audit rows and CloudWatch).
+- **`AuthUnavailable` no longer matches `jwks_refresh_limited`** (a forged key id anyone can send); the failed admin
+  allow-list check counts as `internal`, which it watches. The `ryft_admin_*` series are created at 0 at start-up,
+  because `increase()` of a counter born at 1 would miss the first use of a pod's life.
+- **The rules reach Grafana only through `make alerts-apply`** (the user's manual step), which therefore comes
+  before the first `admin_accounts` row: `AdminWebUsed` is the lost-phone detection.

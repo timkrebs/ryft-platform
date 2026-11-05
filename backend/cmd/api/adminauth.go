@@ -24,7 +24,8 @@ import (
 
 // /v1/admin/ takes two bearers: ADMIN_API_KEY (scripts, smoke), compared first and in constant time,
 // or the Supabase access token of an allow-listed operator with a recent second factor (the
-// operator's web page). The order, the answers and why are in docs/API.md → Admin routes.
+// operator's web page). The order, the answers and why are in docs/API.md → Admin routes; D153 (the
+// token path), D154 (CORS), D155 (the per-address limit), D157 (the actor).
 
 const (
 	// adminMFAMaxAge is how old the token's TOTP may be: a Supabase session never expires by itself,
@@ -143,14 +144,7 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 	if a.auditor == nil && h.st != nil {
 		a.auditor = h.st
 	}
-	// Create the series at 0 now: increase() over a counter that is born at 1 sees no increase, so the
-	// first use of a pod's life would never fire AdminWebUsed (a use you did not make is the signal).
-	for _, kind := range []string{model.ActorKey, model.ActorUser} {
-		metrics.AdminAuthorized.WithLabelValues(kind)
-	}
-	for _, result := range []string{"ok", "invalid", "error", "unauthorized", "mfa_required", "forbidden"} {
-		metrics.AdminRequests.WithLabelValues(result)
-	}
+	metrics.InitAdminSeries()
 	if a.limiter == nil {
 		a.limiter = ratelimit.New(10, 20)
 	}
@@ -162,7 +156,8 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 
 // limit is the per-address limit in front of the bearer check, so a flood of bad credentials costs no
 // token verification and no database call. The address (httpx.ClientIP) is only a map key: it is never
-// logged and never a metric label.
+// logged and never a metric label. The map is bounded by the limiter's 10 idle minutes of eviction and
+// has no cap, which needs one before IPv6 clients arrive (D155).
 func (a adminAuth) limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, wait := a.limiter.Allow(httpx.ClientIP(r)); !ok {
