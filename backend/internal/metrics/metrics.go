@@ -87,7 +87,7 @@ var (
 	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_rate_limited_total",
-		Help: "Requests answered 429 by the per-user limit, by class (sync, default).",
+		Help: "Requests answered 429 by the per-user limit, by class (sync, default, …), and by the per-address limit of /v1/admin (admin_ip).",
 	}, []string{"class"})
 	AuthFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_auth_failures_total",
@@ -222,8 +222,16 @@ var (
 	}, []string{"key", "result"})
 	AdminRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_admin_requests_total",
-		Help: "Requests to /v1/admin, by result (ok, unauthorized, invalid, error).",
+		Help: "Requests to /v1/admin, by result (ok, invalid, error, unauthorized, mfa_required, forbidden). " +
+			"unauthorized: no bearer, or one that is neither the key nor an allow-listed admin's token; mfa_required: a real admin " +
+			"without a second factor of the last 12 hours; forbidden: a token on a key-only route.",
 	}, []string{"result"})
+	// AdminAuthorized counts the /v1/admin requests that passed the bearer check, by who: the key, or
+	// an admin's Supabase token (the operator's page). No label holds an id.
+	AdminAuthorized = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_admin_authorized_total",
+		Help: "Requests to /v1/admin that passed the bearer check, by actor (key, user).",
+	}, []string{"actor"})
 
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",

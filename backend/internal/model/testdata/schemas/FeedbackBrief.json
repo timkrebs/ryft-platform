@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "type": "integer"
+    },
+    "message": {
+      "type": "string"
+    },
+    "resolved_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "user_short_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "category",
+    "created_at",
+    "id",
+    "message",
+    "resolved_at",
+    "user_short_id"
+  ],
+  "title": "FeedbackBrief",
+  "type": "object"
+}

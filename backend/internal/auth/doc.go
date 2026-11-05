@@ -14,6 +14,12 @@
 //     request costs no database query (D36).
 //   - apikey mode lets a caller act as any user (D32), so config.LoadAuth refuses
 //     it without ALLOW_INSECURE_APIKEY_AUTH=true.
+//   - The operator claims (app_metadata.role, aal, the newest totp entry of amr)
+//     are read leniently into Principal.AppRole, AAL and MFAAt: a claim of an
+//     unexpected shape reads as empty and never rejects the token, or one odd
+//     shape would sign every app user out. They grant nothing here; cmd/api's
+//     admin check adds the allow-list row and the freshness rule (D153). The
+//     role comes from app_metadata only, never the top-level role or user_metadata.
 //   - Admin holds the Supabase secret key; only cmd/api builds one, for account
 //     deletion and the operator's user view.
 //   - The JWKS keyfunc library is pinned at v3.7.0 to keep the module's Go floor

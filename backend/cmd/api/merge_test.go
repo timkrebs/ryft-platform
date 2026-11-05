@@ -51,7 +51,7 @@ func TestAdminMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "test-admin-key-0123456789abcdef0123456789"
-	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, key, 30*time.Second))
+	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, adminOptions{Key: key, Timeout: 30 * time.Second}))
 	post := func(path string) (int, MergeAnswer, string) {
 		r := httptest.NewRequest(http.MethodPost, path, nil)
 		r.Header.Set("Authorization", "Bearer "+key)

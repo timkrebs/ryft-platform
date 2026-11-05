@@ -8,6 +8,10 @@
 // Invariants:
 //   - Buckets are keyed by the verified user id, not the client IP: mobile
 //     clients share carrier NAT addresses (D36).
+//     The one exception is /v1/admin/*: an operator surface that is rate limited
+//     before its bearer is checked has no user yet, so cmd/api keys a Limiter
+//     there by httpx.ClientIP (10/s, bursts of 20; the address lives in memory
+//     only and is never logged or a metric label).
 //   - Idle buckets are dropped, so memory follows the active users, not every
 //     user ever seen.
 //   - The class limits (sync, session saves, invite codes, the training import,
