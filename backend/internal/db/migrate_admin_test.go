@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
@@ -49,7 +51,8 @@ func testMigrateAdminAccounts(t *testing.T, supabase bool) {
 		}
 	}
 	dsn := pool.Config().ConnString()
-	api := asRole(t, dsn, "ryft_api", testsupport.RolePassword("ryft_api"))
+	as := func(role string) *pgx.Conn { return asRole(t, dsn, role, testsupport.RolePassword(role)) }
+	api := as("ryft_api")
 	admin := "11111111-2222-4333-8444-555555555555"
 
 	// The owner writes the allow-list (the SQL editor), as the design's step does.
@@ -80,7 +83,7 @@ func testMigrateAdminAccounts(t *testing.T, supabase bool) {
 	}
 	// Nobody else sees it.
 	for _, role := range []string{"ryft_ingest", "ryft_scoring", "ryft_notify"} {
-		c := asRole(t, dsn, role, testsupport.RolePassword(role))
+		c := as(role)
 		if _, err := c.Exec(ctx, `SELECT 1 FROM admin_accounts`); err == nil {
 			t.Errorf("%s must not read admin_accounts", role)
 		}
