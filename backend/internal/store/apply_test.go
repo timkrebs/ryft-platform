@@ -154,7 +154,8 @@ func del(kind string, id uuid.UUID) model.DeletedRecord {
 // A deletion names rows by kind; the day set is the local days of what was removed. A
 // night sample (hrv, respiration, SpO2) also changes the day after it; a workout changes
 // its day and the next (tomorrow's sleep need uses today's strain) and, with a session on
-// it, the day before.
+// it, the day before. The clock-change cases pin today's +-24 h behaviour, not an
+// endorsement of it (D178).
 func TestApplySyncDeletedRowsDays(t *testing.T) {
 	st, pool := testStore(t)
 	ctx := context.Background()

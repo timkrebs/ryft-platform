@@ -395,6 +395,8 @@ func validate(req *model.SyncRequest) error {
 // touchedDays lists every local day whose score could change. A sleep segment
 // affects the day it ends on; a night-time HRV sample affects the next day,
 // so we conservatively add both the sample's own day and the day after.
+// The day after is +24 absolute hours, not the next local date, so a clock-change
+// day can miss it; pinned as it is, not fixed (D178).
 func touchedDays(req *model.SyncRequest, loc *time.Location) []string {
 	set := map[string]struct{}{}
 	add := func(t time.Time) { set[t.In(loc).Format("2006-01-02")] = struct{}{} }
