@@ -179,7 +179,9 @@ export function Container({
  * assistive technology, and under Reduce Motion the band stands still.
  */
 export function Marquee({ text }: { text: string }) {
-  const copies = 6;
+  // Four copies: two make up the visible band at any width the design allows, the other two
+  // follow for the seamless −50 % loop. More copies only make the layer the GPU rasterises wider.
+  const copies = 4;
   return (
     <div className={styles.marquee} role="presentation">
       <p className={styles.marqueeTrack}>

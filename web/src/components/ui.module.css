@@ -70,6 +70,11 @@
   gap: 48px;
   padding-block: var(--section-y);
   border-top: var(--hairline) solid var(--separator);
+  /* Below-the-fold sections are laid out when they come near the viewport: the home page is
+     long and its mock screens use container units, so the first layout and the one at the font
+     swap stay short on a slow phone (Lighthouse's TBT). Anchors (#faq) still work. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 720px;
 }
 
 .sectionInverse {
@@ -179,6 +184,7 @@
 /* The ticker band. */
 .marquee {
   overflow: hidden;
+  contain: layout paint;
   padding: 18px 0;
   background: var(--accent);
   color: var(--on-accent);
@@ -204,7 +210,9 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .marqueeTrack {
-    animation: ticker 40s linear infinite;
+    will-change: transform;
+    /* Starts after the page has settled: the first seconds belong to layout and the font swap. */
+    animation: ticker 40s linear 2s infinite;
   }
 }
 

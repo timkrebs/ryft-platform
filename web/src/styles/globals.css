@@ -91,7 +91,6 @@ h4 {
   line-height: 1;
   letter-spacing: var(--web-tracking-display);
   text-transform: uppercase;
-  text-wrap: balance;
 }
 
 h1 {

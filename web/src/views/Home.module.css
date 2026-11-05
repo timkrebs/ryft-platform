@@ -415,6 +415,8 @@
 /* --- facts band ----------------------------------------------------------------------- */
 
 .facts {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 240px;
   border-top: var(--hairline) solid var(--separator);
   border-bottom: var(--hairline) solid var(--separator);
 }
@@ -675,6 +677,8 @@
 /* --- 09 download ---------------------------------------------------------------------- */
 
 .download {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 720px;
   padding: var(--section-y) 0;
   background: var(--accent);
   color: var(--on-accent);

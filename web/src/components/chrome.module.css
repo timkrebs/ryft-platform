@@ -141,6 +141,8 @@
 
 /* Footer: the wordmark large, two link columns, the small print in one row. */
 .footer {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 480px;
   padding: var(--section-y) 0 32px;
   border-top: var(--hairline) solid var(--separator);
 }
