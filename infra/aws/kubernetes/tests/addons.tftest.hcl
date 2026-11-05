@@ -460,3 +460,196 @@ run "argocd_clusterroles_are_an_allowlist" {
     error_message = "the ApplicationSet controller is off (this chart version has no enabled flag)"
   }
 }
+
+# T12-f: what the ClusterRoles' rules above do not see. A rule check on the two ClusterRoles passes
+# when the chart renders no ClusterRole, or when a ClusterRoleBinding to cluster-admin comes in
+# through extraObjects, or when Argo CD's own RBAC makes every login an admin. The values are
+# inspected by modules/argocd-values-guard (also a check block in argocd.tf).
+run "argocd_values_carry_nothing_else_that_grants" {
+  command = apply
+
+  assert {
+    condition     = module.argocd_values_guard.violations == []
+    error_message = "the Argo CD values carry something they must not: ${join("; ", module.argocd_values_guard.violations)}"
+  }
+  # The same, read from the release itself, so removing the module call does not remove the test.
+  assert {
+    condition = alltrue([for o in yamldecode(helm_release.argocd.values[0]).extraObjects :
+    contains(["NetworkPolicy", "Middleware"], o.kind) && o.metadata.namespace == "argocd"])
+    error_message = "extraObjects may only ship a NetworkPolicy or a Middleware in argocd (a ClusterRoleBinding there would bypass every rule check)"
+  }
+  assert {
+    condition = (
+      !can(yamldecode(helm_release.argocd.values[0]).controller.roleRules) &&
+      !can(yamldecode(helm_release.argocd.values[0]).server.roleRules) &&
+      try(yamldecode(helm_release.argocd.values[0]).createClusterRoles, true) != false
+    )
+    error_message = "no roleRules of ours, and the chart renders its ClusterRoles (createClusterRoles is not false)"
+  }
+  assert {
+    condition = (
+      !can(yamldecode(helm_release.argocd.values[0]).configs.rbac) &&
+      !can(yamldecode(helm_release.argocd.values[0]).configs.cm["users.anonymous.enabled"]) &&
+      !can(yamldecode(helm_release.argocd.values[0]).configs.params["server.disable.auth"])
+    )
+    error_message = "no policy.default, no anonymous login, no disabled authentication on the public UI"
+  }
+}
+
+# Each variant that passed the ClusterRole allowlist and is dangerous, run through the guard module
+# alone: it must be caught, by name.
+run "guard_clean_values_pass" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller   = { clusterRoleRules = { enabled = true } }
+      server       = { clusterRoleRules = { enabled = true } }
+      configs      = { cm = { "resource.respectRBAC" = "strict" }, params = { "server.insecure" = true } }
+      extraObjects = [{ kind = "NetworkPolicy", metadata = { name = "x", namespace = "argocd" } }, { kind = "Middleware", metadata = { name = "y", namespace = "argocd" } }]
+    }
+  }
+  assert {
+    condition     = output.violations == []
+    error_message = "a clean set of values must pass the guard"
+  }
+}
+
+run "guard_catches_a_cluster_admin_binding_in_extraobjects" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      extraObjects = [{
+        apiVersion = "rbac.authorization.k8s.io/v1"
+        kind       = "ClusterRoleBinding"
+        metadata   = { name = "argocd-admin" }
+        roleRef    = { apiGroup = "rbac.authorization.k8s.io", kind = "ClusterRole", name = "cluster-admin" }
+        subjects   = [{ kind = "ServiceAccount", name = "argocd-application-controller", namespace = "argocd" }]
+      }]
+    }
+  }
+  assert {
+    condition     = length(output.violations) == 2 && strcontains(join(" ", output.violations), "kind \"ClusterRoleBinding\" is not one of")
+    error_message = "a ClusterRoleBinding in extraObjects must be caught (kind, and no namespace)"
+  }
+}
+
+run "guard_catches_an_object_in_another_namespace" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller   = { clusterRoleRules = { enabled = true } }
+      server       = { clusterRoleRules = { enabled = true } }
+      extraObjects = [{ kind = "NetworkPolicy", metadata = { name = "x", namespace = "kube-system" } }]
+    }
+  }
+  assert {
+    condition     = length(output.violations) == 1 && strcontains(output.violations[0], "is not argocd")
+    error_message = "an extra object outside argocd must be caught"
+  }
+}
+
+run "guard_catches_controller_role_rules_with_wildcard" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = {
+        clusterRoleRules = { enabled = true }
+        roleRules        = [{ apiGroups = ["*"], resources = ["*"], verbs = ["*"] }]
+      }
+      server = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "controller.roleRules is set")
+    error_message = "controller.roleRules must be caught"
+  }
+}
+
+run "guard_catches_createclusterroles_false" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      createClusterRoles = false
+      controller         = { clusterRoleRules = { enabled = true } }
+      server             = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "createClusterRoles is false")
+    error_message = "createClusterRoles = false must be caught"
+  }
+}
+
+run "guard_catches_a_default_admin_policy" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs    = { rbac = { "policy.default" = "role:admin" } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "configs.rbac is set") && strcontains(join(" ", output.violations), "unexpected value \"configs.rbac\"")
+    error_message = "configs.rbac policy.default must be caught"
+  }
+}
+
+run "guard_catches_anonymous_login_and_disabled_auth" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs = {
+        cm     = { "users.anonymous.enabled" = true }
+        params = { "server.disable.auth" = true }
+      }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "users.anonymous.enabled") && strcontains(join(" ", output.violations), "server.disable.auth")
+    error_message = "an anonymous login and a disabled authentication must be caught"
+  }
+}
+
+run "guard_catches_the_chart_default_clusterroles" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      createAggregateRoles = true
+      controller           = { clusterRoleRules = { enabled = false } }
+      server               = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "controller.clusterRoleRules is not enabled") && strcontains(join(" ", output.violations), "unexpected top-level value \"createAggregateRoles\"")
+    error_message = "the chart's own wildcard ClusterRole and an unexpected top-level value must be caught"
+  }
+}

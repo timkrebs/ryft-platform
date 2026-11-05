@@ -133,9 +133,10 @@ locals {
   # deploy/argocd/project.yaml. docs/OPERATIONS.md has the reason for each rule. A kind
   # added to a path under deploy/argocd/apps needs its rule here first.
   #
-  # What this alone does: the controller holds no escalate or bind on any ClusterRole, no
-  # secrets, no pods/exec, nothing on the admission policies, and the public server nothing
-  # it can write. What it does NOT do: a ClusterRole cannot be scoped to namespaces, so the
+  # What this alone does: the controller holds no escalate on any ClusterRole and bind on one
+  # (messaging-topology-metrics-auth-role, which it cannot extend), no secrets, no pods/exec,
+  # nothing on the admission policies, and the public server nothing it can write. What it
+  # does NOT do: a ClusterRole cannot be scoped to namespaces, so the
   # controller still writes ConfigMaps, Deployments, Jobs, Services and ServiceAccounts in
   # every namespace. With a stolen controller token that reaches kube-system/aws-auth (the
   # cluster runs authentication mode API_AND_CONFIG_MAP: an IAM principal mapped to
@@ -143,7 +144,12 @@ locals {
   # cert-manager and kube-system, argocd-cm and the argocd-server Deployment. Those routes
   # close only with the admission policy P12 (argo-scope) in Deny, or for aws-auth with EKS
   # authentication mode API. The chart's own Roles in `argocd` (the server may rewrite
-  # argocd-secret, argocd-cm and argocd-rbac-cm) are not touched either.
+  # argocd-secret, argocd-cm and argocd-rbac-cm) are not touched either. Nor is the RBAC-writing
+  # route: the controller creates, updates and deletes ClusterRoles, ClusterRoleBindings, Roles
+  # and RoleBindings WITHOUT resourceNames (see "What stays open" in docs/OPERATIONS.md for why
+  # that is not narrowed here). With a stolen token that writes a ClusterRole holding a subset
+  # of the controller's rights and binds it to system:unauthenticated or
+  # system:serviceaccounts, which outlives the token.
   argocd_crud  = ["get", "list", "watch", "create", "update", "patch", "delete"]
   argocd_apply = ["get", "list", "watch", "create", "update", "patch"] # no delete
 
@@ -151,8 +157,9 @@ locals {
   # leader-election Roles in rabbitmq-system (they hold leases and events, which the controller
   # does not) and, since T12-g, the operators' main rules as Roles in ryft-rabbitmq (secrets,
   # pods/exec, ...). Writing or binding a Role needs its permissions or escalate/bind on its
-  # name. The operators render no ClusterRole with rules of that kind any more: see
-  # argocd_operator_held.
+  # name. The operators render no ClusterRole with rules of that kind any more: the three
+  # they still render are held by the controller (tokenreviews and subjectaccessreviews
+  # create, /metrics get), see argocd_controller_rules below.
   argocd_operator_roles = [
     "rabbitmq-cluster-leader-election-role",
     "messaging-topology-leader-election-role",
@@ -457,6 +464,22 @@ locals {
         headers = { stsSeconds = 31536000, stsIncludeSubdomains = false }
       }
     }]
+  }
+}
+
+# Everything in the values that decides what Argo CD may do, other than the two ClusterRoles' rules
+# (tests/addons.tftest.hcl has those): extraObjects kinds, roleRules, createClusterRoles, Argo CD's
+# own RBAC and login settings, unexpected chart values. The check shows at plan time (a warning,
+# as every check block); the test fails on it.
+module "argocd_values_guard" {
+  source = "./modules/argocd-values-guard"
+  values = local.argocd_values
+}
+
+check "argocd_values_guard" {
+  assert {
+    condition     = length(module.argocd_values_guard.violations) == 0
+    error_message = "the Argo CD values carry something they must not (T12-f): ${join("; ", module.argocd_values_guard.violations)}"
   }
 }
 

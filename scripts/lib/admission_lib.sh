@@ -275,6 +275,46 @@ adm_check_argo_rbac() {
   if [ -z "$bad" ]; then rec "argo-rbac-server-readonly" PASS "argocd-server holds read verbs only (it writes Applications and Events in the argocd namespace through the chart's Role)"; else rec "argo-rbac-server-readonly" FAIL "argocd-server may write: $bad"; fi
 }
 
+# The render's role bindings are the chart's own and nothing else: a ClusterRoleBinding to cluster-admin
+# that came in through extraObjects (or any value) passes every rule check on the two ClusterRoles, which
+# look at rules only. Each (Cluster)RoleBinding of the render has the name of the (Cluster)Role it refers
+# to, and that name is one of the chart's seven. Runs on the chart's default render too.
+adm_check_argo_bindings() {
+  [ -n "${ARGO_RENDER:-}" ] || { rec "argo-bindings" SKIP "no render"; return 0; }
+  local bad
+  bad=$(yq -o=json -I0 'select(.kind == "ClusterRoleBinding" or .kind == "RoleBinding")' "$ARGO_RENDER" | jq -rs '
+    ["argocd-application-controller","argocd-applicationset-controller","argocd-repo-server","argocd-server","argocd-redis-secret-init"] as $own
+    | .[] | select(
+        (.metadata.name != .roleRef.name)
+        or ((.roleRef.name | IN($own[])) | not)
+        or (.roleRef.kind != (if .kind == "ClusterRoleBinding" then "ClusterRole" else "Role" end))
+        or (.kind == "ClusterRoleBinding" and (.roleRef.name | IN("argocd-application-controller","argocd-server") | not))
+      ) | .kind + " " + .metadata.name + " -> " + .roleRef.kind + " " + .roleRef.name')
+  if [ -z "$bad" ]; then rec "argo-bindings" PASS "the render binds only the chart's own roles to their own names (no cluster-admin, no extra binding)"; else rec "argo-bindings" FAIL "a role binding in the render that is not the chart's: $bad"; fi
+}
+
+# A binding written in Terraform (kubernetes_role_binding, kubernetes_cluster_role_binding, their _v1
+# forms, or a manifest of kind RoleBinding / ClusterRoleBinding) that names an argocd identity bypasses
+# every check on the two ClusterRoles' rules, and the render above does not contain it (Terraform applies
+# it, not the chart). Tripwire over the module's *.tf (top-level blocks, as `terraform fmt` writes them,
+# comment lines skipped); a binding that names no argocd identity is not this check's business.
+adm_check_argo_tf_bindings() {
+  local dir="$REPO/$K8S_DIR_REL" hits
+  [ -d "$dir" ] || { rec "argo-tf-bindings" SKIP "$K8S_DIR_REL is not in the tree"; return 0; }
+  hits=$(find "$dir" -type f -name '*.tf' ! -path '*/.terraform/*' | sort | while IFS= read -r f; do
+    awk -v file="${f#"$dir"/}" '
+      /^(resource|data)[ \t]+"/ { split($0, p, "\""); type = p[2]; blk = ""; inblk = 1 }
+      inblk && $0 !~ /^[ \t]*(#|\/\/)/ { blk = blk "\n" $0 }
+      inblk && /^}/ {
+        inblk = 0
+        # the resource types for a binding, or any resource (a manifest) that says RoleBinding / ClusterRoleBinding
+        if ((type ~ /^kubernetes_(cluster_)?role_?binding/ || blk ~ /(Cluster)?RoleBinding/) && blk ~ /argocd/)
+          printf "%s: %s names an argocd identity\n", file, type
+      }' "$f"
+  done)
+  if [ -z "$hits" ]; then rec "argo-tf-bindings" PASS "no role binding in $K8S_DIR_REL names an argocd identity"; else rec "argo-tf-bindings" FAIL "$hits"; fi
+}
+
 # The RBAC objects that make the impersonated identities real: the service accounts, the two
 # ClusterRoles and their bindings of the render (the narrowed ones when the tree has them, the
 # chart's defaults otherwise), and a group that fixtures add to an identity so authorisation passes
