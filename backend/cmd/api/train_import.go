@@ -73,6 +73,8 @@ type importRun struct {
 	bodies   []model.Session // the sessions as stored (normalised), for their starts
 }
 
+// newImportRun is the state of a request about to store its items: empty outcomes by index
+// and the window the days are queued in, counted from start (D128).
 func newImportRun(user uuid.UUID, req model.TrainImportRequest, loc *time.Location, start time.Time) *importRun {
 	from, to := train.ImportWindow(start, loc)
 	return &importRun{user: user, source: req.Source, loc: loc, window: store.DayWindow{From: from, To: to}, start: start,
@@ -118,7 +120,8 @@ func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
 	}
 	// Given back before the answer is written (a retry right after it finds it free),
 	// and by the defer on any other way out.
-	free := sync.OnceFunc(func() { release(ctx) })
+	var once sync.Once
+	free := func() { once.Do(func() { release(ctx) }) }
 	defer free()
 	start := time.Now()
 	run := newImportRun(c.user.ID, req, loc, start)
@@ -217,9 +220,9 @@ func importItemsContext(ctx context.Context, finish time.Duration) (context.Cont
 	return ctx, func() {}
 }
 
-// importEnd is what the request came to: the days it queued, the base of the estimate, the
+// importSummary is what the request came to: the days it queued, the base of the estimate, the
 // error that stopped it (the items' or the finish's) and the result label of both.
-type importEnd struct {
+type importSummary struct {
 	days   []string
 	base   int
 	err    error
@@ -228,12 +231,12 @@ type importEnd struct {
 
 // importEnd finishes what the items stored (fctx, D128), gives the lease back before the
 // answer is written, and sums the request up. The result is the items' unless they went well.
-func (h *handler) importEnd(fctx, itemsCtx context.Context, r *http.Request, run *importRun, stopped error, free func()) importEnd {
+func (h *handler) importEnd(fctx, itemsCtx context.Context, r *http.Request, run *importRun, stopped error, free func()) importSummary {
 	days, finished := h.finishImport(fctx, r, run)
 	base, _ := h.st.ExpectedScoreSec(fctx)
 	free()
 	metrics.TrainImportSeconds.Observe(time.Since(run.start).Seconds())
-	end := importEnd{days: days, base: base, err: errors.Join(stopped, finished), result: importResult(itemsCtx, stopped)}
+	end := importSummary{days: days, base: base, err: errors.Join(stopped, finished), result: importResult(itemsCtx, stopped)}
 	if end.result == "ok" {
 		end.result = importResult(fctx, finished)
 	}
@@ -242,7 +245,7 @@ func (h *handler) importEnd(fctx, itemsCtx context.Context, r *http.Request, run
 
 // importRespond writes the answer: the 503 of an import that could not finish, else the
 // results in request order.
-func importRespond(c *importCall, run *importRun, req model.TrainImportRequest, end importEnd) {
+func importRespond(c *importCall, run *importRun, req model.TrainImportRequest, end importSummary) {
 	if end.err != nil {
 		importUnavailable(c.w, c.r, end.err, end.result)
 		return
@@ -387,10 +390,10 @@ func (h *handler) finishImport(ctx context.Context, r *http.Request, run *import
 	return days, nil
 }
 
-// importFinish is what the stored items imply for the finish: the exercises whose records are
+// importStored is what the stored items imply for the finish: the exercises whose records are
 // recomputed, the sessions whose scope moves other days, the days to queue, and the unchanged
 // sessions' days that may still be pending.
-type importFinish struct {
+type importStored struct {
 	records   []uuid.UUID
 	scope     []model.Session
 	changed   map[string]bool
@@ -398,8 +401,8 @@ type importFinish struct {
 }
 
 // stored reads the outcomes of the items that were processed (pure: no store call).
-func (run *importRun) stored() *importFinish {
-	f := &importFinish{changed: map[string]bool{}}
+func (run *importRun) stored() *importStored {
+	f := &importStored{changed: map[string]bool{}}
 	for i, o := range run.sessions {
 		switch o.Status {
 		case store.ImportCreated, store.ImportUpdated:
@@ -426,7 +429,7 @@ func (run *importRun) stored() *importFinish {
 
 // addPending counts an unchanged session whose day an earlier attempt queued and scoring has
 // not finished like a changed one (D140).
-func (f *importFinish) addPending(run *importRun, pending []string) {
+func (f *importStored) addPending(run *importRun, pending []string) {
 	for i, o := range run.sessions {
 		if o.Status == store.ImportUnchanged && slices.Contains(pending, o.Day) {
 			f.changed[o.Day] = true
@@ -436,7 +439,7 @@ func (f *importFinish) addPending(run *importRun, pending []string) {
 }
 
 // addDependentDays adds the days of the user's other sessions that the changed ones can move.
-func (h *handler) addDependentDays(ctx context.Context, run *importRun, f *importFinish) error {
+func (h *handler) addDependentDays(ctx context.Context, run *importRun, f *importStored) error {
 	d, ok := scoring.ScopeOf(f.scope)
 	if !ok {
 		return nil
@@ -452,7 +455,8 @@ func (h *handler) addDependentDays(ctx context.Context, run *importRun, f *impor
 	return nil
 }
 
-func (f *importFinish) sortedDays() []string {
+// sortedDays is the changed days, oldest first: the explicit list the event and the answer carry.
+func (f *importStored) sortedDays() []string {
 	days := make([]string, 0, len(f.changed))
 	for d := range f.changed {
 		days = append(days, d)
