@@ -34,7 +34,7 @@ var adminLogKeys = logcheck.Lines{
 	"admin auth rejected": {"reason": logcheck.Enum(adminRejectReasons...)},
 	"admin second factor required": {"reason": logcheck.Enum("mfa_missing", "mfa_stale"),
 		"admin_actor": logcheck.Pattern(actorLabel)},
-	"admin auth unavailable":       {"reason": logcheck.Enum("jwks_unavailable", "account_check")},
+	"admin auth unavailable":       {"reason": logcheck.Enum("jwks_unavailable", "jwks_refresh_limited", "account_check")},
 	"admin key-only route refused": {"admin_actor": logcheck.Pattern(actorLabel)},
 	"admin feedback read": {"since": logcheck.Time, "n": logcheck.Count, "admin_actor": logcheck.Pattern(actorLabel),
 		"admin_key": logcheck.Pattern(shortHex)},

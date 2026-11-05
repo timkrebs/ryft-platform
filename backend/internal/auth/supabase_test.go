@@ -246,6 +246,25 @@ func TestSupabaseUnknownKeyDuringOutageIsUnavailable(t *testing.T) {
 	}
 }
 
+// FetchFailing follows the last JWKS fetch and never fetches itself (the admin routes read it, D184).
+func TestSupabaseFetchFailing(t *testing.T) {
+	srv := newJWKSServer(t)
+	srv.addKey(t, "k1")
+	v := newVerifier(t, srv, SupabaseOptions{})
+	if v.FetchFailing() {
+		t.Fatal("the first fetch worked")
+	}
+	srv.setFailing(true)
+	if v.FetchFailing() {
+		t.Fatal("FetchFailing must not fetch")
+	}
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, _ = v.Verify(context.Background(), sign(t, other, "x1", claims())) // an unknown kid refreshes, and fails
+	if !v.FetchFailing() {
+		t.Fatal("the failed refresh is not reported")
+	}
+}
+
 func TestSupabaseRefreshLimitIsUnavailable(t *testing.T) {
 	srv := newJWKSServer(t)
 	srv.addKey(t, "k1")

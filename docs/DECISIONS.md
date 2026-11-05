@@ -3757,3 +3757,25 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   it is decided in #121, not here.
 - **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
   enabled, except Pod Security refusals and the liveness alerts.
+
+## D184 — On the admin routes an unknown key id inside the refresh limit is the generic `401` (amends D153)
+
+- **Decision:** on `/v1/admin/*` a token whose key id the api does not know, sent inside the one-a-minute JWKS refresh
+  limit (`auth.classify`: `jwks_refresh_limited`, a `503`), gets the same `401` as every refused bearer, byte for byte,
+  with reason `unknown_key` in the log and on the access line, counted as `ryft_admin_requests_total{result="unauthorized"}`
+  like every admin `401` (not in `ryft_auth_failures_total`, so no label value is added). This settles D153's "Known and
+  accepted" bullet. The mapping lives in the admin chain only (`cmd/api/adminauth.go`); `auth.classify` and the user
+  routes do not change: there the `503` keeps the app from signing a user out in a key rotation race.
+- **Only while the keys are fresh:** the limit is reported whatever the last fetch did, so during a JWKS outage the
+  second unknown key id within a minute is `jwks_refresh_limited` too. The admin chain asks the verifier
+  (`auth.Supabase.FetchFailing`, a read-only accessor added for this; it never fetches) and keeps the `503` with
+  `Retry-After: 5` while the last fetch failed. A verifier that cannot say (a test fake) counts as healthy. Every other
+  `503` reason (`jwks_unavailable`, the allow-list check, an error that is not an `*auth.Error`) stays a `503`.
+- **Why:** anyone can send such a token, and the page reads a `503` as "Supabase or the database is unreachable" and a
+  `401` as "refresh, then sign in". The cost: if Supabase rotates its key and an operator's new token arrives within a
+  minute of a refresh, the page signs the operator in again instead of retrying; operators are few and a rotation is
+  rare, so that is accepted for the routes where the answer must not be an oracle.
+- **Unchanged:** `AuthUnavailable` (`jwks_unavailable|internal`) and its test; on the user routes `jwks_refresh_limited`
+  is still counted and still left out of the alert.
+- **Rejected:** changing `auth.classify` (it would sign app users out in a rotation race); a `401` for
+  `jwks_refresh_limited` whatever the fetch health (an outage would then sign the operator out).

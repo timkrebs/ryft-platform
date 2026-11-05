@@ -208,6 +208,11 @@ func (s *Supabase) Ready(ctx context.Context) error {
 	return nil
 }
 
+// FetchFailing reports whether the most recent JWKS fetch failed. It never fetches. The admin routes
+// read it to tell a refresh-limited unknown key id while the keys are fresh (a 401 there) from one
+// during an outage (still a 503); Verify and classify do not change with it (D184).
+func (s *Supabase) FetchFailing() bool { return s.fetches.lastFailed() }
+
 // fetchHealth remembers whether the most recent JWKS fetch worked, so an
 // unknown key during an outage is not mistaken for a forged token.
 type fetchHealth struct {
