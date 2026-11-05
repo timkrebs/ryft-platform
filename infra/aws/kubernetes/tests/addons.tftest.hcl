@@ -897,6 +897,29 @@ run "guard_catches_a_tab_and_non_ascii_in_the_health_lua" {
   }
 }
 
+# With sync impersonation on, every controller write moves to another username and P12 (names only)
+# matches nothing: it is not an allowed key anywhere.
+run "guard_catches_sync_impersonation" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs = {
+        cm     = { "application.sync.impersonation.enabled" = true }
+        params = { "application.sync.impersonation.enabled" = true }
+      }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" | ", output.violations), "configs.cm.application.sync.impersonation.enabled") && strcontains(join(" | ", output.violations), "configs.params.application.sync.impersonation.enabled")
+    error_message = "application.sync.impersonation.enabled must be caught in configs.cm and configs.params"
+  }
+}
+
 run "guard_catches_a_terminal_and_a_lax_respectrbac" {
   command = plan
   module {

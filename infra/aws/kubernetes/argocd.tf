@@ -142,7 +142,7 @@ locals {
   # cluster runs authentication mode API_AND_CONFIG_MAP: an IAM principal mapped to
   # system:masters is cluster-admin, which deletes the policy bindings), workloads in
   # cert-manager and kube-system, argocd-cm and the argocd-server Deployment. Those routes
-  # close only with the admission policy P12 (argo-scope) in Deny, or for aws-auth with EKS
+  # close only with the admission policies P6 and P12 (argo-scope) both in Deny, or for aws-auth with EKS
   # authentication mode API. The chart's own Roles in `argocd` (the server may rewrite
   # argocd-secret, argocd-cm and argocd-rbac-cm) are not touched either. Nor is the RBAC-writing
   # route: the controller creates, updates and deletes ClusterRoles, ClusterRoleBindings, Roles
@@ -467,6 +467,10 @@ locals {
   }
 }
 
+# application.sync.impersonation.enabled must stay off: with it on, every controller write moves to
+# another username and P12 (which judges names) matches nothing. The guard refuses it (not an allowed
+# configs.cm or configs.params key); tests/addons.tftest.hcl pins that.
+#
 # Everything in the values that decides what Argo CD may do, other than the two ClusterRoles' rules
 # (tests/addons.tftest.hcl has those): extraObjects kinds, roleRules, createClusterRoles, Argo CD's
 # own RBAC and login settings, unexpected chart values. The release's lifecycle conditions below

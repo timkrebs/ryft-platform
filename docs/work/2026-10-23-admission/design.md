@@ -204,7 +204,7 @@ commands, NetworkPolicies, VSO or Argo objects.
 - The operators' roles can't grant `admissionregistration.k8s.io` (P6).
 - **Limit of T12-f (what is true after #47 alone).** T12-f narrows what the Argo CD identities can
   *grant themselves through RBAC*. It does not make a compromised Argo CD harmless, and the sentence
-  "Argo CD cannot switch off or bypass the admission layer" is **not true until P12 is in Deny**.
+  "Argo CD cannot switch off or bypass the admission layer" is **not true until P6 and P12 are both in Deny and #47 is applied**.
   - **Closed by #47 (RBAC alone):** adding VAP/VAPB write to a ClusterRole and binding it. T12-f's first
     version had `escalate`/`bind` on three operator ClusterRoles and was escalation-equivalent to
     cluster-admin; the controller now holds those ClusterRoles' permissions (token and access reviews,
@@ -219,25 +219,25 @@ commands, NetworkPolicies, VSO or Argo objects.
     Pods included, and could mutate Pods; P6 admits the four names, served from `rabbitmq-system`, on
     `rabbitmq.com` only. (b) CRD `create` cannot be limited by name either (#47 limits `update` and
     `patch` to the operators' 14 CRDs); P6 admits CRDs of `rabbitmq.com` without a conversion webhook.
-  - **Open until P12 (design gap, not a regression; the chart's `*` allowed all of it):** the controller
+  - **Open until P6 and P12 are both in Deny (design gap, not a regression; the chart's `*` allowed all of it):** the controller
     writes ConfigMaps, Deployments, Jobs, Services and ServiceAccounts in **every** namespace, and
     no policy matches Argo CD's writes outside `ryft-*` and `rabbitmq-system` (P2: only those; P3, P5, P9:
     `ryft-*`; P7: Argo CD's own kinds and Secrets in `argocd`). A stolen controller token can
     - write `kube-system/aws-auth`: the cluster runs authentication mode `API_AND_CONFIG_MAP`, so an IAM
       principal mapped to `system:masters` is cluster-admin without a Pod, and cluster-admin deletes the
-      bindings (claim a). Only P12 in Deny, or EKS authentication mode `API`, closes it;
+      bindings (claim a). Only P6 and P12 in Deny, or EKS authentication mode `API`, closes it;
     - deploy into `cert-manager` as its ServiceAccount (Secrets cluster-wide, Route53 through Pod Identity:
       a DNS-01 certificate for `api.ryftapp.de`), into `kube-system` as a controller-manager
       ServiceAccount, or patch `argocd-cm`, `argocd-rbac-cm` and the `argocd-server` Deployment.
     The controller's ConfigMap write cannot be narrowed by namespace in a ClusterRole; the options are
-    per-namespace RoleBindings (a separate decision) or P12 ("argo-scope": Argo CD's identities write
+    per-namespace RoleBindings (a separate decision) or P6 and P12 in Deny (P12, "argo-scope": Argo CD's identities write
     namespaced objects only in `ryft-*` and `rabbitmq-system`, in `argocd` only `argoproj.io` objects
-    and Events, cluster-scoped objects only of the whitelisted kinds). P12 is not implemented here.
+    and Events, cluster-scoped objects only of the whitelisted kinds). P12 judges names only; it is built in #121, not here.
   - **Not changed by #47:** the chart hard-codes the server's Role in `argocd` (create, update, patch,
     delete on all Secrets, ConfigMaps, AppProjects, ApplicationSets). P7 refuses only Secrets labelled
     `secret-type`, so a leaked token of the public UI can rewrite `argocd-secret`, `argocd-cm` and
     `argocd-rbac-cm` today.
-  - **Open, no policy covers it: RBAC objects that outlive a stolen controller token.** The controller
+  - **RBAC objects that outlive a stolen controller token (P6 and P12 in Deny close the create and update route, not the rest).** The controller
     creates, updates, patches and deletes ClusterRoles, ClusterRoleBindings, Roles and RoleBindings with no
     `resourceNames` (a fresh cluster needs `create`). Kubernetes' escalation check bounds what a written
     role may hold (a subset of the controller's rights), not who it is bound to: with a stolen token one
@@ -253,8 +253,10 @@ commands, NetworkPolicies, VSO or Argo objects.
     and binding of another name, and showing it safe needs the `full` kind run (the operators' sync with escalate, bind
     and server-side apply of existing objects), which a pull request does not run. Not applied in #47: a
     scoping choice (the PR stays a draft until a full-mode run anyway), and the narrowing does not close the
-    route; its own change, with that run. The route closes with an extended P12 (refuse a binding by Argo CD's
-    identities whose subjects are not the operators' service accounts, and aggregation labels).
+    route; its own change, with that run. The create and update route closes with P6 and P12 together in Deny (P6 limits ClusterRole and
+    binding subjects and rules to the operators' names; P12 alone does not close it). Still open then: the
+    aggregation-label route, `delete` of RBAC objects, prune by name.
+  - **Sync impersonation stays off:** If `application.sync.impersonation.enabled` were ever turned on, all controller writes would move to other usernames and P12 (which judges names) would match nothing: the guard keeps refusing it (it is not an allowed `configs.cm` key, `configs.params` key or `controller` value, and `tests/addons.tftest.hcl` pins that).
   - argocd-server cannot add RBAC (no write on RBAC kinds).
   - **Beside the rules (guards added with #47):** `modules/argocd-values-guard`, a precondition of
     `helm_release.argocd`: `extraObjects` kinds with their one apiVersion, no `{{` anywhere in the values

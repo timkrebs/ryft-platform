@@ -273,8 +273,9 @@ controller can no longer hand itself write on the admission policies through RBA
 on a ClusterRole, `bind` on one fixed name), the public server can write nothing cluster-wide, and neither holds Secrets,
 `pods/exec` or `impersonate`. **What is not:** a compromised Argo CD can still reach cluster-admin
 by other routes (`kube-system/aws-auth`, workloads in `cert-manager` and `kube-system`), and so can
-still switch the admission layer off. That closes only when the admission policy P12 ("argo-scope")
-is in Deny; for `aws-auth` alone, also with EKS authentication mode `API`. It is not a sandbox: read
+still switch the admission layer off. That closes only when **P6 and P12** ("operators-cluster" and
+"argo-scope") are **both** in Deny and this change is applied (P12 judges names, and the chart and
+`admission.tf` refuse it in Deny otherwise); for `aws-auth` alone, also with EKS authentication mode `API`. It is not a sandbox: read
 "What stays open" below before you rely on it. Each rule has a reason; what a
 missing one looks like is under "A missing rule" below (a missing write fails the sync with
 `forbidden`; a missing read is a comparison error; a missing cluster-wide list is silent):
@@ -322,6 +323,7 @@ allowlist:
   `server.ingress` and its annotations. Below that (the values of those keys, other charts' keys) it checks
   only for `{{`, non-ASCII characters and control characters or their escapes. Its dangerous variants are canned test cases in `tests/addons.tftest.hcl`:
   a variant nobody wrote down is not tested for.
+- **Sync impersonation stays off.** If `application.sync.impersonation.enabled` were ever turned on, all controller writes would move to other usernames and P12 (which judges names) would match nothing: the guard keeps refusing it (it is not an allowed `configs.cm` key, `configs.params` key or `controller` value, and `tests/addons.tftest.hcl` pins that).
 - **The release takes the guard's output.** The module returns the document it checked
   (`values_yaml = yamlencode(var.values)`); `helm_release.argocd` uses `values = [module...values_yaml]`,
   and a **postcondition** requires that to be the release's only values, with no `set`, `set_list`,
@@ -375,14 +377,14 @@ allowlist:
    The controller's ConfigMap write cannot be narrowed here: the apps write ConfigMaps only in `ryft-*`
    and `rabbitmq-system`, but a ClusterRole rule cannot be scoped to namespaces, so the honest options are
    per-namespace RoleBindings (a separate decision: one Role and RoleBinding per namespace, kept in
-   step with the apps, and the namespaces must exist first) or P12. The rule is unchanged: the render
+   step with the apps, and the namespaces must exist first) or P6 and P12 both in Deny. The rule is unchanged: the render
    shows the apps need it. For `aws-auth` alone, EKS authentication mode `API` (access entries) removes
    the route.
 
-   Neither the narrowed ClusterRoles nor P1 to P11 stop this. It closes only with a new policy **P12**
-   ("argo-scope"): Argo CD's own identities may write namespaced objects only in `ryft-*` and
+   Neither the narrowed ClusterRoles nor P1 to P11 stop this. It closes only with **P6 and P12 both in Deny**
+   (P12, "argo-scope": Argo CD's own identities may write namespaced objects only in `ryft-*` and
    `rabbitmq-system`, in `argocd` only `argoproj.io` objects and Events, and cluster-scoped objects only
-   of the whitelisted kinds. A design note comes first; it is not implemented. Until P12 exists the
+   of the whitelisted kinds; it judges names only), and this change applied. Until then the
    controller token is, in effect, an admin of the workloads of every namespace, and through them of
    whatever those ServiceAccounts reach (Secrets included).
 2. **A Role of an operator name in any namespace, until P6 is in Deny.** The `escalate` and `bind` on
@@ -411,9 +413,9 @@ allowlist:
    (and Applications) in `argocd`. P7 refuses only Secrets labelled `secret-type`. So a leaked token of
    the public UI (D103) can rewrite `argocd-secret` (`admin.password`, `server.secretkey`), `argocd-cm`
    (`users.anonymous.enabled`) and `argocd-rbac-cm` (`policy.default: role:admin`) today, exactly as
-   before. Only P12 (the server writes Applications and Events in `argocd` only) or a chart that
+   before. Only P6 and P12 in Deny (the server writes Applications and Events in `argocd` only) or a chart that
    stops granting it changes that.
-6. **RBAC objects that outlive a stolen controller token (open, no policy covers it; not narrowed here).**
+6. **RBAC objects that outlive a stolen controller token (not narrowed here; P6 and P12 in Deny close the create and update route, not the rest).**
    The controller has create, update, patch and delete on `clusterroles`, `clusterrolebindings`, `roles`
    and `rolebindings` with **no `resourceNames`**, because Argo CD must create the operators' RBAC objects
    on a fresh cluster. Kubernetes' escalation check limits what a role it writes may hold (a subset of
@@ -446,10 +448,12 @@ allowlist:
    server-side apply of existing objects by name), which only the `full` mode of the kind harness
    exercises (`admission-e2e` workflow, dispatched by hand; the pull request's `admission` job runs `ci`
    mode). This PR stays a draft until a full-mode run passes anyway; the narrowing is better its own change
-   with its own run, since it does not close the route. What closes the route is a policy: P12
-   ("argo-scope"), **extended** to refuse a (Cluster)RoleBinding by Argo CD's identities whose subjects are
-   not the operators' service accounts, ClusterRoles with an aggregation label, and any RBAC write
-   outside the operators' objects (design note, "Limit of T12-f").
+   with its own run, since it does not close the route. What closes the create and update route is
+   **P6 and P12 together in Deny** (P6 limits the ClusterRoles and bindings that Argo CD's identities
+   create or update, their subjects and rules, to the operators' names; P12 keeps those identities to the
+   whitelisted kinds; P12 alone does not close it). **What stays open even then:** the aggregation-label
+   route, `delete` of RBAC objects (P6 matches CREATE and UPDATE only; P12 "does not cover" it), and prune
+   by name.
 
 *Evaluated, not implemented:* move the `escalate`/`bind` rule out of the cluster-wide ClusterRole into
 **namespaced Roles in `rabbitmq-system` and `ryft-rabbitmq`**, shipped as `extraObjects` of the Argo CD
@@ -484,7 +488,7 @@ What an operator does instead:
   Apply" unticked in the UI's sync dialog is refused with `forbidden` for these Roles. Leave it ticked.
 - **The UI cannot show the live manifest of a webhook configuration any more** (intended): argocd-server has
   nothing on `admissionregistration.k8s.io`. The diff of the application and `kubectl get` as admin still do.
-- **Applying the narrowing (Step 0).** From a clean `main` at the merged commit (`git status` empty), run
+- **Applying the narrowing (Step 0).** **Order with #121 (P12): P12 must not go to Deny before this change is applied** and these three read-only checks answer no, each as `--as=system:serviceaccount:argocd:argocd-application-controller --context ryft-prod-euc1`: `kubectl auth can-i patch validatingadmissionpolicybindings`, `kubectl auth can-i delete validatingadmissionpolicybindings`, `kubectl auth can-i impersonate users`. From a clean `main` at the merged commit (`git status` empty), run
   `terraform -chdir=infra/aws/kubernetes init` first: the guard is a new local module, and without `init`
   `validate` and `plan` stop with "Module not installed". Then `plan -out=argocd-rbac.tfplan`: it must show
   only `helm_release.argocd` changing; **if anything else is in the plan, stop**, and stop on any error from
@@ -559,6 +563,8 @@ The kind run does this for the kinds of the apps (`claim-i-list`). The pattern i
   The plan must show only `helm_release.argocd` changing (the chart returns to its default roles).
   **`-target` also plans the resources `helm_release.argocd` depends on: if anything else is in the plan,
   stop** and read why before you apply (a plan file applies exactly what it lists).
+  Rolling back also lifts the ground P12 stands on: do not roll back while P12 is in Deny (#121 refuses P12 in
+  Deny unless the controller role is rendered narrowed); put P12 back to Audit first.
   The squash revert is the whole change: it removes the values guard and the release's lifecycle
   conditions together with the narrowed rules. A **partial hand rollback** (say only
   `clusterRoleRules.enabled = false`) is refused by that guard on purpose; do not edit around it. **If the
