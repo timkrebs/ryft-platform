@@ -1,5 +1,5 @@
 # /v1/sync on the shared host; the api Ingress serves the rest of /v1. Traefik
-# and ingress-nginx both prefer the longer prefix across Ingress objects.
+# prefers the longer prefix across Ingress objects.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

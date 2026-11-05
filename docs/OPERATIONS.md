@@ -1735,7 +1735,7 @@ Every namespace starts with `default-deny` (no ingress, no egress) and `allow-dn
 
 | Workload | In | Out |
 | --- | --- | --- |
-| ingest, api | 8080 from Traefik in `kube-system` (or ingress-nginx in `ingress-nginx`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | RabbitMQ (`ryft-rabbitmq`, 5671), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
+| ingest, api | 8080 from Traefik in `kube-system` (and from the PostSync smoke pod in `ryft-smoke`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | RabbitMQ (`ryft-rabbitmq`, 5671), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
 | scoring | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 to public addresses |
 | notify | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
 | web (`ryft-web`) | 8080 from Traefik | nothing |
