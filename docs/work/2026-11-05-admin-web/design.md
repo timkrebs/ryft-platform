@@ -332,8 +332,8 @@ and fails when a route is in neither list. That keeps A3's route table and this 
     every peer as untrusted, **removes** any incoming `X-Forwarded-*`/`X-Real-Ip`, and its proxy
     **appends** the peer address to `X-Forwarded-For`. The api thus receives exactly one XFF value:
     the client.
-  - The api's NetworkPolicy admits port 8080 only from Traefik (kube-system), ingress-nginx (not
-    deployed) and our own smoke pod (`deploy/k8s/base/api/networkpolicy.yaml`).
+  - The api's NetworkPolicy admits port 8080 only from Traefik (kube-system) and our own smoke pod
+    (`deploy/k8s/base/api/networkpolicy.yaml`; the unused ingress-nginx peer is gone).
   - `httpx.ClientIP(r)` therefore takes the **rightmost** comma-separated XFF entry when it parses as
     an IP, and otherwise the host of `RemoteAddr`. IPv6 keys are masked to /64 (the NLB is IPv4 today;
     this is defensive). A test pins that a forged leftmost XFF is ignored.
