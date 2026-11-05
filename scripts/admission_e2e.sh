@@ -277,7 +277,8 @@ endgroup
 
 group "Argo CD's chart, its RBAC and the identities"
 adm_argo_values
-adm_argo_render && adm_check_argo_rbac
+if adm_argo_render; then adm_check_argo_rbac; adm_check_argo_bindings; adm_check_argo_inventory; adm_check_argo_extra_objects; fi
+adm_check_argo_tf_bindings
 adm_install_argo_identities
 endgroup
 
