@@ -19,6 +19,7 @@ import (
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
+	"github.com/timkrebs/ryft/internal/store"
 )
 
 // /v1/admin/ takes two bearers: ADMIN_API_KEY (scripts, smoke), compared first and in constant time,
@@ -42,6 +43,7 @@ type adminOptions struct {
 	Key      string        // ADMIN_API_KEY
 	Verifier auth.Verifier // verifies a Supabase access token; nil: only the key is accepted
 	Accounts adminAccounts // the allow-list; default the handler's store
+	Auditor  adminAuditor  // where mfa_required refusals are recorded; default the handler's store
 	Origins  []string      // ADMIN_WEB_ORIGINS: the pages that may read the answers; empty: none
 	Timeout  time.Duration // of the routes' work
 	// Per-address limit, per pod: 10/s with bursts of 20. A test passes its own.
@@ -94,6 +96,14 @@ func adminLogAttrs(ctx context.Context) []any {
 	return []any{"admin_actor", a.label()}
 }
 
+// wholeView says whether the caller gets the whole answer (the admin key) or the projection an operator's
+// token gets: no health-derived, device or diagnostic fields (model.AdminUserBrief, model.FeedbackBrief).
+// A caller whose actor is unknown gets the projection.
+func wholeView(r *http.Request) bool {
+	act, ok := adminActorFrom(r.Context())
+	return ok && act.isKey()
+}
+
 // info logs one admin line with the actor's attributes.
 func (a admin) info(r *http.Request, msg string, kv ...any) {
 	a.h.log.InfoContext(r.Context(), msg, append(kv, adminLogAttrs(r.Context())...)...)
@@ -104,21 +114,34 @@ type adminAccounts interface {
 	IsAdminAccount(ctx context.Context, user uuid.UUID) (bool, error)
 }
 
+// adminAuditor records an admin call (store.Audit).
+type adminAuditor interface {
+	Audit(ctx context.Context, e store.AuditEntry) error
+}
+
 type adminAuth struct {
 	keySum      [sha256.Size]byte
 	fingerprint string
 	verifier    auth.Verifier
 	accounts    adminAccounts
+	auditor     adminAuditor // nil: no audit (tests without a database)
 	log         *slog.Logger
 	limiter     *ratelimit.Limiter
+	mfaAudit    *ratelimit.Limiter // bounds the audit rows of mfa_required refusals per operator
+	pattern     func(*http.Request) string
 	now         func() time.Time
 }
 
-func newAdminAuth(h *handler, o adminOptions) adminAuth {
+func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string) adminAuth {
 	a := adminAuth{keySum: sha256.Sum256([]byte(o.Key)), fingerprint: keyFingerprint(o.Key), verifier: o.Verifier,
-		accounts: o.Accounts, log: h.log, limiter: o.Limiter, now: o.Now}
-	if a.accounts == nil {
+		accounts: o.Accounts, auditor: o.Auditor, log: h.log, limiter: o.Limiter, pattern: pattern, now: o.Now,
+		// A burst of 3, then one a minute, per operator and pod: a stale session that retries does not flood the table.
+		mfaAudit: ratelimit.New(1.0/60, 3)}
+	if a.accounts == nil && h.st != nil {
 		a.accounts = h.st
+	}
+	if a.auditor == nil && h.st != nil {
+		a.auditor = h.st
 	}
 	// Create the series at 0 now: increase() over a counter that is born at 1 sees no increase, so the
 	// first use of a pod's life would never fire AdminWebUsed (a use you did not make is the signal).
@@ -208,6 +231,7 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 			metrics.AdminRequests.WithLabelValues("mfa_required").Inc()
 			a.log.InfoContext(r.Context(), "admin second factor required", "reason", reason, "admin_actor", model.ActorUser+":"+p.UserID.String()[:8])
 			httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeMFARequired, "a second factor confirmed in the last 12 hours is required")
+			a.auditMFA(r, p.UserID)
 			return
 		}
 		if ri := httpx.Info(r.Context()); ri != nil {
@@ -215,6 +239,32 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 		}
 		a.pass(w, r, next, adminActor{user: p.UserID})
 	})
+}
+
+// auditMFA records the refusal of a real operator for want of a fresh second factor: who, which route,
+// 403, no details. A stolen password plus a session without the second factor is what this shows. The
+// rows are bounded per operator (a burst of 3, then one a minute, per pod), and only a user who passed
+// the role and the allow-list gets here, so a stranger cannot write them.
+func (a adminAuth) auditMFA(r *http.Request, user uuid.UUID) {
+	if a.auditor == nil {
+		return
+	}
+	if ok, _ := a.mfaAudit.Allow(user.String()); !ok {
+		return
+	}
+	action, requestID := r.Method+" /v1/admin/", ""
+	if p := a.pattern(r); p != "" {
+		action = p
+	}
+	if ri := httpx.Info(r.Context()); ri != nil {
+		requestID = ri.RequestID
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if err := a.auditor.Audit(ctx, store.AuditEntry{ActorUser: &user, Action: action, Status: http.StatusForbidden,
+		RequestID: requestID}); err != nil {
+		a.log.ErrorContext(ctx, "admin audit write failed", "err", err, "action", action)
+	}
 }
 
 // mfaProblem is why the token's second factor does not count: aal must be exactly aal2, and a totp entry
@@ -247,15 +297,22 @@ func (a adminAuth) reject(w http.ResponseWriter, r *http.Request, reason string)
 // never a sign-out, and the key path does not depend on it.
 func (a adminAuth) unavailable(w http.ResponseWriter, r *http.Request, reason string) {
 	metrics.AdminRequests.WithLabelValues("error").Inc()
-	metrics.AuthFailures.WithLabelValues(reason).Inc()
+	// The allow-list check failing is the database being unavailable to an auth decision, which is what
+	// AuthUnavailable watches ("internal", as for the app's user lookup); the log and the access line keep
+	// the precise reason.
+	metricReason := reason
+	if reason == "account_check" {
+		metricReason = "internal"
+	}
+	metrics.AuthFailures.WithLabelValues(metricReason).Inc()
 	httpx.SetCode(r, reason)
 	a.log.WarnContext(r.Context(), "admin auth unavailable", "reason", reason)
 	w.Header().Set("Retry-After", "5")
 	httpx.WriteError(w, http.StatusServiceUnavailable, "authentication temporarily unavailable")
 }
 
-// keyOnly refuses a token on a route that needs the key (destructive or beyond what the page uses):
-// 403 without a code. It runs inside audited, so the attempt is recorded, and an unknown actor is refused.
+// keyOnly wraps a route that needs the key (destructive or beyond what the page uses): a token gets 403
+// without a code. It runs inside audited, so the attempt is recorded, and an unknown actor is refused.
 func (a admin) keyOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if act, ok := adminActorFrom(r.Context()); ok && act.isKey() {
@@ -269,32 +326,34 @@ func (a admin) keyOnly(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// adminRoute is a route of /v1/admin with its class: key-only routes answer a token with 403.
+// adminRoute is a route of /v1/admin with its class. The zero value of tokenOK is the safe one: a route
+// is key-only (a token gets 403) unless it is listed as one the operator's token may call.
 type adminRoute struct {
 	pattern string
-	keyOnly bool
+	tokenOK bool
 	handler http.HandlerFunc
 }
 
-// routes is every /v1/admin route and who may call it. A test pins this classification, so a route
-// cannot be added without saying which bearers reach it.
+// routes is every /v1/admin route and who may call it. A test pins this classification, and another
+// that nothing is registered on the admin mux outside this table, so a route cannot be added without
+// saying which bearers reach it.
 func (a admin) routes() []adminRoute {
 	return []adminRoute{
-		{"GET /v1/admin/flags", false, a.flags},
-		{"PUT /v1/admin/flags/{key}", true, a.putFlag},
-		{"DELETE /v1/admin/flags/{key}", true, a.deleteFlag},
-		{"POST /v1/admin/invites", false, a.createInvite},
-		{"GET /v1/admin/invites", false, a.invites},
-		{"DELETE /v1/admin/invites/{code}", false, a.deleteInvite},
-		{"GET /v1/admin/feedback", false, a.feedback},
-		{"POST /v1/admin/feedback/{id}/resolve", false, a.resolveFeedback},
-		{"GET /v1/admin/users", false, a.users},
-		{"GET /v1/admin/users/{id}", true, a.userDetail},
-		{"POST /v1/admin/users/{id}/access", false, a.grantAccess},
-		{"DELETE /v1/admin/users/{id}/access", false, a.revokeAccess},
-		{"POST /v1/admin/users/{id}/merge-into/{to}", true, a.merge},
-		{"POST /v1/admin/users/{id}/resync-hint", true, a.resyncHint},
-		{"GET /v1/admin/audit", false, a.audit},
+		{"GET /v1/admin/flags", true, a.flags},
+		{"PUT /v1/admin/flags/{key}", false, a.putFlag},
+		{"DELETE /v1/admin/flags/{key}", false, a.deleteFlag},
+		{"POST /v1/admin/invites", true, a.createInvite},
+		{"GET /v1/admin/invites", true, a.invites},
+		{"DELETE /v1/admin/invites/{code}", true, a.deleteInvite},
+		{"GET /v1/admin/feedback", true, a.feedback},
+		{"POST /v1/admin/feedback/{id}/resolve", true, a.resolveFeedback},
+		{"GET /v1/admin/users", true, a.users},
+		{"GET /v1/admin/users/{id}", false, a.userDetail},
+		{"POST /v1/admin/users/{id}/access", true, a.grantAccess},
+		{"DELETE /v1/admin/users/{id}/access", true, a.revokeAccess},
+		{"POST /v1/admin/users/{id}/merge-into/{to}", false, a.merge},
+		{"POST /v1/admin/users/{id}/resync-hint", false, a.resyncHint},
+		{"GET /v1/admin/audit", true, a.audit},
 	}
 }
 
@@ -304,14 +363,14 @@ func (a admin) routes() []adminRoute {
 func adminRoutes(h *handler, o adminOptions) http.Handler {
 	a, adm := admin{h: h}, http.NewServeMux()
 	for _, r := range a.routes() {
-		if r.keyOnly {
-			adm.HandleFunc(r.pattern, a.keyOnly(r.handler))
-		} else {
+		if r.tokenOK {
 			adm.HandleFunc(r.pattern, r.handler)
+		} else {
+			adm.HandleFunc(r.pattern, a.keyOnly(r.handler))
 		}
 	}
-	adm.HandleFunc("/v1/admin/", httpx.NotFound)
-	au := newAdminAuth(h, o)
+	adm.HandleFunc("/v1/admin/", httpx.NotFound) // the one direct registration: everything else is in routes()
+	au := newAdminAuth(h, o, func(r *http.Request) string { _, p := adm.Handler(r); return p })
 	inner := au.limit(au.require(a.audited(httpx.Timeout(o.Timeout, httpx.WithRoutes(adm)))))
 	return httpx.CORS{Origins: o.Origins, Methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete},
 		Headers: []string{"Authorization", "Content-Type"}, Expose: []string{httpx.RequestIDHeader, "Retry-After"},

@@ -131,7 +131,7 @@ func TestAdminRoutesAreClassified(t *testing.T) {
 		if _, dup := got[r.pattern]; dup {
 			t.Errorf("%s is registered twice", r.pattern)
 		}
-		got[r.pattern] = r.keyOnly
+		got[r.pattern] = !r.tokenOK
 	}
 	for p, k := range got {
 		if w, ok := want[p]; !ok {
@@ -159,7 +159,7 @@ func TestAdminRouteMatrix(t *testing.T) {
 		found := false
 		for _, r := range (admin{}).routes() {
 			p := r.pattern
-			found = found || (strings.HasPrefix(p, c.method+" ") && sameShape(strings.TrimPrefix(p, c.method+" "), c.path) && r.keyOnly == c.keyOnly)
+			found = found || (strings.HasPrefix(p, c.method+" ") && sameShape(strings.TrimPrefix(p, c.method+" "), c.path) && !r.tokenOK == c.keyOnly)
 		}
 		if !found {
 			t.Errorf("%s %s does not match a route of the table with its class", c.method, c.path)

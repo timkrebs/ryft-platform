@@ -90,7 +90,10 @@ groups:
         for: 10m
         labels: { severity: warning }
       - alert: AuthUnavailable
-        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_.*|internal"}[5m])) > 0
+        # The signing keys or a user/allow-list lookup cannot be reached. jwks_refresh_limited is left out:
+        # it is a token with an unknown key id inside the refresh limit (a rotation, or a forged kid that
+        # anyone can send), retryable and not an outage.
+        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[5m])) > 0
         for: 5m
         labels: { severity: critical }
       - alert: DatabaseDown
@@ -228,14 +231,17 @@ groups:
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
       - alert: AdminUnauthorized
-        # More than 20 refused /v1/admin requests in 10 minutes: a scanner, a guessed key, or a stolen
-        # password trying the operator's page. The answer is the same 401 for every reason; the reason
-        # is the api's "admin auth rejected" log line and the access line's code. The per-address limit
-        # (ryft_rate_limited_total{class="admin_ip"}) caps what one address can send.
+        # More than 20 /v1/admin requests with a bad bearer in 10 minutes: a scanner, a guessed key, a
+        # stale or foreign token. The api never sees a guessed password (that is Supabase Auth: Supabase ->
+        # Logs -> Auth). The answer is the same 401 for every reason; the reason is the api's "admin auth
+        # rejected" log line and the access line's code. The per-address limit
+        # (ryft_rate_limited_total{class="admin_ip"}) caps what one address can send. A real operator
+        # refused for want of a fresh second factor (result="mfa_required") is in neither alert, on
+        # purpose: it is in the audit and the log (OPERATIONS.md -> Beta -> Admin sign-in).
         expr: sum(increase(ryft_admin_requests_total{result="unauthorized"}[10m])) > 20
         labels: { severity: warning }
         annotations:
-          summary: "Repeated refused admin requests (OPERATIONS.md → Beta → Admin sign-in)"
+          summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
           runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
       - alert: AdminWebUsed
         # The operator's page (an admin Supabase token) was used. Who is in GET /v1/admin/audit, not in a

@@ -58,6 +58,8 @@ var contractTypes = map[string]reflect.Type{
 	"AdminDuplicate":         reflect.TypeOf(AdminDuplicate{}),
 	"AuditRecord":            reflect.TypeOf(AuditRecord{}),
 	"Actor":                  reflect.TypeOf(Actor{}),
+	"AdminUserBrief":         reflect.TypeOf(AdminUserBrief{}),
+	"FeedbackBrief":          reflect.TypeOf(FeedbackBrief{}),
 	"AdminSource":            reflect.TypeOf(AdminSource{}),
 	"UserPatch":              reflect.TypeOf(UserPatch{}),
 	"Behavior":               reflect.TypeOf(Behavior{}),

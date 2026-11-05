@@ -49,6 +49,13 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
+	// Also before any connection: a malformed ADMIN_WEB_ORIGINS must fail at once, not behind the
+	// database and broker waits (a test pins that this stays above db.Open).
+	adminCfg, err := config.LoadAdmin()
+	if err != nil {
+		log.Error("admin config", "err", err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -78,11 +85,6 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("auth", "mode", authCfg.Mode)
-	adminCfg, err := config.LoadAdmin()
-	if err != nil {
-		log.Error("admin config", "err", err)
-		os.Exit(1)
-	}
 
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {

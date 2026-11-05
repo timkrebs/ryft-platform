@@ -1588,40 +1588,98 @@ an operator, for the operator's web page. A token is accepted only when **all** 
 hold: `app_metadata.role` is `"admin"` (never the top-level `role`, never `user_metadata`,
 which the user can write), the user has a row in `admin_accounts` and no tombstone, and the
 token is `aal2` with a TOTP at most 12 hours old. Everything else is one identical `401`
-(the reason is only in the log: `admin auth rejected`, `reason` and the access line's `code`);
-a real operator without a fresh second factor gets `403 mfa_required`; an operator's token on
-merge, flag writes, user detail or resync-hint gets `403` (key-only routes, audited).
-**Nothing changes for anyone until you insert an `admin_accounts` row** and give the account
-the role. Both statements in the SQL editor, as the owner, by id:
+(the reason is only in the log: `admin auth rejected`, `reason` and the access line's `code`).
+One exception, plainly: a token whose key id the api does not know, while the signing keys were
+fetched less than a minute ago, answers `503` (`jwks_refresh_limited`, `Retry-After: 5`), not `401`.
+Anyone can send such a token, so a `503` on an admin route can be provoked and is not by itself an
+outage. A real operator without a fresh second factor gets `403 mfa_required` (and an audit row);
+an operator's token on merge, flag writes, user detail or resync-hint gets `403` (key-only routes,
+audited). The token's answers for the users list and the feedback are a projection without the
+health-derived, device and diagnostic fields (API.md); the key gets the whole answers.
+
+**What changes on deploy, and for whom.** The token path admits nobody until an `admin_accounts`
+row exists *and* the account has the role, and CORS is off while `ADMIN_WEB_ORIGINS` is empty.
+For key callers (scripts, `make smoke-prod`) three small things change: more than 10 requests a
+second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
+and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
+SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
+row exists so that revoking takes effect at once, not so that two parties must agree:
 
 ```sql
 update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
 insert into public.admin_accounts (user_id, note) values ('<admin uuid>', 'operator') on conflict do nothing;
 ```
 
+A role set this way appears only in tokens issued after the update: sign in again on the page.
 The api only reads `admin_accounts`; it is operator configuration, not user data (account
 deletion does not touch it; a deleted account's tombstone refuses the row). Which pages may
 read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
 list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page can, scripts are
-unaffected; a malformed value stops the api at start-up, and a test parses the committed line).
-Every `/v1/admin/*` request is limited per client address (10 a second, bursts of 20, per
-pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's; never logged), and every
-admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`, the first 8 hex
-digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
+unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
+test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
+second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
+never logged), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
+the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
 
-Alerts: `AdminUnauthorized` (warning: more than 20 refused requests in 10 minutes: a scanner or
-a guessed password; read the `admin auth rejected` lines) and `AdminWebUsed` (info: the page was
-used; not you means act, below). A 503 on the admin routes with a token is Supabase's keys or the
-database being unreachable (`Retry-After: 5`); the key keeps working.
+**Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
+a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
+guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sign-in attacks.
+`AdminWebUsed` (info): the page was used; if it was not you, act (below). A real operator refused
+for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
+audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
+is Supabase's keys or the database being unreachable (`Retry-After: 5`, `AuthUnavailable` pages for
+it) or a forged key id (above); the key keeps working. CloudWatch Logs Insights, log group
+`/ryft/ryft-prod-euc1/containers` (OBSERVABILITY → In CloudWatch):
+
+```text
+# refused bearers, by reason (missing, not_a_token, expired, signature, unknown_key, not_admin, not_allowed, …)
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth rejected"
+| stats count() by data.reason, bin(10m)
+
+# who passed with a token (the page was used): every admin line names its actor; the access line
+# carries the operator's user_id and the route
+fields @timestamp, data.admin_actor, data.msg, data.route
+| filter data.service = "api" and data.admin_actor like /^user:/
+
+# a real operator without a fresh second factor (a stolen password with no second factor looks like this)
+fields @timestamp, data.admin_actor, data.reason
+| filter data.service = "api" and data.msg = "admin second factor required"
+
+# signing keys or the allow-list check unreachable
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth unavailable"
+
+# the audit row could not be written (the call was answered; GET /v1/admin/audit lacks it)
+fields @timestamp, data.action, data.err
+| filter data.service = "api" and data.msg = "admin audit write failed"
+
+# the api refused to start over its admin settings (a malformed ADMIN_WEB_ORIGINS)
+fields @timestamp, data.err
+| filter data.service = "api" and data.msg = "admin config"
+```
+
+**The api crash-loops after an `ADMIN_WEB_ORIGINS` change** (the `admin config` line above, `level`
+ERROR): revert the `config.env` line in git (a PR); the new ConfigMap hash rolls the api again. Pods
+that are still ready keep serving while the new ones fail, so check `argocd app get` and the
+rollout before anything else. **A flood of `429`s on `/v1/admin/*`:** look at
+`ryft_rate_limited_total{class="admin_ip"}` and `AdminUnauthorized`; the limit already caps what one
+address costs (no token check, no database call). If it persists, a Traefik IP deny is a change to
+the Argo-managed Middleware in git; nothing does it automatically.
 
 **Lost phone, or any doubt about the admin account** (immediate, in this order):
 
 1. SQL editor, as owner: `delete from admin_accounts where user_id = '<admin uuid>';` — takes
    effect on the next request, whatever the token's lifetime.
-2. Supabase → Authentication → Users → the admin account: *Sign out* (or ban), then remove the
-   MFA factor and change the password.
-3. What happened since: `curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=<day of the loss>" | jq '.[] | select(.actor.kind=="user")'`.
-4. To restore: enrol again from a trusted device, then insert the row again.
+2. Supabase → Authentication → Users → the admin account: *Ban user*, so no new token is issued
+   (verify in the dashboard that the ban is shown; tokens already issued live out their hour, which
+   is why step 1 comes first). Ending its sessions as the owner is `delete from auth.sessions
+   where user_id = '<admin uuid>';` — check the table and the column in the dashboard's schema view
+   first. Then remove the MFA factor and change the password (also in the dashboard).
+3. What happened since: `curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=<day of the loss>" | jq '.[] | select(.actor.kind=="user")'`
+   (the rows with status `403` and a user actor are refusals for want of a second factor).
+4. To restore: lift the ban, enrol again from a trusted device, sign in again (a new `app_metadata.role` only
+   appears in tokens issued after the update), then insert the row again.
 
 **Tracing a request** a tester reports by its id:
 

@@ -1937,16 +1937,20 @@ request; removing the claim ends it when the token expires (at most 1 h). The 12
 stolen refresh token is worth without the second factor. A Supabase user who is not allow-listed gets the
 same answer as no session at all.
 
-**Answers.** Every refusal of the first row is the same `401`: status, headers and body are identical
+**Answers.** Every refusal of a bearer is the same `401`: status, headers and body are identical
 whatever was wrong (no bearer, garbage, an expired or foreign token, an app user's token, a token without
-the role, a user without a row), so the answer is no oracle for the key or for who is an admin.
+the role, a user without a row), so the answer is no oracle for the key or for who is an admin. **One
+exception, said plainly:** a token signed with a key id the api does not know, while it fetched the signing
+keys less than a minute ago, answers `503` with `Retry-After: 5` (the refresh limit: it cannot tell a key
+rotation from a forged id yet), not `401`. Anyone can send such a token, so a `503` on an admin route does not
+by itself mean an outage; send the request again.
 
 | Situation | Status | Body and headers |
 | --- | --- | --- |
 | No bearer, not the key, not a valid admin token (any reason) | `401` | `WWW-Authenticate: Bearer realm="ryft-admin"`; the error shape with the message `admin key or admin sign-in required`; no `code` |
 | Valid token, `role` admin, allow-listed, but `aal` is not `aal2` or the TOTP is older than 12 h | `403` | `code` **`mfa_required`**. Only a real, allow-listed admin ever sees it |
 | Valid admin token on a **key-only** route (route table below) | `403` | no `code`; message `this route needs the admin key` |
-| The signing keys or the database cannot be reached while a **token** is checked | `503` | `Retry-After: 5`; message `authentication temporarily unavailable`. Never a reason to sign out. The key path is not affected |
+| The signing keys or the database cannot be reached while a **token** is checked, or the token names a key id the api does not know and the keys were fetched in the last minute | `503` | `Retry-After: 5`; message `authentication temporarily unavailable`. Never a reason to sign out. The key path is not affected |
 | More than 10 requests a second from one client address (bursts of 20; counted per api pod, before any bearer is checked) | `429` | `Retry-After` (whole seconds); message `too many requests`. A preflight is not counted |
 
 The message texts are for people and not pinned by tests (the `…` in the examples stands for the message; for `mfa_required` it reads `a second factor confirmed in the last 12 hours is required`); branch on the status and the `code`. What the page does: `401` →
@@ -2085,16 +2089,18 @@ or feedback holds `emails` (whether the addresses were asked for) and `n`, an ac
 
 ### Users, feedback, flags (existing shapes)
 
-These shapes are unchanged; they are listed because the page uses them. `AdminUser.email` is present only with
-`?emails=1`. The health-derived fields (`days_scored_14d`, `nights_with_stages_14d`, `days_with_hrv_14d`,
-`calibrating`, `sources`) are part of the answer; the page does not show them.
+These shapes are unchanged **for the admin key**; they are listed because the page uses them. `AdminUser.email` is
+present only with `?emails=1`. **An operator's token gets a smaller answer for the users list and the feedback**
+(the next two subsections): the server leaves out the health-derived data-quality fields, the device fields, the
+consent version, the request ids and the diagnostics, so none of them reaches a browser. The key keeps the whole
+answers (only fields are omitted for a token; no field of the key's answer changes).
 
 | Route | Answer |
 | --- | --- |
-| `GET /v1/admin/users[?emails=1]` | `200` `[AdminUser]` |
+| `GET /v1/admin/users[?emails=1]` | `200` `[AdminUser]` for the key, `[AdminUserBrief]` for a token |
 | `POST /v1/admin/users/{id}/access` | `204`: beta access without a code |
 | `DELETE /v1/admin/users/{id}/access` | `204`: takes it away |
-| `GET /v1/admin/feedback[?since=]` | `200` `[Feedback]`, newest first, at most 500; `since` is RFC 3339 or `YYYY-MM-DD` (default 7 days), else `422` |
+| `GET /v1/admin/feedback[?since=]` | `200` `[Feedback]` for the key, `[FeedbackBrief]` for a token, newest first, at most 500; `since` is RFC 3339 or `YYYY-MM-DD` (default 7 days), else `422` |
 | `POST /v1/admin/feedback/{id}/resolve` | `204`; `400` when `id` is not a number, `404 "no such feedback"` |
 | `GET /v1/admin/flags` | `200` `[FeatureFlag]` ordered by `key` |
 
@@ -2117,6 +2123,33 @@ These shapes are unchanged; they are listed because the page uses them. `AdminUs
     "message": "Sleep stages are empty for last night.", "app_version": "0.9.0", "build": "41",
     "device_model": "iPhone17,1", "os_version": "26.1", "request_ids": ["01a14ffa-eb7c-73e3-9cf9-262c70d5ed9c"],
     "diagnostics": null, "created_at": "2026-11-05T07:30:00Z", "resolved_at": null }
+]
+```
+
+#### What an operator's token gets of the users list and the feedback
+
+`AdminUserBrief` (the same rows, same order, same `?emails=1` rule): `id`, `short_id`, `created_at`, `provider`,
+`email` (only with `?emails=1`), `beta_access`, `last_sync_at`. **Left out:** `consent_version`, `app_version`,
+`os_version`, `sources`, `days_scored_14d`, `nights_with_stages_14d`, `days_with_hrv_14d`, `calibrating`,
+`max_hr_source`, `open_feedback`, `dup`.
+
+<!-- type: []model.AdminUserBrief -->
+```json
+[
+  { "id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", "short_id": "9f8e7d6c", "created_at": "2026-11-05T18:00:02Z",
+    "provider": "email", "email": "anna@example.com", "beta_access": true, "last_sync_at": "2026-11-05T18:20:00Z" }
+]
+```
+
+`FeedbackBrief`: `id`, `user_short_id` (the account's first 8 hex digits, not its id), `category`, `message`,
+`created_at`, `resolved_at`. **Left out:** `user_id`, `app_version`, `build`, `device_model`, `os_version`,
+`request_ids`, `diagnostics`.
+
+<!-- type: []model.FeedbackBrief -->
+```json
+[
+  { "id": 42, "user_short_id": "9f8e7d6c", "category": "bug",
+    "message": "Sleep stages are empty for last night.", "created_at": "2026-11-05T07:30:00Z", "resolved_at": null }
 ]
 ```
 
@@ -2942,7 +2975,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-11-05 | **Admin sign-in** (the api side of the operator's page at `https://ryftapp.de/admin`; the app is not involved, so no `API_REQUESTS.md` entry answers to this): a new section [Admin routes (operator only)](#admin-routes-operator-only) documents `/v1/admin/*`, which API.md did not cover before. **Auth:** `/v1/admin/*` accepts the admin key (unchanged) **or** a Supabase access token with `app_metadata.role` `admin`, an allow-list row and a TOTP (`aal2`, `amr` `totp`) at most 12 h old; every other bearer gets one identical `401`; a valid, allow-listed admin without a fresh second factor gets `403` with the new `code` **`mfa_required`** (Errors → `code` table and the `403` row); merge, flag writes, user detail and resync-hint stay key-only (`403` for a token, no `code`); a token whose signing keys or database check is unavailable gets `503` with `Retry-After: 5`; `/v1/admin/*` has a per-address limit (10/s, bursts of 20, `429` with `Retry-After`). **CORS:** only `/v1/admin/*`, only for the origins in `ADMIN_WEB_ORIGINS` (empty = none), `GET, POST, DELETE`, `Authorization`, `Content-Type`, preflight answered without auth, `Max-Age` 600, no credentials, `X-Request-ID` and `Retry-After` exposed. **Audit:** `AuditRecord.actor` (`{kind: key | user, id}`, `Actor`, closed `kind`); `key_fingerprint` stays and is `""` for a user actor. **Behaviour:** nothing changes for the app or for key-based scripts. Old clients ignore every new field. **Swift:** the mirror gains `APIErrorCode.mfaRequired` for completeness; the app needs no change, it never calls `/v1/admin/*` (`APIErrorBody` is unchanged, and the admin types are not mirrored). |
+| 2026-11-05 | **Admin sign-in** (the api side of the operator's page at `https://ryftapp.de/admin`; the app is not involved, so no `API_REQUESTS.md` entry answers to this): a new section [Admin routes (operator only)](#admin-routes-operator-only) documents `/v1/admin/*`, which API.md did not cover before. **Auth:** `/v1/admin/*` accepts the admin key (unchanged) **or** a Supabase access token with `app_metadata.role` `admin`, an allow-list row and a TOTP (`aal2`, `amr` `totp`) at most 12 h old; every other bearer gets one identical `401`; a valid, allow-listed admin without a fresh second factor gets `403` with the new `code` **`mfa_required`** (Errors → `code` table and the `403` row); merge, flag writes, user detail and resync-hint stay key-only (`403` for a token, no `code`); a token whose signing keys or database check is unavailable gets `503` with `Retry-After: 5`; `/v1/admin/*` has a per-address limit (10/s, bursts of 20, `429` with `Retry-After`). **CORS:** only `/v1/admin/*`, only for the origins in `ADMIN_WEB_ORIGINS` (empty = none), `GET, POST, DELETE`, `Authorization`, `Content-Type`, preflight answered without auth, `Max-Age` 600, no credentials, `X-Request-ID` and `Retry-After` exposed. **Audit:** `AuditRecord.actor` (`{kind: key | user, id}`, `Actor`, closed `kind`); `key_fingerprint` stays and is `""` for a user actor. **Token answers:** the users list and the feedback are projections for an operator's token (`AdminUserBrief`, `FeedbackBrief`: no health-derived, device or diagnostic fields); the key's answers are unchanged. **Behaviour:** nothing changes for the app or for key-based scripts, except that a key caller can now get `429` above 10 requests a second per address, the `401` message is `admin key or admin sign-in required`, and the scheme `bearer` in lower case is accepted. Old clients ignore every new field. **Swift:** the mirror gains `APIErrorCode.mfaRequired` for completeness; the app needs no change, it never calls `/v1/admin/*` (`APIErrorBody` is unchanged, and the admin types are not mirrored). |
 | 2026-11-04 | **Errors: what the client does** (documentation only, behaviour unchanged): Errors → the status table gains a `code` column (the `code`s a status can carry) and a **Do** column with one line per status (`400`, `401`, `403`, `404`, `409`, `413`, `422`, `429`, `500`, `503`), consistent with the app's retry rules (`408`, `429` and `5xx` but `501` are transient; a `4xx` is not retried unchanged). The `When` cells state conditions only; the instructions moved to `Do`. `409` on `PUT /v1/sessions/{id}`: merge the returned `Session` with the local copy by set id (the later `updated_at` wins) and `PUT` the result. `503` When names its causes; a database failure mid-request is a `500`. `429` notes that the edge sends `Retry-After` too and names the feedback and invite limits. No status, `code` or field changed; the `code` enum is still the four values. The sample consent error body shows the real message (`consent to the privacy policy … is required before uploading health data`; it read `consent required`), and the `GET /v1/config` example shows the policy version in force (`2026-10-26`); the messages Errors quotes verbatim are fixed text, every other message stays free text: branch on the status and `code`. Tests check the `code` table, the status table and the quoted messages against the code (the Do wording only for being present). Swift: none (`APIErrorCode`, `APIErrorBody` unchanged). |
 | 2026-10-31 | **Coverage and provisional scores** (answers the app's data-quality D2 and D4, `API_REQUESTS.md` → Sync and performance): `DailyScore.coverage` (`ScoreCoverage?`: `sleep_hr_minutes`, `hrv_readings`, `sleep_source`, `hr_source_hours`, `night_complete`, `status` `provisional` \| `final`, closed); `User.sources[].samples_7d` (sample counts per `Sample.type` over the last 7 days, all eight keys on every source). `details.hr_minutes` stays. **Behaviour:** a night is complete on wake evidence or at 10:00 local; a day is `provisional` until then and `final` after, sticky; scoring gains two floors (sleep heart rate < 120 min drops the resting-HR input of Recovery, which is renormalised, `rhr` itself stays; < 60 min of sleep from the winning source makes `sleep_performance` `null`), so stored numbers change for thin nights and the model version is bumped (`GET /v1/model`; rescore history to fill `coverage` on old rows); `MORNING_SCORE` now waits for the first `final` scoring of the day with recovery and sleep, the silent refresh still follows every scoring. Old clients ignore the new fields. Swift: `ScoreStatus`, `ScoreCoverage`, `DailyScore.coverage`, `UserSource.samples7D` (wire key `samples_7d`; the app's `.convertFromSnakeCase` maps it to `samples7D`, capital D). |
 | 2026-10-31 | **Workout duplicates** (extended the same day with `include_hidden`): `GET /v1/workouts?include_hidden=true` (optional, `true`/`false`, else `422`) also returns the hidden cross-source duplicates, each with `Workout.duplicate_of` (uuid?, the primary's id); the app's export passes it so the file is complete; without it, and on `GET /v1/days/{day}`, nothing changes. `Workout.also_recorded_by` (`[string]?`, omitted when none). **Behaviour:** workouts of one source with the same activity and start and end within 120 s of each other are folded to the most recently uploaded id (the older ids are removed, `404` afterwards, a Train session stays and is re-attached when the day is rescored); workouts of different sources with the same activity (or `other`) that overlap by at least 80 % of the shorter are listed once, as the primary with the other sources in `also_recorded_by`, in `GET /v1/days/{day}` and `GET /v1/workouts` (`GET /v1/workouts/{id}` still answers for the hidden one). Distances, counts and `muscular_load` attachment on affected days change when they are rescored. Swift: `Workout.alsoRecordedBy`, `Workout.duplicateOf`. |

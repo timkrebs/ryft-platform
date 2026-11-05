@@ -905,7 +905,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations:
-              summary: "Repeated refused admin requests (OPERATIONS.md → Beta → Admin sign-in)"
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
               runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
   - name: refused admin requests, just under the threshold
     interval: 1m
@@ -917,6 +917,34 @@ tests:
     alert_rule_test:
       - { eval_time: 20m, alertname: AdminUnauthorized, exp_alerts: [] }
       - { eval_time: 30m, alertname: AdminUnauthorized, exp_alerts: [] }
+  - name: a forged key id is not an auth outage
+    interval: 1m
+    input_series:
+      # Anyone can send a token with an unknown key id: the refresh limit answers 503 jwks_refresh_limited,
+      # a retry and not an outage. It must not page.
+      - { series: 'ryft_auth_failures_total{reason="jwks_refresh_limited",pod="api-1"}', values: '0+10x30' }
+      - { series: 'ryft_auth_failures_total{reason="expired",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AuthUnavailable, exp_alerts: [] }
+  - name: signing keys or a lookup unreachable is an auth outage
+    interval: 1m
+    input_series:
+      - { series: 'ryft_auth_failures_total{reason="jwks_unavailable",pod="api-1"}', values: '0+1x30' }
+    alert_rule_test:
+      - { eval_time: 3m, alertname: AuthUnavailable, exp_alerts: [] }
+      - eval_time: 12m
+        alertname: AuthUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+  - name: a failed lookup behind an auth decision is an auth outage (the admin allow-list check counts as internal)
+    interval: 1m
+    input_series:
+      - { series: 'ryft_auth_failures_total{reason="internal",pod="api-2"}', values: '0+1x30' }
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuthUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
   - name: the admin page is used
     interval: 1m
     input_series:

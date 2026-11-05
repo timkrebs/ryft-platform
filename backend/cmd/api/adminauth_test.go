@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
 )
@@ -310,9 +311,13 @@ func TestAdminOutagesAre503NotUnauthorized(t *testing.T) {
 		acc := newFakeAccounts(op)
 		acc.err = errDown
 		srv, actors := authChain(quietHandler(), adminOptions{Key: testAdminKey, Verifier: jwks.verifier(t), Accounts: acc})
+		internal := count(metrics.AuthFailures.WithLabelValues("internal"))
 		a := do(srv, "GET", "/v1/admin/flags", jwks.sign(t, adminClaims(op)), "")
 		if a.status != 503 || a.header.Get("Retry-After") != "5" || strings.Contains(a.body, "db down") {
 			t.Fatalf("%d %v %s", a.status, a.header, a.body)
+		}
+		if count(metrics.AuthFailures.WithLabelValues("internal")) != internal+1 {
+			t.Error("the failed allow-list check counts as ryft_auth_failures_total{reason=internal}, which AuthUnavailable watches")
 		}
 		if a := do(srv, "GET", "/v1/admin/flags", testAdminKey, ""); a.status != 204 {
 			t.Fatalf("the key: %d", a.status)

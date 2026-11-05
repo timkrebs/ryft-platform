@@ -106,6 +106,14 @@ func (a admin) feedback(w http.ResponseWriter, r *http.Request) {
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	auditDetail(r, "n", len(list))
 	a.info(r, "admin feedback read", "since", since, "n", len(list))
+	if !wholeView(r) {
+		brief := make([]model.FeedbackBrief, 0, len(list))
+		for _, f := range list {
+			brief = append(brief, f.Brief())
+		}
+		httpx.WriteJSON(w, 200, brief)
+		return
+	}
 	httpx.WriteJSON(w, 200, list)
 }
 
@@ -160,5 +168,13 @@ func (a admin) users(w http.ResponseWriter, r *http.Request) {
 	auditDetail(r, "emails", emails)
 	auditDetail(r, "n", len(list))
 	a.info(r, "admin users read", "emails", emails, "n", len(list))
+	if !wholeView(r) {
+		brief := make([]model.AdminUserBrief, 0, len(list))
+		for _, u := range list {
+			brief = append(brief, u.Brief())
+		}
+		httpx.WriteJSON(w, 200, brief)
+		return
+	}
 	httpx.WriteJSON(w, 200, list)
 }

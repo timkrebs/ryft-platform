@@ -32,6 +32,26 @@ type AdminUser struct {
 	Duplicates int `json:"dup"`
 }
 
+// AdminUserBrief is what an operator's Supabase token gets of an AdminUser in GET /v1/admin/users: the
+// account and its access state, none of the health-derived data-quality fields (days scored, nights
+// with stages, days with HRV, calibrating, sources, max-HR source), device fields, consent or
+// feedback counts. The admin key gets the whole AdminUser. The projection is made on the server.
+type AdminUserBrief struct {
+	ID         uuid.UUID  `json:"id"`
+	ShortID    string     `json:"short_id"`
+	CreatedAt  time.Time  `json:"created_at"`
+	Provider   *string    `json:"provider"`
+	Email      *string    `json:"email,omitempty"` // only with ?emails=1
+	BetaAccess bool       `json:"beta_access"`
+	LastSyncAt *time.Time `json:"last_sync_at"`
+}
+
+// Brief is the token caller's view of u.
+func (u AdminUser) Brief() AdminUserBrief {
+	return AdminUserBrief{ID: u.ID, ShortID: u.ShortID, CreatedAt: u.CreatedAt, Provider: u.Provider, Email: u.Email,
+		BetaAccess: u.BetaAccess, LastSyncAt: u.LastSyncAt}
+}
+
 // AdminUserDetail is GET /v1/admin/users/{id}: the account, its devices, its
 // data and other accounts on its devices (D89). Emails are masked unless asked.
 type AdminUserDetail struct {

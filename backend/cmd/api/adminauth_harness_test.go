@@ -184,7 +184,7 @@ func authChain(h *handler, o adminOptions) (http.Handler, *[]adminActor) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	return newAdminAuth(h, o).require(next), &actors
+	return newAdminAuth(h, o, func(*http.Request) string { return "" }).require(next), &actors
 }
 
 // wide is a limiter no test hits by accident.
