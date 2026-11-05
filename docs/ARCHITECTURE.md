@@ -53,6 +53,20 @@ has every migration they were built with.
 Each serves `/healthz`, `/readyz` and Prometheus `/metrics` on 8080 — metric
 catalogue and dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
+**Lifecycle.** scoring and notify start and stop through `internal/app` (api and ingest
+follow): their `main` hands `app.Main` a `Spec` (settings, and a `Build` that returns the
+consumers and timers), and app does the rest in one order. The settings are read before
+anything connects (D78); then the pool, the broker, `/metrics`, `Build`, the outbox relay,
+the timers, the consumers and, last, the HTTP port, so the start-up probe still covers the
+database wait. One signal handler: on the first signal, or when any task fails or panics,
+`/readyz` answers `draining`, the timers stop, the consumers stop, HTTP drains, then the
+relay, the broker and the pool close, each step bounded and logged (`shutdown step`), all
+inside the kubelet's 30 s. A task that panics is recovered, counted
+(`ryft_goroutine_panics_total`) and ends the service with exit 2; an HTTP port that will not
+bind ends it with exit 1. Timers and consumers log and swallow a transient error and return
+only one they cannot go on after, because a returned error stops the service.
+OPERATIONS → A deploy: what the old pod logs.
+
 **Auth and users.** Multi-user, with Supabase as identity provider and database
 ([`SUPABASE.md`](SUPABASE.md)). The app signs in with Apple through Supabase and sends
 the Supabase access token as the bearer; `internal/auth` verifies it against the
@@ -153,11 +167,11 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 24 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 7 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
-| `cmd/notify` | notify wires internal/notify to its queue and a 15-minute timer. | apns, config, db, eventbus, events, httpx, logx, notify, store | none |
+| `cmd/notify` | notify wires internal/notify to its queue and a 15-minute timer. | apns, app, config, events, logx, notify, store | 1 file |
 | `cmd/rabbitmq-topology` | rabbitmq-topology writes the broker's topology (internal/events/amqpbus) as the Topology Operator's objects and as the definitions compose loads. | events/amqpbus | none |
-| `cmd/scoring` | scoring runs the scoring consumer and the 15-minute pass that keeps today and yesterday fresh. | config, db, eventbus, events, events/outbox, httpx, logx, metrics, model, scoring, store | 2 files (Postgres) |
+| `cmd/scoring` | scoring runs the scoring consumer and the 15-minute pass that keeps today and yesterday fresh. | app, config, db, events, httpx, logx, metrics, model, scoring, store | 3 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
-| `internal/app` | owns a long-running service's lifecycle: it starts the pool, the broker, consumers and HTTP in order and stops them in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 3 files |
+| `internal/app` | owns a long-running service's lifecycle: it starts the pool, the broker, consumers and HTTP in order and stops them in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 4 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 3 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |

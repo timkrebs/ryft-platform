@@ -5,24 +5,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
 	"slices"
 	"sort"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/config"
-	"github.com/timkrebs/ryft/internal/db"
-	"github.com/timkrebs/ryft/internal/eventbus"
-	"github.com/timkrebs/ryft/internal/events"
-	"github.com/timkrebs/ryft/internal/events/outbox"
-	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/logx"
-	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
 	"github.com/timkrebs/ryft/internal/store"
@@ -47,129 +39,27 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "learn-baselines" {
 		os.Exit(learnBaselines(os.Args[2:]))
 	}
-	log := httpx.Logger("scoring")
-	cfg, err := config.Load("scoring")
-	if err != nil {
-		log.Error("config", "err", err)
-		os.Exit(1)
-	}
-	// Only the consent mode; scoring needs no policy version (any recorded one
-	// counts, D78), so no RequirePolicy here.
-	beta, err := config.LoadBeta()
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
-	log.Info("beta", "consent", beta.Consent)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	app.Main(spec())
+}
 
-	// Retries until the role can log in and the migrate job has applied the
-	// schema; this service's role cannot change it.
-	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
-	if err != nil {
-		log.Error("db", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-	go db.Watch(ctx, pool, "scoring", log)
-	st := store.New(pool)
-	engine := scoring.NewEngine(st, log)
-	engine.SetConsentMode(beta.Consent)
-
-	// RabbitMQ (D97), retried at start-up.
-	bus, err := eventbus.Open(ctx, cfg, "scoring", log)
-	if err != nil {
-		log.Error("events", "err", err)
-		os.Exit(1)
-	}
-	defer bus.Close()
-
-	// Health endpoints only; no public API.
-	mux := http.NewServeMux()
-	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
-	httpx.Health(mux, func(ctx context.Context) error {
-		if err := st.Ready(ctx); err != nil {
-			return err
-		}
-		return bus.Ready(ctx)
-	})
-	mux.HandleFunc("/", httpx.NotFound)
-	go func() {
-		if err := httpx.Serve(log, ":"+cfg.Port, httpx.Recover(mux)); err != nil {
-			log.Error("serve", "err", err)
-		}
-	}()
-
-	// What scoring tells notify goes through its outbox (D101): written to the
-	// database, sent once the broker confirms it, so a broker outage loses no morning
-	// push.
-	ob := outbox.New(pool, "scoring", bus, log)
-	go ob.Run(ctx)
-	pub := events.Publisher{Sender: ob}
-
-	// The morning push: notify sends it when today first gets a recovery. A failed
-	// write loses that one push (the day is not "first" again); the score itself is
-	// stored either way.
-	engine.OnScored(func(ctx context.Context, ev model.ScoredEvent) {
-		if f := logx.FieldsFrom(ctx); f != nil {
-			ev.RequestID = f.RequestID
-		}
-		if err := pub.PublishScored(ctx, ev); err != nil {
-			log.ErrorContext(ctx, "publish scored", "day", ev.Day, "err", err)
-		}
-	})
-
-	handle := func(ctx context.Context, ev model.IngestedEvent) error {
-		ctx = logx.WithFields(ctx, &logx.Fields{RequestID: ev.RequestID, UserID: ev.UserID.String()})
-		err := handleEvent(ctx, engine, ev)
-		if err == nil {
-			session, refresh := announce(ev)
-			if session != nil {
-				if perr := pub.PublishSessionScored(ctx, *session); perr != nil {
-					log.ErrorContext(ctx, "publish session scored", "session_id", session.SessionID, "err", perr)
-				}
+// spec is what scoring asks app for. Outbox is not optional: build refuses a Deps
+// without one, and BrokerRequired keeps /readyz honest about the queue it consumes.
+func spec() app.Spec {
+	var beta config.Beta
+	return app.Spec{
+		Name:           "scoring",
+		BrokerRequired: true, // /readyz needs the queue it consumes
+		Outbox:         true, // what scoring tells notify goes through the outbox (D101)
+		// Only the consent mode; scoring needs no policy version (any recorded one
+		// counts, D78), so no RequirePolicy here.
+		Load: func(log *slog.Logger) (err error) {
+			if beta, err = config.LoadBeta(); err != nil {
+				return app.ConfigError{Msg: "beta config", Err: err}
 			}
-			if refresh != nil {
-				if perr := pub.PublishRefresh(ctx, *refresh); perr != nil {
-					log.ErrorContext(ctx, "publish refresh", "day", refresh.Day, "err", perr)
-				}
-			}
-		}
-		if errors.Is(err, store.ErrNotFound) {
-			// The user was deleted after the event was queued.
-			return events.Permanent(err)
-		}
-		return err
-	}
-
-	go func() {
-		t := time.NewTicker(refreshEvery)
-		defer t.Stop()
-		learn := learner{tried: map[uuid.UUID]string{}}
-		behind := catchUp{failed: map[uuid.UUID]string{}}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				refreshActive(ctx, log, st, engine, &learn, &behind)
-				if err := st.PruneScoreQueue(ctx); err != nil {
-					log.Warn("prune score queue", "err", err)
-				}
-				if ages, err := st.SyncAges(ctx); err == nil {
-					for age, n := range ages {
-						metrics.UsersByLastSync.WithLabelValues(age).Set(float64(n))
-					}
-				}
-			}
-		}
-	}()
-
-	log.Info("consuming ingest events")
-	if err := bus.ConsumeIngested(ctx, log, handle); err != nil {
-		log.Error("consume", "err", err)
-		os.Exit(1)
+			log.Info("beta", "consent", beta.Consent)
+			return nil
+		},
+		Build: func(_ context.Context, d app.Deps) (app.Parts, error) { return build(d, beta) },
 	}
 }
 
@@ -219,34 +109,39 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 
 // refreshActive rescores yesterday and today for every user who synced within
 // activeWindow, each in their own timezone, re-scores days left behind their
-// history (catchUp), then runs the weekly baseline estimate where it is due.
+// history (catchUp), then runs the weekly baseline estimate where it is due. It stops
+// between two users when ctx ends.
 func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner, behind *catchUp) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
 	if err != nil {
-		log.Error("periodic: active users", "err", err)
+		if ctx.Err() == nil { // a query cut by the shutdown is not an error
+			log.Error("periodic: active users", "err", err)
+		}
 		return
 	}
 	users = behind.order(users)
 	budget := behindPerRun
-	for i, id := range users {
-		ctx := logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
+	eachUser(ctx, users, func(ctx context.Context, i int, id uuid.UUID) {
+		ctx = logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
 		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
-			log.ErrorContext(ctx, "periodic: user", "err", err)
-			continue
+			if ctx.Err() == nil {
+				log.ErrorContext(ctx, "periodic: user", "err", err)
+			}
+			return
 		}
 		if !engine.Admits(user) {
-			continue // withdrawn: no scores, no baseline estimate (D78)
+			return // withdrawn: no scores, no baseline estimate (D78)
 		}
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")
 		yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
-		if err := engine.ComputeDays(ctx, id, []string{yesterday, today}); err != nil {
+		if err := engine.ComputeDays(ctx, id, []string{yesterday, today}); err != nil && ctx.Err() == nil {
 			log.ErrorContext(ctx, "periodic recompute", "err", err)
 		}
 		if budget > 0 && behind.failed[id] != today {
 			n, err := engine.RescoreBehind(ctx, id, today, budget)
-			if err != nil {
+			if err != nil && ctx.Err() == nil { // cut by the shutdown: not the day's fault, tried again next pass
 				log.ErrorContext(ctx, "periodic: days behind their history", "err", err)
 				behind.failed[id] = today
 			}
@@ -255,6 +150,18 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 			}
 		}
 		learn.maybe(ctx, log, engine, user, now)
+	})
+}
+
+// eachUser calls fn for the users in turn, and stops before the next one once ctx
+// has ended: a pass over every active user must not outlive the shutdown by the
+// users it has left (each would only log a cancelled query).
+func eachUser(ctx context.Context, users []uuid.UUID, fn func(ctx context.Context, i int, id uuid.UUID)) {
+	for i, id := range users {
+		if ctx.Err() != nil {
+			return
+		}
+		fn(ctx, i, id)
 	}
 }
 
@@ -297,7 +204,7 @@ func (l *learner) maybe(ctx context.Context, log *slog.Logger, engine *scoring.E
 		return
 	}
 	l.tried[u.ID] = day
-	if _, err := engine.LearnBaseline(ctx, u.ID, day); err != nil {
+	if _, err := engine.LearnBaseline(ctx, u.ID, day); err != nil && ctx.Err() == nil {
 		log.ErrorContext(ctx, "learn sleep baseline", "err", err)
 	}
 }

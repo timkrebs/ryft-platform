@@ -86,6 +86,13 @@ func (s *syncBuf) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 
+// text is everything written so far.
+func (s *syncBuf) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.TrimSpace(s.b.String())
+}
+
 func (s *syncBuf) lines() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
