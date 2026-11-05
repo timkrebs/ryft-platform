@@ -93,16 +93,12 @@ if "web" in groups:
                 sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
             version = versions["api"]
         else:
-            newest = {}
-            for lang in ("en", "de"):
-                r = run("ls-tree", "--name-only", f"{full}:web/content/legal/{lang}/privacy/")
-                names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
-                if r.returncode != 0 or not names:
-                    sys.exit(f"✗ pin_images: {sha} has no config.env and no {lang} privacy page: cannot tell which version it serves")
-                newest[lang] = names[-1]
-            if newest["en"] != newest["de"]:
-                sys.exit(f"✗ pin_images: at {sha} the newest privacy page is {newest['en']} in English and {newest['de']} in German")
-            version = newest["en"]
+            # The site is English only (web D18); older commits also carry a German page.
+            r = run("ls-tree", "--name-only", f"{full}:web/content/legal/en/privacy/")
+            names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
+            if r.returncode != 0 or not names:
+                sys.exit(f"✗ pin_images: {sha} has no config.env and no en privacy page: cannot tell which version it serves")
+            version = names[-1]
     elif not cands and sha == FOREIGN:
         version = FOREIGN_VERSION
     else:
