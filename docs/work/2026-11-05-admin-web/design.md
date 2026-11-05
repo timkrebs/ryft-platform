@@ -8,8 +8,8 @@ claim about the current code below names its file, so it can be checked again.
 D-C = D155, D-D = D156, D-E = D157, D-I = D158 (worded there as decided; where they differ, `DECISIONS.md` wins).
 D-F, D-G and D-H take the next numbers with the PRs that implement them.
 
-**Status:** proposal. Section 13 lists the decisions the user has to make. The lead numbers the
-`D<n>` entries proposed in section 12; the latest entry is D152.
+**Status:** proposal, as written when `main` ended at D152. Section 13 lists the decisions the user has to make.
+The entries proposed in section 12 are numbered as the note above says (PR1's are D153-D158).
 
 ---
 

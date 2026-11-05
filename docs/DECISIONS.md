@@ -3144,6 +3144,8 @@ Engine, and fails with the changed fields grouped by field.
   projection of the users list and the feedback (`AdminUserBrief`, `FeedbackBrief`: no health-derived, device,
   consent, request-id or diagnostic fields). Merge, flag writes, user detail and resync-hint stay key-only (`403`,
   audited). The routes are classified in one table (`admin.routes()`, zero value key-only), pinned by tests.
+  `FeedbackBrief.message` is free text a tester wrote and may fill with health statements; it stays in the
+  token's answer by design (the operator reads it to answer the tester), as `Feedback.message` is for the key.
 - **Known and accepted:** a token with an unknown key id inside the one-a-minute JWKS refresh limit answers `503`
   (`jwks_refresh_limited`) instead of `401`, because `auth.classify` cannot tell a rotation from a forged id; it is
   kept out of `AuthUnavailable` and documented (API.md), and fixing the classification is a follow-up.

@@ -73,7 +73,7 @@ func (a admin) audited(next http.Handler) http.Handler {
 		entry := store.AuditEntry{Action: action, TargetUser: e.target, Status: sw.status, RequestID: requestID, Details: e.details}
 		if act, ok := adminActorFrom(r.Context()); ok && act.isKey() {
 			entry.KeyFingerprint = act.fingerprint
-		} else if ok {
+		} else if ok && act.isUser() {
 			entry.ActorUser = &act.user
 		}
 		if err := a.h.st.Audit(ctx, entry); err != nil {
