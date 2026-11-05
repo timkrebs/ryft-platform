@@ -8,6 +8,10 @@
 // It must not serve user HTTP (health and metrics only) or run with more than
 // one replica: recompute ranges are scored oldest first by one consumer (D17).
 //
+// main hands internal/app a Spec; service.go builds the timer (a job) and the consumer
+// from the opened pool and broker. Both log and swallow a transient error: one they
+// return stops the service. The subcommands run outside app.
+//
 // Invariants:
 //   - The handlers are idempotent (D100).
 //   - What scoring tells notify (scored, session.scored, refresh) goes through
