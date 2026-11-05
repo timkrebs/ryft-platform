@@ -2010,6 +2010,66 @@ never logged; the map is bounded only by evicting a bucket idle for 10 minutes a
 before IPv6 clients arrive), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
 the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
 
+**Setting up the operator account (once, in this order).** Before step 1 the Supabase project must be set as
+SUPABASE.md → checklist says for the admin page (Data API off, TOTP on, maximum enrolled factors 1, *Confirm
+email* and *Secure email change* on), and `make alerts-apply` must have run (above).
+
+1. **A dedicated admin account:** Supabase → Authentication → Users → *Add user*, an address used for nothing
+   else and **not** your Apple ID address (Supabase links identities of the same verified email, so an app sign-in
+   with Apple could land in it), a long random password from the password manager, *Auto confirm*. Note its UUID.
+   Grant nothing yet.
+2. **Enrol the TOTP on the live page:** open `https://ryftapp.de/admin`, sign in, scan the QR code (or open the
+   `otpauth://` link; the page has no copy button for the secret on purpose) and enter the code. The page then
+   says "This account is not an operator account." and ends this session only (`scope=local`): expected, the
+   account has no role yet.
+3. **V-MFA-1** (blocking): with an **aal1** session of this account, which now has a verified factor, enrolling
+   a second factor must be refused (`403`, `error_code` `insufficient_aal`). Either way is enough:
+   - Devtools on `https://ryftapp.de/admin`: sign in with the password and stop at "Enter your code" (the tab now
+     holds the aal1 session), then in the console (the page's CSP allows exactly this origin and path; put in the
+     two values of `web/config/admin.json`):
+     ```js
+     (async () => {
+       const s = JSON.parse(sessionStorage.getItem('ryft.admin.session'));
+       const r = await fetch('<supabaseUrl>/auth/v1/factors', {
+         method: 'POST',
+         headers: {
+           apikey: '<supabaseKey>',
+           Authorization: `Bearer ${s.access_token}`,
+           'Content-Type': 'application/json',
+         },
+         body: JSON.stringify({ factor_type: 'totp', friendly_name: 'v-mfa-1-probe' }),
+       });
+       console.log(r.status, await r.text());
+     })();
+     ```
+   - `curl` from the repository root (the password is read without echo and stays out of the shell history):
+     ```bash
+     KEY=$(jq -r .supabaseKey web/config/admin.json)
+     AUTH=$(jq -r .supabaseUrl web/config/admin.json)/auth/v1
+     read -r EMAIL; read -rs PASSWORD
+     TOKEN=$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}' |
+       curl -s "$AUTH/token?grant_type=password" -H "apikey: $KEY" -H 'Content-Type: application/json' -d @- |
+       jq -r .access_token)
+     curl -s -w '\n%{http_code}\n' "$AUTH/factors" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN" \
+       -H 'Content-Type: application/json' -d '{"factor_type":"totp","friendly_name":"v-mfa-1-probe"}'
+     unset PASSWORD TOKEN
+     ```
+   A `200` is a failure: stop, delete that unverified factor (`DELETE $AUTH/factors/<id>` with the same token), and
+   do not grant the role. Record the result and the date in STATUS.md.
+4. **Grant the role and the row** with the two SQL statements above (as owner, by id).
+5. **Sign in again** on the page (the role is only in tokens issued after the update): password, then the code;
+   the Invites list loads.
+
+**Using the page.** The session lives in that tab's `sessionStorage` and is cleared when the tab leaves `/admin`
+(web D16): closing the tab, going to another page, typing a URL **and a browser reload or pull to refresh** sign you
+out (password and code again, about 20 seconds); switching sections (`#users`, `#audit`) does not. The page asks for
+the code again when the api answers `mfa_required` (the TOTP is older than 12 hours). **Sign out ends every
+session of that account (`scope=global`)**, on every device, not only this tab (access tokens already issued
+live out their hour, so revoking at once is the `admin_accounts` row); so does *Use another account* on
+the code screens. "Not an operator account" and a second `401` end only the page's own session (`scope=local`). The Audit
+tab shows the admin calls of the last 7 days (read-only); flag changes, merge, user detail and resync-hint stay
+with the key and the scripts. A lost phone: the runbook below.
+
 **Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
 a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
 guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sign-in attacks.
