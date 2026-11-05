@@ -29,8 +29,8 @@ body: {"results":[{"kind":"plan","id":"bfccc6f5-c40e-57b2-b900-0cd7922562b4","st
 == state of user:a
 stored session session:s origin=import day=D-9 sets=2
 stored plan plan:p
-outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
-outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-9 user=user:a request=#1 session_id_set=false
+outbox ingested reason=import days=D-9 user=user:a request=#2 session_id_set=false
 pending D-9
 lease held: false
 record exercise:squat e1rm=122.5 from session:s
@@ -44,6 +44,7 @@ items/plan/created +1
 items/plan/unchanged +1
 items/session/created +1
 items/session/unchanged +1
+seconds/observations +2
 
 == log lines
 train import result=ok plans=1 sessions=1 created=2 unchanged=0 updated=0 rejected=0 days=1 level=INFO
@@ -67,8 +68,8 @@ body: {"results":[{"kind":"plan","id":"bfccc6f5-c40e-57b2-b900-0cd7922562b4","st
 == state of user:a
 stored session session:s origin=import day=D-9 sets=2
 stored plan plan:p
-outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
-outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-9 user=user:a request=#1 session_id_set=false
+outbox ingested reason=import days=D-9 user=user:a request=#2 session_id_set=false
 pending 
 lease held: false
 record exercise:squat e1rm=122.5 from session:s
@@ -82,6 +83,7 @@ items/plan/created +1
 items/plan/unchanged +2
 items/session/created +1
 items/session/unchanged +2
+seconds/observations +3
 
 == log lines
 train import result=ok plans=1 sessions=1 created=2 unchanged=0 updated=0 rejected=0 days=1 level=INFO

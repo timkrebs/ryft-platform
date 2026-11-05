@@ -10,7 +10,7 @@ header Strict-Transport-Security: max-age=31536000; includeSubDomains
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: DENY
 header X-Request-Id: <rid>
-body: {"code":"consent_required","error":"consent to the privacy policy D-34 is required before uploading health data","request_id":"<rid>"}
+body: {"code":"consent_required","error":"consent to the privacy policy 2026-10-01 is required before uploading health data","request_id":"<rid>"}
 <eof>
 
 == no consent, malformed body
@@ -23,7 +23,7 @@ header Strict-Transport-Security: max-age=31536000; includeSubDomains
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: DENY
 header X-Request-Id: <rid>
-body: {"code":"consent_required","error":"consent to the privacy policy D-34 is required before uploading health data","request_id":"<rid>"}
+body: {"code":"consent_required","error":"consent to the privacy policy 2026-10-01 is required before uploading health data","request_id":"<rid>"}
 <eof>
 
 == no consent, flag off
@@ -36,7 +36,7 @@ header Strict-Transport-Security: max-age=31536000; includeSubDomains
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: DENY
 header X-Request-Id: <rid>
-body: {"code":"consent_required","error":"consent to the privacy policy D-34 is required before uploading health data","request_id":"<rid>"}
+body: {"code":"consent_required","error":"consent to the privacy policy 2026-10-01 is required before uploading health data","request_id":"<rid>"}
 <eof>
 
 == state of user:a

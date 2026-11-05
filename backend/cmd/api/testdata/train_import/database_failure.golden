@@ -17,7 +17,7 @@ body: {"error":"the database is unavailable; send the same request again","reque
 == state of user:a
 stored session session:good origin=import day=D-9 sets=1
 stored plan plan:p
-outbox ingested reason=import days=D-9 request_id_set=true session_id_set=false
+outbox ingested reason=import days=D-9 user=user:a request=#1 session_id_set=false
 pending D-9
 lease held: false
 record exercise:squat e1rm=118.1 from session:good
@@ -29,6 +29,7 @@ record exercise:squat max_weight=101.3 from session:good
 imports/error +1
 items/plan/created +1
 items/session/created +1
+seconds/observations +1
 
 == log lines
 train import result=error plans=1 sessions=3 created=2 unchanged=0 updated=0 rejected=0 days=1 level=INFO

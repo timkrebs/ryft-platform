@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -53,9 +54,37 @@ type goldenCase struct {
 	m0      map[string]float64
 	users   map[uuid.UUID]string
 	labels  map[uuid.UUID]string
+	rids    []string // the request id of each answer recorded, in order
+}
+
+// importGoldenNames is every case with a golden file: a case not listed fails, and a file not
+// listed (a case renamed or dropped) is an orphan that TestTrainImportGoldenFiles reports.
+var importGoldenNames = []string{"consent_gate", "counts", "database_failure", "deadline", "empty_and_limit", "finish_fails",
+	"flag_off", "id_taken", "idempotent_reimport", "invalid_items", "lease_taken", "newer_on_server", "oldest_first",
+	"panic_in_finish", "plan_database_failure", "records_recomputed", "request_refusals", "resumed_all_unchanged"}
+
+// awayFromMidnight waits out the last seconds before UTC midnight: a case builds its requests from
+// today's date and the server reads it again, so a case spanning midnight would shift every day.
+func awayFromMidnight(t *testing.T) {
+	t.Helper()
+	now := time.Now().UTC()
+	if left := now.Truncate(24 * time.Hour).Add(24 * time.Hour).Sub(now); left < 30*time.Second {
+		time.Sleep(left + time.Second)
+	}
 }
 
 func newGoldenCase(t *testing.T, b *bench, name string) *goldenCase {
+	t.Helper()
+	if !slices.Contains(importGoldenNames, name) {
+		t.Fatalf("case %q is not in importGoldenNames", name)
+	}
+	awayFromMidnight(t)
+	// expected_within_sec is the sync estimate plus 2 s a day; the estimate is DefaultExpectedSec
+	// while fewer than 5 rows were scored in the last 6 hours (store.ExpectedScoreSec). Each case
+	// starts without scored rows and post() checks the count, so the goldens never read a measured p95.
+	if _, err := b.pool.Exec(context.Background(), `DELETE FROM score_queue WHERE scored_at IS NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
 	c := &goldenCase{t: t, b: b, name: name, today: time.Now().UTC().Truncate(24 * time.Hour), logMark: len(b.logs.String()),
 		m0: importMetrics(), users: map[uuid.UUID]string{}, labels: map[uuid.UUID]string{}}
 	fmt.Fprintf(&c.out, "case %s\n", name)
@@ -102,6 +131,9 @@ func (c *goldenCase) plan(name string) model.Plan {
 // post sends the import and records the answer under step.
 func (c *goldenCase) post(step, token string, body any) *httptest.ResponseRecorder {
 	c.t.Helper()
+	if n := c.b.count(`SELECT count(*) FROM score_queue WHERE scored_at > now() - interval '6 hours'`); n >= 5 {
+		c.t.Fatalf("%d scored rows: the estimate would be measured, not the default", n)
+	}
 	rec := c.b.call(token, http.MethodPost, "/v1/train/import", body)
 	c.record(step, rec)
 	return rec
@@ -119,6 +151,7 @@ func (c *goldenCase) days(rec *httptest.ResponseRecorder) []string {
 func (c *goldenCase) record(step string, rec *httptest.ResponseRecorder) {
 	fmt.Fprintf(&c.out, "\n== %s\nstatus: %d\n", step, rec.Code)
 	rid := rec.Header().Get("X-Request-Id")
+	c.rids = append(c.rids, rid)
 	keys := make([]string, 0, len(rec.Header()))
 	for k := range rec.Header() {
 		keys = append(keys, k)
@@ -140,7 +173,7 @@ func (c *goldenCase) record(step string, rec *httptest.ResponseRecorder) {
 func (c *goldenCase) norm(s string) string {
 	return dateRE.ReplaceAllStringFunc(s, func(d string) string {
 		t, err := time.Parse(time.DateOnly, d)
-		if err != nil {
+		if err != nil || d == benchPolicy { // the policy version is a date that does not move
 			return d
 		}
 		return fmt.Sprintf("D-%d", int(c.today.Sub(t).Hours()/24))
@@ -161,7 +194,7 @@ func (c *goldenCase) label(id uuid.UUID) string {
 }
 
 func importMetrics() map[string]float64 {
-	m := map[string]float64{}
+	m := map[string]float64{"seconds/observations": importSeconds()}
 	for _, r := range []string{"ok", "invalid", "disabled", "busy", "timeout", "error"} {
 		m["imports/"+r] = testutil.ToFloat64(metrics.TrainImports.WithLabelValues(r))
 	}
@@ -171,6 +204,17 @@ func importMetrics() map[string]float64 {
 		}
 	}
 	return m
+}
+
+// importSeconds is the number of observations of ryft_train_import_seconds.
+func importSeconds() float64 {
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(metrics.TrainImportSeconds)
+	fams, err := reg.Gather()
+	if err != nil || len(fams) != 1 || len(fams[0].GetMetric()) != 1 {
+		return -1
+	}
+	return float64(fams[0].GetMetric()[0].GetHistogram().GetSampleCount())
 }
 
 // state appends what the case left behind for each user, the metrics and the log lines.
@@ -220,8 +264,12 @@ func (c *goldenCase) state(users ...uuid.UUID) {
 			if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 				c.t.Fatal(err)
 			}
-			fmt.Fprintf(&c.out, "outbox %s reason=%s days=%s request_id_set=%t session_id_set=%t\n", key, reason,
-				c.norm(strings.Join(ev.Days, ",")), ev.RequestID != "", ev.SessionID != nil)
+			from := "unrecorded" // the event carries the request id of the answer that queued it
+			if k := slices.Index(c.rids, ev.RequestID); k >= 0 && ev.RequestID != "" {
+				from = fmt.Sprintf("#%d", k+1)
+			}
+			fmt.Fprintf(&c.out, "outbox %s reason=%s days=%s user=%s request=%s session_id_set=%t\n", key, reason,
+				c.norm(strings.Join(ev.Days, ",")), c.label(ev.UserID), from, ev.SessionID != nil)
 		}
 		rows.Close()
 		fmt.Fprintf(&c.out, "pending %s\n", c.norm(strings.Join(c.b.pending(u), ",")))
@@ -267,7 +315,7 @@ func (c *goldenCase) metricsAndLogs() {
 		case "train import":
 			fmt.Fprintf(&c.out, "%s result=%v plans=%v sessions=%v created=%v unchanged=%v updated=%v rejected=%v days=%v level=%v\n", msg,
 				l["result"], l["plans"], l["sessions"], l["created"], l["unchanged"], l["updated"], l["rejected"], l["days"], l["level"])
-		case "request failed", "client closed the request":
+		case "request failed", "client closed the request", "panic":
 			fmt.Fprintf(&c.out, "%s status=%v level=%v\n", msg, l["status"], l["level"])
 		case "http":
 			if strings.Contains(fmt.Sprint(l["route"]), "train/import") {
@@ -283,6 +331,9 @@ func (c *goldenCase) check() {
 	path := filepath.Join(importGoldenDir, c.name+".golden")
 	got := c.out.String()
 	if os.Getenv("RYFT_IMPORT_GOLDEN") == "update" {
+		if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+			c.t.Fatal("RYFT_IMPORT_GOLDEN=update would make every case pass: not in CI")
+		}
 		if err := os.MkdirAll(importGoldenDir, 0o755); err != nil {
 			c.t.Fatal(err)
 		}
@@ -503,6 +554,22 @@ func TestTrainImportCharacteriseItems(t *testing.T) {
 			c.post("resend after scoring", token, req)
 			c.state(u)
 		},
+		// A resumed request whose items are all unchanged (D140): the attempt before it died after
+		// its item, so the item is stored and its day pending; the user's later session of the same
+		// exercise, scored long ago, is queued with it because the pending item counts as changed.
+		"resumed_all_unchanged": func(c *goldenCase, b *bench) {
+			u, token := c.user("a", true)
+			later, x := c.sess("later", 3, squatID, 130), c.sess("x", 20, squatID, 100)
+			b.scored(u, b.imports(token, request(nil, later)).DaysTouched...)
+			from, to := train.ImportWindow(time.Now(), time.UTC)
+			out, err := b.st.ImportSession(context.Background(), u, model.ImportSourceAlphaProgression, x.ToSession(), time.UTC,
+				store.DayWindow{From: from, To: to})
+			if err != nil || out.Status != store.ImportCreated {
+				c.t.Fatalf("the interrupted attempt's one item: %+v %v", out, err)
+			}
+			c.post("resend, every item unchanged", token, request(nil, x))
+			c.state(u)
+		},
 		// The records follow the stored sessions: a heavier set raises them, an update that
 		// drops it lowers them again.
 		"records_recomputed": func(c *goldenCase, b *bench) {
@@ -541,6 +608,9 @@ func TestTrainImportCharacteriseFailures(t *testing.T) {
 		`CREATE FUNCTION ryft_test_fail() RETURNS trigger LANGUAGE plpgsql AS $$
 		 BEGIN IF NEW.title = 'boom' THEN RAISE EXCEPTION 'injected failure' USING ERRCODE = 'XX000'; END IF; RETURN NEW; END $$`,
 		`CREATE TRIGGER ryft_test_fail BEFORE INSERT OR UPDATE ON sessions FOR EACH ROW EXECUTE FUNCTION ryft_test_fail()`,
+		`CREATE FUNCTION ryft_test_fail_plan() RETURNS trigger LANGUAGE plpgsql AS $$
+		 BEGIN IF NEW.name = 'boom' THEN RAISE EXCEPTION 'injected failure' USING ERRCODE = 'XX000'; END IF; RETURN NEW; END $$`,
+		`CREATE TRIGGER ryft_test_fail_plan BEFORE INSERT OR UPDATE ON plans FOR EACH ROW EXECUTE FUNCTION ryft_test_fail_plan()`,
 	} {
 		if _, err := b.pool.Exec(ctx, q); err != nil {
 			t.Fatal(err)
@@ -556,6 +626,25 @@ func TestTrainImportCharacteriseFailures(t *testing.T) {
 			good, boom, never := c.sess("good", 9, squatID, 101.25), c.sess("boom", 4, squatID, 103.75), c.sess("never", 2, squatID, 106.25)
 			boom.Title = "boom"
 			c.post("failure on the second", token, request([]model.Plan{c.plan("p")}, never, boom, good))
+			c.state(u)
+		},
+		// A plan's database error stops the loop the same way: 503, the first plan stored, the
+		// sessions never reached.
+		"plan_database_failure": func(c *goldenCase) {
+			u, token := c.user("a", true)
+			good, boom := c.plan("good"), c.plan("boom")
+			boom.Name = "boom"
+			c.post("failure on the second plan", token, request([]model.Plan{good, boom}, c.sess("never", 4, squatID, 100)))
+			c.state(u)
+		},
+		// A panic in the finish (here the insight cache is gone), after the days are queued: the
+		// recovered 500 leaves the lease free, because the deferred release runs (D132).
+		"panic_in_finish": func(c *goldenCase) {
+			u, token := c.user("a", true)
+			cache := b.h.cache
+			b.h.cache = nil
+			defer func() { b.h.cache = cache }()
+			c.post("panic after the queue", token, request(nil, c.sess("s", 5, squatID, 100)))
 			c.state(u)
 		},
 		// The items' time runs out: 503 "request timed out", Retry-After 5; the items before
@@ -578,7 +667,12 @@ func TestTrainImportCharacteriseFailures(t *testing.T) {
 				srv.ServeHTTP(w, r.WithContext(ctx))
 			})
 			defer func() { b.srv = srv }()
+			t0 := time.Now()
 			c.post("items out of time", token, request([]model.Plan{c.plan("p")}, stuck, early))
+			// The items stop the finish's share (1 s) before the 4 s budget ends (D140), not at its end.
+			if el := time.Since(t0); el < 2800*time.Millisecond || el > 3700*time.Millisecond {
+				c.t.Fatalf("answered after %v: the items get the budget less the finish's second (about 3 s)", el)
+			}
 			if err := tx.Rollback(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -621,6 +715,7 @@ func TestTrainImportCharacteriseFailures(t *testing.T) {
 	// The lease is given back after the finish, not before it (D132, D140): while the records
 	// step waits, a second import of the same user is still 429.
 	t.Run("lease_held_through_the_finish", func(t *testing.T) {
+		awayFromMidnight(t)
 		u, token := b.user("UTC", true)
 		tx, err := b.pool.Begin(ctx)
 		if err != nil {
@@ -655,4 +750,38 @@ func TestTrainImportCharacteriseFailures(t *testing.T) {
 			t.Fatal("the lease is given back before the answer")
 		}
 	})
+}
+
+// A golden file without a case (a case renamed or dropped) would pass for ever, and a case
+// without a file cannot compare: the files and importGoldenNames are the same set. In update
+// mode the orphans are removed.
+func TestTrainImportGoldenFiles(t *testing.T) {
+	update := os.Getenv("RYFT_IMPORT_GOLDEN") == "update"
+	if update && (os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "") {
+		t.Fatal("RYFT_IMPORT_GOLDEN=update would make every case pass: not in CI")
+	}
+	entries, err := os.ReadDir(importGoldenDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, e := range entries {
+		name, golden := strings.CutSuffix(e.Name(), ".golden")
+		have[name] = true
+		if golden && slices.Contains(importGoldenNames, name) {
+			continue
+		}
+		if update {
+			if err := os.Remove(filepath.Join(importGoldenDir, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		t.Errorf("%s has no case: renamed or dropped? (RYFT_IMPORT_GOLDEN=update removes it)", e.Name())
+	}
+	for _, n := range importGoldenNames {
+		if !have[n] && !update {
+			t.Errorf("case %s has no golden file (RYFT_IMPORT_GOLDEN=update records it)", n)
+		}
+	}
 }
