@@ -121,6 +121,7 @@ jobs:
               - '.github/workflows/ci.yml'
             terraform:
               - 'infra/**'
+              - 'scripts/tests/argocd_release_guard_test.sh'
               # infra/aws/kubernetes' test compares its Vault address with these generated files
               - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
@@ -469,6 +470,9 @@ jobs:
       - run: terraform validate
       - run: tflint --init && tflint --format compact
       - run: terraform test
+      # The release's lifecycle conditions (a set or a second values document must be refused): edits a copy.
+      - if: matrix.root == 'infra/aws/kubernetes'
+        run: bash "$GITHUB_WORKSPACE/scripts/tests/argocd_release_guard_test.sh"
 
   # Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) in a Lua VM with
   # exactly Argo CD's libraries (no string library), against table-driven objects. Reads
