@@ -1,5 +1,5 @@
 variable "admin_principal_arns" {
-  description = "Extra cluster admins by label => IAM role or user ARN, each given AmazonEKSClusterAdminPolicy at cluster scope through an access entry. The identity that runs the apply is always an admin already; use this for a principal that only uses kubectl."
+  description = "Extra cluster admins by label => IAM role or user ARN, each given AmazonEKSClusterAdminPolicy at cluster scope through an access entry. The identity that runs the apply is always an admin already (cluster_creator); list only a principal other than the apply identity (the same ARN fails with ResourceInUseException)."
   type        = map(string)
   default     = {}
 
@@ -64,7 +64,7 @@ variable "name" {
 }
 
 variable "node_access_entry" {
-  description = "Create the EC2_LINUX access entry for the managed node group's role. Off: EKS creates it itself with the node group. Turn on only if `aws eks list-access-entries` does not list the role before the switch to API."
+  description = "Create the EC2_LINUX access entry for the managed node group's role. Off: EKS creates it itself with the node group. Turn on only if `aws eks list-access-entries` does not list the role before the switch to API. Never set it back to false once true or imported: in mode API that destroys the node entry and the nodes go NotReady."
   type        = bool
   default     = false
 }

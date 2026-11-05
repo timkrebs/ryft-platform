@@ -1080,7 +1080,8 @@ The cluster runs in `API_AND_CONFIG_MAP`: the API server accepts an IAM principa
 access entry **or** is mapped in `kube-system/aws-auth`. A write to that ConfigMap (the Argo CD
 controller's cluster-wide ConfigMap write can do it) maps any IAM principal to `system:masters`.
 Mode `API` ignores `aws-auth`, so that route is closed whatever admission does. It closes only
-that route: a Pod running as a `kube-system` controller service account stays P12's job
+that route: a Pod running as a `kube-system` controller service account, and the other
+`kube-system` writes (the `coredns` and `amazon-vpc-cni` ConfigMaps, Deployments), stay P12's job
 (`docs/work/2026-10-23-admission/p12-argo-scope.md`). **The change cannot be reverted**: EKS
 refuses `API` -> `API_AND_CONFIG_MAP`. Recovery is always forward, with access entries (below).
 
@@ -1089,25 +1090,34 @@ refuses `API` -> `API_AND_CONFIG_MAP`. Recovery is always forward, with access e
 | Identity | How it authenticates | Needs an access entry in mode API? |
 | --- | --- | --- |
 | managed node group `ryft-prod-euc1-default` (3 nodes) | kubelet signs with the node role, mapped to `system:nodes` | **yes**, type `EC2_LINUX`. The upstream module does not create it; EKS creates it with the node group when the mode includes `API`, and an `aws-auth` line otherwise. Check 2 shows which |
-| you / the identity that ran `infra/aws` apply | `aws eks get-token` (kubectl, and the `helm`/`kubernetes` providers of `infra/aws/kubernetes` and `infra/vault`) | **yes**, and the module already manages it: `enable_cluster_creator_admin_permissions = true` is an access entry `cluster_creator` with `AmazonEKSClusterAdminPolicy` for the apply identity's role/user. A kubectl identity that is not that principal needs `admin_principal_arns` |
+| you / the identity that ran `infra/aws` apply | `aws eks get-token` (kubectl, and the `helm`/`kubernetes` providers of `infra/aws/kubernetes` and `infra/vault`) | **yes**, and the module already manages it: `enable_cluster_creator_admin_permissions = true` is an access entry `cluster_creator` with `AmazonEKSClusterAdminPolicy` for the role/user **of whoever runs the plan** (see the warning below). A kubectl identity that is not that principal needs `admin_principal_arns` |
 | Argo CD, VSO, the operators, HCP Vault (TokenReview) | service-account tokens | no |
-| cert-manager, ExternalDNS, LB controller, EBS CSI | EKS Pod Identity | no |
+| cert-manager, ExternalDNS, LB controller, EBS CSI, fluent-bit | EKS Pod Identity | no |
 | CI | no AWS credentials; CI only pushes images and opens promote PRs | no |
-| Karpenter, Fargate, self-managed nodes | not used | no |
+| Karpenter, Cluster Autoscaler, Fargate, self-managed nodes | not used | no |
 
-Terraform: `authentication_mode` (default `API_AND_CONFIG_MAP`, **merging changes nothing**),
-`node_access_entry` (default `false`), `admin_principal_arns` (default `{}`) in `infra/aws`.
+**`cluster_creator` follows whoever runs Terraform.** The module resolves the principal from the
+caller's session on every plan. Plan or apply as another principal (another SSO permission set or
+profile) and Terraform proposes `-/+ ...aws_eks_access_entry.this["cluster_creator"]` plus its
+policy association (the principal is ForceNew). In mode `API` that silently removes the previous
+admin's only path. **A replacement of `cluster_creator` in any plan below means you are not the
+identity of the last apply: stop.** Pin human and break-glass admins explicitly with
+`admin_principal_arns`, with a principal *other than* the apply identity (the same ARN fails with
+`ResourceInUseException`).
 
-**Pre-checks (read-only; run them yourself, every one must be go).**
+Terraform (`infra/aws`): `authentication_mode` (default `API_AND_CONFIG_MAP`; **merging changes
+nothing**), `node_access_entry` (default `false`), `admin_principal_arns` (default `{}`).
+
+**Pre-checks (read-only; run them yourself, every one must be go).** The first block saves the
+names for a fresh shell, which the break-glass below needs.
 
 ```bash
 export AWS_REGION=eu-central-1 CL=ryft-prod-euc1 CTX=ryft-prod-euc1
 
-# 1. mode and status
-aws eks describe-cluster --name $CL --query 'cluster.{mode:accessConfig.authenticationMode,status:status}'
+# 1. mode, status, deletion protection
+aws eks describe-cluster --name $CL --query 'cluster.{mode:accessConfig.authenticationMode,status:status,dp:deletionProtection}'
 # 2. who has an access entry, and the node role
 aws eks list-access-entries --cluster-name $CL --query accessEntries --output text
-aws eks list-nodegroups --cluster-name $CL --query nodegroups --output text
 NG=$(aws eks list-nodegroups --cluster-name $CL --query 'nodegroups[0]' --output text)
 NODE_ROLE=$(aws eks describe-nodegroup --cluster-name $CL --nodegroup-name $NG --query nodegroup.nodeRole --output text)
 aws eks describe-access-entry --cluster-name $CL --principal-arn $NODE_ROLE --query 'accessEntry.{type:type,groups:kubernetesGroups,user:username}'
@@ -1116,44 +1126,69 @@ aws sts get-caller-identity --query Arn --output text    # an assumed-role ARN: 
 ME=<the role or user ARN from list-access-entries that is yours>
 aws eks list-associated-access-policies --cluster-name $CL --principal-arn $ME
 aws iam simulate-principal-policy --policy-source-arn $ME --action-names eks:CreateAccessEntry eks:AssociateAccessPolicy --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+# save the names (after 2 and 3) so the break-glass works from a fresh shell
+printf 'export AWS_REGION=%s CL=%s CTX=%s NG=%s NODE_ROLE=%s ME=%s\n' "$AWS_REGION" "$CL" "$CTX" "$NG" "$NODE_ROLE" "$ME" > ~/ryft-eks-auth.env
 # 4. what aws-auth still maps (keep a copy outside the repository)
 kubectl --context $CTX -n kube-system get configmap aws-auth -o yaml | tee ~/aws-auth.before.yaml
 # 5. baseline and the path you are coming in by
 kubectl --context $CTX get nodes -o wide
-kubectl --context $CTX auth whoami
+kubectl --context $CTX auth whoami -o yaml
 aws eks describe-nodegroup --cluster-name $CL --nodegroup-name $NG --query 'nodegroup.{status:status,health:health.issues,scaling:scalingConfig}'
 aws eks list-fargate-profiles --cluster-name $CL --query fargateProfileNames
 ```
 
 | # | Expected | Go | No-go (and what to do) |
 | --- | --- | --- | --- |
-| 1 | `mode: API_AND_CONFIG_MAP`, `status: ACTIVE` | as expected | `API`: already done, stop. `UPDATING`: wait. Anything else: stop |
+| 1 | `mode: API_AND_CONFIG_MAP`, `status: ACTIVE`; `dp: true` is a second net (an accidental replacement fails at the destroy step) | as expected | `API`: already done, stop. `UPDATING`: wait. Anything else: stop |
 | 2 | `$NODE_ROLE` is listed and `describe-access-entry` says `type: EC2_LINUX` | yes | not listed: set `node_access_entry = true` in `terraform.tfvars` and apply it first (step 1 below). `ResourceInUseException` on that apply means the entry exists after all: unset it |
-| 3 | your principal is listed with `AmazonEKSClusterAdminPolicy`, `accessScope.type: cluster`; `simulate-principal-policy` says `allowed` for both actions | yes | not listed or other policy: your kubectl comes in through `aws-auth`. Put the ARN in `admin_principal_arns` (step 1). `implicitDeny`: you cannot do the break-glass below with this identity; find one that can before going on |
+| 3 | your principal is listed with `AmazonEKSClusterAdminPolicy`, `accessScope.type: cluster`; `simulate-principal-policy` says `allowed` for both actions. That is **necessary, not sufficient**: the simulation needs `iam:SimulatePrincipalPolicy` itself (an `AccessDenied` is not an `implicitDeny`) and ignores session policies, conditions (MFA, source IP) and SCP/RCP | yes | not listed or other policy: your kubectl comes in through `aws-auth`. Put the ARN in `admin_principal_arns` (step 1; a principal other than the apply identity). `implicitDeny`: you cannot do the break-glass below with this identity |
 | 4 | `mapRoles` holds only the node role (`system:bootstrappers`, `system:nodes`), no `mapUsers`; or `NotFound` | yes | any other role or user (above all one with `system:masters`): it needs an equivalent entry or must go; an entry you do not recognise is a finding, not a go |
-| 5 | 3 nodes `Ready`; `whoami` shows an ARN-shaped username (an access entry), not a short mapped name; node group `ACTIVE`, no health issues; no Fargate profiles | yes | `NotReady` nodes: fix them first. A short username (e.g. `admin`) means you come in through `aws-auth`: back to 3 |
+| 5 | 3 nodes `Ready`; the `whoami` **groups** do not contain `system:masters` (an `aws-auth` mapping can also give an ARN-shaped username, so judge by groups); node group `ACTIVE`, no health issues; no Fargate profiles | yes | `NotReady` nodes: fix them first. `system:masters` among the groups: you come in through `aws-auth`, back to 3 |
 
-**Apply order.** Each plan is `-out`; read it before you apply.
+**The recovery identity (decide before you start).** After the switch, the only way back from a
+lockout is an IAM principal that can call `eks:CreateAccessEntry` and `eks:AssociateAccessPolicy`
+without cluster access. In practice that is the same SSO admin role as `$ME`, which makes IAM
+Identity Center a single point of failure. Name a second one now: a break-glass IAM role or user
+outside Identity Center (MFA, credentials stored offline), and the account root as the last
+resort (an SCP may block root; check yours). Test it with `aws sts get-caller-identity` and
+the simulation of check 3 for *that* principal.
+
+**Apply order.** Each plan is `-out`; read it before you apply. Run it as the identity of the last apply.
 
 ```bash
 cd infra/aws && terraform init && terraform fmt -check && terraform validate && terraform test
-# 0. After the merge: outputs only. Anything else in this plan (an upstream module drift) is a stop.
+# 0. After the merge: outputs only.
 terraform plan -out=auth0.tfplan        # expect: no resource changes; new outputs authentication_mode, node_role_arn
 terraform apply auth0.tfplan
+#    Anything else is a stop: an upstream module drift, or a replacement of cluster_creator
+#    (you are not the identity of the last apply).
 # 1. Only if check 2 or 3 was no-go: add the entries while the mode is still API_AND_CONFIG_MAP.
 #    In terraform.tfvars: node_access_entry = true  and/or  admin_principal_arns = { me = "<arn>" }
 terraform plan -out=auth1.tfplan        # expect: only "+ aws_eks_access_entry" (and policy association); 0 change, 0 destroy
 terraform apply auth1.tfplan
 #    then repeat checks 2 and 3: every row go. Do not continue before.
-# 2. The switch.
-terraform plan -var='authentication_mode=API' -out=auth2.tfplan
-terraform show auth2.tfplan             # expect exactly: ~ aws_eks_cluster.this[0] access_config { ~ authentication_mode = "API_AND_CONFIG_MAP" -> "API" }
-terraform apply auth2.tfplan            # Plan: 0 to add, 1 to change, 0 to destroy. A replace ("-/+") or any destroy: STOP, do not apply
+# 2. The switch. In terraform.tfvars set:  authentication_mode = "API"   (and keep it there, see below)
+terraform plan -out=auth2.tfplan
+terraform show auth2.tfplan
+terraform show -json auth2.tfplan | jq '[.resource_changes[] | select(.change.actions != ["no-op"]) | {address, actions: .change.actions}]'
+terraform show -json auth2.tfplan | jq '.resource_changes[] | select(.address=="module.eks.module.eks.aws_eks_cluster.this[0]") | .change.after.access_config'
+```
+
+Apply only when the first `jq` prints exactly
+`[{"address":"module.eks.module.eks.aws_eks_cluster.this[0]","actions":["update"]}]` and the second
+shows `authentication_mode` `"API"`. A replacement (`-/+`), any destroy, or an entry for
+`cluster_creator` in that list: STOP, do not apply.
+
+```bash
+terraform apply auth2.tfplan            # Plan: 0 to add, 1 to change, 0 to destroy
 aws eks wait cluster-active --name $CL
 ```
 
-Stop at step 2 if the plan shows a replacement of the cluster or anything but the one in-place
-`access_config` change; a cluster replacement is a destroy of a stateful resource.
+**Keep `authentication_mode = "API"` in `terraform.tfvars` from step 2 on.** Without it every later
+`terraform plan` proposes `API` -> `API_AND_CONFIG_MAP`, which EKS rejects, so an apply that bundles
+it with other changes stops partway. The follow-up commit sets the variable's default to `API`
+(and narrows its validation to `["API"]`, with the test `authentication_mode_defaults_to_the_current_mode`
+flipped); merge it only after the switch.
 
 **Post-checks** (within 5 minutes, and again after 20: a signed IAM token lives about 15 minutes, so a missing node entry shows up at the latest then):
 
@@ -1163,34 +1198,42 @@ kubectl --context $CTX get nodes                                       # 3 Ready
 kubectl --context $CTX auth whoami && kubectl --context $CTX auth can-i '*' '*' --all-namespaces   # yes
 kubectl --context $CTX -n argocd get applications                      # Synced / Healthy, as before
 kubectl --context $CTX -n kube-system get pods                         # no new CrashLoop
-(cd kubernetes && terraform plan)                                      # reads the cluster as you: no changes, no auth error
+terraform -chdir=kubernetes plan                                       # reads the cluster as you: no changes, no auth error
+terraform -chdir=../vault plan                                         # same, Kubernetes auth backends
 ```
 
-A new node joining is the only proof of the join path. If you want it: scale the group by one
-(`aws eks update-nodegroup-config --cluster-name $CL --nodegroup-name $NG --scaling-config
-minSize=3,maxSize=4,desiredSize=4`), watch `kubectl get nodes -w` until the fourth is `Ready`, then back to
-`desiredSize=3`. About 0.10 USD/h for the extra t3.large while it runs (Terraform ignores
-`desired_size` after creation, no drift). Skip it if check 2 showed the `EC2_LINUX` entry: that
-entry is what a node joins by.
+Check 2 showing the `EC2_LINUX` entry is the evidence that nodes join. A real join test is
+optional and mutating: scale the group to 4 (`aws eks update-nodegroup-config --cluster-name $CL
+--nodegroup-name $NG --scaling-config minSize=3,maxSize=4,desiredSize=4`), wait for the fourth node
+`Ready`, scale back to 3. The scale-in lets the ASG pick the node to terminate, possibly one
+hosting a RabbitMQ replica: do it only in a quiet window after `kubectl get pdb -A` looks right,
+otherwise skip it. About 0.10 USD/h for the extra t3.large while it runs (Terraform ignores
+`desired_size` after creation, no drift).
 
-Afterwards, in a follow-up commit: set `authentication_mode`'s default to `API` (so the repository
-says what the cluster is) and update the `aws-auth` sentence in the chart's `values.yaml`
-(`clusterRoleWrites`), and the same sentence in the Argo CD RBAC text if it names the mode. The inert `aws-auth`
-ConfigMap can stay; delete it after a quiet week if you want no stale mapping lying around.
+Afterwards, in a follow-up commit: the default flip above, and the `aws-auth` sentence in the
+chart's `values.yaml` (`clusterRoleWrites`) and in the Argo CD RBAC text if it names the mode. The
+inert `aws-auth` ConfigMap can stay; delete it after a quiet week if you want no stale mapping.
 
 **If something is missing after the switch.**
 
 | Symptom | Cause | Recovery (any IAM principal that may call `eks:CreateAccessEntry`; it does not need cluster access) |
 | --- | --- | --- |
-| nodes go `NotReady`, new nodes never register | no `EC2_LINUX` entry for the node role | `aws eks create-access-entry --cluster-name $CL --principal-arn $NODE_ROLE --type EC2_LINUX`. Do this at once: Pods on a `NotReady` node are evicted after the default 5 minutes |
-| `kubectl`: `You must be logged in to the server` / `Unauthorized`, and Terraform of `infra/aws/kubernetes` and `infra/vault` fails alike | no admin entry for your principal | `aws eks create-access-entry --cluster-name $CL --principal-arn $ME --type STANDARD`, then `aws eks associate-access-policy --cluster-name $CL --principal-arn $ME --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster` |
+| nodes go `NotReady` (about 40-50 s after the kubelet's authentication fails), new nodes never register | no `EC2_LINUX` entry for the node role | `source ~/ryft-eks-auth.env; aws eks create-access-entry --cluster-name $CL --principal-arn $NODE_ROLE --type EC2_LINUX` **at once**. The outage begins when the nodes turn `NotReady`, not after the eviction timeout: the node lifecycle controller marks their Pods NotReady, EndpointSlices drop them, so Traefik/NLB targets and api/ingest go dark immediately. With all three zones `NotReady` the controller stops evicting; containers keep running and pod-to-pod networking works, but nothing is reachable from outside and node group scale-ups and updates fail with `NodeCreationFailure`. Workloads that use service-account tokens or Pod Identity are unaffected |
+| `kubectl`: `You must be logged in to the server` / `Unauthorized`, and Terraform of `infra/aws/kubernetes` and `infra/vault` fails alike | no admin entry for your principal (often: `cluster_creator` was replaced by running as another identity) | `source ~/ryft-eks-auth.env; aws eks create-access-entry --cluster-name $CL --principal-arn $ME --type STANDARD`, then `aws eks associate-access-policy --cluster-name $CL --principal-arn $ME --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster` |
 
-Afterwards bring Terraform in line: for the node entry `node_access_entry = true` plus
-`terraform import 'module.eks.aws_eks_access_entry.node[0]' $CL:$NODE_ROLE` (or leave it unmanaged
-as EKS does); for an admin, `admin_principal_arns` plus the matching imports, or delete the manual
-entry first. There is no way back to `API_AND_CONFIG_MAP`: do not plan on a rollback, plan on
-check 2 and 3 being green. Keep one IAM identity that can call `eks:*` and does not depend on the
-cluster (check 3's `simulate-principal-policy`): it is the only recovery from a locked cluster.
+Afterwards bring Terraform in line, or leave the entry unmanaged as EKS does:
+- node entry: `node_access_entry = true` plus
+  `terraform import 'module.eks.aws_eks_access_entry.node[0]' $CL:$NODE_ROLE`;
+- admin: `admin_principal_arns = { <label> = "<arn>" }` plus
+  `terraform import 'module.eks.module.eks.aws_eks_access_entry.this["admin-<label>"]' $CL:$ME` and
+  `terraform import 'module.eks.module.eks.aws_eks_access_policy_association.this["admin-<label>_admin"]' "$CL#$ME#arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"`.
+
+**Never set `node_access_entry` back to `false` once it is `true` or imported**: in mode `API` that
+destroys the node entry, which is the outage above. Likewise never remove an admin from
+`admin_principal_arns` without another path in place.
+
+There is no way back to `API_AND_CONFIG_MAP`: do not plan on a rollback, plan on checks 2 and 3
+being green and on the second recovery identity.
 
 ## RabbitMQ
 

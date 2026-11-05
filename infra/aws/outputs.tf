@@ -1,5 +1,5 @@
 output "authentication_mode" {
-  description = "Authentication mode the cluster is configured with (API makes kube-system/aws-auth inert)"
+  description = "Authentication mode requested in the configuration, not read back from AWS (API makes kube-system/aws-auth inert)"
   value       = module.eks.authentication_mode
 }
 

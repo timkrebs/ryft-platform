@@ -29,15 +29,17 @@ node_group = {
 
 # Access to the cluster. The identity that runs the apply is always a cluster admin (an access
 # entry). Mode API ignores kube-system/aws-auth and cannot be reverted: do the read-only checks in
-# docs/OPERATIONS.md (EKS authentication mode API) first, then pass -var='authentication_mode=API'
-# on one reviewed plan; do not put it here before the checks are green.
+# docs/OPERATIONS.md (EKS authentication mode API) first, then set it to "API" for one reviewed plan
+# and KEEP it (a plan without it proposes API -> API_AND_CONFIG_MAP, which EKS rejects). Not before
+# the checks are green.
 # authentication_mode = "API_AND_CONFIG_MAP"
 #
 # Only if `aws eks list-access-entries` does not list the node group's role (EKS normally creates
 # that EC2_LINUX entry itself; true on top of an existing one fails with ResourceInUseException):
-# node_access_entry = true
+# node_access_entry = true   # never back to false afterwards: in mode API that destroys the entry
 #
-# Only if your kubectl uses another IAM role/user than the one that runs terraform:
+# Only for a principal other than the one that runs terraform (the same ARN fails with
+# ResourceInUseException): your kubectl role if it differs, a break-glass admin:
 # admin_principal_arns = { me = "arn:aws:iam::123456789012:role/your-admin-role" }
 
 tags = {

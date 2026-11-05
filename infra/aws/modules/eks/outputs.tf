@@ -4,7 +4,7 @@ output "access_entry_keys" {
 }
 
 output "authentication_mode" {
-  description = "Authentication mode the cluster is configured with"
+  description = "Authentication mode requested in the configuration, not read back from AWS"
   value       = var.authentication_mode
 }
 
