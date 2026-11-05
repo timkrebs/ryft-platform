@@ -203,7 +203,7 @@ func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) erro
 
 // CheckStale sends SYNC_STALE to users without new data for StaleAfter, once
 // per local day, in the daytime and outside quiet hours. It does nothing
-// without APNs.
+// without APNs. It stops between two users when ctx ends and returns its error.
 func (s *Service) CheckStale(ctx context.Context) error {
 	if s.APNs == nil {
 		return nil
@@ -214,6 +214,9 @@ func (s *Service) CheckStale(ctx context.Context) error {
 		return err
 	}
 	for _, r := range cands {
+		if err := ctx.Err(); err != nil {
+			return err // the shutdown: the rest waits for the next pass (a claim is per day)
+		}
 		if r.LastSample == nil || len(r.Tokens) == 0 || now.Sub(*r.LastSample) < StaleAfter {
 			continue
 		}
