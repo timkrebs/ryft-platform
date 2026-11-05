@@ -19,7 +19,7 @@
 # target: namespace ryft-api
 # patch: {"metadata":{"labels":{"pod-security.kubernetes.io/enforce":"baseline"}}}
 # refused-by: ryft-namespaces
-# message: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+# message: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 # ----
 # fixture: P3 default-deny deleted while its namespace lives
 # op: delete

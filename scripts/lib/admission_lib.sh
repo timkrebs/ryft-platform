@@ -683,7 +683,7 @@ EOF
     ($2 == "refused" || $2 == "warned") {
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/rabbitmq-cluster-operator-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a (Role or )?ClusterRole of the operators (must not (hold a wildcard verb|grant Secrets))/) next
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/messaging-topology-manager-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a ClusterRole of the operators (is read-only|must not grant Secrets)/) next
-      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432, or the broker.s 443 rule/) next
+      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432 \(443 in vault\), the broker.s 443 rule/) next
       printf "%s %s by %s (%s); ", $1, $3, $4, substr($5, 1, 80)
     }' "$WORK/dry-all-$variant.tsv")
   if [ -n "$unexplained" ]; then
