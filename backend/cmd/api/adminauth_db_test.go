@@ -22,14 +22,14 @@ import (
 // adminDB is the real chain (CORS, limit, bearer check, audit, routes) on a migrated Postgres, with an
 // operator who has a row, one who has none and one whose account was deleted.
 type adminDB struct {
-	t                 *testing.T
-	pool              *pgxpool.Pool
-	st                *store.Store
-	jwks              *jwksStub
-	srv               http.Handler
-	op, noRow, tombed uuid.UUID
-	target            model.User // an app user the routes can act on
-	startedAt         time.Time
+	t                      *testing.T
+	pool                   *pgxpool.Pool
+	st                     *store.Store
+	jwks                   *jwksStub
+	srv                    http.Handler
+	op, op2, noRow, tombed uuid.UUID
+	target                 model.User // an app user the routes can act on
+	startedAt              time.Time
 }
 
 func newAdminDB(t *testing.T, origins ...string) *adminDB {
@@ -44,7 +44,7 @@ func newAdminDBLog(t *testing.T, log *slog.Logger, origins ...string) *adminDB {
 	st := store.New(pool)
 	h := quietHandler()
 	h.st, h.log = st, log
-	d := &adminDB{t: t, pool: pool, st: st, jwks: newJWKSStub(t, false), op: uuid.New(), noRow: uuid.New(), tombed: uuid.New(),
+	d := &adminDB{t: t, pool: pool, st: st, jwks: newJWKSStub(t, false), op: uuid.New(), op2: uuid.New(), noRow: uuid.New(), tombed: uuid.New(),
 		startedAt: time.Now().Add(-time.Second)}
 	ctx := context.Background()
 	for _, q := range []struct {
@@ -52,6 +52,7 @@ func newAdminDBLog(t *testing.T, log *slog.Logger, origins ...string) *adminDB {
 		id  uuid.UUID
 	}{
 		{`INSERT INTO admin_accounts (user_id, note) VALUES ($1, 'operator')`, d.op},
+		{`INSERT INTO admin_accounts (user_id, note) VALUES ($1, 'second operator')`, d.op2},
 		{`INSERT INTO admin_accounts (user_id, note) VALUES ($1, 'deleted operator')`, d.tombed},
 		{`INSERT INTO deleted_users (id) VALUES ($1)`, d.tombed},
 	} {

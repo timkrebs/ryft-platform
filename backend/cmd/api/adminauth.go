@@ -59,22 +59,31 @@ type adminActor struct {
 	user        uuid.UUID // of the operator's account; Nil for the key
 }
 
-func (a adminActor) isKey() bool { return a.user == uuid.Nil }
+// isKey and isUser fail closed: the zero adminActor is neither, so it gets neither the whole view nor a
+// key-only route.
+func (a adminActor) isKey() bool  { return a.user == uuid.Nil && a.fingerprint != "" }
+func (a adminActor) isUser() bool { return a.user != uuid.Nil }
 
 func (a adminActor) kind() string {
-	if a.isKey() {
+	switch {
+	case a.isKey():
 		return model.ActorKey
+	case a.isUser():
+		return model.ActorUser
 	}
-	return model.ActorUser
+	return ""
 }
 
 // label names the actor in logs: "key:3fa1c2d9" or "user:1b2c3d4e" (the first 8 hex digits, as user_id's
 // short form elsewhere).
 func (a adminActor) label() string {
-	if a.isKey() {
+	switch {
+	case a.isKey():
 		return a.kind() + ":" + a.fingerprint
+	case a.isUser():
+		return a.kind() + ":" + a.user.String()[:8]
 	}
-	return a.kind() + ":" + a.user.String()[:8]
+	return "unknown"
 }
 
 type adminActorKey struct{}
@@ -93,8 +102,10 @@ func adminLogAttrs(ctx context.Context) []any {
 		return nil
 	case a.isKey():
 		return []any{"admin_actor", a.label(), "admin_key", a.fingerprint}
+	case a.isUser():
+		return []any{"admin_actor", a.label()}
 	}
-	return []any{"admin_actor", a.label()}
+	return nil
 }
 
 // wholeView says whether the caller gets the whole answer (the admin key) or the projection an operator's
@@ -144,7 +155,7 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 	if a.auditor == nil && h.st != nil {
 		a.auditor = h.st
 	}
-	metrics.InitAdminSeries()
+	initAdminSeries()
 	if a.limiter == nil {
 		a.limiter = ratelimit.New(10, 20)
 	}
@@ -152,6 +163,18 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 		a.now = time.Now
 	}
 	return a
+}
+
+// initAdminSeries creates the admin series at 0. increase() over a counter that is born at 1 sees no
+// increase, so without it the first use of a pod's life would never fire AdminWebUsed (a use you did not
+// make is the signal). Built with the chain, so a service without admin routes exports none.
+func initAdminSeries() {
+	for _, actor := range []string{model.ActorKey, model.ActorUser} {
+		metrics.AdminAuthorized.WithLabelValues(actor)
+	}
+	for _, result := range []string{"ok", "invalid", "error", "unauthorized", "mfa_required", "forbidden"} {
+		metrics.AdminRequests.WithLabelValues(result)
+	}
 }
 
 // limit is the per-address limit in front of the bearer check, so a flood of bad credentials costs no

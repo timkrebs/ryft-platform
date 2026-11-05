@@ -154,18 +154,41 @@ func TestAdminAuditsMFARefusals(t *testing.T) {
 			t.Errorf("row %d: %+v (details %s), want %s", i, r, r.Details, want)
 		}
 	}
-	// A stale session that keeps retrying writes a bounded number of rows (a burst of 3 per operator and pod).
+	// A stale session that keeps retrying writes exactly the burst of 3 rows per operator and pod (two are
+	// already there), however often it retries.
 	for i := 0; i < 20; i++ {
 		do(d.srv, "GET", "/v1/admin/invites", aal1, "")
 	}
-	if n := len(d.audit()); n > 3 {
-		t.Errorf("%d audit rows after 22 refusals, want at most the burst of 3", n)
+	byActor := func() map[string]int {
+		n := map[string]int{}
+		for _, r := range d.audit() {
+			if r.Actor.ID != nil {
+				n[*r.Actor.ID]++
+			}
+		}
+		return n
+	}
+	if n := byActor(); n[d.op.String()] != 3 || len(n) != 1 {
+		t.Errorf("after 22 refusals of one operator: %v, want exactly 3 rows for it", n)
+	}
+	// A second operator has a bucket of its own: its refusal is audited while the first is rate-limited.
+	aal1b := d.token(d.op2, func(c jwt.MapClaims) { c["aal"] = "aal1"; delete(c, "amr") })
+	if a := do(d.srv, "GET", "/v1/admin/users", aal1b, ""); a.status != 403 || a.code() != model.CodeMFARequired {
+		t.Fatalf("%d %s", a.status, a.body)
+	}
+	if n := byActor(); n[d.op.String()] != 3 || n[d.op2.String()] != 1 {
+		t.Errorf("the second operator's refusal is audited and the first stays at 3: %v", n)
 	}
 }
 
 // Nothing is registered on the admin mux except through the classified table (adminRoute.tokenOK, zero value
 // key-only), apart from the catch-all that mounts the chain. A route added by a direct HandleFunc would reach
 // a token without anyone having classified it.
+//
+// The scan's limit: it sees a Handle or HandleFunc call whose first argument is a string literal. A pattern
+// built from a constant or a variable is not seen (adminauth.go's own registration of the table, which
+// passes r.pattern, is the one such call and is meant to be). Review a new Handle or HandleFunc on an admin
+// mux by eye.
 func TestAdminRoutesAreOnlyRegisteredThroughTheTable(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -261,10 +284,15 @@ func TestMainLoadsAdminConfigBeforeDependencies(t *testing.T) {
 // check runs in a fresh process (this test binary, running only TestAdminSeriesChild) where nothing has
 // touched them before.
 func TestAdminSeriesExistAtZero(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestAdminSeriesChild$", "-test.count=1")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAdminSeriesChild$", "-test.count=1", "-test.v")
 	cmd.Env = append(os.Environ(), "RYFT_ADMIN_SERIES_CHILD=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("a fresh api process does not export the admin series at 0:\n%s", out)
+	}
+	// "no tests to run" exits 0: require that the child really ran and passed.
+	if !strings.Contains(string(out), "--- PASS: TestAdminSeriesChild") {
+		t.Fatalf("the child test did not run (renamed?):\n%s", out)
 	}
 }
 
