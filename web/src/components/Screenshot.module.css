@@ -4,7 +4,7 @@
   height: auto;
 }
 
-/* A plain outline: a rounded body with a hairline edge, the screen inset. Proportions
+/* The phone: a thick ink outline with a small radius, the screen flush inside. Proportions
    in container units (of .device) so the frame scales with its width. */
 .device {
   container-type: inline-size;
@@ -12,16 +12,13 @@
 }
 
 .body {
-  padding: 2.6cqw;
-  border-radius: 15cqw;
-  background: var(--graphite);
-  box-shadow:
-    0 0 0 var(--hairline) var(--surface-raised),
-    0 30px 60px -30px color-mix(in srgb, var(--graphite) 60%, transparent);
+  padding: 1.4cqw;
+  border-radius: 4cqw;
+  background: var(--text-primary);
 }
 
 .screen {
   overflow: hidden;
-  border-radius: 12.6cqw;
+  border-radius: 2.8cqw;
   background: var(--background);
 }

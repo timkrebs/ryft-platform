@@ -1,11 +1,13 @@
-// Small building blocks with the app's shapes (Theme.swift → Metrics): cards (radius 18,
-// padding 18), tiles (radius 16), sections (24 apart), pill buttons, tracked labels.
+// Small building blocks of the monochrome system (web/docs/DECISIONS.md, "Alpine"): hairline
+// sections with a numbered eyebrow, square buttons with the ↗ arrow, tracked uppercase labels,
+// the black ticker band. Colours and motion are tokens from the app; the web type scale and
+// rhythm are the `--web-*` properties in globals.css.
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import styles from './ui.module.css';
 
-const cx = (...names: (string | false | undefined)[]) => names.filter(Boolean).join(' ');
+const cx = (...names: (string | false | undefined | null)[]) => names.filter(Boolean).join(' ');
 
-/** Small uppercase tracked label (ryftLabelStyle). */
+/** Small uppercase tracked label (the app's ryftLabelStyle; here Inter 400, +0.08 em). */
 export function Label({
   children,
   as: Tag = 'p',
@@ -15,12 +17,33 @@ export function Label({
 }: {
   children: ReactNode;
   as?: 'p' | 'span' | 'h2' | 'h3' | 'dt';
-  tone?: 'secondary' | 'accent' | 'warning' | 'alert';
+  tone?: 'secondary' | 'primary' | 'accent' | 'warning' | 'alert' | 'inverse';
   className?: string;
   id?: string;
 }) {
   return (
     <Tag id={id} className={cx(styles.label, styles[`tone-${tone}`], className)}>
+      {children}
+    </Tag>
+  );
+}
+
+/** The section eyebrow: `02 / SCORES`, in the primary ink. */
+export function Eyebrow({
+  children,
+  as: Tag = 'p',
+  tone = 'primary',
+  className,
+  id,
+}: {
+  children: ReactNode;
+  as?: 'p' | 'span' | 'h2' | 'h3';
+  tone?: 'primary' | 'secondary' | 'inverse';
+  className?: string;
+  id?: string;
+}) {
+  return (
+    <Tag id={id} className={cx(styles.eyebrow, styles[`tone-${tone}`], className)}>
       {children}
     </Tag>
   );
@@ -58,23 +81,30 @@ export function Tile({
   return <Tag className={cx(styles.tile, className)}>{children}</Tag>;
 }
 
-/** A page section: optional label above the heading, an intro, and content. */
+/**
+ * A page section: a hairline on top, the numbered eyebrow (`02 / SCORES`), the heading in
+ * display caps, an optional intro, then the content.
+ */
 export function Section({
   id,
+  number,
   label,
   title,
   intro,
   children,
   className,
   headingLevel = 2,
+  tone = 'default',
 }: {
   id?: string;
+  number?: string;
   label?: string;
   title?: ReactNode;
   intro?: ReactNode;
   children?: ReactNode;
   className?: string;
   headingLevel?: 1 | 2;
+  tone?: 'default' | 'inverse';
 }) {
   const H = headingLevel === 1 ? 'h1' : 'h2';
   const headingId = id ? `${id}-title` : undefined;
@@ -82,12 +112,20 @@ export function Section({
     <section
       id={id}
       aria-labelledby={title ? headingId : undefined}
-      className={cx(styles.section, className)}
+      className={cx(styles.section, tone === 'inverse' && styles.sectionInverse, className)}
     >
       {(label || title || intro) && (
         <header className={styles.sectionHeader}>
-          {label && <Label as="p">{label}</Label>}
-          {title && <H id={headingId}>{title}</H>}
+          {label && (
+            <Eyebrow tone={tone === 'inverse' ? 'inverse' : 'primary'}>
+              {number ? `${number} / ${label}` : label}
+            </Eyebrow>
+          )}
+          {title && (
+            <H id={headingId} className={styles.sectionTitle}>
+              {title}
+            </H>
+          )}
           {intro && <div className={styles.intro}>{intro}</div>}
         </header>
       )}
@@ -96,22 +134,29 @@ export function Section({
   );
 }
 
-/** A link styled as the app's pill button. */
+/** A link styled as the square button; `arrow` appends the ↗ of every call to action. */
 export function ButtonLink({
   href,
   children,
   variant = 'primary',
+  arrow = false,
   className,
   ...rest
 }: {
   href: string;
   children: ReactNode;
-  variant?: 'primary' | 'secondary' | 'quiet';
+  variant?: 'primary' | 'secondary' | 'quiet' | 'inverse' | 'inverseOutline';
+  arrow?: boolean;
   className?: string;
 } & Omit<ComponentPropsWithoutRef<'a'>, 'href' | 'className' | 'children'>) {
   return (
     <a href={href} className={cx(styles.button, styles[`button-${variant}`], className)} {...rest}>
-      {children}
+      <span>{children}</span>
+      {arrow && (
+        <span className={styles.arrow} aria-hidden="true">
+          ↗
+        </span>
+      )}
     </a>
   );
 }
@@ -127,6 +172,25 @@ export function Container({
   narrow?: boolean;
 }) {
   return <div className={cx(styles.container, narrow && styles.narrow, className)}>{children}</div>;
+}
+
+/**
+ * The black ticker band. The text is repeated for the loop; the copies are hidden from
+ * assistive technology, and under Reduce Motion the band stands still.
+ */
+export function Marquee({ text }: { text: string }) {
+  const copies = 6;
+  return (
+    <div className={styles.marquee} role="presentation">
+      <p className={styles.marqueeTrack}>
+        {Array.from({ length: copies }, (_, i) => (
+          <span key={i} aria-hidden={i > 0 ? true : undefined}>
+            {text}
+          </span>
+        ))}
+      </p>
+    </div>
+  );
 }
 
 /** The marker for an unfinished value, styled like the legal drafts' TODO(user). */

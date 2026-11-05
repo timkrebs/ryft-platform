@@ -1,22 +1,22 @@
+/* The wordmark in the monochrome system: Inter Bold, caps, the display tracking. */
 .wordmark {
-  font-weight: var(--type-wordmark-weight);
+  font-weight: 700;
   font-size: 1em;
-  letter-spacing: var(--tracking-wordmark);
-  /* Tracking adds space after the last letter too; take it back so the word centres. */
-  margin-right: calc(-1 * var(--tracking-wordmark));
+  letter-spacing: -0.04em;
   line-height: 1;
+  text-transform: uppercase;
 }
 
 .logo {
   display: inline-flex;
   align-items: center;
-  gap: 0.6em;
-  font-size: var(--type-wordmark);
+  gap: 0.5em;
+  font-size: var(--web-h4);
   color: var(--text-primary);
 }
 
 .logo[data-size='large'] {
-  font-size: var(--type-title);
+  font-size: var(--web-h3);
 }
 
 .lockup {
@@ -34,15 +34,14 @@
 }
 
 .lockupWordmark {
-  font-size: 2rem;
+  font-size: var(--web-h2);
 }
 
 .tagline {
   margin: 0;
-  font-size: var(--type-label);
-  font-weight: var(--type-label-weight);
+  font-size: var(--web-label);
+  font-weight: 400;
   text-transform: uppercase;
-  /* The lock-up's tagline is tracked twice as wide as a label (BrandLockup). */
-  letter-spacing: calc(2 * var(--tracking-label));
+  letter-spacing: var(--web-tracking-label);
   color: var(--text-secondary);
 }

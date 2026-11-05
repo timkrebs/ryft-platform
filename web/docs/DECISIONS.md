@@ -317,3 +317,43 @@ Would change if the restyle wants Medium or SemiBold: then the files are added (
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
 400/700 only, which removes the question. Would also change if a page needs glyphs outside
 the subset (Greek, Cyrillic, CJK): widen the unicode ranges, don't swap back to the full file.
+
+## D21 — The "Alpine" restyle: monochrome, typographic, hairline grid (2026-11-05; builds on D18–D20)
+
+The user's design direction for RYFT (web first, app to follow): a black-on-white,
+typographic landing page after the "Alpine" reference the user named — Inter Bold in caps
+with −0.07 em tracking for every heading, Regular with +0.08 em for labels, 1 px ink rules
+instead of filled cards and shadows, square buttons with the ↗ arrow, numbered sections
+(`02 / SCORES`), and the app shown as monochrome mock screens rather than captures. The
+spec and the section mapping live in the RYFT project doc `docs/ALPINE_STYLE.md`.
+
+What stays from the app's tokens: every colour (the light palette of ryft-app ADR 0015),
+motion, and the app's own type scale (still generated into `tokens.css`, still used by the
+styleguide and anywhere a value is "the app's"). What the site adds: its own scale and rhythm
+as `--web-*` custom properties in `globals.css` (display 56–144 px, h1 42–56, h2 36–56 for
+indices and prices, h3 26–38, h4 22, h5 16, lead 18, body 15, long-form 17, label 13,
+caption 12; `--section-y` 56–120 px; `--container-max` 1440), because a marketing hero at
+104 px has no counterpart in an iPhone app and inventing app tokens for it would be a lie
+about where the value comes from. Radii are gone (the app's `--card-radius`/`--tile-radius`
+tokens are no longer referenced; the restyled app will set them to 0 and the generator keeps
+emitting them). `--rule-soft` is derived from `--separator` for the hero's guide lines.
+
+Components: `Section` takes a `number` and renders the eyebrow `02 / LABEL`; `Eyebrow`,
+`Marquee` (the black ticker band, CSS animation, still under Reduce Motion) and the
+`inverse`/`inverseOutline` button variants are new; `DeviceFrame` is a thick ink outline
+with a small radius; `Mockups.tsx` draws Today, Sleep and Strain in HTML/SVG from sample
+data (no inline styles: the marketing CSP has no `style-src 'unsafe-inline'`, so bars are
+SVG rects). The header's narrow-screen menu is a `<details>`, the pricing toggle two radio
+buttons and `:has()`, so the site still ships no script. The hero reads "Engineered for
+peak." (the user's choice); the tagline stays in the footer and the lock-up until the app
+changes it.
+
+Copy: the home page's texts were rewritten in the terser register (`messages/en.json` →
+`home`), facts unchanged; a pricing section states the 2026-11-05 decision (Free forever;
+Plus 4.99 €/month, 34.99 €/year, 99 € once; founder price for testers; Plus arrives with the
+App Store launch) and the FAQ's cost answer follows it. The app's real captures remain only
+on the legal pages (`profile-account-light`); the other light captures stay in
+`public/screenshots` until the app's restyle produces new ones.
+
+Would change if the user wants the hero figure to be a real capture again once the app is
+monochrome: `TodayScreen` is one component to swap for `Screenshot`.

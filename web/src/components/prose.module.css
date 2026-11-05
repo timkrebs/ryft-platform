@@ -1,7 +1,9 @@
+/* Long texts (legal, science, support): a measured column in Inter 400, headings in the
+   display caps, hairlines instead of fills. */
 .prose {
   max-width: 46rem;
-  font-size: var(--type-body);
-  line-height: 1.65;
+  font-size: var(--web-body-long);
+  line-height: 1.6;
 }
 
 .prose > * + * {
@@ -12,17 +14,25 @@
   margin-top: calc(var(--section-spacing) * 2.5);
   padding-top: var(--section-spacing);
   border-top: var(--hairline) solid var(--separator);
-  font-size: var(--type-title);
+  font-size: var(--web-h3);
+  line-height: 0.95;
   scroll-margin-top: 5rem;
 }
 
 .prose h3 {
+  margin-top: calc(var(--section-spacing) * 1.5);
+  font-size: var(--web-h4);
+  line-height: 1;
+}
+
+.prose h4 {
   margin-top: calc(var(--section-spacing) * 1.25);
-  font-size: var(--type-headline);
+  font-size: var(--web-h5);
 }
 
 .prose h2 + *,
-.prose h3 + * {
+.prose h3 + *,
+.prose h4 + * {
   margin-top: 0.75em;
 }
 
@@ -42,11 +52,12 @@
 }
 
 .prose li::marker {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 .prose a {
-  color: var(--accent);
+  color: var(--text-primary);
+  text-decoration-color: var(--text-primary);
 }
 
 .prose strong {
@@ -56,20 +67,19 @@
 .prose code {
   font-size: 0.9em;
   padding: 1px 5px;
-  border-radius: 6px;
-  background: var(--surface);
+  border: var(--hairline) solid var(--separator);
+  background: var(--background);
 }
 
 .tableWrap {
   overflow-x: auto;
-  border-radius: var(--tile-radius);
-  background: var(--surface);
+  border: var(--hairline) solid var(--separator);
 }
 
 .tableWrap table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--type-callout);
+  font-size: var(--web-body);
   line-height: 1.45;
 }
 
@@ -81,23 +91,28 @@
 }
 
 .tableWrap th {
-  font-size: var(--type-label);
-  font-weight: var(--type-label-weight);
+  font-size: var(--web-label);
+  font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--web-tracking-label);
   color: var(--text-secondary);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 
-.tableWrap tr + tr td,
-.tableWrap tbody tr:first-child td {
+.tableWrap th + th,
+.tableWrap td + td {
+  border-left: var(--hairline) solid var(--separator);
+}
+
+.tableWrap tr + tr td {
   border-top: var(--hairline) solid var(--separator);
 }
 
 .formula {
   padding: 14px 18px;
-  border-left: 2px solid var(--accent);
-  border-radius: 0 var(--tile-radius) var(--tile-radius) 0;
-  background: var(--surface);
+  border: var(--hairline) solid var(--separator);
+  border-left-width: 3px;
+  background: var(--background);
   overflow-x: auto;
 }
 

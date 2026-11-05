@@ -1,7 +1,7 @@
 .main {
   display: grid;
   align-content: center;
-  gap: calc(var(--section-spacing) * 1.25);
+  gap: 32px;
   min-height: 100vh;
   max-width: 34rem;
   margin-inline: auto;

@@ -1,5 +1,30 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-05 — the "Alpine" restyle (branches `web/english-light-inter` → `web/alpine`, not yet merged)
+
+Done, on top of D18–D20 (English only, light only, Inter):
+- Monochrome typographic system (D21): `--web-*` scale in `globals.css`, hairline sections with
+  numbered eyebrows, square ↗ buttons, the black ticker band, `<details>` menu, CSS-only pricing
+  toggle. Home rebuilt in nine sections with HTML/SVG mock screens (`src/components/Mockups.tsx`);
+  Beta, Science, Legal, Licences, Open, 404, Styleguide and `/admin` restyled on the same tokens.
+- Hero statement "Engineered for peak."; pricing section with the 2026-11-05 Free/Plus decision.
+- Checked here: typecheck, ESLint, Prettier, brand, `tokens:check` against
+  `ryft-app@design/alpine-light-palette`, Vitest (unit + `tests/output.test.ts` on the export),
+  `next build`, and headless-Chrome renders of `/`, `/beta`, `/science`, `/privacy`, `/admin` at
+  1440 and `/` at 390.
+
+Open:
+- Merge order: ryft-app `design/alpine-light-palette` (ADR 0015) first, or CI's `tokens:check`
+  fails on these branches; `.github/workflows/ci.yml` line 631 (`check-messages.mjs`) must go.
+- Not run here: Playwright e2e (`make web-e2e`), Lighthouse, `npm run og` (needs Chromium via
+  Playwright) — `public/og/en.png` is still the old dark card; `docs/screenshots/*` are stale.
+- The user decides: publish the pricing section now or hide it until launch; the Plus feature
+  lines are placeholders ("more depth", no concrete features).
+- App follow-ups from ADR 0015: band/zone fill levels instead of hue, outlined destructive
+  actions, Inter, radius 0, the hero statement in the app.
+
+---
+
 As of 2026-10-21. **Live on `https://ryftapp.de` since 2026-10-21, 20:32 CEST**: the
 platform's `2cc55ef` (ryft-platform #3) runs `ghcr.io/timkrebs/ryft/web:f437747` (public,
 D14) instead of the ConfigMap site. (Historical: until 2026-10-21 `main` lived at `github.com/timkrebs/ryft-web`; the site is now `web/` of `timkrebs/ryft-platform`, platform D107.)
