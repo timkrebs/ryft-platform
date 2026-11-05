@@ -469,18 +469,11 @@ locals {
 
 # Everything in the values that decides what Argo CD may do, other than the two ClusterRoles' rules
 # (tests/addons.tftest.hcl has those): extraObjects kinds, roleRules, createClusterRoles, Argo CD's
-# own RBAC and login settings, unexpected chart values. The check shows at plan time (a warning,
-# as every check block); the test fails on it.
+# own RBAC and login settings, unexpected chart values. The release's lifecycle conditions below
+# make a violation an ERROR of plan and apply (a check block only warns and the apply goes on).
 module "argocd_values_guard" {
   source = "./modules/argocd-values-guard"
   values = local.argocd_values
-}
-
-check "argocd_values_guard" {
-  assert {
-    condition     = length(module.argocd_values_guard.violations) == 0
-    error_message = "the Argo CD values carry something they must not (T12-f): ${join("; ", module.argocd_values_guard.violations)}"
-  }
 }
 
 resource "helm_release" "argocd" {
@@ -494,4 +487,19 @@ resource "helm_release" "argocd" {
 
   # The middlewares are Traefik's CRDs; the Ingress's certificate is cert-manager's.
   depends_on = [helm_release.traefik, helm_release.cert_manager]
+
+  lifecycle {
+    precondition {
+      condition     = length(module.argocd_values_guard.violations) == 0
+      error_message = "the Argo CD values carry something they must not (T12-f): ${join("; ", module.argocd_values_guard.violations)}"
+    }
+    # The guard and the tests read local.argocd_values: a second values document or a `set` would
+    # reach Helm without them (a `set` of createClusterRoles=false, a document with a wildcard role).
+    # (lookup(self, "postrender", null), not self.postrender: scripts/lib/tf_scan.py refuses the word as code, because a
+    # postrender block runs a program; a string is not scanned.)
+    postcondition {
+      condition     = length(self.values) == 1 && self.set == null && self.set_list == null && self.set_sensitive == null && lookup(self, "postrender", null) == null
+      error_message = "the release takes its values from local.argocd_values only (one document, no set, set_list, set_sensitive or postrender), so the guard and the tests see what Helm gets"
+    }
+  }
 }

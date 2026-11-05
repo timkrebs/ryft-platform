@@ -508,7 +508,7 @@ run "guard_clean_values_pass" {
       controller   = { clusterRoleRules = { enabled = true } }
       server       = { clusterRoleRules = { enabled = true } }
       configs      = { cm = { "resource.respectRBAC" = "strict" }, params = { "server.insecure" = true } }
-      extraObjects = [{ kind = "NetworkPolicy", metadata = { name = "x", namespace = "argocd" } }, { kind = "Middleware", metadata = { name = "y", namespace = "argocd" } }]
+      extraObjects = [{ apiVersion = "networking.k8s.io/v1", kind = "NetworkPolicy", metadata = { name = "x", namespace = "argocd" } }, { apiVersion = "traefik.io/v1alpha1", kind = "Middleware", metadata = { name = "y", namespace = "argocd" } }]
     }
   }
   assert {
@@ -550,7 +550,7 @@ run "guard_catches_an_object_in_another_namespace" {
     values = {
       controller   = { clusterRoleRules = { enabled = true } }
       server       = { clusterRoleRules = { enabled = true } }
-      extraObjects = [{ kind = "NetworkPolicy", metadata = { name = "x", namespace = "kube-system" } }]
+      extraObjects = [{ apiVersion = "networking.k8s.io/v1", kind = "NetworkPolicy", metadata = { name = "x", namespace = "kube-system" } }]
     }
   }
   assert {
@@ -651,5 +651,87 @@ run "guard_catches_the_chart_default_clusterroles" {
   assert {
     condition     = strcontains(join(" ", output.violations), "controller.clusterRoleRules is not enabled") && strcontains(join(" ", output.violations), "unexpected top-level value \"createAggregateRoles\"")
     error_message = "the chart's own wildcard ClusterRole and an unexpected top-level value must be caught"
+  }
+}
+
+# The chart renders extraObjects with `tpl`: a base64-decoded document inside apiVersion renders a whole
+# ClusterRoleBinding to cluster-admin while kind, namespace and name look allowed (variant B6).
+run "guard_catches_a_template_expression_in_an_extra_object" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      extraObjects = [{
+        apiVersion = "networking.k8s.io/v1{{\"a2luZDogQ2x1c3RlclJvbGVCaW5kaW5n\"|b64dec}}"
+        kind       = "NetworkPolicy"
+        metadata   = { name = "x", namespace = "argocd" }
+      }]
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "template expression ({{)") && strcontains(join(" ", output.violations), "is not networking.k8s.io/v1")
+    error_message = "a template expression in an extra object, and a changed apiVersion, must be caught"
+  }
+}
+
+run "guard_catches_a_wrong_api_version_and_a_string_extra_object" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      extraObjects = [
+        { apiVersion = "traefik.io/v1", kind = "Middleware", metadata = { name = "y", namespace = "argocd" } },
+        "kind: ClusterRoleBinding",
+      ]
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "is not traefik.io/v1alpha1") && strcontains(join(" ", output.violations), "extraObjects[1]: kind")
+    error_message = "another apiVersion of an allowed kind, and a string entry (the chart would tpl it), must be caught"
+  }
+}
+
+# The release's lifecycle conditions (a `set` and a second values document, variants B1 and B2) cannot be
+# injected from a test file (override_resource does not replace configured arguments):
+# scripts/tests/argocd_release_guard_test.sh edits a copy of this module and runs this file against it.
+
+# Variant B7: values below the second level that decide something and passed the first version.
+run "guard_catches_deeper_values" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      global = {
+        image         = { repository = "evil.example/argocd" }
+        networkPolicy = { create = false }
+      }
+      configs = {
+        cm     = { "accounts.admin" = "apiKey, login" }
+        params = { "server.insecure" = true, "server.x.frame.options" = "" }
+        secret = { extra = { "server.secretkey" = "x" } }
+      }
+      controller = { clusterRoleRules = { enabled = true } }
+      server = {
+        clusterRoleRules = { enabled = true }
+        ingress          = { enabled = true, annotations = { "nginx.ingress.kubernetes.io/configuration-snippet" = "x" } }
+      }
+    }
+  }
+  assert {
+    condition = alltrue([for needle in [
+      "global.image.repository", "global.networkPolicy.create is not true", "configs.cm.accounts.admin",
+      "configs.params.server.x.frame.options", "configs.secret.extra", "server.ingress.annotations.nginx.ingress.kubernetes.io/configuration-snippet",
+    ] : strcontains(join(" | ", output.violations), needle)])
+    error_message = "the image repository, the chart's NetworkPolicies off, an admin API-key account, another param, extra secret keys and another ingress annotation must be caught"
   }
 }

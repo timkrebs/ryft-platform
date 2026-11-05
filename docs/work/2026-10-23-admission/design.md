@@ -242,20 +242,27 @@ commands, NetworkPolicies, VSO or Argo objects.
     `resourceNames` (a fresh cluster needs `create`). Kubernetes' escalation check bounds what a written
     role may hold (a subset of the controller's rights), not who it is bound to: with a stolen token one
     writes a ClusterRole of that subset (ConfigMaps, Deployments, Jobs in every namespace) and binds it to
-    `system:unauthenticated`, `system:authenticated` or `system:serviceaccounts`; the grant outlives the
-    token. `delete` of any binding or ClusterRole is open too, and P6 matches only CREATE and UPDATE of the
+    `system:serviceaccounts` or `system:authenticated` (`system:unauthenticated` is probably not effective
+    on EKS 1.36, where anonymous requests are, as far as known, admitted to the health endpoints only: not
+    verified); the grant outlives the token. A second route needs no binding write: a ClusterRole labelled
+    `rbac.authorization.k8s.io/aggregate-to-edit|admin|view` adds its rules (a subset of the controller's)
+    to roles already bound to others (an `aggregationRule` of its own would need `escalate`, which stays
+    closed). `delete` of any binding or ClusterRole is open too, and P6 matches only CREATE and UPDATE of the
     operators' objects. Evaluated: `update`/`patch`/`delete` limited by `resourceNames` to the operators' 12
     RBAC objects (create stays open). That narrows the rewrite and the delete but not a created ClusterRole
-    and binding of another name, and it needs the `full` kind run (the operators' sync with escalate, bind
-    and server-side apply of existing objects), which a pull request does not run: not applied in #47; its
-    own change, with that run. The route closes with an extended P12 (refuse a binding by Argo CD's
-    identities whose subjects are not the operators' service accounts).
+    and binding of another name, and showing it safe needs the `full` kind run (the operators' sync with escalate, bind
+    and server-side apply of existing objects), which a pull request does not run. Not applied in #47: a
+    scoping choice (the PR stays a draft until a full-mode run anyway), and the narrowing does not close the
+    route; its own change, with that run. The route closes with an extended P12 (refuse a binding by Argo CD's
+    identities whose subjects are not the operators' service accounts, and aggregation labels).
   - argocd-server cannot add RBAC (no write on RBAC kinds).
-  - **Beside the rules (guards added with #47):** `modules/argocd-values-guard` (`extraObjects` kinds, no
-    `controller.roleRules`, `createClusterRoles` not false, no `configs.rbac`/anonymous login/disabled auth,
-    no unexpected chart value), the kind run's `argo-bindings` and `argo-tf-bindings`: a ClusterRoleBinding
-    to `cluster-admin` shipped as an extra object, or written in Terraform, passes every check on the two
-    ClusterRoles' rules.
+  - **Beside the rules (guards added with #47):** `modules/argocd-values-guard`, a precondition of
+    `helm_release.argocd` (`extraObjects` kinds with their one apiVersion and no `{{`, no `controller.roleRules`,
+    `createClusterRoles` not false, no `configs.rbac`/anonymous login/disabled auth, a key allowlist two
+    levels deep plus the keys of a few maps), a postcondition (one values document, no `set*`, no
+    postrender), the kind run's `argo-bindings` and `argo-extra-objects`, and `argo-tf-bindings` (a
+    tripwire): a ClusterRoleBinding to `cluster-admin` shipped as an extra object, or written in Terraform,
+    passes every check on the two ClusterRoles' rules.
 - **Structural options (future D97/D120 decisions, for you; not implemented).** (1) Move the operators'
   ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons: Argo CD
   then needs no `escalate` and no `bind` at all. (2) Keep Argo CD as it is but move the `escalate`/`bind`
@@ -706,8 +713,10 @@ kubectl get mutatingwebhookconfigurations \
   -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
 
 # 1. Step 0, T12-f alone (kind e2e passed; admission-values.yaml has enabled: false for both new releases)
-terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes; anything else in the plan: stop
-#    the release's values show as (sensitive value): the RBAC diff is not readable in the plan; the evidence is the kind run and helm template
+terraform -chdir=infra/aws/kubernetes init                               # the values guard is a new local module
+terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes; anything else, or any error: stop
+#    the human view prints the values as (sensitive value); the saved plan holds them in clear: read the rules with
+#    `terraform show -json argocd-rbac.tfplan | jq ... | yq ...` (docs/OPERATIONS.md, "Applying the narrowing"); the plan holds the admin hash: never commit it
 terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan
 #    then watch one full deploy (promote PR → sync → PreSync migrate → PostSync smoke) before going on
 kubectl -n argocd get applications

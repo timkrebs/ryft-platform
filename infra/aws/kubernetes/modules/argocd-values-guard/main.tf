@@ -8,11 +8,16 @@
 #     renders no ClusterRole, so the rules we narrowed vanish and every check on them passes for
 #     want of an object), configs.rbac (policy.default role:admin for every login), anonymous login
 #     and server.disable.auth.
-#   - any value key the chart has that this file does not expect: a key is added on purpose, here.
+#   - any value key the chart has that this file does not expect: a key is added on purpose, here. The
+#     allowlist is two levels deep, plus the keys of the maps listed in `allowed_nested` and configs.cm;
+#     below that nothing is looked at.
+#   - extraObjects is rendered by the chart with `tpl`: a `{{` in any of them is refused, and each allowed
+#     kind has its one apiVersion (the kind run also renders templates/extra-manifests.yaml and counts).
 #
-# argocd.tf calls it with local.argocd_values and a check block reports the violations at plan time;
-# tests/addons.tftest.hcl asserts the real values are clean and that each variant listed there is
-# caught. It reads values only: no resource, no provider.
+# argocd.tf calls it with local.argocd_values, and a precondition of helm_release.argocd turns a violation
+# into an error of plan and apply; tests/addons.tftest.hcl asserts the real values are clean and that each
+# canned variant listed there is caught (a variant nobody wrote down is not tested for). It reads values
+# only: no resource, no provider.
 
 terraform {
   required_version = "1.16.6"
@@ -41,10 +46,55 @@ locals {
     redis          = ["resources"]
   }
 
+  # The one apiVersion each allowed kind may carry.
+  extra_object_api_versions = {
+    NetworkPolicy = "networking.k8s.io/v1"
+    Middleware    = "traefik.io/v1alpha1"
+  }
+
+  # Below the second level only the places that decide something are listed (the keys of these maps,
+  # and for configs.cm the three settings and the health customizations).
+  nested = {
+    "global.image"               = try(local.v.global.image, {})
+    "global.logging"             = try(local.v.global.logging, {})
+    "global.networkPolicy"       = try(local.v.global.networkPolicy, {})
+    "configs.params"             = try(local.v.configs.params, {})
+    "configs.secret"             = try(local.v.configs.secret, {})
+    "server.ingress"             = try(local.v.server.ingress, {})
+    "server.ingress.annotations" = try(local.v.server.ingress.annotations, {})
+  }
+  allowed_nested = {
+    "global.image"         = ["tag"]
+    "global.logging"       = ["format"]
+    "global.networkPolicy" = ["create"]
+    "configs.params"       = ["server.insecure"]
+    "configs.secret"       = ["argocdServerAdminPassword", "argocdServerAdminPasswordMtime"]
+    "server.ingress"       = ["enabled", "ingressClassName", "tls", "annotations"]
+    "server.ingress.annotations" = [
+      "cert-manager.io/cluster-issuer",
+      "traefik.ingress.kubernetes.io/router.entrypoints",
+      "traefik.ingress.kubernetes.io/router.tls",
+      "traefik.ingress.kubernetes.io/router.middlewares",
+    ]
+  }
+  allowed_cm_keys = ["admin.enabled", "exec.enabled", "resource.respectRBAC"]
+
   # A tuple of objects of different shapes: iterate it as it is (tolist would fail on it).
   extra_objects = try(local.v.extraObjects, [])
 
   violations = concat(
+    flatten([for path, allowed in local.allowed_nested :
+      [for k in try(keys(local.nested[path]), []) : "unexpected value \"${path}.${k}\"" if !contains(allowed, k)]
+    ]),
+    [for k in try(keys(local.v.configs.cm), []) : "unexpected value \"configs.cm.${k}\"" if !contains(local.allowed_cm_keys, k) && !startswith(k, "resource.customizations.health.")],
+    try(local.v.global.networkPolicy.create, true) != true ? ["global.networkPolicy.create is not true: the chart's NetworkPolicies are off"] : [],
+    # The chart renders every extraObject with `tpl`: a template expression in any field is code that
+    # runs at render time (a base64-decoded document in apiVersion renders a whole other object).
+    strcontains(jsonencode(local.extra_objects), "{{") ? ["extraObjects carry a template expression ({{): the chart renders them with tpl, so a field can produce any object"] : [],
+    [for i, o in local.extra_objects :
+      "extraObjects[${i}]: apiVersion \"${try(o.apiVersion, "")}\" is not ${local.extra_object_api_versions[o.kind]} (the one apiVersion of a ${o.kind})"
+      if contains(keys(local.extra_object_api_versions), try(o.kind, "")) && try(o.apiVersion, "") != local.extra_object_api_versions[o.kind]
+    ],
     [for k in keys(local.v) : "unexpected top-level value \"${k}\" (createAggregateRoles, rbac, crds, ... change who may do what)" if !contains(local.allowed_top_level, k)],
     flatten([for section, allowed in local.allowed_keys :
       [for k in try(keys(local.v[section]), []) : "unexpected value \"${section}.${k}\"" if !contains(allowed, k)]

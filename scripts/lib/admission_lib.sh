@@ -293,8 +293,42 @@ adm_check_argo_bindings() {
   if [ -z "$bad" ]; then rec "argo-bindings" PASS "the render binds only the chart's own roles to their own names (no cluster-admin, no extra binding)"; else rec "argo-bindings" FAIL "a role binding in the render that is not the chart's: $bad"; fi
 }
 
+# What the chart renders from extraObjects (templates/extra-manifests.yaml, which runs every entry through
+# `tpl`): exactly as many documents as the values list, each a NetworkPolicy or a Middleware in argocd. A
+# template expression inside an allowed kind (apiVersion: "...{{ ... | b64dec }}") can render a whole other
+# object, which the values guard cannot see once it is expanded; this looks at the result.
+#   adm_check_argo_extra_docs <rendered-file> <expected count>
+adm_check_argo_extra_docs() {
+  local f=$1 want=$2 got bad
+  got=$(yq -o=json -I0 '.' "$f" | jq -s 'map(select(. != null)) | length')
+  bad=$(yq -o=json -I0 '.' "$f" | jq -rs 'map(select(. != null)) | .[] | select(((.kind == "NetworkPolicy" or .kind == "Middleware") and .metadata.namespace == "argocd") | not) | (.kind // "?") + " " + (.metadata.namespace // "-") + "/" + (.metadata.name // "?")')
+  if [ "$got" != "$want" ]; then
+    rec "argo-extra-objects" FAIL "extraObjects render $got documents, the values list $want"
+  elif [ -n "$bad" ]; then
+    rec "argo-extra-objects" FAIL "an extra object that is not a NetworkPolicy or Middleware in argocd: $bad"
+  else
+    rec "argo-extra-objects" PASS "the $want extraObjects render as $want NetworkPolicy/Middleware documents in argocd, nothing else"
+  fi
+}
+
+# adm_check_argo_extra_objects: renders only templates/extra-manifests.yaml with the values of argocd.tf
+# and checks it (adm_check_argo_extra_docs). Needs the values; with the chart's defaults there are none.
+adm_check_argo_extra_objects() {
+  [ -n "${ARGO_VALUES:-}" ] || { rec "argo-extra-objects" SKIP "no values of argocd.tf (the chart's defaults ship no extra object)"; return 0; }
+  local repo ver want out="$WORK/argocd-extra.yaml"
+  repo=$(chart_repo argocd); ver=$(chart_version argocd)
+  want=$(jq '(.extraObjects // []) | length' "$ARGO_VALUES")
+  if [ "$want" = 0 ]; then rec "argo-extra-objects" PASS "the values list no extra object"; return 0; fi
+  if ! helm template argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -s templates/extra-manifests.yaml > "$out" 2>"$WORK/log/argo-extra.err"; then
+    rec "argo-extra-objects" FAIL "helm template -s templates/extra-manifests.yaml: $(head -c 300 "$WORK/log/argo-extra.err")"
+    return 0
+  fi
+  adm_check_argo_extra_docs "$out" "$want"
+}
+
 # A binding written in Terraform (kubernetes_role_binding, kubernetes_cluster_role_binding, their _v1
-# forms, or a manifest of kind RoleBinding / ClusterRoleBinding) that names an argocd identity bypasses
+# forms, or a manifest of kind RoleBinding / ClusterRoleBinding) that names an argocd identity, or the
+# groups system:serviceaccounts / system:authenticated / system:unauthenticated, bypasses
 # every check on the two ClusterRoles' rules, and the render above does not contain it (Terraform applies
 # it, not the chart). Tripwire over the module's *.tf (top-level blocks, as `terraform fmt` writes them,
 # comment lines skipped); a binding that names no argocd identity is not this check's business.
@@ -308,11 +342,17 @@ adm_check_argo_tf_bindings() {
       inblk && /^}/ {
         inblk = 0
         # the resource types for a binding, or any resource (a manifest) that says RoleBinding / ClusterRoleBinding
-        if ((type ~ /^kubernetes_(cluster_)?role_?binding/ || blk ~ /(Cluster)?RoleBinding/) && blk ~ /argocd/)
+        isbind = (type ~ /^kubernetes_(cluster_)?role_?binding/ || blk ~ /(Cluster)?RoleBinding/)
+        if (isbind && blk ~ /argocd/)
           printf "%s: %s names an argocd identity\n", file, type
+        else if (isbind && blk ~ /system:(serviceaccounts|authenticated|unauthenticated)/)
+          printf "%s: %s binds a broad group (system:serviceaccounts, system:authenticated or system:unauthenticated)\n", file, type
+        # a manifest the tripwire cannot read (manifest = local.x, yamldecode(file(...))) is reviewed by hand
+        if (type ~ /^(kubernetes|kubectl)_manifest$/ && blk !~ /kind[ \t]*=[ \t]*"/)
+          printf "%s: %s takes a manifest that is not a literal: review it by hand\n", file, type
       }' "$f"
   done)
-  if [ -z "$hits" ]; then rec "argo-tf-bindings" PASS "no role binding in $K8S_DIR_REL names an argocd identity"; else rec "argo-tf-bindings" FAIL "$hits"; fi
+  if [ -z "$hits" ]; then rec "argo-tf-bindings" PASS "no role binding in $K8S_DIR_REL names an argocd identity or a broad group, and no manifest resource it cannot read"; else rec "argo-tf-bindings" FAIL "$hits"; fi
 }
 
 # The RBAC objects that make the impersonated identities real: the service accounts, the two

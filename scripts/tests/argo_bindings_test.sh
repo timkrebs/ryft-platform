@@ -152,5 +152,68 @@ resource "kubernetes_role_binding" "old" {
 }
 EOF
 : > "$RESULTS"; adm_check_argo_tf_bindings; expect argo-tf-bindings FAIL "the unversioned kubernetes_role_binding"
+rm "$mod/m3.tf"
+
+cat > "$mod/m4.tf" <<'EOF'
+resource "kubernetes_cluster_role_binding_v1" "all" {
+  metadata { name = "all" }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = "view"
+  }
+  subject {
+    kind      = "Group"
+    name      = "system:serviceaccounts"
+    api_group = "rbac.authorization.k8s.io"
+  }
+}
+EOF
+: > "$RESULTS"; adm_check_argo_tf_bindings; expect argo-tf-bindings FAIL "a binding to system:serviceaccounts"
+rm "$mod/m4.tf"
+
+cat > "$mod/m5.tf" <<'EOF'
+resource "kubernetes_manifest" "hidden" {
+  manifest = yamldecode(file("${path.module}/x.yaml"))
+}
+EOF
+: > "$RESULTS"; adm_check_argo_tf_bindings; expect argo-tf-bindings FAIL "a manifest that is not a literal"
+rm "$mod/m5.tf"
+: > "$RESULTS"; adm_check_argo_tf_bindings; expect argo-tf-bindings PASS "the module again as it is"
+
+# --- what extraObjects render (B6: a template expression in an allowed kind renders another object) ---
+cat > "$tmp/extra-ok.yaml" <<'EOF'
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-metrics-from-nodes, namespace: argocd}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: ratelimit, namespace: argocd}
+EOF
+: > "$RESULTS"; adm_check_argo_extra_docs "$tmp/extra-ok.yaml" 2; expect argo-extra-objects PASS "two allowed documents"
+: > "$RESULTS"; adm_check_argo_extra_docs "$tmp/extra-ok.yaml" 3; expect argo-extra-objects FAIL "a document fewer than the values list"
+cat > "$tmp/extra-b6.yaml" <<'EOF'
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: x, namespace: argocd}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: z}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin}
+subjects: [{kind: Group, name: "system:authenticated", apiGroup: rbac.authorization.k8s.io}]
+EOF
+: > "$RESULTS"; adm_check_argo_extra_docs "$tmp/extra-b6.yaml" 2; expect argo-extra-objects FAIL "a ClusterRoleBinding rendered out of an allowed kind"
+cat > "$tmp/extra-ns.yaml" <<'EOF'
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: x, namespace: kube-system}
+EOF
+: > "$RESULTS"; adm_check_argo_extra_docs "$tmp/extra-ns.yaml" 1; expect argo-extra-objects FAIL "an allowed kind in another namespace"
 
 echo "✓ argo_bindings_test"
