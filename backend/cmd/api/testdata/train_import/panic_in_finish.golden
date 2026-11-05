@@ -1,0 +1,27 @@
+case panic_in_finish
+
+== panic after the queue
+status: 500
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"internal error","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+stored session session:s origin=import day=D-5 sets=1
+outbox ingested reason=import days=D-5 user=user:a request=#1 session_id_set=false
+pending D-5
+lease held: false
+
+== metrics moved
+imports/invalid +1
+
+== log lines
+panic status=<nil> level=ERROR
+http status=500 code=<nil> route=POST /v1/train/import
