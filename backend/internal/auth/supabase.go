@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -76,8 +77,17 @@ func NewSupabase(ctx context.Context, o SupabaseOptions) (*Supabase, error) {
 		HTTPTimeout:       10 * time.Second,
 		RefreshInterval:   o.RefreshInterval,
 		RefreshUnknownKID: rate.NewLimiter(rate.Every(o.UnknownKIDEvery), 1),
-		// Never park a request behind the refresh limiter for long.
+		// Never park a request behind the refresh limiter for long. It also bounds the refresh an unknown
+		// key id triggers: jwkset waits for the limiter and fetches on the same 1 s context.
 		RateLimitWaitMax: time.Second,
+		// Every refresh that does not end with a key set lands here: no response, another status, or a
+		// body that is not a key set (the transport sees only the status). Keyfunc's own log line is kept.
+		RefreshErrorHandlerFunc: func(u string) func(context.Context, error) {
+			return func(ctx context.Context, err error) {
+				slog.Default().ErrorContext(ctx, "Failed to refresh HTTP JWK Set from remote HTTP resource.", "error", err, "url", u)
+				fetches.failed(err)
+			}
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("auth: JWKS client: %w", err)
@@ -130,7 +140,11 @@ func (s *Supabase) Verify(ctx context.Context, token string) (Principal, error) 
 		return Principal{}, Unavailable("jwks_unavailable", errors.New("no signing keys loaded"))
 	}
 	var c supabaseClaims
-	if _, err := s.parser.ParseWithClaims(token, &c, s.kf.KeyfuncCtx(ctx)); err != nil {
+	// The key lookup may fetch the JWKS (an unknown key id). That fetch must not end with the client: a
+	// caller that hangs up would cut it short, use up the minute's refresh and leave a rotated key
+	// unloaded. Detached from the caller's cancellation and deadline, it stays bounded by jwkset's 1 s
+	// (RateLimitWaitMax) and the HTTP client's 10 s; the context's values stay (D184).
+	if _, err := s.parser.ParseWithClaims(token, &c, s.kf.KeyfuncCtx(context.WithoutCancel(ctx))); err != nil {
 		return Principal{}, s.classify(err)
 	}
 	switch {
@@ -208,31 +222,43 @@ func (s *Supabase) Ready(ctx context.Context) error {
 	return nil
 }
 
-// FetchFailing reports whether the most recent JWKS fetch failed. It never fetches. The admin routes
-// read it to tell a refresh-limited unknown key id while the keys are fresh (a 401 there) from one
-// during an outage (still a 503); Verify and classify do not change with it (D184).
-func (s *Supabase) FetchFailing() bool { return s.fetches.lastFailed() }
-
 // fetchHealth remembers whether the most recent JWKS fetch worked, so an
-// unknown key during an outage is not mistaken for a forged token.
+// unknown key during an outage is not mistaken for a forged token. The
+// transport records a response with the expected status (ok); jwkset's
+// refresh error handler records a refresh that did not end with a key set
+// (failed), a 200 whose body is not one included: that is ok, then failed,
+// in that order, so it counts as failed.
 type fetchHealth struct {
 	lastOK, lastFail atomic.Int64 // unix nanoseconds
 }
 
 func (h *fetchHealth) lastFailed() bool { return h.lastFail.Load() > h.lastOK.Load() }
 
+func (h *fetchHealth) ok() { h.lastOK.Store(time.Now().UnixNano()) }
+
+// failed records a failed refresh, except one cut short because its own
+// context was cancelled (the service stopping; a request's hang-up no longer
+// reaches it, see Verify), which says nothing about the JWKS. A refresh that
+// ran out of its time (1 s for an unknown key id, 10 s otherwise) did fail.
+func (h *fetchHealth) failed(err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	h.lastFail.Store(time.Now().UnixNano())
+}
+
 type recordingTransport struct {
 	next   http.RoundTripper
 	health *fetchHealth
 }
 
+// RoundTrip records a response with the expected status. It records no
+// failure: the refresh error handler does, seeing the whole refresh (and
+// leaving out a cancelled one; D184).
 func (t *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.next.RoundTrip(r)
-	now := time.Now().UnixNano()
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.health.lastFail.Store(now)
-	} else {
-		t.health.lastOK.Store(now)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		t.health.ok()
 	}
 	return resp, err
 }

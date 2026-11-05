@@ -3758,24 +3758,34 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
   enabled, except Pod Security refusals and the liveness alerts.
 
-## D184 — On the admin routes an unknown key id inside the refresh limit is the generic `401` (amends D153)
+## D184 — A client that hangs up no longer fails the JWKS fetch; the admin `503` for an unknown key id stays (amends D153)
 
-- **Decision:** on `/v1/admin/*` a token whose key id the api does not know, sent inside the one-a-minute JWKS refresh
-  limit (`auth.classify`: `jwks_refresh_limited`, a `503`), gets the same `401` as every refused bearer, byte for byte,
-  with reason `unknown_key` in the log and on the access line, counted as `ryft_admin_requests_total{result="unauthorized"}`
-  like every admin `401` (not in `ryft_auth_failures_total`, so no label value is added). This settles D153's "Known and
-  accepted" bullet. The mapping lives in the admin chain only (`cmd/api/adminauth.go`); `auth.classify` and the user
-  routes do not change: there the `503` keeps the app from signing a user out in a key rotation race.
-- **Only while the keys are fresh:** the limit is reported whatever the last fetch did, so during a JWKS outage the
-  second unknown key id within a minute is `jwks_refresh_limited` too. The admin chain asks the verifier
-  (`auth.Supabase.FetchFailing`, a read-only accessor added for this; it never fetches) and keeps the `503` with
-  `Retry-After: 5` while the last fetch failed. A verifier that cannot say (a test fake) counts as healthy. Every other
-  `503` reason (`jwks_unavailable`, the allow-list check, an error that is not an `*auth.Error`) stays a `503`.
-- **Why:** anyone can send such a token, and the page reads a `503` as "Supabase or the database is unreachable" and a
-  `401` as "refresh, then sign in". The cost: if Supabase rotates its key and an operator's new token arrives within a
-  minute of a refresh, the page signs the operator in again instead of retrying; operators are few and a rotation is
-  rare, so that is accepted for the routes where the answer must not be an oracle.
-- **Unchanged:** `AuthUnavailable` (`jwks_unavailable|internal`) and its test; on the user routes `jwks_refresh_limited`
-  is still counted and still left out of the alert.
-- **Rejected:** changing `auth.classify` (it would sign app users out in a rotation race); a `401` for
-  `jwks_refresh_limited` whatever the fetch health (an outage would then sign the operator out).
+- **Considered and rejected: the admin routes answering an unknown key id inside the refresh limit with the generic
+  `401`** (D153's "Known and accepted" bullet; built in the first version of #141 and withdrawn after its security
+  review). Two reasons:
+  - **Its premise was false.** It assumed that with the mapping a `503` on `/v1/admin/*` proves an outage. It does not:
+    the key lookup ran on the request's context, jwkset fetches an unknown key id on `context.WithTimeout(requestCtx,
+    1 s)`, and the transport recorded the cancelled fetch of a client that hung up as a failed fetch. Anyone could so make
+    the last fetch "failed", get the `503` back, and count `jwks_unavailable`, which `AuthUnavailable` pages on (true on
+    every route on main before this entry).
+  - **It is worse in the case it is for.** During a key rotation the operator was not told about, a flood of forged key
+    ids holds the global refresh limiter, so the operator's own token with the new key id would get `401`, refresh,
+    `401` again, and the page signs out (a local revoke), where the `503` asks for a retry.
+- **The `503` stays** on the admin routes as on the user routes. It means "the api could not complete a key fetch (or the
+  database check) for this token", not that an outage is proven; API.md, OPERATIONS and OBSERVABILITY say so.
+- **Decision instead, the root cause in `internal/auth` (api and ingest):**
+  - `Supabase.Verify` calls the keyfunc with `context.WithoutCancel(ctx)`: a fetch an unknown key id starts no longer
+    ends with the client. It stays bounded by jwkset's 1 s (`RateLimitWaitMax`, which also bounds the fetch) and the
+    HTTP client's 10 s; the context's values stay. A request whose client left may finish its key lookup (at most 1 s).
+  - The transport records only a `200`. A failure is recorded by jwkset's refresh error handler
+    (`RefreshErrorHandlerFunc`, keyfunc's log line kept word for word), which sees the whole refresh: no answer, another
+    status, or a `200` whose body is not a key set (that was counted as a working fetch). A refresh cut short by its
+    own context being cancelled (the service stopping) is not recorded. One that ran out of its time is: after the
+    detach that can only be the fetch's own bound, a JWKS slower than 1 s, and treating it as healthy would answer a
+    real rotation with `401 unknown_key` on the user routes (a sign-out).
+  - Behaviour change: a client that disconnects mid-refresh no longer makes later unknown key ids `jwks_unavailable`,
+    and a `200` with an undecodable key set now makes an unknown key id a `503` instead of `401 unknown_key`. Nothing
+    changes for a valid token, an expired one, an unknown key id inside the limit (`503 jwks_refresh_limited`) or an
+    outage (`503 jwks_unavailable`). `AuthUnavailable` and its test are unchanged.
+- **Not done:** a refresh limiter per caller (the limiter stays global, so a flood of forged key ids still delays a
+  rotated key by up to a minute, answered with retryable `503`s); JWKS stale-while-revalidate (STATUS, Phase 3).

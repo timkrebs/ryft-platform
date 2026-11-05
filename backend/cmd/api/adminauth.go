@@ -25,7 +25,7 @@ import (
 // /v1/admin/ takes two bearers: ADMIN_API_KEY (scripts, smoke), compared first and in constant time,
 // or the Supabase access token of an allow-listed operator with a recent second factor (the
 // operator's web page). The order, the answers and why are in docs/API.md → Admin routes; D153 (the
-// token path), D154 (CORS), D155 (the per-address limit), D157 (the actor), D184 (an unknown key id is a 401).
+// token path), D154 (CORS), D155 (the per-address limit), D157 (the actor).
 
 const (
 	// adminMFAMaxAge is how old the token's TOTP may be: a Supabase session never expires by itself,
@@ -37,14 +37,7 @@ const (
 	adminRole = "admin"
 	// adminMaxToken bounds the work a bearer can cost, as auth.Middleware does.
 	adminMaxToken = 8 << 10
-	// refreshLimited is auth.classify's reason for an unknown key id inside the JWKS refresh limit.
-	refreshLimited = "jwks_refresh_limited"
 )
-
-// jwksFetchHealth is what auth.Supabase says about its last JWKS fetch (FetchFailing).
-type jwksFetchHealth interface{ FetchFailing() bool }
-
-var _ jwksFetchHealth = (*auth.Supabase)(nil) // the production verifier must keep answering it
 
 // adminOptions is what adminRoutes needs besides the handler.
 type adminOptions struct {
@@ -202,9 +195,8 @@ func (a adminAuth) limit(next http.Handler) http.Handler {
 
 // require lets a request through with the key or an operator's token, and answers everything else:
 // one identical 401 for every bearer that is not accepted (so the answer is no oracle for the key or
-// for who is an operator; an unknown key id is one of them while the signing keys are fresh, D184),
-// 403 mfa_required only for a real operator, 503 when a token cannot be checked now (the signing keys
-// or the database). The reason of a 401 is in the log and on the access line's code, never in the answer.
+// for who is an operator), 403 mfa_required only for a real operator, 503 when a token cannot be
+// checked now. The reason of a 401 is in the log and on the access line's code, never in the answer.
 func (a adminAuth) require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := auth.Bearer(r)
@@ -225,19 +217,15 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 		p, err := a.verifier.Verify(r.Context(), token)
 		if err != nil {
 			var ae *auth.Error
-			switch {
-			case !errors.As(err, &ae):
-				a.unavailable(w, r, "internal")
-			case ae.Status == http.StatusUnauthorized:
+			if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
 				a.reject(w, r, ae.Reason)
-			case ae.Reason == refreshLimited && !a.jwksFailing():
-				// An unknown key id inside the refresh limit while the keys are fresh: anyone can send
-				// one, so here it is the same 401 as every refused bearer. The user routes keep the 503
-				// (auth.classify is unchanged): there it protects the app against a rotation race (D184).
-				a.reject(w, r, "unknown_key")
-			default:
-				a.unavailable(w, r, ae.Reason)
+				return
 			}
+			reason := "internal"
+			if ae != nil {
+				reason = ae.Reason
+			}
+			a.unavailable(w, r, reason)
 			return
 		}
 		if p.AppRole != adminRole {
@@ -269,13 +257,6 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 		}
 		a.pass(w, r, next, adminActor{user: p.UserID})
 	})
-}
-
-// jwksFailing says whether the verifier's last JWKS fetch failed. A verifier that cannot say (a test
-// fake) counts as healthy: the unknown key id is then refused like every other bearer.
-func (a adminAuth) jwksFailing() bool {
-	h, ok := a.verifier.(jwksFetchHealth)
-	return ok && h.FetchFailing()
 }
 
 // auditMFA records the refusal of a real operator for want of a fresh second factor: who, which route,

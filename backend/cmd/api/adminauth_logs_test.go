@@ -30,7 +30,7 @@ var adminRejectReasons = []string{"missing", "not_a_token", "expired", "signatur
 // request's (docs/OPERATIONS.md → Data protection (logs)): the actor as a pseudonymous short id, a reason from
 // a closed set, counts. Never a token, an email, an address, a note or a code.
 var adminLogKeys = logcheck.Lines{
-	"http":                logcheck.HTTP(append([]string{"mfa_required", "key_only", "jwks_unavailable", "account_check"}, adminRejectReasons...)...),
+	"http":                logcheck.HTTP(append([]string{"mfa_required", "key_only", "jwks_unavailable", "jwks_refresh_limited", "account_check"}, adminRejectReasons...)...),
 	"admin auth rejected": {"reason": logcheck.Enum(adminRejectReasons...)},
 	"admin second factor required": {"reason": logcheck.Enum("mfa_missing", "mfa_stale"),
 		"admin_actor": logcheck.Pattern(actorLabel)},

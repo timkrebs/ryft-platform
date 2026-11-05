@@ -166,7 +166,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 34 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 33 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 7 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its queue and a 15-minute timer. | apns, app, config, events, logx, notify, store | 1 file |
@@ -175,7 +175,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
 | `internal/app` | owns a long-running service's lifecycle: it starts the pool, the broker, consumers and HTTP in order and stops them in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 4 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
-| `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 4 files |
+| `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 5 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 1 file |
 | `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 9 files (Postgres) |
@@ -189,7 +189,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
 | `internal/logx/logcheck` | owns the test-side half of "no health values in logs": it checks captured log lines against the keys each message may carry. | none | 1 file |
-| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, events/amqpbus, gate, httpx, notify, scoring, store |
+| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, auth, events/amqpbus, gate, httpx, notify, scoring, store |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
