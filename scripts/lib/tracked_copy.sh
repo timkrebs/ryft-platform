@@ -9,6 +9,9 @@
 #   never reach a rendering, a Terraform run or the git server of the kind cluster). <tree> must be the
 #   top level of a git work tree. A tracked symbolic link is refused (it could point out of the tree).
 #   A tracked file that is deleted in the working tree is skipped. Exit status: 0, or 1 with a message.
+#   TRACKED_COPY_HEAD=1 copies the files of the HEAD commit (git archive) instead: a tree whose commit
+#   was vouched for (admission_e2e.sh) is read as committed, whatever `git status` says (it trusts the
+#   index, which assume-unchanged and skip-worktree flags or a restored mtime can make lie).
 tracked_copy() {
   local tree=$1 dest=$2 top want f n=0
   shift 2
@@ -20,6 +23,12 @@ tracked_copy() {
     return 1
   fi
   mkdir -p "$dest" || return 1
+  if [ "${TRACKED_COPY_HEAD:-}" = 1 ]; then
+    git -c core.fsmonitor=false -C "$want" archive --format=tar HEAD -- "$@" | tar -x -C "$dest" || { echo "tracked_copy: git archive HEAD failed in $tree" >&2; return 1; }
+    if [ -n "$(find "$dest" -type l -print -quit)" ]; then echo "tracked_copy: a tracked symbolic link: refused" >&2; return 1; fi
+    [ -n "$(find "$dest" -type f -print -quit)" ] || { echo "tracked_copy: no tracked file under $* in $tree" >&2; return 1; }
+    return 0
+  fi
   while IFS= read -r -d '' f; do
     [ -e "$want/$f" ] || [ -L "$want/$f" ] || continue
     if [ -L "$want/$f" ]; then echo "tracked_copy: $f is a symbolic link: refused" >&2; return 1; fi
