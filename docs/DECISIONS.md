@@ -3123,3 +3123,21 @@ Engine, and fails with the changed fields grouped by field.
 - **Pinned:** kind, kubectl (the EKS minor), helm and yq by version and sha256 in `scripts/install_*.sh`;
   their versions are printed in the summary. The chart's `version:` must go up when its templates or values
   change (`scripts/check_chart_bump.sh`, a pull request).
+
+## D162 — The /admin page on ryftapp.de and its CSP exception (admin web, PR3)
+
+- **Decision:** the operator's page is `https://ryftapp.de/admin`, part of the static site (`web/`, D107), not
+  a service of its own: one esbuild-bundled inline script in its own document, Supabase Auth by REST with TOTP,
+  then only the `/v1/admin/*` routes of D153 with the operator's token. It is the one exception to the site's
+  "no script beyond the theme, `connect-src 'none'`, no forms, `localStorage` for the theme only": its own nginx
+  location and CSP (`connect-src` path-scoped to `<supabase>/auth/v1/` and `https://api.ryftapp.de/v1/admin/`,
+  `trusted-types 'none'`), the session in `sessionStorage`, cleared when the tab leaves `/admin` (a reload signs
+  out), English-only strings. Every other page keeps its policy unchanged. The details and the reasons are web
+  D15 (document, script, CSP), web D16 (storage) and web D17 (forms, origins, language) in
+  `web/docs/DECISIONS.md`; the PR is timkrebs/ryft-platform#128.
+- **Why on the site and not a separate origin:** no new image, Deployment or certificate for a page used by one
+  person; the marketing pages run no dynamic code, which keeps the shared origin acceptable. A subdomain is the
+  v2 hardening if the site ever gets more dynamic pages.
+- **Preconditions to use it:** D154's `ADMIN_WEB_ORIGINS=https://ryftapp.de` live on the api, the invite fields
+  of D159-D160 live, the Data API off (`docs/SUPABASE.md` step 4), at most one TOTP factor per account
+  (`max_enrolled_factors = 1`), and a check that a second factor cannot be enrolled at aal1 (the design's V-MFA-1).

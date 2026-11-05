@@ -165,3 +165,54 @@ public image lets anyone pull it and take the files out. That risk is accepted f
 way back is ready: set the package private again and apply the platform's pull-secret
 variant (`docs/HANDOFF.md` → 2, `docs/handoff/platform-web-image.patch`: a
 `kubernetes.io/dockerconfigjson` Secret synced by the Vault Secrets Operator).
+
+## D15 — The admin page is one hashed inline script in its own document (2026-11-05; amends D2)
+
+`/admin` is the operator's page (invites, beta access, feedback, flags, audit; root D162). It
+has its own root layout, `src/app/(admin)`, a server component that inlines ONE script,
+`data-ryft="admin"`, built by esbuild (a pinned dev dependency; nothing of it ships) from
+`src/admin`. No React runtime, no supabase-js (the GoTrue calls are plain `fetch` in
+`gotrue.ts`), no third-party code: about 25 KB, under 10 KB gzipped for the whole page. The
+DOM is built only through `dom.ts` (`createElement`, text nodes, an attribute allow-list);
+ESLint, `tests/admin-source.test.ts`, the bundle step and `trusted-types 'none'` at run time
+keep HTML sinks out.
+
+It has its own nginx location and CSP (`nginx/headers-admin.conf`): one script hash,
+`connect-src` path-scoped to `<supabase>/auth/v1/` and `<api>/v1/admin/` from
+`config/admin.json` (so the user routes, PostgREST and storage cannot be reached from the
+page), `img-src 'self' data:` for the TOTP QR code, `form-action 'none'`, `frame-ancestors
+'none'`. Every other page keeps `connect-src 'none'` and the two theme hashes. The shared
+security headers live in `headers-common.conf`, so a location with its own CSP does not
+lose them; a location includes exactly one of the two CSP snippets, never both (two CSPs
+intersect). The postbuild allows the admin script on `admin.html` only, and no other page may
+carry it. `noindex` by header and meta tag; not linked, not in the sitemap or `robots.txt`.
+
+Would change if the site gets more dynamic pages: then the admin page moves to its own
+subdomain.
+
+## D16 — `sessionStorage` on `/admin` holds the operator's session (2026-11-05; amends D5)
+
+D5's "nothing else is stored" no longer holds for `/admin`: the operator's session (access
+and refresh token) is kept in `sessionStorage['ryft.admin.session']`, never in
+`localStorage` and never in a cookie. `sessionStorage` is per tab and per origin: it is gone
+when the tab closes and is not shared with other tabs, but every page of `ryftapp.de` loaded
+in the same tab (and a tab made with "Duplicate tab") can read it. So `src/admin/leave.ts`
+clears it on `pagehide` unless the Navigation API announced a navigation to `/admin` itself.
+A browser reload, pull to refresh and a URL typed in the address bar fire no `navigate`
+event, so they cannot be told apart from leaving and sign the operator out: the safe
+direction, chosen over keeping the token readable by the next page. Changing section
+(`#users`) is a same-document navigation and keeps the session.
+
+What makes the remaining exposure acceptable: the marketing pages run no dynamic code (two
+hashed scripts, Trusted Types) and are served under a CSP with `connect-src 'none'`. The operator signs in again (password manager and TOTP) after closing the tab or
+reloading. The v2 hardening is a subdomain.
+
+## D17 — The admin page has forms, talks to two origins, and its strings are English-only (2026-11-05)
+
+Amends the site's "no forms", "no third-party requests" and two-language rules for this page
+only. The sign-in and TOTP forms exist for password-manager autofill (`form-action 'none'`;
+the script handles submission). The page connects to the api and to the project's Supabase
+Auth, both named in its footer; every other page still makes no request beyond the site. Its
+strings are for one operator, live in the bundle, outside `messages/{en,de}.json`, and there
+is no `/de/admin`: the page sits outside `[locale]`, so the two-language checks do not apply
+to it.

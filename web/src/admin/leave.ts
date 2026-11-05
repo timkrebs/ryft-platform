@@ -3,8 +3,8 @@
 // /admin: on `pagehide`, unless the Navigation API told us the next document is /admin itself
 // (a script-initiated reload or navigation). A reload by the browser (reload button, pull to
 // refresh) and the address bar fire no `navigate` event, so they look like leaving: the
-// operator signs in again, the safe direction. This is the only use of the Navigation API and of `pagehide` in the bundle
-// (tests/admin-source.test.ts and tests/output.test.ts pin that).
+// operator signs in again, the safe direction (web D16). This is the only use of the Navigation
+// API and of `pagehide` in the bundle (tests/admin-source.test.ts and tests/output.test.ts pin that).
 //
 // Without the Navigation API every pagehide clears, a reload included: the operator signs in
 // again, which is the safe direction. A page restored from the back/forward cache is not exempt

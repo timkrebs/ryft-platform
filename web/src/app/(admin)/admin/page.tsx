@@ -4,6 +4,7 @@ import config from '../../../../config/admin.json';
 
 // out/admin.html. A server component: it renders the shell and inlines the bundle that
 // scripts/admin-bundle.mjs built from src/admin (no 'use client', no React runtime ships).
+// English-only, outside messages/ and [locale] (web D17).
 export default function AdminPage() {
   const script = readFileSync(join(process.cwd(), 'src/generated/admin.js'), 'utf8');
   const apiHost = new URL(config.apiUrl).host;
