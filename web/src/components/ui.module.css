@@ -29,7 +29,8 @@
 }
 
 .tone-warning {
-  color: var(--warning);
+  /* Warning is a mark colour (3.3:1 on white), not a text colour: web D19. */
+  color: var(--text-secondary);
 }
 
 .tone-alert {
