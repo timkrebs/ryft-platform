@@ -1,6 +1,21 @@
 /* Global styles. Every colour, radius, size and duration is a token from tokens.css
    (generated from the app); this file only decides where they go. */
 
+/* Inter's metric-matched fallback (the overrides next/font computes for Inter against Arial),
+   bound to every local font that shares Arial's metrics, so the first paint has Inter's line
+   heights and widths on every platform and nothing moves when Inter swaps in: Arial and
+   Helvetica (Apple, Windows), Liberation Sans and Arimo (Linux), Roboto (Android). */
+@font-face {
+  font-family: 'Inter Fallback';
+  src:
+    local('Arial'), local('ArialMT'), local('Helvetica'), local('Liberation Sans'), local('LiberationSans'),
+    local('Arimo'), local('Roboto'), local('Roboto-Regular');
+  ascent-override: 90.44%;
+  descent-override: 22.52%;
+  line-gap-override: 0%;
+  size-adjust: 107.12%;
+}
+
 *,
 *::before,
 *::after {

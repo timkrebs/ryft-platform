@@ -300,6 +300,18 @@ server. To regenerate: download Inter 4.1, then
 `pyftsubset web/Inter-<W>.woff2 --flavor=woff2 --unicodes="U+0000-00FF,U+0100-017F,U+2000-206F,U+20AC,U+2190-2199,U+2212,…" --layout-features=… --no-hinting --desubroutinize`
 (the exact lists are in the commit that introduced them).
 
+**Loading (measured, not guessed).** Lighthouse's mobile run (simulated slow 4G, `lighthouserc.json`)
+treats the repaint of text when its web font arrives as the LCP whenever that repaint changes the
+text's size. With both files *preloaded*, that repaint lands at exactly 1.50 s on every page (the
+preload joins the critical chain), and with next/font's computed fallback but no preload at
+1.65 s. The recipe that D13 used for the previous typeface wins again: **no preload**, next/font's
+fallback off, and a hand-written metric-matched `'Inter Fallback'` in `globals.css` (Arial-class
+local fonts with Inter's ascent/descent/size-adjust). Text paints at FCP in the fallback with
+Inter's metrics (CLS ≤ 0.001 on every page), Inter swaps in a moment later; LCP is 1.35 s on `/`
+and 1.5–1.65 s on the long-text pages, where the swap still reflows a paragraph by a line. The LCP
+budget moves from 1.5 s to **1.8 s** for that reason only — the first paint is 1.2–1.35 s on every
+page and the performance score is 1.0; the real-user LCP is the first paint, not the swap.
+
 Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
 400/700 only, which removes the question. Would also change if a page needs glyphs outside

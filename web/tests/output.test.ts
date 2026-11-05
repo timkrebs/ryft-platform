@@ -37,7 +37,7 @@ describe.skipIf(!built)('built site', () => {
     expect(gzipSync(js).length).toBeLessThan(80 * 1024);
   });
 
-  it('serves Inter Regular and Bold byte-identical to the committed files, preloaded', () => {
+  it('serves Inter Regular and Bold byte-identical to the committed files, not preloaded', () => {
     const committed = new Set(
       ['Inter-Regular.woff2', 'Inter-Bold.woff2'].map((f) =>
         createHash('sha256')
@@ -51,7 +51,13 @@ describe.skipIf(!built)('built site', () => {
       expect(committed.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
     }
     const page = readFileSync(join(OUT, 'index.html'), 'utf8');
-    expect(page.match(/<link rel="preload"[^>]*as="font"/g) ?? []).toHaveLength(2);
+    // Not preloaded (D20: the preload made the font swap the LCP); the fallback is metric-matched.
+    expect(page.match(/<link rel="preload"[^>]*as="font"/g) ?? []).toHaveLength(0);
+    const css = [...files(OUT)]
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('');
+    expect(css).toMatch(/font-family:\s*["']?Inter Fallback/);
     expect(page).not.toMatch(/Satoshi/i);
   });
 
