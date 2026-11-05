@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Part of make k8s-validate (offline): the RabbitMQ operators render namespace-scoped (T12-g, D97).
+# Part of make k8s-validate (offline): the RabbitMQ operators render namespace-scoped (T12-g, D97, D182).
 # A `$patch: delete` or JSON patch whose target matches nothing still renders with exit 0, so a
 # renamed ClusterRole in a new release would silently bring back cluster-wide Secret reads. This
 # asserts the RESULT of `kubectl kustomize deploy/rabbitmq/operators` (or the rendered file given

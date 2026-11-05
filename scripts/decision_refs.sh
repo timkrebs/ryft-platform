@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Decisions whose code never says so: lists the D-numbers defined in docs/DECISIONS.md that no tracked source or
+# Decisions whose code never says so (D165): lists the D-numbers defined in docs/DECISIONS.md that no tracked source or
 # config file mentions, so a reader of the code can find the reason for a branch, a constant or a manifest.
 #   scripts/decision_refs.sh            warn about each unreferenced D<n>; exit 0 (`make lint`, CI `bytes`)
 #   scripts/decision_refs.sh --strict   the same, exit 1 when there is a warning (for a later promotion to a failure)

@@ -2312,6 +2312,8 @@ sent, and whether a second account shares its phone.
 
 ## D120 — Admission: Pod Security labels plus ValidatingAdmissionPolicy, owned by Terraform (amends D95)
 
+- **Amended by D180:** Argo CD's ClusterRoles are an allowlist and the values that decide what Argo CD may do are guarded
+  (merged in #47, not yet applied). **Amended by D182:** how the operators are namespace-scoped (T12-g, #51).
 - **Why (2026-10-23):** D115's CI checks hold a small set of render invariants. Pod security, images
   per namespace, commands, NetworkPolicy and Traefik shapes, the VSO objects, the operators' cluster
   power and the Argo CD objects are not checked, and whatever is written in the cluster (Argo CD's
@@ -3065,6 +3067,8 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D151 — The kind run of the admission policies: what it found and what was decided (T12-d; amends D120 by a note)
 
+- **Amended by D183:** the "Claim m disproved" bullet's consequence ("T12-e needs another binding-state signal") no
+  longer holds: T12-e shipped with kube-state-metrics' native collector (#55).
 - **Why (2026-10-26):** the policies were only ever evaluated offline (D120's CEL harness). The kind run
   (`scripts/admission_e2e.sh`, CI job `admission`, workflow `admission-e2e`) put them in front of a real
   API server, a real Argo CD and the real operators, and found things the harness could not.
@@ -3123,6 +3127,8 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D152 — The tree under test is code (T12-d)
 
+- **Amended by D181:** the Terraform scan is a tripwire (a lexer with a longer refusal list, not "refuses a module with a
+  provisioner, ..."), and a tree that is not this checkout needs its provenance (#114, #116).
 - **Decision:** the kind run reads a tree (`--repo`, the workflow's `ref`) that kustomize renders,
   Terraform evaluates and Argo CD syncs, so the scripts treat it as code: only files git tracks are
   copied (no tfplan, tfvars, `.terraform` or git-ignored `secrets.yaml`; a tracked symbolic link is
@@ -3372,9 +3378,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Decision:** every package with Go files has exactly one `doc.go` holding the only package comment and no
   declaration. Its first paragraph is one sentence ending in a period, at most 160 characters; `scripts/pkgmap.sh`
   puts it into the "owns" cell (D163, R12). revive `exported` and `package-comments` are on in `.golangci.yml` with
-  the stutter check **off**, so `model.ModelInfo` and `model.ModelChangeEntry` keep the names API.md and the Swift
-  mirror use. No `//nolint:revive`, `//nolint:all` or bare `//nolint` anywhere (the arch test reads the comments;
-  nolintlint `require-specific` is on too).
+  the stutter check **on**; one rule of `exclusions.rules` (a text match on revive's stutter message) exempts exactly
+  `model.ModelInfo` and `model.ModelChangeEntry`, which keep the names API.md and the Swift mirror use. Nothing else may
+  stutter. No `//nolint:revive`, `//nolint:all` or bare `//nolint` anywhere (the arch test reads the comments; nolintlint
+  `require-specific` is on too); other linters have named `//nolint` comments.
 - **Why:** the old package comments were stale in places the review found by checking each claim against the code
   (`scoring` said "pure functions" while only the formulas are; `workoutdup` said ingest uses it while only `store`
   and `scoring` import it, D146; `store` claimed RLS as a second line for the service roles, D42). Comments only: the
@@ -3413,7 +3420,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 
 ## D167 — The contract is tested against the code: schema snapshots, API.md examples, error tables (hardening Phase 0 and 1; #87, #100)
 
-- **Decision:** 104 schema snapshots of the `model` types (reflection; `go test ./internal/model -run TestSchemaSnapshots
+- **Decision:** schema snapshots of the `model` types (104 in #87, 108 on main now; reflection, `go test ./internal/model -run TestSchemaSnapshots
   -update`); `TestAPIDocExamples` decodes the json blocks of `docs/API.md` (45 blocks at #87: 39 tied by
   `<!-- type: model.X -->`, 23 of them decoded strictly and 16 field-checked, 6 allow-listed with reasons; a failure
   names the API.md line). #100 adds tests that tie the Errors tables of API.md (status, `code`, the **Do** column) to
@@ -3528,9 +3535,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   promote PR; watch 30 minutes after Healthy (restarts, `ryft_amqp_connected`, `ryft_db_up`, queue depth under 100,
   `increase(ryft_goroutine_panics_total[30m]) == 0`, sync-to-score p95 under 120 s, PostSync smoke); look at the
   shutdown lines in CloudWatch; soak at least 1 hour before A3. Rollback: `./scripts/pin_images.sh 10bc4d0 services` and
-  `./scripts/hold.sh add services "A2 rollback"` in one commit (10bc4d0 is after the D144/D145 one-way door).
+  `./scripts/hold.sh add services "A2 rollback, see #117"` in one commit (10bc4d0 is after the D144/D145 one-way door).
 - **What happened (timestamps from GitHub):** the promote PR #124 `deploy: images ab87021` (services `10bc4d0` to
-  `ab87021`, whose only backend commit was A2, #117) was open and unmerged. At 10:19:28 UTC on 2026-11-05 promote closed it
+  `ab87021`, whose only backend commit was A2, #117) had its auto-merge switched off at 06:53:06 UTC by the owner, which is
+  why it sat open and unmerged. At 10:19:28 UTC on 2026-11-05 promote closed it
   with the comment "Superseded by deploy: images dc1fcd4" and, 4 seconds later, opened #130, which pinned the same A2 commit
   and nothing else from `backend/`; #130 merged itself at 10:22:25 UTC when its checks passed. That is what the
   deploy flow does (OPERATIONS → Deploy and roll back: promote "closes every older open `deploy/*` PR as superseded", and
@@ -3538,11 +3546,15 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   had been refused by Grafana Cloud's 20-rule group limit (D179), so `ServiceExited` and the extended `Panics` were **not
   live** while the A2 images were already pinned. Whether the rules were applied afterwards, and what the 30-minute watch
   showed, is not recorded in any PR and is **not verified** here.
-- **Rule (set after that supersede; it replaces #117's step "do not merge the promote PR"):** to stage a backend change whose promote must wait, hold the
+- **Rule (decided in the close-out PR #137, after that supersede; it replaces #117's step "do not merge the promote PR".
+  #124, #130 and #131 are the evidence, not the decision: #124 and #130 are promote PRs opened by the bot, and #131 split
+  the alert group):** to stage a backend change whose promote must wait, hold the
   group **before** the merge that would build it: `./scripts/hold.sh add services "<reason>"` in a PR that reaches main
   first. While the hold stands CI builds nothing for the group and no promote PR opens; the change merges; the user does
   the steps that must come first; then the hold is released (`hold.sh rm`, two merges, OPERATIONS → Release a hold). A
   newer promote PR supersedes an older one and merges itself; the staging must not depend on someone not merging it.
+  Switching auto-merge off on one promote PR (what was done to #124) is not a hold; OPERATIONS → "Staging a backend
+  change" says so in that case.
 - **One group at a time:** the five service images roll together (D107). Stage A3 (api and ingest through `app.Run`)
   and A4 (the in-hand delivery) as separate rollouts with the soak between them.
 - **Consequences:** the checks above are a precondition of the pin moving, not a watch after it, for any change that
@@ -3603,7 +3615,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   autumn next-day shape is also pinned for a night HRV sample. Effect: a score is not recalculated after a deletion or an
   upload on the neighbouring day until something else queues it.
 - **Decision:** #122 and #123 are refactors and pin the behaviour **as it is** in `TestApplySyncDeletedRowsDays`; the pins
-  do not endorse it. The code at `origin/main` d924dd7 still has `Add(24 * time.Hour)` in the three places (checked).
+  do not endorse it. The code at `origin/main` cd7970c still has `Add(24 * time.Hour)` in the three places (checked; the same at d924dd7).
 - **Follow-up, not built:** one helper that computes the neighbouring local date from the date (`AddDate(0, 0, ±1)` on
   the local date), used in `touchedDays`, `deleteSamples`/`deleteWorkouts` and `planFold` together, with its own `D`
   entry; the pinned autumn case then flips to two days and the others to the full set. The `touchedDays` table of C3 pins
@@ -3614,9 +3626,11 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Why (2026-11-05):** `make alerts-apply` was refused by Grafana Cloud's ruler: `per-user rules per rule group limit
   (limit: 20 actual: 39)` for group `ryft`. mimirtool rejected the load, so nothing was written and the live group
   stayed the older, smaller set (D175).
-- **Decision:** `deploy/grafana/alerts/ryft.yaml` is three groups along the file's own section comments: `ryft` (11
-  rules), `ryft-pipeline` (14), `ryft-ops` (14 in #131; 17 on main now, with the admin and invite alerts of #126 and #127, checked with
-  `scripts/check_rule_groups.sh`: `ryft-ops` has room for one more under the 18 guidance). Only
+- **Decision:** the 39-rule group `ryft` became three groups along the file's own section comments: `ryft` (11 rules),
+  `ryft-pipeline` (14), `ryft-ops` (14 in #131; 17 on main now, with the admin and invite alerts of #126 and #127). With
+  `ryft-admission` (13) and `ryft-admission-intended` (12, in its own file `admission-intended.yaml`), both unchanged,
+  `ryft.yaml` holds four groups; counts from `scripts/check_rule_groups.sh` on main: `ryft-ops` has room for one more
+  under the 18 guidance. Only
   `- name:` / `rules:` header lines were inserted; no rule moved or changed, and the first group keeps the name `ryft`,
   so the load replaces the live group with a disjoint subset and adds two. `scripts/check_rule_groups.sh` counts `alert:`
   and `record:` items per group (block and flow style, comments ignored) and fails above 20 (`RULE_GROUP_LIMIT`) and on a
@@ -3648,8 +3662,8 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   them narrows but does not close the route of a written ClusterRole bound to `system:serviceaccounts` or
   `system:authenticated` (or an aggregation-labelled ClusterRole). Not applying it is a scoping choice, not a proof of
   unsafety; it is documented as open (OPERATIONS → "What stays open", item 6).
-- **What is true after this alone:** a stolen controller token can no longer grant itself write on the admission policies
-  through RBAC. "Argo CD cannot switch off the admission layer" is **not** true until P6 and P12 are both in Deny and this
+- **What is true once this is applied (today the chart's `*` role is the live one):** a stolen controller token can no
+  longer grant itself write on the admission policies through RBAC. "Argo CD cannot switch off the admission layer" is **not** true until P6 and P12 are both in Deny and this
   change is applied (P12 is #121, open; P12 judges names only, so the RBAC route needs P6 and P12 together). With
   authentication mode `API` (#118, open) the `aws-auth` route closes too.
 - **Rollback** is `git revert <squash-sha>` (this repository squash-merges), which also removes the guard; a partial hand
@@ -3657,8 +3671,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   manifest of a webhook configuration. The plan's human view hides the values but the saved plan holds them in clear (the
   admin password's bcrypt hash): never commit or paste `argocd-rbac.tfplan`, delete it after the apply.
 - **State:** merged; `terraform apply` of `infra/aws/kubernetes` is the user's Step 0 (OPERATIONS → Deploy and roll back →
-  "What Argo CD may no longer do", and the PR body). The PR was a draft until a full-mode kind run passed on its final
-  head; whether that run was repeated before the merge is **not verified** here.
+  "What Argo CD may no longer do", and the PR body). **Kind runs:** the last full-mode `admission-e2e` run on #47 was
+  42004329007 on `c5af15b` (success). The final head `0f1402c` changed the comments of `argocd.tf` only (plus 23 lines of
+  tests and docs); there was **no full-mode run on it**. The ci-mode `admission` job passed on `0f1402c`. The PR was marked
+  ready at 10:11:33 UTC and merged at 10:12:20 UTC on 2026-11-05.
 
 ## D181 — The Terraform scan of the kind run is a tripwire, and a foreign tree needs its provenance (amends D152; #114, #116)
 
@@ -3712,13 +3728,14 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   enables and what `AdmissionBindingMissing`, `AdmissionBindingNotDenying`, `AdmissionBindingDrift` and
   `AdmissionBreakGlass` read (D120's "Signals" bullet already says so). What D151 recorded stays true: custom-resource-state
   exports CustomResourceDefinitions only.
-- **Measured on the open #121** (draft; kind run 42004326289, workflow `admission-e2e`, mode full, head 4b9f739: 83 pass,
+- **Observed on the open #121** (draft; kind run 42004326289, workflow `admission-e2e`, mode full, head 4b9f739: 83 pass,
   0 fail, 2 skipped): `claim-m-native` passes (for each of the 13 `ryft-*` bindings the info series exists and the
-  `validation_action` series are exactly one per entry of `spec.validationActions`, value 1); **claim o is disproved**:
-  neither the controller's nor argocd-server's SelfSubjectAccessReview was refused by a policy built to refuse it, because
-  the review kinds (`selfsubjectaccessreviews`, `subjectaccessreviews`, `localsubjectaccessreviews`,
-  `selfsubjectrulesreviews`, `tokenreviews`, `selfsubjectreviews`) are on kube-apiserver's hard-coded exclusion list, which
-  the policy plugin consults, since Kubernetes 1.30 (read in the sources of release-1.30 and v1.36.0 and measured by the
-  run). So no policy can match access reviews. This is a measurement; what P12 does with it is decided in #121, not here.
+  `validation_action` series are exactly one per entry of `spec.validationActions`, value 1). **Claim o is disproved
+  for the policy as it was tested:** with P12 in Deny on that kind cluster (kube-apiserver 1.36.4), neither the controller's
+  nor argocd-server's SelfSubjectAccessReview was refused. That is all the run measured. The reason #121 gives is that the
+  review kinds (`selfsubjectaccessreviews`, `subjectaccessreviews`, `localsubjectaccessreviews`, `selfsubjectrulesreviews`,
+  `tokenreviews`, `selfsubjectreviews`) are on kube-apiserver's hard-coded exclusion list, which the policy plugin consults,
+  since Kubernetes 1.30; that is **read from the sources** of release-1.30 and v1.36.0, not measured. What P12 does with
+  it is decided in #121, not here.
 - **Alerts:** the series budget is about 300 of the free tier's 10k; the admission alerts stay quiet until the chart is
   enabled, except Pod Security refusals and the liveness alerts.

@@ -14,7 +14,7 @@ Written 2026-11-04 by platform-lead. Status at writing: **planned, nothing start
 >   the `lint` target exists since #99.
 > - **Phase 1 done:** package docs #96, #94, #95 (revive `exported` on); decision references #102; package map and
 >   dependency rules #99; error actions in API.md #100.
-> - **Phase 2 done:** A1 `internal/app` #105; A2 scoring and notify on `app.Run` #117 (live); B1 `model` split #110;
+> - **Phase 2 done:** A1 `internal/app` #105; A2 scoring and notify on `app.Run` #117 (pinned since #130); B1 `model` split #110;
 >   C1 `computeDay` in steps #111 + #112; C2 `ApplySync` in steps #122 + #123; C4 `trainImport` in steps #119 + #120.
 > - **Phase 2 not done:** A3 (api, ingest on `app.Run`), A4 (amqpbus finishes the delivery in hand), A5 (readiness and
 >   ordered shutdown for api and ingest), A6 (config in one place), A7 (5 s drain delay), B2 (error taxonomy), B3 (store
