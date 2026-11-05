@@ -110,7 +110,7 @@ Beyond the render, the components write at runtime (to be confirmed by claim n):
 | --- | --- | --- |
 | controller | Application status, operation and finalizers in `argocd` | sync and refresh; P7's carve-out |
 | controller | Events in `argocd` | Application events (namespaced Role) |
-| controller | `selfsubjectaccessreviews` (CREATE, cluster-scoped) | `resource.respectRBAC: strict` asks per resource type (claim o: whether admission sees them at all) |
+| controller | `selfsubjectaccessreviews` (CREATE, cluster-scoped) | `resource.respectRBAC: strict` asks per resource type. **Not a write admission sees** (claim o, disproved by the kind run): access reviews never reach validating admission, so no rule lists them |
 | controller | hook Jobs in `ryft-migrate` and `ryft-smoke`: create, the hook finalizer UPDATE, delete (`BeforeHookCreation`) | PreSync and PostSync |
 | server | Applications in `argocd` (operation, refresh annotation, spec through the UI) and Events there | the UI and CLI; P7 and P10 judge the content |
 | server | `argocd-secret` once, on first start, when `server.secretkey` is absent | `InitializeSettings` (claim p). Never in steady state: the admin password and its mtime are Terraform's |
@@ -186,7 +186,7 @@ later hardening (see "What P12 does not cover"). It doesn't block A.
 | 2 | only the controller and the server write. The one exception is `argocd-redis-secret-init`: CREATE of Secret `argocd-redis` in `argocd` | `P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).` |
 | 3 | the server: in `argocd` only, `applications.argoproj.io` and `events`, plus the first `server.secretkey` (below) | `P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).` |
 | 4 | the controller, namespaced: a namespace starting with `ryft-`, or in `[rabbitmq-system]`, any resource; in `argocd`, only `applications.argoproj.io` and `events` (core and `events.k8s.io`) | `P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.` |
-| 5 | the controller, cluster-scoped: only what the apps render (below), plus the access reviews | `P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.` |
+| 5 | the controller, cluster-scoped: only what the apps render (below) | `P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.` |
 
 **Cluster-scoped allowlist (rule 5).** Values drive it, and the lists are the ones P1 and P6 already
 hold:
@@ -197,11 +197,13 @@ hold:
 | CustomResourceDefinition | name ends with `.rabbitmq.com` (the name is `<plural>.<group>`; a new operator CRD needs no chart change) | CREATE, UPDATE |
 | ClusterRole, ClusterRoleBinding | a prefix of `operators.clusterRoleNamePrefixes` | CREATE, UPDATE, DELETE (prune) |
 | Mutating- and ValidatingWebhookConfiguration | `operators.webhookConfigurations` (4) | CREATE, UPDATE, DELETE |
-| `selfsubjectaccessreviews`, `selfsubjectrulesreviews` (`authorization.k8s.io`) | – | CREATE |
 
 Everything else cluster-scoped is refused: ClusterIssuers, PriorityClasses, StorageClasses, PVs,
-APIServices, CSIDrivers, IngressClasses, RuntimeClasses, the admission policies themselves, and
-`tokenreviews` and `subjectaccessreviews`. Content stays P1's and P6's.
+APIServices, CSIDrivers, IngressClasses, RuntimeClasses and the admission policies themselves.
+Content stays P1's and P6's. Access reviews are not in the list on purpose: a SelfSubjectAccessReview
+does not reach validating admission (claim o, disproved by the kind run), so P12 neither admits nor
+refuses it, and the harness has no case for the reviews. (Only the SelfSubjectAccessReview was
+observed.)
 
 **The server's first `server.secretkey` (decision 4).** The server may UPDATE Secret
 `argocd-secret` in `argocd` only when all of these hold:
@@ -286,9 +288,7 @@ spec:
            {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.name.startsWith(p))) ||
           (variables.grp == 'admissionregistration.k8s.io' &&
            variables.res in ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations'] &&
-           variables.name in {{ .Values.operators.webhookConfigurations | toJson }}) ||
-          (variables.grp == 'authorization.k8s.io' && request.operation == 'CREATE' &&
-           variables.res in ['selfsubjectaccessreviews', 'selfsubjectrulesreviews']))
+           variables.name in {{ .Values.operators.webhookConfigurations | toJson }}))
     - name: serverKeyInit   # the first server.secretkey, never a change of one
       expression: |-
         variables.isSrv && request.operation == 'UPDATE' && variables.ns == {{ .Values.argocd.namespace | toJson }} &&
@@ -409,7 +409,7 @@ is a finding to explain.
      matches them all: HPA, PDB, Certificate, Issuer, and the `rabbitmq.com` kinds Exchange,
      Binding, Permission, Policy, TopicPermission, User and Vhost.
    - It also gains what the negatives need: Event, ClusterIssuer, PriorityClass, StorageClass,
-     PersistentVolume, APIService, SelfSubjectAccessReview, Lease, and the subresources
+     PersistentVolume, APIService, Lease, and the subresources
      `deployments/scale`, `pods/eviction` and `serviceaccounts/token`.
    - `ruleMatches` already handles `*` and `*/*`; `Req.Sub` exists, and CONNECT needs a Req with no
      object.
@@ -437,7 +437,7 @@ is a finding to explain.
      - the subresources `deployments/scale` in `ryft-api` and `serviceaccounts/token`;
      - CONNECT `pods/exec` and `pods/portforward` in `ryft-api`;
      - admitted: every in-scope kind, Application status and operation in `argocd`, Events in
-       `argocd`, SSAR create, DELETE of a hook Job, DELETE of a prefixed ClusterRole.
+       `argocd`, DELETE of a hook Job, DELETE of a prefixed ClusterRole.
    - **Server:**
      - refused: a Secret or ConfigMap in `argocd` (`argocd-rbac-cm`, unlabelled Secret), an
        AppProject, the `argocd-server` Deployment, an Event in `kube-system`;
@@ -516,8 +516,9 @@ is a finding to explain.
        run as admin: the components' startup writes under Deny;
      - `helm upgrade` of `argocd` with the same values: the `redis-secret-init` pre-upgrade hook, run
        by the admin's Helm, its Pod writing as the SA;
-     - one SSAR (`kubectl auth can-i --as …controller`): the audit log answers claim o, whether
-       validating admission sees access reviews.
+     - one SSAR (`kubectl auth can-i --as …controller`): claim o, whether validating admission
+       sees access reviews. It does not (disproved), so the stage stays as a canary
+       (`claim-o-canary`): it fails if P12 ever refuses a review.
 3. **Not tried:**
    - a first install of Argo CD with P12 already in Deny. The harness and the manual fixture pin the
      `server.secretkey` path; a fresh-install run would add about 6 minutes and isn't proposed;
@@ -528,9 +529,9 @@ is a finding to explain.
 
 | # | Claim | Status | Checked in |
 | --- | --- | --- | --- |
-| n | Argo CD's controller and server write only the allowlist: sync, hooks, terminate-op, manual sync, restart and chart upgrade show no P12 finding | to verify | kind full (Audit, then Deny), then Phase 1's 7 days in production |
-| o | `selfsubjectaccessreviews` reach validating admission (either way P12 admits them) | to verify | kind audit log |
-| p | argocd-server writes `argocd-secret` only when `server.secretkey` is absent; a restart with the key present writes nothing | to verify | kind full: restart under Deny, no finding; manual fixture |
+| n | Argo CD's controller and server write only the allowlist: sync, hooks, terminate-op, manual sync, restart and chart upgrade show no P12 finding | **PASS** (kind run 41982428417, Audit and Deny: no `ryft-argo-scope` line through the first sync, the syncs, hooks, terminate-op and the restart; and none through the chart upgrade, whose rerun is run 41988993599: the hook Job ran as its service account) | kind full (Audit, then Deny), then Phase 1's 7 days in production |
+| o | `selfsubjectaccessreviews` reach validating admission (either way P12 admits them) | **DISPROVED** (kind runs 41982428417 and 41988993599): neither the controller's nor argocd-server's review was refused by P12, so admission does not see them (the access-review REST create does not call the validating hook). Rule 5's entry for them was dead code and is removed (with its 4 harness cases, 983 -> 979); `claim-o-canary` fails the full mode if a Kubernetes version ever starts refusing them | kind audit log |
+| p | argocd-server writes `argocd-secret` only when `server.secretkey` is absent; a restart with the key present writes nothing | **PASS** (kind runs 41982428417 and 41988993599: both components rolled out under Deny, `argocd-secret`'s resourceVersion unchanged) | kind full: restart under Deny, no finding; manual fixture |
 
 ## Rollout
 
@@ -701,7 +702,7 @@ exemption covers a later recreate.
   not used). The controller writes namespaced objects only in `ryft-*` and `rabbitmq-system`, in
   `argocd` only Applications and events, cluster-scoped only Namespaces `ryft-web`/`rabbitmq-system`,
   `*.rabbitmq.com` CRDs, the operators' prefixed ClusterRoles and bindings and four webhook
-  configurations, and access reviews; no Namespace or CRD delete. argocd-server writes only
+  configurations (access reviews never reach validating admission, claim o); no Namespace or CRD delete. argocd-server writes only
   Applications and events in `argocd`, plus the first `server.secretkey` of `argocd-secret`. The
   chart's redis-secret-init may create Secret `argocd-redis`. Every other `argocd` service account
   writes nothing. No subresource, no CONNECT. Content stays P1–P11's.

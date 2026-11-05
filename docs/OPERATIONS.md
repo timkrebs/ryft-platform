@@ -969,10 +969,10 @@ as the sync's revision, claim k); the operators' logs (no `forbidden`, since the
 topology Ready, `kubectl auth can-i` for both operator service accounts; then, with P12 in Deny, a
 `kubectl -n argocd rollout restart` of argocd-server and the application controller (claim p: the Secret
 `argocd-secret` is not written), a `helm upgrade` of the argocd release with the same values (the
-`redis-secret-init` hook Job) and one access review as the controller (claim o), each followed by every app
+`redis-secret-init` hook Job; the run forces the Helm field conflict its own `kubectl patch` of the admin password causes, `--force-conflicts`) and one access review as the controller and one as the server (claim o, a canary: neither may be refused), each followed by every app
 Synced and Healthy again, the findings and P12's own (`claim-n-*`, `full-*-p12`: no warning in the audit
 annotation and no 403 naming `ryft-argo-scope`); claim i (`respectRBAC: strict`
-with no cluster-wide Secrets) and claim m (kube-state-metrics, disproved). Validation failures the API
+with no cluster-wide Secrets) and claim m (kube-state-metrics: custom-resource-state is disproved, the native collector the alerts read is checked, `claim-m-native`). Validation failures the API
 server logged during each stage (the audit log of the kind node, grepped there) are listed; one is
 explained only if it has the policy, requester, resource and message of what the tree has not fixed yet
 (the two vendored operator ClusterRoles until T12-g; the broker's open 443 egress until T12-k), and only
@@ -1045,10 +1045,10 @@ again each time; the table is in the design too):
 | h: escalate/bind by `resourceNames` | the negative test: without policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it, then may write the bindings; with P6 in Deny both steps are refused. Positive: the narrowed role syncs the operators' ClusterRoles, Roles, bindings and webhooks |
 | i: `respectRBAC: strict` without cluster-wide Secrets | holds, **after** one added rule: the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its children for ever (#47 lacks it) |
 | k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D151) |
-| m: kube-state-metrics exports the bindings | **no**: custom-resource-state exports CustomResourceDefinitions only (v2.20.0); T12-e needs another binding-state signal (D151) |
-| n: Argo CD's controller and server write only P12's allowlist | **not yet kind-verified** (the harness evaluates every render against P12; `make admission-e2e` MODE=full is the check: no `ryft-argo-scope` line through the first sync in Audit, and none through sync, hooks, terminate-op, restart and chart upgrade in Deny) |
-| o: `selfsubjectaccessreviews` reach validating admission | **not yet kind-verified** (full mode: the controller's review is admitted by rule 5, the server's is refused by rule 3 only if admission sees reviews) |
-| p: argocd-server writes `argocd-secret` only when `server.secretkey` is absent | **not yet kind-verified** (full mode: a restart under Deny leaves the Secret's resourceVersion unchanged; CI mode: the first key added for real, its change and removal refused) |
+| m: kube-state-metrics exports the bindings | custom-resource-state: **no**, it exports CustomResourceDefinitions only (v2.20.0, D151). The native collector `validatingadmissionpolicybindings` does: 13 `info` series for the 13 `ryft-*` bindings and their live actions (`claim-m-native`), which is the source of the T12-e alerts |
+| n: Argo CD's controller and server write only P12's allowlist | holds (`make admission-e2e` MODE=full: no `ryft-argo-scope` line through the first sync in Audit, and none through sync, hooks, terminate-op, restart and chart upgrade in Deny) |
+| o: `selfsubjectaccessreviews` reach validating admission | **no**: neither the controller's nor argocd-server's review was refused by P12, so P12 has no entry for them. The full mode keeps `claim-o-canary`, which fails if a Kubernetes version ever refuses one |
+| p: argocd-server writes `argocd-secret` only when `server.secretkey` is absent | holds (full mode: a restart under Deny leaves the Secret's resourceVersion unchanged; CI mode: the first key added for real, its change and removal refused) |
 | f, j, l | not tried here (f: a refusal under server-side diff; j: `terraform validate`; l: the VPC) |
 
 **Upgrading it.** The EKS minor: change the node image (tag and index digest) in
@@ -1069,7 +1069,7 @@ and `enabled: false` in `admission-values.yaml` is unchanged: merging P12 change
 
 | Requester | May write |
 | --- | --- |
-| application controller | any resource in `ryft-*` and `rabbitmq-system`; in `argocd` only Applications and events; cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs `*.rabbitmq.com` (no delete), ClusterRoles and bindings named `rabbitmq-cluster-*` / `messaging-topology-*`, the operators' four webhook configurations, and the access reviews |
+| application controller | any resource in `ryft-*` and `rabbitmq-system`; in `argocd` only Applications and events; cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs `*.rabbitmq.com` (no delete), ClusterRoles and bindings named `rabbitmq-cluster-*` / `messaging-topology-*`, the operators' four webhook configurations (access reviews never reach validating admission) |
 | `argocd-server` | in `argocd` only Applications and events, and **once** the first `server.secretkey` of `argocd-secret` (an UPDATE that adds that key and changes no value, label or annotation; never a change of an existing key) |
 | `argocd-redis-secret-init` | CREATE of Secret `argocd-redis` (the argo-cd chart's pre-install/pre-upgrade hook) |
 | any other `argocd` service account | nothing |
