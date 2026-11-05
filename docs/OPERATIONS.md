@@ -2176,7 +2176,10 @@ restarts both collectors when it changes. It is never passed on a command line:
      `ryft-.*`; RYFT's logs go to CloudWatch.
    - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
      point (email and the Grafana mobile app) and a notification policy for
-     `severity` `critical`, `warning` and `info`.
+     `severity` `critical`, `warning` and `info`. If the load fails with
+     `per-user rules per rule group limit (limit: 20 actual: N) exceeded`, a group holds more
+     than the stack's 20 rules and nothing was loaded: split it in `ryft.yaml` (OBSERVABILITY
+     → Alerts; `make alerts-check` catches this before the load) and run it again from main.
    - Create the external site checks (**Synthetic Monitoring, once**, below).
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      single `alloy` collector before 2026-10-19).
@@ -2260,7 +2263,7 @@ comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
 
 ```bash
 make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
-make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
+make alerts-apply          # both rule files: ryft (groups ryft, ryft-pipeline, ryft-ops, ryft-admission) and ryft-admission (the committed actions)
 ```
 
 Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMissing` fires
