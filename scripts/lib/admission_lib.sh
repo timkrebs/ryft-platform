@@ -293,6 +293,43 @@ adm_check_argo_bindings() {
   if [ -z "$bad" ]; then rec "argo-bindings" PASS "the render binds only the chart's own roles to their own names (no cluster-admin, no extra binding)"; else rec "argo-bindings" FAIL "a role binding in the render that is not the chart's: $bad"; fi
 }
 
+# The whole render, counted: what the chart renders with the values of argocd.tf is exactly this
+# inventory of (kind, namespace), cluster-scoped objects with "-". A value that is allowed by the guard
+# and still renders another object (a line break in a string, a template) adds a line here. Recomputed
+# from `helm template argocd argo-cd --version 10.10.5 -n argocd -f <values>`; a chart bump, or a
+# component turned on, changes it on purpose, in the same PR.
+ARGO_INVENTORY_EXPECTED='ClusterRole - 2
+ClusterRoleBinding - 2
+ConfigMap argocd 7
+CustomResourceDefinition - 3
+Deployment argocd 4
+Ingress argocd 1
+Job argocd 1
+Middleware argocd 2
+NetworkPolicy argocd 5
+Role argocd 5
+RoleBinding argocd 5
+Secret argocd 1
+Service argocd 4
+ServiceAccount argocd 5
+StatefulSet argocd 1'
+
+# adm_check_argo_inventory: the render (ARGO_RENDER) against ARGO_INVENTORY_EXPECTED (or $ARGO_INVENTORY,
+# for the tests). Only for the values of argocd.tf: the chart's defaults render another set.
+adm_check_argo_inventory() {
+  [ -n "${ARGO_RENDER:-}" ] || { rec "argo-inventory" SKIP "no render"; return 0; }
+  [ -n "${ARGO_VALUES:-}" ] || { rec "argo-inventory" SKIP "no values of argocd.tf: the chart's defaults render another set"; return 0; }
+  local want got diffs
+  want=$(printf '%s\n' "${ARGO_INVENTORY:-$ARGO_INVENTORY_EXPECTED}" | sort)
+  got=$(yq -o=json -I0 '.' "$ARGO_RENDER" | jq -rs 'map(select(. != null)) | map((.kind // "?") + " " + (.metadata.namespace // "-")) | group_by(.) | map(.[0] + " " + (length | tostring)) | .[]' | sort)
+  if [ "$got" = "$want" ]; then
+    rec "argo-inventory" PASS "the render holds exactly the expected $(printf '%s\n' "$want" | awk '{n += $NF} END {print n}') objects ($(printf '%s\n' "$want" | wc -l | tr -d ' ') kinds), all in argocd or cluster-scoped"
+  else
+    diffs=$(diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | grep '^[<>]' | tr '\n' ';' || true)
+    rec "argo-inventory" FAIL "the render differs from the expected inventory (< expected, > rendered): $diffs"
+  fi
+}
+
 # What the chart renders from extraObjects (templates/extra-manifests.yaml, which runs every entry through
 # `tpl`): exactly as many documents as the values list, each a NetworkPolicy or a Middleware in argocd. A
 # template expression inside an allowed kind (apiVersion: "...{{ ... | b64dec }}") can render a whole other

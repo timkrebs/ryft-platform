@@ -257,12 +257,18 @@ commands, NetworkPolicies, VSO or Argo objects.
     identities whose subjects are not the operators' service accounts, and aggregation labels).
   - argocd-server cannot add RBAC (no write on RBAC kinds).
   - **Beside the rules (guards added with #47):** `modules/argocd-values-guard`, a precondition of
-    `helm_release.argocd` (`extraObjects` kinds with their one apiVersion and no `{{`, no `controller.roleRules`,
-    `createClusterRoles` not false, no `configs.rbac`/anonymous login/disabled auth, a key allowlist two
-    levels deep plus the keys of a few maps), a postcondition (one values document, no `set*`, no
-    postrender), the kind run's `argo-bindings` and `argo-extra-objects`, and `argo-tf-bindings` (a
-    tripwire): a ClusterRoleBinding to `cluster-admin` shipped as an extra object, or written in Terraform,
-    passes every check on the two ClusterRoles' rules.
+    `helm_release.argocd`: `extraObjects` kinds with their one apiVersion, no `{{` anywhere in the values
+    and no line break in a string value (the chart renders many values with `tpl`, and a line break in an
+    allowed value starts another YAML document), no `controller.roleRules`, `createClusterRoles` not false,
+    no `configs.rbac`/anonymous login/disabled auth, a key allowlist two levels deep plus the keys of a few
+    maps. The release takes the guard's output as its values (`values_yaml`), and a postcondition requires
+    exactly that (no `set*`, no second document, no postrender); it is a plan-time check only while the
+    release's inputs are known then, so no computed value may enter the release's values or `set*`. The kind
+    run adds `argo-bindings`, `argo-extra-objects` and `argo-inventory` (the whole render counted by kind and
+    namespace against an expected table), and `argo-tf-bindings` (a tripwire). A ClusterRoleBinding to
+    `cluster-admin` shipped as an extra object, or written in Terraform, passes every check on the two
+    ClusterRoles' rules. Not covered: the content of an object of an expected kind, and a change to the
+    guard together with its tests, which only review catches.
 - **Structural options (future D97/D120 decisions, for you; not implemented).** (1) Move the operators'
   ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons: Argo CD
   then needs no `escalate` and no `bind` at all. (2) Keep Argo CD as it is but move the `escalate`/`bind`

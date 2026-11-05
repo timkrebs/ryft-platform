@@ -308,23 +308,41 @@ allowlist:
 - `modules/argocd-values-guard`, wired into `helm_release.argocd` as a **precondition** (a violation is an
   error of `plan` and `apply`; a `check` block would only warn, and the apply would go on). It allows:
   `extraObjects` of the kinds NetworkPolicy and Middleware only, each in `argocd`, each with its one
-  apiVersion, and no `{{` in any of them (the chart renders them with `tpl`, so a template expression in an
-  allowed kind can render a whole other object); no `controller.roleRules`; `createClusterRoles` not false
+  apiVersion; **no `{{` anywhere in the values** (the chart renders many values with `tpl`: a template
+  expression in an `extraObjects` apiVersion renders a whole other object, one in an ingress annotation
+  runs `lookup` with Terraform's credentials); **no line break in any string value** except the Lua health
+  customizations of `configs.cm` (a line break in `ingressClassName` or `global.domain` ends the value in
+  the rendered YAML and starts another document); no `controller.roleRules`; `createClusterRoles` not false
   (the chart then renders no ClusterRole and every check on the rules passes for want of an object); no
   `configs.rbac`, anonymous login or `server.disable.auth`; and a key allowlist **two levels deep**, plus
   the keys of `global.image`, `global.logging`, `global.networkPolicy` (create must stay true),
   `configs.cm` (three settings and the health customizations), `configs.params`, `configs.secret`,
-  `server.ingress` and its annotations. Below that (the values of those keys, other charts' keys) it looks
-  at nothing. Its dangerous variants are canned test cases in `tests/addons.tftest.hcl`: a variant nobody
-  wrote down is not tested for.
-- A **postcondition** of the same release: one values document, no `set`, `set_list`, `set_sensitive` or
-  `postrender`, because those reach Helm without passing through `local.argocd_values`, which the guard and
-  the tests read. `scripts/tests/argocd_release_guard_test.sh` proves it (it edits a copy of the module: a
-  `set` of `createClusterRoles=false`, a second document with a wildcard role, a guard violation; CI's
-  terraform job for `infra/aws/kubernetes` runs it).
+  `server.ingress` and its annotations. Below that (the values of those keys, other charts' keys) it checks
+  only for `{{` and line breaks. Its dangerous variants are canned test cases in `tests/addons.tftest.hcl`:
+  a variant nobody wrote down is not tested for.
+- **The release takes the guard's output.** The module returns the document it checked
+  (`values_yaml = yamlencode(var.values)`); `helm_release.argocd` uses `values = [module...values_yaml]`,
+  and a **postcondition** requires that to be the release's only values, with no `set`, `set_list`,
+  `set_sensitive` or `postrender`. So a map renamed behind the guard's back, or a `merge` in the release,
+  reaches Helm only if the postcondition is edited away. `scripts/tests/argocd_release_guard_test.sh`
+  shows these fail (it edits a copy of the module: a `set`, a second document with a wildcard role, a
+  renamed base map merged afterwards, a merge in the release, a guard violation). Limits: a postcondition
+  is checked at plan time only when the release's inputs are known then, which is true today (nothing
+  computed is in the values or the `set` arguments); with a computed input it fails only after the apply
+  has started. **Review checklist: no computed value in the release's values or `set*`.** And a PR that
+  changes the guard module together with the tests and the script's anchors is caught only by human
+  review (`.github/CODEOWNERS`: everything is `@timkrebs`'s).
 - The kind run: `argo-bindings` (the render holds only the chart's own role bindings, none to
-  `cluster-admin`) and `argo-extra-objects` (`helm template -s templates/extra-manifests.yaml` yields
-  exactly as many documents as `extraObjects` lists, each a NetworkPolicy or Middleware in `argocd`).
+  `cluster-admin`), `argo-extra-objects` (`helm template -s templates/extra-manifests.yaml` yields exactly as
+  many documents as `extraObjects` lists, each a NetworkPolicy or Middleware in `argocd`) and
+  **`argo-inventory`**: the whole render counted by (kind, namespace) must equal the table
+  `ARGO_INVENTORY_EXPECTED` in `scripts/lib/admission_lib.sh` (48 objects: ConfigMap 7, ServiceAccount 5,
+  RoleBinding 5, Role 5, NetworkPolicy 5, Service 4, Deployment 4, CRD 3, Middleware 2, ClusterRoleBinding
+  2, ClusterRole 2, StatefulSet, Secret, Job and Ingress 1 each; all in `argocd` or cluster-scoped). It is
+  the backstop for a value that the guard allows and that still renders another object: a DaemonSet or a
+  ClusterRoleBinding adds a line. It does not look inside an object of an expected kind (a Deployment's
+  image, an Ingress's rules); the drift and invariant checks cover the two ClusterRoles only. A chart bump
+  or a component turned on changes the table on purpose, in the same PR.
 - `argo-tf-bindings`: a **tripwire**, not a guard. It reads the module's `*.tf` for a `kubernetes_*role_binding*`
   resource or a RoleBinding manifest that names an argocd identity or one of the groups
   `system:serviceaccounts`, `system:authenticated`, `system:unauthenticated`, and for a
@@ -466,8 +484,8 @@ What an operator does instead:
   `terraform -chdir=infra/aws/kubernetes init` first: the guard is a new local module, and without `init`
   `validate` and `plan` stop with "Module not installed". Then `plan -out=argocd-rbac.tfplan`: it must show
   only `helm_release.argocd` changing; **if anything else is in the plan, stop**, and stop on any error from
-  the release ("the Argo CD values carry something they must not", "the release takes its values from
-  local.argocd_values only").
+  the release ("the Argo CD values carry something they must not", "the release takes the checked values
+  document of the guard module and nothing else").
   The human plan view prints the release's values as `(sensitive value)` (the admin password's bcrypt hash
   is in them), **but the saved plan holds them in clear**, and that is the primary evidence. Read the
   rules out of it, printing no secret (never print `.configs.secret`; the plan file holds the admin bcrypt
@@ -484,13 +502,16 @@ What an operator does instead:
 
   Expect: `top` the ten keys applicationSet, configs, controller, dex, extraObjects, global, notifications,
   redis, repoServer, server; controller 25 rules and server 13, both `enabled: true`; `extra`
-  NetworkPolicy/argocd and two Middleware/argocd; `set*` null and `n_values` 1. **These two commands are
-  checked on a hand-built plan JSON of the documented shape (`resource_changes[].change.after.values` a list
-  of one YAML string), not on a real saved plan: if a field is named differently in your Terraform's JSON,
-  fix the path, not the expectation.** The second evidence is `helm template` of the chart with the
+  NetworkPolicy/argocd and two Middleware/argocd; `set*` null and `n_values` 1. Both commands were run
+  unchanged on a real saved plan (helm provider 3.3.0): `.change.after.values` is a list of one YAML string,
+  in clear in `show -json` (`after_sensitive.values` is `[true]`, which is why the human view hides it),
+  `set`, `set_list`, `set_sensitive` and `postrender` are null, and the output matched this exactly. They need
+  mikefarah `yq` v4. `.change.before` is what the state says was last applied, not necessarily the live
+  release (a release changed by hand does not show there). **Delete `argocd-rbac.tfplan` after the apply: it
+  holds the admin bcrypt hash.** The second evidence is `helm template` of the chart with the
   evaluated values (`scripts/lib/tf_values.sh . argocd_values out.json`, then `helm template argocd argo-cd
   --version 10.10.5 -n argocd -f out.json`; no credentials, mock providers) and the kind run of the PR
-  (`argo-rbac-drift-*`, the invariants, `argo-bindings`, `argo-extra-objects`). After the apply,
+  (`argo-rbac-drift-*`, the invariants, `argo-bindings`, `argo-extra-objects`, `argo-inventory`). After the apply,
   `kubectl get clusterrole argocd-application-controller -o yaml` has no `*` rule (read-only).
 
 **Check that no kind is silently dropped.** Under `respectRBAC: strict` the controller asks the API

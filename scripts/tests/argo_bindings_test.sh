@@ -216,4 +216,39 @@ metadata: {name: x, namespace: kube-system}
 EOF
 : > "$RESULTS"; adm_check_argo_extra_docs "$tmp/extra-ns.yaml" 1; expect argo-extra-objects FAIL "an allowed kind in another namespace"
 
+# --- the inventory of the whole render (a value that renders another object adds a line) ---
+cat > "$tmp/inv.yaml" <<'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: a, namespace: argocd}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: b, namespace: argocd}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: c}
+EOF
+ARGO_INVENTORY='ClusterRole - 1
+ServiceAccount argocd 2'
+ARGO_RENDER=$tmp/inv.yaml ARGO_VALUES=$tmp/values.json
+: > "$RESULTS"; adm_check_argo_inventory; expect argo-inventory PASS "the render is the expected inventory"
+cp "$tmp/inv.yaml" "$tmp/inv-ds.yaml"
+cat >> "$tmp/inv-ds.yaml" <<'EOF'
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: x, namespace: argocd}
+EOF
+ARGO_RENDER=$tmp/inv-ds.yaml
+: > "$RESULTS"; adm_check_argo_inventory; expect argo-inventory FAIL "a DaemonSet that a value rendered"
+cp "$tmp/inv.yaml" "$tmp/inv-ns.yaml"
+printf -- '---\napiVersion: v1\nkind: ServiceAccount\nmetadata: {name: z, namespace: kube-system}\n' >> "$tmp/inv-ns.yaml"
+ARGO_RENDER=$tmp/inv-ns.yaml
+: > "$RESULTS"; adm_check_argo_inventory; expect argo-inventory FAIL "a ServiceAccount in another namespace"
+ARGO_VALUES=
+: > "$RESULTS"; adm_check_argo_inventory; expect argo-inventory SKIP "the chart's defaults are not judged"
+unset ARGO_INVENTORY
+
 echo "✓ argo_bindings_test"

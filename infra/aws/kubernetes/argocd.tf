@@ -483,7 +483,8 @@ resource "helm_release" "argocd" {
   chart      = local.charts.argocd.chart
   version    = local.charts.argocd.version
 
-  values = [yamlencode(local.argocd_values)]
+  # The document the guard module checked, as it renders it: the release takes no other values.
+  values = [module.argocd_values_guard.values_yaml]
 
   # The middlewares are Traefik's CRDs; the Ingress's certificate is cert-manager's.
   depends_on = [helm_release.traefik, helm_release.cert_manager]
@@ -493,13 +494,16 @@ resource "helm_release" "argocd" {
       condition     = length(module.argocd_values_guard.violations) == 0
       error_message = "the Argo CD values carry something they must not (T12-f): ${join("; ", module.argocd_values_guard.violations)}"
     }
-    # The guard and the tests read local.argocd_values: a second values document or a `set` would
-    # reach Helm without them (a `set` of createClusterRoles=false, a document with a wildcard role).
-    # (lookup(self, "postrender", null), not self.postrender: scripts/lib/tf_scan.py refuses the word as code, because a
-    # postrender block runs a program; a string is not scanned.)
+    # The release's values ARE the guard's output (above), so what the guard checked is what Helm gets;
+    # a second document, a `set` or any other values would reach Helm without it, and this refuses
+    # them. (lookup(self, "postrender", null), not self.postrender: scripts/lib/tf_scan.py refuses the
+    # word as code, because a postrender block runs a program; a string is not scanned.) A postcondition
+    # is checked at plan time only when the release's inputs are known then (true today: nothing
+    # computed is in the values or the set arguments); with a computed input it fails only after the
+    # apply has started. Review: no computed value in the release's values or set*.
     postcondition {
-      condition     = length(self.values) == 1 && self.set == null && self.set_list == null && self.set_sensitive == null && lookup(self, "postrender", null) == null
-      error_message = "the release takes its values from local.argocd_values only (one document, no set, set_list, set_sensitive or postrender), so the guard and the tests see what Helm gets"
+      condition     = length(self.values) == 1 && self.values[0] == module.argocd_values_guard.values_yaml && self.set == null && self.set_list == null && self.set_sensitive == null && lookup(self, "postrender", null) == null
+      error_message = "the release takes the checked values document of the guard module and nothing else (no second document, set, set_list, set_sensitive or postrender), so the guard and the tests see what Helm gets"
     }
   }
 }

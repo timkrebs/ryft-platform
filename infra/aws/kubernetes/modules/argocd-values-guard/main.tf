@@ -11,8 +11,11 @@
 #   - any value key the chart has that this file does not expect: a key is added on purpose, here. The
 #     allowlist is two levels deep, plus the keys of the maps listed in `allowed_nested` and configs.cm;
 #     below that nothing is looked at.
-#   - extraObjects is rendered by the chart with `tpl`: a `{{` in any of them is refused, and each allowed
-#     kind has its one apiVersion (the kind run also renders templates/extra-manifests.yaml and counts).
+#   - the chart renders many values with `tpl`: a `{{` anywhere in the values is refused; a line break in a
+#     string value starts another YAML document in the render: refused except in the health customizations
+#     of configs.cm; each allowed extraObjects kind has its one apiVersion. The kind run counts the whole
+#     render by (kind, namespace) as the backstop for what these rules miss.
+#   - values_yaml is what the release must use (its postcondition), so what is checked is what Helm gets.
 #
 # argocd.tf calls it with local.argocd_values, and a precondition of helm_release.argocd turns a violation
 # into an error of plan and apply; tests/addons.tftest.hcl asserts the real values are clean and that each
@@ -79,6 +82,13 @@ locals {
   }
   allowed_cm_keys = ["admin.enabled", "exec.enabled", "resource.respectRBAC"]
 
+  # The values without the health customizations (the one place that holds multi-line strings).
+  v_without_health = merge(local.v, {
+    configs = merge(try(local.v.configs, {}), {
+      cm = { for k, x in try(local.v.configs.cm, {}) : k => x if !startswith(k, "resource.customizations.health.") }
+    })
+  })
+
   # A tuple of objects of different shapes: iterate it as it is (tolist would fail on it).
   extra_objects = try(local.v.extraObjects, [])
 
@@ -88,9 +98,15 @@ locals {
     ]),
     [for k in try(keys(local.v.configs.cm), []) : "unexpected value \"configs.cm.${k}\"" if !contains(local.allowed_cm_keys, k) && !startswith(k, "resource.customizations.health.")],
     try(local.v.global.networkPolicy.create, true) != true ? ["global.networkPolicy.create is not true: the chart's NetworkPolicies are off"] : [],
-    # The chart renders every extraObject with `tpl`: a template expression in any field is code that
-    # runs at render time (a base64-decoded document in apiVersion renders a whole other object).
-    strcontains(jsonencode(local.extra_objects), "{{") ? ["extraObjects carry a template expression ({{): the chart renders them with tpl, so a field can produce any object"] : [],
+    # The chart renders many values with `tpl` (extraObjects, ingress annotations, ...): a template
+    # expression anywhere in the values is code that runs at render time (a base64-decoded document in an
+    # apiVersion renders a whole other object, `lookup` reads the cluster). None is wanted: refuse `{{`
+    # in the whole tree. (nonsensitive: the tree holds the admin password's hash; the answer is only yes or no.)
+    nonsensitive(strcontains(jsonencode(local.v), "{{")) ? ["the values carry a template expression ({{): the chart renders values with tpl, so a value can produce any object or read the cluster"] : [],
+    # A line break inside a string value ends the value in the rendered YAML and starts another document
+    # (ingressClassName or global.domain with "\n---\n<any object>"). The only multi-line strings are the
+    # health customizations (Lua) of configs.cm, which the chart writes as block scalars.
+    nonsensitive(strcontains(jsonencode(local.v_without_health), "\\n")) || nonsensitive(strcontains(jsonencode(local.v_without_health), "\\r")) ? ["a string value holds a line break (outside the health customizations of configs.cm): it would end the value in the rendered YAML and start another document"] : [],
     [for i, o in local.extra_objects :
       "extraObjects[${i}]: apiVersion \"${try(o.apiVersion, "")}\" is not ${local.extra_object_api_versions[o.kind]} (the one apiVersion of a ${o.kind})"
       if contains(keys(local.extra_object_api_versions), try(o.kind, "")) && try(o.apiVersion, "") != local.extra_object_api_versions[o.kind]
@@ -122,4 +138,10 @@ locals {
 output "violations" {
   description = "One line per thing the values carry that they must not; empty when clean."
   value       = local.violations
+}
+
+output "values_yaml" {
+  description = "The values document the release must use: what this module checked, as YAML. helm_release.argocd takes it, and its postcondition requires it to be the release's only values."
+  value       = yamlencode(local.v)
+  sensitive   = true # the admin password's hash is in it
 }

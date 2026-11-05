@@ -464,7 +464,7 @@ run "argocd_clusterroles_are_an_allowlist" {
 # T12-f: what the ClusterRoles' rules above do not see. A rule check on the two ClusterRoles passes
 # when the chart renders no ClusterRole, or when a ClusterRoleBinding to cluster-admin comes in
 # through extraObjects, or when Argo CD's own RBAC makes every login an admin. The values are
-# inspected by modules/argocd-values-guard (also a check block in argocd.tf).
+# inspected by modules/argocd-values-guard, a precondition of helm_release.argocd (argocd.tf).
 run "argocd_values_carry_nothing_else_that_grants" {
   command = apply
 
@@ -733,5 +733,85 @@ run "guard_catches_deeper_values" {
       "configs.params.server.x.frame.options", "configs.secret.extra", "server.ingress.annotations.nginx.ingress.kubernetes.io/configuration-snippet",
     ] : strcontains(join(" | ", output.violations), needle)])
     error_message = "the image repository, the chart's NetworkPolicies off, an admin API-key account, another param, extra secret keys and another ingress annotation must be caught"
+  }
+}
+
+# Values of ALLOWED keys that still render other objects: a line break ends the value in the rendered YAML
+# and starts another document (server.ingress.ingressClassName and global.domain are written into the
+# Ingress and its annotations), and an annotation goes through `tpl`, so `{{ lookup ... }}` would run at
+# render time.
+run "guard_catches_a_line_break_in_ingressclassname" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server = {
+        clusterRoleRules = { enabled = true }
+        ingress          = { enabled = true, ingressClassName = "traefik\n---\nkind: ClusterRoleBinding\n" }
+      }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "line break")
+    error_message = "a line break in ingressClassName must be caught"
+  }
+}
+
+run "guard_catches_a_line_break_in_the_domain" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      global     = { domain = "x.example.com\n---\nkind: DaemonSet\n" }
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "line break")
+    error_message = "a line break in global.domain must be caught"
+  }
+}
+
+run "guard_catches_a_template_expression_in_an_annotation" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server = {
+        clusterRoleRules = { enabled = true }
+        ingress          = { enabled = true, annotations = { "cert-manager.io/cluster-issuer" = "{{ (lookup \"v1\" \"Secret\" \"kube-system\" \"x\").data }}" } }
+      }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "template expression ({{)")
+    error_message = "a template expression in an allowed annotation must be caught"
+  }
+}
+
+run "guard_allows_the_health_customizations_to_be_multi_line" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs    = { cm = { "resource.customizations.health.apps_Deployment" = "hs = {}\nreturn hs\n" } }
+    }
+  }
+  assert {
+    condition     = output.violations == []
+    error_message = "the Lua health customizations are the one place for multi-line strings"
   }
 }
