@@ -14,6 +14,7 @@ src/fonts/FFL.txt
 # generated at build time
 src/generated/
 nginx/csp.conf
+nginx/csp-admin.conf
 
 # test output
 test-results/

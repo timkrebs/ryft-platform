@@ -1,0 +1,361 @@
+/* The admin page (/admin). Phone first: one column, 44 px targets; wider screens get a
+   centred column and a card grid. Every colour, radius, size and duration is a token. */
+
+.adm-shell {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: var(--screen-padding);
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-spacing);
+  min-height: 100vh;
+}
+
+.adm-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 44px;
+}
+
+.adm-brand {
+  font-size: var(--type-wordmark);
+  font-weight: var(--type-wordmark-weight);
+  letter-spacing: var(--tracking-wordmark);
+  text-transform: uppercase;
+}
+
+.adm-brand-sub {
+  color: var(--text-secondary);
+  letter-spacing: var(--tracking-label);
+}
+
+.adm-nav {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  border-bottom: var(--hairline) solid var(--separator);
+}
+
+.adm-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 1rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.adm-tab[aria-current='page'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.adm-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-spacing);
+}
+
+.adm-main:focus {
+  outline: none;
+}
+
+.adm-foot {
+  color: var(--text-secondary);
+  font-size: var(--type-caption);
+  border-top: var(--hairline) solid var(--separator);
+  padding-top: 1rem;
+}
+
+.adm-narrow {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 28rem;
+}
+
+.adm-h1 {
+  font-size: var(--type-title);
+}
+
+.adm-h1:focus {
+  outline: none;
+}
+
+.adm-h2 {
+  font-size: var(--type-headline);
+  font-weight: var(--type-headline-weight);
+}
+
+.adm-note,
+.adm-hint,
+.adm-sub {
+  color: var(--text-secondary);
+  font-size: var(--type-callout);
+}
+
+.adm-sub {
+  margin: 0.75rem 0 0.25rem;
+}
+
+.adm-error {
+  color: var(--alert);
+  font-size: var(--type-callout);
+  overflow-wrap: anywhere;
+}
+
+/* Forms */
+.adm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.adm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.adm-field label {
+  font-size: var(--type-callout);
+  font-weight: var(--type-headline-weight);
+}
+
+.adm-input {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: var(--hairline) solid var(--text-tertiary);
+  border-radius: var(--tile-radius);
+  width: 100%;
+}
+
+.adm-input:disabled {
+  opacity: 0.6;
+}
+
+.adm-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  font-size: var(--type-callout);
+}
+
+.adm-check {
+  width: 1.5rem;
+  height: 1.5rem;
+  accent-color: var(--accent);
+}
+
+/* Buttons */
+.adm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 1.25rem;
+  font: inherit;
+  font-weight: var(--type-headline-weight);
+  border-radius: var(--tile-radius);
+  border: var(--hairline) solid transparent;
+  cursor: pointer;
+}
+
+.adm-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.adm-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.adm-btn-secondary {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.adm-btn-danger {
+  background: transparent;
+  color: var(--alert);
+  border-color: var(--alert);
+}
+
+.adm-actions,
+.adm-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.adm-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.adm-bar .adm-field {
+  flex: 1 1 14rem;
+}
+
+/* Cards */
+.adm-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (min-width: 40rem) {
+  .adm-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  }
+}
+
+.adm-card {
+  background: var(--surface);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.adm-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.adm-title {
+  font-weight: var(--type-headline-weight);
+  overflow-wrap: anywhere;
+}
+
+.adm-code,
+.adm-bigcode,
+.adm-secret {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
+.adm-code {
+  font-size: var(--type-headline);
+}
+
+.adm-bigcode {
+  font-size: var(--type-number-large);
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.adm-link,
+.adm-secret {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.adm-secret {
+  font-size: var(--type-headline);
+  background: var(--surface);
+  border-radius: var(--tile-radius);
+  padding: 0.75rem;
+}
+
+.adm-new {
+  border: 2px solid var(--accent);
+}
+
+.adm-new:focus,
+.adm-new h2:focus {
+  outline: none;
+}
+
+.adm-qr {
+  width: 12.5rem;
+  height: 12.5rem;
+  background: var(--mist);
+  padding: 0.5rem;
+  border-radius: var(--tile-radius);
+}
+
+.adm-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.adm-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  font-size: var(--type-callout);
+}
+
+.adm-facts dt {
+  color: var(--text-secondary);
+}
+
+.adm-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.adm-uses {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: var(--type-callout);
+  overflow-wrap: anywhere;
+}
+
+/* Badges */
+.adm-badge {
+  display: inline-block;
+  padding: 0.125rem 0.625rem;
+  font-size: var(--type-caption);
+  font-weight: var(--type-label-weight);
+  border-radius: 999px;
+  border: var(--hairline) solid currentColor;
+  white-space: nowrap;
+}
+
+.adm-badge-plain {
+  color: var(--text-secondary);
+}
+
+.adm-badge-ok {
+  color: var(--accent);
+}
+
+.adm-badge-warn {
+  color: var(--warning);
+}
+
+.adm-badge-bad {
+  color: var(--alert);
+}
+
+.adm-link-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}

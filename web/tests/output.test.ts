@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import fonts from '../config/fonts.json';
+import { cspHash } from '../scripts/lib/html.mjs';
+import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
 const OUT = 'out';
@@ -17,6 +19,8 @@ function* files(dir: string): Generator<string> {
     else yield p;
   }
 }
+
+const isAdminPage = (f: string) => relative(OUT, f) === 'admin.html';
 
 describe.skipIf(!built)('built site', () => {
   const html = built ? [...files(OUT)].filter((f) => f.endsWith('.html')) : [];
@@ -56,11 +60,68 @@ describe.skipIf(!built)('built site', () => {
   });
 
   it('runs no script that could read the URL (auth callbacks carry tokens)', () => {
-    for (const f of html) {
+    // The one exception, narrow (web D15): /admin's own bundle reads its #view from the fragment
+    // and is checked on its own below. Every other page keeps the strict rule.
+    for (const f of html.filter((f) => !isAdminPage(f))) {
       for (const [, body] of readFileSync(f, 'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
         expect(body, f).not.toMatch(/location|document\.URL|\bhref\b|\bhash\b|\bsearch\b|referrer|history/);
       }
     }
+  });
+
+  it('pins the marketing CSP: script-src is exactly the hashes of the two theme scripts', () => {
+    // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
+    // (or the admin bundle leaking into this policy) would widen it; this fails instead.
+    const csp = readFileSync('nginx/csp.conf', 'utf8');
+    const scriptSrc = /script-src ([^;]*);/.exec(csp)![1]!;
+    expect(scriptSrc.split(' ').sort()).toEqual([cspHash(THEME_INIT), cspHash(THEME_SWITCH)].sort());
+    expect(csp).toContain("connect-src 'none'");
+  });
+
+  describe('the admin page (the /admin exception, web D15)', () => {
+    const page = () => readFileSync(join(OUT, 'admin.html'), 'utf8');
+    const otherPages = () => html.filter((f) => !isAdminPage(f));
+
+    it('has exactly one script, the bundle, and no other page carries it', () => {
+      const scripts = [...page().matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]!);
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0]).toMatch(/data-ryft="admin"/);
+      expect(scripts[0]).not.toMatch(/\bsrc=/);
+      for (const f of otherPages()) expect(readFileSync(f, 'utf8'), f).not.toContain('data-ryft="admin"');
+    });
+
+    it('is noindex by meta tag and its own document: no theme scripts, no alternates', () => {
+      const p = page();
+      expect(p).toMatch(/<meta name="robots" content="noindex, nofollow"/);
+      expect(p).not.toMatch(/data-ryft="theme-/);
+      expect(p).not.toMatch(/<link rel="(alternate|canonical)"/);
+      expect(p).toContain('<html lang="en"');
+    });
+
+    it('is not in the sitemap or robots.txt (that would list the path), and no page links to it', () => {
+      expect(readFileSync(join(OUT, 'sitemap.xml'), 'utf8')).not.toMatch(/\/admin/);
+      expect(readFileSync(join(OUT, 'robots.txt'), 'utf8')).not.toMatch(/admin/i);
+      for (const f of otherPages()) expect(readFileSync(f, 'utf8'), f).not.toMatch(/href="\/admin/);
+    });
+
+    it('names its connections in the footer', () => {
+      expect(page()).toContain(
+        'Signs in with Supabase Auth; talks to api.ryftapp.de. Nothing else is loaded.',
+      );
+    });
+
+    it('has its hash in the admin policy only, and the marketing policy keeps connect-src none', () => {
+      const csp = readFileSync('nginx/csp.conf', 'utf8');
+      const adminCsp = readFileSync('nginx/csp-admin.conf', 'utf8');
+      const body = [...page().matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)][0]![1]!;
+      const hash = `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`;
+      expect(adminCsp).toContain(`script-src ${hash};`);
+      expect(csp).not.toContain(hash);
+      expect(adminCsp).toMatch(
+        /connect-src https:\/\/[a-z0-9]+\.supabase\.co\/auth\/v1\/ https:\/\/api\.ryftapp\.de\/v1\/admin\/;/,
+      );
+      expect(csp).toContain("connect-src 'none'");
+    });
   });
 
   it('keeps the app-link fallback, drafts, the styleguide and 404 out of search engines', () => {

@@ -12,6 +12,8 @@ D23 Route 53 zone in its own root (infra/aws/dns)
 # Operator one-off.
 D49 recreate the Supabase project in Frankfurt; a runbook step in docs/SUPABASE.md, no code change
 
+# Code only under web/, which the script does not scan; the site cites its own numbers (web D15-D17).
+D162 the /admin page; web/ cites web D15-D17
 # A process rule (how a change is staged, how a refactor is proven): the practice is in docs/OPERATIONS.md and the PR
 # descriptions, and no single line of code follows from it.
 D175 staging a backend change by holding its image group; the steps are in docs/OPERATIONS.md (Deploy and roll back)

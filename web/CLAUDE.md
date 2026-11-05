@@ -24,6 +24,19 @@ here: read from it, never write there.
   client JS is `src/lib/inline-scripts.ts`. Every inline script is hashed into the CSP.
 - **No tracking.** No cookies, no analytics, no third-party requests (fonts self-hosted,
   no CDNs), no forms. `localStorage` holds the theme choice and nothing else.
+- **The one exception: `/admin`** (the operator's page; web D15–D17). It is its own document
+  (`src/app/(admin)`, a separate root layout, `noindex`, not linked, not in the sitemap or
+  `robots.txt`) with ONE inline hashed script bundled by esbuild from `src/admin` (no framework,
+  no supabase-js, no client components: it is a server component that inlines the bundle). It
+  has forms (sign-in, TOTP), talks to exactly two origins (`config/admin.json`: the api and the
+  Supabase project, path-scoped to `/v1/admin/` and `/auth/v1/` in `connect-src` of its own CSP, `nginx/headers-admin.conf`) and keeps the
+  session in `sessionStorage` (never `localStorage`, never a cookie; it is per tab but readable by every
+  page of the origin in that tab, so it is cleared when the tab leaves `/admin`, `src/admin/leave.ts`). Its UI strings are
+  English-only and live in the bundle, outside `messages/`. Everything the api returns is
+  rendered with `textContent` (no HTML sink; `trusted-types 'none'`; ESLint and
+  `tests/admin-source.test.ts` enforce it). A location includes exactly one of `headers.conf`
+  or `headers-admin.conf`, never both (two CSPs intersect). Every other page keeps
+  `connect-src 'none'`, and no change here may widen the marketing policy.
 - **Legal content is ported, not invented.** `content/legal/` holds the platform's drafts,
   restructured only. Keep every `TODO(user)`; never change legal meaning or add facts.
   The privacy `version` equals `PRIVACY_POLICY_VERSION` in `../deploy/k8s/base/{api,ingest}/config.env`

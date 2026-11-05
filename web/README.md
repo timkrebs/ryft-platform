@@ -105,6 +105,8 @@ draft until you publish it: a banner, `noindex`, `TODO(user)` markers.
 ```text
 src/app/(en)/…        English routes at the root (the app's URLs)
 src/app/[locale]/…    the same routes under /de
+src/app/(admin)/…     /admin, its own root layout (the operator's page)
+src/admin/            the admin page's script (TypeScript, bundled by esbuild into one inline script)
 src/views/            page bodies, shared by both
 src/components/       mark, chrome, cards, charts, screenshots, prose
 src/lib/              i18n, metadata, content loading, the mark's geometry, inline scripts

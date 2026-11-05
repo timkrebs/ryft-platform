@@ -9,6 +9,7 @@ src/fonts/*.woff2
 src/fonts/FFL.txt
 src/generated
 nginx/csp.conf
+nginx/csp-admin.conf
 test-results
 playwright-report
 .lighthouseci
