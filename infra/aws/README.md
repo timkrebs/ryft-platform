@@ -6,7 +6,7 @@ Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
 | Root | What | Lifetime |
 | --- | --- | --- |
 | `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only) | long-lived; survives cluster rebuilds |
-| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons | the cluster |
+| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons; Vault's KMS keys and snapshot bucket | the cluster; the Vault keys and bucket outlive it (`prevent_destroy`) |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
 The zone has its own root so destroying the cluster never changes the nameservers at
@@ -16,12 +16,14 @@ be configured from a cluster created in the same apply.
 ```
 infra/aws/
 ├── terraform.tf providers.tf locals.tf main.tf variables.tf outputs.tf
+├── vault.tf                   Vault's unseal key, snapshot key and snapshot bucket (prevent_destroy)
 ├── terraform.tfvars.example   copy to terraform.tfvars (git-ignored)
 ├── modules/
 │   ├── network/               VPC, subnets, NAT, flow logs   (terraform-aws-modules/vpc v6)
 │   └── eks/                   cluster, node group, add-ons, EBS CSI Pod Identity role
 │                                                             (terraform-aws-modules/eks v21)
 ├── tests/ryft.tftest.hcl      terraform test, providers mocked
+├── tests/vault.tftest.hcl     the Vault keys and bucket (mocked; greps prevent_destroy)
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
@@ -43,6 +45,8 @@ infra/aws/
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
+| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`; the key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`) |
+| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS and any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
@@ -258,7 +262,11 @@ admission-policy <last deployed revision>`. The full runbook comes with the late
 
 Roughly $350–370 per month in eu-central-1 before data transfer: control plane ~$73,
 3 × t3.large ~$210, NAT gateway ~$38, NLB ~$16, three public IPv4 addresses ~$11, Route 53
-zone $0.50, plus EBS volumes and CloudWatch logs. Graviton nodes (`t4g.medium`,
+zone $0.50, plus EBS volumes and CloudWatch logs. Vault's two KMS keys add $2 a month,
+rising to $4 after the first yearly rotation and $6 after the second (AWS bills each new
+key version for two rotations, then stops); its requests stay in the free 20,000 a month,
+and the snapshot bucket (four objects of well under 1 MB a day, 30 days) costs cents.
+Graviton nodes (`t4g.medium`,
 `AL2023_ARM_64_STANDARD`; the RYFT images are multi-arch) and Spot capacity
 (`node_group.capacity_type = "SPOT"`) cut the node share.
 
@@ -286,10 +294,29 @@ kubectl delete -k deploy/k8s/overlays/eks       # Ingress gone → ExternalDNS d
 # gp3-encrypted retains volumes: delete the leftovers explicitly
 aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft \
   --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
-(cd infra/aws && terraform apply -var deletion_protection=false && terraform destroy)
+(cd infra/aws && terraform apply -var deletion_protection=false && \
+  terraform destroy -target=module.eks -target=module.network)  # Vault's keys and bucket stay
 ```
 
 The zone in `infra/aws/dns` stays; it costs $0.50 a month and keeps the delegation intact.
+
+**Vault's keys and bucket stay too.** They carry `prevent_destroy`, so a plain
+`terraform destroy` of this root stops with "Instance cannot be destroyed"; the targets
+above leave them alone. `infra/aws/kubernetes` finds them again by name, and a Vault in a
+rebuilt cluster unseals with the same key and can restore the old snapshots. Removing them is a deliberate,
+reviewed step, never a side effect:
+
+1. A pull request removes `lifecycle { prevent_destroy = true }` from the resource (and,
+   for the bucket, sets `force_destroy = true`, or you empty every object version
+   first: S3 refuses to delete a non-empty bucket). To keep a resource in AWS but drop it
+   from this root, use a `removed` block with `lifecycle { destroy = false }` instead.
+2. You plan, read the destroy lines, and apply. A KMS key is not deleted at once: it is
+   scheduled for deletion in 30 days and unusable from that moment. Within the window,
+   `aws kms cancel-key-deletion --key-id <arn>` and then `aws kms enable-key --key-id
+   <arn>` bring it back (a cancelled key returns disabled).
+
+Without the unseal key, Vault's data and every snapshot are unreadable for good: only
+schedule its deletion after the in-cluster Vault and its snapshots are gone.
 
 ## Checks
 
@@ -300,10 +327,11 @@ trivy config --tf-vars terraform.tfvars.example .
 ```
 
 `terraform test` mocks every provider; nothing touches AWS or the cluster. trivy reports
-four findings in the cluster root that are deliberate:
+five findings in the cluster root that are deliberate:
 
 | Finding | Why it stays |
 | --- | --- |
+| AWS-0089 Vault snapshot bucket has no access logging | Server access logs would need a second bucket; CloudTrail records the management events, the bucket policy refuses every put that does not name its key, and the job's role can only put |
 | AWS-0040/0041 public API endpoint | `kubectl` from your machine; restricted to `endpoint_public_access_cidrs` (set it to your IP) |
 | AWS-0104 node egress to 0.0.0.0/0 | Nodes pull images and call AWS APIs |
 | AWS-0038 scheduler / controller-manager logs off | Audit, api and authenticator logs are on; the other two add CloudWatch cost for little value at this size |

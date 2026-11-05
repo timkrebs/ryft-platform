@@ -38,6 +38,36 @@ output "region" {
   value       = var.region
 }
 
+output "vault_snapshots_bucket" {
+  description = "Name of the S3 bucket for Vault's Raft snapshots (the CronJob writes under snapshots/)"
+  value       = aws_s3_bucket.vault_snapshots.bucket
+}
+
+output "vault_snapshots_bucket_arn" {
+  description = "ARN of the S3 bucket for Vault's Raft snapshots"
+  value       = aws_s3_bucket.vault_snapshots.arn
+}
+
+output "vault_snapshots_kms_alias" {
+  description = "Alias of the KMS key that encrypts the snapshot bucket"
+  value       = aws_kms_alias.vault_snapshots.name
+}
+
+output "vault_snapshots_kms_key_arn" {
+  description = "ARN of the KMS key that encrypts the snapshot bucket; every PutObject must name it"
+  value       = aws_kms_key.vault_snapshots.arn
+}
+
+output "vault_unseal_kms_alias" {
+  description = "Alias of Vault's auto-unseal KMS key; infra/aws/kubernetes looks the key up by it"
+  value       = aws_kms_alias.vault_unseal.name
+}
+
+output "vault_unseal_kms_key_arn" {
+  description = "ARN of Vault's auto-unseal KMS key; the seal stanza names the ARN, not the alias"
+  value       = aws_kms_key.vault_unseal.arn
+}
+
 output "vpc_id" {
   description = "ID of the VPC"
   value       = module.network.vpc_id
