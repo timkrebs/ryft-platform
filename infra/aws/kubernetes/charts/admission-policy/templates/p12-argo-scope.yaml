@@ -22,7 +22,8 @@ docs/work/2026-10-23-admission/p12-argo-scope.md; D-entry "P12".
      5 the controller, cluster-scoped: Namespaces argoScope.namespaceObjects (no DELETE), CRDs of
        argoScope.crdGroups (no DELETE), ClusterRoles and ClusterRoleBindings with an operators
        prefix, and the operators' webhook configurations. (No entry for access reviews:
-       they never reach validating admission, claim o of the kind run.)
+       kube-apiserver's exclusion list exempts them from policies and webhooks, since 1.30;
+       claim o of the kind run.)
  - Every optional request field is read through has() (the API server omits empty fields:
    namespace of a cluster-scoped object, name of a generateName create, subResource, userInfo
    of an anonymous request), and object / oldObject are touched only where the operation has

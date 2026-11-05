@@ -216,13 +216,62 @@ AUDIT_RC=0; CREATED=1
 # ---- adm_full_claim_o -----------------------------------------------------------------------------------------------------------
 adm_full_p12_stage() { :; }
 ARGO_CTRL=$CTRL
-SSAR_CTL="yes" SSAR_SRV=""
-kca() { case "$1" in "$ARGO_CTRL") printf '%s\n' "$SSAR_CTL" ;; "$ARGO_SRV") printf '%s\n' "$SSAR_SRV" ;; esac; return 0; }
+SSAR_CTL="yes" SSAR_SRV="" CTRL_OUT=""
+# the positive control (a ConfigMap create as the server) and the two reviews (auth can-i) as canned answers
+kca() {
+  if [ "$2" = create ]; then printf '%s\n' "$CTRL_OUT"; return 0; fi
+  case "$1" in "$ARGO_CTRL") printf '%s\n' "$SSAR_CTL" ;; "$ARGO_SRV") printf '%s\n' "$SSAR_SRV" ;; esac
+  return 0
+}
 co() { : > "$RESULTS"; adm_full_claim_o "" || true; }
-SSAR_CTL=no SSAR_SRV=yes; co; expect claim-o-canary PASS "neither review was refused: access reviews bypass validating admission"
-SSAR_CTL=yes SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o-canary FAIL "the server's review was refused: admission sees access reviews"
+CTRL_OUT=$(den ryft-argo-scope "$MSG3 (and once the first server.secretkey of argocd-secret).")
+SSAR_CTL=no SSAR_SRV=yes; co; expect claim-o-canary PASS "P12 in Deny, neither review refused: access reviews are exempt"
+SSAR_CTL=no SSAR_SRV=no; co; expect claim-o-canary PASS "the server's answer may be no"
+SSAR_CTL=yes SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o-canary FAIL "the server's review was refused: P12 judges access reviews"
 SSAR_CTL=$(den ryft-argo-scope "P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render"); SSAR_SRV=yes; co; expect claim-o-canary FAIL "the controller's review refused"
 SSAR_CTL="error: the server could not find the requested resource" SSAR_SRV=yes; co; expect claim-o-canary FAIL "the controller's review gave no answer"
+# vacuous canaries: an error that hides a refusal, an empty answer from the server, no Deny at that moment
+SSAR_CTL=yes SSAR_SRV="error: the server could not find the requested resource"; co; expect claim-o-canary FAIL "the server's review gave no answer"
+SSAR_CTL=yes SSAR_SRV=""; co; expect claim-o-canary FAIL "the server's answer is empty"
+CTRL_OUT="configmap/zz-claim-o-control created (server dry run)"; SSAR_CTL=yes SSAR_SRV=yes; co; expect claim-o-canary FAIL "P12 is not in Deny: the control was admitted"
+CTRL_OUT=$(den ryft-other "P6: something else"); co; expect claim-o-canary FAIL "the control was refused by another binding"
+CTRL_OUT=$(den ryft-argo-scope "$MSG3"); SSAR_CTL=$(den ryft-argo-scope "$MSG3"); SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o-canary FAIL "both reviews refused"
+
+# ---- adm_full_ksm_compare (claim-m-native) ------------------------------------------------------------------------------------
+cat > "$tmp/vapb.json" <<'EOF2'
+{"items":[
+ {"metadata":{"name":"ryft-vso"},"spec":{"validationActions":["Deny"]}},
+ {"metadata":{"name":"ryft-netpol"},"spec":{"validationActions":["Warn","Audit"]}},
+ {"metadata":{"name":"ryft-both"},"spec":{"validationActions":["Deny","Audit"]}},
+ {"metadata":{"name":"other-binding"},"spec":{"validationActions":["Deny"]}}]}
+EOF2
+cat > "$tmp/ksm_good.txt" <<'EOF2'
+kube_validatingadmissionpolicybinding_info{namespace="",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"} 1
+kube_validatingadmissionpolicybinding_info{namespace="",validatingadmissionpolicybinding="ryft-netpol",policy_name="p"} 1
+kube_validatingadmissionpolicybinding_info{namespace="",validatingadmissionpolicybinding="ryft-both",policy_name="p"} 1
+kube_validatingadmissionpolicybinding_validation_action{namespace="",validatingadmissionpolicybinding="ryft-vso",action="Deny"} 1
+kube_validatingadmissionpolicybinding_validation_action{namespace="",validatingadmissionpolicybinding="ryft-netpol",action="Warn"} 1
+kube_validatingadmissionpolicybinding_validation_action{namespace="",validatingadmissionpolicybinding="ryft-netpol",action="Audit"} 1
+kube_validatingadmissionpolicybinding_validation_action{action="Deny",namespace="",validatingadmissionpolicybinding="ryft-both"} 1
+kube_validatingadmissionpolicybinding_validation_action{namespace="",validatingadmissionpolicybinding="ryft-both",action="Audit"} 1
+EOF2
+# kc_cmp <sed expression or ''> [extra line]: compare a mutated copy of the good series with the bindings
+kc_cmp() {
+  if [ -n "${1:-}" ]; then sed -e "$1" "$tmp/ksm_good.txt" > "$tmp/ksm.txt"; else cp "$tmp/ksm_good.txt" "$tmp/ksm.txt"; fi
+  [ -z "${2:-}" ] || printf '%s\n' "$2" >> "$tmp/ksm.txt"
+  adm_full_ksm_compare "$tmp/ksm.txt" "$tmp/vapb.json"
+}
+kc_cmp "" || fail "ksm_compare: the matching series were refused: $ADM_KSM_DETAIL"
+case "$ADM_KSM_DETAIL" in *"3 bindings, 5 action series, 1 of the bindings without Deny"*) ;; *) fail "ksm_compare summary: $ADM_KSM_DETAIL" ;; esac
+kc_cmp '/ryft-netpol",action="Warn"/d' && fail "ksm_compare: a missing live action was accepted"
+kc_cmp 's/ryft-netpol",action="Audit"} 1/ryft-netpol",action="Deny"} 1/' && fail "ksm_compare: a Deny series for a Warn+Audit binding was accepted"
+kc_cmp "" 'kube_validatingadmissionpolicybinding_validation_action{namespace="",validatingadmissionpolicybinding="ryft-netpol",action="Deny"} 1' && fail "ksm_compare: an extra Deny series was accepted"
+kc_cmp 's/action="Warn"} 1/action="Warn"} 0/' && fail "ksm_compare: a series of value 0 was accepted"
+kc_cmp 's/ryft-netpol",action="Warn"/ryft-netpol",action=""/' && fail "ksm_compare: an empty action was accepted"
+kc_cmp '/info{.*ryft-both/d' && fail "ksm_compare: a missing info series was accepted"
+kc_cmp "" 'kube_validatingadmissionpolicybinding_info{namespace="",validatingadmissionpolicybinding="ryft-extra"} 1' && fail "ksm_compare: an info series of no binding was accepted"
+echo '{"items":[]}' > "$tmp/none.json"
+adm_full_ksm_compare "$tmp/ksm_good.txt" "$tmp/none.json" && fail "ksm_compare: a cluster without bindings was accepted"
 
 # ---- adm_full_argo_restart (claim p) ----------------------------------------------------------------------------------------------
 RV=100 RV_AFTER=100 ROLL_RC=0

@@ -75,6 +75,8 @@ P12 controller creates a CRD of another group
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a ClusterIssuer
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a ClusterRole without any metadata
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a ClusterRoleBinding without the prefix
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a Deployment in cert-manager
@@ -88,6 +90,8 @@ P12 controller creates a Lease in kube-system
 P12 controller creates a Namespace with a generateName
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller creates a Namespace without any metadata
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a PersistentVolume
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a PriorityClass
@@ -114,8 +118,6 @@ P12 controller creates an ApplicationSet
     ryft-argocd: P7: ApplicationSets are not allowed.
 P12 controller creates an Event in kube-system
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
-P12 controller creates an object without any metadata
-    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates another Namespace
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.

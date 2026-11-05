@@ -252,8 +252,9 @@ EOF
 # of argocd-secret, which argocd.tf's values (argocdServerAdminPassword) also set, and Helm 4's
 # server-side apply refuses a second run over them. In production Helm owns those fields and nothing
 # patches them, so the conflict is the harness's own: the upgrade takes the fields back and the login
-# patches them again afterwards. The stage tests that P12 does not refuse the upgrade, not Helm's field
-# ownership.
+# patches them again afterwards. (Production installs Argo CD with the Terraform helm provider ~> 3.3,
+# which uses Helm v3 libraries and no server-side apply, so this conflict cannot occur there.)
+# The stage tests that P12 does not refuse the upgrade, not Helm's field ownership.
 adm_full_argocd() {
   local repo ver label=${1:-full-argocd} force=${2:-} flags=()
   [ "$force" = force ] && flags+=(--force-conflicts)
@@ -586,24 +587,56 @@ adm_full_claim_i() {
   fi
 }
 
-# claim-m-native: the source AdmissionBindingMissing / NotDenying read in this tree (deploy/grafana/alerts),
-# kube-state-metrics' own collector for the bindings (v2.20+, chart RBAC included), asked of the cluster
-# the run is on: one kube_validatingadmissionpolicybinding_info series per ryft-* binding that exists, and
-# a live-action series for the binding ryft-vso.
-# It needs the pod of the KSM release of adm_full_claim_m.
+# adm_full_ksm_compare <metrics-file> <bindings-json-file>: the native collector's series of the ryft-*
+# bindings against what the cluster holds. One kube_validatingadmissionpolicybinding_info series per
+# binding, and kube_validatingadmissionpolicybinding_validation_action: exactly one series, value 1, for
+# each of the binding's spec.validationActions and none else (a binding held in Warn+Audit has no Deny
+# series; a series for an action it does not have, with another value, or with an empty action, is a
+# difference). Sets ADM_KSM_DETAIL (the differences, or a summary) and returns 1 on any difference or when
+# the cluster has no ryft-* binding.
+adm_full_ksm_compare() {
+  local want_b want_a have_b have_a
+  want_b=$(jq -r '.items[].metadata.name | select(startswith("ryft-"))' "$2" | sort -u)
+  want_a=$(jq -r '.items[] | select(.metadata.name | startswith("ryft-")) | .metadata.name as $n | (.spec.validationActions // [])[] | "\($n) \(.) 1"' "$2" | sort -u)
+  # label values are read by name, whatever the order of the labels
+  have_b=$(awk '
+    function g(l) { if (match($0, l "=\"[^\"]*\"")) return substr($0, RSTART + length(l) + 2, RLENGTH - length(l) - 3); return "" }
+    /^kube_validatingadmissionpolicybinding_info\{/ { b = g("validatingadmissionpolicybinding"); if (b ~ /^ryft-/) print b }' "$1" | sort -u)
+  have_a=$(awk '
+    function g(l) { if (match($0, l "=\"[^\"]*\"")) return substr($0, RSTART + length(l) + 2, RLENGTH - length(l) - 3); return "" }
+    /^kube_validatingadmissionpolicybinding_validation_action\{/ { b = g("validatingadmissionpolicybinding"); if (b ~ /^ryft-/) print b " " g("action") " " $NF }' "$1" | sort)
+  ADM_KSM_DETAIL=""
+  if [ -z "$want_b" ]; then ADM_KSM_DETAIL="the cluster has no ryft-* binding"; return 1; fi
+  if [ "$have_b" != "$want_b" ]; then
+    ADM_KSM_DETAIL="info series differ from the bindings of the cluster: only in the cluster: $(comm -23 <(printf '%s\n' "$want_b") <(printf '%s\n' "$have_b") | tr '\n' ' '), only in the series: $(comm -13 <(printf '%s\n' "$want_b") <(printf '%s\n' "$have_b") | tr '\n' ' ')"
+    return 1
+  fi
+  if [ "$have_a" != "$want_a" ]; then
+    ADM_KSM_DETAIL="action series differ from spec.validationActions: missing: $(comm -23 <(printf '%s\n' "$want_a") <(printf '%s\n' "$have_a") | tr '\n' ';'), unexpected: $(comm -13 <(printf '%s\n' "$want_a") <(printf '%s\n' "$have_a") | tr '\n' ';')"
+    return 1
+  fi
+  ADM_KSM_DETAIL="$(printf '%s\n' "$want_b" | wc -l | tr -d ' ') bindings, $(printf '%s\n' "$want_a" | wc -l | tr -d ' ') action series, $(jq -r '[.items[] | select(.metadata.name | startswith("ryft-")) | select((.spec.validationActions // []) | index("Deny") | not)] | length' "$2") of the bindings without Deny (and no Deny series for them)"
+}
+
+# claim-m-native: the source AdmissionBindingMissing / NotDenying / Drift read in this tree
+# (deploy/grafana/alerts), kube-state-metrics' own collector for the bindings (v2.20+), asked of the cluster
+# the run is on, binding by binding (adm_full_ksm_compare). It needs the pod of the KSM release of
+# adm_full_claim_m. What this run does NOT show: that the chart adds the RBAC itself, because that release
+# is given rbac.extraRules for list/watch (claim m's probe). That holds by the chart's source for
+# kube-state-metrics 8.6.0: helm template with collectors={validatingadmissionpolicybindings} renders the
+# ClusterRole rule for them and --resources=validatingadmissionpolicybindings.
 adm_full_ksm_native() {
-  local m have want i
-  want=$(kc get validatingadmissionpolicybindings -o name 2>/dev/null | grep -c '/ryft-')
+  local i bj="$WORK/ksm-bindings.json" mf="$WORK/ksm-metrics.txt"
   for i in 1 2 3 4 5 6; do   # the collector lists the bindings a moment after the pod is ready
-    m=$(kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" 2>&1)
-    have=$(printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_info{' | grep -c 'validatingadmissionpolicybinding="ryft-')
-    { [ "$have" = "$want" ] && [ "$want" -gt 0 ]; } && break
+    kc get validatingadmissionpolicybindings -o json > "$bj" 2>/dev/null
+    kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" > "$mf" 2>&1
+    adm_full_ksm_compare "$mf" "$bj" && break
     sleep 5
   done
-  if [ "${want:-0}" -gt 0 ] && [ "$have" = "$want" ] && printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_validation_action{' | grep -q 'validatingadmissionpolicybinding="ryft-vso".*action="[A-Za-z]*"'; then
-    rec "claim-m-native" PASS "kube-state-metrics' native collector exports $have kube_validatingadmissionpolicybinding_info series for the $want ryft-* bindings of the cluster (the alert AdmissionBindingMissing counts them against 13) and the live action of ryft-vso: $(printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_validation_action{' | grep 'validatingadmissionpolicybinding="ryft-vso"' | tr '\n' ' ' | cut -c1-200)"
+  if adm_full_ksm_compare "$mf" "$bj"; then
+    rec "claim-m-native" PASS "kube-state-metrics' native collector matches the cluster binding by binding: $ADM_KSM_DETAIL (the alert AdmissionBindingMissing counts the info series against 13). This release is given rbac.extraRules, so the run does not show that the chart adds the RBAC; that holds by the chart's source for 8.6.0 (the ClusterRole rule and --resources=validatingadmissionpolicybindings are rendered)"
   else
-    rec "claim-m-native" FAIL "the native collector exports $have info series for $want ryft-* bindings, or none for ryft-vso's action: $(printf '%s\n' "$m" | grep 'validatingadmissionpolicybinding' | head -3 | cut -c1-300)"
+    rec "claim-m-native" FAIL "the native collector differs from the cluster: $ADM_KSM_DETAIL"
   fi
 }
 
@@ -744,24 +777,34 @@ adm_full_argo_upgrade() {
   adm_full_p12_stage "$label" "$since" "$held"
 }
 
-# Claim o was DISPROVED by the first kind run: access reviews (SelfSubjectAccessReview and kin) do not
-# reach validating admission, so P12 has no entry for them. What stays is a canary: the request the
-# controller asks per resource type under resource.respectRBAC: strict, and the same one as argocd-server,
-# with P12 in Deny. Neither may be refused by ryft-argo-scope. If one is, admission sees access reviews on
-# this Kubernetes version and the controller would be refused its own reviews: rule 5 needs an
-# authorization.k8s.io entry (create of the access reviews) again.
+# Claim o was DISPROVED by the first kind run: access reviews (SelfSubjectAccessReview and kin) are not
+# judged by P12 (kube-apiserver's exclusion list exempts the review kinds from policies and webhooks since
+# Kubernetes 1.30), so P12 has no entry for them. What stays is a canary: the request the controller asks
+# per resource type under resource.respectRBAC: strict, and the same one as argocd-server, with P12 in Deny.
+# It is worth something only if
+#   - P12 is in Deny at that moment: a positive control, a dry-run create of a ConfigMap in argocd as
+#     argocd-server (its chart Role allows it, so RBAC does not answer first; rule 3 refuses it), and
+#   - both identities got a real answer (yes or no), not an error that would hide a refusal.
+# Neither review may then be refused by ryft-argo-scope. If one is, the exclusion is gone on this Kubernetes
+# version and the controller would be refused its own reviews: rule 5 needs an authorization.k8s.io entry
+# (create of the access reviews) again. (The control's refusal is asked after the stage's findings check.)
 adm_full_claim_o() {
-  local held=$1 since ctl srv
+  local held=$1 since ctl srv ctrl
   since=$(adm_now)
   ctl=$(kca "$ARGO_CTRL" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
   adm_full_p12_stage "full-ssar" "$since" "$held"
   srv=$(kca "$ARGO_SRV" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
-  if printf '%s%s' "$ctl" "$srv" | grep -qF "with binding 'ryft-argo-scope' denied request"; then
-    rec "claim-o-canary" FAIL "access reviews now reach validating admission and P12 refuses them (controller: $(printf '%s' "$ctl" | cut -c1-200); server: $(printf '%s' "$srv" | cut -c1-200)): rule 5 needs an entry for the access reviews again"
+  ctrl=$(kca "$ARGO_SRV" create configmap zz-claim-o-control -n argocd --dry-run=server 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
+  if ! printf '%s' "$ctrl" | grep -qF "with binding 'ryft-argo-scope' denied request: P12: argocd-server writes only"; then
+    rec "claim-o-canary" FAIL "no positive control: argocd-server's dry-run create of a ConfigMap in argocd was not refused by ryft-argo-scope (rule 3), so P12 is not in Deny now and the canary would prove nothing: $(printf '%s' "$ctrl" | cut -c1-300)"
+  elif printf '%s%s' "$ctl" "$srv" | grep -qF "with binding 'ryft-argo-scope' denied request"; then
+    rec "claim-o-canary" FAIL "access reviews are now judged by P12 and refused (controller: $(printf '%s' "$ctl" | cut -c1-200); server: $(printf '%s' "$srv" | cut -c1-200)): rule 5 needs an entry for the access reviews again"
   elif ! [[ $ctl =~ ^(yes|no)($|\ ) ]]; then
     rec "claim-o-canary" FAIL "a SelfSubjectAccessReview as the application controller did not answer yes or no: $(printf '%s' "$ctl" | cut -c1-300)"
+  elif ! [[ $srv =~ ^(yes|no)($|\ ) ]]; then
+    rec "claim-o-canary" FAIL "a SelfSubjectAccessReview as argocd-server did not answer yes or no: $(printf '%s' "$srv" | cut -c1-300)"
   else
-    rec "claim-o-canary" PASS "claim o stays DISPROVED: neither the controller's nor argocd-server's SelfSubjectAccessReview was refused by ryft-argo-scope (controller: ${ctl%% *}, server: ${srv%% *}), so access reviews do not reach validating admission and P12 has no entry for them"
+    rec "claim-o-canary" PASS "claim o stays DISPROVED: with P12 shown in Deny (argocd-server's ConfigMap dry-run refused by rule 3), neither the controller's (${ctl%% *}) nor argocd-server's (${srv%% *}) SelfSubjectAccessReview was refused by ryft-argo-scope: access reviews are exempt from policies (kube-apiserver's exclusion list), so P12 has no entry for them"
   fi
 }
 

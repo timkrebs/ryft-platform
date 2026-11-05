@@ -219,6 +219,9 @@ type Req struct {
 	// A Namespace create: the request path has no namespace, so the API server may send none. The
 	// harness otherwise gives a Namespace its own name, as the apiserver does for UPDATE and DELETE.
 	NoNs bool
+	// Only: judge the verdict of this binding alone (a request the harness models loosely enough that
+	// another policy errors on it, which no real API server sends).
+	Only string
 }
 
 type Result struct {
@@ -452,6 +455,15 @@ func report(c *chart, name string, r Req, want []string) {
 		panic("duplicate case name: " + name)
 	}
 	res := c.eval(r)
+	if r.Only != "" {
+		var kept []Result
+		for _, x := range res {
+			if x.Binding == r.Only {
+				kept = append(kept, x)
+			}
+		}
+		res = kept
+	}
 	maybeEmit(name, r, res)
 	var msgs, plain []string
 	errored := false

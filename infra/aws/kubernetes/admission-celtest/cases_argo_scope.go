@@ -140,8 +140,9 @@ func runArgoScope(c *chart) {
 	del("P12 controller deletes cluster-admin", argoCtl, mk("rbac.authorization.k8s.io/v1", "ClusterRole", "", "cluster-admin"), r5)
 	crt("P12 controller creates an operators' webhook configuration", argoCtl, find("ValidatingWebhookConfiguration", "", "cluster-operator-validating-webhook-configuration"))
 	crt("P12 controller creates a webhook configuration of another name", argoCtl, set(find("ValidatingWebhookConfiguration", "", "cluster-operator-validating-webhook-configuration"), "metadata/name", "evil"), r5, "P6")
-	// (SelfSubjectAccessReview, SelfSubjectRulesReview and SubjectAccessReview creates have no case: access reviews
-	// never reach validating admission, claim o of the kind run, so P12 neither admits nor refuses them)
+	// (SelfSubjectAccessReview, SelfSubjectRulesReview and SubjectAccessReview creates have no case: kube-apiserver's
+	// exclusion list (pkg/kubeapiserver/admission/exclusion, since 1.30) exempts them from policies, claim o of
+	// the kind run, so P12 neither admits nor refuses them)
 
 	// ---- rule 1: subresources and CONNECT, whoever the account
 	scale := map[string]any{"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": map[string]any{"name": "api", "namespace": "ryft-api"}, "spec": map[string]any{"replicas": float64(3)}}
@@ -308,9 +309,14 @@ func runArgoScope(c *chart) {
 		delete(o["metadata"].(map[string]any), "name")
 		return o
 	}(), r3)
-	// (the shape of an access review: no metadata at all; P12 must refuse it by rule 5, not fail with a CEL error)
-	noMeta := map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"verb": "list", "resource": "secrets"}}}
-	raw("P12 controller creates an object without any metadata", Req{User: argoCtl, Op: "CREATE", Obj: noMeta}, r5)
+	// A create with no metadata at all, of a kind rule 5 judges by name: the `name` variable must read
+	// object.metadata through has() (no CEL error) and fall back to '', which is in no allowlist, so rule 5
+	// refuses it. Judged on ryft-argo-scope alone: the other policies error on such an object in the harness.
+	noMeta := func(kind, apiVersion string) map[string]any {
+		return map[string]any{"apiVersion": apiVersion, "kind": kind}
+	}
+	raw("P12 controller creates a ClusterRole without any metadata", Req{User: argoCtl, Op: "CREATE", Obj: noMeta("ClusterRole", "rbac.authorization.k8s.io/v1"), NoNs: true, Only: "ryft-argo-scope"}, r5)
+	raw("P12 controller creates a Namespace without any metadata", Req{User: argoCtl, Op: "CREATE", Obj: noMeta("Namespace", "v1"), NoNs: true, Only: "ryft-argo-scope"}, r5)
 	raw("P12 controller deletes a cluster-scoped object with only the old object", Req{User: argoCtl, Op: "DELETE", Old: find("ClusterRole", "", "messaging-topology-metrics-reader")})
 
 	for _, t := range ts {
