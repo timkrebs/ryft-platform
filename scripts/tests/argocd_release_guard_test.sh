@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The lifecycle conditions of helm_release.argocd (infra/aws/kubernetes/argocd.tf, T12-f): the release takes
+# The lifecycle conditions of helm_release.argocd (infra/aws/kubernetes/argocd.tf, T12-f, D180): the release takes
 # the values document that the guard module checked (module.argocd_values_guard.values_yaml) and nothing
 # else, so what the guard and the tests see is what Helm gets. None of these can be injected from a test
 # file (override_resource does not replace configured arguments), so this copies the module, edits it, and

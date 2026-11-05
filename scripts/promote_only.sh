@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Is this change limited to what promote writes? CI's `changes` job asks it of a pull request, to
+# Is this change limited to what promote writes (D181)? CI's `changes` job asks it of a pull request, to
 # skip the checks a deploy PR cannot affect (the `admission` job: a pinned image tag does not
 # change what the cluster admits, and a kind run per deploy would cost minutes of every release).
 #   scripts/promote_only.sh <base-sha> <head-sha>      exit 0: only promote's lines; 1: anything else

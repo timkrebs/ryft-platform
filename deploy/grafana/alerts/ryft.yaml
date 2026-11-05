@@ -5,7 +5,7 @@
 # notification policy for severity critical, warning and info. Expressions, thresholds
 # and what to do: docs/OBSERVABILITY.md → Alerts. Labels namespace and pod come from the
 # collector's pod discovery.
-# Grafana Cloud takes at most 20 rules per group (alerts and recording rules); keep a group
+# Grafana Cloud takes at most 20 rules per group (alerts and recording rules; D179); keep a group
 # at 18 or fewer and start a new one by theme (scripts/check_rule_groups.sh fails above 20;
 # OBSERVABILITY.md → Alerts). A load replaces each named group whole, and a group not in the
 # file stays live: rename or drop one only with its live copy in mind.
@@ -28,7 +28,7 @@ groups:
         labels: { severity: critical }
         annotations: { summary: "{{ $labels.pod }} restarted more than 3 times in 30 minutes" }
       - alert: ServiceExited
-        # A container of api, ingest, scoring or notify restarted in the last 15 minutes.
+        # A container of api, ingest, scoring or notify restarted in the last 15 minutes (D173, D174).
         # Zero restarts is normal for these four, so any restart pages. The exit code is
         # not part of the rule: the services handle SIGTERM and exit 0 on a clean stop, so
         # a container the kubelet killed for a failed liveness or startup probe (a hang, a
@@ -45,7 +45,7 @@ groups:
           summary: "{{ $labels.namespace }} {{ $labels.pod }}: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
           runbook: "docs/OPERATIONS.md → A service exited"
       - alert: Panics
-        # A panic anywhere: a handler (ryft_http_panics_total, answered 500), an event
+        # A panic anywhere (D173, D174): a handler (ryft_http_panics_total, answered 500), an event
         # handler (ryft_event_handler_panics_total, retried) or a service's own goroutine
         # (ryft_goroutine_panics_total, after which the service exits 2). The terms are
         # joined with `or`, not `+`: a sum would be empty as soon as one counter has no

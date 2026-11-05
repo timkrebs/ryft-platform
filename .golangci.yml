@@ -21,7 +21,7 @@ linters:
     - sqlclosecheck   # unclosed rows / statements
     - unconvert       # redundant conversions
     - usestdlibvars   # http.MethodGet over "GET", etc.
-    - revive          # exported identifiers and package comments only (rules below)
+    - revive          # exported identifiers and package comments only (rules below; D164)
   settings:
     revive:
       # Listed explicitly: revive's default set adds unrelated findings.
@@ -38,7 +38,7 @@ linters:
           deny:
             - pkg: github.com/timkrebs/ryft/internal/logx/logcheck
               desc: test-only (D114)
-        goleak-tests-only:
+        goleak-tests-only:  # D171
           files: ["!$test"]
           deny:
             - pkg: go.uber.org/goleak

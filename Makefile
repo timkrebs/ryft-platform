@@ -237,7 +237,7 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check. Then the decision references, which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
+# map check. Then the decision references (D165), which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
 # exits 0 unless it cannot work).
 # The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
 # different findings, so a mismatch is said out loud before the run.
@@ -251,7 +251,7 @@ lint:
 	./scripts/pkgmap.sh --check
 	./scripts/decision_refs.sh
 
-# After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
+# After editing docs/API.md (D167): the tests that read it (examples, Errors tables, quoted messages).
 # docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.
 check-api-doc:
 	cd backend && go test -count=1 -run 'APIDoc|DocChecker' ./internal/model/ ./internal/httpx/ ./internal/gate/

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof that a split of one Go package into several files (J8, a pure move) changed nothing but where the code
+# Proof that a split of one Go package into several files (J8, a pure move, D176) changed nothing but where the code
 # lives. Compares the package at a git ref with the working tree:
 #   1. `go doc -all -u` is the same once the entries of its CONSTANTS and VARIABLES sections are sorted (go doc
 #      lists them in file order, so a split reorders them; types, functions and methods come sorted);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Load baseline against the LOCAL compose stack (make up): 50 synthetic users, each syncs one full day of
+# Load baseline (D166) against the LOCAL compose stack (make up): 50 synthetic users, each syncs one full day of
 # Apple-Watch-like records, then reads GET /v1/days over 30 days. k6 runs in a container (podman or docker, $CONTAINER
 # as in the Makefile) pinned by digest, on the compose network, so the numbers are not the port-forward's.
 #   make up && make load            # a warm-up run, then 3 measured runs; prints a table, exits 1 above 1 % errors
