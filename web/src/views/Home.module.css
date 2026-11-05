@@ -41,6 +41,14 @@
   text-transform: uppercase;
 }
 
+.meta span {
+  /* One line each, in the fallback font too: a wrap that undoes itself at the swap is CLS. */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .meta span:nth-child(2) {
   text-align: center;
 }
@@ -58,7 +66,10 @@
 }
 
 .title span {
+  /* One line each, whatever font paints first: the hero's height then never moves when
+     Inter swaps in (the fallback is metric-matched, but not at 144 px with −0.07 em). */
   display: block;
+  white-space: nowrap;
 }
 
 .heroGrid {
@@ -130,6 +141,10 @@
   .heroFigure {
     order: -1;
     width: min(100%, 260px);
+  }
+
+  .meta {
+    font-size: var(--web-caption);
   }
 
   .meta span:nth-child(2) {
