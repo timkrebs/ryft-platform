@@ -11,7 +11,13 @@ D-F, D-G and D-H take the next numbers with the PRs that implement them.
 **Status:** proposal, as written when `main` ended at D152. Section 13 lists the decisions the user has to make.
 The entries proposed in section 12 are numbered as the note above says (PR1's are D153-D158).
 
-**Status as built (2026-11-05).** PR1 (#126), PR2 (#127) and PR3 (#128) are merged and live. The decisions as taken
+**Status as built (2026-11-05).** PR1 (#126) and PR2 (#127) are merged and pinned with the services at `dc344e1`
+(#134); PR3 (#128) is merged and pinned (#138, web `bb74830`). Confirmed by the owner on 2026-11-05 (pasted output):
+the web pods rolled, `/admin` answers `200` with the admin CSP and `no-store`, `/` keeps `connect-src 'none'`, the api
+rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the preflight `204` with `access-control-allow-origin:
+https://ryftapp.de`), and the operator's sign-in on the page worked. Not verified: the V-MFA-1 result (not recorded),
+`mfa_required` after 12 h on the live project, the effect of `scope=global` on other devices, the lost-phone runbook.
+The decisions as taken
 are D153-D161 and **D162** (the page) in `docs/DECISIONS.md`, and **web D15** (document, script, CSP), **web D16**
 (`sessionStorage`) and **web D17** (forms, two origins, English-only) in `web/docs/DECISIONS.md`; where this note
 differs from them, they win. D-G is D162 (with web D15-D17); D-H (sending by email) is v2 and has no number. The
@@ -930,7 +936,8 @@ D100 and D101 are untouched.
    - MFA makes a correct password worth nothing.
    - **V-MFA-1 (blocking user check):** with an aal1 session of an account that has a verified
      factor, enrolling another factor must fail. Additionally set *Maximum enrolled factors* to **1**
-     (`max_enrolled_factors`, project-wide; the app uses no MFA), so an attacker with the password
+     (project-wide; the app uses no MFA; *as built*: GoTrue checks this count before the aal, so with the
+     limit at 1 the refusal is `422 too_many_enrolled_mfa_factors`, see §11 step 4), so an attacker with the password
      cannot add their own factor.
    - The first enrolment happens **before** the role and the row are granted (§11), so there is no
      window in which the admin account has a role but no factor.
@@ -1025,8 +1032,11 @@ flowchart LR
 4. **V-MFA-1:** sign in again with the password only, stop at the challenge screen, and try to enrol
    another factor (the page offers no button: web-engineer provides a one-off devtools snippet in the
    PR, or `curl` with the aal1 token against `POST /auth/v1/factors`). It **must** be refused. *As built:* the
-   snippets are in PR #128's body and in `OPERATIONS.md` → Beta → Admin sign-in; the expected answer is `403`
-   with `error_code` `insufficient_aal`.
+   snippets are in PR #128's body and in `OPERATIONS.md` → Beta → Admin sign-in (corrected there). GoTrue checks
+   the factor count before the aal (`validateFactors`, `internal/api/mfa.go`, as read in the review of #139), so
+   with *Maximum enrolled factors* at 1 the pass is `422 too_many_enrolled_mfa_factors`; `403 insufficient_aal`
+   (the aal check itself) appears only with a limit of 2 or more (an optional run before lowering it to 1); `200`
+   means stop; anything else is inconclusive.
 5. SQL editor, as owner (both statements by **id**, not by email):
 
    ```sql

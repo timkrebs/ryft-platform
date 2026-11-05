@@ -1736,9 +1736,9 @@ Every namespace starts with `default-deny` (no ingress, no egress) and `allow-dn
 | Workload | In | Out |
 | --- | --- | --- |
 | ingest, api | 8080 from Traefik in `kube-system` (and from the PostSync smoke pod in `ryft-smoke`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | RabbitMQ (`ryft-rabbitmq`, 5671), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
-| scoring | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 to public addresses |
-| notify | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
-| web (`ryft-web`) | 8080 from Traefik | nothing |
+| scoring | 9090 from `monitoring` (and the VPC range on EKS); 8080 from the PostSync smoke pod in `ryft-smoke` (readiness) | RabbitMQ (5671), TCP 5432 to public addresses |
+| notify | 9090 from `monitoring` (and the VPC range on EKS); 8080 from the PostSync smoke pod in `ryft-smoke` (readiness) | RabbitMQ (5671), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
+| web (`ryft-web`) | 8080 from Traefik in `kube-system` | nothing |
 | rabbitmq | 5671 from the `ingest`, `scoring`, `api` and `notify` pods, each in its own namespace; 15671 from the Topology Operator; 15692 (metrics) from the VPC range; the Erlang ports from its own nodes | its own nodes, the Kubernetes API (peer discovery) |
 | migrate | nothing | TCP 5432 to public addresses |
 | postgres (`local-postgres`) | 5432 from the five client namespaces and the backup pods | nothing |
@@ -2023,13 +2023,25 @@ email* and *Secure email change* on), and `make alerts-apply` must have run (abo
    says "This account is not an operator account." and ends this session only (`scope=local`): expected, the
    account has no role yet.
 3. **V-MFA-1** (blocking): with an **aal1** session of this account, which now has a verified factor, enrolling
-   a second factor must be refused (`403`, `error_code` `insufficient_aal`). Either way is enough:
+   a second factor must be refused. **Which refusal you get depends on the factor limit**, because GoTrue checks
+   the count first (`validateFactors` in its `internal/api/mfa.go`, as read in the review of #139; not run against
+   the project here):
+   - *Maximum enrolled factors* is **1** (the setting this page needs): **pass** = `422`, `error_code`
+     `too_many_enrolled_mfa_factors`. That shows the limit holds; it does not reach the aal check.
+   - The limit is **2 or more**: **pass** = `403`, `error_code` `insufficient_aal` (the aal check itself).
+   - `200`: **fail**. Stop, delete the factor the answer names (below), and do not grant the role.
+   - Anything else (a `401` from a failed sign-in, a `429`, a `5xx`, another `error_code`): **inconclusive**; fix
+     the cause and run it again.
+
+   Optional, to test the aal check itself: set the limit to 2, run the probe (expect `403 insufficient_aal`), set
+   it back to 1 and run it again (expect `422 too_many_enrolled_mfa_factors`). Either way below is enough:
    - Devtools on `https://ryftapp.de/admin`: sign in with the password and stop at "Enter your code" (the tab now
      holds the aal1 session), then in the console (the page's CSP allows exactly this origin and path; put in the
      two values of `web/config/admin.json`):
      ```js
      (async () => {
-       const s = JSON.parse(sessionStorage.getItem('ryft.admin.session'));
+       const s = JSON.parse(sessionStorage.getItem('ryft.admin.session') ?? 'null');
+       if (!s?.access_token) return console.log('no session in this tab: sign in and stop at "Enter your code"');
        const r = await fetch('<supabaseUrl>/auth/v1/factors', {
          method: 'POST',
          headers: {
@@ -2042,20 +2054,30 @@ email* and *Secure email change* on), and `make alerts-apply` must have run (abo
        console.log(r.status, await r.text());
      })();
      ```
-   - `curl` from the repository root (the password is read without echo and stays out of the shell history):
+     After a `200`, delete it from the same console with `fetch('<supabaseUrl>/auth/v1/factors/<id>', { method:
+     'DELETE', headers: { apikey: '<supabaseKey>', Authorization: `Bearer ${s.access_token}` } })` (read `s` again
+     as above).
+   - `curl` from the repository root. The password is read without echo, stays out of the shell history and off
+     every command line (`printf` is a shell builtin; `jq` reads it from stdin):
      ```bash
      KEY=$(jq -r .supabaseKey web/config/admin.json)
      AUTH=$(jq -r .supabaseUrl web/config/admin.json)/auth/v1
      read -r EMAIL; read -rs PASSWORD
-     TOKEN=$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}' |
-       curl -s "$AUTH/token?grant_type=password" -H "apikey: $KEY" -H 'Content-Type: application/json' -d @- |
+     TOKEN=$(printf '%s' "$PASSWORD" | jq -Rs --arg e "$EMAIL" '{email: $e, password: .}' |
+       curl -s "$AUTH/token?grant_type=password" -H "apikey: $KEY" -H 'Content-Type: application/json' --data-binary @- |
        jq -r .access_token)
-     curl -s -w '\n%{http_code}\n' "$AUTH/factors" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN" \
-       -H 'Content-Type: application/json' -d '{"factor_type":"totp","friendly_name":"v-mfa-1-probe"}'
-     unset PASSWORD TOKEN
+     unset PASSWORD
+     if [ -z "$TOKEN" ] || [ "$TOKEN" = null ]; then
+       echo 'sign-in failed: no token, so the probe would prove nothing'
+     else
+       curl -s -w '\n%{http_code}\n' "$AUTH/factors" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN" \
+         -H 'Content-Type: application/json' -d '{"factor_type":"totp","friendly_name":"v-mfa-1-probe"}'
+     fi
+     # only after a 200, before the unset: the id is the answer's "id"
+     # curl -s -X DELETE "$AUTH/factors/<id>" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN"
+     unset TOKEN
      ```
-   A `200` is a failure: stop, delete that unverified factor (`DELETE $AUTH/factors/<id>` with the same token), and
-   do not grant the role. Record the result and the date in STATUS.md.
+   Record the answer (status and `error_code`), the factor limit it ran under and the date in STATUS.md.
 4. **Grant the role and the row** with the two SQL statements above (as owner, by id).
 5. **Sign in again** on the page (the role is only in tokens issued after the update): password, then the code;
    the Invites list loads.
@@ -2063,12 +2085,19 @@ email* and *Secure email change* on), and `make alerts-apply` must have run (abo
 **Using the page.** The session lives in that tab's `sessionStorage` and is cleared when the tab leaves `/admin`
 (web D16): closing the tab, going to another page, typing a URL **and a browser reload or pull to refresh** sign you
 out (password and code again, about 20 seconds); switching sections (`#users`, `#audit`) does not. The page asks for
-the code again when the api answers `mfa_required` (the TOTP is older than 12 hours). **Sign out ends every
-session of that account (`scope=global`)**, on every device, not only this tab (access tokens already issued
-live out their hour, so revoking at once is the `admin_accounts` row); so does *Use another account* on
-the code screens. "Not an operator account" and a second `401` end only the page's own session (`scope=local`). The Audit
-tab shows the admin calls of the last 7 days (read-only); flag changes, merge, user detail and resync-hint stay
-with the key and the scripts. A lost phone: the runbook below.
+the code again when the api answers `mfa_required` (the TOTP is older than 12 hours; that path is tested against
+the e2e stub only, **not verified** on the live project). **Sign out ends every session of that account
+(`scope=global`)**, not only this tab (access tokens already issued live out their hour, so revoking at once is the
+`admin_accounts` row); so does *Use another account* on the code screens. That other devices are signed out is
+GoTrue's documented behaviour, **not verified** here. "Not an operator account" and a second `401` end only the page's
+own session (`scope=local`). The Audit tab shows the admin calls of the last 7 days (read-only); flag changes, merge,
+user detail and resync-hint stay with the key and the scripts. A lost phone: the runbook below (**not verified**: no run of
+it is recorded).
+
+**Evidence that the page works in production:** merged (#128), pinned (#138, web `bb74830`), confirmed by the owner on
+2026-11-05 (pasted output): the web pods rolled, `/admin` answers `200` with the admin CSP and `Cache-Control:
+no-store`, `/` keeps `connect-src 'none'`, the api rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the `OPTIONS`
+preflight `204` with `access-control-allow-origin: https://ryftapp.de`), and the operator's sign-in on the page worked.
 
 **Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
 a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
