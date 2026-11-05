@@ -246,8 +246,17 @@ EOF
 # ---------------------------------------------------------------------------------------------
 # Argo CD
 
+# adm_full_argocd [label [force]]: the Helm release of Argo CD with argocd.tf's values (install or upgrade).
+# "force" adds --force-conflicts. The stand-in admin password (adm_full_argocd_login) is written with
+# kubectl, so the field manager kubectl-patch owns .data.admin.password and .data.admin.passwordMtime
+# of argocd-secret, which argocd.tf's values (argocdServerAdminPassword) also set, and Helm 4's
+# server-side apply refuses a second run over them. In production Helm owns those fields and nothing
+# patches them, so the conflict is the harness's own: the upgrade takes the fields back and the login
+# patches them again afterwards. The stage tests that P12 does not refuse the upgrade, not Helm's field
+# ownership.
 adm_full_argocd() {
-  local repo ver label=${1:-full-argocd}
+  local repo ver label=${1:-full-argocd} force=${2:-} flags=()
+  [ "$force" = force ] && flags+=(--force-conflicts)
   if [ -z "${ARGO_VALUES:-}" ]; then rec "$label" FAIL "no values of argocd.tf (terraform is needed in the full mode)"; return 1; fi
   repo=$(chart_repo argocd); ver=$(chart_version argocd)
   cat > "$WORK/argocd-e2e-values.yaml" <<EOF
@@ -257,7 +266,7 @@ server:
   ingress:
     enabled: false
 EOF
-  if hc upgrade --install argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -f "$WORK/argocd-e2e-values.yaml" --wait --timeout 10m >"$WORK/log/argocd.out" 2>&1; then
+  if hc upgrade --install argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -f "$WORK/argocd-e2e-values.yaml" ${flags[@]+"${flags[@]}"} --wait --timeout 10m >"$WORK/log/argocd.out" 2>&1; then
     rec "$label" PASS "argo-cd $ver installed with argocd.tf's values$([ "${NARROWED_RBAC:-0}" = 1 ] && echo " (T12-f's narrowed ClusterRoles, respectRBAC strict, ApplicationSet at 0)" || echo " (this tree: the chart's default ClusterRoles)"); stand-ins: no Ingress, the admin password"
   else
     rec "$label" FAIL "helm: $(tail -6 "$WORK/log/argocd.out" | cut -c1-300)"
@@ -577,8 +586,30 @@ adm_full_claim_i() {
   fi
 }
 
+# claim-m-native: the source AdmissionBindingMissing / NotDenying read in this tree (deploy/grafana/alerts),
+# kube-state-metrics' own collector for the bindings (v2.20+, chart RBAC included), asked of the cluster
+# the run is on: one kube_validatingadmissionpolicybinding_info series per ryft-* binding that exists, and
+# a live-action series for the binding ryft-vso.
+# It needs the pod of the KSM release of adm_full_claim_m.
+adm_full_ksm_native() {
+  local m have want i
+  want=$(kc get validatingadmissionpolicybindings -o name 2>/dev/null | grep -c '/ryft-')
+  for i in 1 2 3 4 5 6; do   # the collector lists the bindings a moment after the pod is ready
+    m=$(kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" 2>&1)
+    have=$(printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_info{' | grep -c 'validatingadmissionpolicybinding="ryft-')
+    { [ "$have" = "$want" ] && [ "$want" -gt 0 ]; } && break
+    sleep 5
+  done
+  if [ "${want:-0}" -gt 0 ] && [ "$have" = "$want" ] && printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_validation_action{' | grep -q 'validatingadmissionpolicybinding="ryft-vso".*action="[A-Za-z]*"'; then
+    rec "claim-m-native" PASS "kube-state-metrics' native collector exports $have kube_validatingadmissionpolicybinding_info series for the $want ryft-* bindings of the cluster (the alert AdmissionBindingMissing counts them against 13) and the live action of ryft-vso: $(printf '%s\n' "$m" | grep '^kube_validatingadmissionpolicybinding_validation_action{' | grep 'validatingadmissionpolicybinding="ryft-vso"' | tr '\n' ' ' | cut -c1-200)"
+  else
+    rec "claim-m-native" FAIL "the native collector exports $have info series for $want ryft-* bindings, or none for ryft-vso's action: $(printf '%s\n' "$m" | grep 'validatingadmissionpolicybinding' | head -3 | cut -c1-300)"
+  fi
+}
+
 # Claim m: kube-state-metrics custom-resource-state can export ValidatingAdmissionPolicyBinding (name,
 # policy, the intended action label, validationActions), given rbac.extraRules for list/watch.
+# DISPROVED (INFO below); adm_full_ksm_native checks the collector the tree uses instead.
 adm_full_claim_m() {
   local out
   cat > "$WORK/ksm-values.yaml" <<'EOF'
@@ -611,17 +642,18 @@ selfMonitor: { enabled: false }
 resources: { requests: { cpu: 10m, memory: 32Mi } }
 EOF
   kc create namespace ksm >/dev/null 2>&1
-  if ! hc upgrade --install ksm kube-state-metrics --repo https://prometheus-community.github.io/helm-charts --version 8.6.0 --namespace ksm -f "$WORK/ksm-values.yaml" --set 'collectors={namespaces}' --wait --timeout 5m >"$WORK/log/ksm.out" 2>&1; then
+  if ! hc upgrade --install ksm kube-state-metrics --repo https://prometheus-community.github.io/helm-charts --version 8.6.0 --namespace ksm -f "$WORK/ksm-values.yaml" --set 'collectors={validatingadmissionpolicybindings}' --wait --timeout 5m >"$WORK/log/ksm.out" 2>&1; then
     rec "claim-m" FAIL "helm install of kube-state-metrics: $(tail -3 "$WORK/log/ksm.out" | cut -c1-300)"
     return
   fi
+  adm_full_ksm_native
   out=$(kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" 2>&1 | grep '^ryft_admission_binding_action' )
   if printf '%s' "$out" | grep -q 'action="Deny"' && printf '%s' "$out" | grep -q 'policy="ryft-vso"'; then
     rec "claim-m" PASS "kube-state-metrics custom-resource-state exports the bindings ($(printf '%s\n' "$out" | grep -c 'binding=')  series, e.g. $(printf '%s\n' "$out" | grep 'binding="ryft-vso"' | tr '\n' ' ' | cut -c1-260))"
   elif kc -n ksm logs deploy/ksm-kube-state-metrics 2>&1 | grep -q "no matching CRD found for configured GVK"; then
     # Not a failure of this run: the claim of the design is wrong. Recorded as INFO so the run stays usable
     # as a gate; it turns into a PASS the day kube-state-metrics can export built-in kinds.
-    rec "claim-m" INFO "DISPROVED with kube-state-metrics 8.6.0 (v2.20.0): custom-resource-state only exports CustomResourceDefinitions (\"no matching CRD found for configured GVK admissionregistration.k8s.io/v1 ValidatingAdmissionPolicyBinding\"), so rbac.extraRules cannot make it export the bindings. T12-e needs another source (k8s-manifest-tail with the bindings in its object list and a log alert, or an exporter of its own)"
+    rec "claim-m" INFO "DISPROVED with kube-state-metrics 8.6.0 (v2.20.0): custom-resource-state only exports CustomResourceDefinitions (\"no matching CRD found for configured GVK admissionregistration.k8s.io/v1 ValidatingAdmissionPolicyBinding\"), so rbac.extraRules cannot make it export the bindings. The source in this tree is KSM's native collector (claim-m-native)"
   else
     rec "claim-m" FAIL "no ryft_admission_binding_action series for the bindings: $(printf '%s' "$out" | head -3 | cut -c1-300) $(kc -n ksm logs deploy/ksm-kube-state-metrics 2>&1 | tail -3 | cut -c1-300)"
   fi
@@ -700,7 +732,7 @@ adm_full_argo_upgrade() {
   since=$(adm_now)
   # (the hook's delete policy is before-hook-creation: a Job of this upgrade is a new object, another UID)
   uid0=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.metadata.uid}' 2>/dev/null)
-  adm_full_argocd "$label-helm" || return 1
+  adm_full_argocd "$label-helm" force || return 1
   uid1=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.metadata.uid}' 2>/dev/null)
   ok=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.status.succeeded}' 2>/dev/null)
   if [ -n "$uid1" ] && [ "$uid1" != "$uid0" ] && [ "$ok" = 1 ]; then
@@ -712,26 +744,24 @@ adm_full_argo_upgrade() {
   adm_full_p12_stage "$label" "$since" "$held"
 }
 
-# Claim o: do access reviews reach validating admission at all? One SelfSubjectAccessReview as the
-# controller (what resource.respectRBAC: strict makes it do per resource type): P12's rule 5 admits it.
-# Then the proof that admission saw it: the same request as argocd-server, which rule 3 refuses. A cluster
-# where access reviews bypass admission admits both, which is recorded as INFO (rule 5's entry for the
-# reviews is then dead but harmless).
+# Claim o was DISPROVED by the first kind run: access reviews (SelfSubjectAccessReview and kin) do not
+# reach validating admission, so P12 has no entry for them. What stays is a canary: the request the
+# controller asks per resource type under resource.respectRBAC: strict, and the same one as argocd-server,
+# with P12 in Deny. Neither may be refused by ryft-argo-scope. If one is, admission sees access reviews on
+# this Kubernetes version and the controller would be refused its own reviews: rule 5 needs an
+# authorization.k8s.io entry (create of the access reviews) again.
 adm_full_claim_o() {
-  local held=$1 since ctl srv msg3
-  msg3="P12: argocd-server writes only Applications and events in argocd"
+  local held=$1 since ctl srv
   since=$(adm_now)
   ctl=$(kca "$ARGO_CTRL" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
   adm_full_p12_stage "full-ssar" "$since" "$held"
   srv=$(kca "$ARGO_SRV" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
-  if ! [[ $ctl =~ ^(yes|no)($|\ ) ]]; then
-    rec "claim-o" FAIL "a SelfSubjectAccessReview as the application controller did not answer yes or no (P12 rule 5 admits access reviews): $(printf '%s' "$ctl" | cut -c1-300)"
-    return 1
-  fi
-  if printf '%s' "$srv" | grep -qF "with binding 'ryft-argo-scope' denied request: $msg3"; then
-    rec "claim-o" PASS "validating admission sees access reviews: a SelfSubjectAccessReview as the application controller was admitted (answer: ${ctl%% *}), the same request as argocd-server was refused by ryft-argo-scope (rule 3). Rule 5's entry for the reviews is live"
+  if printf '%s%s' "$ctl" "$srv" | grep -qF "with binding 'ryft-argo-scope' denied request"; then
+    rec "claim-o-canary" FAIL "access reviews now reach validating admission and P12 refuses them (controller: $(printf '%s' "$ctl" | cut -c1-200); server: $(printf '%s' "$srv" | cut -c1-200)): rule 5 needs an entry for the access reviews again"
+  elif ! [[ $ctl =~ ^(yes|no)($|\ ) ]]; then
+    rec "claim-o-canary" FAIL "a SelfSubjectAccessReview as the application controller did not answer yes or no: $(printf '%s' "$ctl" | cut -c1-300)"
   else
-    rec "claim-o" INFO "DISPROVED: access reviews do not reach validating admission here: argocd-server's SelfSubjectAccessReview was not refused by ryft-argo-scope ($(printf '%s' "$srv" | cut -c1-160)). Rule 5's entry for the reviews is dead code, harmless"
+    rec "claim-o-canary" PASS "claim o stays DISPROVED: neither the controller's nor argocd-server's SelfSubjectAccessReview was refused by ryft-argo-scope (controller: ${ctl%% *}, server: ${srv%% *}), so access reviews do not reach validating admission and P12 has no entry for them"
   fi
 }
 

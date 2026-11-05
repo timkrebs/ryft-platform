@@ -219,9 +219,10 @@ ARGO_CTRL=$CTRL
 SSAR_CTL="yes" SSAR_SRV=""
 kca() { case "$1" in "$ARGO_CTRL") printf '%s\n' "$SSAR_CTL" ;; "$ARGO_SRV") printf '%s\n' "$SSAR_SRV" ;; esac; return 0; }
 co() { : > "$RESULTS"; adm_full_claim_o "" || true; }
-SSAR_CTL=no SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o PASS "the controller answered, the server was refused: admission sees access reviews"
-SSAR_CTL=yes SSAR_SRV=yes; co; expect claim-o INFO "the server's review was not refused: admission does not see them"
-SSAR_CTL=$(den ryft-argo-scope "P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render"); SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o FAIL "the controller's review refused"
+SSAR_CTL=no SSAR_SRV=yes; co; expect claim-o-canary PASS "neither review was refused: access reviews bypass validating admission"
+SSAR_CTL=yes SSAR_SRV=$(den ryft-argo-scope "$MSG3"); co; expect claim-o-canary FAIL "the server's review was refused: admission sees access reviews"
+SSAR_CTL=$(den ryft-argo-scope "P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render"); SSAR_SRV=yes; co; expect claim-o-canary FAIL "the controller's review refused"
+SSAR_CTL="error: the server could not find the requested resource" SSAR_SRV=yes; co; expect claim-o-canary FAIL "the controller's review gave no answer"
 
 # ---- adm_full_argo_restart (claim p) ----------------------------------------------------------------------------------------------
 RV=100 RV_AFTER=100 ROLL_RC=0
@@ -246,7 +247,7 @@ rr 100 101; expect claim-p FAIL "argocd-secret written during the restart"
 ROLL_RC=1; rr 100 100; expect r FAIL "the rollout did not finish"; ROLL_RC=0
 
 # ---- adm_full_argo_upgrade: the redis-secret-init hook ran if the Job is a new object ------------------------------------------------
-adm_full_argocd() { rec "$1" PASS "stub"; }
+adm_full_argocd() { echo "${2:-}" > "$tmp/argocd_force"; rec "$1" PASS "stub"; }
 UID0=u1 UID1=u2 SUCC=1
 kc() {
   case "$*" in
@@ -257,6 +258,7 @@ kc() {
 }
 up() { : > "$RESULTS"; : > "$tmp/uidreads"; adm_full_argo_upgrade "u" "" || true; }
 up; expect u-hook PASS "a new hook Job that succeeded"
+[ "$(cat "$tmp/argocd_force")" = force ] || fail "the upgrade must pass force (the harness's kubectl-patch owns the admin password)"
 UID1=u1; up; expect u-hook INFO "the same Job as before the upgrade: the hook did not run"
 UID0="" UID1=u2 SUCC=0; up; expect u-hook INFO "a new Job that did not succeed"
 

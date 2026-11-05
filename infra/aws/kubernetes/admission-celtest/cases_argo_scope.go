@@ -140,13 +140,8 @@ func runArgoScope(c *chart) {
 	del("P12 controller deletes cluster-admin", argoCtl, mk("rbac.authorization.k8s.io/v1", "ClusterRole", "", "cluster-admin"), r5)
 	crt("P12 controller creates an operators' webhook configuration", argoCtl, find("ValidatingWebhookConfiguration", "", "cluster-operator-validating-webhook-configuration"))
 	crt("P12 controller creates a webhook configuration of another name", argoCtl, set(find("ValidatingWebhookConfiguration", "", "cluster-operator-validating-webhook-configuration"), "metadata/name", "evil"), r5, "P6")
-	ssar := func() map[string]any {
-		return map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"verb": "list", "resource": "secrets"}}}
-	}
-	crt("P12 controller creates a SelfSubjectAccessReview", argoCtl, ssar())
-	crt("P12 controller creates a SelfSubjectRulesReview", argoCtl, map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectRulesReview", "spec": map[string]any{"namespace": "ryft-api"}})
-	crt("P12 controller creates a SubjectAccessReview", argoCtl, map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SubjectAccessReview", "spec": map[string]any{"user": "x"}}, r5)
-	crt("P12 server creates a SelfSubjectAccessReview", argoSrv, ssar(), r3)
+	// (SelfSubjectAccessReview, SelfSubjectRulesReview and SubjectAccessReview creates have no case: access reviews
+	// never reach validating admission, claim o of the kind run, so P12 neither admits nor refuses them)
 
 	// ---- rule 1: subresources and CONNECT, whoever the account
 	scale := map[string]any{"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": map[string]any{"name": "api", "namespace": "ryft-api"}, "spec": map[string]any{"replicas": float64(3)}}
@@ -313,7 +308,9 @@ func runArgoScope(c *chart) {
 		delete(o["metadata"].(map[string]any), "name")
 		return o
 	}(), r3)
-	raw("P12 controller creates an object without any metadata (access review)", Req{User: argoCtl, Op: "CREATE", Obj: ssar()})
+	// (the shape of an access review: no metadata at all; P12 must refuse it by rule 5, not fail with a CEL error)
+	noMeta := map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"verb": "list", "resource": "secrets"}}}
+	raw("P12 controller creates an object without any metadata", Req{User: argoCtl, Op: "CREATE", Obj: noMeta}, r5)
 	raw("P12 controller deletes a cluster-scoped object with only the old object", Req{User: argoCtl, Op: "DELETE", Old: find("ClusterRole", "", "messaging-topology-metrics-reader")})
 
 	for _, t := range ts {

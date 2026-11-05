@@ -100,8 +100,6 @@ P12 controller creates a ServiceAccount in default
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
 P12 controller creates a StorageClass
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
-P12 controller creates a SubjectAccessReview
-    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates a generateName ConfigMap in cert-manager
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
 P12 controller creates a webhook configuration of another name
@@ -116,6 +114,8 @@ P12 controller creates an ApplicationSet
     ryft-argocd: P7: ApplicationSets are not allowed.
 P12 controller creates an Event in kube-system
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in ryft-* and rabbitmq-system, and in argocd only Applications and events.
+P12 controller creates an object without any metadata
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 P12 controller creates another Namespace
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
@@ -233,8 +233,6 @@ P12 server creates a ConfigMap in ryft-api
 P12 server creates a Lease in kube-system
     ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 P12 server creates a PersistentVolume
-    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
-P12 server creates a SelfSubjectAccessReview
     ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 P12 server creates an APIService
     ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).

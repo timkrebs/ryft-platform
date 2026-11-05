@@ -21,7 +21,8 @@ docs/work/2026-10-23-admission/p12-argo-scope.md; D-entry "P12".
        events.
      5 the controller, cluster-scoped: Namespaces argoScope.namespaceObjects (no DELETE), CRDs of
        argoScope.crdGroups (no DELETE), ClusterRoles and ClusterRoleBindings with an operators
-       prefix, the operators' webhook configurations, and the access reviews (CREATE).
+       prefix, and the operators' webhook configurations. (No entry for access reviews:
+       they never reach validating admission, claim o of the kind run.)
  - Every optional request field is read through has() (the API server omits empty fields:
    namespace of a cluster-scoped object, name of a generateName create, subResource, userInfo
    of an anonymous request), and object / oldObject are touched only where the operation has
@@ -121,9 +122,7 @@ spec:
          {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.name.startsWith(p))) ||
         (variables.grp == 'admissionregistration.k8s.io' &&
          variables.res in ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations'] &&
-         variables.name in {{ .Values.operators.webhookConfigurations | toJson }}) ||
-        (variables.grp == 'authorization.k8s.io' && request.operation == 'CREATE' &&
-         variables.res in ['selfsubjectaccessreviews', 'selfsubjectrulesreviews'])
+         variables.name in {{ .Values.operators.webhookConfigurations | toJson }})
     # the server's FIRST server.secretkey (rule 3): an UPDATE of the Secret whose old object has data
     # without the key, whose new object adds the key and changes nothing else (no value, no label,
     # no annotation). It cannot be used while a key exists, i.e. in steady state.
