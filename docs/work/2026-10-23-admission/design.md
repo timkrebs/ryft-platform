@@ -258,8 +258,9 @@ commands, NetworkPolicies, VSO or Argo objects.
   - argocd-server cannot add RBAC (no write on RBAC kinds).
   - **Beside the rules (guards added with #47):** `modules/argocd-values-guard`, a precondition of
     `helm_release.argocd`: `extraObjects` kinds with their one apiVersion, no `{{` anywhere in the values
-    and no line break in a string value (the chart renders many values with `tpl`, and a line break in an
-    allowed value starts another YAML document), no `controller.roleRules`, `createClusterRoles` not false,
+    and the values ASCII only with no control character or escape, except newlines in the health Lua entries
+    (the chart renders many values with `tpl`, and a line break in an allowed value, U+2028, U+2029 and U+0085
+    included, starts another YAML document), `exec.enabled` false, `respectRBAC` strict, no `controller.roleRules`, `createClusterRoles` not false,
     no `configs.rbac`/anonymous login/disabled auth, a key allowlist two levels deep plus the keys of a few
     maps. The release takes the guard's output as its values (`values_yaml`), and a postcondition requires
     exactly that (no `set*`, no second document, no postrender); it is a plan-time check only while the
@@ -267,7 +268,7 @@ commands, NetworkPolicies, VSO or Argo objects.
     run adds `argo-bindings`, `argo-extra-objects` and `argo-inventory` (the whole render counted by kind and
     namespace against an expected table), and `argo-tf-bindings` (a tripwire). A ClusterRoleBinding to
     `cluster-admin` shipped as an extra object, or written in Terraform, passes every check on the two
-    ClusterRoles' rules. Not covered: the content of an object of an expected kind, and a change to the
+    ClusterRoles' rules. Not covered: the values of other allowed keys (reviewed), the content of an object of an expected kind, and a change to the
     guard together with its tests, which only review catches.
 - **Structural options (future D97/D120 decisions, for you; not implemented).** (1) Move the operators'
   ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons: Argo CD

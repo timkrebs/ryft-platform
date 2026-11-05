@@ -815,3 +815,102 @@ run "guard_allows_the_health_customizations_to_be_multi_line" {
     error_message = "the Lua health customizations are the one place for multi-line strings"
   }
 }
+
+# Unicode line breaks: jsonencode writes U+2028 and U+2029 as escapes (no \n in them) and U+0085 raw,
+# and YAML reads all three as line breaks in the values the chart writes unquoted. Built with escapes
+# here so this file stays ASCII.
+run "guard_catches_u2028_in_the_domain" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      global     = { domain = "x.example.com${jsondecode("\"\\u2028\"")}kind: DaemonSet" }
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "control character or an escape")
+    error_message = "U+2028 in global.domain must be caught"
+  }
+}
+
+run "guard_catches_u2029_in_ingressclassname" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server = {
+        clusterRoleRules = { enabled = true }
+        ingress          = { enabled = true, ingressClassName = "traefik${jsondecode("\"\\u2029\"")}kind: ClusterRoleBinding" }
+      }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "control character or an escape")
+    error_message = "U+2029 in ingressClassName must be caught"
+  }
+}
+
+run "guard_catches_u0085_in_the_image_tag" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      global     = { image = { tag = "v3.5.6${jsondecode("\"\\u0085\"")}kind: DaemonSet" } }
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "non-ASCII character")
+    error_message = "U+0085 in global.image.tag must be caught"
+  }
+}
+
+run "guard_catches_a_tab_and_non_ascii_in_the_health_lua" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs = { cm = {
+        "resource.customizations.health.apps_Deployment" = "hs = {}\n\treturn hs\n"
+        "resource.customizations.health.batch_Job"       = "-- caf${jsondecode("\"\\u00e9\"")}\nreturn {}\n"
+        "resource.customizations.health.autoscaling_HPA" = "a${jsondecode("\"\\u2028\"")}b"
+      } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "control character or an escape") && strcontains(join(" ", output.violations), "non-ASCII character")
+    error_message = "a tab, U+2028 and non-ASCII in the Lua health customizations must be caught (only newlines are allowed there)"
+  }
+}
+
+run "guard_catches_a_terminal_and_a_lax_respectrbac" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = {
+      controller = { clusterRoleRules = { enabled = true } }
+      server     = { clusterRoleRules = { enabled = true } }
+      configs    = { cm = { "exec.enabled" = true, "resource.respectRBAC" = "normal" } }
+    }
+  }
+  assert {
+    condition     = strcontains(join(" ", output.violations), "exec.enabled is not false") && strcontains(join(" ", output.violations), "respectRBAC is not strict")
+    error_message = "a terminal in the UI and a respectRBAC that is not strict must be caught"
+  }
+}

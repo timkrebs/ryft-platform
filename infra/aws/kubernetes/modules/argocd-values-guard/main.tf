@@ -12,8 +12,9 @@
 #     allowlist is two levels deep, plus the keys of the maps listed in `allowed_nested` and configs.cm;
 #     below that nothing is looked at.
 #   - the chart renders many values with `tpl`: a `{{` anywhere in the values is refused; a line break in a
-#     string value starts another YAML document in the render: refused except in the health customizations
-#     of configs.cm; each allowed extraObjects kind has its one apiVersion. The kind run counts the whole
+#     value starts another YAML document in the render (U+2028, U+2029 and U+0085 are line breaks too): the
+#     values are ASCII only, with no control character or escape, except newlines in the health
+#     customizations (Lua) of configs.cm; each allowed extraObjects kind has its one apiVersion. The kind run counts the whole
 #     render by (kind, namespace) as the backstop for what these rules miss.
 #   - values_yaml is what the release must use (its postcondition), so what is checked is what Helm gets.
 #
@@ -89,6 +90,16 @@ locals {
     })
   })
 
+  # The health customizations alone: Lua, the one place for newlines.
+  v_health = { for k, x in try(local.v.configs.cm, {}) : k => x if startswith(k, "resource.customizations.health.") }
+
+  # What jsonencode writes for a character that YAML reads as a line break or a control: \n \r \t \f \b,
+  # every \u00XX control, U+2028 and U+2029 (jsonencode writes those two as escapes). U+0085 and the rest
+  # of non-ASCII come out raw, so any non-ASCII is refused as well. A literal backslash is written as two
+  # by jsonencode, so a false positive fails closed.
+  escape_pattern_all    = "\\\\(?:[nrtfb]|u00[01][0-9a-fA-F]|u202[89])"
+  escape_pattern_health = "\\\\(?:[rtfb]|u00[01][0-9a-fA-F]|u202[89])"
+
   # A tuple of objects of different shapes: iterate it as it is (tolist would fail on it).
   extra_objects = try(local.v.extraObjects, [])
 
@@ -103,10 +114,17 @@ locals {
     # apiVersion renders a whole other object, `lookup` reads the cluster). None is wanted: refuse `{{`
     # in the whole tree. (nonsensitive: the tree holds the admin password's hash; the answer is only yes or no.)
     nonsensitive(strcontains(jsonencode(local.v), "{{")) ? ["the values carry a template expression ({{): the chart renders values with tpl, so a value can produce any object or read the cluster"] : [],
-    # A line break inside a string value ends the value in the rendered YAML and starts another document
-    # (ingressClassName or global.domain with "\n---\n<any object>"). The only multi-line strings are the
-    # health customizations (Lua) of configs.cm, which the chart writes as block scalars.
-    nonsensitive(strcontains(jsonencode(local.v_without_health), "\\n")) || nonsensitive(strcontains(jsonencode(local.v_without_health), "\\r")) ? ["a string value holds a line break (outside the health customizations of configs.cm): it would end the value in the rendered YAML and start another document"] : [],
+    # A line break inside a value ends it in the rendered YAML and starts another document
+    # (ingressClassName, global.domain or global.image.tag with "\n---\n<any object>"), and so do U+2028,
+    # U+2029 and U+0085, which the chart writes unquoted. So: ASCII only, no control character or escape,
+    # in keys and values alike, except the newlines of the health customizations (Lua) of configs.cm, which
+    # the chart writes as block scalars (those pass the same rules otherwise).
+    nonsensitive(can(regex("[^\\x00-\\x7f]", jsonencode(local.v)))) ? ["the values carry a non-ASCII character (in a key or a value): U+2028, U+2029 and U+0085 are line breaks in YAML"] : [],
+    nonsensitive(can(regex(local.escape_pattern_all, jsonencode(local.v_without_health)))) || nonsensitive(can(regex(local.escape_pattern_health, jsonencode(local.v_health)))) ? ["a value or key holds a control character or an escape of one (line break, tab, U+2028/2029, u00XX), except newlines in the health customizations of configs.cm: it would end the value in the rendered YAML and start another document"] : [],
+    # Allowed keys whose values switch the narrowed model off: a terminal into pods from the UI, and a
+    # controller that fails on, instead of skipping, the kinds it may not list.
+    try(local.v.configs.cm["exec.enabled"], false) != false ? ["configs.cm exec.enabled is not false: no terminal into pods from the UI"] : [],
+    try(local.v.configs.cm["resource.respectRBAC"], "strict") != "strict" ? ["configs.cm resource.respectRBAC is not strict"] : [],
     [for i, o in local.extra_objects :
       "extraObjects[${i}]: apiVersion \"${try(o.apiVersion, "")}\" is not ${local.extra_object_api_versions[o.kind]} (the one apiVersion of a ${o.kind})"
       if contains(keys(local.extra_object_api_versions), try(o.kind, "")) && try(o.apiVersion, "") != local.extra_object_api_versions[o.kind]
