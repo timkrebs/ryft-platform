@@ -3104,6 +3104,23 @@ Engine, and fails with the changed fields grouped by field.
   the local image store), the git remote (a smart-HTTP server in the cluster, the Applications rewritten
   to it), Ingress status.
 
+> **Amendment (2026-11-04, security review of #47; replaces the wording "waits for ever" in the bullet
+> "Claim i needs one more rule" above).** The first kind run of #47's tree passed claim i without the
+> rule, so "waits for ever" was wrong. What happens: under `resource.respectRBAC: strict` the controller's
+> cache lists each kind in all namespaces; when that is forbidden it asks a self-subject access review
+> for namespace `*`, is denied, and **drops the kind without a log line**. The chart's Role in `argocd`
+> (full rights on Applications there) does not count, and `GetManagedLiveObjs` falls back to a GET by
+> name. Without the cluster-wide `applications.argoproj.io` get, list and watch: a child's change does
+> not refresh the root until its periodic reconcile (about 3 minutes; the run showed the root
+> Progressing for about 6 while every child was Healthy), a child whose file was deleted from git is
+> **not pruned**, and a hand edit of a child is seen only at the root's reconcile. The general pattern:
+> under strict mode any kind without a cluster-wide `list` is silently dropped (no tree, no prune, no
+> log). The rule is now in #47; the check is `kubectl auth can-i list <kind> -A
+> --as=system:serviceaccount:argocd:argocd-application-controller`, which the kind run does for the
+> kinds of the apps (`claim-i-list`). A missing `get` on a rendered kind is a `ComparisonError` (sync
+> status Unknown, `ArgoAppOutOfSync` after 30 minutes, the old release keeps running); a missing write
+> is a failed sync (`ArgoSyncFailed`, critical, after the retries).
+
 ## D152 — The tree under test is code (T12-d)
 
 - **Decision:** the kind run reads a tree (`--repo`, the workflow's `ref`) that kustomize renders,

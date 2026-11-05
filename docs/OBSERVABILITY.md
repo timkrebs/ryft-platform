@@ -293,7 +293,19 @@ The rules are code: `deploy/grafana/alerts/ryft.yaml` (Prometheus format, D85), 
 unit tests in `ryft.test.yaml`. `make alerts-check` runs `promtool check rules`, the tests
 and `mimirtool rules check` (in containers); `make alerts-apply` loads them into the
 stack's ruler with `GRAFANA_PROM_URL`, `GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN` (an
-access policy token with `rules:read` and `rules:write`). Routing is the operator's, in
+access policy token with `rules:read` and `rules:write`). The owner's stack takes at most
+**20 rules per group** (alerts and recording rules alike); a larger group makes the ruler
+refuse the whole load (`per-user rules per rule group limit (limit: 20 actual: 39) exceeded`
+for group `ryft`, 2026-11-05) and nothing is written. So `ryft.yaml` splits its rules by
+theme into `ryft` (the services, HTTP, auth, database, certificates), `ryft-pipeline`
+(dead letters, RabbitMQ, outbox, scoring, sync) and `ryft-ops` (push, accounts and the beta,
+Argo CD, the site's synthetics), next to `ryft-admission`; `admission-intended.yaml` is one
+group, `ryft-admission-intended`. Keep a group at 18 or fewer and open a new one by theme
+when it grows: `make alerts-check` runs `scripts/check_rule_groups.sh` first, which fails
+above 20 (promtool and mimirtool do not know the limit). A load replaces each group it names
+whole and leaves groups it does not name alone, so moving an alert between groups in the
+file is safe, but a renamed or dropped group stays live until it is deleted in Grafana Cloud
+(Alerting → Alert rules) or with `mimirtool rules delete`. Routing is the operator's, in
 Grafana Cloud → Alerting: a contact point with email and the Grafana mobile app, and a
 notification policy for `severity` `critical`, `warning` and `info` (feedback).
 
