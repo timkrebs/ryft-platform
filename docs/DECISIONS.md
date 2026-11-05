@@ -3259,7 +3259,9 @@ Engine, and fails with the changed fields grouped by field.
   statement ignores `email`**, so every open bound code would turn into a code anyone can use. **Before re-pinning an
   older image run** `UPDATE beta_invite_codes SET revoked_at = now(), expires_at = LEAST(COALESCE(expires_at, now()),
   now()) WHERE email IS NOT NULL AND revoked_at IS NULL;` (OPERATIONS → Beta → Rollback of 0033) and make new codes
-  after the roll forward.
+  after the roll forward. The same holds during an ordinary rolling deploy: while pods of the older image still serve,
+  they spend a bound code for any account. **Create the first bound code only after the rollout of the image with
+  this migration is complete** (all api pods on it); a bound code made earlier is revoked with the SQL above.
 - **Erasure:** `DeleteUser` removes the account's `beta_invite_uses` rows and, for a bound code it redeemed, clears
   the code's `email` and `note` (the code identifies the person). `MergeUsers` moves the rows; the merged-away
   account's deletion then clears as above. `beta_invite_uses` appears in no `/v1/me` read and is not in an export:
@@ -3289,8 +3291,8 @@ Engine, and fails with the changed fields grouped by field.
   way. The call is audited with `emails`. Unlike users and feedback there is no second view for the token: the
   invite answer holds no health-derived, device or diagnostic field, so the only sensitive field is the address, and
   the one switch covers it (the token's projection rule: nothing a token does not need, no address unless asked for).
-  The create answer shows the address **as the caller sent it** (stored form); nothing else about an address is
-  returned by `POST`. `note` is free text the operator wrote and is returned as written; it may name the person
+  The create answer shows the address in its **stored form** (trimmed, ASCII lower-cased), not masked, because the
+  caller just sent it; nothing else about an address is returned by `POST`. `note` is free text the operator wrote and is returned as written; it may name the person
   (D161).
 - **Why:** the token path is the browser, and an address that is not on the screen cannot be shoulder-surfed or
   left in a screenshot; the page asks for `?emails=1` because the operator needs the address to match a tester. A

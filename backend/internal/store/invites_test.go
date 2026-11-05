@@ -935,3 +935,68 @@ func TestDeleteUserClearsTheBoundEmailOfItsCode(t *testing.T) {
 		t.Errorf("uses stays the count, the row is gone: %d %d", uses, rows)
 	}
 }
+
+// The 30 days of D161 are pinned from both sides: a code that stopped being redeemable 30 days minus an hour ago
+// keeps its address, one that stopped 30 days plus an hour ago loses it, whichever way it stopped (revoked,
+// expired, used up).
+func TestPurgeInviteEmailsBoundaryIsThirtyDays(t *testing.T) {
+	const age = 30 * 24 * time.Hour
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		stop func(h inviteHarness, code string, at time.Time)
+	}{
+		{"revoked", func(h inviteHarness, code string, at time.Time) {
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET revoked_at = $2, expires_at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"expired", func(h inviteHarness, code string, at time.Time) {
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"used up", func(h inviteHarness, code string, at time.Time) {
+			if _, err := h.redeem(h.user(), code, mustEmail(t, h, code)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_uses SET at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newInviteHarness(t)
+			inside := h.bound(fmt.Sprintf("in%s@example.com", uuid.NewString()[:8]))
+			outside := h.bound(fmt.Sprintf("out%s@example.com", uuid.NewString()[:8]))
+			c.stop(h, inside, time.Now().Add(-age+time.Hour))
+			c.stop(h, outside, time.Now().Add(-age-time.Hour))
+			n, err := h.st.PurgeInviteEmails(ctx, age)
+			if err != nil || n != 1 {
+				t.Fatalf("purge: %d %v, want exactly the one outside", n, err)
+			}
+			has := func(code string) bool {
+				var e *string
+				if err := h.pool.QueryRow(ctx, `SELECT email FROM beta_invite_codes WHERE code = $1`, NormalizeInvite(code)).Scan(&e); err != nil {
+					t.Fatal(err)
+				}
+				return e != nil
+			}
+			if !has(inside) {
+				t.Error("29 days 23 hours: the address is still kept")
+			}
+			if has(outside) {
+				t.Error("30 days 1 hour: the address is cleared")
+			}
+		})
+	}
+}
+
+func mustEmail(t *testing.T, h inviteHarness, code string) string {
+	t.Helper()
+	var e string
+	if err := h.pool.QueryRow(context.Background(), `SELECT email FROM beta_invite_codes WHERE code = $1`, NormalizeInvite(code)).Scan(&e); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}

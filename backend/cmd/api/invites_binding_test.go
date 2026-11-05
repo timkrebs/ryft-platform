@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -282,5 +283,48 @@ func TestPurgeInviteEmailsCountsItsPasses(t *testing.T) {
 	purgeInviteEmailsEvery(ctx2, r.st, quietHandler().log, 10*time.Millisecond)
 	if testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("error")) <= errBefore {
 		t.Error("a failed pass is counted as an error")
+	}
+}
+
+// The wired retention is the 30 days the privacy text will name (D161), end to end through the ticker: a code
+// that stopped being redeemable 29 days 23 hours ago keeps its address, one that stopped 30 days 1 hour ago does not.
+func TestPurgeInviteEmailsWiredToThirtyDays(t *testing.T) {
+	if purgeInviteEmailsAfter != 30*24*time.Hour {
+		t.Fatalf("purgeInviteEmailsAfter = %v, the retention is 30 days (D161, the privacy text)", purgeInviteEmailsAfter)
+	}
+	r := newRedeemer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inside, outside := r.bound("inside@example.com"), r.bound("outside@example.com")
+	for code, ago := range map[string]time.Duration{inside: 30*24*time.Hour - time.Hour, outside: 30*24*time.Hour + time.Hour} {
+		if _, err := r.pool.Exec(ctx, `UPDATE beta_invite_codes SET revoked_at = now() - $2::interval, expires_at = now() - $2::interval WHERE code = $1`,
+			store.NormalizeInvite(code), fmt.Sprintf("%d seconds", int64(ago.Seconds()))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	okBefore := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok"))
+	done := make(chan struct{})
+	go func() { purgeInviteEmailsEvery(ctx, r.st, quietHandler().log, time.Hour); close(done) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok")) < okBefore+1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first pass did not run")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	has := func(code string) bool {
+		var e *string
+		if err := r.pool.QueryRow(context.Background(), `SELECT email FROM beta_invite_codes WHERE code = $1`, store.NormalizeInvite(code)).Scan(&e); err != nil {
+			t.Fatal(err)
+		}
+		return e != nil
+	}
+	if !has(inside) {
+		t.Error("29 days 23 hours: the address is still kept")
+	}
+	if has(outside) {
+		t.Error("30 days 1 hour: the address is cleared")
 	}
 }
