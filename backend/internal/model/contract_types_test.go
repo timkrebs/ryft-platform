@@ -46,6 +46,7 @@ var contractTypes = map[string]reflect.Type{
 	"InvitePost":             reflect.TypeOf(InvitePost{}),
 	"BetaInvite":             reflect.TypeOf(BetaInvite{}),
 	"BetaInviteInput":        reflect.TypeOf(BetaInviteInput{}),
+	"InviteUse":              reflect.TypeOf(InviteUse{}),
 	"FeedbackPost":           reflect.TypeOf(FeedbackPost{}),
 	"Feedback":               reflect.TypeOf(Feedback{}),
 	"AdminUser":              reflect.TypeOf(AdminUser{}),

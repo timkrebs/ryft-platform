@@ -7,6 +7,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// Invite statuses, a closed enum; the first that applies wins (cmd/api inviteStatus).
+const (
+	InviteRevoked = "revoked" // revoked_at is set
+	InviteUsed    = "used"    // uses >= max_uses
+	InviteExpired = "expired" // expires_at is not in the future
+	InviteOpen    = "open"
+)
+
 // BetaInvite is an invite code as the admin routes show it.
 type BetaInvite struct {
 	Code      string     `json:"code"` // RYFT-7K3M-QX9P
@@ -15,6 +23,23 @@ type BetaInvite struct {
 	Uses      int        `json:"uses"`
 	ExpiresAt *time.Time `json:"expires_at"`
 	CreatedAt time.Time  `json:"created_at"`
+	// Email is the address the code is bound to; nil for a code anyone may redeem. The handler masks it
+	// unless ?emails=1 (the create answer shows it as stored).
+	Email     *string     `json:"email"`
+	CreatedBy Actor       `json:"created_by"` // {"kind":"key","id":null} for codes from before 2026-11-05
+	RevokedAt *time.Time  `json:"revoked_at"`
+	Status    string      `json:"status"` // InviteOpen, InviteUsed, InviteExpired or InviteRevoked
+	Link      string      `json:"link"`   // PUBLIC_WEB_URL + /invite/ + the code
+	UsesBy    []InviteUse `json:"uses_by"`
+}
+
+// InviteUse is an account that redeemed a code. Only accounts that still exist are listed.
+type InviteUse struct {
+	UserID       uuid.UUID `json:"user_id"`
+	ShortID      string    `json:"short_id"` // the first 8 hex digits of UserID
+	Email        *string   `json:"email"`    // the account's email, masked unless ?emails=1; nil when it has none
+	PrivateRelay bool      `json:"private_relay"`
+	At           time.Time `json:"at"`
 }
 
 // BetaInviteInput is POST /v1/admin/invites.
@@ -22,6 +47,7 @@ type BetaInviteInput struct {
 	Note      string     `json:"note"`
 	MaxUses   *int       `json:"max_uses"`
 	ExpiresAt *time.Time `json:"expires_at"`
+	Email     *string    `json:"email"` // binds the code to this address (max_uses 1); nil: anyone with the code
 }
 
 // FeedbackBrief is what an operator's Supabase token gets of a Feedback in GET /v1/admin/feedback: the

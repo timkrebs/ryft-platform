@@ -262,6 +262,18 @@ groups:
         annotations:
           summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
           runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      - alert: InviteEmailPurgeFailing
+        # The hourly job that clears the email (and note) of an invite code 30 days after it stopped being
+        # redeemable (D161) keeps failing: three failed passes in three hours is one pod failing every time
+        # (each api pod runs it). The address of someone who only asked for an invite then stays longer than
+        # the privacy text says. Nothing user-visible breaks, so a warning. The api logs "invite email purge
+        # failed" with the cause. Like the admin alerts it reaches Grafana only through the user's manual
+        # alerts apply.
+        expr: sum(increase(ryft_invite_email_purge_total{result="error"}[3h])) >= 3
+        labels: { severity: warning }
+        annotations:
+          summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+          runbook: "docs/OPERATIONS.md → Beta → A code for one person"
 
       # ---- deploys (Argo CD, D94) ---------------------------------------------------
       - alert: ArgoAppDegraded

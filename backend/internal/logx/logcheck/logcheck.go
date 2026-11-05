@@ -149,7 +149,7 @@ type Lines map[string]Keys
 var (
 	clientRequest = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 	routePattern  = regexp.MustCompile(`^(unmatched|([A-Z]+ )?/[A-Za-z0-9/_{}.$-]*)$`)
-	pathPattern   = regexp.MustCompile(`^/[A-Za-z0-9/_.-]*$`)
+	pathPattern   = regexp.MustCompile(`^/[A-Za-z0-9/_.{}-]*$`)
 )
 
 // Standard returns the keys on every line: logx's and the request's. service

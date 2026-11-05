@@ -43,7 +43,7 @@ func newAdminDBLog(t *testing.T, log *slog.Logger, origins ...string) *adminDB {
 	pool := testPool(t)
 	st := store.New(pool)
 	h := quietHandler()
-	h.st, h.log = st, log
+	h.st, h.log, h.binding = st, log, fixedBinding(bindOK)
 	d := &adminDB{t: t, pool: pool, st: st, jwks: newJWKSStub(t, false), op: uuid.New(), op2: uuid.New(), noRow: uuid.New(), tombed: uuid.New(),
 		startedAt: time.Now().Add(-time.Second)}
 	ctx := context.Background()

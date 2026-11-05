@@ -1,11 +1,17 @@
 package main
 
 import (
+	"cmp"
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/gate"
 	"github.com/timkrebs/ryft/internal/httpx"
@@ -70,13 +76,78 @@ func (h *handler) deleteConsent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// inviteEmails answers which email Supabase holds for an account and has confirmed: what a code bound to an
+// email is compared with. "" when the account has none or it is not confirmed; an error when Supabase
+// cannot be asked.
+type inviteEmails interface {
+	VerifiedEmail(ctx context.Context, id uuid.UUID) (string, error)
+}
+
+// VerifiedEmail is the account's email from the Supabase admin API, only when Supabase has confirmed it
+// (email_confirmed_at). Not the token's email claim (a copy, possibly older), not users.email (a copy of that
+// claim) and not user_metadata (the user writes it). Without the admin client (apikey mode, or no
+// SUPABASE_SERVICE_ROLE_KEY) it answers "": a bound code then never redeems.
+func (a *accounts) VerifiedEmail(ctx context.Context, id uuid.UUID) (string, error) {
+	if a == nil || a.admin == nil {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	info, err := a.admin.GetUser(ctx, id)
+	switch {
+	case errors.Is(err, auth.ErrNoAuthUser):
+		return "", nil
+	case err != nil:
+		return "", err
+	case info.EmailConfirmedAt == nil:
+		return "", nil
+	case !store.PrintableASCII(info.Email):
+		// An address with a space, a control character or a non-ASCII byte is never the stored form: refused
+		// as it is, not trimmed into a match.
+		return "", nil
+	}
+	return info.Email, nil
+}
+
+// redeemInvite is POST /v1/me/invite (D159). One 422 for every refusal. An account that has access gets 204 first
+// and nothing is looked up or spent. Supabase is asked only for a code that exists, is open and is bound, and
+// outside any transaction (no row lock is held across the call); if it cannot answer, 503 (the tester sends
+// the same request again).
 func (h *handler) redeemInvite(w http.ResponseWriter, r *http.Request) {
 	var p model.InvitePost
 	if err := httpx.ReadJSON(w, r, &p, httpx.MaxBodyDefault); err != nil {
 		httpx.WriteDecodeError(w, err)
 		return
 	}
-	used, err := h.st.RedeemInvite(r.Context(), userOf(r).ID, p.Code)
+	u := userOf(r)
+	var verified string
+	if !u.BetaAccess {
+		_, bound, err := h.st.BoundInviteEmail(r.Context(), p.Code)
+		if err != nil {
+			httpx.Fail(w, r, err)
+			return
+		}
+		if bound {
+			switch h.bindingState() {
+			case bindOK:
+				if verified, err = h.verifiedEmail(r.Context(), u.ID); err != nil {
+					// The error is the Supabase client's (a status and GoTrue's error_code, or the transport's
+					// cause; never the URL, which holds the user id) and is for the operator's logs only.
+					h.log.WarnContext(r.Context(), "invite email lookup failed", "err", err)
+					h.cannotCheck(w)
+					return
+				}
+			case bindUnknown:
+				// The project's sign-up settings cannot be read: not known whether a "confirmed" address is one.
+				h.cannotCheck(w)
+				return
+			default:
+				// Confirm email is off, or the api cannot ask Supabase: no address counts as confirmed, so the
+				// statement below refuses the bound code with the one 422.
+			}
+		}
+	}
+	used, err := h.st.RedeemInvite(r.Context(), u.ID, p.Code, verified)
 	switch {
 	case errors.Is(err, store.ErrInvalidCode):
 		metrics.InviteRedemptions.WithLabelValues("invalid").Inc()
@@ -94,7 +165,108 @@ func (h *handler) redeemInvite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// cannotCheck is the 503 for a bound code whose account's email cannot be checked now.
+func (h *handler) cannotCheck(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	httpx.WriteError(w, http.StatusServiceUnavailable, "the invite could not be checked right now")
+}
+
+func (h *handler) verifiedEmail(ctx context.Context, id uuid.UUID) (string, error) {
+	if h.emails == nil {
+		return "", nil
+	}
+	return h.emails.VerifiedEmail(ctx, id)
+}
+
+// purgeInviteEmailsAfter is how long after a code can no longer be redeemed its bound email is kept
+// (D161; docs/API.md → Invites for a person; the privacy text names it once U3 is decided).
+const purgeInviteEmailsAfter = 30 * 24 * time.Hour
+
+// purgeInviteEmailsEvery clears the emails of codes that have not been redeemable for 30 days, once now and
+// then every interval, until ctx ends. Idempotent, so every pod runs it; a failed pass is logged and retried
+// at the next tick. A pass that clears nothing is normal and silent.
+func purgeInviteEmailsEvery(ctx context.Context, st *store.Store, log *slog.Logger, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	// Both series exist at 0, so increase() sees the first pass of a pod's life.
+	metrics.InviteEmailPurges.WithLabelValues("ok")
+	metrics.InviteEmailPurges.WithLabelValues("error")
+	for {
+		n, err := st.PurgeInviteEmails(ctx, purgeInviteEmailsAfter)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			metrics.InviteEmailPurges.WithLabelValues("error").Inc()
+			log.WarnContext(ctx, "invite email purge failed", "err", err)
+		default:
+			metrics.InviteEmailPurges.WithLabelValues("ok").Inc()
+			if n > 0 {
+				log.InfoContext(ctx, "invite emails purged", "n", n)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // ---- admin: invite codes --------------------------------------------------------
+
+// inviteStatus is the closed status of a code, the first that applies: revoked, used, expired, open.
+func inviteStatus(i model.BetaInvite, now time.Time) string {
+	switch {
+	case i.RevokedAt != nil:
+		return model.InviteRevoked
+	case i.Uses >= i.MaxUses:
+		return model.InviteUsed
+	case i.ExpiresAt != nil && !i.ExpiresAt.After(now):
+		return model.InviteExpired
+	}
+	return model.InviteOpen
+}
+
+// inviteView fills what the store does not (D160): status, link, and the emails as the caller asked for them
+// (masked unless emails; the create answer passes true for the address the caller just sent). The store's
+// slice is not shared with the caller.
+func (a admin) inviteView(i model.BetaInvite, emails bool, now time.Time) model.BetaInvite {
+	i.Status = inviteStatus(i, now)
+	i.Link = strings.TrimRight(cmp.Or(a.h.webURL, config.DefaultPublicWebURL), "/") + "/invite/" + i.Code
+	if i.Email != nil {
+		i.Email = shown(*i.Email, emails)
+	}
+	uses := make([]model.InviteUse, 0, len(i.UsesBy))
+	for _, u := range i.UsesBy {
+		if u.Email != nil {
+			u.PrivateRelay = isRelay(*u.Email)
+			u.Email = shown(*u.Email, emails)
+		}
+		uses = append(uses, u)
+	}
+	i.UsesBy = uses
+	return i
+}
+
+// createdBy is what beta_invite_codes.created_by stores for the caller of a create: "key:3fa1c2d9" or
+// "user:<uuid>".
+func createdBy(r *http.Request) string {
+	act, ok := adminActorFrom(r.Context())
+	switch {
+	case ok && !act.isKey():
+		return model.ActorUser + ":" + act.user.String()
+	case ok:
+		return model.ActorKey + ":" + act.fingerprint
+	}
+	return model.ActorKey // unreachable behind adminAuth; the column's default form
+}
+
+// A code for one email expires: 14 days when the caller names no time, and never more than 90 days away.
+const (
+	boundInviteDefaultExpiry = 14 * 24 * time.Hour
+	boundInviteMaxExpiry     = 90 * 24 * time.Hour
+)
 
 func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 	var in model.BetaInviteInput
@@ -107,45 +279,91 @@ func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 	if in.MaxUses != nil {
 		maxUses = *in.MaxUses
 	}
+	var email *string
+	if in.Email != nil {
+		e, ok := store.ParseInviteEmail(*in.Email)
+		if !ok {
+			metrics.AdminRequests.WithLabelValues("invalid").Inc()
+			httpx.WriteError(w, 422, "email is not a valid address")
+			return
+		}
+		email = &e
+	}
+	now := time.Now()
 	msg := ""
 	switch {
 	case maxUses < 1 || maxUses > 1000:
 		msg = "max_uses must be 1-1000"
 	case len(in.Note) > 200:
 		msg = "note has at most 200 characters"
-	case in.ExpiresAt != nil && !in.ExpiresAt.After(time.Now()):
+	case in.ExpiresAt != nil && !in.ExpiresAt.After(now):
 		msg = "expires_at must be in the future"
+	case email != nil && maxUses != 1:
+		msg = "a code for one email has max_uses 1"
+	case email != nil && in.ExpiresAt != nil && in.ExpiresAt.After(now.Add(boundInviteMaxExpiry)):
+		msg = "expires_at is at most 90 days away for a code for one email"
+	}
+	if msg == "" && email != nil {
+		// A bound code is only made while it can be redeemed safely (D159).
+		if state := a.h.bindingState(); state != bindOK {
+			msg = bindingMessage(state)
+		}
 	}
 	if msg != "" {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()
 		httpx.WriteError(w, 422, msg)
 		return
 	}
-	inv, err := a.h.st.CreateInvite(r.Context(), strings.TrimSpace(in.Note), maxUses, in.ExpiresAt)
+	expiresAt := in.ExpiresAt
+	if email != nil && expiresAt == nil {
+		// The address of someone who may never sign up is not kept without an end: a bound code expires.
+		e := now.Add(boundInviteDefaultExpiry).UTC().Truncate(time.Second)
+		expiresAt = &e
+	}
+	inv, err := a.h.st.CreateInvite(r.Context(), store.NewInvite{Note: strings.TrimSpace(in.Note), MaxUses: maxUses,
+		ExpiresAt: expiresAt, Email: email, CreatedBy: createdBy(r)})
 	if err != nil {
 		metrics.AdminRequests.WithLabelValues("error").Inc()
 		httpx.Fail(w, r, err)
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	// Not the note: it may name the person the code is for.
-	a.info(r, "invite created", "max_uses", inv.MaxUses)
-	httpx.WriteJSON(w, 201, inv)
+	// The code goes into the audit row (the database only, for the operator); never the address.
+	auditDetail(r, "code", inv.Code)
+	// Not the note or the address: they may name the person the code is for.
+	a.info(r, "invite created", "max_uses", inv.MaxUses, "bound", email != nil)
+	// The caller just sent the address: it is shown as stored, not masked.
+	httpx.WriteJSON(w, 201, a.inviteView(inv, true, time.Now()))
 }
 
+// invites is GET /v1/admin/invites[?emails=1]: every code, with who redeemed it. Emails are masked unless
+// asked for, whichever bearer asks; the call is audited with whether they were.
 func (a admin) invites(w http.ResponseWriter, r *http.Request) {
+	emails := r.URL.Query().Get("emails") == "1"
 	list, err := a.h.st.Invites(r.Context())
 	if err != nil {
 		metrics.AdminRequests.WithLabelValues("error").Inc()
 		httpx.Fail(w, r, err)
 		return
 	}
+	now := time.Now()
+	for k := range list {
+		list[k] = a.inviteView(list[k], emails, now)
+	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
+	auditDetail(r, "emails", emails)
+	a.info(r, "admin invites read", "emails", emails, "n", len(list))
 	httpx.WriteJSON(w, 200, list)
 }
 
-func (a admin) deleteInvite(w http.ResponseWriter, r *http.Request) {
-	err := a.h.st.DeleteInvite(r.Context(), r.PathValue("code"))
+// revokeInvite is DELETE /v1/admin/invites/{code}: the code stays listed and redeems nothing any more.
+// 204 also when it was revoked already; 404 for a code that does not exist.
+func (a admin) revokeInvite(w http.ResponseWriter, r *http.Request) {
+	// The access line logs the path, and this path ends in the code: log the pattern instead (D160).
+	if ri := httpx.Info(r.Context()); ri != nil {
+		ri.LogPath = "/v1/admin/invites/{code}"
+	}
+	err := a.h.st.RevokeInvite(r.Context(), r.PathValue("code"))
 	if errors.Is(err, store.ErrNotFound) {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()
 		httpx.WriteError(w, 404, "no such code")
@@ -157,6 +375,7 @@ func (a admin) deleteInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.info(r, "invite deleted")
+	auditDetail(r, "code", store.ShowInvite(store.NormalizeInvite(r.PathValue("code"))))
+	a.info(r, "invite revoked")
 	w.WriteHeader(http.StatusNoContent)
 }

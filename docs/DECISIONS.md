@@ -3224,3 +3224,115 @@ Engine, and fails with the changed fields grouped by field.
   because `increase()` of a counter born at 1 would miss the first use of a pod's life.
 - **The rules reach Grafana only through `make alerts-apply`** (the user's manual step), which therefore comes
   before the first `admin_accounts` row: `AdminWebUsed` is the lost-phone detection.
+
+## D159 — Invites for a person: bound to a confirmed email, revoked not deleted, with who redeemed (admin web, PR2; the design's D-F)
+
+- **Decision:** migration 0033 adds to `beta_invite_codes` `email` (lower-case, printable ASCII; a code for one email
+  has `max_uses` 1 and an `expires_at`), `created_by` (`key`, `key:<fingerprint>` or `user:<uuid>`; `DEFAULT 'key'`)
+  and `revoked_at`, and the table `beta_invite_uses (code, user_id, at)` with primary key `(code, user_id)`,
+  backfilled from `users.beta_invite_code` (`at` = `beta_access_at`). Redeeming is one transaction under the
+  account's row lock and one statement that spends the use and records it; **every** refusal (unknown, expired, used
+  up, revoked, another email, an unconfirmed email, redeemed by this account before) is the same
+  `422 "invalid or used code"`. A bound code is compared with the email **Supabase** holds for the account (admin API
+  `GET /auth/v1/admin/users/{id}`), and only when `email_confirmed_at` is set; never the token's `email` claim, never
+  `users.email` (a copy of that claim), never `user_metadata`. The comparison is byte for byte after lower-casing the
+  ASCII letters: no trimming (an address with a space or a newline around it is refused as it is), no plus-address or
+  dot folding, no Unicode case folding (a Kelvin sign would otherwise match an ASCII `k`), and an address outside
+  printable ASCII never matches. Supabase is asked only for a code that exists, is open and is bound, outside any
+  transaction; if it cannot answer, `503` with `Retry-After: 5` and no `code`, for that case only. An account that
+  already has access gets `204` first and nothing is looked up. `DELETE /v1/admin/invites/{code}` **revokes**
+  (idempotent `204`, `404` for an unknown code) and caps `expires_at` at the revoke time. A hard delete is not offered.
+- **Bound codes need *Confirm email* ON (security-critical).** With *Confirm email* off, Supabase marks a new
+  sign-up's address confirmed at once (`email_confirmed_at` set), so anyone holding a leaked link could sign up with
+  the victim's address and redeem the code; the design's sentence that the check holds "whatever the project's
+  Confirm email setting is" was wrong and is corrected. So: (a) the user records *Confirm email* **on** and *Secure
+  email change* **on** before the first bound code (OPERATIONS → Beta, SUPABASE.md); (b) the api enforces it: it reads
+  the project's public auth setting `mailer_autoconfirm` (`GET {auth}/settings`, with the admin key as the apikey) at
+  start and every hour, and **while it is true, unknown (not read yet, unreadable, older than 3 hours) or the api has
+  no Supabase admin client**, a bound code is neither created (`422` with the reason) nor redeemed (`422`, the same
+  single refusal, when Confirm email is off or there is no admin client; `503` + `Retry-After: 5` when the setting is
+  unknown). A failed read is unknown at once; the last good answer is not kept. Metric `ryft_invite_binding_available`
+  and log line `invite binding` (state `ok`, `autoconfirm`, `unknown`, `no_admin_client`). Unbound codes never
+  depend on it. The field name `mailer_autoconfirm` is GoTrue's; it is read from the live project by the first
+  `invite binding` line after the deploy (state `ok` on a project with Confirm email on).
+- **Why:** a code in a chat can be forwarded; a binding to an address the tester has proven makes a forwarded code
+  useless to anyone else, without a new service. Every refusal is one status and one body, so a guesser cannot tell
+  *why* a code fails or tell an unknown code from a revoked, used or bound one. **There is no oracle before a correct
+  guess of a live bound code**: the Supabase lookup (50-150 ms, and a possible `503`) happens only for a code that
+  exists, is open and is bound, so a timing or status difference appears only after such a guess. The guess budget is
+  31^8 = 8.5e11 codes (about 39.6 bits), 5 attempts an hour per account and pod, and fewer than about 100 open codes:
+  about 1e-10 per guess, and every guessing account costs a confirmed email behind Supabase's sign-up limits. Revoke
+  keeps the row so that `uses_by` and the audit still say what happened.
+- **A bound code ends:** `expires_at` is required for a code with an `email` (the database CHECK
+  `beta_invite_codes_bound_expires`): 14 days when the caller names none, at most 90 days away (`422` beyond).
+  Otherwise the address of a non-user would be kept for ever by a code nobody redeems (the purge, D161, only clears
+  codes that can no longer be redeemed).
+- **Rollback stays safe, with one step before it:** `created_by` has a default, so an older image's `INSERT` works; a
+  revoke sets `expires_at`, so an older image refuses a revoked code too; `ON DELETE CASCADE` on `code` keeps an older
+  image's hard `DELETE` working. **Deviation from the design text:** `user_id` cascades too. The design relied on
+  `DeleteUser` removing the rows first, but an older image's `DeleteUser` does not know the table, and the backfill
+  gives every account that redeemed a code a row, so after a rollback their erasure (`DELETE /v1/me`) would fail on
+  the foreign key. The current `DeleteUser` still deletes the rows explicitly. **But an older image's redeem
+  statement ignores `email`**, so every open bound code would turn into a code anyone can use. **Before re-pinning an
+  older image run** `UPDATE beta_invite_codes SET revoked_at = now(), expires_at = LEAST(COALESCE(expires_at, now()),
+  now()) WHERE email IS NOT NULL AND revoked_at IS NULL;` (OPERATIONS → Beta → Rollback of 0033) and make new codes
+  after the roll forward. The same holds during an ordinary rolling deploy: while pods of the older image still serve,
+  they spend a bound code for any account. **Create the first bound code only after the rollout of the image with
+  this migration is complete** (all api pods on it); a bound code made earlier is revoked with the SQL above.
+- **Erasure:** `DeleteUser` removes the account's `beta_invite_uses` rows and, for a bound code it redeemed, clears
+  the code's `email` and `note` (the code identifies the person). `MergeUsers` moves the rows; the merged-away
+  account's deletion then clears as above. `beta_invite_uses` appears in no `/v1/me` read and is not in an export:
+  it holds a code, an account id and a time, nothing the account entered; the rows are deleted with the account. If
+  an export is added it gets this table (a code and a time).
+- **Known and accepted:** an account whose access the operator took away cannot redeem the same code again (it
+  already used it); the operator grants access by hand or makes a new code. `uses_by` lists accounts that still
+  exist, `uses` stays the count. A Sign in with Apple relay address matches only a code made for exactly that
+  address; the page says so and recommends an unbound code when unsure.
+- **Needs the user (U3):** a bound email is data about someone who may never become a user (and the `note` may name
+  them). The privacy text needs a sentence and a new `PRIVACY_POLICY_VERSION` (a separate PR, the user's decision on
+  timing): the new category (an email address, possibly a name in a note, of a person who may never become a user;
+  Art. 14 information if someone else asked for the invite), the purpose (sending that person an invitation, and
+  redeeming it only for that address), the legal basis, the retention (until redeemed, at most 90 days to
+  expiry, then 30 days; address and note), and what is compared at redemption (the address Supabase holds for the
+  account, confirmed). **Bound codes are not to be created in production before it is published.** The api does not
+  enforce that: a flag would be one more moving part for a single operator, and the operator decides who gets a bound
+  code.
+- Design: `docs/work/2026-11-05-admin-web/design.md` §6.1–§6.3; contract `docs/API.md` → Invites for a person.
+  The design's D-G (the page) and D-H (sending the invite by email) take the numbers of the PRs that implement them.
+
+## D160 — Emails in the invite answers: masked unless `?emails=1`, whichever bearer asks
+
+- **Decision:** `GET /v1/admin/invites` shows the bound `email` and every `uses_by[].email` masked
+  (`a***@e***.com`, the `maskEmail` of `/v1/admin/users`) unless the request says `?emails=1` (exactly `1`), for the
+  admin key **and** for an operator's token. `uses_by` keeps `user_id`, `short_id`, `private_relay` and `at` either
+  way. The call is audited with `emails`. Unlike users and feedback there is no second view for the token: the
+  invite answer holds no health-derived, device or diagnostic field, so the only sensitive field is the address, and
+  the one switch covers it (the token's projection rule: nothing a token does not need, no address unless asked for).
+  The create answer shows the address in its **stored form** (trimmed, ASCII lower-cased), not masked, because the
+  caller just sent it; nothing else about an address is returned by `POST`. `note` is free text the operator wrote and is returned as written; it may name the person
+  (D161).
+- **Why:** the token path is the browser, and an address that is not on the screen cannot be shoulder-surfed or
+  left in a screenshot; the page asks for `?emails=1` because the operator needs the address to match a tester. A
+  test pins that the default answer of both bearers has no `@` outside a mask.
+- **Audit and logs:** the audit `details` of a create or revoke hold the `code` (the database only, for the
+  operator), never an address; the log lines say `bound: true|false` and carry no code, note or address. The access
+  line of `DELETE /v1/admin/invites/{code}` logs the pattern `/v1/admin/invites/{code}` as its `path` (the code is
+  the last path segment; `RequestInfo.LogPath`), and the Supabase client's errors carry no URL, which holds the
+  user id.
+
+## D161 — A bound email and its note are kept 30 days after the code stopped being redeemable
+
+- **Decision:** an hourly, idempotent job in each api pod (`PurgeInviteEmails`) sets `email` to NULL and `note` to ''
+  on every bound code that has not been redeemable for 30 days (revoked, expired, or used up; a used-up code whose
+  account is gone uses the creation time), and sets `revoked_at` on such a code that is not used up, so it stays dead
+  even if someone edits `expires_at` in SQL later (a used-up code keeps its status; an expired one then reads
+  `revoked`). Clearing is safe: a code that cannot be redeemed cannot be widened by losing its binding. An open code
+  keeps its address; a bound code always expires (D159), so none is kept for ever. The note of an **unbound** code
+  is the operator's label for a group and is not touched; there is no hard delete of a code, so a note that names a
+  person on an unbound code stays until the operator edits it in SQL (`UPDATE beta_invite_codes SET note = ''
+  WHERE code = '…'`) - do not put names in the note of an unbound code.
+- **Observable:** `ryft_invite_email_purge_total{result}` (`ok`, `error`; created at 0) and the warning
+  `InviteEmailPurgeFailing` (three failed passes in three hours); the log line `invite emails purged` when a pass
+  cleared something.
+- **Why:** the privacy text (once U3 is decided) can state a retention that is enforced, instead of "until the
+  operator remembers", and a failing job is seen, not silent.

@@ -495,20 +495,25 @@ unchanged):
 - **Not `user_metadata.email_verified`.** Users can write it.
 - `email` from **Supabase's admin API** `GET /auth/v1/admin/users/{id}` (the api already holds
   `SUPABASE_SERVICE_ROLE_KEY` and calls it in `auth.Admin.GetUser`). It counts **only when
-  `email_confirmed_at` is set**: `AdminUserInfo` gains `EmailConfirmedAt *time.Time`. That holds
-  whatever the project's *Confirm email* setting is. A Sign in with Apple account's email is confirmed
-  by Supabase on sign-in. An email account is confirmed only through its link. An unconfirmed address
-  never matches.
-- **Comparison:** `strings.ToLower(strings.TrimSpace(email)) == code.email`. There is no
-  plus-address stripping and no Gmail dot folding: both would widen who may redeem, and for most
-  domains `a.b@` and `ab@` are different mailboxes.
+  `email_confirmed_at` is set**: `AdminUserInfo` gains `EmailConfirmedAt *time.Time`. **That proves a mailbox only
+  while the project's *Confirm email* is ON** (corrected after the security review of PR2; the first draft said
+  "whatever the setting is", which is false): with it off, Supabase sets `email_confirmed_at` at sign-up, and anyone
+  holding a leaked link could register the victim's address and redeem the code. A Sign in with Apple account's
+  email is confirmed by Supabase on sign-in; an email account is confirmed through its link only with Confirm
+  email on. An unconfirmed address never matches. So the user records *Confirm email* on (and *Secure email
+  change* on) before the first bound code, and the api reads `mailer_autoconfirm` from the project's public auth
+  settings at start and hourly and refuses to create or redeem a bound code while it is true or unknown (D159).
+- **Comparison:** the ASCII letters of the address lower-cased, then byte equality with `code.email`. No trimming
+  (the first draft said `TrimSpace`; an address with a space around it is refused), and an address outside printable
+  ASCII never matches. There is no plus-address stripping and no Gmail dot folding: both would widen who may redeem,
+  and for most domains `a.b@` and `ab@` are different mailboxes.
 - **Without the admin client** (apikey mode, or no service key), `VerifiedEmail` returns `""`, so
-  bound codes never redeem. Local stacks and tests use a fake `emails` interface.
+  bound codes never redeem, and creating one is refused (`422`) with a start-up log line. Local stacks and tests use a fake `emails` interface.
 - **Apple private relay:** an `@privaterelay.appleid.com` address matches only if the tester gives the
   operator exactly that address. The page says so and recommends an unbound code when unsure, which is
   today's behaviour.
 
-**No oracle, timing included.** One message and one status for every refusal. The Supabase lookup
+**No oracle before a correct guess of a live bound code.** One message and one status for every refusal. The Supabase lookup
 (about 50–150 ms) happens only for a code that exists, is open and is bound, so a timing difference
 shows up only *after* a correct guess of a live code. With 31⁸ ≈ 8.5·10¹¹ codes (~39.6 bits), 5 tries
 per hour per account and pod, and fewer than about 100 open codes, the chance per guess is around

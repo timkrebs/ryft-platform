@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -84,7 +85,7 @@ func TestAdminGetUser(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"id":"` + id.String() + `","email":"x7k2@privaterelay.appleid.com",
-			"last_sign_in_at":"2026-10-20T17:40:00Z",
+			"email_confirmed_at":"2026-10-20T17:40:00Z", "last_sign_in_at":"2026-10-20T17:40:00Z",
 			"identities":[{"provider":"apple","identity_data":{"email":"x7k2@privaterelay.appleid.com"},"last_sign_in_at":"2026-10-20T17:40:00Z"},
 			              {"provider":"email","identity_data":{"email":"tim@example.com"}}]}`))
 	}))
@@ -95,11 +96,29 @@ func TestAdminGetUser(t *testing.T) {
 	}
 	u, err := a.GetUser(context.Background(), id)
 	if err != nil || u.Email != "x7k2@privaterelay.appleid.com" || u.LastSignInAt == nil || len(u.Identities) != 2 ||
+		u.EmailConfirmedAt == nil || !u.EmailConfirmedAt.Equal(time.Date(2026, 10, 20, 17, 40, 0, 0, time.UTC)) ||
 		u.Identities[0].Provider != "apple" || u.Identities[1].Email != "tim@example.com" || u.Identities[1].LastSignInAt != nil {
 		t.Fatalf("user: %+v %v", u, err)
 	}
 	if _, err := a.GetUser(context.Background(), uuid.New()); !errors.Is(err, ErrNoAuthUser) {
 		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+// An address Supabase has not confirmed has no email_confirmed_at: the invite binding must not trust it.
+func TestAdminGetUserUnconfirmedEmail(t *testing.T) {
+	for body, confirmed := range map[string]bool{
+		`{"email":"anna@example.com"}`:                                             false,
+		`{"email":"anna@example.com","email_confirmed_at":null}`:                   false,
+		`{"email":"anna@example.com","email_confirmed_at":"2026-11-01T08:00:00Z"}`: true,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+		u, err := a.GetUser(context.Background(), uuid.New())
+		srv.Close()
+		if err != nil || u.Email != "anna@example.com" || (u.EmailConfirmedAt != nil) != confirmed {
+			t.Errorf("%s: %+v %v", body, u, err)
+		}
 	}
 }
 
@@ -196,5 +215,66 @@ func TestAdminErrorsHoldNoBody(t *testing.T) {
 				t.Errorf("%s: %v, want the status and %q only", b, err, code)
 			}
 		}
+	}
+}
+
+// mailer_autoconfirm decides whether "email confirmed" proves a mailbox. Anything but a clear false is an error
+// (the caller treats it like true), and the apikey travels the same way as for the user calls.
+func TestAdminEmailAutoconfirm(t *testing.T) {
+	status, reply := 200, ""
+	var path, apikey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, apikey = r.URL.Path, r.Header.Get("apikey")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer srv.Close()
+	a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+	for _, c := range []struct {
+		name   string
+		status int
+		reply  string
+		want   bool
+		fail   bool
+	}{
+		{"confirm email on", 200, `{"external":{"email":true},"disable_signup":false,"mailer_autoconfirm":false}`, false, false},
+		{"confirm email off", 200, `{"mailer_autoconfirm":true}`, true, false},
+		{"field missing", 200, `{"external":{"email":true}}`, false, true},
+		{"field null", 200, `{"mailer_autoconfirm":null}`, false, true},
+		{"field a string", 200, `{"mailer_autoconfirm":"false"}`, false, true},
+		{"not JSON", 200, `<html>`, false, true},
+		{"server error", 500, `{"error_code":"unexpected_failure","msg":"tim@example.com"}`, false, true},
+		{"forbidden", 401, `{}`, false, true},
+	} {
+		status, reply = c.status, c.reply
+		got, err := a.EmailAutoconfirm(context.Background())
+		if got != c.want || (err != nil) != c.fail {
+			t.Errorf("%s: %v %v", c.name, got, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "tim@example.com") {
+			t.Errorf("%s: the answer's text is in the error: %v", c.name, err)
+		}
+	}
+	if path != "/auth/v1/settings" || apikey != "sb_secret_abc" {
+		t.Errorf("request: %s apikey %q", path, apikey)
+	}
+	// An unreachable Supabase: an error, never false.
+	srv.Close()
+	if got, err := a.EmailAutoconfirm(context.Background()); err == nil || got {
+		t.Errorf("unreachable: %v %v", got, err)
+	}
+}
+
+// A transport error of a user call names no user id: net/http quotes the URL, and the URL holds the id.
+func TestAdminTransportErrorsHoldNoUserID(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	a, _ := NewAdmin(srv.URL+"/auth/v1", "sb_secret_abc", srv.Client())
+	srv.Close()
+	id := uuid.New()
+	if _, err := a.GetUser(context.Background(), id); err == nil || strings.Contains(err.Error(), id.String()) || strings.Contains(err.Error(), "http://") {
+		t.Errorf("get user: %v", err)
+	}
+	if err := a.DeleteUser(context.Background(), id); err == nil || strings.Contains(err.Error(), id.String()) {
+		t.Errorf("delete user: %v", err)
 	}
 }

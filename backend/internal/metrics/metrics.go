@@ -233,6 +233,27 @@ var (
 		Help: "Requests to /v1/admin that passed the bearer check, by actor (key, user).",
 	}, []string{"actor"})
 
+	// InviteEmailPurges counts the passes of the job that clears the emails of codes that can no longer be
+	// redeemed (D161): ok (also a pass that cleared nothing) or error. A failing job keeps addresses of
+	// non-users longer than the privacy text says, so a run of errors is an alert.
+	InviteEmailPurges = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_invite_email_purge_total",
+		Help: "Passes of the job that clears bound invite emails 30 days after the code stopped being redeemable: ok, error.",
+	}, []string{"result"})
+	// InviteBindingAvailable is 1 while email-bound invites can be created and redeemed: the Supabase project
+	// confirms emails (mailer_autoconfirm false, read from its public settings) and the api can ask Supabase
+	// for an account's email. 0 while it is true, unknown or the api has no admin client (D159).
+	InviteBindingAvailable = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ryft_invite_binding_available",
+		Help: "1 while email-bound invites work (Supabase confirms emails and the admin key is set), else 0.",
+	})
+	// InviteSettingsChecks counts the reads of the project's public auth settings: ok (Confirm email on),
+	// autoconfirm (it is off: bound codes refuse) and error (unknown: bound codes refuse).
+	InviteSettingsChecks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_invite_settings_checks_total",
+		Help: "Reads of the Supabase auth settings for email-bound invites: ok, autoconfirm, error.",
+	}, []string{"result"})
+
 	TrainSessionsCompleted = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_train_sessions_completed_total",
 		Help: "Strength sessions completed (POST /v1/sessions/{id}/complete, repeats included).",

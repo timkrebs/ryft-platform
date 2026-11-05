@@ -112,8 +112,8 @@ func TestConsentAndInviteAPI(t *testing.T) {
 	dr := httptest.NewRecorder()
 	d := httptest.NewRequest(http.MethodDelete, "/v1/admin/invites/"+inv.Code, nil)
 	d.SetPathValue("code", inv.Code)
-	a.deleteInvite(dr, d)
+	a.revokeInvite(dr, d)
 	if dr.Code != 204 {
-		t.Fatalf("delete: %d", dr.Code)
+		t.Fatalf("revoke: %d", dr.Code)
 	}
 }
