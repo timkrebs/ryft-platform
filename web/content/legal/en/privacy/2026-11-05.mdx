@@ -4,7 +4,7 @@ version: '2026-11-05'
 effective: null
 status: draft
 versionNote: "the app asks for your consent to this version"
-draftNote: "TODO(user): decide when the new version takes effect (U3) and review the new sentences in Sections 3, 4 and 6 (the email address on an invite code); only then set it to published."
+draftNote: "TODO(user): decide when the new version takes effect (U3) and review the new sentences in Sections 3, 4 and 6 (the email address and name on an invite code), and the sentence on the admin page in Section 3; only then set it to published."
 ---
 
 ## 1. Who is responsible
@@ -22,17 +22,17 @@ RYFT is an iPhone app. With your permission it reads data from Apple Health, sen
 - **What RYFT computes from it:** daily scores (recovery, strain, readiness, sleep performance, need, debt, quality and consistency), step and energy totals, your personal baselines, insights, and which version of the scoring model computed them.
 - **What you enter:** birth year and maximum heart rate (to estimate your maximum heart rate), your sleep baseline, strength training (exercises, plans, sessions, sets, weights, body weight, personal records), your journal (for example alcohol, caffeine, nicotine, cannabis, supplements, feeling sick, injury, stress), and your notification settings. You can import training history and plans from another training app's export file: the file is read on your iPhone and is never uploaded; only the workouts and plans you confirm are sent, together with the custom exercises (their names) those workouts use, and each imported workout is stored with the name of the app the file came from. An import that has not been sent yet (paused, failed or waiting to be retried) is kept on your iPhone for up to 30 days and then deleted; signing out or deleting your account removes it at once.
 - **Devices and notifications:** a random identifier per installation of the app, the device name, app and iOS version, when it last synced; the push token Apple assigns to the app, with its environment and language.
-- **If you ask for an invite:** the email address you give the operator for your invite is stored with the invite code, even if you never sign up. The operator can see it.
+- **If you ask for an invite:** the email address you give the operator for your invite and, if you give it, your name in the note are stored with the invite code, even if you never sign up. The operator can see them.
 - **Your consent:** which version of this policy you consented to, when, with which app version, and when you withdrew it.
 - **Feedback you send:** your message, its category, app version and build, device model, iOS version, the request identifiers and the diagnostics the app attaches.
 - **Technical logs:** for every request the time, path, result, duration, your account identifier and a request identifier; the scoring service also logs the daily scores it computed. Request contents and email addresses are not logged.
-- **Visiting ryftapp.de:** your browser's IP address, to deliver the page and to limit requests per address; it is not stored. The site's access log records the time, the page, the result, its size and duration, without your IP address, browser, referring page or query string. The site sets no cookies and has no analytics; in your browser it keeps only your choice of light or dark appearance.
+- **Visiting ryftapp.de:** your browser's IP address, to deliver the page and to limit requests per address; it is not stored. The site's access log records the time, the page, the result, its size and duration, without your IP address, browser, referring page or query string. The site sets no cookies and has no analytics; in your browser it keeps only your choice of light or dark appearance (the operator's own page, ryftapp.de/admin, also keeps the operator's sign-in in the browser tab while it is open).
 
 ## 4. Why, and on which legal basis
 
 - **Health data** (and the health-related parts of what you enter, such as the journal): to compute your scores and show them to you, on your **explicit consent** (Art. 9(2)(a) GDPR), which the app asks for before the first upload. Without it RYFT accepts no uploads and computes nothing.
 - **Account, settings, training, devices and notifications:** to provide the app you signed up for (Art. 6(1)(b) GDPR). Notifications only after you allow them in iOS.
-- **Email address for an invite:** to bind the invite code to you and to give you access to the beta at your request (Art. 6(1)(b) GDPR, steps at your request).
+- **Email address and name for an invite:** to bind the invite code to you and to give you access to the beta at your request (Art. 6(1)(b) GDPR, steps taken at your request before a contract).
 - **Logs and rate limits:** to keep the service secure and running (legitimate interests, Art. 6(1)(f) GDPR).
 - **Feedback:** to answer it and fix what you report (Art. 6(1)(b) and (f) GDPR).
 - **Consent records:** to be able to show that you consented (Art. 6(1)(c) with Art. 7(1) GDPR).
@@ -51,7 +51,7 @@ We do not sell data and do not use it for advertising. The app contains no adver
 ## 6. How long we keep it
 
 - Everything tied to your account until you delete the account in the app. Deleting erases it from the database at once, removes your sign-in at Supabase and revokes the Sign in with Apple authorization. A random account identifier is kept so that the account cannot reappear.
-- The email address on an invite code: until 30 days after the code can no longer be redeemed (redeemed, expired or revoked); then it is deleted from the code. Whoever redeems the code keeps their account as described above.
+- The email address and the note on an invite code for you: until 30 days after the code can no longer be redeemed, that is 30 days after it is redeemed or revoked or, if the code is never used, after it expires (a code for one address always expires, at the latest 90 days after it was made); then both are deleted from the code. Whoever redeems the code keeps their account as described above.
 - Database backups at Supabase are kept for 7 days; deleted data leaves them within that time.
 - Logs: 14 days.
 - Events that could not be processed: up to 14 days in an internal queue (your account identifier and the days concerned, for notifications also your morning scores).
