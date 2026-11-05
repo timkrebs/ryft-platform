@@ -289,6 +289,18 @@ makes sure no face is faked. Emphasis (`strong`, the draft title, the TODO marke
 from 500 to 700, since Medium no longer exists. `/licenses` lists Inter with the OFL text
 under the website; the app lists its own typeface itself.
 
+The committed files are **subsets** of the release files (the OFL allows modification):
+`pyftsubset` to Latin, Latin-1, Latin Extended-A, general punctuation, the arrows, `€`, `−`
+and the few symbols the site sets (`↗ · ° ′ →`), layout features kept (kern, liga, calt,
+tnum, case, ss01–03, …), hinting dropped — 30 KB and 31 KB instead of 111 KB and 115 KB.
+Reason: with the full files preloaded, Lighthouse's mobile run reported the hero text's
+LCP at 2.25 s (the text repaints when Inter arrives, and that repaint is the LCP), against
+the 1.5 s budget in `lighthouserc.json`; the subsets bring it to ~1.4–1.7 s depending on the
+server. To regenerate: download Inter 4.1, then
+`pyftsubset web/Inter-<W>.woff2 --flavor=woff2 --unicodes="U+0000-00FF,U+0100-017F,U+2000-206F,U+20AC,U+2190-2199,U+2212,…" --layout-features=… --no-hinting --desubroutinize`
+(the exact lists are in the commit that introduced them).
+
 Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
-400/700 only, which removes the question.
+400/700 only, which removes the question. Would also change if a page needs glyphs outside
+the subset (Greek, Cyrillic, CJK): widen the unicode ranges, don't swap back to the full file.
