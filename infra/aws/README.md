@@ -42,6 +42,7 @@ infra/aws/
 | Edge (Helm) | `aws-load-balancer-controller` 3.6.0, `traefik` 42.0.0 in `kube-system` behind an internet-facing NLB, port 443 only; `cert-manager` v1.21.2 with ClusterIssuers `letsencrypt-staging`/`-prod` (DNS-01 in Route 53); `external-dns` 1.23.0 (zone `ryftapp.de` only, TXT ownership) |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
+| Cluster access | access entries: the apply identity (`cluster_creator`, `AmazonEKSClusterAdminPolicy`) and EKS's own `EC2_LINUX` entry for the node role; authentication mode `API_AND_CONFIG_MAP`, switch to `API` is one-way and has pre-checks (`docs/OPERATIONS.md` → EKS authentication mode API) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.

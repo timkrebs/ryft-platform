@@ -1,3 +1,8 @@
+output "authentication_mode" {
+  description = "Authentication mode requested in the configuration, not read back from AWS (API makes kube-system/aws-auth inert)"
+  value       = module.eks.authentication_mode
+}
+
 output "cluster_endpoint" {
   description = "Endpoint of the Kubernetes API server"
   value       = module.eks.cluster_endpoint
@@ -21,6 +26,11 @@ output "configure_kubectl" {
 output "node_security_group_id" {
   description = "Security group attached to the nodes"
   value       = module.eks.node_security_group_id
+}
+
+output "node_role_arn" {
+  description = "IAM role of the managed node group; must be listed by aws eks list-access-entries (EC2_LINUX) before authentication_mode becomes API"
+  value       = module.eks.node_role_arn
 }
 
 output "oidc_provider_arn" {

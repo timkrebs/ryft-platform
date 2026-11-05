@@ -22,5 +22,9 @@ module "eks" {
   deletion_protection          = var.deletion_protection
   node_group                   = var.node_group
 
+  authentication_mode  = var.authentication_mode
+  node_access_entry    = var.node_access_entry
+  admin_principal_arns = var.admin_principal_arns
+
   tags = local.tags
 }

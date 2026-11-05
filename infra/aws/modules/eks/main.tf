@@ -27,8 +27,29 @@ module "eks" {
   endpoint_public_access_cidrs = var.endpoint_public_access_cidrs
   deletion_protection          = var.deletion_protection
 
+  # How the API server authenticates IAM principals. API_AND_CONFIG_MAP reads both access
+  # entries and the kube-system/aws-auth ConfigMap; API reads access entries only and makes
+  # aws-auth inert. The change to API is one-way in EKS (docs/OPERATIONS.md -> EKS
+  # authentication mode API).
+  authentication_mode = var.authentication_mode
+
   # The identity running terraform apply becomes cluster admin via an access entry.
   enable_cluster_creator_admin_permissions = true
+
+  # Further cluster admins (AmazonEKSClusterAdminPolicy, cluster scope), only for a principal
+  # that uses kubectl but does not run terraform. Empty by default.
+  access_entries = {
+    for label, arn in var.admin_principal_arns : "admin-${label}" => {
+      principal_arn = arn
+      type          = "STANDARD"
+      policy_associations = {
+        admin = {
+          policy_arn   = "arn:${data.aws_partition.current.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  }
 
   vpc_id     = var.vpc_id
   subnet_ids = var.subnet_ids
@@ -74,6 +95,20 @@ module "eks" {
       desired_size = var.node_group.desired_size
     }
   }
+
+  tags = var.tags
+}
+
+# The managed node group's role. EKS creates this access entry itself when the node group is
+# created in a cluster whose mode includes API (the upstream module does not manage it), so
+# this stays off unless `aws eks list-access-entries` shows the role missing BEFORE the switch
+# to API. Turning it on while EKS already created it fails with ResourceInUseException.
+resource "aws_eks_access_entry" "node" {
+  count = var.node_access_entry ? 1 : 0
+
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.eks.eks_managed_node_groups["default"].iam_role_arn
+  type          = "EC2_LINUX"
 
   tags = var.tags
 }
