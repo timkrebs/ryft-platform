@@ -1,0 +1,123 @@
+# ApplySync: the statements one call sends, in order (apply_trace_test.go).
+
+## days only, no emit
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+4. commit [args=0]
+
+## days only, emit
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+4. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+5. commit [args=0]
+
+## nothing at all
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. commit [args=0]
+
+## unknown kind and nil ids only
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. commit [args=0]
+
+## unknown ids of every kind
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM samples WHERE user_id=$1 AND hk_id = ANY($2) RETURNING type, start_at [args=2]
+4. DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id = ANY($2) RETURNING end_at [args=2]
+5. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 RETURNING start_at, session_id IS NOT NULL [args=3]
+6. commit [args=0]
+
+## sample deletion only
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM samples WHERE user_id=$1 AND hk_id = ANY($2) RETURNING type, start_at [args=2]
+4. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+5. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+6. commit [args=0]
+
+## sleep deletion only
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id = ANY($2) RETURNING end_at [args=2]
+4. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+5. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+6. commit [args=0]
+
+## workout deletion only
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 RETURNING start_at, session_id IS NOT NULL [args=3]
+4. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+5. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+6. commit [args=0]
+
+## all three deletions, emit
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM samples WHERE user_id=$1 AND hk_id = ANY($2) RETURNING type, start_at [args=2]
+4. DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id = ANY($2) RETURNING end_at [args=2]
+5. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 RETURNING start_at, session_id IS NOT NULL [args=3]
+6. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+7. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+8. commit [args=0]
+
+## fold that folds
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. SELECT id, activity, start_at, end_at, source, created_at, session_id IS NOT NULL FROM workouts WHERE user_id=$1 AND source <> $2 AND source = ANY($3) AND start_at >= $4 AND start_at <= $5 ORDER BY start_at, id LIMIT 5001 FOR UPDATE [args=5]
+4. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 [args=3]
+5. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+6. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+7. commit [args=0]
+
+## fold with nothing to fold
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. SELECT id, activity, start_at, end_at, source, created_at, session_id IS NOT NULL FROM workouts WHERE user_id=$1 AND source <> $2 AND source = ANY($3) AND start_at >= $4 AND start_at <= $5 ORDER BY start_at, id LIMIT 5001 FOR UPDATE [args=5]
+4. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+5. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+6. commit [args=0]
+
+## deletions and fold together
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM samples WHERE user_id=$1 AND hk_id = ANY($2) RETURNING type, start_at [args=2]
+4. DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id = ANY($2) RETURNING end_at [args=2]
+5. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 RETURNING start_at, session_id IS NOT NULL [args=3]
+6. SELECT id, activity, start_at, end_at, source, created_at, session_id IS NOT NULL FROM workouts WHERE user_id=$1 AND source <> $2 AND source = ANY($3) AND start_at >= $4 AND start_at <= $5 ORDER BY start_at, id LIMIT 5001 FOR UPDATE [args=5]
+7. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 [args=3]
+8. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+9. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+10. commit [args=0]
+
+## fold skipped above the row bound
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. SELECT id, activity, start_at, end_at, source, created_at, session_id IS NOT NULL FROM workouts WHERE user_id=$1 AND source <> $2 AND source = ANY($3) AND start_at >= $4 AND start_at <= $5 ORDER BY start_at, id LIMIT 5001 FOR UPDATE [args=5]
+4. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+5. INSERT INTO outbox (publisher, user_id, routing_key, payload) VALUES ('ingest', $1, 'ingested', '{}'::jsonb) [args=1]
+6. commit [args=0]
+
+## sleep deletion fails (rollback)
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. DELETE FROM samples WHERE user_id=$1 AND hk_id = ANY($2) RETURNING type, start_at [args=2]
+4. DELETE FROM sleep_segments WHERE user_id=$1 AND hk_id = ANY($2) RETURNING end_at [args=2]
+5. rollback [args=0]
+
+## fold delete fails (rollback)
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. SELECT id, activity, start_at, end_at, source, created_at, session_id IS NOT NULL FROM workouts WHERE user_id=$1 AND source <> $2 AND source = ANY($3) AND start_at >= $4 AND start_at <= $5 ORDER BY start_at, id LIMIT 5001 FOR UPDATE [args=5]
+4. DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3 [args=3]
+5. rollback [args=0]
+
+## queue fails (rollback)
+1. begin [args=0]
+2. SELECT pg_advisory_xact_lock(7419005, hashtext($1::text)) [args=1]
+3. INSERT INTO score_queue (user_id, day, queued_at, scored_at) SELECT $1, d::date, now(), NULL FROM unnest($2::text[]) WITH ORDINALITY AS u(d, n) ORDER BY n ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL [args=2]
+4. rollback [args=0]

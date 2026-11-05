@@ -483,9 +483,12 @@ Technical:
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11
   (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **Open before
-  Step 0:** #47 (`infra/argocd-rbac`) lacks `{ apiGroups = ["argoproj.io"], resources = ["applications"],
-  verbs = ["get", "list", "watch"] }` in `argocd_controller_rules` (claim i: with
-  `respectRBAC: strict` the root app otherwise waits for ever); T12-e needs another binding-state signal
+  Step 0:** #47 (`infra/argocd-rbac`) had lacked `{ apiGroups = ["argoproj.io"], resources =
+  ["applications"], verbs = ["get", "list", "watch"] }` in `argocd_controller_rules`; it is in now (claim
+  i did not wait for ever: under `respectRBAC: strict` the kind is dropped from the cache silently, so the
+  root lagged by minutes and a deleted child would not be pruned; D151 amended). #47 also dropped
+  `escalate`/`bind` on ClusterRoles, tightened CRD update and the server's cluster-wide writes, and
+  states what stays open until P12 (docs/OPERATIONS.md "What stays open"). T12-e needs another binding-state signal
   (claim m is disproved: KSM exports no built-in kinds); P7 must not go to break-glass assuming P10 blocks
   `--repo` (P10 no longer does). Not tried by the kind run: a node drain, three workers, claims f, j and l.
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
