@@ -235,9 +235,6 @@
       "number": "07",
       "label": "Pricing",
       "title": "Free to start. Plus to go deeper.",
-      "periodLabel": "Billing period",
-      "monthly": "Monthly",
-      "yearly": "Yearly −42 %",
       "free": {
         "name": "Free",
         "price": "0 €",
@@ -254,20 +251,14 @@
       },
       "plus": {
         "name": "RYFT Plus",
-        "monthly": "4.99 €",
-        "perMonth": "per month",
-        "yearly": "34.99 €",
-        "perYear": "per year",
-        "lifetime": "Or 99 € once, for life.",
-        "items": [
-          "Everything in Free",
-          "More depth on top of the scores, never the scores themselves",
-          "Founder price locked in for beta testers"
-        ],
+        "price": "TBA",
+        "period": "pricing announced at launch",
+        "lead": "Arrives with the App Store launch.",
+        "items": ["Everything in Free", "More depth on top of the scores, never the scores themselves"],
         "founder": "Founder price for beta testers",
-        "cta": "Arrives with the App Store launch"
+        "cta": "Coming with launch"
       },
-      "note": "Scores, history and export are never behind a paywall. Prices include VAT."
+      "note": "Scores, history and export are never behind a paywall."
     },
     "faq": {
       "number": "08",
@@ -280,7 +271,7 @@
         },
         {
           "q": "Does RYFT cost anything?",
-          "a": "Not during the beta. At launch the scores, your history and export stay free; RYFT Plus adds depth for 4.99 € a month, 34.99 € a year or 99 € once. Beta testers keep a founder price."
+          "a": "Not during the beta. At launch the scores, your history and export stay free; RYFT Plus adds depth on top, with pricing announced at launch and a founder price for beta testers."
         },
         {
           "q": "Where is my data?",

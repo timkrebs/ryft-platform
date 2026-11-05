@@ -502,48 +502,6 @@
   gap: 32px;
 }
 
-.period {
-  display: inline-flex;
-  width: fit-content;
-  margin: 0;
-  padding: 0;
-  border: var(--hairline) solid var(--separator);
-}
-
-.period label {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-height: 40px;
-  padding: 0 18px;
-  font-size: var(--web-label);
-  letter-spacing: var(--web-tracking-label);
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.period label + label {
-  border-left: var(--hairline) solid var(--separator);
-}
-
-.period input {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.period label:has(input:checked) {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.period label:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .plans {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -582,18 +540,6 @@
   font-weight: 400;
   letter-spacing: var(--web-tracking-label);
   opacity: 0.7;
-}
-
-.priceYearly {
-  display: none;
-}
-
-.pricing:has(input[value='yearly']:checked) .priceMonthly {
-  display: none;
-}
-
-.pricing:has(input[value='yearly']:checked) .priceYearly {
-  display: block;
 }
 
 .planLead {

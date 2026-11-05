@@ -275,22 +275,11 @@ function Hero({ locale }: { locale: Locale }) {
   );
 }
 
-/** Free and Plus; the period toggle is two radio buttons and CSS, no script. */
+/** Free and Plus. Plus has no price yet: the figure reads TBA until the launch decision. */
 function Pricing({ locale }: { locale: Locale }) {
   const p = messages(locale).home.pricing;
   return (
     <div className={styles.pricing}>
-      <fieldset className={styles.period}>
-        <legend className="visually-hidden">{p.periodLabel}</legend>
-        <label>
-          <input type="radio" name="period" value="monthly" defaultChecked />
-          <span>{p.monthly}</span>
-        </label>
-        <label>
-          <input type="radio" name="period" value="yearly" />
-          <span>{p.yearly}</span>
-        </label>
-      </fieldset>
       <div className={styles.plans}>
         <article className={styles.plan} aria-labelledby="plan-free">
           <h3 id="plan-free">{p.free.name}</h3>
@@ -310,15 +299,11 @@ function Pricing({ locale }: { locale: Locale }) {
         </article>
         <article className={`${styles.plan} ${styles.planPlus}`} aria-labelledby="plan-plus">
           <h3 id="plan-plus">{p.plus.name}</h3>
-          <p className={`${styles.price} ${styles.priceMonthly}`}>
-            {p.plus.monthly}
-            <span className={styles.priceUnit}>{p.plus.perMonth}</span>
+          <p className={styles.price}>
+            {p.plus.price}
+            <span className={styles.priceUnit}>{p.plus.period}</span>
           </p>
-          <p className={`${styles.price} ${styles.priceYearly}`}>
-            {p.plus.yearly}
-            <span className={styles.priceUnit}>{p.plus.perYear}</span>
-          </p>
-          <p className={styles.planLead}>{p.plus.lifetime}</p>
+          <p className={styles.planLead}>{p.plus.lead}</p>
           <ul className={styles.planItems}>
             {p.plus.items.map((i) => (
               <li key={i}>{i}</li>

@@ -343,15 +343,14 @@ Components: `Section` takes a `number` and renders the eyebrow `02 / LABEL`; `Ey
 `inverse`/`inverseOutline` button variants are new; `DeviceFrame` is a thick ink outline
 with a small radius; `Mockups.tsx` draws Today, Sleep and Strain in HTML/SVG from sample
 data (no inline styles: the marketing CSP has no `style-src 'unsafe-inline'`, so bars are
-SVG rects). The header's narrow-screen menu is a `<details>`, the pricing toggle two radio
-buttons and `:has()`, so the site still ships no script. The hero reads "Engineered for
+SVG rects). The header's narrow-screen menu is a `<details>`, so the site still ships no script. The hero reads "Engineered for
 peak." (the user's choice); the tagline stays in the footer and the lock-up until the app
 changes it.
 
 Copy: the home page's texts were rewritten in the terser register (`messages/en.json` →
-`home`), facts unchanged; a pricing section states the 2026-11-05 decision (Free forever;
-Plus 4.99 €/month, 34.99 €/year, 99 € once; founder price for testers; Plus arrives with the
-App Store launch) and the FAQ's cost answer follows it. The app's real captures remain only
+`home`), facts unchanged; a pricing section shows Free (forever) next to RYFT Plus with the price
+as **TBA** (the user's call on 2026-11-05: the Plus figures stay internal until launch; a
+founder price for testers is announced, no number) and the FAQ's cost answer follows it. The app's real captures remain only
 on the legal pages (`profile-account-light`); the other light captures stay in
 `public/screenshots` until the app's restyle produces new ones.
 
