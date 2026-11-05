@@ -78,7 +78,9 @@ Run of 2026-11-04 and 2026-11-05: Phase 0 (safety net), Phase 1 (docs in code) a
 `docs/work/2026-11-04-production-hardening/plan.md`, plus the admission and admin-web work that ran beside it. Written at the
 close-out against `origin/main` `7b439df`; every number below comes from a pull request named next to it or from a
 command run for this note, and "not verified" means exactly that. Decisions: D148–D152 (earlier) and D163–D183 (this
-close-out); D162 is reserved for the `/admin` page (#128). Behaviour is unchanged except where D174 says otherwise
+close-out); D162 is the `/admin` page (#128), D185 the NetworkPolicy peers (#140, written in #139); D184 is proposed in
+#141 (open). Updated after the close-out with the admin-web merges of 2026-11-05 (#135, #136, #128, #138, #140) and the
+owner's checks of that evening. Behaviour is unchanged except where D174 says otherwise
 (A2: four accepted changes), where D150 changed the DLQ replay (a redelivery) and the operator scripts (they name their
 cluster), where D182 re-scoped the RabbitMQ operators (once synced), and where the admin work added routes and CORS
 (D153–D161, #136).
@@ -129,22 +131,28 @@ cluster), where D182 re-scoped the RabbitMQ operators (once synced), and where t
   tripwire, D181), #51 (both operators namespace-scoped, D182), #55 (admission signals scraped and alerted, D183), #131
   (alert groups under Grafana Cloud's 20-rule limit, D179), #107 (the licence snapshot in step with the app).
 - **Admin web, backend half** (#126 admin sign-in by Supabase token with MFA, CORS, audit actor, D153–D158; #127 invites for
-  a person, revoke, who redeemed, D159–D161; migrations 0032 and 0033). The page (#128) is open.
+  a person, revoke, who redeemed, D159–D161; migrations 0032 and 0033).
+- **Admin web, the page and its config** (2026-11-05): #135 merged 13:39 UTC (the secret-scan allowlist for the page's
+  publishable key, U4); #136 merged 13:55 UTC (`ADMIN_WEB_ORIGINS=https://ryftapp.de`); #128 merged 15:48 UTC (the `/admin`
+  page, D162, web D15–D17) and pinned by #138 (16:04 UTC, web `bb74830`); #140 merged 17:27 UTC (the unused ingress-nginx
+  peer removed from the api, ingest and web NetworkPolicies, D185). The docs as built are #139 (API.md audit row and page
+  column, `design.md` corrections, OPERATIONS → Admin sign-in setup order and V-MFA-1, SUPABASE.md checklist).
 
-**Live in production as of 2026-11-05** (the pins of `deploy/k8s/overlays/eks`: services and web `dc344e1` and `09d3413`
+**Live in production as of 2026-11-05** (the pins of `deploy/k8s/overlays/eks`: services `dc344e1`, web `bb74830` (#138)
 on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **not verified** from this session):
 
 - Services at `dc344e1` (#134): A2 (reached the pin with #130, `dc1fcd4`, 10:22 UTC; see D175), the B1, C1, C2 and C4
   refactors, #126 and #127.
-- **Admin sign-in is inert** until an `admin_accounts` row exists and the account has the role (OPERATIONS → Beta → Admin
-  sign-in). #136 set `ADMIN_WEB_ORIGINS=https://ryftapp.de` in `deploy/k8s/base/api/config.env` (merged 2026-11-05 13:55
-  UTC as `cd7970c`): the ConfigMap hash changes, so Argo CD rolls the **api only**, and from then on a browser page on
-  `https://ryftapp.de` can read the operator routes' answers (CORS on `/v1/admin/` only). **Whether the api has rolled and
-  the owner ran #136's two post-roll checks is not verified:** `kubectl --context ryft-prod-euc1 -n ryft-api logs -l app=api
-  --tail=-1 --prefix | grep 'admin routes enabled'` shows `"web_origins":1` on both pods, and `curl -si -X OPTIONS
-  https://api.ryftapp.de/v1/admin/invites -H 'Origin: https://ryftapp.de' -H 'Access-Control-Request-Method: POST'`
-  returns `204` with `access-control-allow-origin: https://ryftapp.de`. The user's `make alerts-apply` comes before the
-  first row (D158).
+- **The admin page works** (`https://ryftapp.de/admin`): merged (#128), pinned (#138), **confirmed by the owner on
+  2026-11-05** (pasted output): the web pods rolled; `/admin` answers `200` with the admin CSP and `Cache-Control:
+  no-store`; `/` keeps `connect-src 'none'`; the api rolled with #136's `ADMIN_WEB_ORIGINS` (`admin routes enabled` with
+  `"web_origins":1`, the `OPTIONS` preflight on `/v1/admin/invites` `204` with `access-control-allow-origin:
+  https://ryftapp.de`); the operator's sign-in on the page worked, so the owner did the account setup (OPERATIONS → Beta →
+  Admin sign-in). **V-MFA-1 result: not recorded.** Whether `make alerts-apply` ran before the first row (D158) is **not
+  verified**. Also **not verified**: `mfa_required` after 12 h on the live project, the effect of *Sign out*
+  (`scope=global`) on other devices, the lost-phone runbook.
+- **NetworkPolicies without the ingress-nginx peer** (#140, D185): Argo CD updates the three policies in place, no pod
+  restarts. #140's read-only post-sync checks were given to the owner; the result is **not verified**.
 - **Invites with a bound email** exist since migration 0033. A bound code is created or redeemed only while the api's
   `invite binding` state is `ok` (Confirm email on at Supabase, read as `mailer_autoconfirm` from the project; D159); the
   log line `invite binding` after the deploy is the evidence, and **reading it from the live pods is not verified here**.
@@ -197,11 +205,12 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
   and a narrowed controller role rendered by `argocd.tf` (#47 applied); the chart fails the render and `admission.tf` the
   plan otherwise. Kind run 42004326289 on its head: 83 pass, 0 fail, 2 skipped (`argo-rbac`, `claim-i`: that tree has no
   #47). Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
-- **#128** (the `/admin` page): U4 is done (the secret-scan allowlist merged as #135, 13:39 UTC). Before its merge, from its body:
-  #127 and #126 live (both are in the pin above); `ADMIN_WEB_ORIGINS=https://ryftapp.de` live (#136 merged at 13:55 UTC; that the
-  api rolled is not verified, see above); U5, the
-  `/admin` exception paragraph in `web/CLAUDE.md`; at Supabase the Data API off, maximum enrolled MFA factors = 1, the
-  V-MFA-1 check (an aal1 session must be refused a second factor) and the real-project GoTrue shape check.
+- **V-MFA-1 result: not recorded.** The owner did the operator setup; please record the probe's status and `error_code`, the
+  factor limit it ran under and the date here (OPERATIONS → Beta → Admin sign-in, step 3: with *Maximum enrolled factors* 1
+  the pass is `422 too_many_enrolled_mfa_factors`, with 2 or more `403 insufficient_aal`; `200` means stop). The Supabase
+  states (Data API off, maximum enrolled factors 1, *Confirm email* and *Secure email change* on) are not recorded here
+  either (SUPABASE.md → checklist).
+- **#141** (open): the unknown-key-id follow-up below.
 - **#129** (draft): the privacy text for an invite address, the user's decision U3. A new `PRIVACY_POLICY_VERSION` makes every
   account consent again; under `CONSENT_ENFORCE=warn` (this file records `warn` until the app ships its consent screen, D87; the
   live Vault value is not verified here) uploads still pass, and scoring keeps running (#129's body).
@@ -222,7 +231,7 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
   fails at `-count>1` and passes at `-count=1` (#105's body); `Add(0)` for the counters whose first event no alert sees
   (listed under Technical below, and the holes named in D174); `samples_7d` and `coverage` are documented in API.md and absent
   from the Go types (`docDrift`, #87); `loadNight`'s `mean`/`last` read a store error as a missing value (#112).
-- Documentation: superseded notes for D15, D16, D18, D27, D33, D44 and D84 (the hand-off's list; D15 is in
+- Documentation: superseded notes for D15, D16 (its third bullet points to D185 since #139; the first, Prometheus on 8080, is also stale), D18, D27, D33, D44 and D84 (the hand-off's list; D15 is in
   `scripts/decision_refs.skip`); `../app/Ryft/Networking/Models.swift` line 2 names `model/model.go` (the app repo, #110);
   the "Not covered (yet)" sentence in `docs/ARCHITECTURE.md` still says admission policy is not covered, while the chart
   exists and is disabled; the grouping leftovers #110 lists. The `Models.swift` and `ARCHITECTURE.md` lines are not edited here.
@@ -240,12 +249,11 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
   user** (the service roles' policies are `USING (true)`, D42, so "user A cannot read user B through a service role" fails
   by design: re-scope the test or add per-user RLS); govulncheck and dependabot for the Go modules; a nightly load job;
   build info and pprof; SLOs; a database audit and retention; the restore drill.
-- Admin-web follow-ups: an unknown key id answers `401` when the signing keys are fresh (today `503 jwks_refresh_limited`,
-  OPERATIONS → Admin sign-in); the unused `ingress-nginx` rule of the api NetworkPolicy
-  (`deploy/k8s/base/api/networkpolicy.yaml`) can go; the privacy text should name `api.ryftapp.de` with the PR that ships
-  PR2's wording; `docs/API.md`'s audit row says "not in v1" and is stale (#128's body, PR4 docs); `design.md` of
-  `docs/work/2026-11-05-admin-web/` needs the corrections #128's body lists (`sessionStorage` cleared on leaving, the path-scoped
-  `connect-src`, the QR prologue, `*.gz` answering 404).
+- Admin-web follow-ups: **an unknown key id on an admin route** still answers `503 jwks_refresh_limited` within the refresh
+  limit (OPERATIONS → Admin sign-in). Mapping it to the generic `401` was considered and rejected (D184 in #141, open); the
+  root cause, a client hang-up counted as a failed key fetch, is fixed in #141. Open until #141 merges. The privacy text should
+  name `api.ryftapp.de` with the PR that ships PR2's wording. Settled: the ingress-nginx rule (#140, D185), the stale
+  `docs/API.md` audit row and the `design.md` corrections (#139).
 
 **Deploy commands for what is open** (the user's; every cluster command names its cluster, D150):
 
@@ -256,7 +264,11 @@ make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 git pull --ff-only && make alerts-apply
 # #51, only if not yet done: kubectl --context ryft-prod-euc1 diff -f deploy/argocd/project.yaml (only the added destination), then apply it,
 # and the checks of OPERATIONS → RabbitMQ → "After an operator sync".
-# After #128 is merged and promoted: OPERATIONS → Beta → Admin sign-in (the two SQL statements) is the only step that opens it.
+# The admin page: done by the owner on 2026-11-05 (sign-in works). Still to record: the V-MFA-1 result (OPERATIONS → Beta → Admin sign-in, step 3).
+# #140, read-only after the sync (its body): the ingress-nginx peer is gone and traffic still passes Traefik
+kubectl --context ryft-prod-euc1 get networkpolicy -n ryft-api -o yaml | grep -c ingress-nginx      # 0 (also -n ryft-ingest, -n ryft-web)
+curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftapp.de/v1/me   # 401
+make smoke-prod
 ```
 
 **Gotcha: a newer promote PR supersedes a held one.** On 2026-11-05 the promote PR #124 (A2) had its auto-merge switched

@@ -54,10 +54,30 @@ either.
      relay address. Two accounts that already exist are merged by the operator
      (`OPERATIONS.md` → Two accounts for one person).
 
+   - **Multi-factor** (Authentication → Multi-Factor; for the operator's page `/admin`,
+     **security-critical**): *TOTP* enabled, and *Maximum enrolled factors* (project-wide; the
+     Management API's name is believed to be `mfa_max_enrolled_factors`, not verified in the dashboard)
+     set to **1**; the app uses no MFA. With one factor allowed, someone who has the admin password but
+     not the phone cannot add a factor of their own. Then the check V-MFA-1: an aal1 session of an
+     account with a verified factor must be refused a second enrolment. GoTrue checks the factor count
+     first, so with the limit at 1 the pass is `422 too_many_enrolled_mfa_factors`, and only with a limit
+     of 2 or more `403 insufficient_aal`; `200` means stop, anything else is inconclusive
+     (`OPERATIONS.md` → Beta → Admin sign-in has the steps). Under Hooks, no custom access token hook
+     may touch `app_metadata.role` (What the services check, below).
+
    Dashboard labels move between Supabase releases; the settings above are what
    matters.
+
+   **Security-critical for the admin page and for invites bound to an email** (D159, D162): *Confirm
+   email* ON and *Secure email change* ON (Email accounts above), *Maximum enrolled factors* 1 and the
+   V-MFA-1 check (Multi-factor above), and the Data API off (step 4). Record each state and the date in
+   STATUS.md before the role is granted or the first bound code is made. The api checks none of them for
+   sign-in; its only reaction is that it refuses to create or redeem a bound invite while the project's
+   `mailer_autoconfirm` is true or unknown (D159). Every one of them is yours to check.
 4. **Turn off the Data API** (Project Settings → Data API), or at least remove `public`
-   from the exposed schemas. Migration 0007 also revokes every table privilege from
+   from the exposed schemas (**security-critical** for the admin page, D162: the page's
+   publishable key is public and its `connect-src` reaches `/auth/v1/` only, but any client can use the key).
+   Migration 0007 also revokes every table privilege from
    `anon`, `authenticated` and `service_role` and enables RLS, but nothing should be
    exposed in the first place.
 5. **Session pooler** (Connect → Session pooler, port **5432**): copy the host
