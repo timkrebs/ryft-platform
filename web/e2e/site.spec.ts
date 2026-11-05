@@ -15,7 +15,7 @@ for (const path of ALL) {
       const res = await page.goto(path, { waitUntil: 'networkidle' });
       expect(res?.status()).toBe(200);
       await expect(page.locator('h1').first()).toBeVisible();
-      expect(await page.locator('html').getAttribute('lang')).toBe(path.startsWith('/de') ? 'de' : 'en');
+      expect(await page.locator('html').getAttribute('lang')).toBe('en');
       expect(await page.title()).toMatch(/RYFT/);
 
       const axe = await new AxeBuilder({ page })

@@ -21,7 +21,7 @@ function repo(versions: Record<string, string | null>, line = (v: string) => `PR
   return dir;
 }
 
-/** A site root (web/) with the privacy texts of each locale and privacy-versions.json. */
+/** A site root (web/) with the privacy texts and privacy-versions.json. */
 function site(pages: Record<string, string[]>, list: string[] | null = ['2026-10-20'], status = 'published') {
   const dir = mkdtempSync(join(tmpdir(), 'ryft-site-'));
   for (const [locale, names] of Object.entries(pages)) {
@@ -41,9 +41,8 @@ const both = (v: string) => repo({ api: v, ingest: v });
 describe('privacy policy version check', () => {
   it('reads the newest version on the site', () => {
     expect(sitePolicyVersion('.')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(sitePolicyVersion('.', 'de')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(sitePolicyVersion(site({ en: ['2026-01-01', '2026-10-20', '2026-03-03'] }))).toBe(V);
-    expect(sitePolicyVersion(site({ en: [] }), 'de')).toBeNull();
+    expect(sitePolicyVersion(site({ en: [] }))).toBeNull();
   });
 
   it('parses config.env lines of exactly one shape', () => {
@@ -86,7 +85,7 @@ describe('privacy policy version check', () => {
   });
 
   it('rejects an impossible date in privacy-versions.json', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, ['2026-11-31', V]), repoRoot: both(V) });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }, ['2026-11-31', V]), repoRoot: both(V) });
     expect(r.problems.join('\n')).toMatch(/privacy-versions\.json is missing or not a non-empty list/);
   });
 
@@ -114,24 +113,19 @@ describe('privacy policy version check', () => {
     expect(p.problem).toBe('deploy/k8s/base/ingest/config.env: file not found');
   });
 
-  it('is ok when both languages have the version and it is the newest', () => {
-    const r = checkPolicy({ siteRoot: site({ en: ['2026-01-01', V], de: [V] }), repoRoot: both(V) });
+  it('is ok when the site has the version and it is the newest', () => {
+    const r = checkPolicy({ siteRoot: site({ en: ['2026-01-01', V] }), repoRoot: both(V) });
     expect(r).toMatchObject({ version: V, problems: [] });
   });
 
-  it('fails when the German page is missing', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [] }), repoRoot: both(V) });
+  it('fails when the page is missing', () => {
+    const r = checkPolicy({ siteRoot: site({ en: [] }), repoRoot: both(V) });
     expect(r.problems).toHaveLength(1);
-    expect(r.problems[0]).toMatch(/content\/legal\/de\/privacy\/2026-10-20\.mdx is missing/);
-  });
-
-  it('fails when the English page is missing', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [], de: [V] }), repoRoot: both(V) });
-    expect(r.problems.join('\n')).toMatch(/content\/legal\/en\/privacy\/2026-10-20\.mdx is missing/);
+    expect(r.problems[0]).toMatch(/content\/legal\/en\/privacy\/2026-10-20\.mdx is missing/);
   });
 
   it('fails when config.env is ahead of the site', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: both('2026-11-01') });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }), repoRoot: both('2026-11-01') });
     expect(r.problems.join('\n')).toMatch(/2026-11-01\.mdx is missing/);
     expect(r.problems.join('\n')).toMatch(
       /newest en privacy policy is 2026-10-20, PRIVACY_POLICY_VERSION is 2026-11-01/,
@@ -139,17 +133,14 @@ describe('privacy policy version check', () => {
   });
 
   it('fails when the site is ahead of config.env (a new text nobody consents to)', () => {
-    const r = checkPolicy({
-      siteRoot: site({ en: [V, '2026-11-01'], de: [V, '2026-11-01'] }),
-      repoRoot: both(V),
-    });
-    expect(r.problems).toHaveLength(2);
-    expect(r.problems.join('\n')).toMatch(/newest de privacy policy is 2026-11-01/);
+    const r = checkPolicy({ siteRoot: site({ en: [V, '2026-11-01'] }), repoRoot: both(V) });
+    expect(r.problems).toHaveLength(1);
+    expect(r.problems.join('\n')).toMatch(/newest en privacy policy is 2026-11-01/);
   });
 
   it('fails when api and ingest disagree', () => {
     const r = checkPolicy({
-      siteRoot: site({ en: [V], de: [V] }),
+      siteRoot: site({ en: [V] }),
       repoRoot: repo({ api: V, ingest: '2026-11-01' }),
     });
     expect(r.version).toBeNull();
@@ -157,7 +148,7 @@ describe('privacy policy version check', () => {
   });
 
   it('fails when a config.env is missing', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: repo({ api: V, ingest: null }) });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }), repoRoot: repo({ api: V, ingest: null }) });
     expect(r.problems.join('\n')).toMatch(/deploy\/k8s\/base\/ingest\/config\.env: file not found/);
   });
 });
@@ -165,67 +156,60 @@ describe('privacy policy version check', () => {
 describe('privacy versions that users consented to', () => {
   it('fails when an old version loses its page (a renamed file)', () => {
     const r = checkPolicy({
-      siteRoot: site({ en: ['2026-11-01'], de: ['2026-11-01'] }, ['2026-10-20', '2026-11-01']),
+      siteRoot: site({ en: ['2026-11-01'] }, ['2026-10-20', '2026-11-01']),
       repoRoot: both('2026-11-01'),
     });
     expect(r.problems.join('\n')).toMatch(/en\/privacy\/2026-10-20\.mdx is missing/);
-    expect(r.problems.join('\n')).toMatch(/de\/privacy\/2026-10-20\.mdx is missing/);
   });
 
   it('is ok when the old version is kept and the list ends with the current one', () => {
     const both2 = ['2026-10-20', '2026-11-01'];
-    const r = checkPolicy({
-      siteRoot: site({ en: both2, de: both2 }, both2),
-      repoRoot: both('2026-11-01'),
-    });
+    const r = checkPolicy({ siteRoot: site({ en: both2 }, both2), repoRoot: both('2026-11-01') });
     expect(r.problems).toEqual([]);
   });
 
   it('fails when config.env is not the last entry of the list', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, ['2026-01-01']), repoRoot: both(V) });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }, ['2026-01-01']), repoRoot: both(V) });
     expect(r.problems.join('\n')).toMatch(
       /last entry of content\/legal\/privacy-versions\.json is 2026-01-01/,
     );
   });
 
   it('fails without the list', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }, null), repoRoot: both(V) });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }, null), repoRoot: both(V) });
     expect(r.problems.join('\n')).toMatch(/privacy-versions\.json is missing/);
   });
 
   it('fails on a privacy page with another name', () => {
-    const r = checkPolicy({ siteRoot: site({ en: [V, 'draft.mdx'], de: [V] }), repoRoot: both(V) });
+    const r = checkPolicy({ siteRoot: site({ en: [V, 'draft.mdx'] }), repoRoot: both(V) });
     expect(r.problems.join('\n')).toMatch(/en\/privacy\/draft\.mdx: privacy pages must be named/);
   });
 
   it('ignores dotfiles such as .DS_Store, but not other non-date pages', () => {
-    const dir = site({ en: [V, '.DS_Store'], de: [V] });
+    const dir = site({ en: [V, '.DS_Store'] });
     expect(checkPolicy({ siteRoot: dir, repoRoot: both(V) }).problems).toEqual([]);
     expect(sitePolicyVersion(dir)).toBe(V);
   });
 
   it('warns, but does not fail, while the consented page is a draft', () => {
-    const r = checkPolicy({
-      siteRoot: site({ en: [V], de: [V] }, ['2026-10-20'], 'draft'),
-      repoRoot: both(V),
-    });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }, ['2026-10-20'], 'draft'), repoRoot: both(V) });
     expect(r.problems).toEqual([]);
-    expect(r.warnings).toHaveLength(2);
+    expect(r.warnings).toHaveLength(1);
     expect(r.warnings[0]).toMatch(/still a draft/);
   });
 
   it("fails when docker-compose.yml's version differs", () => {
     const repoRoot = both(V);
     writeFileSync(join(repoRoot, 'docker-compose.yml'), '    PRIVACY_POLICY_VERSION: "2026-01-01"\n');
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }), repoRoot });
     expect(r.problems.join('\n')).toMatch(/docker-compose\.yml .* 2026-01-01/);
     writeFileSync(join(repoRoot, 'docker-compose.yml'), '    PRIVACY_POLICY_VERSION: "2026-10-20"\n');
-    expect(checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot }).problems).toEqual([]);
+    expect(checkPolicy({ siteRoot: site({ en: [V] }), repoRoot }).problems).toEqual([]);
   });
 
   it('names the searched folder when config.env is not there', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ryft-empty-'));
-    const r = checkPolicy({ siteRoot: site({ en: [V], de: [V] }), repoRoot: empty });
+    const r = checkPolicy({ siteRoot: site({ en: [V] }), repoRoot: empty });
     expect(r.problems[0]).toContain(empty);
   });
 });

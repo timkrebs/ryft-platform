@@ -22,7 +22,7 @@ const typeSamples: [keyof typeof tokens.type.scale, string][] = [
 export function StyleguidePage() {
   const colors = Object.entries(tokens.colors);
   return (
-    <PageShell locale="en" path="/styleguide" translated={false}>
+    <PageShell locale="en" path="/styleguide">
       <Container>
         <Section
           headingLevel={1}

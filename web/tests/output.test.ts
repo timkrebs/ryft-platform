@@ -128,29 +128,25 @@ describe.skipIf(!built)('built site', () => {
     const noindex = (f: string) =>
       /<meta name="robots" content="noindex/.test(readFileSync(join(OUT, f), 'utf8'));
     for (const f of ['open.html', '404.html', 'styleguide.html']) expect(noindex(f), f).toBe(true);
-    for (const f of ['privacy.html', 'de/privacy.html', 'terms.html', 'impressum.html', 'support.html']) {
+    for (const f of ['privacy.html', 'terms.html', 'impressum.html', 'support.html']) {
       const page = readFileSync(join(OUT, f), 'utf8');
-      if (/Draft — not yet in force|Entwurf – noch nicht in Kraft/.test(page))
-        expect(noindex(f), f).toBe(true);
+      if (/Draft — not yet in force/.test(page)) expect(noindex(f), f).toBe(true);
     }
     const sitemap = readFileSync(join(OUT, 'sitemap.xml'), 'utf8');
     for (const p of ['/styleguide', '/open', '/404']) expect(sitemap).not.toContain(`ryftapp.de${p}<`);
-    expect(sitemap).toContain('<loc>https://ryftapp.de/de/science</loc>');
+    expect(sitemap).toContain('<loc>https://ryftapp.de/science</loc>');
   });
 
-  it('links every translated page to its other language', () => {
-    for (const f of [
-      'index.html',
-      'science.html',
-      'beta.html',
-      'privacy.html',
-      'de.html',
-      'de/privacy.html',
-    ]) {
+  it('is English only: no German pages, no hreflang alternates (web D18)', () => {
+    expect(existsSync(join(OUT, 'de.html'))).toBe(false);
+    expect(existsSync(join(OUT, 'de'))).toBe(false);
+    for (const f of ['index.html', 'science.html', 'privacy.html']) {
       const page = readFileSync(join(OUT, f), 'utf8');
-      expect(page, f).toMatch(/<link rel="alternate" hrefLang="de"/);
-      expect(page, f).toMatch(/<link rel="alternate" hrefLang="en"/);
+      expect(page, f).not.toMatch(/hrefLang=/i);
+      expect(page, f).toContain('<html lang="en"');
+      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftapp\.de\//);
     }
+    expect(readFileSync(join(OUT, 'sitemap.xml'), 'utf8')).not.toContain('/de');
   });
 
   it('lists the app’s and the site’s components with their licences on /licenses', () => {

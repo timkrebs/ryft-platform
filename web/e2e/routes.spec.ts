@@ -2,21 +2,28 @@ import { expect, test } from '@playwright/test';
 
 // The URLs the app links to, the AASA, and how nginx answers around them.
 test.describe('routes the app depends on', () => {
-  for (const path of [
-    '/privacy',
-    '/terms',
-    '/support',
-    '/impressum',
-    '/de/impressum',
-    '/de/privacy',
-    '/de/terms',
-  ]) {
+  for (const path of ['/privacy', '/terms', '/support', '/impressum']) {
     test(`${path} is 200`, async ({ request }) => {
       const res = await request.get(path, { maxRedirects: 0 });
       expect(res.status()).toBe(200);
       expect(res.headers()['content-type']).toContain('text/html');
     });
   }
+
+  // The German pages are gone (web D18); older builds of the app still link to /de/….
+  test('the old German URLs redirect to the English page', async ({ request }) => {
+    for (const [from, to] of [
+      ['/de', '/'],
+      ['/de/privacy', '/privacy'],
+      ['/de/terms', '/terms'],
+      ['/de/impressum', '/impressum'],
+      ['/de/privacy/2026-10-20', '/privacy/2026-10-20'],
+    ]) {
+      const res = await request.get(from, { maxRedirects: 0 });
+      expect(res.status(), from).toBe(301);
+      expect(res.headers()['location'], from).toBe(to);
+    }
+  });
 
   test('apple-app-site-association is JSON, no redirect, no extension', async ({ request }) => {
     const res = await request.get('/.well-known/apple-app-site-association', { maxRedirects: 0 });
@@ -59,8 +66,8 @@ test.describe('routes the app depends on', () => {
   test('trailing slashes redirect to the canonical path, relatively', async ({ request }) => {
     for (const [from, to] of [
       ['/privacy/', '/privacy'],
-      ['/de/', '/de'],
-      ['/de/science/', '/de/science'],
+      ['/science/', '/science'],
+      ['/terms/2026-10-20/', '/terms/2026-10-20'],
     ]) {
       const res = await request.get(from, { maxRedirects: 0 });
       expect(res.status(), from).toBe(301);
@@ -69,7 +76,7 @@ test.describe('routes the app depends on', () => {
   });
 
   test('unknown paths are 404 with the site’s 404 page', async ({ request }) => {
-    for (const path of ['/nope', '/de/nope', '/privacy/1999-01-01']) {
+    for (const path of ['/nope', '/privacy/1999-01-01']) {
       const res = await request.get(path);
       expect(res.status(), path).toBe(404);
       expect(await res.text(), path).toContain('Page not found');
@@ -83,7 +90,7 @@ test.describe('routes the app depends on', () => {
   });
 
   test('security headers and the CSP on pages and errors', async ({ request }) => {
-    for (const path of ['/', '/de/privacy', '/nope', '/auth/callback']) {
+    for (const path of ['/', '/privacy', '/nope', '/auth/callback']) {
       const h = (await request.get(path)).headers();
       expect(h['content-security-policy'], path).toMatch(/script-src 'sha256-[^']+'/);
       expect(h['content-security-policy'], path).not.toContain('unsafe-inline');
@@ -101,9 +108,7 @@ test.describe('routes the app depends on', () => {
     expect((await request.get(css!)).headers()['cache-control']).toContain('immutable');
     expect((await request.get('/')).headers()['cache-control']).toBe('public, max-age=300');
     // The text in force is revalidated; a versioned text is fixed and may be cached.
-    for (const path of ['/privacy', '/de/privacy']) {
-      expect((await request.get(path)).headers()['cache-control'], path).toBe('no-cache');
-    }
+    expect((await request.get('/privacy')).headers()['cache-control']).toBe('no-cache');
     expect((await request.get('/privacy/2026-10-20')).headers()['cache-control']).toBe('public, max-age=300');
   });
 });

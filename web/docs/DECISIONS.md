@@ -216,3 +216,30 @@ Auth, both named in its footer; every other page still makes no request beyond t
 strings are for one operator, live in the bundle, outside `messages/{en,de}.json`, and there
 is no `/de/admin`: the page sits outside `[locale]`, so the two-language checks do not apply
 to it.
+
+## D18 — English only; the German pages are gone (2026-11-05; amends D8)
+
+The user's decision of 2026-11-05: the site moves to a monochrome, light-only, typographic
+design, English only for now; the restyle follows in the next PR on top of this one. German
+goes because every page, legal text, string and OG image existed twice, and a redesign of
+twenty-four pages is half the work of twelve. So: `src/app/[locale]`, `messages/de.json`,
+`content/legal/de`, `content/science/de.mdx` and `public/og/de.png` are deleted, with the
+language switch, the hreflang alternates, the German sitemap entries and
+`scripts/check-messages.mjs` (parity has nothing to compare; `tests/messages.test.ts`
+keeps the empty-string check). `src/lib/i18n.ts` keeps `Locale`, `messages()`,
+`localePath()` (now the identity) and `intlLocale()` (`en-GB`), so the views compile
+unchanged and a second language can come back without touching them.
+
+Consequences:
+- Older builds of the app link to `/de/privacy`, `/de/terms` and `/de/impressum`; nginx
+  answers every `/de/…` with a 301 to the English page (`e2e/routes.spec.ts`).
+- The English legal notice carried the VAT and consumer-dispute statements only by linking
+  to the German page; they are ported into `content/legal/en/impressum.mdx` as they were.
+- `scripts/lib/policy.mjs` checks the English privacy page only. The repository's own guards
+  (`scripts/check_policy_in_force.sh`, `scripts/pin_images.sh`) looked for both languages
+  and are changed with this.
+- The privacy texts in force still mention "your choice of appearance" (D19); the wording is
+  the user's legal call and changes only with a new version.
+
+Would change if the user wants German back: `messages/de.json`, `content/legal/de` and a
+`[locale]` segment again, from this PR's parent commit.

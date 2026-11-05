@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Screenshots for docs/STATUS.md from the running image (npm run image && npm run serve):
-// every page's first screen in dark and light (English), the German home page, the home
-// page on a phone, and the app-vs-web comparisons (the app's capture next to the site in
+// every page's first screen in dark and light, the home page on a phone, and the app-vs-web comparisons (the app's capture next to the site in
 // the same appearance). JPEG to keep the repository small. BASE_URL overrides :8080.
 import { mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -47,7 +46,6 @@ async function shoot(path, scheme, file, viewport = { width: 1280, height: 900 }
 
 for (const p of PAGES) for (const s of ['dark', 'light']) await shoot(p, s, `${name(p)}-${s}.jpg`);
 for (const s of ['dark', 'light']) {
-  await shoot('/de', s, `de-home-${s}.jpg`);
   await shoot('/', s, `home-phone-${s}.jpg`, { width: 390, height: 844 });
   await shoot('/', s, `home-full-${s}.jpg`, { width: 1280, height: 900 }, true);
 }
@@ -71,4 +69,4 @@ for (const s of ['dark', 'light']) {
     .toFile(join(OUT, `compare-${s}.jpg`));
 }
 await browser.close();
-console.log(`status shots: docs/screenshots/ (${PAGES.length * 2 + 8} images).`);
+console.log(`status shots: docs/screenshots/ (${PAGES.length * 2 + 6} images).`);

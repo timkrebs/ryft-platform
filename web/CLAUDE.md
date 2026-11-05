@@ -46,23 +46,23 @@ here: read from it, never write there.
   (`overlays/eks`), once the pinned image carries the page. Only the user flips
   `status: draft` → `published`, and a new privacy version (`PRIVACY_POLICY_VERSION`) only
   on the user's decision: it asks every user to consent again. The new text, its entry in
-  `content/legal/privacy-versions.json` and the version bump go in one PR (the en and de
-  pages, `privacy-versions.json`, base `config.env` of api and ingest, `docker-compose.yml`);
+  `content/legal/privacy-versions.json` and the version bump go in one PR (the page,
+  `privacy-versions.json`, base `config.env` of api and ingest, `docker-compose.yml`);
   old versions keep their pages. The version goes into force with the web pin, not with the
   merge (the window is in `../docs/OPERATIONS.md`).
 - **Science numbers come from `../docs/SCORING.md` and `../docs/ARCHITECTURE.md`**, by
   hand, for the model version in `content/science/meta.json`. A test fails when the
   platform's model version moves.
 - **No medical claims.** RYFT is a wellness app, not a medical device; say so near scores.
-- **Two languages.** English at `/…`, German at `/de/…`, du-form like the app. Every
-  UI string in `messages/{en,de}.json` (same keys, checked).
+- **English only** (web D18). Every UI string in `messages/en.json`; `/de/…` redirects to the
+  English page for the app's older builds. German may come back; the views keep `Locale`.
 - **Fonts**: Satoshi WOFF2 files are fetched by `npm run fonts`, verified by hash and never
   committed (ITF FFL: self-hosting yes, redistribution through repositories no, no subsetting).
 
 ## Verify before every commit
 From the repository root:
 ```bash
-make web-test web-build   # typecheck, lint (ESLint, Prettier, brand, messages), Vitest, static export
+make web-test web-build   # typecheck, lint (ESLint, Prettier, brand), Vitest, static export
 make web-e2e              # builds the nginx image (Podman or Docker) and runs Playwright against it
 ```
 (`make web-install` once; `make hooks` once per clone.) The same from `web/` with `npm ci`,

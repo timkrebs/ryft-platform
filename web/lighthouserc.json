@@ -3,7 +3,6 @@
     "collect": {
       "url": [
         "http://localhost:8080/",
-        "http://localhost:8080/de",
         "http://localhost:8080/science",
         "http://localhost:8080/beta",
         "http://localhost:8080/privacy"

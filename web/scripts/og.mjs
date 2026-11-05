@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Open Graph / Twitter images, one per locale: public/og/<locale>.png, 1200 × 630.
+// The Open Graph / Twitter image: public/og/en.png, 1200 × 630.
 // Rendered in Chromium (Playwright) from an HTML card that uses the self-hosted Satoshi
 // files and the token colours, so the image is ordinary use of the font (ITF FFL), not
 // a converted copy of it. The output is committed; run again when the copy or the tokens
@@ -23,11 +23,6 @@ const copy = {
     tagline: 'Your whole health.',
     line: 'Readiness · Recovery · Strain · Sleep',
     foot: 'iPhone · Apple Health · Hosted in the EU',
-  },
-  de: {
-    tagline: 'Deine ganze Gesundheit.',
-    line: 'Bereitschaft · Erholung · Belastung · Schlaf',
-    foot: 'iPhone · Apple Health · Gehostet in der EU',
   },
 };
 
@@ -61,4 +56,4 @@ h1{font-weight:500;font-size:84px;line-height:1.05;letter-spacing:-.02em;max-wid
   await page.screenshot({ path: join(ROOT, 'public/og', `${locale}.png`) });
 }
 await browser.close();
-console.log('og: public/og/en.png and public/og/de.png (1200 × 630).');
+console.log('og: public/og/en.png (1200 × 630).');

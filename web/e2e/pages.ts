@@ -1,5 +1,5 @@
-// Every page, as the English path; German exists under /de unless `en` says otherwise.
-export const PAGES: { path: string; enOnly?: boolean }[] = [
+// Every page of the site (English only, web D18).
+export const PAGES: { path: string }[] = [
   { path: '/' },
   { path: '/science' },
   { path: '/beta' },
@@ -10,10 +10,8 @@ export const PAGES: { path: string; enOnly?: boolean }[] = [
   { path: '/impressum' },
   { path: '/support' },
   { path: '/licenses' },
-  { path: '/styleguide', enOnly: true },
-  { path: '/open', enOnly: true },
+  { path: '/styleguide' },
+  { path: '/open' },
 ];
 
-export const de = (path: string) => (path === '/' ? '/de' : `/de${path}`);
-
-export const ALL = PAGES.flatMap((p) => (p.enOnly ? [p.path] : [p.path, de(p.path)]));
+export const ALL = PAGES.map((p) => p.path);

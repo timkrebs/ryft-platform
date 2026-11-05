@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
-import { localePath, locales, messages, type Locale } from './i18n';
+import { localePath, messages, type Locale } from './i18n';
 import { SITE_NAME, SITE_URL, absoluteUrl } from './site';
 
-/** Shared by both root layouts. */
+/** Shared by the root layouts. */
 export function rootMetadata(locale: Locale): Metadata {
   const t = messages(locale);
   return {
@@ -30,19 +30,10 @@ type PageMeta = {
   description?: string;
   /** Drafts, the styleguide, the app-link fallback and 404 stay out of search engines. */
   noindex?: boolean;
-  /** False for pages that exist in one language only. */
-  translated?: boolean;
 };
 
-/** Title, description, canonical, hreflang alternates, Open Graph and Twitter for a page. */
-export function pageMetadata({
-  locale,
-  path,
-  title,
-  description,
-  noindex,
-  translated = true,
-}: PageMeta): Metadata {
+/** Title, description, canonical, Open Graph and Twitter for a page. English only (web D18). */
+export function pageMetadata({ locale, path, title, description, noindex }: PageMeta): Metadata {
   const t = messages(locale);
   const url = absoluteUrl(localePath(locale, path));
   const ogTitle = title ? `${title} · ${SITE_NAME}` : `${SITE_NAME} — ${t.site.tagline}`;
@@ -56,25 +47,14 @@ export function pageMetadata({
   return {
     title: title ?? { absolute: `${SITE_NAME} — ${t.site.tagline}` },
     description: desc,
-    alternates: {
-      canonical: url,
-      languages: translated
-        ? {
-            ...Object.fromEntries(locales.map((l) => [l, absoluteUrl(localePath(l, path))])),
-            'x-default': absoluteUrl(localePath('en', path)),
-          }
-        : undefined,
-    },
+    alternates: { canonical: url },
     openGraph: {
       type: 'website',
       siteName: SITE_NAME,
       url,
       title: ogTitle,
       description: desc,
-      locale: locale === 'de' ? 'de_DE' : 'en_GB',
-      alternateLocale: translated
-        ? locales.filter((l) => l !== locale).map((l) => (l === 'de' ? 'de_DE' : 'en_GB'))
-        : [],
+      locale: 'en_GB',
       images: [image],
     },
     twitter: { card: 'summary_large_image', title: ogTitle, description: desc, images: [image.url] },
