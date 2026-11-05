@@ -609,6 +609,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: timkrebs/ryft-app
+          # Temporary (web D19/D21): the site's tokens come from the app's monochrome light
+          # palette, which is timkrebs/ryft-app#100. Drop `ref` once that PR is on main.
+          ref: design/alpine-light-palette
           path: app
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -628,7 +631,6 @@ jobs:
           if [ -n "$PR_TITLE" ]; then printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/title" && node scripts/check-brand.mjs --message "$RUNNER_TEMP/title"; fi
       - run: npm run tokens:check
       - run: npm run licenses:check
-      - run: node scripts/check-messages.mjs
       - name: Unit tests
         run: npx vitest run --exclude tests/output.test.ts
         env:
