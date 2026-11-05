@@ -170,7 +170,7 @@ telemetryServices:
       - storageclasses
       - validatingwebhookconfigurations
       - volumeattachments
-      - validatingadmissionpolicybindings
+      - validatingadmissionpolicybindings  # the native collector, not custom-resource-state (D183)
   beyla:
     deploy: true
     k8sCache:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The tripwire of scripts/lib/tf_values.sh: refuse a Terraform module that can run a program or read
+"""The tripwire of scripts/lib/tf_values.sh (D181): refuse a Terraform module that can run a program or read
 a credential file when `terraform test` evaluates it.
 
   scripts/lib/tf_scan.py [--trusted F]... [--files-ok F]... [--allow-files] [--skip-dir N]... DIR   exit 0: nothing found; 1: findings (printed

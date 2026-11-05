@@ -72,6 +72,198 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Production hardening (2026-11)
+
+Run of 2026-11-04 and 2026-11-05: Phase 0 (safety net), Phase 1 (docs in code) and part of Phase 2 (structure) of
+`docs/work/2026-11-04-production-hardening/plan.md`, plus the admission and admin-web work that ran beside it. Written at the
+close-out against `origin/main` `7b439df`; every number below comes from a pull request named next to it or from a
+command run for this note, and "not verified" means exactly that. Decisions: D148–D152 (earlier) and D163–D183 (this
+close-out); D162 is reserved for the `/admin` page (#128). Behaviour is unchanged except where D174 says otherwise
+(A2: four accepted changes), where D150 changed the DLQ replay (a redelivery) and the operator scripts (they name their
+cluster), where D182 re-scoped the RabbitMQ operators (once synced), and where the admin work added routes and CORS
+(D153–D161, #136).
+
+**Done**
+
+- **Golden scoring fixtures** (#90, D149; CI guard #93): six synthetic users × 30 days (2026-10-05 to 2026-11-03, across
+  the Berlin and New York clock changes), every `daily_scores` column plus the `workouts` and `sessions` rows scoring
+  writes; `make golden-update` refuses while `ModelVersion` is unchanged unless the generator's inputs changed (and then
+  only for those users; `ModelVersion` is still `2026.10.3`). Every Phase 2 PR below
+  passed them unchanged.
+- **Coverage gate** (#89, D148): relative, fails on a drop of more than 1.0 point of the `internal/` total against main's
+  newest push run. **Baseline 77.30 %** (the first push run after #89, run 41792584785); **81.35 %** on main at
+  `d924dd7` (run 42034721046; both read from the runs' `coverage` artifacts for this note).
+- **Load baseline** (#97, D166; numbers in `docs/OBSERVABILITY.md` → Baselines): the median of three runs on one laptop
+  (Apple M4 Pro, a 4-vCPU podman VM, one replica of everything): `POST /v1/sync` p50 520 ms, p95 4.3 s, p99 4.5 s;
+  `GET /v1/days` p50 16.5 ms, p95 221 ms, p99 652 ms; 0 % errors; `ryft_sync_to_score_seconds` p95 2.4 s. **Caveats:** the
+  runs are bimodal (sync p95 1.3 to 4.6 s across the three runs; a quieter machine gave 83 and 73 ms), a laptop is not
+  production, n = 50 syncs per run makes p95 and p99 single events. Only the error rate is a gate; no nightly job exists.
+- **Contract tests** (#87, #100, D167): 108 schema snapshots (104 in #87; counted in `backend/internal/model/testdata/schemas` on main now), API.md examples decoded, the Errors tables tied to the
+  `model.Code*` constants and the Swift mirror, `make check-api-doc`.
+- **Docs in code** (Phase 1; #94, #95, #96, #99, #102; D163–D165): a `doc.go` per package, revive `exported` on with no
+  `//nolint` for revive (other linters have some), the package map generated into `docs/ARCHITECTURE.md` (`scripts/pkgmap.sh --check`), import rules R1–R13 as
+  a test, `make lint`, and a warning-only check that every decision is cited from code.
+- **Structure** (Phase 2):
+  - A1 `internal/app` (#105, D168–D173).
+  - A2 scoring and notify on `app.Run` (#117, D174; `ServiceExited` and the extended `Panics`, rules in `deploy/grafana/alerts/`).
+  - B1 `model.go` split into 14 files, proven by `scripts/check_pure_move.sh` (#110, D176).
+  - C1 `computeDay` in steps (#111, #112), C2 `ApplySync` in steps (#122, #123), C4 `trainImport` in steps (#119, #120),
+    each as characterisation tests on the old code followed by the refactor with unchanged goldens (D177).
+- **Longest functions and files over 800 lines, before and after.** Measured for this note with a go/ast walk over
+  non-test files under `backend/` (a function's first to last line; the method of `phase2-design.md`'s appendix, which
+  reproduced that note's numbers for the base), base `69d1838` (before A1, B1, C1, C2, C4) and `d924dd7`:
+
+  | | before (`69d1838`) | after (`d924dd7`) |
+  | --- | --- | --- |
+  | functions over 80 lines | 15 | 10 |
+  | functions over 40 lines | 77 | 80 |
+  | longest function | `scoring.computeDay` 278 | `cmd/api` `main` 184 (163 before; the growth was not analysed) |
+  | non-test files over 800 lines | 3: `model/model.go` 1 453, `store/train.go` 1 378, `store/store.go` 1 148 | 2: `store/train.go` 1 378, `store/store.go` 1 152 |
+  | non-test files, lines | 132, 24 249 | 158, 27 413 (new code since the base, such as `internal/app` and the admin work; not broken down) |
+
+  Per refactor, from the PR bodies: `computeDay` 278 to 28 lines, `ApplySync` 136 to 14, `trainImport` 101 to 45 (and
+  `finishImport` 69 to 21), scoring `main` 132 to 24, notify `main` 81 to 16. The 40 count rose because new code was added
+  (A3 and L1 are not done); no "after" number exists from any PR other than these.
+- **Admission and CI follow-ups merged this run:** #53 (a replayed dead letter is a redelivery; operator scripts name their
+  cluster, D150), #57 (the `admission` job and a kind end-to-end run, D151/D152), #114 and #116 (the kind-run scripts as a
+  tripwire, D181), #51 (both operators namespace-scoped, D182), #55 (admission signals scraped and alerted, D183), #131
+  (alert groups under Grafana Cloud's 20-rule limit, D179), #107 (the licence snapshot in step with the app).
+- **Admin web, backend half** (#126 admin sign-in by Supabase token with MFA, CORS, audit actor, D153–D158; #127 invites for
+  a person, revoke, who redeemed, D159–D161; migrations 0032 and 0033). The page (#128) is open.
+
+**Live in production as of 2026-11-05** (the pins of `deploy/k8s/overlays/eks`: services and web `dc344e1` and `09d3413`
+on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **not verified** from this session):
+
+- Services at `dc344e1` (#134): A2 (reached the pin with #130, `dc1fcd4`, 10:22 UTC; see D175), the B1, C1, C2 and C4
+  refactors, #126 and #127.
+- **Admin sign-in is inert** until an `admin_accounts` row exists and the account has the role (OPERATIONS → Beta → Admin
+  sign-in). #136 set `ADMIN_WEB_ORIGINS=https://ryftapp.de` in `deploy/k8s/base/api/config.env` (merged 2026-11-05 13:55
+  UTC as `cd7970c`): the ConfigMap hash changes, so Argo CD rolls the **api only**, and from then on a browser page on
+  `https://ryftapp.de` can read the operator routes' answers (CORS on `/v1/admin/` only). **Whether the api has rolled and
+  the owner ran #136's two post-roll checks is not verified:** `kubectl --context ryft-prod-euc1 -n ryft-api logs -l app=api
+  --tail=-1 --prefix | grep 'admin routes enabled'` shows `"web_origins":1` on both pods, and `curl -si -X OPTIONS
+  https://api.ryftapp.de/v1/admin/invites -H 'Origin: https://ryftapp.de' -H 'Access-Control-Request-Method: POST'`
+  returns `204` with `access-control-allow-origin: https://ryftapp.de`. The user's `make alerts-apply` comes before the
+  first row (D158).
+- **Invites with a bound email** exist since migration 0033. A bound code is created or redeemed only while the api's
+  `invite binding` state is `ok` (Confirm email on at Supabase, read as `mailer_autoconfirm` from the project; D159); the
+  log line `invite binding` after the deploy is the evidence, and **reading it from the live pods is not verified here**.
+  D159 also says bound codes are not to be created in production before the privacy text (#129, the user's decision U3)
+  is published, and not before the rollout of the image with 0033 has completed on all api pods.
+- **Alert rules in Grafana Cloud:** #131's body (10:47 UTC) says `make alerts-apply` had been refused by the 20-rule limit
+  and `ServiceExited` and the extended `Panics` were not live. Whether the user has re-run it since is **not verified**.
+
+**Merged but NOT applied**
+
+- **#47** (Argo CD's ClusterRoles narrowed, admission Step 0; D180), merged 2026-11-05 10:12 UTC: nothing reaches the
+  cluster until the user plans and applies `infra/aws/kubernetes`. The commands and the checks that come first are in
+  OPERATIONS → "Applying the narrowing (Step 0)"; in short, from a clean `main` (the stop rules are in that text):
+
+  ```bash
+  terraform -chdir=infra/aws/kubernetes init                           # the values guard is a new local module
+  terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan   # only helm_release.argocd may change
+  terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan       # then delete argocd-rbac.tfplan: it holds a password hash
+  ```
+
+  **P12 (#121) must not go to Deny before this is applied** and the three `kubectl auth can-i` answers in that text are no.
+  Until it is applied the chart's `*` ClusterRoles are the live ones.
+
+- **#55** (admission signals, T12-e; D183), merged 2026-11-04: the scrape and the kube-state-metrics collector are in
+  `deploy/monitoring/k8s-monitoring.yaml`, which reaches the cluster only through the owner's monitoring apply, and the
+  admission alert rules only through `make alerts-apply`. **Needed only if not yet run (not verified):** until the monitoring
+  apply has run, the native `validatingadmissionpolicybindings` collector and the API-server admission scrape do not exist
+  in the cluster.
+
+  ```bash
+  make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1        # the owner's step; KSM restarts once, Alloy reloads its ConfigMap
+  make alerts-apply                                         # GRAFANA_* variables as for any alert load
+  # Grafana Explore, from #55's body: 1 per API server endpoint plus one for KSM
+  up{job=~"ryft/kube-apiserver-admission|ryft/admission-bindings"}
+  ```
+
+- **#51** (both RabbitMQ operators namespace-scoped; D182), merged 2026-11-04: `deploy/argocd/project.yaml` is applied by hand
+  and #51's body asks for that **before** the merge (`kubectl diff -f deploy/argocd/project.yaml` shows only the added
+  `ryft-rabbitmq` destination, then `kubectl apply` it); Argo CD then syncs `rabbitmq-operators` and both operators restart
+  once. Whether that was done, and the post-sync checks of OPERATIONS → RabbitMQ → "After an operator sync" (both operators
+  Running, no new `forbidden`, the broker `ALLREPLICASREADY`, every topology object Ready, `kubectl auth can-i list secrets
+  -A --as=system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator` answers `no`), is **not verified**. Needed only
+  if not yet done.
+
+**Open**
+
+- **#118** (draft): EKS authentication mode `API`, inert until the user sets it in `terraform.tfvars`; one-way.
+- **#121** (draft): admission policy P12 `ryft-argo-scope`, chart 0.3.0, ships disabled (`admission-values.yaml` still says
+  `enabled: false`). Its Deny gate needs P6, P1 and P2 in Deny (`operators-cluster`, `namespaces`, `workloads-templates`)
+  and a narrowed controller role rendered by `argocd.tf` (#47 applied); the chart fails the render and `admission.tf` the
+  plan otherwise. Kind run 42004326289 on its head: 83 pass, 0 fail, 2 skipped (`argo-rbac`, `claim-i`: that tree has no
+  #47). Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
+- **#128** (the `/admin` page): U4 is done (the secret-scan allowlist merged as #135, 13:39 UTC). Before its merge, from its body:
+  #127 and #126 live (both are in the pin above); `ADMIN_WEB_ORIGINS=https://ryftapp.de` live (#136 merged at 13:55 UTC; that the
+  api rolled is not verified, see above); U5, the
+  `/admin` exception paragraph in `web/CLAUDE.md`; at Supabase the Data API off, maximum enrolled MFA factors = 1, the
+  V-MFA-1 check (an aal1 session must be refused a second factor) and the real-project GoTrue shape check.
+- **#129** (draft): the privacy text for an invite address, the user's decision U3. A new `PRIVACY_POLICY_VERSION` makes every
+  account consent again; under `CONSENT_ENFORCE=warn` (this file records `warn` until the app ships its consent screen, D87; the
+  live Vault value is not verified here) uploads still pass, and scoring keeps running (#129's body).
+- **Proposed, not decided** (drafts; no D-entry until they merge): #118 proposes to switch to authentication mode `API`
+  after read-only checks, a recovery identity outside Identity Center and a plan that shows one in-place update of
+  `aws_eks_cluster.this[0]`, with admins pinned in `admin_principal_arns`; its text calls it irreversible and says a missing
+  node access entry is an immediate user-facing outage. #121 proposes a twelfth policy that lets Argo CD's service accounts
+  write only where its apps render (the controller in an explicit namespace list, `argocd-server` Applications and events
+  plus the first `server.secretkey`), failurePolicy Fail, and states that access reviews are exempt from policies since
+  Kubernetes 1.30 (read from the kube-apiserver sources; its kind run saw P12 refuse neither review, D183).
+
+**Queued follow-ups** (nothing here has a PR yet unless named)
+
+- Small fixes: a foreign-key violation (SQLSTATE 23503) should map to `ErrNotFound` in the scoring handler (no `23503`
+  handling exists under `backend/`, checked with grep); `eventFailed` in `cmd/ingest/main.go`; the trends `422` message (these
+  three come from the close-out hand-off and are not traced to a PR body); the P1, P6, P7 and P8 CEL templates read
+  `request.userInfo.username` without `has()` (checked in the templates; P12 guards it); `httpx.TestInstrumentLabelsByInnerRouteAcrossRequestCopies`
+  fails at `-count>1` and passes at `-count=1` (#105's body); `Add(0)` for the counters whose first event no alert sees
+  (listed under Technical below, and the holes named in D174); `samples_7d` and `coverage` are documented in API.md and absent
+  from the Go types (`docDrift`, #87); `loadNight`'s `mean`/`last` read a store error as a missing value (#112).
+- Documentation: superseded notes for D15, D16, D18, D27, D33, D44 and D84 (the hand-off's list; D15 is in
+  `scripts/decision_refs.skip`); `../app/Ryft/Networking/Models.swift` line 2 names `model/model.go` (the app repo, #110);
+  the "Not covered (yet)" sentence in `docs/ARCHITECTURE.md` still says admission policy is not covered, while the chart
+  exists and is disabled; the grouping leftovers #110 lists. The `Models.swift` and `ARCHITECTURE.md` lines are not edited here.
+- Citations still missing for `scripts/decision_refs.sh` (5 warnings: D168, D169, D170, D172, D178): cite D168 to D172 in
+  `backend/internal/app/doc.go` and D178 at the clock-change sites, batched with the next backend change (a `backend/` edit
+  rolls every service, so it is not done in a documentation PR). D175 and D177 are process rules, in
+  `scripts/decision_refs.skip` with a reason; the other new decisions are cited from scripts, `.golangci.yml`, the
+  `Makefile`, the alert rules and the monitoring values (comments only).
+- Phase 2, not built: A3 api and ingest through `app.Run`, A4 the delivery in hand finishes on shutdown (amqpbus), A5 `/readyz`
+  and the ordered shutdown for api and ingest, A6 settings in one place, A7 the 5 s drain delay, L1 `funlen` lint, B2 the
+  error taxonomy, B3 the store split, B4, C3 the ingest sync in steps. Stage each as D175 says (hold the group first).
+- The clock-change days (D178): the `AddDate` helper in `touchedDays`, `deleteSamples`, `deleteWorkouts` and `planFold`, with its own D-entry.
+- Phases 3 to 5 are queued, none started: request deadlines and `statement_timeout`; goroutine lifecycle; broker audit and
+  prefetch 1; JWKS stale-while-revalidate; idempotency tests per consumer; RLS tests, where **a decision is needed from the
+  user** (the service roles' policies are `USING (true)`, D42, so "user A cannot read user B through a service role" fails
+  by design: re-scope the test or add per-user RLS); govulncheck and dependabot for the Go modules; a nightly load job;
+  build info and pprof; SLOs; a database audit and retention; the restore drill.
+- Admin-web follow-ups: an unknown key id answers `401` when the signing keys are fresh (today `503 jwks_refresh_limited`,
+  OPERATIONS → Admin sign-in); the unused `ingress-nginx` rule of the api NetworkPolicy
+  (`deploy/k8s/base/api/networkpolicy.yaml`) can go; the privacy text should name `api.ryftapp.de` with the PR that ships
+  PR2's wording; `docs/API.md`'s audit row says "not in v1" and is stale (#128's body, PR4 docs); `design.md` of
+  `docs/work/2026-11-05-admin-web/` needs the corrections #128's body lists (`sessionStorage` cleared on leaving, the path-scoped
+  `connect-src`, the QR prologue, `*.gz` answering 404).
+
+**Deploy commands for what is open** (the user's; every cluster command names its cluster, D150):
+
+```bash
+# #47 Step 0: above (terraform init, plan -out, apply of that file).
+# #55, only if not yet run: the monitoring apply, then the alert rules (the GRAFANA_* variables of OPERATIONS → Monitoring set)
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
+git pull --ff-only && make alerts-apply
+# #51, only if not yet done: kubectl --context ryft-prod-euc1 diff -f deploy/argocd/project.yaml (only the added destination), then apply it,
+# and the checks of OPERATIONS → RabbitMQ → "After an operator sync".
+# After #128 is merged and promoted: OPERATIONS → Beta → Admin sign-in (the two SQL statements) is the only step that opens it.
+```
+
+**Gotcha: a newer promote PR supersedes a held one.** On 2026-11-05 the promote PR #124 (A2) had its auto-merge switched
+off at 06:53:06 UTC to stage the rollout, and sat open; promote closed it as "Superseded by deploy: images dc1fcd4" when the next promote PR (#130) opened, and #130
+merged itself. To stage a backend change, hold the group (`./scripts/hold.sh add services "<reason>"`) before the merge that
+builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backend change".
+
 ## Done
 
 | Item | What | Where |
@@ -476,20 +668,23 @@ Technical:
   security-reviewed three rounds): Pod Security labels plus ValidatingAdmissionPolicy (CEL), owned by
   Terraform in `infra/aws/kubernetes`, Warn+Audit first, then Deny in four steps by blast radius.
   Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
-  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
-  in progress; nothing reaches the cluster before your applies (the note's §5 commands).
+  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k:
+  see "Production hardening (2026-11)" above for what merged (#47, #51, #55, #57, #114, #116) and what is open
+  (#121, #118); nothing reaches the cluster before your applies (the note's §5 commands).
   **T12-d (the kind run) is done** on `ci/admission-kind` (D151, D152): CI's required job `admission`
   (`scripts/admission_e2e.sh --mode ci`, ~5 min; skipped for promote PRs and their merge) and the
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11
-  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **Open before
-  Step 0:** #47 (`infra/argocd-rbac`) had lacked `{ apiGroups = ["argoproj.io"], resources =
-  ["applications"], verbs = ["get", "list", "watch"] }` in `argocd_controller_rules`; it is in now (claim
+  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **#47 is merged,
+  not applied (D180; Step 0 is yours):** it had lacked `{ apiGroups = ["argoproj.io"], resources =
+  ["applications"], verbs = ["get", "list", "watch"] }` in `argocd_controller_rules`; the rule is in it (claim
   i did not wait for ever: under `respectRBAC: strict` the kind is dropped from the cache silently, so the
   root lagged by minutes and a deleted child would not be pruned; D151 amended). #47 also dropped
   `escalate`/`bind` on ClusterRoles, tightened CRD update and the server's cluster-wide writes, and
-  states what stays open until P12 (docs/OPERATIONS.md "What stays open"). T12-e needs another binding-state signal
-  (claim m is disproved: KSM exports no built-in kinds); P7 must not go to break-glass assuming P10 blocks
+  states what stays open until P6 and P12 are both in Deny (docs/OPERATIONS.md "What stays open"). T12-e is merged
+  (#55) and live after the monitoring apply: its binding-state signal
+  is kube-state-metrics' native `validatingadmissionpolicybindings` collector (claim m is disproved only for custom-resource-state,
+  which exports CRD kinds only; D183 amends D151); P7 must not go to break-glass assuming P10 blocks
   `--repo` (P10 no longer does). Not tried by the kind run: a node drain, three workers, claims f, j and l.
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).

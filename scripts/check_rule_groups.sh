@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The size of every rule group in Prometheus rule files, against Grafana Cloud's ruler limit.
+# The size of every rule group in Prometheus rule files, against Grafana Cloud's ruler limit (D179).
 #
 #   scripts/check_rule_groups.sh <rules.yaml>...    (make alerts-check runs it on both rule files)
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The package map in docs/ARCHITECTURE.md (Package map): one row per Go package of the backend, generated from
+# The package map in docs/ARCHITECTURE.md (Package map, D163): one row per Go package of the backend, generated from
 # `go list` so it cannot rot. Package, owns (the first sentence of its doc.go, which is go list's .Doc), depends on
 # (the direct imports of this module, not the transitive closure) and tested by (its own test files, with the
 # external services they need; else the packages whose tests import it).
