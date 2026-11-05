@@ -52,9 +52,9 @@ func (s *statusRecorder) WriteHeader(code int) {
 }
 
 // audited writes an admin_audit row for every authorized admin call once it
-// has been answered: the route pattern, the status, the request id, the key's
-// fingerprint, and what the handler added (D88). A failed write is logged; the
-// answer has gone out by then.
+// has been answered: the route pattern, the status, the request id, the actor
+// (the key's fingerprint, or the operator's user id for a token), and what the
+// handler added (D88). A failed write is logged; the answer has gone out by then.
 func (a admin) audited(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e := &auditEntry{details: map[string]any{}}
@@ -70,8 +70,13 @@ func (a admin) audited(next http.Handler) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 		defer cancel()
-		if err := a.h.st.Audit(ctx, store.AuditEntry{KeyFingerprint: a.keyID, Action: action, TargetUser: e.target,
-			Status: sw.status, RequestID: requestID, Details: e.details}); err != nil {
+		entry := store.AuditEntry{Action: action, TargetUser: e.target, Status: sw.status, RequestID: requestID, Details: e.details}
+		if act, ok := adminActorFrom(r.Context()); ok && act.isKey() {
+			entry.KeyFingerprint = act.fingerprint
+		} else if ok {
+			entry.ActorUser = &act.user
+		}
+		if err := a.h.st.Audit(ctx, entry); err != nil {
 			a.h.log.ErrorContext(ctx, "admin audit write failed", "err", err, "action", action)
 		}
 	})
@@ -117,8 +122,7 @@ func (a admin) setAccess(w http.ResponseWriter, r *http.Request, grant bool) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "beta access set by the operator", "grant", grant, "target_user", id.String()[:8],
-		"admin_key", a.keyID)
+	a.info(r, "beta access set by the operator", "grant", grant, "target_user", id.String()[:8])
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -137,7 +141,7 @@ func (a admin) resyncHint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "full re-sync requested", "target_user", id.String()[:8], "admin_key", a.keyID)
+	a.info(r, "full re-sync requested", "target_user", id.String()[:8])
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -157,27 +161,4 @@ func (a admin) audit(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	httpx.WriteJSON(w, 200, list)
-}
-
-// adminRoutes is /v1/admin/: the admin key first, then the audit around every
-// authorized call, the timeout and the routes.
-func adminRoutes(h *handler, key string, timeout time.Duration) http.Handler {
-	a, adm := admin{h: h, keyID: keyFingerprint(key)}, http.NewServeMux()
-	adm.HandleFunc("GET /v1/admin/flags", a.flags)
-	adm.HandleFunc("PUT /v1/admin/flags/{key}", a.putFlag)
-	adm.HandleFunc("DELETE /v1/admin/flags/{key}", a.deleteFlag)
-	adm.HandleFunc("POST /v1/admin/invites", a.createInvite)
-	adm.HandleFunc("GET /v1/admin/invites", a.invites)
-	adm.HandleFunc("DELETE /v1/admin/invites/{code}", a.deleteInvite)
-	adm.HandleFunc("GET /v1/admin/feedback", a.feedback)
-	adm.HandleFunc("POST /v1/admin/feedback/{id}/resolve", a.resolveFeedback)
-	adm.HandleFunc("GET /v1/admin/users", a.users)
-	adm.HandleFunc("GET /v1/admin/users/{id}", a.userDetail)
-	adm.HandleFunc("POST /v1/admin/users/{id}/access", a.grantAccess)
-	adm.HandleFunc("DELETE /v1/admin/users/{id}/access", a.revokeAccess)
-	adm.HandleFunc("POST /v1/admin/users/{id}/merge-into/{to}", a.merge)
-	adm.HandleFunc("POST /v1/admin/users/{id}/resync-hint", a.resyncHint)
-	adm.HandleFunc("GET /v1/admin/audit", a.audit)
-	adm.HandleFunc("/v1/admin/", httpx.NotFound)
-	return adminOnly(key, a.audited(httpx.Timeout(timeout, httpx.WithRoutes(adm))))
 }

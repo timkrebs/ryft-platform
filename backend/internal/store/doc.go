@@ -15,9 +15,10 @@
 //     (AdminUserDetail, JournalDay, Trend, SyncStateOf) read without one
 //     snapshot. The import writes its outbox row in its own transaction under
 //     publisher "api" (FinishImport).
-//   - Of the 133 exported methods, 106 take the user id first after ctx and scope
+//   - Of the 134 exported methods, 107 take the user id first after ctx and scope
 //     by it. Not every WHERE names it: RedeemInvite matches the global invite by
-//     code, a statement that looks a row up by its own id (ArchiveBehavior,
+//     code, IsAdminAccount looks the id up in the operators' allow-list (admin_accounts,
+//     operator configuration that account deletion does not touch), a statement that looks a row up by its own id (ArchiveBehavior,
 //     UpdateCustomExercise, Enroll) checks ownership around the lookup, and
 //     built-in rows are read with user_id IS NULL OR user_id = $1.
 //   - The service roles' RLS policies admit every row (USING (true), migration

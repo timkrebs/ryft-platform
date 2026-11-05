@@ -2,11 +2,9 @@ package main
 
 import (
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/flags"
@@ -41,12 +39,11 @@ func onOff(on bool) string {
 // maxAllowList bounds a flag's allow-list (testers, not a user segment).
 const maxAllowList = 1000
 
-// admin serves the operator's /v1/admin routes (feature flags, invite codes).
-// They are not user routes: the bearer is ADMIN_API_KEY, no user is looked up.
-// keyID (the key's fingerprint) goes into the log of every change.
+// admin serves the operator's /v1/admin routes (feature flags, invite codes, users, feedback, audit).
+// They are not user routes: the bearer is ADMIN_API_KEY or an operator's Supabase token (adminauth.go),
+// and the caller travels in the context as the admin actor, which every log line and audit row names.
 type admin struct {
-	h     *handler
-	keyID string
+	h *handler
 }
 
 // keyFingerprint names an admin key in logs without revealing it: the first 8
@@ -99,8 +96,8 @@ func (a admin) putFlag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "feature flag set", "key", f.Key, "enabled", f.Enabled,
-		"rollout_pct", f.RolloutPct, "allow_users", len(f.AllowUserIDs), "created", created, "admin_key", a.keyID)
+	a.info(r, "feature flag set", "key", f.Key, "enabled", f.Enabled,
+		"rollout_pct", f.RolloutPct, "allow_users", len(f.AllowUserIDs), "created", created)
 	status := 200
 	if created {
 		status = 201
@@ -122,22 +119,6 @@ func (a admin) deleteFlag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "feature flag deleted", "key", key, "admin_key", a.keyID)
+	a.info(r, "feature flag deleted", "key", key)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// adminOnly lets a request through only with "Authorization: Bearer
-// <ADMIN_API_KEY>", compared in constant time.
-func adminOnly(key string, next http.Handler) http.Handler {
-	want := []byte("Bearer " + key)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(strings.TrimSpace(r.Header.Get("Authorization")))
-		if subtle.ConstantTimeCompare(got, want) != 1 {
-			metrics.AdminRequests.WithLabelValues("unauthorized").Inc()
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ryft-admin"`)
-			httpx.WriteError(w, http.StatusUnauthorized, "admin key required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

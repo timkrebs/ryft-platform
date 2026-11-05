@@ -1580,6 +1580,49 @@ Vault (`VAULT_NAMESPACE=admin/ryft/api vault kv get -mount=kv -field=ADMIN_API_K
 config`); they say which one they used, and what to log in to when none works. `API_URL`
 defaults to production.
 
+### Admin sign-in
+
+`/v1/admin/*` takes two bearers (docs/API.md → Admin routes): the key above (scripts, smoke;
+compared first, in constant time, independent of Supabase), or the Supabase access token of
+an operator, for the operator's web page. A token is accepted only when **all** of these
+hold: `app_metadata.role` is `"admin"` (never the top-level `role`, never `user_metadata`,
+which the user can write), the user has a row in `admin_accounts` and no tombstone, and the
+token is `aal2` with a TOTP at most 12 hours old. Everything else is one identical `401`
+(the reason is only in the log: `admin auth rejected`, `reason` and the access line's `code`);
+a real operator without a fresh second factor gets `403 mfa_required`; an operator's token on
+merge, flag writes, user detail or resync-hint gets `403` (key-only routes, audited).
+**Nothing changes for anyone until you insert an `admin_accounts` row** and give the account
+the role. Both statements in the SQL editor, as the owner, by id:
+
+```sql
+update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
+insert into public.admin_accounts (user_id, note) values ('<admin uuid>', 'operator') on conflict do nothing;
+```
+
+The api only reads `admin_accounts`; it is operator configuration, not user data (account
+deletion does not touch it; a deleted account's tombstone refuses the row). Which pages may
+read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
+list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page can, scripts are
+unaffected; a malformed value stops the api at start-up, and a test parses the committed line).
+Every `/v1/admin/*` request is limited per client address (10 a second, bursts of 20, per
+pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's; never logged), and every
+admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`, the first 8 hex
+digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
+
+Alerts: `AdminUnauthorized` (warning: more than 20 refused requests in 10 minutes: a scanner or
+a guessed password; read the `admin auth rejected` lines) and `AdminWebUsed` (info: the page was
+used; not you means act, below). A 503 on the admin routes with a token is Supabase's keys or the
+database being unreachable (`Retry-After: 5`); the key keeps working.
+
+**Lost phone, or any doubt about the admin account** (immediate, in this order):
+
+1. SQL editor, as owner: `delete from admin_accounts where user_id = '<admin uuid>';` — takes
+   effect on the next request, whatever the token's lifetime.
+2. Supabase → Authentication → Users → the admin account: *Sign out* (or ban), then remove the
+   MFA factor and change the password.
+3. What happened since: `curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=<day of the loss>" | jq '.[] | select(.actor.kind=="user")'`.
+4. To restore: enrol again from a trusted device, then insert the row again.
+
 **Tracing a request** a tester reports by its id:
 
 ```bash

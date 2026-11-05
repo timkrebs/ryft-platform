@@ -888,6 +888,61 @@ tests:
             exp_annotations:
               summary: "The admission scrape ryft/admission-bindings of 10.0.3.3:8080 has been down for 15 minutes"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
+  - name: refused admin requests, a scanner
+    interval: 1m
+    input_series:
+      # Two pods refuse 5 a minute each (100 in 10 minutes). Granted requests, a missing second factor and a
+      # key-only route are other results and must not count.
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+5x30' }
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-2"}', values: '0+5x30' }
+      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+100x30' }
+      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+30x30' }
+      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+30x30' }
+    alert_rule_test:
+      - { eval_time: 1m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: AdminUnauthorized
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated refused admin requests (OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: refused admin requests, just under the threshold
+    interval: 1m
+    input_series:
+      # One refusal a minute and a second pod with one in ten minutes: about 11 in a window, under 20.
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+1x30' }
+      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-2"}', values: '0x9 1x21' }
+      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+50x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - { eval_time: 30m, alertname: AdminUnauthorized, exp_alerts: [] }
+  - name: the admin page is used
+    interval: 1m
+    input_series:
+      # A pod that started at 0 (the api creates the series at start) and is used once at 5 minutes. The
+      # key's calls are another actor and do not fire it. A second pod saw nothing.
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x5 1x25' }
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-2"}', values: '0x30' }
+      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 3m, alertname: AdminWebUsed, exp_alerts: [] }
+      - eval_time: 8m
+        alertname: AdminWebUsed
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      # The window moves on: 10 minutes after the use nothing is left to fire.
+      - { eval_time: 25m, alertname: AdminWebUsed, exp_alerts: [] }
+  - name: the admin page is not used, only the key
+    interval: 1m
+    input_series:
+      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x30' }
+      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: AdminWebUsed, exp_alerts: [] }
   - name: admission scrapes, nothing reports the bindings
     interval: 1m
     input_series:

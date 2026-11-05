@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "kind"
+  ],
+  "title": "Actor",
+  "type": "object"
+}

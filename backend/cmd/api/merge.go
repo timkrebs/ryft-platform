@@ -138,8 +138,7 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 	}
 	ans.Deleted = &gone
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(work, "accounts merged", "from", ans.From.ShortID, "into", ans.To.ShortID, "moved", moved,
-		"admin_key", a.keyID)
+	a.info(r, "accounts merged", "from", ans.From.ShortID, "into", ans.To.ShortID, "moved", moved)
 	httpx.WriteJSON(w, 200, ans)
 }
 

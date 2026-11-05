@@ -129,7 +129,7 @@ func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	// Not the note: it may name the person the code is for.
-	a.h.log.InfoContext(r.Context(), "invite created", "max_uses", inv.MaxUses, "admin_key", a.keyID)
+	a.info(r, "invite created", "max_uses", inv.MaxUses)
 	httpx.WriteJSON(w, 201, inv)
 }
 
@@ -157,6 +157,6 @@ func (a admin) deleteInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "invite deleted", "admin_key", a.keyID)
+	a.info(r, "invite deleted")
 	w.WriteHeader(http.StatusNoContent)
 }

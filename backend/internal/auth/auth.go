@@ -26,6 +26,13 @@ type Principal struct {
 	// AppleSubject is the Apple user ID when the account signed in with Apple
 	// (Supabase copies the identity into user_metadata); "" otherwise.
 	AppleSubject string
+
+	// What the token says about operator access. It never grants anything on its own: cmd/api's
+	// admin check also needs an admin_accounts row and a recent second factor (D-A). All three
+	// are read leniently and stay empty when a claim has an unexpected shape (claims.go).
+	AppRole string    // app_metadata.role when it is a JSON string of at most 32 bytes; else ""
+	AAL     string    // exactly "aal1" or "aal2"; anything else ""
+	MFAAt   time.Time // the newest amr entry with method "totp"; zero when there is none
 }
 
 type principalKey struct{}
@@ -148,6 +155,10 @@ func Middleware(o Options, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// Bearer is the token of "Authorization: Bearer <token>" for callers outside Middleware (the
+// operator routes); the scheme is case-insensitive.
+func Bearer(r *http.Request) (string, bool) { return bearer(r) }
 
 // bearer extracts the token from "Authorization: Bearer <token>" (the scheme
 // is case-insensitive per RFC 7235).

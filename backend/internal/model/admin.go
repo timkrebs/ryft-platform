@@ -111,11 +111,29 @@ type AdminDuplicate struct {
 	NewestRecord *time.Time `json:"newest_record"`
 }
 
+// Actor kinds, a closed enum.
+const (
+	ActorKey  = "key"  // a call with ADMIN_API_KEY; ID is the key's fingerprint
+	ActorUser = "user" // a call with an admin's Supabase token; ID is the user id
+)
+
+// CodeMFARequired is the 403 on /v1/admin/* only, for an allow-listed admin whose token has no second
+// factor or one older than 12 hours. Operator surface only: the app never calls these routes and
+// never receives it; the operator's page runs a TOTP challenge and sends again.
+const CodeMFARequired = "mfa_required"
+
+// Actor is who made an admin call.
+type Actor struct {
+	Kind string  `json:"kind"` // ActorKey or ActorUser
+	ID   *string `json:"id"`   // the key's fingerprint or the user id
+}
+
 // AuditRecord is one admin call as GET /v1/admin/audit shows it.
 type AuditRecord struct {
 	ID             int64           `json:"id"`
 	At             time.Time       `json:"at"`
-	KeyFingerprint string          `json:"key_fingerprint"`
+	KeyFingerprint string          `json:"key_fingerprint"` // "" when the actor is a user
+	Actor          Actor           `json:"actor"`
 	Action         string          `json:"action"` // the route pattern
 	TargetUser     *uuid.UUID      `json:"target_user"`
 	Status         int             `json:"status"`

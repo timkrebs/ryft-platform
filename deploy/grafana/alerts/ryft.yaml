@@ -227,6 +227,24 @@ groups:
         expr: sum(increase(ryft_feedback_received_total[10m])) > 0
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
+      - alert: AdminUnauthorized
+        # More than 20 refused /v1/admin requests in 10 minutes: a scanner, a guessed key, or a stolen
+        # password trying the operator's page. The answer is the same 401 for every reason; the reason
+        # is the api's "admin auth rejected" log line and the access line's code. The per-address limit
+        # (ryft_rate_limited_total{class="admin_ip"}) caps what one address can send.
+        expr: sum(increase(ryft_admin_requests_total{result="unauthorized"}[10m])) > 20
+        labels: { severity: warning }
+        annotations:
+          summary: "Repeated refused admin requests (OPERATIONS.md → Beta → Admin sign-in)"
+          runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+      - alert: AdminWebUsed
+        # The operator's page (an admin Supabase token) was used. Who is in GET /v1/admin/audit, not in a
+        # label: a user id in a metric is personal data in Grafana Cloud. A use you did not make is the signal.
+        expr: sum(increase(ryft_admin_authorized_total{actor="user"}[10m])) > 0
+        labels: { severity: info }
+        annotations:
+          summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+          runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
 
       # ---- deploys (Argo CD, D94) ---------------------------------------------------
       - alert: ArgoAppDegraded

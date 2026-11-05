@@ -7,8 +7,13 @@
 //   - api and ingest wrap their mux as Instrument, Recover, SecurityHeaders, mux.
 //     Behind auth a /v1 route usually passes Timeout and WithRoutes (api puts its
 //     invite gate in between), with exceptions: DELETE /v1/me and the training
-//     import have their own deadlines, and /v1/admin is behind its own key, not
-//     auth. scoring and notify serve only health and metrics and use Recover alone.
+//     import have their own deadlines, and /v1/admin has its own chain (CORS, a
+//     per-address limit, the admin key or an admin's Supabase token), not auth.
+//     scoring and notify serve only health and metrics and use Recover alone.
+//   - CORS is for the operator's page only: api wraps /v1/admin/ in it and nothing
+//     else, with exact origins from ADMIN_WEB_ORIGINS and no credentials. It
+//     answers a preflight itself, before any auth. ClientIP keys a per-address
+//     limit by the rightmost X-Forwarded-For entry (Traefik's) and is never logged.
 //   - The request id is the server's (a client's X-Request-ID is logged as
 //     client_request_id, never used, D35). The route label is the ServeMux
 //     pattern, so metric cardinality stays bounded (D14).

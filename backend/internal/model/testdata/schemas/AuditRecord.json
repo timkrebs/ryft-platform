@@ -4,6 +4,9 @@
     "action": {
       "type": "string"
     },
+    "actor": {
+      "$ref": "Actor"
+    },
     "at": {
       "format": "date-time",
       "type": "string"
@@ -31,6 +34,7 @@
   },
   "required": [
     "action",
+    "actor",
     "at",
     "details",
     "id",

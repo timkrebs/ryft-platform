@@ -68,8 +68,7 @@ func (a admin) userDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	a.addIdentities(r.Context(), acct, emails)
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "admin user read", "target_user", acct.ShortID, "emails", emails,
-		"duplicates", len(d.Duplicates), "admin_key", a.keyID)
+	a.info(r, "admin user read", "target_user", acct.ShortID, "emails", emails, "duplicates", len(d.Duplicates))
 	httpx.WriteJSON(w, 200, d)
 }
 
