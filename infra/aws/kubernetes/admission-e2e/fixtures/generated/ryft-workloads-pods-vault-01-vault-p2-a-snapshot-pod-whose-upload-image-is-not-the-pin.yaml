@@ -1,0 +1,152 @@
+# fixture: vault: P2 a snapshot pod whose upload image is not the pin
+# op: create
+# as: system:serviceaccount:kube-system:job-controller
+# refused-by: ryft-workloads-pods-vault
+# message: P2: a container image is not the one this namespace may run.
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app.kubernetes.io/name: vault-snapshot
+  name: vault-snapshot-abc12
+  namespace: vault
+spec:
+  automountServiceAccountToken: false
+  containers:
+  - args:
+    - |
+      f=/work/vault.snap
+      [ -s "$f" ] || { echo '{"level":"error","msg":"no snapshot to upload"}' >&2; exit 1; }
+      key="snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap"
+      bytes=$(wc -c <"$f")
+      sum=$(sha256sum "$f" | cut -d' ' -f1)
+      aws s3api put-object \
+        --region "$AWS_REGION" \
+        --bucket "$BUCKET" --expected-bucket-owner "$BUCKET_OWNER" \
+        --key "$key" --body "$f" \
+        --if-none-match '*' \
+        --server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN" --bucket-key-enabled \
+        --metadata "sha256=$sum" \
+        --output json >/dev/null
+      echo "{\"level\":\"info\",\"msg\":\"snapshot uploaded\",\"bucket\":\"$BUCKET\",\"key\":\"$key\",\"bytes\":$bytes,\"sha256\":\"$sum\"}"
+    command:
+    - /bin/sh
+    - -eu
+    - -c
+    env:
+    - name: AWS_REGION
+      value: eu-central-1
+    - name: AWS_PAGER
+      value: ""
+    - name: AWS_EC2_METADATA_DISABLED
+      value: "true"
+    - name: HOME
+      value: /work
+    - name: BUCKET
+      value: ryft-prod-euc1-vault-snapshots-123456789012
+    - name: BUCKET_OWNER
+      value: "123456789012"
+    - name: SNAPSHOT_KEY_ARN
+      value: arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    imagePullPolicy: IfNotPresent
+    name: upload
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+    volumeMounts:
+    - mountPath: /work
+      name: work
+  enableServiceLinks: false
+  initContainers:
+  - args:
+    - |
+      umask 077
+      # Assigned first, then exported: `export X="$(...)"` would hide a failed login from -e.
+      token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login" role="$VAULT_ROLE" jwt=@/var/run/secrets/vault/token)
+      export VAULT_TOKEN="$token"
+      trap 'vault token revoke -self >/dev/null 2>&1 || echo "{\"@level\":\"warn\",\"@message\":\"snapshot token not revoked (expires with its TTL)\"}"' EXIT
+      vault operator raft snapshot save /work/vault.snap
+      vault operator raft snapshot inspect /work/vault.snap >/dev/null
+      echo "{\"@level\":\"info\",\"@message\":\"snapshot saved and inspected\",\"bytes\":$(wc -c </work/vault.snap)}"
+    command:
+    - /bin/sh
+    - -eu
+    - -c
+    env:
+    - name: VAULT_ADDR
+      value: https://vault-active.vault.svc:8200
+    - name: VAULT_CACERT
+      value: /ca/ca.crt
+    - name: HOME
+      value: /work
+    - name: VAULT_AUTH_MOUNT
+      value: kubernetes
+    - name: VAULT_ROLE
+      value: vault-snapshot
+    image: docker.io/hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2
+    imagePullPolicy: IfNotPresent
+    name: snapshot
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+    volumeMounts:
+    - mountPath: /work
+      name: work
+    - mountPath: /ca
+      name: vault-ca
+      readOnly: true
+    - mountPath: /var/run/secrets/vault
+      name: vault-token
+      readOnly: true
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    runAsUser: 100
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: vault-snapshot
+  volumes:
+  - emptyDir:
+      sizeLimit: 512Mi
+    name: work
+  - name: vault-ca
+    secret:
+      items:
+      - key: ca.crt
+        path: ca.crt
+      secretName: vault-ca
+  - name: vault-token
+    projected:
+      sources:
+      - serviceAccountToken:
+          audience: vault
+          expirationSeconds: 600
+          path: token
+  - name: eks-pod-identity-token
+    projected:
+      sources:
+      - serviceAccountToken:
+          audience: pods.eks.amazonaws.com
+          expirationSeconds: 86400
+          path: eks-pod-identity-token
