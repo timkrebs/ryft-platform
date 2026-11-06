@@ -143,13 +143,15 @@ auth/kubernetes   (Vault reviews tokens as its own SA; no reviewer JWT)
 │   policy api:   read kv-api/data/config
 ├── role rabbitmq     policy rabbitmq: kv-rabbitmq/data/config, kv-rabbitmq/data/amqp-user-*
 ├── …             one role, one policy and one kv-<svc>/ per entry in services
-└── role vault-snapshot ◀── SA vault-snapshot in ns vault only, audience vault, 10-minute tokens
+└── role vault-snapshot ◀── SA vault-snapshot in ns vault only, audience vault, 10-minute service tokens, no default policy
     policy snapshot: read sys/storage/raft/snapshot, nothing else (restore is break-glass, admin)
 kv-<svc>/config   the same values as kv/config in admin/ryft/<svc> (same locals, same random_*)
 kv-operator/demo  the App Review demo password (no workload policy names kv-operator)
 ```
 
-The snapshot CronJob (`charts/vault-extras`, #153) logs in as `vault-snapshot`. Both names
+The snapshot CronJob (`charts/vault-extras`, #153) logs in as `vault-snapshot`. Its token
+holds `snapshot` alone, without `default`, so it can neither look itself up nor revoke itself:
+the job lets it expire (10 minutes at most). Both names
 are reserved: no service may be called `vault-snapshot` or `snapshot`. The job can succeed only
 after PR 3b's first write of this Vault and the apply of #153, in that order.
 
@@ -228,12 +230,31 @@ the namespace points.
 Workspace login). Terraform never writes them: otherwise its token could rewrite its own
 policy or reach the operator's login, and the OIDC client secret would sit in state.
 `terraform.hcl` is generated from `terraform.hcl.tftpl` for the services (exact paths per
-service): after adding a service, `terraform -chdir=infra/vault output -raw
-bootstrap_terraform_policy > infra/vault/bootstrap/terraform.hcl`, commit it, and
-`vault policy write terraform …` by hand (`check.bootstrap_terraform_policy_matches_services`
-warns until the file matches). `bootstrap.tf` reads all of them, and
-`tests/vault.tftest.hcl` holds them to an exact allowlist: every path with its capabilities
-and parameter limits; `user_claim = "sub"`, no claim mappings, a fresh sign-in and
+service). A changed service list turns the test red, and the check warns, until the file
+matches.
+
+**Render it without an apply.** `output` has the new value only after an apply, so read it from
+a plan:
+```bash
+terraform -chdir=infra/vault plan -out=tfplan
+terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl
+rm infra/vault/tfplan   # the plan holds every credential; never keep or share the JSON
+```
+
+**The order** matters, because an apply the token's policy does not cover stops halfway on a
+403 (a partial apply):
+- **Adding a service:**
+  1. commit the regenerated file in the same PR, and merge it;
+  2. `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin login;
+  3. then the apply.
+- **Removing a service:**
+  1. the apply first, while the policy still covers the old paths;
+  2. then write the narrower policy.
+
+`bootstrap.tf` reads all of them, and
+`tests/vault.tftest.hcl` holds them to an exact allowlist: every path, and each block's whole
+body byte for byte (capabilities and parameter limits). Nothing may sit outside those blocks
+but `#` comment lines: no `/* */` or `//` comment, no JSON, no block the regexes cannot read; `user_claim = "sub"`, no claim mappings, a fresh sign-in and
 loopback-bound tokens for the login; the token role's one policy, hour and no renewal. A
 change to one is a reviewed commit, and then the same `vault policy write` / `vault write`
 by hand.

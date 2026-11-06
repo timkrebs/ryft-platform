@@ -46,7 +46,7 @@ output "vso_targets" {
 }
 
 output "bootstrap_terraform_policy" {
-  description = "The policy terraform for the in-cluster Vault, rendered for these services (bootstrap/terraform.hcl.tftpl): the content bootstrap/terraform.hcl must hold. No secret; written into Vault by hand (docs/OPERATIONS.md -> Vault)."
+  description = "The policy terraform for the in-cluster Vault, rendered for these services (bootstrap/terraform.hcl.tftpl): the content bootstrap/terraform.hcl must hold. Read it from a plan (`show -json tfplan`), not after an apply (infra/vault/README.md -> bootstrap/). No secret; written into Vault by hand (docs/OPERATIONS.md -> Vault)."
   value       = local.bootstrap_terraform_policy_rendered
 }
 

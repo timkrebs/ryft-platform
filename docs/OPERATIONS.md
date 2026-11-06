@@ -2967,8 +2967,10 @@ Cross-check the digits with admin.google.com → Directory → Users → the acc
 in the URL (believed to equal the OIDC `sub`: **to verify** here; if they differ, stop).
 If the login fails on a missing `hd` claim, stop. Google should send `hd` for a Workspace
 account without the `email` scope (**to verify** here). If it fails on `auth_time` or
-`max_age`, Google did not report the sign-in time (**to verify** here). Either fix is a
-reviewed change to the role files, not an ad-hoc one.
+`max_age`, Google did not report the sign-in time (**to verify** here). If it fails with
+`request originated from invalid CIDR` (or a plain `permission denied` right after the browser
+step), the port-forward did not arrive as `127.0.0.1`: the enroll role is bound like the
+others (below, after 7d). Every fix is a reviewed change to the role files, not an ad-hoc one.
 
 *7d. The admin role, bound to you, and a check that fails closed.* `bound_subject` is the
 only thing that ties `admin` to one person (the committed file has none, on purpose). Run the
@@ -2981,9 +2983,23 @@ ADMIN="$(vault login -method=oidc -no-store -token-only role=admin)"
 VAULT_TOKEN="$ADMIN" vault token lookup | grep -E 'display_name|policies|ttl|bound_cidrs'   # oidc-<digits>, [admin default], ~1h, [127.0.0.1]
 ```
 Keep the subject in the 1Password item too, not in git. It identifies you in every audit line.
-The tokens are bound to `127.0.0.1`, the address a port-forward arrives from inside the pod
-(**to verify** here: if `lookup` above is refused, the binding is wrong; drop
-`token_bound_cidrs` from both role files in a reviewed change).
+*The loopback binding.* Three files bind to `127.0.0.1/32`, the address a port-forward is
+believed to arrive from inside the pod: `oidc-role-enroll.json`, `oidc-role-admin.json` and
+`token-role-terraform.json`.
+- **Why it should hold.** The listener is `[::]:8200` with no `x_forwarded_for`, so Vault sees
+  the peer address of the connection. containerd's port-forward is believed to dial
+  `localhost` over tcp4 first, so that peer is `127.0.0.1`. A forwarded request after a
+  step-down (to `svc/vault-active`, a new pod) still arrives from `127.0.0.1`. If it arrives
+  as `::1` instead, all three bindings fail. Each of these is **to verify** in kind.
+- **How a mismatch shows.** First as a refused login at 7c, because the enroll role is bound
+  too. Later, the same can happen after a containerd or Kubernetes upgrade (**Break-glass**).
+- **The fix** is one reviewed change to all three files: drop `token_bound_cidrs`, or set the
+  address Vault reports. `tests/vault.tftest.hcl` pins the binding
+  (`the_admin_policy_and_the_login_hold_the_reviewed_shape`), so its asserts change in the same
+  commit.
+- **A wrong CIDR cannot lock you out at the bootstrap.** Both OIDC roles are first used in 7c
+  and 7d, while the root token from step 2 stays valid until step 9. Repair with it, then run
+  7c again. After step 9, generate-root needs no login (**Break-glass**).
 
 **8. What the terraform token can and cannot do.** It is admin-equivalent for its hour, not a
 sandbox (`bootstrap/terraform.hcl.tftpl` has the reasoning). It reads every credential, and it
@@ -3063,8 +3079,14 @@ vault operator rekey -target=recovery -nonce=<nonce>      # three times, one sha
 
 ### Break-glass
 
-When OIDC cannot log you in (Google, the OAuth client, Vault's egress to Google, the OIDC
-config or the admin policy is broken, or the Google account is lost). In the standalone
+When OIDC cannot log you in. The causes:
+- Google, the OAuth client, Vault's egress to Google, the OIDC config or the admin policy is
+  broken;
+- the Google account is lost;
+- the loopback binding stopped matching after a containerd or Kubernetes upgrade. The login
+  says `invalid CIDR`. Repair it as in 7d's *The loopback binding*, all three files at once.
+
+In the standalone
 terminal, through the vault shell and the `svc/vault-active` port-forward, with no login:
 ```bash
 unset VAULT_TOKEN
@@ -3113,6 +3135,12 @@ unset ADMIN TF_VAR_vault_k8s_token VAULT_TOKEN
   `VAULT_TLS_SERVER_NAME`, `VAULT_CAPATH`, `VAULT_CACERT_BYTES`, the client-certificate
   variables and `VAULT_MAX_RETRIES` from the environment, so the `unset` line above matters.
 - Never set `TF_LOG` to `DEBUG` or `TRACE` in this shell while the token is set.
+- **A service added or removed** changes the policy `terraform` (`bootstrap/terraform.hcl`,
+  rendered from a plan: `infra/vault/README.md` → `bootstrap/`). An apply the token's policy
+  does not cover stops on a 403 halfway, so the order is fixed:
+  - **adding a service:** commit the regenerated file, merge, `vault policy write terraform
+    infra/vault/bootstrap/terraform.hcl` with the admin login, then the apply;
+  - **removing a service:** the apply first, then write the narrower policy.
 - A plan that hangs or fails on `127.0.0.1:8200`: the port-forward died. A leader change
   ends it (**The leader is gone**). Restart it and run the plan again.
 - The token lives one hour and cannot be renewed. A longer session needs a new one, and so
@@ -3125,7 +3153,8 @@ unset ADMIN TF_VAR_vault_k8s_token VAULT_TOKEN
   vault list auth/oidc/role                                     # admin
   vault policy list                                             # admin, default, root, snapshot, terraform and the services
   vault policy read snapshot                                    # read on sys/storage/raft/snapshot, nothing else
-  vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl}'   # vault-snapshot, vault, [snapshot], 600
+  vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl, token_type, token_no_default_policy}'   # vault-snapshot, vault, [snapshot], 600, service, true
+  vault read -field=token_type sys/mounts/auth/kubernetes/tune  # default-service: the terraform token cannot tune it to batch
   vault read -field=kubernetes_host auth/kubernetes/config      # https://kubernetes.default.svc
   vault read -field=bound_subject auth/oidc/role/admin          # your digits
   for m in $(vault secrets list -format=json | jq -r 'keys[] | select(startswith("kv-"))'); do

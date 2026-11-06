@@ -1,8 +1,9 @@
 # Policy terraform on the in-cluster Vault: what infra/vault's provider vault.k8s may do (k8s.tf, D191, D193).
 #
 # GENERATED from bootstrap/terraform.hcl.tftpl with the services of var.services (bootstrap.tf): edit the template,
-# then `terraform -chdir=infra/vault output -raw bootstrap_terraform_policy > infra/vault/bootstrap/terraform.hcl`
-# after the apply (tests/vault.tftest.hcl and check.bootstrap_terraform_policy_matches_services pin the two equal).
+# then render it from a plan, not an apply (output bootstrap_terraform_policy; the commands and the order of commit,
+# `vault policy write` and apply are in infra/vault/README.md -> bootstrap/). tests/vault.tftest.hcl and
+# check.bootstrap_terraform_policy_matches_services pin the two equal.
 # Written into Vault by hand, never by Terraform, so this root cannot rewrite its own token's policy:
 #   vault policy write terraform infra/vault/bootstrap/terraform.hcl
 # The token comes from the token role terraform (bootstrap/token-role-terraform.json): 1 hour, not renewable,
@@ -16,13 +17,15 @@
 #     lower-cases and trims a policy's name when it writes it, so a glob with a few denies would let `ADMIN`,
 #     `Terraform` or `default ` overwrite the protected policies. With exact paths only the names below exist.
 #   - A role may carry only its own policy and trust only its own namespace and service account
-#     (allowed_parameters; Vault checks policy names element by element after the same lower-casing).
+#     (allowed_parameters; Vault compares a list element by element with the exact allowed value, without
+#     lower-casing or trimming: ["API"] and ["api "] are refused as well as ["admin"]).
 #   - The auth mount stays type kubernetes, and its config keeps the in-cluster API server, so the login cannot be
 #     re-pointed at a TokenReview server outside the cluster.
 #   - A tune may not set the keys that switch audit HMAC off (audit_non_hmac_*: the values would reach both audit
 #     devices and Grafana Cloud in clear) or expose headers and the mount in the UI. A mount's creation carries the
 #     same keys inside `config`, which ACL parameters cannot reach: tests/vault.tftest.hcl pins that k8s.tf sets
-#     none, and docs/OPERATIONS.md -> Vault -> Day 2 reads every tune back.
+#     none, and docs/OPERATIONS.md -> Vault -> Day 2 reads every tune back. The auth mount's tune also refuses
+#     token_type: as batch, the tokens of every role that sets no token_type of its own could not be revoked.
 #   - Nothing on sys/audit, sys/config/auditing, sys/seal, sys/storage/raft, sys/generate-root, sys/rekey,
 #     sys/auth/oidc, auth/oidc, auth/token (beyond the default policy's own-token paths), identity/*.
 # Never attach policies to the operator's entity or groups (identity/*): admin comes from the OIDC role only.
@@ -79,6 +82,7 @@ path "sys/mounts/auth/kubernetes/tune" {
     passthrough_request_headers  = []
     allowed_response_headers     = []
     listing_visibility           = []
+    token_type                   = []
   }
 }
 path "auth/kubernetes/config" {

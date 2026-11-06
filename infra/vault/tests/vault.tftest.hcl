@@ -576,9 +576,11 @@ run "the_snapshot_job_saves_a_snapshot_and_nothing_else" {
       tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_namespaces) == tolist(["vault"]) &&
       vault_kubernetes_auth_backend_role.k8s_snapshot[0].audience == "vault" &&
       tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_policies) == tolist(["snapshot"]) &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_ttl == 600 && vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_max_ttl == 600
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_ttl == 600 && vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_max_ttl == 600 &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_type == "service" &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_no_default_policy == true
     )
-    error_message = "role vault-snapshot is bound to vault/vault-snapshot, audience vault, policy snapshot only, tokens of 10 minutes at most"
+    error_message = "role vault-snapshot is bound to vault/vault-snapshot, audience vault, policy snapshot only (no default policy), revocable service tokens of 10 minutes at most"
   }
   assert {
     condition = toset(concat([for p in values(vault_policy.k8s_service) : p.name], [for p in vault_policy.k8s_snapshot : p.name])) == toset(concat(keys(var.services), ["snapshot"])) && toset(concat(
@@ -876,15 +878,22 @@ run "service_names_are_canonical" {
 
 # Every resource in k8s.tf goes to the in-cluster Vault, and nothing else does: a dropped `provider = vault.k8s`
 # would write that object (the demo password, a service's KV) into HCP's admin namespace instead.
+#
+# k8s.tf is read with its comments removed (/* */, # and //), so a `provider = vault.k8s` inside a comment is not
+# taken for the real line. Removing text can only drop a provider line or a block, and either fails here, so the
+# stripping never makes this run pass where the raw file should fail. The other files are read raw: there any
+# mention fails, comments included.
 run "the_k8s_resources_and_only_they_use_the_k8s_provider" {
   command = plan
 
   assert {
     condition = length(local.k8s_kv_mount) > 0 && alltrue([
-      for b in regexall("(?ms)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\" \\{\\n(.*?)^\\}$", file("k8s.tf")) :
+      for b in regexall("(?ms)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\" \\{\\n(.*?)^\\}$",
+      replace(replace(replace(file("k8s.tf"), "/(?s)/\\*.*?\\*//", ""), "/(?m)#.*$/", ""), "/(?m)//.*$/", "")) :
       startswith(b[0], "vault_") && can(regex("(?m)^  provider += vault\\.k8s$", b[2]))
-    ]) && length(regexall("(?m)^resource ", file("k8s.tf"))) == 11
-    error_message = "every resource block in k8s.tf (11) is a vault_ resource with provider = vault.k8s"
+      ]) && length(regexall("(?m)^resource ",
+    replace(replace(replace(file("k8s.tf"), "/(?s)/\\*.*?\\*//", ""), "/(?m)#.*$/", ""), "/(?m)//.*$/", ""))) == 11
+    error_message = "every resource block in k8s.tf (11, comments removed) is a vault_ resource with a live provider = vault.k8s"
   }
   assert {
     condition = length(local.k8s_kv_mount) > 0 && alltrue([
@@ -956,28 +965,55 @@ run "the_terraform_policy_is_an_exact_allowlist" {
     ))
     error_message = "the terraform policy names exactly the paths it needs, each with exactly its capabilities: one mount, tune, data and metadata path per kv-<svc> and kv-operator, one role and one policy per service plus the snapshot job's (vault-snapshot, snapshot), the one auth mount; no glob on a policy, role or mount, nothing else"
   }
+  # Every block's whole body, byte for byte (the capabilities line is pinned above): allowed_parameters cannot turn
+  # into denied_parameters, the "*" key cannot be renamed or dropped, and no line can be added anywhere.
   assert {
-    condition = alltrue([for p, body in local.bootstrap_policy_blocks.terraform :
-      endswith(p, "/tune") ? (
-        length(compact(split("\n", body))) == 8 && strcontains(body, "\n  denied_parameters = {\n") &&
-        alltrue([for k in ["audit_non_hmac_request_keys", "audit_non_hmac_response_keys", "passthrough_request_headers", "allowed_response_headers", "listing_visibility"] :
-        can(regex("\\n    ${k} *= \\[\\]\\n", body))])
-        ) : p == "sys/auth/kubernetes" ? (
-        length(compact(split("\n", body))) == 5 && can(regex("\\n  allowed_parameters = \\{\\n    type = \\[\"kubernetes\"\\]\\n    \"\\*\" += \\[\\]\\n  \\}\\n", body))
-        ) : p == "auth/kubernetes/config" ? (
-        length(compact(split("\n", body))) == 5 && can(regex("\\n  allowed_parameters = \\{\\n    kubernetes_host = \\[\"https://kubernetes\\.default\\.svc\"\\]\\n    \"\\*\" += \\[\\]\\n  \\}\\n", body))
-        ) : startswith(p, "auth/kubernetes/role/") ? (
+    condition = alltrue([for p, body in local.bootstrap_policy_blocks.terraform : body == join("", [
+      format("  capabilities = [%s]\n", try(regex("^  capabilities = \\[([^\\]\\n]*)\\]\\n", body)[0], "MISSING")),
+      endswith(p, "/tune") ? join("", concat(
+        ["  denied_parameters = {\n"],
+        [for k in concat(
+          ["audit_non_hmac_request_keys", "audit_non_hmac_response_keys", "passthrough_request_headers", "allowed_response_headers", "listing_visibility"],
+          p == "sys/mounts/auth/kubernetes/tune" ? ["token_type"] : []
+        ) : format("    %-28s = []\n", k)],
+        ["  }\n"]
+        )) : p == "sys/auth/kubernetes" ? join("", [
+        "  allowed_parameters = {\n", format("    %-4s = [\"kubernetes\"]\n", "type"), format("    %-4s = []\n", "\"*\""), "  }\n"
+        ]) : p == "auth/kubernetes/config" ? join("", [
+        "  allowed_parameters = {\n", format("    %-15s = [\"https://kubernetes.default.svc\"]\n", "kubernetes_host"), format("    %-15s = []\n", "\"*\""), "  }\n"
+        ]) : startswith(p, "auth/kubernetes/role/") ? join("", concat(
+        ["  allowed_parameters = {\n"],
         # [policy, service account, namespace]: the snapshot job's literally, a service's from its locals.
-        length(compact(split("\n", body))) == 9 && alltrue([for kv in [
+        [for kv in [
           ["token_policies", p == "auth/kubernetes/role/vault-snapshot" ? "snapshot" : trimprefix(p, "auth/kubernetes/role/")],
           ["policies", p == "auth/kubernetes/role/vault-snapshot" ? "snapshot" : trimprefix(p, "auth/kubernetes/role/")],
-          ["bound_service_account_names", p == "auth/kubernetes/role/vault-snapshot" ? "vault-snapshot" : local.services[trimprefix(p, "auth/kubernetes/role/")].service_account],
-          ["bound_service_account_namespaces", p == "auth/kubernetes/role/vault-snapshot" ? "vault" : local.services[trimprefix(p, "auth/kubernetes/role/")].k8s_ns],
+          ["bound_service_account_names", p == "auth/kubernetes/role/vault-snapshot" ? "vault-snapshot" : try(local.services[trimprefix(p, "auth/kubernetes/role/")].service_account, "NO-SUCH-SERVICE")],
+          ["bound_service_account_namespaces", p == "auth/kubernetes/role/vault-snapshot" ? "vault" : try(local.services[trimprefix(p, "auth/kubernetes/role/")].k8s_ns, "NO-SUCH-SERVICE")],
           ["bound_service_account_namespace_selector", ""],
-        ] : can(regex("\\n    ${kv[0]} *= \\[\"${kv[1]}\"\\]\\n", body))])
-      ) : length(compact(split("\n", body))) == 1
+        ] : format("    %-40s = [\"%s\"]\n", kv[0], kv[1])],
+        [format("    %-40s = []\n", "\"*\""), "  }\n"]
+      )) : "",
+    ])])
+    error_message = "parameter limits, as whole block bodies: every tune refuses the audit HMAC, header and listing keys (the auth mount's also token_type); the auth mount stays type kubernetes; its config keeps the in-cluster API server; a role carries only its own policy, namespace and service account, with \"*\" = [] for everything else; every other path has its capabilities line and nothing else"
+  }
+}
+
+# Both policies are nothing but `#` comment lines and the blocks the allowlists read. Vault's parser also takes
+# `path"x" {`, `"path" "x" {`, one-line blocks, /* */ and // comments and JSON; the regexes above would not see such
+# a block. So: remove the comment lines and every matched block, and only whitespace may remain; with the comment
+# lines and every quoted string removed, no /*, */ or // may remain (a glob like "kv-api/data/*" is inside a string).
+run "both_policies_are_plain_blocks_only" {
+  command = plan
+
+  assert {
+    condition     = alltrue([for k in ["terraform", "admin"] : trimspace(local.bootstrap_policy_residue[k]) == ""])
+    error_message = "bootstrap/terraform.hcl or bootstrap/admin.hcl holds something besides `#` comment lines and `path \"<p>\" {` ... `}` blocks at the start of a line: a block the allowlist does not see"
+  }
+  assert {
+    condition = alltrue([for k in ["terraform", "admin"] :
+      length(regexall("/\\*|\\*/|//", local.bootstrap_policy_code[k])) == 0 && !can(regex("^\\s*[\\{\\[]", local.bootstrap_policy_code[k]))
     ])
-    error_message = "parameter limits: every tune refuses the audit HMAC, header and listing keys; the auth mount stays type kubernetes; its config keeps the in-cluster API server; a role carries only its own policy, namespace and service account; every other path has capabilities and nothing else"
+    error_message = "bootstrap/terraform.hcl or bootstrap/admin.hcl uses /* */ or // comments, or is JSON: only `#` comments and HCL blocks, so that what the tests read is what Vault parses"
   }
 }
 

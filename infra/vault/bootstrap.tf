@@ -34,6 +34,17 @@ locals {
     for k, text in { terraform = local.bootstrap.terraform_policy, admin = local.bootstrap.admin_policy } :
     k => { for m in regexall("(?ms)^path \"([^\"]*)\" \\{\\n(.*?)^\\}$", text) : m[0] => m[1] }
   }
+  # What Vault parses but the two maps above do not see: the text without its `#` comment lines and without every
+  # matched block (must be whitespace only), and the text without its comment lines and quoted strings (must hold
+  # no /* */ or // comment and must not be JSON).
+  bootstrap_policy_residue = {
+    for k, text in { terraform = local.bootstrap.terraform_policy, admin = local.bootstrap.admin_policy } :
+    k => replace(replace(text, "/(?m)^[ \\t]*#.*$/", ""), "/(?ms)^path \"[^\"]*\" \\{\\n.*?^\\}$/", "")
+  }
+  bootstrap_policy_code = {
+    for k, text in { terraform = local.bootstrap.terraform_policy, admin = local.bootstrap.admin_policy } :
+    k => replace(replace(text, "/(?m)^[ \\t]*#.*$/", ""), "/\"[^\"\\n]*\"/", "")
+  }
 }
 
 # The operator's login puts a pseudonymous id into every audit line, never an email or a name (D198): those lines
@@ -51,7 +62,7 @@ check "bootstrap_oidc_roles_are_pseudonymous" {
 check "bootstrap_terraform_policy_matches_services" {
   assert {
     condition     = local.bootstrap.terraform_policy == local.bootstrap_terraform_policy_rendered
-    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. After the apply: terraform -chdir=infra/vault output -raw bootstrap_terraform_policy > infra/vault/bootstrap/terraform.hcl, review and commit it, then `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin login (docs/OPERATIONS.md -> Vault). Until then the terraform token cannot manage the new service."
+    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. Render it from a plan, no apply: terraform -chdir=infra/vault plan -out=tfplan && terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl, then commit it. A new service: merge, `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin login, THEN apply (otherwise the apply stops on a 403 halfway). A removed service: apply first, then write the narrower policy (infra/vault/README.md -> bootstrap/)."
   }
 }
 
@@ -59,8 +70,10 @@ check "bootstrap_policies_have_one_block_per_path" {
   assert {
     condition = alltrue([for k in ["terraform", "admin"] :
       length(local.bootstrap_policy_paths[k]) == length(keys(local.bootstrap_policy_blocks[k])) &&
-      length(local.bootstrap_policy_paths[k]) == length(toset(local.bootstrap_policy_paths[k]))
+      length(local.bootstrap_policy_paths[k]) == length(toset(local.bootstrap_policy_paths[k])) &&
+      trimspace(local.bootstrap_policy_residue[k]) == "" &&
+      length(regexall("/\\*|\\*/|//", local.bootstrap_policy_code[k])) == 0 && !can(regex("^\\s*[\\{\\[]", local.bootstrap_policy_code[k]))
     ])
-    error_message = "bootstrap/terraform.hcl or bootstrap/admin.hcl has a `path` that does not open its own block at the start of a line, or a path twice: the tests' allowlist would not see it the way Vault does."
+    error_message = "bootstrap/terraform.hcl or bootstrap/admin.hcl has a `path` that does not open its own block at the start of a line, a path twice, anything besides `#` comment lines and such blocks, a /* */ or // comment, or is JSON: the tests' allowlist would not see it the way Vault does."
   }
 }

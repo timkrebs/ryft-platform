@@ -156,4 +156,8 @@ resource "vault_kubernetes_auth_backend_role" "k8s_snapshot" {
   token_policies                   = [vault_policy.k8s_snapshot[0].name]
   token_ttl                        = 600
   token_max_ttl                    = 600
+  # A revocable service token with policy snapshot alone: without default it cannot even look itself up or revoke
+  # itself, so the job lets it expire (at most 10 minutes).
+  token_type              = "service"
+  token_no_default_policy = true
 }
