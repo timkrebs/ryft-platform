@@ -24,3 +24,13 @@ module "eks" {
 
   tags = local.tags
 }
+
+# Vault (Raft) and RabbitMQ (quorum queues) run three voters, one per node. On Spot, two
+# interruptions at once lose the quorum: Vault stops serving and the broker stops
+# accepting writes until a node returns. A plan with SPOT still works; it warns.
+check "stateful_quorum_needs_on_demand" {
+  assert {
+    condition     = var.node_group.capacity_type == "ON_DEMAND"
+    error_message = "node_group.capacity_type is ${var.node_group.capacity_type}: the Vault and RabbitMQ quorums (three voters on three nodes) need ON_DEMAND nodes. Spot needs a decision of its own (for example a separate on-demand group for the stateful workloads)."
+  }
+}

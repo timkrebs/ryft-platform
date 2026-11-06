@@ -296,7 +296,7 @@ k8s-validate:
 	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
 	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh

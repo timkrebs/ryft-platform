@@ -42,6 +42,17 @@ series for the admission bindings (job `ryft/admission-bindings`). They write th
 destination of their own with the `PROM_USERNAME` and `GC_TOKEN` of `ryft-secrets`, the
 token the Fleet pipelines write with.
 
+Two more are the in-cluster Vault's (D194; **Vault** under Alerts): `/v1/sys/metrics?format=prometheus`
+on each server pod over TLS with the ryft-vault CA (job `ryft/vault`; no token,
+`unauthenticated_metrics_access` on the listener; admitted by vault-extras' NetworkPolicy from the
+`alloy-deployment` pods only, and only once `vault_collector_peer` is set after the operator's own
+init: the peer reaches all of 8200, `PUT /v1/sys/init` included), and kube-state-metrics' series
+for namespace `vault` (job `ryft/vault-state`: the snapshot CronJob, the StatefulSet, the server
+pods' readiness and their service-registration labels). Both run on
+`alloy-deployment` and write through the same destination. Vault's own pod logs go to Grafana
+Cloud through a pipeline of the chart's, off until the Loki details are in Vault (**Logs → Vault's
+logs** below).
+
 Alert rules: `deploy/grafana/alerts/ryft.yaml`, checked and loaded with `make
 alerts-check` / `make alerts-apply`; see **Alerts** below.
 
@@ -52,7 +63,10 @@ exclude. The admission policies pin the images and commands of RYFT's pods, so a
 container would be refused, and the services emit their own metrics. The chart excludes
 by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
 every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
-default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
+default list). A new `ryft-*` namespace is added there too. `vault` and
+`vault-secrets-operator-system` are listed as well (D186): the webhook's configuration is steered
+from Grafana Fleet, and a mutated Vault pod would run foreign code next to the unsealed keyring
+and its Pod Identity token. Scraping and the Fleet
 Management log setting above are unaffected. Apply with `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
 check read-only:
 
@@ -61,7 +75,8 @@ kubectl get mutatingwebhookconfigurations \
   -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
 ```
 
-The selector of the injector's webhook must list every `ryft-*` namespace under `NotIn`.
+The selector of the injector's webhook must list every `ryft-*` namespace, `vault` and
+`vault-secrets-operator-system` under `NotIn`.
 
 A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace
@@ -131,7 +146,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_journal_saves_total` | counter | — | api | Journal days saved (`PUT /v1/journal/{day}`). |
 | `ryft_behavior_impact_seconds` | histogram | `caller` | api | CPU time of the behavior-impact computation: `caller="impact"` (`GET /v1/behaviors/impact`) or `insight` (yesterday's behaviors for the card). Its p95 passing ~0.1 s is the signal to move it into a worker (D76). |
 | `ryft_flag_evaluations_total` | counter | `key`, `result` | api | Feature flags evaluated for `GET /v1/config`, `on` or `off` per flag key. |
-| `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `invalid`, `error` (a failed handler, and the `503` of a token that cannot be checked now; the log and the access line's `code` say `jwks_unavailable`, `jwks_refresh_limited` or `account_check`, and the last counts as `internal` in `ryft_auth_failures_total`), `unauthorized` (no bearer, or one that is neither the key nor an allow-listed operator's token: one `401` for every reason, the reason is only in the log), `mfa_required` (a real operator without a second factor of the last 12 hours: `403`), `forbidden` (an operator's token on a key-only route: `403`). The series exist at 0 from start-up. |
+| `ryft_admin_requests_total` | counter | `result` | api | `/v1/admin` requests: `ok`, `invalid`, `error` (a failed handler, and the `503` of a token that cannot be checked now: the api could not complete a key fetch or the allow-list check, which is not by itself an outage, since anyone can send an unknown key id inside the refresh limit; the log and the access line's `code` say `jwks_unavailable`, `jwks_refresh_limited` or `account_check`, and the last counts as `internal` in `ryft_auth_failures_total`), `unauthorized` (no bearer, or one that is neither the key nor an allow-listed operator's token: one `401` for every reason, the reason is only in the log), `mfa_required` (a real operator without a second factor of the last 12 hours: `403`), `forbidden` (an operator's token on a key-only route: `403`). The series exist at 0 from start-up. |
 | `ryft_admin_authorized_total` | counter | `actor` | api | `/v1/admin` requests that passed the bearer check, by `actor`: `key` (scripts, smoke) or `user` (the operator's page with a Supabase token). No label holds an id: who acted is in `GET /v1/admin/audit` (`actor`), and `admin_actor` (`key:3fa1c2d9`, `user:1b2c3d4e`, the first 8 hex digits) is on the admin log lines. |
 | `ryft_gate_refusals_total` | counter | `code`, `mode`, `service` | api, ingest, scoring | Requests a gate would refuse: `invite_required` (the beta gate, D79) or `consent_required` (a sync or, `service="api"`, a training import, or in scoring a day, without consent, D78, D129). `mode="on"`: refused with `403`; `mode="warn"`: served with `X-RYFT-Gate` (D87). After a policy bump, `consent_required` rises until the testers open the app. The training import's consent refusals count as `mode="on"` also under `CONSENT_ENFORCE=warn`: on that route warn acts as on (D141). (Was `ryft_beta_denied_total` before `61db1c4`, 2026-10-20.) |
 | `ryft_consents_total` | counter | `action` | api | `granted`, `revoked`, `stale` (a POST for an outdated policy version: the app shows an old text). |
@@ -172,6 +187,17 @@ JSON (`make synthetics-apply`), not the page.
 | `kube_validatingadmissionpolicybinding_info` | gauge | `validatingadmissionpolicybinding`, `policy_name` (+ `param_*`, empty) | kube-state-metrics, native collector `validatingadmissionpolicybindings` (job `ryft/admission-bindings`) | One series per binding, value 1. 12 `ryft-*` bindings once the chart is enabled, none before. kube-state-metrics v2.20 does not export a binding's labels, so the committed action is not here (see `ryft:admission_binding_intended`). Custom-resource-state cannot be used: it resolves kinds from CRDs only and skips built-in ones (design claim m was wrong). |
 | `kube_validatingadmissionpolicybinding_validation_action` | gauge | `validatingadmissionpolicybinding`, `action` | kube-state-metrics | One series, value 1, for each of the binding's live `validationActions` (`Deny`, `Warn`, `Audit`); an action it lacks has no series. |
 | `ryft:admission_binding_intended` | recording rule | `validatingadmissionpolicybinding`, `intended_action` | Grafana ruler (`deploy/grafana/alerts/admission-intended.yaml`) | 1 per binding, `audit` or `deny`, generated from `actions:` in `infra/aws/kubernetes/admission-values.yaml` by `scripts/admission_intended.sh`. `make alerts-check` fails when the file and the values differ. It exists whether or not the chart is enabled. |
+| `vault_core_active` | gauge | `pod`, `vault_cluster` | Vault, every unsealed node (job `ryft/vault`) | 1 on the active node, 0 on a standby. A sealed node reports none (and Vault's gauges expire 2 minutes after their last update, `prometheus_retention_time`), so absence is not "standby". Vault's own `cluster` label (its Raft cluster name) is renamed `vault_cluster` by the scrape, so the external `cluster` label stays the cluster's. `VaultNoActiveNode`. |
+| `vault_core_unsealed` | gauge | `pod`, `vault_cluster` | Vault, every node | 1 unsealed, 0 sealed, but it expires with the retention, so the alerts read sealing from the pods' readiness instead (`kube_pod_container_status_ready`). Dashboard only. |
+| `vault_autopilot_healthy`, `vault_autopilot_failure_tolerance`, `vault_autopilot_node_healthy` | gauge | `node_id` (the last) | Vault, the active node only | Raft autopilot: the cluster's health, how many voters it may lose, each voter's health. `VaultRaftPeersBelow3` counts `node_healthy == 1` (`vault_raft_peers` expires and lags, not used). |
+| `vault_audit_log_request_failure`, `vault_audit_log_response_failure` | counter | `pod` | Vault, the active node | Audit entries that could not be written. Cumulative: Vault adds 0 or 1 on every request, so the counter lives while requests come and expires 2 minutes after the last (retention). `VaultAuditFailing` (critical) reads `increase()` over 10 minutes, plus a counter that appears above 0 (no request for 2 minutes, then a failing one). With every audit device failing, Vault refuses the request. |
+| `vault_audit_log_request_count`, `vault_audit_log_response_count`, `vault_core_handle_request_count`, `vault_core_handle_login_request_count`, `vault_core_in_flight_requests` | counter, gauge | `pod` | Vault, the active node | Request and login volume (VSO's hourly refreshes and logins); dashboard only. Before the first cutover nearly 0. |
+| `vault_token_count`, `vault_token_count_by_policy`, `vault_token_count_by_ttl` | gauge | `policy`, `creation_ttl` | Vault, the active node | Live tokens. Vault emits these usage gauges every 10 minutes and they expire after 2, so the series has gaps: read it with `max_over_time(…[15m])`. Not seen in the local 2.2.1 check (a fresh dev cluster); confirm on the first scrape. A steady rise means a client that logs in more often than its tokens expire (the snapshot job's token, policy `snapshot`, cannot revoke itself and lives its 10 minutes: four a day, never more than one at a time). |
+| `vault_raft_leader_lastContact_sum`, `_count` | summary | `pod` | Vault, standbys | Heartbeat delay from the leader as a mean; a rise before `VaultRaftPeersBelow3` points at a CPU-starved node. |
+| `kube_cronjob_status_last_successful_time`, `kube_cronjob_status_last_schedule_time` | gauge | `cronjob` | kube-state-metrics (job `ryft/vault-state`, namespace `vault` only) | When the snapshot job last succeeded and was last scheduled (Unix seconds). The success series exists only after the first success. `VaultSnapshotStale` (pages at 13 h), `VaultSnapshotFailing`. |
+| `kube_statefulset_replicas`, `kube_statefulset_status_replicas`, `kube_statefulset_status_replicas_ready`, `kube_statefulset_status_replicas_updated` | gauge | `statefulset` | kube-state-metrics (`ryft/vault-state`) | The server StatefulSet: desired, existing, ready (unsealed and serving), at the current template (OnDelete: `VaultUpdatePending`). `replicas_ready` at 0 for 10 minutes is `VaultUnavailable`. |
+| `kube_pod_container_status_running`, `kube_pod_container_status_ready` | gauge | `pod`, `container` | kube-state-metrics (`ryft/vault-state`) | Per server container: running but not ready is `VaultSealed` (one pod) or `VaultSealedQuorum` (two or more). Fleet's own kube-state-metrics pipeline does not keep readiness, hence the scrape of its own. |
+| `kube_pod_labels` | gauge | `pod`, `label_vault_initialized`, `label_vault_sealed`, `label_vault_active` | kube-state-metrics (`ryft/vault-state`; `--metric-labels-allowlist=pods=[vault-initialized,vault-sealed,vault-active]`) | The labels Vault's service registration writes on its own pods (sealed or not). A server pod with `label_vault_initialized="true"` in the last hour, or a snapshot that has succeeded once, is the alerts' "Vault has been initialised" gate. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -280,6 +306,20 @@ Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces)
 | Feedback (7 d) | stat | `sum by (category) (increase(ryft_feedback_received_total[7d]))` |
 | Deploys | table | `max by (name, sync_status, health_status) (argocd_app_info)`, and `sum by (name, phase) (increase(argocd_app_sync_total[24h]))` |
 
+**Row: Vault** (namespace `vault`; not filtered by `$namespace`)
+
+| Panel | Type | Query |
+| --- | --- | --- |
+| Active node / ready pods | state timeline | `max by (pod) (vault_core_active{job="ryft/vault"})`, `max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", statefulset="vault"})` (3 when healthy; 0 before the init) |
+| Raft health | stat | `max(vault_autopilot_healthy{job="ryft/vault"})`, `min(vault_autopilot_failure_tolerance{job="ryft/vault"})` (1 with three voters), `count(max by (node_id) (vault_autopilot_node_healthy{job="ryft/vault"}) == 1)` |
+| Last snapshot | stat (thresholds 7 h / 13 h) | `time() - max(kube_cronjob_status_last_successful_time{job="ryft/vault-state", cronjob="vault-snapshot"})` |
+| Requests and logins | time series | `sum(rate(vault_core_handle_request_count{job="ryft/vault"}[15m]))`, `sum(rate(vault_core_handle_login_request_count{job="ryft/vault"}[15m]))` |
+| Audit failures | time series | `max by (pod) (vault_audit_log_request_failure{job="ryft/vault"})`, `max by (pod) (vault_audit_log_response_failure{job="ryft/vault"})` (empty when healthy) |
+| Volumes | bar gauge (%) | `max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace="vault"}) / max by (persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="vault"})` |
+| Live tokens | time series | `max by (policy) (max_over_time(vault_token_count_by_policy{job="ryft/vault"}[15m]))` |
+| Leader contact | time series | `max by (pod) (rate(vault_raft_leader_lastContact_sum{job="ryft/vault"}[5m]) / rate(vault_raft_leader_lastContact_count{job="ryft/vault"}[5m]))` (ms) |
+| Pending pod restarts | stat | `max(kube_statefulset_replicas{job="ryft/vault-state", statefulset="vault"}) - max(kube_statefulset_status_replicas_updated{job="ryft/vault-state", statefulset="vault"})` |
+
 RabbitMQ's nodes carry the same scrape annotations (port 15692, plain HTTP; the
 broker's network policy admits it from the VPC range like the services' 9090). Its
 management UI shows the same per queue (OPERATIONS → RabbitMQ). Until the cutover the
@@ -299,7 +339,8 @@ refuse the whole load (`per-user rules per rule group limit (limit: 20 actual: 3
 for group `ryft`, 2026-11-05) and nothing is written. So `ryft.yaml` splits its rules by
 theme into `ryft` (the services, HTTP, auth, database, certificates), `ryft-pipeline`
 (dead letters, RabbitMQ, outbox, scoring, sync) and `ryft-ops` (push, accounts and the beta,
-Argo CD, the site's synthetics), next to `ryft-admission`; `admission-intended.yaml` is one
+Argo CD, the site's synthetics), next to `ryft-admission` and `ryft-vault` (the in-cluster
+Vault); `admission-intended.yaml` is one
 group, `ryft-admission-intended`. Keep a group at 18 or fewer and open a new one by theme
 when it grows: `make alerts-check` runs `scripts/check_rule_groups.sh` first, which fails
 above 20 (promtool and mimirtool do not know the limit). A load replaces each group it names
@@ -312,14 +353,14 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | Alert | Severity | Fires when | First look |
 | --- | --- | --- | --- |
 | HTTP5xxRatio | critical | api or ingest answers > 2 % of requests with 5xx, 10 min | logs of that namespace, `err` on `level=ERROR` |
-| PodRestarting | critical | a `ryft-*` pod restarted > 3× in 30 min | `kubectl -n <ns> describe pod`, the previous container's log |
+| PodRestarting | critical | a `ryft-*` or `vault` pod restarted > 3× in 30 min | `kubectl -n <ns> describe pod`, the previous container's log; for vault OPERATIONS → Vault alerts |
 | ServiceExited | critical | a container of api, ingest, scoring or notify restarted in the last 15 min (`kube_pod_container_status_restarts_total`; any restart, whatever the exit code: a probe kill can exit 0) | OPERATIONS → A service exited: `describe pod` for the exit code and the events, the previous container's log (`kubectl --context ryft-prod-euc1 -n <ns> logs <pod> --previous`, or CloudWatch) |
 | Panics | critical | a handler (`ryft_http_panics_total`), an event handler (`ryft_event_handler_panics_total`) or a service's own goroutine (`ryft_goroutine_panics_total`) panicked in the last 15 min, per namespace. Terms joined with `or`; the two labelled counters' first panic (a series born at 1) is caught by the TextRefusedByDatabase pattern | the `msg="panic"` line with the stack (`task` or `route` names where); OPERATIONS → A panic (Panics); after a goroutine panic the pod has restarted, so read the previous container's log |
 | TextRefusedByDatabase | warning | Postgres refused a request's text (SQLSTATE 22021/22P05) in the last hour, per namespace and route (`ryft_http_text_refused_total{at="database"}`; a route's first refusal included) | The client got a `422` and nothing was logged (it used to be a logged `500`). Either a path the checks miss — a handler reading text without `httpx.ReadJSON`, a raw field `normalizeRaw` does not reach, a URL value outside `WithRoutes` — or a server-side bug writing bad text (a string cut inside a UTF-8 sequence). Reproduce on that route against a throwaway database (the `err` is not logged), then close the gap in `internal/httpx` with a test. |
-| AuthUnavailable | critical | `jwks_unavailable` (no signing keys, or an unknown key id while the last fetch failed) or `internal` (the user lookup, or the admin allow-list check, failed), 5 min. `jwks_refresh_limited` is left out: a token with an unknown key id inside the refresh limit, which anyone can send | Supabase status, `ryft_db_up` |
+| AuthUnavailable | critical | `jwks_unavailable` (no signing keys, or an unknown key id while the last fetch failed: no answer, another status than 200, a body that is not a key set, or no key set within the fetch's time; a client that hangs up mid-fetch does not count, D184) or `internal` (the user lookup, or the admin allow-list check, failed), 5 min. `jwks_refresh_limited` is left out: a token with an unknown key id inside the refresh limit, which anyone can send | Supabase status, `ryft_db_up` |
 | DatabaseDown | critical | a service's database ping failed for 2 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins (OPERATIONS → EKS) |
 | DatabaseFlapping | warning | > 3 failed pings in 15 min | the same, intermittently |
-| CertificateExpiring | warning | a cert-manager certificate expires in < 14 days, 1 h | `kubectl get certificate -A`, the issuer's events |
+| CertificateExpiring | warning | a cert-manager certificate expires in < 14 days, 1 h (every namespace, Vault's `vault-tls` included) | `kubectl get certificate -A`, the issuer's events |
 | SyncSlow | warning | sync p95 > 10 s, 15 min | database latency, sync sizes |
 | RateLimited | warning | > 1 request/s answered 429, 10 min | which class (`ryft_rate_limited_total{class}`), the logs |
 | SyncToScoreSlow | warning | p95 from sync to score over 2 min, 15 min | scoring's CPU and database time, the backlog, a large backfill |
@@ -353,16 +394,27 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
 | SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
 | AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny. Info, not warning: findings that repeat on every Argo CD refresh would page all day | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
-| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
-| AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-operator-reach`, `ryft-auth-env`: step C and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
+| AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
+| AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`: step C, vault's pods and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
 | AdmissionPolicyError | critical / warning | a policy's CEL could not be evaluated in the last 10 min (`error_type` not `no_error`): critical when the binding refuses (the request fails under `Fail`), warning under Warn+Audit | the expression meets an unexpected object shape; break-glass, then fix the chart |
-| AdmissionBindingMissing | critical | fewer than 12 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
+| AdmissionBindingMissing | critical | fewer than 17 `ryft-*` bindings for 10 min, once some existed in the last day | `kubectl get validatingadmissionpolicybindings`, kube-state-metrics, the `[0]` replace apply (OPERATIONS) |
 | AdmissionBindingNotDenying | warning | a binding committed as deny has no `Deny` while other bindings do, 10 min | a fast-path patch left in place; the `[0]` replace apply |
 | AdmissionBindingDrift | warning | the other mismatches with the committed action (deny without Audit; audit with Deny or without Warn or Audit), 2 h | the same |
 | AdmissionBreakGlass | warning | no `ryft-*` binding has `Deny` while at least one is committed as deny, 4 h | end it with `admission_break_glass=false` |
 | AdmissionSignalsMissing | warning | no `up` for the API-server scrape or the bindings scrape for 15 min (also before the monitoring values are applied) | `kubectl -n monitoring get pods`, the collector log |
 | AdmissionScrapeDown | warning | `up == 0` for an admission target, 15 min | the same; remote_write errors in the collector log |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
+| VaultSealed | warning | one Vault server pod runs but is not ready for 5 min (sealed, or a standby that cannot reach the active node), once Vault has been initialised | OPERATIONS → Vault alerts (VaultSealed) → Vault → A pod is sealed |
+| VaultSealedQuorum | critical | two or more server pods run but are not ready for 5 min: no quorum with 3 replicas (same gate) | OPERATIONS → Vault alerts (VaultSealedQuorum) → Vault → Quorum loss: the unseal key, its role |
+| VaultUnavailable | critical | no Vault server is ready for 10 min, whatever the reason (same gate) | OPERATIONS → Vault alerts (VaultUnavailable): sealed, Pending or crash-looping |
+| VaultNoActiveNode | critical | the Vault scrape works and no node reports itself active, 2 min (same gate) | OPERATIONS → Vault alerts (VaultNoActiveNode) → Vault → The leader is gone |
+| VaultRaftPeersBelow3 | warning | autopilot counts fewer than 3 healthy voters, 10 min (only with an active node) | OPERATIONS → Vault alerts (VaultRaftPeersBelow3): which pod, its zone, `raft list-peers` |
+| VaultSnapshotStale | critical | no successful snapshot for 13 h, or none in 13 h of a Vault that was ready throughout, while a server is ready (RPO 6 h; expiry would delete the last snapshot after 37 days) | OPERATIONS → Vault → Snapshots |
+| VaultSnapshotFailing | warning | the latest scheduled snapshot run started over 30 min ago and has not succeeded, or none has ever succeeded while a server is ready | OPERATIONS → Vault → Snapshots: the failed Job's logs |
+| VaultAuditFailing | critical | a node failed to write an audit entry in the last 10 min (`increase()`, or a counter that appears above 0) | OPERATIONS → Vault alerts (VaultAuditFailing): `vault audit list -detailed`, the audit volume |
+| VaultVolumeFilling | warning | a Vault data or audit volume is over 80 % full, 15 min | OPERATIONS → Vault alerts (VaultVolumeFilling): patch the PVC only |
+| VaultUpdatePending | info | Vault pods run the previous template for 24 h (updateStrategy OnDelete: the next node drain would roll them, D204) | OPERATIONS → Vault alerts (VaultUpdatePending): the pod-by-pod restart |
+| VaultScrapeDown | warning | kube-state-metrics for vault (`ryft/vault-state`) is not scraped; or, once Vault has been initialised and while the StatefulSet exists, a server's scrape fails or is missing, or Fleet sends no kubelet volume stats for `vault`; 15 min: the Vault alerts are blind | OPERATIONS → Vault alerts (VaultScrapeDown): `vault_collector_peer`, the collector's `vault-ca` Secret, the NetworkPolicy peer |
 
 ### Admission
 
@@ -398,11 +450,11 @@ selector is pinned by `job`. Properties that are deliberate:
   scrape is gone or failing; the clean-pass counter is not a liveness signal (it does not
   exist).
 
-Series budget (free tier, 10k active series): the three API-server families are about 200
-series at most (12 bindings x 3 or 4 action and error children x 2 API servers, the latency
-as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 12 (`info`) + at most
-24 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 12 recorded
-intended series, and `up` plus `scrape_samples_scraped` per target; about 300 in total. Deny
+Series budget (free tier, 10k active series): the three API-server families are about 250
+series at most (17 bindings x 3 or 4 action and error children x 2 API servers, the latency
+as `_sum` and `_count`, Pod Security refusals only), kube-state-metrics 17 (`info`) + at most
+34 (`validation_action`: Deny and Audit or Warn and Audit per binding) + 2, the 17 recorded
+intended series, and `up` plus `scrape_samples_scraped` per target; about 350 in total. Deny
 and error children appear only after their first event.
 
 To confirm in the kind e2e before Phase 1: the `enforcement_action` and `error_type` label
@@ -412,6 +464,57 @@ values on EKS's Kubernetes minor (which of them an evaluation error carries), th
 `NoSync` needs a scrape since the last ingest restart (the gauge is in memory), hence the
 `absent()`. Per-tester staleness is a dashboard panel, not a page: one tester on holiday
 is no incident.
+
+### Vault
+
+The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/vault` and
+`ryft/vault-state`; Collection above). Properties that are deliberate:
+
+- **Sealed is read from readiness.** A sealed node still answers the metrics scrape, but its
+  `vault_core_unsealed` expires two minutes later and it never reports `vault_core_active`
+  (checked on 2.2.1). The readiness probe is strict (`/v1/sys/health?standbyok=true`: only an
+  unsealed active or standby node is ready), so "running and not ready" is the signal.
+- **The "initialised" gate.** Before the first init every pod runs and none is ready, by design
+  (D196), and the collector may not reach the servers (`vault_collector_peer` is off until the
+  operator's own init). `VaultSealed`, `VaultSealedQuorum`, `VaultUnavailable`,
+  `VaultNoActiveNode` and the server and kubelet branches of `VaultScrapeDown` fire only once
+  Vault has been initialised: a server pod labelled `vault-initialized=true` in the last hour
+  (`kube_pod_labels`; Vault's service registration writes the label, sealed or not), or a
+  snapshot that has succeeded once (the CronJob's `lastSuccessfulTime` stays in its status). The
+  second half holds through an outage of every pod (new pods carry no labels until Vault
+  starts), so a Vault down for a week keeps paging; a fresh or rebuilt cluster stays quiet until
+  its init.
+- **Sealed: one warns, two page.** One sealed pod costs the failure tolerance, not the service
+  (`VaultSealed`, warning); two or more of three leave no quorum (`VaultSealedQuorum`,
+  critical, one alert instead of one per pod). `VaultUnavailable` covers the rest of "no server
+  ready" (Pending, crash loops).
+- **A lost audit write pages.** `VaultAuditFailing` is critical (the lead's call): the audit
+  trail is the one record of who read which secret, a failure means requests go unrecorded (or,
+  with both devices failing, refused), and its causes (a full audit volume, a broken device)
+  only get worse.
+- **The snapshot pages.** `VaultSnapshotStale` is critical at 13 hours (two missed runs): the
+  bucket's lifecycle deletes snapshots 30 days after they were written and the versions 7 days
+  later, so a job broken for 37 days leaves no snapshot to restore. It counts only while a pod
+  is ready (a Vault that is down pages as `VaultUnavailable`, and no snapshot can be taken);
+  a never-successful job pages once Vault has been ready for 13 hours, and
+  `VaultSnapshotFailing` warns 30 minutes after the first failed run.
+- **Blind is a warning, not silence.** `VaultScrapeDown` fires when kube-state-metrics' vault
+  scrape is gone (also before the monitoring values are applied), when a server's scrape fails
+  or is missing, and when Fleet sends no `kubelet_volume_stats_*` for `vault` (VaultVolumeFilling
+  would be blind). The last two count only once Vault has been initialised and while the
+  StatefulSet exists, so a cluster without Vault, or one before its init, is quiet.
+  `VaultNoActiveNode` stays quiet while every server scrape fails (blind is not leaderless).
+- **Not here:** restarts (`PodRestarting` covers `vault`), the certificate
+  (`CertificateExpiring` has no namespace filter), and the log-based rules (an audit device
+  that stopped, a root-token login): Loki rules need `lokitool`, which `make alerts-check` does
+  not run yet; they are a follow-up (D199, group `ryft-vault-logs`).
+
+Series budget: about 25 from `ryft/vault` (three pods; the keep list in
+`deploy/monitoring/k8s-monitoring.yaml`, the autopilot and audit series from the active node
+only, token gauges per policy), about 18 from `ryft/vault-state` (one CronJob, one StatefulSet,
+three containers, three `kube_pod_labels`), and `up` plus `scrape_samples_scraped` per target:
+under 65 in total. The pod-label allowlist adds a `kube_pod_labels` series per pod cluster-wide
+in kube-state-metrics itself, but the scrape keeps namespace `vault` only.
 
 ## Baselines
 
@@ -568,3 +671,65 @@ Today that is the account's administrators only. Treat any grant as access to th
 personal data, and until 14 days after the deploy that stopped logging health values
 (OPERATIONS → Data protection (logs), older lines) to their scores: no broad
 `CloudWatchLogsReadOnlyAccess` for others, and no export to buckets or third parties. Cost at alpha volume is around €1 a month, plus €1 for the key.
+
+### Vault's logs
+
+The one log stream that goes to Grafana Cloud on purpose (D197, D198): namespace `vault`, from
+`alloy-daemonset` (the node's log files) to the stack's Loki, through the chart's own
+`podLogsViaLoki` pipeline (`deploy/monitoring/k8s-monitoring.yaml`, **off** until the steps in
+OPERATIONS → Vault logs are done). Fleet Management's pod-log pipeline excludes `ryft-.*|vault`
+and Beyla skips `vault`, both set before the Vault add-on is applied (OPERATIONS → Before the
+Vault add-on is applied, with the Explore check that `{namespace="vault"}` is empty), so
+nothing of it arrives shaped by remote configuration.
+
+| Stream label | Values |
+| --- | --- |
+| `cluster`, `namespace`, `pod`, `container` | from the pod (`namespace` is always `vault`) |
+| `job` | `ryft/vault` |
+| `stream` | `server` (Vault's JSON log: a line with `@level` from container `vault`), `audit` (the stdout audit device: a line with `type` `request` or `response`), `other` (the start script, the snapshot job: its init container's `@level` lines too) |
+
+Nothing else becomes a label or structured metadata, and no line is rewritten: a value inside
+a line (a path, an accessor) never turns into a stream. Queries:
+
+```text
+{namespace="vault", stream="audit"} | json | request_path=~"sys/.*"     # administrative requests
+{namespace="vault", stream="audit"} | json | auth_display_name="root"   # root-token use
+{namespace="vault", stream="server"} | json | __error__="" | _level=~"warn|error"
+```
+
+**What an audit entry holds.** One entry per request and per response: time, the operation and
+the request path (`kv-api/data/config`, `sys/storage/raft/snapshot`), the mount, the client's
+address (a pod IP; `127.0.0.1` through the port-forward), the auth's display name, entity and
+policies (a service's Kubernetes role, the operator's admin identity), token accessor and TTLs.
+Secret values, tokens and request or response bodies' values are HMAC-SHA256'd with the audit
+device's salt (Vault's default; no `hmac_accessor=false`, no unhashed keys), so a line names
+*which* secret was read by *whom*, never its value. No tester data: the testers never talk to
+Vault. Vault does hold a little personal data as KV values (the e-mail addresses of the smoke
+user and of the App Review demo account); the audit lines carry those only as HMACs.
+
+**Data protection.**
+
+- **Art. 32:** the audit trail of who reads which credential is a security measure in its own
+  right (integrity and confidentiality of the processing systems, and detecting their misuse).
+  The copy in Grafana Cloud survives the cluster and the audit volume, which a compromised
+  Vault host could alter; access to the stack is limited to its members (OPERATIONS →
+  Monitoring: keep them to yourself). It is **not** tamper-proof: anyone with a token that has
+  `logs:write` on the stack (`GC_TOKEN`, which the collectors hold) can push lines with
+  `stream="audit"`. It is evidence only together with the file device on the audit volume.
+- **Processor:** Grafana Labs, already the processor for the metrics (stack in London, D86;
+  the UK is a third country with an adequacy decision, Art. 45 GDPR). The audit lines add
+  personal data of one person, the operator (a pseudonymous OIDC subject, D198; the client
+  address of an operator session is `127.0.0.1`, through the port-forward), and none of the
+  testers. Retention is the stack's log retention (Grafana Cloud → the stack → Usage/limits).
+- **Your steps, before turning the pipeline on:** accept Grafana Labs' data processing
+  agreement (grafana.com → Legal → DPA, in the organisation's settings), and add an entry to
+  the record of processing activities: purpose "security monitoring of access to credentials",
+  categories "the operator's pseudonymous subject, client addresses (pod IPs; `127.0.0.1` for
+  operator sessions), service account names, timestamps, HMACs of KV values", recipient
+  Grafana Labs (processor), the retention above, and the transfers with their mechanisms: the
+  UK (the stack's region; adequacy decision) and the US entities and sub-processors Grafana's
+  DPA lists (the mechanism the DPA names for each, for example the EU-US Data Privacy Framework
+  or Standard Contractual Clauses). **To verify** against the DPA and its sub-processor list
+  before the entry is written; do not record "no transfer".
+- **The privacy policy does not change:** it covers the app's users, whose data never reaches
+  Vault or its audit log.

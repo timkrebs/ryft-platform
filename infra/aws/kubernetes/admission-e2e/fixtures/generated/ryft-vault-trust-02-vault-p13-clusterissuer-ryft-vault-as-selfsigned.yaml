@@ -1,0 +1,11 @@
+# fixture: vault: P13 ClusterIssuer ryft-vault as selfSigned
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-vault
+spec:
+  selfSigned: {}

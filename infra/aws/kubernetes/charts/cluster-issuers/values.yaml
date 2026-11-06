@@ -7,3 +7,7 @@ dnsZone: ""
 # The internal CA for AMQPS (templates/internal-ca.yaml).
 internalCA:
   enabled: true
+
+# Vault's own CA (templates/vault-ca.yaml, D190): the server certificate and the per-namespace vault-ca.
+vaultCA:
+  enabled: true

@@ -2,7 +2,7 @@
 # op: create
 # as: kubernetes-admin
 # refused-by: ryft-vso
-# message: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+# message: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultConnection
 metadata:

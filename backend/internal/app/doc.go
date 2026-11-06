@@ -38,5 +38,6 @@
 //     each check (db, auth, broker) and answers the same status codes as
 //     before; the broker gates it only where Spec.BrokerRequired says so (D101).
 //
-// See docs/ARCHITECTURE.md → Services; D78, D101.
+// See docs/ARCHITECTURE.md → Services; D78, D101, and D168-D172 (the lifecycle, the shutdown order
+// and budget, /readyz, errgroup and goleak, shutdown measured in the log).
 package app

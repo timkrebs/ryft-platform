@@ -14,14 +14,58 @@ test.describe('routes the app depends on', () => {
   test('the old German URLs redirect to the English page', async ({ request }) => {
     for (const [from, to] of [
       ['/de', '/'],
+      ['/de?x=1', '/?x=1'],
       ['/de/privacy', '/privacy'],
+      ['/de/privacy?x=1&y=2', '/privacy?x=1&y=2'],
       ['/de/terms', '/terms'],
       ['/de/impressum', '/impressum'],
+      ['/de/support', '/support'],
+      ['/de/science', '/science'],
+      ['/de/beta', '/beta'],
+      ['/de/licenses', '/licenses'],
       ['/de/privacy/2026-10-20', '/privacy/2026-10-20'],
+      ['/de/terms/2026-10-20', '/terms/2026-10-20'],
+      // The trailing slash goes first (to /de…), then the language: two hops, query kept.
+      ['/de/', '/de'],
+      ['/de/?x=1', '/de?x=1'],
+      ['/de/privacy/', '/de/privacy'],
     ]) {
       const res = await request.get(from, { maxRedirects: 0 });
       expect(res.status(), from).toBe(301);
       expect(res.headers()['location'], from).toBe(to);
+      if (!from.endsWith('/') && !from.includes('/?'))
+        expect(res.headers()['cache-control'], from).toBe('public, max-age=3600');
+    }
+    // Followed to the end, every old link lands on an English page.
+    for (const from of ['/de/', '/de/privacy/', '/de/impressum']) {
+      const res = await request.get(from);
+      expect(res.status(), from).toBe(200);
+      expect(new URL(res.url()).pathname, from).not.toMatch(/^\/de/);
+    }
+  });
+
+  // The /de rule builds Location from the decoded path, like the trailing-slash rule: nothing
+  // under /de/ may turn into "//host", "/\host" or a header with a control character.
+  test('a /de/… path never redirects off the site', async ({ request }) => {
+    for (const path of [
+      '/de/%5Cevil.com',
+      '/de/%09/evil.com',
+      '/de/%0d/evil.com',
+      '/de/%0a/evil.com',
+      '/de/%20x',
+      '/de//evil.com',
+      '/de/%2F%2Fevil.com',
+      '/de/a/%5Cb',
+    ]) {
+      const res = await request.get(path, { maxRedirects: 0 });
+      const location = res.headers()['location'];
+      if (res.status() === 404) {
+        expect(location, path).toBeUndefined();
+        continue;
+      }
+      expect(res.status(), path).toBe(301);
+      expect(location, path).toMatch(/^\/[A-Za-z0-9]/);
+      expect(location, path).not.toMatch(/[\\\s\x00-\x1f\x7f]/);
     }
   });
 
@@ -68,10 +112,49 @@ test.describe('routes the app depends on', () => {
       ['/privacy/', '/privacy'],
       ['/science/', '/science'],
       ['/terms/2026-10-20/', '/terms/2026-10-20'],
+      ['/privacy/?x=1', '/privacy?x=1'],
+      ['/privacy/2026-10-26/', '/privacy/2026-10-26'],
+      ['/licenses/', '/licenses'],
+      ['/de/', '/de'],
+      ['/de/science/', '/de/science'],
+      ['/de/privacy/', '/de/privacy'],
+      ['/x//y/', '/x/y'],
     ]) {
       const res = await request.get(from, { maxRedirects: 0 });
       expect(res.status(), from).toBe(301);
       expect(res.headers()['location'], from).toBe(to);
+    }
+  });
+
+  // The decoded path must never reach Location: "/\evil.com" is another host to a browser, and
+  // a tab or CR in the header is worse. These are 404s with the site's 404 page, no redirect.
+  test('a trailing-slash path with a backslash, space or control character is a 404, not a redirect', async ({
+    request,
+  }) => {
+    for (const path of [
+      '/%5Cevil.com/',
+      '/%5Cevil.com',
+      '/%09/evil.com/',
+      '/%0d/evil.com/',
+      '/%0a/evil.com/',
+      '/%20/evil.com/',
+      '/a/%5Cevil.com/',
+      '/_next/static/',
+    ]) {
+      const res = await request.get(path, { maxRedirects: 0 });
+      expect(res.status(), path).toBe(404);
+      expect(res.headers()['location'], path).toBeUndefined();
+      expect(await res.text(), path).toContain('Page not found');
+    }
+  });
+
+  test('no redirect points off the site', async ({ request }) => {
+    for (const path of ['/%2F%2Fevil.com/', '/a//', '/x//y/', '/de/']) {
+      const res = await request.get(path, { maxRedirects: 0 });
+      const location = res.headers()['location'];
+      if (location === undefined) continue;
+      expect(location, path).toMatch(/^\/[A-Za-z0-9]/);
+      expect(location, path).not.toMatch(/[\\\s\x00-\x1f\x7f]/);
     }
   });
 

@@ -23,12 +23,17 @@ tests:
     input_series:
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0 1 2 3 4 5 6' }
       - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-1",container="api"}', values: '0 0 1 1 1 1 1' }
+      # Vault is in scope too; a pod in another namespace (vault-secrets-operator-system) is not.
+      - { series: 'kube_pod_container_status_restarts_total{namespace="vault",pod="vault-1",container="vault"}', values: '0 1 2 3 4 5 6' }
+      - { series: 'kube_pod_container_status_restarts_total{namespace="vault-secrets-operator-system",pod="vso-1",container="manager"}', values: '0 1 2 3 4 5 6' }
     alert_rule_test:
       - eval_time: 30m
         alertname: PodRestarting
         exp_alerts:
           - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1 }
             exp_annotations: { summary: "scoring-1 restarted more than 3 times in 30 minutes" }
+          - exp_labels: { severity: critical, namespace: vault, pod: vault-1 }
+            exp_annotations: { summary: "vault-1 restarted more than 3 times in 30 minutes" }
   - name: a service exited and restarted
     interval: 1m
     input_series:
@@ -192,6 +197,10 @@ tests:
     input_series:
       - { series: 'ryft_feedback_received_total{category="bug"}', values: '0 0 0 1 1' }
       - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="ryft-web",name="ryftapp-tls"}', values: '864000x90' }
+      # Vault's server certificate is covered by the same rule (no namespace filter); vault-ca with
+      # 300 days left is not.
+      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="vault",name="vault-tls"}', values: '864000x90' }
+      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="vault",name="vault-ca"}', values: '25920000x90' }
     alert_rule_test:
       - eval_time: 4m
         alertname: NewFeedback
@@ -203,6 +212,8 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, namespace: ryft-web, name: ryftapp-tls }
             exp_annotations: { summary: "Certificate ryft-web/ryftapp-tls expires in under 14 days" }
+          - exp_labels: { severity: warning, namespace: vault, name: vault-tls }
+            exp_annotations: { summary: "Certificate vault/vault-tls expires in under 14 days" }
   - name: argo cd
     interval: 1m
     input_series:
@@ -518,6 +529,11 @@ tests:
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operator-reach",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd-operation",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vault-trust",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces-vault",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-templates-vault",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-pods-vault",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol-vault",intended_action="deny"}', values: '1x300' }
     alert_rule_test:
       - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
       - { eval_time: 31m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
@@ -540,6 +556,8 @@ tests:
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operator-reach",policy_binding="ryft-operator-reach",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-auth-env",policy_binding="ryft-auth-env",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
       - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-templates",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods-vault",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
+      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-netpol",policy_binding="ryft-netpol-vault",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
     alert_rule_test:
       - eval_time: 31m
         alertname: AdmissionPolicyDenied
@@ -551,6 +569,10 @@ tests:
           - exp_labels: { severity: warning, policy: ryft-workloads, policy_binding: ryft-workloads-templates }
             exp_annotations:
               summary: "Admission policy ryft-workloads (ryft-workloads-templates) refused a request"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: warning, policy: ryft-netpol, policy_binding: ryft-netpol-vault }
+            exp_annotations:
+              summary: "Admission policy ryft-netpol (ryft-netpol-vault) refused a request"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - eval_time: 31m
         alertname: AdmissionPodDenied
@@ -564,6 +586,10 @@ tests:
               summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
           - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-auth-env }
+            exp_annotations:
+              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-workloads-pods-vault }
             exp_annotations:
               summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
@@ -674,7 +700,7 @@ tests:
               summary: "Admission policy ryft-traefik (ryft-traefik) fails to evaluate (invalid_error); requests are admitted"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - { eval_time: 50m, alertname: AdmissionPolicyError, exp_alerts: [] }
-  - name: admission bindings, eleven of twelve
+  - name: admission bindings, sixteen of seventeen
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -688,6 +714,11 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
     alert_rule_test:
       - { eval_time: 5m, alertname: AdmissionBindingMissing, exp_alerts: [] }
       - eval_time: 15m
@@ -695,9 +726,9 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "11 of 12 admission policy bindings exist"
+              summary: "16 of 17 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, eleven of ryft and one that is not ours
+  - name: admission bindings, sixteen of ryft and one that is not ours
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -711,6 +742,11 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="other-binding",policy_name="ryft-other-binding"}', values: '1x120' }
     alert_rule_test:
       - eval_time: 15m
@@ -718,9 +754,9 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "11 of 12 admission policy bindings exist"
+              summary: "16 of 17 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, all twelve
+  - name: admission bindings, all seventeen
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -734,6 +770,11 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x120' }
     alert_rule_test:
       - { eval_time: 30m, alertname: AdmissionBindingMissing, exp_alerts: [] }
@@ -757,6 +798,11 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x60' }
     alert_rule_test:
       - { eval_time: 65m, alertname: AdmissionBindingMissing, exp_alerts: [] }
@@ -765,7 +811,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "0 of 12 admission policy bindings exist"
+              summary: "0 of 17 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
   - name: admission binding committed as deny that does not deny, while others do
     interval: 5m
@@ -1049,3 +1095,535 @@ tests:
             exp_annotations:
               summary: "No ryft/admission-bindings scrape results for 15 minutes; the admission alerts are blind"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
+
+  # ---- group ryft-vault -------------------------------------------------------------
+  # "Initialised" is a server pod labelled vault-initialized=true (kube_pod_labels) or a snapshot
+  # that has succeeded once; the tests use one or the other, so both halves of the gate count.
+  - name: vault before the init (every pod running, none ready, the collector not admitted) is quiet
+    interval: 1m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x1600' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
+      - { series: 'kube_statefulset_status_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
+      - { series: 'kube_statefulset_status_replicas_updated{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '1x1600' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x1600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '0x1600' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x1600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x1600' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x1600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '0x1600' }
+      # Every run fails before the init (no role yet): scheduled, never successful.
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x1600' }
+      # The NetworkPolicy does not admit the collector yet (var.vault_collector_peer false).
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x1600' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x1600' }
+    alert_rule_test:
+      - { eval_time: 60m, alertname: VaultSealed, exp_alerts: [] }
+      - { eval_time: 60m, alertname: VaultSealedQuorum, exp_alerts: [] }
+      - { eval_time: 60m, alertname: VaultUnavailable, exp_alerts: [] }
+      - { eval_time: 60m, alertname: VaultNoActiveNode, exp_alerts: [] }
+      - { eval_time: 60m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
+      - { eval_time: 60m, alertname: VaultScrapeDown, exp_alerts: [] }
+      - { eval_time: 26h, alertname: VaultUpdatePending, exp_alerts: [] }
+      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - { eval_time: 14h, alertname: VaultSnapshotFailing, exp_alerts: [] }
+  - name: vault sealed (one pod)
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x60' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 2x50' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x50' }
+      # Not running at all (Pending, a crash loop) is not "sealed": PodRestarting, VaultRaftPeersBelow3.
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
+      # Not a server: an operator's pod with a container named vault (the restore drill's, say).
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-restore-debug",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-restore-debug",container="vault"}', values: '0x60' }
+    alert_rule_test:
+      - { eval_time: 14m, alertname: VaultSealed, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: VaultSealed
+        exp_alerts:
+          - exp_labels: { severity: warning, pod: vault-1 }
+            exp_annotations:
+              summary: "vault-1 runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
+      - { eval_time: 20m, alertname: VaultSealedQuorum, exp_alerts: [] }
+  - name: two vault pods sealed, the quorum is gone
+    interval: 1m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 1x50' }
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="true",label_vault_active="false"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x50' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
+    alert_rule_test:
+      - { eval_time: 14m, alertname: VaultSealedQuorum, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: VaultSealedQuorum
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
+      # One alert for the quorum, not one per pod as well.
+      - { eval_time: 20m, alertname: VaultSealed, exp_alerts: [] }
+      # One server is still ready: not VaultUnavailable.
+      - { eval_time: 25m, alertname: VaultUnavailable, exp_alerts: [] }
+  - name: vault unavailable, the gate held by the last snapshot
+    interval: 1m
+    input_series:
+      # Every pod gone (a node group lost, the pods Pending): no pod labels, no running container;
+      # the CronJob's lastSuccessfulTime remains.
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x60' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 0x50' }
+    alert_rule_test:
+      - { eval_time: 19m, alertname: VaultUnavailable, exp_alerts: [] }
+      - eval_time: 25m
+        alertname: VaultUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
+  - name: vault without an active node
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 0x30' }
+      - { series: 'vault_core_active{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '1x10 0x30' }
+      - { series: 'vault_core_active{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '0x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 11m, alertname: VaultNoActiveNode, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: VaultNoActiveNode
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault node has been active for 2 minutes: logins and reads fail"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
+      # The gate here is the pod label alone.
+      - eval_time: 25m
+        alertname: VaultUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
+  - name: every vault server scrape fails, so no node is active is not known
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '0x40' }
+    alert_rule_test:
+      # Blind, not leaderless: VaultScrapeDown says so, VaultNoActiveNode does not page.
+      - { eval_time: 20m, alertname: VaultNoActiveNode, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-0 }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault of vault-0 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-1 }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault of vault-1 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: one vault server is not scraped
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x40' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
+    alert_rule_test:
+      # vault-0's scrape fails while vault-1's works: the rule names the failing pod.
+      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-0 }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault of vault-0 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: the vault server scrape is not configured at all
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/vault }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: no kubelet volume stats for vault
+    interval: 1m
+    input_series:
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: kubelet volume stats, namespace: vault }
+            exp_annotations:
+              summary: "The Vault scrape kubelet volume stats has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: kube-state-metrics for vault is not scraped
+    interval: 1m
+    input_series:
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/vault-state }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault-state has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: no vault deployed, nothing to scrape
+    interval: 1m
+    input_series:
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 30m, alertname: VaultScrapeDown, exp_alerts: [] }
+  - name: the server StatefulSet removed for a restore, the CronJob's history remains
+    interval: 1m
+    input_series:
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 30m, alertname: VaultScrapeDown, exp_alerts: [] }
+  - name: before the init, one pod up and answering the scrape, the others Pending, is quiet
+    interval: 1m
+    input_series:
+      # A restore into a fresh cluster with the collector peer left on by mistake: vault-0 is
+      # running, uninitialised and scraped; vault-1 and vault-2 wait for nodes.
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '1x60' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x60' }
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x60' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '0x60' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x60' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x60' }
+    alert_rule_test:
+      - { eval_time: 40m, alertname: VaultSealed, exp_alerts: [] }
+      - { eval_time: 40m, alertname: VaultNoActiveNode, exp_alerts: [] }
+      - { eval_time: 40m, alertname: VaultUnavailable, exp_alerts: [] }
+      - { eval_time: 40m, alertname: VaultScrapeDown, exp_alerts: [] }
+  - name: the gate held by the last snapshot alone (no pod labels)
+    interval: 1m
+    input_series:
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
+      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x40' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x40' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x40' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x40' }
+      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
+      - { series: 'up{job="ryft/vault",pod="vault-2"}', values: '0x40' }
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: VaultSealed
+        exp_alerts:
+          - exp_labels: { severity: warning, pod: vault-1 }
+            exp_annotations:
+              summary: "vault-1 runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
+      - eval_time: 30m
+        alertname: VaultNoActiveNode
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault node has been active for 2 minutes: logins and reads fail"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
+      - eval_time: 30m
+        alertname: VaultScrapeDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-2 }
+            exp_annotations:
+              summary: "The Vault scrape ryft/vault of vault-2 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
+  - name: the quorum gate held by the last snapshot alone
+    interval: 1m
+    input_series:
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x40' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x40' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x40' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '0x40' }
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSealedQuorum
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
+  - name: a scrape gap of hours does not hide a stale snapshot
+    interval: 10m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x100' }
+      # The last success at 18 minutes; kube-state-metrics' series stop at 12 h (a scrape gap).
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x72' }
+    alert_rule_test:
+      - eval_time: 13h30m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: raft peers below 3
+    interval: 1m
+    input_series:
+      - { series: 'vault_core_active{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-0"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-1"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-2"}', values: '1x10 0x30' }
+    alert_rule_test:
+      - { eval_time: 15m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: VaultRaftPeersBelow3
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Only 2 of 3 Raft peers are healthy: one more loss ends the quorum"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultRaftPeersBelow3)"
+  - name: raft peers all healthy
+    interval: 1m
+    input_series:
+      - { series: 'vault_core_active{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-0"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-1"}', values: '1x40' }
+      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-2"}', values: '1x40' }
+    alert_rule_test:
+      - { eval_time: 30m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
+  - name: vault snapshots every 6 hours are fresh
+    interval: 10m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
+      # Runs at 17 past every sixth hour, each done a minute later.
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x35 22620x35 44220x35 65820x14' }
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x35 22680x35 44280x35 65880x14' }
+    alert_rule_test:
+      - { eval_time: 19h, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - { eval_time: 19h, alertname: VaultSnapshotFailing, exp_alerts: [] }
+  - name: a run that succeeded in the second it was scheduled is not failing
+    interval: 5m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30' }
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x30' }
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x30' }
+    alert_rule_test:
+      - { eval_time: 2h, alertname: VaultSnapshotFailing, exp_alerts: [] }
+  - name: vault snapshot stale after 13 hours
+    interval: 10m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
+      # The last success at 18 minutes; every run after that fails.
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x120' }
+    alert_rule_test:
+      - { eval_time: 790m, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - eval_time: 810m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: a stale snapshot of a vault that is down now pages as VaultUnavailable, not stale
+    interval: 10m
+    input_series:
+      # The last success at 18 minutes; every server down from 13 h 50 m.
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x82 0x38' }
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x120' }
+    alert_rule_test:
+      - eval_time: 13h30m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
+  - name: vault snapshot never succeeded in 13 hours of a ready vault
+    interval: 10m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x120' }
+    alert_rule_test:
+      - { eval_time: 770m, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - eval_time: 800m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: a vault down in between gets 13 new hours for its first snapshot
+    interval: 10m
+    input_series:
+      # Ready from 0 to 5 h, down until 6 h, ready again; no success ever.
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30 0x6 3x90' }
+    alert_rule_test:
+      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - eval_time: 19h40m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: the success series has been gone for 13 hours, not 12
+    interval: 10m
+    input_series:
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x130' }
+      # lastSuccessfulTime reported until 1 h, then gone (the CronJob replaced, its status empty).
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x6' }
+    alert_rule_test:
+      - { eval_time: 13h30m, alertname: VaultSnapshotStale, exp_alerts: [] }
+      - eval_time: 14h10m
+        alertname: VaultSnapshotStale
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: a fresh init has 13 hours for its first snapshot
+    interval: 10m
+    input_series:
+      # Ready from 5 hours in (the init); no success yet at 14 hours.
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x30 3x90' }
+    alert_rule_test:
+      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
+  - name: one vault snapshot run failed
+    interval: 5m
+    input_series:
+      # The 6:17 run (22620 s) fails; the last success is the 0:17 run's.
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x75 22620x30' }
+      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x105' }
+    alert_rule_test:
+      - { eval_time: 300m, alertname: VaultSnapshotFailing, exp_alerts: [] }
+      - { eval_time: 400m, alertname: VaultSnapshotFailing, exp_alerts: [] }
+      - eval_time: 420m
+        alertname: VaultSnapshotFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The latest Vault snapshot run did not succeed"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: the first snapshot runs after the init fail
+    interval: 5m
+    input_series:
+      # Ready from 35 minutes (the init); the run scheduled at 40 minutes (2400 s) fails.
+      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x6 3x30' }
+      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '_x8 2400x28' }
+    alert_rule_test:
+      - { eval_time: 65m, alertname: VaultSnapshotFailing, exp_alerts: [] }
+      - eval_time: 75m
+        alertname: VaultSnapshotFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The latest Vault snapshot run did not succeed"
+              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+  - name: vault audit writes fail
+    interval: 1m
+    input_series:
+      # Vault adds 0 or 1 on every request, so a counter is cumulative and stays while requests
+      # come; 2 minutes without one and it expires.
+      # vault-0: a live counter that moves from 0 to 1 at 20 minutes.
+      - { series: 'vault_audit_log_request_failure{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '0x20 1x30' }
+      # vault-1: no request for a while, then a failing one: the counter appears at 2 and expires.
+      - { series: 'vault_audit_log_response_failure{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '_x20 2 2 _x30' }
+      # vault-2: one failure long ago, none since: the counter stays at 3 and must not alert.
+      - { series: 'vault_audit_log_request_failure{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '3x50' }
+      - { series: 'vault_audit_log_request_count{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '1+1x50' }
+    alert_rule_test:
+      - { eval_time: 15m, alertname: VaultAuditFailing, exp_alerts: [] }
+      - eval_time: 25m
+        alertname: VaultAuditFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, pod: vault-0 }
+            exp_annotations:
+              summary: "vault-0 failed to write audit entries in the last 10 minutes"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
+          - exp_labels: { severity: critical, pod: vault-1 }
+            exp_annotations:
+              summary: "vault-1 failed to write audit entries in the last 10 minutes"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
+      - { eval_time: 45m, alertname: VaultAuditFailing, exp_alerts: [] }
+  - name: a vault response audit write fails on a live counter
+    interval: 1m
+    input_series:
+      - { series: 'vault_audit_log_response_failure{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '0x20 1x30' }
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultAuditFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, pod: vault-2 }
+            exp_annotations:
+              summary: "vault-2 failed to write audit entries in the last 10 minutes"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
+      - { eval_time: 45m, alertname: VaultAuditFailing, exp_alerts: [] }
+  - name: a vault volume over 80 %
+    interval: 1m
+    input_series:
+      - { series: 'kubelet_volume_stats_used_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '9663676416x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
+      - { series: 'kubelet_volume_stats_used_bytes{namespace="vault",persistentvolumeclaim="audit-vault-0"}', values: '1073741824x40' }
+      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="audit-vault-0"}', values: '5368709120x40' }
+    alert_rule_test:
+      - { eval_time: 10m, alertname: VaultVolumeFilling, exp_alerts: [] }
+      - eval_time: 20m
+        alertname: VaultVolumeFilling
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: vault, persistentvolumeclaim: data-vault-0 }
+            exp_annotations:
+              summary: "data-vault-0 is 90% full"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultVolumeFilling)"
+  - name: a vault template change waits for the pod-by-pod restart
+    interval: 4m
+    input_series:
+      # The change is applied at 1 h; only one pod is restarted.
+      - { series: 'kube_statefulset_status_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x420' }
+      - { series: 'kube_statefulset_status_replicas_updated{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x14 1x405' }
+    alert_rule_test:
+      - { eval_time: 20h, alertname: VaultUpdatePending, exp_alerts: [] }
+      - eval_time: 26h
+        alertname: VaultUpdatePending
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "2 Vault pod(s) still run the previous template: restart them one by one"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUpdatePending)"

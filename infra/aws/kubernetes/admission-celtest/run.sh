@@ -25,6 +25,11 @@ export GIT_ALLOW_PROTOCOL=file
 yq eval-all '[select(di >= 0)] | {"projects": .}' "$repo/deploy/argocd/project.yaml" > "$out/projects-values.yaml"
 helm template admission-policy "$k8s/charts/admission-policy" \
   -f "$k8s/admission-values.yaml" -f "$out/projects-values.yaml" > "$out/chart.yaml"
+# The decommission's values (after the last namespace moved off HCP Vault): P4's HCP fields go.
+helm template admission-policy "$k8s/charts/admission-policy" \
+  -f "$k8s/admission-values.yaml" -f "$out/projects-values.yaml" \
+  --set vso.kvMount= --set vso.vaultNamespacePrefix= --set 'vaultAddresses={https://vault.vault.svc:8200}' > "$out/chart-decom.yaml"
+export CELTEST_DECOM_CHART="$out/chart-decom.yaml"
 
 # What Argo CD applies, and what the controllers write on top.
 kubectl kustomize "$repo/deploy/k8s/overlays/eks" > "$out/eks.yaml"

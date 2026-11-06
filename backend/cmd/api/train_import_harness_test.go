@@ -279,9 +279,16 @@ var (
 )
 
 // daysAgo is 17:00 UTC n days back: in Europe/Berlin and UTC the same local day.
-func daysAgo(n int) time.Time {
-	return time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -n).Add(17 * time.Hour)
+func daysAgo(n int) time.Time { return daysBefore(time.Now(), n) }
+
+// daysBefore is 17:00 UTC n days before ref's UTC day: daysAgo from any reference day (the
+// calendar test of the golden normaliser runs it on fixed days).
+func daysBefore(ref time.Time, n int) time.Time {
+	return utcDay(ref).AddDate(0, 0, -n).Add(17 * time.Hour)
 }
+
+// utcDay is the start (00:00 UTC) of t's UTC day.
+func utcDay(t time.Time) time.Time { return t.UTC().Truncate(24 * time.Hour) }
 
 func day(t time.Time) string { return t.Format(time.DateOnly) }
 

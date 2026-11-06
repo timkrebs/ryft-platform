@@ -4,7 +4,19 @@ project                     = "ryft"
 vault_parent_namespace_root = "admin" # "admin" on HCP Vault Dedicated; "" on self-managed Enterprise
 vault_address_for_cluster   = "https://<cluster>.hashicorp.cloud:8200" # Terraform uses it too
 # vault_address             = "https://…"         # only if Terraform reaches Vault at another address
-# vault_ca_bundle_b64       = "LS0tLS1CRUdJTi..."  # only for a private CA
+# vault_ca_bundle_b64 is retired (must stay unset): every VaultConnection reads the CA from the
+# cert-manager Secret vault-ca, which the generated overlays request (D190).
+
+# The Vault in the cluster (Community Edition), written beside HCP once targets.tf says so
+# (local.write_k8s, a reviewed commit, D191). Terraform reaches it only through
+# `kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200`
+# (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). While write_k8s is false
+# neither value is read and no port-forward is needed.
+# vault_k8s_address      = "https://127.0.0.1:8200"        # loopback only (validated)
+# vault_k8s_ca_cert_file = "~/.config/ryft/vault-ca.pem"   # the vault-ca CA, written by the runbook
+# The token is never in this file: export TF_VAR_vault_k8s_token (an ephemeral variable, never in
+# state or plan), a token of the token role terraform (1 hour, not renewable) from the OIDC login.
+# test_override_targets is for terraform test only; never set it here (a check warns).
 
 # Supabase (docs/SUPABASE.md). The database and RabbitMQ passwords of the services are
 # generated here; you only provide the owner password, which only the migrate

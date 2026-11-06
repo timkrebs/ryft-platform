@@ -1,0 +1,91 @@
+# fixture: vault: P3 another private range on 443
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-netpol-vault
+# message: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-server
+  namespace: vault
+spec:
+  egress:
+  - ports:
+    - port: 8200
+      protocol: TCP
+    - port: 8201
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+          component: server
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 10.0.0.0/8
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+  - ports:
+    - port: 80
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 169.254.170.23/32
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: vault-secrets-operator-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault-secrets-operator
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: alloy-deployment
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault-snapshot
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+          component: server
+    ports:
+    - port: 8200
+      protocol: TCP
+    - port: 8201
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+      component: server
+  policyTypes:
+  - Ingress
+  - Egress

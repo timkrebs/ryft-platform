@@ -90,6 +90,8 @@ func planFold(ctx context.Context, rows []foldRow, loc *time.Location) (groups [
 			g.Folded = append(g.Folded, d.ID)
 			drop = append(drop, d.ID)
 			add(d.Start)
+			// +-24 absolute hours, not the neighbouring local date: on a clock-change day the
+			// neighbour can be missed, as in ApplySync and touchedDays (D178).
 			add(d.Start.Add(24 * time.Hour))
 			if session[d.ID] {
 				add(d.Start.Add(-24 * time.Hour))
