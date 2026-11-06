@@ -394,9 +394,8 @@ peak." (the user's choice); the tagline stays in the footer and the lock-up unti
 changes it.
 
 Copy: the home page's texts were rewritten in the terser register (`messages/en.json` →
-`home`), facts unchanged; a pricing section shows Free (forever) next to RYFT Plus with the price
-as **TBA** (the user's call on 2026-11-05: the Plus figures stay internal until launch; a
-founder price for testers is announced, no number) and the FAQ's cost answer follows it. The app's real captures remain only
+`home`), facts unchanged; the pricing section first showed Free next to a "RYFT Plus" with the
+price TBA, which D23 replaces with one plan, free during the beta, and no paid tier. The app's real captures remain only
 on the legal pages (`profile-account-light`); the other light captures stay in
 `public/screenshots` until the app's restyle produces new ones.
 
@@ -428,8 +427,8 @@ to solve with CSS alone; the calls made:
   size is `clamp(2rem, 15vw, var(--web-display))` (unchanged from about 375 px up), and the
   meta line stacks and may wrap below 25rem. The hero facts carry a marker each, so a wrapped
   line no longer starts with a separator; the last principle drops its own rule.
-- **Focus on ink.** The focus ring is ink; on the download band it vanished. Inside `.download`,
-  `.planPlus` and `.sectionInverse` it is paper (`--on-accent`); an e2e test tabs to the band
+- **Focus on ink.** The focus ring is ink; on the download band it vanished. Inside `.download`
+  and `.sectionInverse` it is paper (`--on-accent`; the ink Plus card went with D23); an e2e test tabs to the band
   and checks the ring's contrast against it.
 - **axe and `content-visibility`.** Sections below the fold are skipped until they come near
   the viewport, so axe judged colours on unrendered boxes and the full-page captures showed
@@ -443,3 +442,33 @@ the scores grid.
 
 Would change if the site ever ships a script for the menu: then a disclosure button with
 `aria-expanded` and Escape replaces the `:target` panel.
+
+## D23 — The site's copy promises nothing the legal texts don't; legal checklist U1, U6, U7 closed (2026-11-06)
+
+The owner delegated the open copy decisions to the lead on 2026-11-06 ("decide what's best
+for the platform"). The rule: the site makes no commitment that the terms in force
+(2026-10-20: "provided free of charge") or the privacy policy (2026-10-26) do not make, and
+every claim stays true to what the app does today.
+
+- **"Works with" row → a data-source line** ("Reads Apple Health, from Apple Watch, or Garmin
+  and Oura through their apps.", label "Data source"). A row of brand names reads as
+  partnerships; the brand rule allows those names only as data sources, so it says that.
+- **Pricing → one plan, free during the beta.** "0 € forever", "RYFT Plus" (TBA), the founder
+  price and "never behind a paywall" promised a future the terms do not; the section now lists
+  what the app has today and says later plans are announced here first and in the app before
+  they start (the terms announce changes in the app before they apply). The cost answer in
+  the FAQ says the same; nothing claims permanence.
+- **Deletion.** "Deletion is immediate" and "removes everything … at once" said more than
+  privacy 2026-10-26 §6: the database is erased at once, backups follow within 7 days, and a
+  random account identifier is kept. The home page, the FAQ and the support steps now say so.
+  The ported support text (`content/legal/en/support.mdx`, l. 24) still says "removes
+  everything … at once"; it is a legal text, so it changes only with the owner's next legal
+  edit.
+- **Sample values.** The visible "sample data" caption under the scores grid stays (D22).
+- **Legal checklist.** U1, U6 and U7 are answered by the published Impressum, privacy §1 and
+  terms §1 and were closed by the owner on 2026-11-06 (`docs/LEGAL_CHECKLIST.md`); the
+  owner also accepted English-only legal texts (D18). The German privacy and terms URLs in
+  App Store Connect are the owner's to change (they 301 to the English pages meanwhile).
+
+Would change if a paid plan is decided: its price and terms come first in the terms of use
+(a new version, announced in the app), then on this page.

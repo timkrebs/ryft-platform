@@ -8,7 +8,7 @@ Done, on top of D18–D20 (English only, light only, Inter):
   under Reduce Motion), a script-free `:target` menu on narrow screens (D22). Home rebuilt in
   nine sections with HTML/SVG mock screens (`src/components/Mockups.tsx`); Beta, Science,
   Legal, Licences, Open, 404, Styleguide and `/admin` restyled on the same tokens.
-- Hero statement "Engineered for peak."; pricing section with Free and RYFT Plus (price TBA until launch).
+- Hero statement "Engineered for peak."; a pricing section with one plan, free during the beta (D23).
 - Review fixes (D22): focus ring in paper on the ink band, the menu closes when a link in it
   is followed, the hero reflows at 320 px, axe judges rendered sections, the OG card
   (`public/og/en.png`) in the new design.
@@ -23,10 +23,13 @@ Open:
   not the branch, so deleting the branch breaks nothing); after #100 merges, a follow-up
   commit removes the `ref:` line and CI reads the app's main.
 - `docs/screenshots/*` still show the old design.
-- Plus price and features are placeholders (TBA, "more depth") until the launch decision.
-- Copy waiting for the owner's decision: the "Works with" row, the pricing lines ("0 €
-  forever", "Founder price for beta testers", "never behind a paywall"), "Deletion is
-  immediate" and "removes everything … at once".
+- Decided (D23, 2026-11-06): the copy promises nothing the terms and privacy policy don't (a
+  data-source line instead of the "Works with" row, one plan free during the beta, deletion as
+  privacy §6 says it). The owner accepted English-only legal texts; changing the German privacy
+  and terms URLs in App Store Connect to the English ones is the owner's task (the old URLs
+  301 meanwhile). LEGAL_CHECKLIST U1, U6 and U7 closed by the owner.
+- The ported support text (`content/legal/en/support.mdx`, l. 24) still says deleting
+  "removes everything … at once"; it changes with the owner's next legal edit.
 - App follow-ups from ADR 0015: band/zone fill levels instead of hue, outlined destructive
   actions, Inter, radius 0, the hero statement in the app.
 
