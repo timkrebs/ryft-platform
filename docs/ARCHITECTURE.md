@@ -356,8 +356,12 @@ Everything above is a starting point with sensible constants; the tests in
 ## Namespaces and trust
 
 Every workload is its own security domain: a Kubernetes namespace, a service account, a
-Vault namespace with its own Kubernetes auth mount, and credentials usable only for
-what that workload does. No credential is shared, and none is broader than its user.
+Vault identity of its own, and credentials usable only for what that workload does. No
+credential is shared, and none is broader than its user. On HCP Vault the identity is a
+Vault namespace with its own Kubernetes auth mount. On the Vault in the cluster
+(Community Edition, no namespaces) it is a mount, a role and a policy: `kv-<svc>/`, the
+role `<svc>` in the one `auth/kubernetes`, and a policy that reads `kv-<svc>/data/config`
+and nothing else (D187).
 
 ```text
               Internet ──TLS── Traefik (kube-system)
@@ -378,14 +382,18 @@ what that workload does. No credential is shared, and none is broader than its u
 
   Vault (HCP): admin/ryft/{ingest,scoring,api,notify,rabbitmq,migrate,smoke}, each with auth/kubernetes
   bound to its namespace + service account, kv/config = that workload's keys only.
+  Vault (CE, namespace vault, 3 Raft pods, KMS auto-unseal; during the migration, D191):
+  auth/kubernetes with role <svc> bound to its namespace + service account, kv-<svc>/config,
+  the same values. Each namespace's VaultConnection names exactly one of the two.
   The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
 ```
 
 - **Identity:** each pod runs as its own service account, without an automounted
   Kubernetes token (no workload calls the Kubernetes API). The operator requests
   short-lived, audience-`vault` tokens for that account and logs into that namespace's
-  Vault mount. Vault confirms each token through the cluster's TokenReview. A role is
-  bound to exactly one namespace and one service account.
+  Vault mount (on CE: that service's role in the shared mount). Vault confirms each
+  token through the cluster's TokenReview. A role is bound to exactly one namespace and
+  one service account.
 - **Secrets:** `infra/vault` generates the database and broker passwords and writes each
   one only into the namespaces that need it (`infra/vault/README.md`); the broker's
   users get theirs in `ryft-rabbitmq` (`amqp-user-<service>`, for the Topology Operator).

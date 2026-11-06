@@ -37,6 +37,19 @@ output "vso_manifests" {
   value       = { for k, f in local_file.vso : k => dirname(f.filename) }
 }
 
+output "vso_targets" {
+  description = "Which Vault each namespace's operator objects read (hcp or k8s, targets.tf) and whether this root writes the in-cluster Vault"
+  value = {
+    write_k8s = local.write_k8s
+    services  = local.vso_target
+  }
+}
+
+output "bootstrap_terraform_policy" {
+  description = "The policy terraform for the in-cluster Vault, rendered for these services (bootstrap/terraform.hcl.tftpl): the content bootstrap/terraform.hcl must hold. Read it from a plan (`show -json tfplan`), not after an apply (infra/vault/README.md -> bootstrap/). No secret; written into Vault by hand (docs/OPERATIONS.md -> Vault)."
+  value       = local.bootstrap_terraform_policy_rendered
+}
+
 output "login_check" {
   description = "Manual check: log in as a service with a token the operator would use"
   value = {
