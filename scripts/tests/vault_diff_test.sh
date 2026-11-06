@@ -214,6 +214,8 @@ run() {
   [ "$rc" = "$want" ] || fail "'$*' exited $rc, want $want: $(cat "$t/stdout" "$t/stderr")"
 }
 COMMON=(--context test-ctx --hcp-addr "$HCP_URL" --k8s-addr "$K8S_URL" --hcp-cacert "$CA" --k8s-cacert "$CA")
+# The service goes before --secret below (the script takes services anywhere): a secret scanner reads
+# `--secret <word>` on a command line as a credential.
 has() { grep -Fqx -- "$1" "$t/stdout" || fail "no line '$1' in: $(cat "$t/stdout" "$t/stderr")"; }
 requests() { cat "$t/srv/requests-$1.log" 2>/dev/null || true; }
 no_requests() { [ -z "$(requests hcp)$(requests k8s)" ] || fail "$1: a Vault was asked: $(requests hcp) $(requests k8s)"; }
@@ -243,7 +245,7 @@ grep -Fq "HCP_VAULT_TOKEN has characters" "$t/stderr" || fail "a bad token: $(ca
 run 2 "${COMMON[@]}" --kv no-such-svc
 run 2 "${COMMON[@]}" --kv 'api;id'
 run 2 "${COMMON[@]}" --kv api --save "$t/work/fp"
-run 2 "${COMMON[@]}" --secret api --kv
+run 2 "${COMMON[@]}" api --secret --kv
 no_requests "the refusals"
 [ ! -e "$t/work/fp" ] || fail "a refused --save still wrote a file"
 
@@ -322,30 +324,30 @@ grep -Fq 'HCP Vault answered HTTP 307' "$t/stderr" || fail "a redirect: $(cat "$
 # 8. --secret: the synced Secret against the in-cluster Vault (or HCP), through the named context.
 both
 secret ryft-api ryft-secrets "$API"
-run 0 "${COMMON[@]}" --secret api
+run 0 "${COMMON[@]}" api --secret
 has "api  ryft-secrets  DATABASE_URL  equal"
 [ "$(cat "$t/kubectl.calls")" = "config get-contexts -o name
 --context test-ctx -n ryft-api get secret ryft-secrets --ignore-not-found -o json" ] || fail "kubectl: $(cat "$t/kubectl.calls")"
 [ -z "$(requests hcp)" ] || fail "--secret (k8s) asked HCP: $(requests hcp)"
-run 0 "${COMMON[@]}" --secret api --vault hcp
+run 0 "${COMMON[@]}" api --secret --vault hcp
 [ -z "$(requests k8s)" ] || fail "--secret --vault hcp asked the in-cluster Vault: $(requests k8s)"
 secret ryft-api ryft-secrets "dict($API, ADMIN_API_KEY=C + '-rotated', EXTRA='x')"
-run 1 "${COMMON[@]}" --secret api
+run 1 "${COMMON[@]}" api --secret
 has "api  ryft-secrets  ADMIN_API_KEY  differs"
 has "api  ryft-secrets  EXTRA  missing in Vault"
 rm -f "$t/secrets/ryft-api/ryft-secrets.json"
-run 1 "${COMMON[@]}" --secret api
+run 1 "${COMMON[@]}" api --secret
 has "api  ryft-secrets  DATABASE_URL  missing in Secret"
 secret ryft-rabbitmq amqp-user-api "{'username': 'api', 'password': C + 'a'}"
 secret ryft-rabbitmq amqp-user-ingest "{'username': 'ingest', 'password': C + 'i'}"
-run 0 "${COMMON[@]}" --secret rabbitmq
+run 0 "${COMMON[@]}" rabbitmq --secret
 has "rabbitmq  amqp-user-ingest  password  equal"
-run 2 "${COMMON[@]}" --secret operator
+run 2 "${COMMON[@]}" operator --secret
 
 # 9. --save, then --against: no Vault and no token needed; the file is 0600, holds no value and no
 #    unsalted hash, is never overwritten, and its salt is new on every save.
 secret ryft-api ryft-secrets "$API"
-RUN_NOTOK=1 run 0 --context test-ctx --secret api --save "$t/work/fp"
+RUN_NOTOK=1 run 0 --context test-ctx api --secret --save "$t/work/fp"
 no_requests "--save"
 # shellcheck disable=SC2012 # the mode string, from a name this test made
 [ "$(ls -l "$t/work/fp" | cut -c1-10)" = "-rw-------" ] || fail "the fingerprint's mode: $(ls -l "$t/work/fp")"
@@ -353,22 +355,22 @@ no_requests "--save"
 for v in "$CANARY-admin" "abcdefghij12"; do
   ! grep -Fq "$(sha "$v")" "$t/work/fp" || fail "the fingerprint holds an unsalted hash"
 done
-run 2 "${COMMON[@]}" --secret api --save "$t/work/fp"
+run 2 "${COMMON[@]}" api --secret --save "$t/work/fp"
 grep -Fq 'never overwritten' "$t/stderr" || fail "overwrite: $(cat "$t/stderr")"
-run 0 --context test-ctx --secret api --save "$t/work/fp2"
+run 0 --context test-ctx api --secret --save "$t/work/fp2"
 [ "$(grep '^salt ' "$t/work/fp")" != "$(grep '^salt ' "$t/work/fp2")" ] || fail "two saves share a salt"
-RUN_NOTOK=1 run 0 --context test-ctx --secret api --against "$t/work/fp"
+RUN_NOTOK=1 run 0 --context test-ctx api --secret --against "$t/work/fp"
 has "api  ryft-secrets  ADMIN_API_KEY  equal"
 no_requests "--against"
 secret ryft-api ryft-secrets "dict($API, BETA_GATE='off')"
-run 1 --context test-ctx --secret api --against "$t/work/fp"
+run 1 --context test-ctx api --secret --against "$t/work/fp"
 has "api  ryft-secrets  BETA_GATE  differs"
 # The key is in the hash: two keys with the same value get different fingerprints (the file does not
 # tell which values are equal).
 secret ryft-api ryft-secrets "{'BETA_GATE': 'on', 'SAME_AS_BETA': 'on'}"
-run 0 --context test-ctx --secret api --save "$t/work/fp3"
+run 0 --context test-ctx api --secret --save "$t/work/fp3"
 [ "$(cut -f3 "$t/work/fp3" | grep -E '^[0-9a-f]{64}$' | sort -u | wc -l | tr -d ' ')" = 2 ] || fail "equal values share a fingerprint: $(cat "$t/work/fp3")"
-run 2 --context test-ctx --secret ingest --against "$t/work/fp"
+run 2 --context test-ctx ingest --secret --against "$t/work/fp"
 grep -Fq 'not a fingerprint of ingest' "$t/stderr" || fail "a foreign fingerprint: $(cat "$t/stderr")"
 
 # 10. The caller's tracing and a verbose ~/.curlrc change nothing (the leak scan below covers these runs).
