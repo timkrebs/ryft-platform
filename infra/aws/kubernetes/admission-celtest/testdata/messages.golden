@@ -127,6 +127,9 @@ P12 controller creates another Namespace (no namespace in the request)
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 P12 controller creates kube-system/aws-auth
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates the Namespace ryft-api (in namespaces, not in namespaceObjects)
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 P12 controller deletes a Lease in kube-system
     ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 P12 controller deletes a PersistentVolume
@@ -195,6 +198,9 @@ P12 controller updates argocd
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
     ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 P12 controller updates kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller updates the Namespace ryft-api (in namespaces, not in namespaceObjects)
     ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 P12 controller writes a ConfigMap in a future ryft-infra namespace

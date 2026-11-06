@@ -68,16 +68,11 @@ locals {
   # exempt from admission) and impersonate. So argocd.tf must render a narrowed controller role
   # (T12-f, #47: controller.clusterRoleRules.enabled with no "*" in any rule) and must not turn on
   # sync impersonation (application.sync.impersonation.enabled: Argo CD would then write as other
-  # service accounts and P12 would match nothing). The variable is for tests; a check flags it.
-  admission_argo_rbac_narrowed_rendered = (
-    try(local.argocd_values.controller.clusterRoleRules.enabled, false) == true &&
-    !anytrue([
-      for r in try(local.argocd_values.controller.clusterRoleRules.rules, []) :
-      anytrue([for f in [try(r.apiGroups, []), try(r.resources, []), try(r.verbs, [])] : contains(f, "*")])
-    ]) &&
-    tostring(try(local.argocd_values.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
-  )
-  admission_argo_rbac_narrowed = coalesce(var.admission_argo_rbac_narrowed, local.admission_argo_rbac_narrowed_rendered)
+  # service accounts and P12 would match nothing). The variable is for tests; a check flags it. The
+  # expression is the guard module's output (it judges the values helm_release.argocd takes), so that
+  # tests/admission.tftest.hcl can run it with a wildcard rule, the chart's default role and impersonation.
+  admission_argo_rbac_narrowed_rendered = module.argocd_values_guard.controller_rbac_narrowed
+  admission_argo_rbac_narrowed          = coalesce(var.admission_argo_rbac_narrowed, local.admission_argo_rbac_narrowed_rendered)
 
   # The destination namespaces of the Applications Argo CD syncs (deploy/argocd/apps): the check
   # "admission_argo_scope" holds P12's namespace list against them.

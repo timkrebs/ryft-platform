@@ -158,6 +158,22 @@ output "violations" {
   value       = local.violations
 }
 
+# For P12's Deny gate (admission.tf, D206): the controller's ClusterRole is narrowed (clusterRoleRules on, no
+# "*" in any rule's apiGroups, resources or verbs) and sync impersonation is off. Not a violation (the
+# chart's default role is allowed for a release); a bool, so that tests/admission.tftest.hcl can run the
+# real expression through this module with other values.
+output "controller_rbac_narrowed" {
+  description = "true when the values render a narrowed controller ClusterRole (no wildcard) and leave application.sync.impersonation.enabled off: the condition admission.tf puts on argo-scope: deny."
+  value = (
+    try(local.v.controller.clusterRoleRules.enabled, false) == true &&
+    !anytrue([
+      for r in try(local.v.controller.clusterRoleRules.rules, []) :
+      anytrue([for f in [try(r.apiGroups, []), try(r.resources, []), try(r.verbs, [])] : contains(f, "*")])
+    ]) &&
+    tostring(try(local.v.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
+  )
+}
+
 output "values_yaml" {
   description = "The values document the release must use: what this module checked, as YAML. helm_release.argocd takes it, and its postcondition requires it to be the release's only values."
   value       = yamlencode(local.v)

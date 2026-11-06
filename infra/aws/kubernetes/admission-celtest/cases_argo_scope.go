@@ -129,6 +129,10 @@ func runArgoScope(c *chart) {
 	crt("P12 controller creates another Namespace", argoCtl, set(web(), "metadata/name", "ryft-evil"), r5, "P1")
 	raw("P12 controller creates another Namespace (no namespace in the request)", Req{User: argoCtl, Op: "CREATE", Obj: set(web(), "metadata/name", "ryft-evil"), NoNs: true}, r5, "P1")
 	upd("P12 controller updates kube-system", argoCtl, mk("v1", "Namespace", "", "kube-system"), r5, "P1")
+	// ryft-api is in argoScope.namespaces (the controller writes in it) but not in namespaceObjects (it is
+	// infra/vault's Namespace): both P1 and P12 refuse the Namespace object itself (P1 reads namespaceObjects).
+	crt("P12 controller creates the Namespace ryft-api (in namespaces, not in namespaceObjects)", argoCtl, set(web(), "metadata/name", "ryft-api"), r5, "P1: Argo CD may write only the Namespaces")
+	upd("P12 controller updates the Namespace ryft-api (in namespaces, not in namespaceObjects)", argoCtl, set(web(), "metadata/name", "ryft-api"), r5, "P1: Argo CD may write only the Namespaces")
 	upd("P12 controller updates argocd", argoCtl, set(fx("namespace-argocd"), "metadata/name", "argocd"), r5, "P1")
 	crt("P12 controller creates a Namespace with a generateName", argoCtl, func() map[string]any {
 		n := web()

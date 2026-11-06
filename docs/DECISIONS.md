@@ -4259,8 +4259,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   `workloads-templates` bindings in deny, not their `-vault` twins (P12 judges names, not what a ClusterRole or
   binding grants: the RBAC route is closed when P6 and P12 are both in Deny), and a narrowed controller
   ClusterRole rendered by `argocd.tf` (`controller.clusterRoleRules.enabled`, no `*`, no sync impersonation).
-  The chart fails the render, `admission.tf` fails the plan. On the tree since #47 the precondition reads the
-  rendered role as narrowed (a test without the stand-in variable pins it); the owner applied #47 on 2026-11-06
+  The chart fails the render, `admission.tf` fails the plan. The gate's expression is the argocd values guard's
+  output `controller_rbac_narrowed` (it judges the values `helm_release.argocd` takes; tests run it with a wildcard
+  verb, resource and group, the chart's default role and impersonation). On the tree since #47 the precondition
+  reads the rendered role as narrowed (a test without the stand-in variable pins it); the owner applied #47 on 2026-11-06
   and checked that the controller cannot patch or delete `validatingadmissionpolicybindings` or impersonate,
   and can list Applications. The full kind mode must pass on a tree with #47, `argo-rbac` and `claim-i` not
   skipped. Sync impersonation (`application.sync.impersonation.enabled`) must stay off: it would make P12

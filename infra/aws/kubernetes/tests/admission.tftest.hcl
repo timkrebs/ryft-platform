@@ -1057,13 +1057,100 @@ run "argo_scope_deny_is_deny_and_audit_with_the_route_closed_and_rbac_narrowed" 
   }
 }
 
+# The gate's expression itself (the guard module's controller_rbac_narrowed), with values argocd.tf does not
+# have: a wildcard in any field of any rule, the chart's default role, sync impersonation on. Each is "not
+# narrowed", so argo-scope: deny is refused; a narrowed role without impersonation is.
+run "argo_rbac_gate_narrowed_role_passes" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }] } }, configs = { cm = { "resource.respectRBAC" = "strict" } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == true
+    error_message = "a narrowed controller role without impersonation is narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_a_wildcard_verb" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingadmissionpolicybindings"], verbs = ["*"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a wildcard verb in any rule is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_a_wildcard_resource" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = ["rbac.authorization.k8s.io"], resources = ["*"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a wildcard resource is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_a_wildcard_group" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = ["*"], resources = ["configmaps"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a wildcard API group is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_the_chart_default_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { replicas = 1 } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "without clusterRoleRules the chart's wildcard role is the controller's"
+  }
+}
+
+run "argo_rbac_gate_refuses_sync_impersonation" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }] } }, configs = { cm = { "application.sync.impersonation.enabled" = "true" } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "sync impersonation makes P12 match nothing: not narrowed"
+  }
+}
+
 # The rendered Argo CD RBAC is what the gate reads: no clusterRoleRules, or one with a wildcard, or sync
 # impersonation, is not narrowed.
 run "the_rbac_gate_reads_argocd_tf" {
   command = plan
 
   assert {
-    condition = local.admission_argo_rbac_narrowed == (
+    condition = local.admission_argo_rbac_narrowed == module.argocd_values_guard.controller_rbac_narrowed && local.admission_argo_rbac_narrowed == (
       try(local.argocd_values.controller.clusterRoleRules.enabled, false) == true &&
       !anytrue([
         for r in try(local.argocd_values.controller.clusterRoleRules.rules, []) :
@@ -1071,7 +1158,7 @@ run "the_rbac_gate_reads_argocd_tf" {
       ]) &&
       tostring(try(local.argocd_values.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
     )
-    error_message = "without the variable the gate is exactly the rendered RBAC of argocd.tf"
+    error_message = "without the variable the gate is exactly the rendered RBAC of argocd.tf (the guard module's output)"
   }
 
   assert {
