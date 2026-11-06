@@ -12,7 +12,7 @@
 # - TLS: a server signed by another CA (given as either --cacert), the system trust for HCP, and
 #   CURL_CA_BUNDLE / SSL_CERT_FILE / SSL_CERT_DIR in the environment ignored; no redirect followed;
 # - the prompt, in a pseudo-terminal: no echo, each token to its own Vault, echo back after Ctrl-C,
-#   Ctrl-\ and SIGHUP (with every bash found: 3.2 on macOS, 5 in CI);
+#   Ctrl-\, SIGHUP and SIGTERM (with every bash found: 3.2 on macOS, 5 in CI);
 # - no core file: every process the script starts has a core limit of 0;
 # - no leak: a canary value, the base64 of every fixture Secret value, both tokens, a VAULT_TOKEN and a
 #   ~/.vault-token are looked for in every stdout and stderr, in the argv and environment of every
@@ -440,9 +440,8 @@ RUN_BASH="bash -x" run 0 "${COMMON[@]}" api --secret
 rm -f "$t/home/.curlrc"
 
 # 11. The prompt, in a pseudo-terminal, with every bash there is: nothing echoed, each token to its own
-#     Vault; Ctrl-C, Ctrl-\ and SIGHUP at the prompt exit 130, 131 and 129 and leave the terminal
-#     echoing. The tokens reach the
-#     driver on its stdin, never in its argv.
+#     Vault; Ctrl-C, Ctrl-\, SIGHUP and SIGTERM at the prompt exit 130, 131, 129 and 143 and leave
+#     the terminal echoing. The tokens reach the driver on its stdin, never in its argv.
 cat > "$t/srv/pty_drive.py" <<'PY'
 import os, pty, select, signal, sys, termios, time
 mode, out, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
@@ -454,10 +453,10 @@ def echo_off(fd, deadline=10):
         time.sleep(0.02)
 toks = [l.rstrip("\n").encode() for l in sys.stdin.readlines()]
 if mode != "prompt":
-    # mode is INT (Ctrl-C), QUIT (Ctrl-\) or HUP (the terminal's session gets SIGHUP). The shell around
-    # the script traps HUP and QUIT so it lives to print the script's rc and the terminal's state; a
-    # trapped signal is back to its default in the script.
-    argv = [argv[0], "-c", 'trap : HUP QUIT; "$0" "$@"; echo "rc=$?"; stty -a'] + argv
+    # mode is INT (Ctrl-C), QUIT (Ctrl-\), or HUP or TERM (sent to the terminal's process group). The
+    # shell around the script traps HUP, QUIT and TERM so it lives to print the script's rc and the
+    # terminal's state; a trapped signal is back to its default in the script.
+    argv = [argv[0], "-c", 'trap : HUP QUIT TERM; "$0" "$@"; echo "rc=$?"; stty -a'] + argv
 pid, fd = pty.fork()
 if pid == 0:
     os.execv(argv[0], argv)
@@ -477,8 +476,8 @@ while time.time() < end:
         if mode == "prompt":
             os.write(fd, toks[sent] + b"\n"); sent += 1
         else:
-            if mode == "HUP":
-                os.killpg(pid, signal.SIGHUP)  # pty.fork's child leads its session and process group
+            if mode in ("HUP", "TERM"):
+                os.killpg(pid, getattr(signal, "SIG" + mode))  # pty.fork's child leads its process group
             else:
                 os.write(fd, b"\x03" if mode == "INT" else b"\x1c")
             sent = 2
@@ -512,7 +511,7 @@ for vb in "${bashes[@]}"; do
   [ "$(requests k8s)" = '{"path": "/v1/kv-api/data/config", "ns": null, "token": "ok", "auth": false}' ] || fail "bash ${vb%%:*}: the in-cluster Vault got $(requests k8s)"
   # A signal at the (silent) prompt: the script's exit code, and the terminal echoes again (the
   # cleanup's stty echo; a signal without a trap would kill the script with echo still off).
-  for sr in INT:130 QUIT:131 HUP:129; do
+  for sr in INT:130 QUIT:131 HUP:129 TERM:143; do
     sig=${sr%%:*}
     runs=$((runs + 1)); rc=0
     # shellcheck disable=SC2031 # as above
@@ -588,7 +587,8 @@ hits=$(grep -rlF -f "$t/needles" "$t/tmp" "$t/home" "$t/work" | grep -vx "$t/hom
 # run() allowed core files (checked only where the hard limit lets the caller raise it).
 if [ "$( (ulimit -S -c unlimited 2>/dev/null && ulimit -S -c) || echo 0)" != 0 ]; then
   grep -q '^core: 0$' "$t/spawn.log" || fail "no core limit was recorded"
-  ! grep -v '^core: 0$' "$t/spawn.log" | grep -q '^core: ' || fail "a process of the script may dump core: $(grep '^core: ' "$t/spawn.log" | sort | uniq -c)"
+  # One grep: in a pipe, grep -q's early exit gives the first grep SIGPIPE, and pipefail reports that.
+  ! grep -Eq '^core: ([^0]|0.)' "$t/spawn.log" || fail "a process of the script may dump core: $(grep '^core: ' "$t/spawn.log" | sort | uniq -c)"
 else
   echo "vault_diff_test: the hard core limit is 0 here: the script's ulimit -c 0 is not checked" >&2
 fi
