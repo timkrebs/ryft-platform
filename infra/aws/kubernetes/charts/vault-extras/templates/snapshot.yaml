@@ -165,13 +165,17 @@ spec:
                   [ -s "$f" ] || { echo '{"level":"error","msg":"no snapshot to upload"}' >&2; exit 1; }
                   # The snapshot step's hash (hex). S3 takes base64 of the raw digest: each hex pair
                   # becomes one byte through an octal printf escape (POSIX; no xxd in this image).
+                  # `|| :`: read fails on a last line without a newline (and under -e would exit unlogged);
+                  # what it read is still judged below.
                   sum=
-                  [ -s "$f.sha256" ] && IFS= read -r sum <"$f.sha256"
+                  if [ -s "$f.sha256" ]; then IFS= read -r sum <"$f.sha256" || :; fi
                   case $sum in
                     *[!0-9a-f]*|'') echo '{"level":"error","msg":"no valid hash from the snapshot step"}' >&2; exit 1 ;;
                   esac
                   [ "${#sum}" -eq 64 ] || { echo '{"level":"error","msg":"no valid hash from the snapshot step"}' >&2; exit 1; }
                   b64=$(rest=$sum; while [ "${#rest}" -ge 2 ]; do h=${rest%"${rest#??}"}; rest=${rest#??}; printf "\\$(printf %03o "0x$h")"; done | base64)
+                  # 32 bytes are 44 base64 characters: anything else is a broken conversion, never sent.
+                  [ "${#b64}" -eq 44 ] || { echo '{"level":"error","msg":"the snapshot hash did not convert to 44 base64 characters"}' >&2; exit 1; }
                   key="snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap"
                   bytes=$(wc -c <"$f")
                   aws s3api put-object \

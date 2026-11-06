@@ -590,7 +590,9 @@ groups:
   # kube_pod_labels). Vault's service registration resets its labels at every process start to
   # initialized=false, sealed=true and sets vault-initialized=true again only when the node
   # unseals, so the label means "unsealed at least once since this process started": after a
-  # restart of every pod that stays sealed it lapses an hour after the last unsealed sample.
+  # restart of every pod that stays sealed it lapses an hour after the last unsealed sample
+  # (Vault's command/server.go starts the registration as initialized=false, sealed=true;
+  # NotifyInitializedStateChange(true) runs on unseal; to verify in the kind drill).
   # (2) The snapshot CronJob has succeeded at least once (its status keeps lastSuccessfulTime;
   # last_over_time bridges a 6 h scrape gap): the half that survives an outage of every pod.
   # The first snapshot is taken by hand right after the init (OPERATIONS.md → Vault metrics

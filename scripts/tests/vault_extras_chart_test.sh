@@ -224,29 +224,44 @@ script containers[0] | sed "s#/work/#$up/work/#g" >"$up/upload.sh"
 # sha256("vault snapshot\n"), in hex and as S3's base64 of the raw digest.
 HEX=9bc36d4e0712f591ff5624f2b3b170788f0865b22539d4c4c2e569d6caeb607b
 B64=m8NtTgcS9ZH/ViTys7FweI8IZbIlOdTEwuVp1srrYHs=
-upload() { # <shell> <hash file content or "-" for none>; prints the exit status
-  rm -rf "$up/work" "$up/args"; mkdir -p "$up/work"; printf 'vault snapshot\n' >"$up/work/vault.snap"
-  [ "$2" = - ] || printf '%s\n' "$2" >"$up/work/vault.snap.sha256"
+upload() { # <shell> <hash file content or "-" for none> [nonl]; prints the exit status; stderr goes to $up/err
+  rm -rf "$up/work" "$up/args" "$up/err"; mkdir -p "$up/work"; printf 'vault snapshot\n' >"$up/work/vault.snap"
+  if [ "$2" != - ]; then
+    if [ "${3:-}" = nonl ]; then printf '%s' "$2" >"$up/work/vault.snap.sha256"; else printf '%s\n' "$2" >"$up/work/vault.snap.sha256"; fi
+  fi
   local rc=0
-  PATH="$up/bin:$PATH" AWS_ARGS="$up/args" AWS_REGION=eu-central-1 BUCKET=b BUCKET_OWNER=123456789012 SNAPSHOT_KEY_ARN=k \
-    "$1" -eu "$up/upload.sh" >/dev/null 2>&1 || rc=$?
+  PATH="${UPLOAD_PATH:-$up/bin}:$PATH" AWS_ARGS="$up/args" AWS_REGION=eu-central-1 BUCKET=b BUCKET_OWNER=123456789012 SNAPSHOT_KEY_ARN=k \
+    "$1" -eu "$up/upload.sh" >/dev/null 2>"$up/err" || rc=$?
   echo "$rc"
 }
+# A stand-in base64 that drops the last character: the length check must refuse what it returns.
+mkdir -p "$up/badb64"; cp "$up/bin/aws" "$up/badb64/aws"
+real_b64=$(command -v base64)
+printf '#!/bin/sh\n"%s" | tr -d "\\n" | sed "s/.$//"\necho\n' "$real_b64" >"$up/badb64/base64"; chmod +x "$up/badb64/base64"
 # The script sets pipefail, which the image's bash has and dash (CI's sh) has not: a shell without it is skipped for
 # the whole script, and the conversion line alone runs in sh (POSIX) as well.
 conv=$(script containers[0] | grep -F 'b64=$(')
 [ "$(sh -c "sum=$HEX; $conv; printf %s \"\$b64\"")" = "$B64" ] || fail "sh: the hex to base64 conversion is not POSIX"
 for sh in sh bash; do
   command -v "$sh" >/dev/null && "$sh" -c 'set -o pipefail' 2>/dev/null || continue
-  [ "$(upload "$sh" "$HEX")" = 0 ] || fail "$sh: the upload script fails with a valid hash"
-  grep -qxF -- "$B64" "$up/args" && grep -qxF -- "--checksum-sha256" "$up/args" || fail "$sh: the upload does not send the hash as base64 ($B64)"
-  grep -qxF -- "sha256=$HEX" "$up/args" || fail "$sh: the upload's metadata does not carry the hex hash"
-  [ ! -e "$up/work/vault.snap" ] && [ ! -e "$up/work/vault.snap.sha256" ] || fail "$sh: the upload leaves the snapshot or its hash behind"
-  for bad in - "" "${HEX%?}" "${HEX}0" "$(printf %s "$HEX" | tr a-f A-F)" "zz${HEX#??}"; do
-    [ "$(upload "$sh" "$bad")" != 0 ] || fail "$sh: the upload accepts the hash '$bad'"
-    [ ! -e "$up/args" ] || fail "$sh: the upload calls aws with the hash '$bad'"
-    [ ! -e "$up/work/vault.snap" ] || fail "$sh: a refused upload leaves the snapshot behind"
+  for nl in "" nonl; do
+    [ "$(upload "$sh" "$HEX" $nl)" = 0 ] || fail "$sh: the upload script fails with a valid hash ${nl:+(no trailing newline)}"
+    grep -qxF -- "$B64" "$up/args" && grep -qxF -- "--checksum-sha256" "$up/args" || fail "$sh: the upload does not send the hash as base64 ($B64)"
+    grep -qxF -- "sha256=$HEX" "$up/args" || fail "$sh: the upload's metadata does not carry the hex hash"
+    [ ! -e "$up/work/vault.snap" ] && [ ! -e "$up/work/vault.snap.sha256" ] || fail "$sh: the upload leaves the snapshot or its hash behind"
   done
+  for bad in - "" "${HEX%?}" "${HEX}0" "$(printf %s "$HEX" | tr a-f A-F)" "zz${HEX#??}"; do
+    for nl in "" nonl; do
+      [ "$bad" = - ] && [ -n "$nl" ] && continue
+      [ "$(upload "$sh" "$bad" $nl)" != 0 ] || fail "$sh: the upload accepts the hash '$bad' ${nl:+(no trailing newline)}"
+      grep -qF 'no valid hash from the snapshot step' "$up/err" || fail "$sh: the refusal of '$bad' ${nl:+(no trailing newline) }is not logged"
+      [ ! -e "$up/args" ] || fail "$sh: the upload calls aws with the hash '$bad'"
+      [ ! -e "$up/work/vault.snap" ] || fail "$sh: a refused upload leaves the snapshot behind"
+    done
+  done
+  [ "$(UPLOAD_PATH="$up/badb64" upload "$sh" "$HEX")" != 0 ] || fail "$sh: the upload sends a base64 hash that is not 44 characters"
+  grep -qF 'did not convert to 44 base64 characters' "$up/err" || fail "$sh: a broken conversion is not logged"
+  [ ! -e "$up/args" ] || fail "$sh: the upload calls aws with a broken conversion"
 done
 script containers[0] | grep -qE 'aws s3 (cp|sync|mv)|create-multipart|upload-part' && fail "the upload must be one put-object (multipart would need kms:Decrypt)"
 

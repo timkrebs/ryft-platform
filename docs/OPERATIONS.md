@@ -2554,7 +2554,10 @@ repository cannot set them):
      collects them: scheduling, probe and volume events). Tell them apart in the label browser
      (`job`, `service_name`, `source`); **to verify** the labels both carry on the stack. A
      stream with a `container` label, or any line that looks like Vault's own (`@level`,
-     `@message`, audit JSON with `"type":"request"`), is the reason to stop;
+     `@message`, audit JSON with `"type":"request"`), is the reason to stop. **Pass** only when
+     both hold: the narrowed query returns nothing, **and** every stream the wider
+     `{namespace="vault"}` returns is one of the two named kinds (manifest-tail or events);
+     a stream you cannot place is a stop as well;
    - Prometheus: `count by (__name__) ({k8s_namespace_name="vault"})` returns nothing (Beyla's
      series carry `k8s_namespace_name`; **to verify** the label name on one RYFT series);
    - Tempo: `{resource.k8s.namespace.name="vault"}` returns no trace.
@@ -2597,8 +2600,8 @@ hour after a restart goes quiet.
    shows `Initialized true` from **your own** init (bootstrap step 2), the root token is revoked
    (bootstrap step 9), and G1-G4 hold. Then `vault_collector_peer = true` in
    `infra/aws/kubernetes/terraform.tfvars` (yours, git-ignored; a `-var` would be undone by the
-   next plan without it), plan (`1 to change`: `helm_release.vault_extras`, the NetworkPolicy
-   `vault-server` gains the collector rule) and apply. The rule's selector must match the
+   next plan without it), plan (exactly `1 to change`: `helm_release.vault_extras`, the
+   NetworkPolicy `vault-server` gains the collector rule; anything else: stop) and apply. The rule's selector must match the
    running pods:
    `kubectl --context ryft-prod-euc1 -n monitoring get pods -l app.kubernetes.io/name=alloy-deployment`
    lists one pod.
@@ -2683,8 +2686,13 @@ shell (Vault, #151: the port-forward, `~/.config/ryft/vault-ca.pem`) with the ad
 rules that would fire before the init are gated on "this Vault has been initialised": a server
 pod labelled `vault-initialized=true` in the last hour, or a snapshot that has succeeded once.
 The label means "unsealed at least once since this process started" (Vault resets it to `false`
-at every start), so after a restart of every pod that stays sealed only the snapshot half holds:
-the hand-run first snapshot (Vault metrics (once)) is what keeps these alerts alive then.
+at every start; the source and its status are in OBSERVABILITY → Alerts → Vault, **to verify
+in the kind drill**), so after a restart of every pod that stays sealed only the snapshot half
+holds: the hand-run first snapshot (Vault metrics (once)) is what keeps these alerts alive then.
+
+**Known gap:** with the StatefulSet itself gone (deleted, or not yet recreated after a restore),
+`VaultUnavailable` and the server and kubelet branches of `VaultScrapeDown` are silent by design
+(they need its series); only `PodRestarting` and the snapshot alerts remain.
 The procedures for the states themselves are Vault's sections (#151); these entries say which
 one and what the alert adds.
 
@@ -3519,28 +3527,53 @@ recovery" tutorial). It is **to verify** in the kind drill before it is ever use
 
 One pod's data volume is gone (EBS volume lost, zone gone for good) or holds stale data
 (530). The other two keep the quorum. Its node id (the pod name) is still a voter in the Raft
-configuration, so the failure tolerance is 0 until it is replaced:
+configuration, so the failure tolerance is 0 until it is replaced.
+
+**First, close the collector's path.** The replacement pod starts with a fresh claim and is
+**uninitialised** until `retry_join` has joined it to the cluster. Until then it answers
+`PUT /v1/sys/init` without a token (G3's risk) to anything that reaches its 8200. If that call
+lands, the node forms a cluster of its own, auto-unseals with the same awskms key, is labelled
+`vault-active` and joins the `vault-active` endpoints next to the real leader, splitting VSO's
+and the snapshot job's logins between two Vaults. So, by default, set the peer off before you
+start: `vault_collector_peer = false` in `infra/aws/kubernetes/terraform.tfvars`, plan (exactly
+`1 to change`, `helm_release.vault_extras`, the NetworkPolicy `vault-server` loses the
+collector rule; anything else: stop), apply. The server scrape fails until you turn it back on
+(`VaultScrapeDown` may warn). This **narrows** the window, it does not close it: the host-network
+`alloy-daemonset` reaches 8200 from its node's address whatever the variable says (Vault metrics
+(once), step 2; to verify), and so does anything else on a node. Keep the steps below short.
+
+Then, in the vault shell (the `svc/vault-active` port-forward and the admin login, G3; never
+`vault login` through `kubectl exec`):
 ```bash
 vault operator raft list-peers                  # vault-<n> Voter, not reachable
 vault operator raft remove-peer vault-<n>       # the admin login
 kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false
 kubectl --context ryft-prod-euc1 -n vault delete pod vault-<n>
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=10m
-vault operator raft list-peers                  # vault-<n> back as a voter
-vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
 ```
 The StatefulSet makes a fresh claim, and the pod joins by `retry_join` and receives the data
-from the leader. Until the join finishes the new node is **uninitialised** and answers
-`PUT /v1/sys/init` without a token (G3's risk) to anything that reaches its 8200: with
-`vault_collector_peer = true` that includes the `alloy-deployment` pods. Either set the peer
-to `false` for this procedure (plan and apply `infra/aws/kubernetes`, `1 to change`; back to
-`true` afterwards, the scrape fails in between and `VaultScrapeDown` may warn), or keep it and
-check the join: `vault operator raft list-peers` must list `vault-<n>` as a voter of **this**
-cluster. A node that reports `Initialized true` on its own port-forward but is missing from
-`list-peers` was initialised alone: stop (G3), delete its claim and pod again and find out
-who reached it. Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old
-EBS volume. It holds only barrier-encrypted data, but delete it in the EC2 console once the
-pod is healthy.
+from the leader. **Two checks before anything else**, once the pod is Ready:
+```bash
+vault operator raft list-peers                  # vault-<n> back as a Voter of this cluster
+kubectl --context ryft-prod-euc1 -n vault get endpoints vault-active -o jsonpath='{.subsets[*].addresses[*].ip}{"\n"}'
+# exactly one address: the leader's
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+```
+Both hold: put `vault_collector_peer = true` back (plan exactly `1 to change`, anything else:
+stop; apply) and check that `up{job="ryft/vault"}` is 1 for all three pods again.
+
+**Initialised alone** (`vault-<n>` missing from `list-peers`, or two addresses behind
+`vault-active`, or the new pod reporting `Initialized true` with a cluster of its own on its
+pod port-forward): treat it as G3, a compromise. In this order: first close the path (the peer
+stays `false`; if you had kept it on, set it off now as above) and stop every other change;
+then delete its claim and pod again (`kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false`,
+then the pod) so that it rejoins the real cluster; then find out who reached it (the EKS
+audit log for `pods/portforward` and `pods/exec` in `vault`, the node's connections) and
+check VSO's and the snapshot job's logins of that period against the real Vault's audit
+stream. Until it is understood, no secret is written.
+
+Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old EBS volume. It
+holds only barrier-encrypted data, but delete it in the EC2 console once the pod is healthy.
 
 ### Snapshots
 
@@ -3709,17 +3742,20 @@ next (the Terraform runs are yours):
    the file opens with the unseal key, so treat it as every secret. Your disk's encryption
    (FileVault) is what protects the deleted blocks; `shred` is no help on APFS (copy-on-write,
    SSD) and is not on stock macOS.
-5. **The collector peer on again**: `vault_collector_peer = true`, plan (`1 to change`) and
-   apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the restored Vault is
-   initialised, by your snapshot).
-6. **VSO syncs.** The restored Kubernetes auth reviews tokens as before (Vault's own service
+5. **The collector peer on again**: `vault_collector_peer = true`, plan (exactly `1 to change`,
+   anything else: stop) and apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the
+   restored Vault is initialised, by your snapshot).
+6. **The first snapshot by hand** (Snapshots → The first snapshot), right away. The rebuilt
+   CronJob has no `lastSuccessfulTime`, so until a run succeeds the alerts' "initialised" gate
+   rests on the pod labels alone, which lapse an hour after every pod restarts sealed.
+7. **VSO syncs.** The restored Kubernetes auth reviews tokens as before (Vault's own service
    account, D187): `kubectl --context ryft-prod-euc1 get vaultstaticsecrets -A` shows each
    synced within its `refreshAfter`. A plan of `infra/vault` shows what changed after the
    snapshot (a rotated secret, a new service): apply it.
-7. **Argo CD** syncs the workloads (app of apps); pods that started before their Secret
+8. **Argo CD** syncs the workloads (app of apps); pods that started before their Secret
    existed are restarted by VSO's `rolloutRestartTargets`, or by hand.
 
-RPO 6 h: secrets changed after the snapshot come back from step 6's plan (infra/vault holds
+RPO 6 h: secrets changed after the snapshot come back from step 7's plan (infra/vault holds
 them in its variables), so nothing is lost that Terraform knows.
 
 **The unseal key is lost** (deleted after its 30-day window, which the key policy forbids, or
@@ -3727,8 +3763,9 @@ the account is gone): no snapshot opens again. Initialise a new Vault: Vault →
 step 1, with the collector peer off as in step 2 above (the recovery keys and root token are
 the new bootstrap's). Then apply `infra/vault`: it recreates the mounts, auth, roles and
 policies and writes the KV values from its variables (`service_secrets` in
-`terraform.tfvars`, the values Terraform state holds). Then steps 5 to 7. Credentials that
-only lived in Vault (none by design today) would be lost.
+`terraform.tfvars`, the values Terraform state holds). Then steps 5 to 8, the first snapshot by
+hand (step 6) included: the new CronJob has no success yet. Credentials that only lived in
+Vault (none by design today) would be lost.
 
 **Restore drill: yearly, and after every change** to the seal, the snapshot job, the Vault
 version or the bucket's policies. Into kind on your machine, from the newest real snapshot:
