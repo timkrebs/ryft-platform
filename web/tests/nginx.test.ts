@@ -86,6 +86,61 @@ describe('nginx locations and the two security-header snippets', () => {
     expect(conf).toMatch(/gzip_static on;/);
   });
 
+  // An open redirect: nginx captures from the decoded path, so "/%5Cevil.com/" once became
+  // "Location: /\evil.com" (another host to a browser) and %09 or %0D landed in the header.
+  it('redirects only to literal paths or the safe trailing-slash capture', () => {
+    const redirects = locations.filter((l) => /\breturn 30[1278]\b/.test(l.body));
+    for (const l of redirects) {
+      const target = l.body.match(/return 30[1278] ([^;]+);/)![1]!;
+      if (!target.includes('$')) {
+        expect(target, l.name).toMatch(/^\/[A-Za-z0-9]/);
+        continue;
+      }
+      expect(l.name).toBe('~ "^(/[A-Za-z0-9][A-Za-z0-9/._-]*)/$"');
+      expect(target).toBe('$1$is_args$args');
+    }
+    expect(conf).not.toMatch(/^\s*rewrite\s/m);
+  });
+
+  it('never captures a host, a backslash, space or control character for Location', () => {
+    const names = locations.map((l) => l.name);
+    const i = names.indexOf('~ "^(/[A-Za-z0-9][A-Za-z0-9/._-]*)/$"');
+    expect(i).toBeGreaterThan(-1);
+    // The rest of the trailing-slash paths are 404s, right after it.
+    expect(names[i + 1]).toBe('~ "^/.+/$"');
+    expect(locations[i + 1]!.body).toMatch(/^\s*return 404;\s*$/);
+
+    const redirect = new RegExp(names[i]!.slice(3, -1));
+    // nginx matches the decoded, slash-merged path.
+    for (const path of [
+      '/\\evil.com/',
+      '/\t/evil.com/',
+      '/\r/evil.com/',
+      '/\n/evil.com/',
+      '/ /evil.com/',
+      '/a/\\evil.com/',
+      '//evil.com/',
+      '/./',
+      '/_next/static/',
+      '/',
+    ]) {
+      expect(redirect.test(path), JSON.stringify(path)).toBe(false);
+    }
+    for (const [from, to] of [
+      ['/privacy/', '/privacy'],
+      ['/privacy/2026-10-26/', '/privacy/2026-10-26'],
+      ['/licenses/', '/licenses'],
+      ['/de/', '/de'],
+      ['/de/science/', '/de/science'],
+      ['/a//', '/a/'],
+      ['/x//y/', '/x//y'],
+    ]) {
+      const m = from.match(redirect);
+      expect(m?.[1], from).toBe(to);
+      expect(m![1], from).toMatch(/^\/[A-Za-z0-9][A-Za-z0-9/._-]*$/);
+    }
+  });
+
   it('keeps the policies apart: each header file includes only its own', () => {
     const read = (f: string) => readFileSync(`nginx/${f}`, 'utf8');
     expect(read('headers.conf')).toMatch(/include \/etc\/nginx\/snippets\/csp\.conf;/);
