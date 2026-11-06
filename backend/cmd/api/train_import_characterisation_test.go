@@ -32,7 +32,8 @@ import (
 // code before trainImport was split into steps; a refactor passes when they are unchanged.
 //
 // Only what varies between runs is normalised: request ids, dates (as D-<days back from
-// today>) and the user id. Item ids are derived from the case name, so they are stable.
+// today>, whatever today is: TestTrainImportGoldenDaysIgnoreTheCalendar) and the user id.
+// Item ids are derived from the case name, so they are stable.
 // RYFT_IMPORT_GOLDEN=update rewrites the files (review the diff: it must be empty).
 
 const importGoldenDir = "testdata/train_import"
@@ -85,7 +86,7 @@ func newGoldenCase(t *testing.T, b *bench, name string) *goldenCase {
 	if _, err := b.pool.Exec(context.Background(), `DELETE FROM score_queue WHERE scored_at IS NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
-	c := &goldenCase{t: t, b: b, name: name, today: time.Now().UTC().Truncate(24 * time.Hour), logMark: len(b.logs.String()),
+	c := &goldenCase{t: t, b: b, name: name, today: utcDay(time.Now()), logMark: len(b.logs.String()),
 		m0: importMetrics(), users: map[uuid.UUID]string{}, labels: map[uuid.UUID]string{}}
 	fmt.Fprintf(&c.out, "case %s\n", name)
 	return c
@@ -170,14 +171,30 @@ func (c *goldenCase) record(step string, rec *httptest.ResponseRecorder) {
 }
 
 // norm names the dates relative to today.
-func (c *goldenCase) norm(s string) string {
-	return dateRE.ReplaceAllStringFunc(s, func(d string) string {
+func (c *goldenCase) norm(s string) string { return normDays(s, c.today) }
+
+// policyText is where the policy version stands in an answer (the consent refusal). It is a
+// date that does not move, so it stays as it is; every other date is a day and becomes
+// D-<days before today>.
+var policyText = "privacy policy " + benchPolicy
+
+// policyMark holds policyText's place while the days are renamed.
+const policyMark = "\x00policy-version\x00"
+
+// normDays names every date in s by its distance from today (00:00 UTC), except the policy
+// version, which is kept by where it stands, never by its value: a session day falls on the
+// policy's date once the clock is that many days past it, and which session that is moves by
+// one each calendar day (until 2026-11-06 the golden kept session m33's day as 2026-10-01).
+func normDays(s string, today time.Time) string {
+	s = strings.ReplaceAll(s, policyText, policyMark)
+	s = dateRE.ReplaceAllStringFunc(s, func(d string) string {
 		t, err := time.Parse(time.DateOnly, d)
-		if err != nil || d == benchPolicy { // the policy version is a date that does not move
+		if err != nil {
 			return d
 		}
-		return fmt.Sprintf("D-%d", int(c.today.Sub(t).Hours()/24))
+		return fmt.Sprintf("D-%d", int(today.Sub(t).Hours()/24))
 	})
+	return strings.ReplaceAll(s, policyMark, policyText)
 }
 
 func (c *goldenCase) label(id uuid.UUID) string {
@@ -782,6 +799,57 @@ func TestTrainImportGoldenFiles(t *testing.T) {
 	for _, n := range importGoldenNames {
 		if !have[n] && !update {
 			t.Errorf("case %s has no golden file (RYFT_IMPORT_GOLDEN=update records it)", n)
+		}
+	}
+}
+
+// The goldens are recorded on one day and compared on every later one: what the normaliser
+// makes of a case's days must not depend on which day that is. For reference days around the
+// policy's date, the month, year, leap-day and DST changes, each day the import window holds,
+// built as the cases build theirs (daysBefore, as daysAgo), is D-<n> and nothing else, also
+// when it is the policy's date; the policy version in the consent refusal stays as it is.
+func TestTrainImportGoldenDaysIgnoreTheCalendar(t *testing.T) {
+	refusal := `{"code":"consent_required","error":"consent to the privacy policy ` + benchPolicy +
+		` is required before uploading health data","request_id":"<rid>"}`
+	policy, err := time.Parse(time.DateOnly, benchPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{
+		"2026-10-01", // the policy's own date: D-0
+		"2026-10-03", // the policy's date is the first session's (m0, two days back)
+		"2026-10-25", // Europe/Berlin leaves summer time
+		"2026-11-01", // a new month; America/New_York leaves summer time
+		"2026-11-05", // the goldens were recorded: m33 (D-35) on the policy's date
+		"2026-11-06", // the first day they failed: m34 (D-36) on it
+		"2026-11-21", // the policy's date is the last session's (m49, D-51)
+		"2026-12-31",
+		"2027-01-01", // a new year
+		"2027-03-28", // Europe/Berlin enters summer time
+		"2027-11-04", // the policy's date is the import window's first day (D-399)
+		"2028-02-29", // a leap day
+		"2028-03-01",
+	} {
+		day0, err := time.Parse(time.DateOnly, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, now := range []time.Time{day0, day0.Add(23*time.Hour + 59*time.Minute + 59*time.Second)} {
+			today := utcDay(now)
+			for n := 0; n < train.ImportWindowDays; n++ {
+				d := day(daysBefore(now, n))
+				if got, want := normDays(d, today), fmt.Sprintf("D-%d", n); got != want {
+					t.Fatalf("today %s: %s (%d days back) is %q, want %q", now.Format(time.RFC3339), d, n, got, want)
+				}
+			}
+			if got := normDays(refusal, today); got != refusal {
+				t.Fatalf("today %s: the consent refusal became %s", ref, got)
+			}
+			mixed := `"days_touched":["` + benchPolicy + `"] ` + refusal
+			want := fmt.Sprintf(`"days_touched":["D-%d"] `, int(today.Sub(policy).Hours()/24)) + refusal
+			if got := normDays(mixed, today); got != want {
+				t.Fatalf("today %s: the policy's date as a day and as the version:\n got %s\nwant %s", ref, got, want)
+			}
 		}
 	}
 }
