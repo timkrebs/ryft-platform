@@ -68,6 +68,11 @@ output "vault_unseal_kms_key_arn" {
   value       = aws_kms_key.vault_unseal.arn
 }
 
+output "vault_unseal_role_arn_pattern" {
+  description = "ARN pattern of the role infra/aws/kubernetes creates for Vault's seal; the entry vault_unseal_allowed_principal_arns needs"
+  value       = local.vault_unseal_role_arn_pattern
+}
+
 output "vpc_id" {
   description = "ID of the VPC"
   value       = module.network.vpc_id

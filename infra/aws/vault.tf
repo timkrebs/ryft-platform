@@ -6,13 +6,20 @@
 # vault/vault-snapshot for the upload) are in infra/aws/kubernetes and find the keys by
 # alias, so nothing here names them.
 #
-# prevent_destroy on both keys and the bucket: Terraform refuses any plan that would
-# destroy or replace them. Removing one is a deliberate two-step (README → Destroying).
+# prevent_destroy on both keys and the bucket: Terraform refuses a plan that destroys or
+# replaces them while the block is in the file. It is no guard against deleting the block
+# (or vault.tf, or reverting the PR that added it): the protection goes with it. The keys'
+# own policy is the guard that holds then (NoDeletionOrDisable below). Removing them on
+# purpose: README → Destroying.
 
 locals {
   # At most 49 characters (S3 allows 63): modules/eks caps local.name at 20.
   vault_snapshots_bucket     = "${local.name}-vault-snapshots-${local.account_id}"
   vault_snapshots_bucket_arn = "arn:${local.partition}:s3:::${local.vault_snapshots_bucket}"
+
+  # The role infra/aws/kubernetes creates for vault/vault (the pod identity module adds a
+  # generated suffix to the name), for var.vault_unseal_allowed_principal_arns.
+  vault_unseal_role_arn_pattern = "arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal-*"
 }
 
 # Both keys: the account administers them and IAM policies decide who uses them (as
@@ -30,6 +37,65 @@ data "aws_iam_policy_document" "vault_keys" {
       identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
     }
   }
+
+  # Nobody, the account root and Terraform included, may schedule a key's deletion or
+  # disable it. A destroy that slips past prevent_destroy (a revert, a deleted block)
+  # fails here instead of starting the 30-day clock. To delete or disable a key on
+  # purpose, a reviewed change drops this statement and is applied first (PutKeyPolicy
+  # stays with the account, so there is no lockout): README → Destroying.
+  statement {
+    sid       = "NoDeletionOrDisable"
+    effect    = "Deny"
+    actions   = ["kms:ScheduleKeyDeletion", "kms:DisableKey"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+  }
+}
+
+# The unseal key: the same, plus, once var.vault_unseal_allowed_principal_arns is set, a
+# deny of every cryptographic use to any principal outside that list. Off by default: a
+# list that misses Vault's role leaves every restarted Vault pod sealed (README → Unseal
+# key allowlist).
+data "aws_iam_policy_document" "vault_unseal_key" {
+  source_policy_documents = [data.aws_iam_policy_document.vault_keys.json]
+
+  dynamic "statement" {
+    for_each = length(var.vault_unseal_allowed_principal_arns) > 0 ? [var.vault_unseal_allowed_principal_arns] : []
+
+    content {
+      sid       = "OnlyListedPrincipalsUseTheUnsealKey"
+      effect    = "Deny"
+      actions   = ["kms:Decrypt", "kms:Encrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*"]
+      resources = ["*"]
+
+      principals {
+        type        = "AWS"
+        identifiers = ["*"]
+      }
+
+      condition {
+        test     = "ArnNotLike"
+        variable = "aws:PrincipalArn"
+        values   = statement.value
+      }
+    }
+  }
+}
+
+# Set the allowlist without Vault's role and the next Vault pod that starts stays sealed;
+# nothing fails at apply. Warn on every plan instead.
+check "vault_unseal_allowlist_names_the_vault_role" {
+  assert {
+    condition = length(var.vault_unseal_allowed_principal_arns) == 0 || anytrue([
+      for a in var.vault_unseal_allowed_principal_arns :
+      startswith(a, "arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal")
+    ])
+    error_message = "vault_unseal_allowed_principal_arns is set but names no role arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal-…: Vault could no longer unseal. Add \"${local.vault_unseal_role_arn_pattern}\"."
+  }
 }
 
 resource "aws_kms_key" "vault_unseal" {
@@ -37,7 +103,7 @@ resource "aws_kms_key" "vault_unseal" {
   key_usage               = "ENCRYPT_DECRYPT"
   enable_key_rotation     = true # KMS keeps the old material; Vault decrypts with the ciphertext's version
   deletion_window_in_days = 30
-  policy                  = data.aws_iam_policy_document.vault_keys.json
+  policy                  = data.aws_iam_policy_document.vault_unseal_key.json
   tags                    = local.tags
 
   lifecycle {

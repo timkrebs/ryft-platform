@@ -45,11 +45,39 @@ infra/aws/
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
-| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`; the key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`) |
+| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
 | Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS and any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
+
+### Unseal key allowlist (optional, off by default)
+
+Without it, any identity in the account whose IAM policy allows `kms:Decrypt` on `*` (an
+administrator, a broad CI role) can use Vault's unseal key. `vault_unseal_allowed_principal_arns`
+adds a Deny to the unseal key's policy: `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*` and
+`kms:GenerateDataKey*` for every principal whose `aws:PrincipalArn` is not like one of the
+listed patterns. The snapshot key is not affected.
+
+It is off because a wrong list fails silently: nothing breaks at apply, but the next Vault
+pod that starts cannot unseal and stays sealed. Turn it on only after the in-cluster Vault has
+unsealed once with its Pod Identity role (`infra/aws/kubernetes`, `vault/vault`):
+
+1. Check the role: `kubectl --context ryft-prod-euc1 -n vault exec vault-0 -- vault status`
+   shows `Seal Type awskms` and `Sealed false`. CloudTrail shows `Decrypt` on the unseal key by
+   a role named `<cluster>-vault-unseal-…`.
+2. In `terraform.tfvars`, list `terraform output -raw vault_unseal_role_arn_pattern` (the
+   module gives the role a generated suffix, hence the `*`). Add your own admin role's
+   pattern if you will ever restore a production snapshot outside the cluster, for example
+   in the kind drill with the same key.
+3. Plan (only the unseal key's `policy` changes in place) and apply. Then prove it: delete one
+   standby pod and watch it come back unsealed.
+
+A `check` warns on every plan if the list names no `<cluster>-vault-unseal` role. The list is
+no barrier against an administrator: `AccountAdministers` keeps `kms:PutKeyPolicy`, so an
+admin can rewrite the policy (CloudTrail records that). It also blocks every principal not
+listed, the account root and the restore drill's identity included. Rollback: set the list
+back to `[]` and apply.
 
 ## Usage
 
@@ -294,6 +322,10 @@ kubectl delete -k deploy/k8s/overlays/eks       # Ingress gone → ExternalDNS d
 # gp3-encrypted retains volumes: delete the leftovers explicitly
 aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft \
   --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
+# the vault namespace's volumes too (Raft data and audit): they hold Vault's seal-wrapped root
+# key, and the unseal key outlives the cluster, so a leftover volume stays readable
+aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=vault \
+  --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
 (cd infra/aws && terraform apply -var deletion_protection=false && \
   terraform destroy -target=module.eks -target=module.network)  # Vault's keys and bucket stay
 ```
@@ -303,17 +335,38 @@ The zone in `infra/aws/dns` stays; it costs $0.50 a month and keeps the delegati
 **Vault's keys and bucket stay too.** They carry `prevent_destroy`, so a plain
 `terraform destroy` of this root stops with "Instance cannot be destroyed"; the targets
 above leave them alone. `infra/aws/kubernetes` finds them again by name, and a Vault in a
-rebuilt cluster unseals with the same key and can restore the old snapshots. Removing them is a deliberate,
-reviewed step, never a side effect:
+rebuilt cluster unseals with the same key and can restore the old snapshots.
 
-1. A pull request removes `lifecycle { prevent_destroy = true }` from the resource (and,
-   for the bucket, sets `force_destroy = true`, or you empty every object version
-   first: S3 refuses to delete a non-empty bucket). To keep a resource in AWS but drop it
-   from this root, use a `removed` block with `lifecycle { destroy = false }` instead.
-2. You plan, read the destroy lines, and apply. A KMS key is not deleted at once: it is
-   scheduled for deletion in 30 days and unusable from that moment. Within the window,
+`prevent_destroy` guards only while its block is in the file. **Deleting the block, deleting
+`vault.tf` or reverting the pull request that added them removes the protection with it**,
+and the next plan destroys them. So, once applied, never revert that pull request. What
+holds then is the keys' own policy: `NoDeletionOrDisable` denies `kms:ScheduleKeyDeletion`
+and `kms:DisableKey` to everyone, the account root and Terraform included. Such a plan
+fails at the keys. But it has already destroyed the bucket's policy, public access block,
+encryption default and lifecycle and suspended its versioning, and the bucket itself fails with
+`BucketNotEmpty`. Read every `-` line of a plan here.
+
+To keep a resource in AWS but drop it from this root, replace its block with a `removed`
+block: `removed { from = aws_kms_key.vault_unseal  lifecycle { destroy = false } }`
+(one per resource; the plan shows "will no longer be managed", no destroy).
+
+Removing them for good is deliberate and takes separate, reviewed steps:
+
+1. A pull request drops `NoDeletionOrDisable` from `vault_keys` (and, for the bucket,
+   sets `force_destroy = true`). You apply it: only the key policies and the bucket's
+   `force_destroy` change. `force_destroy` must be in the state before the bucket is
+   destroyed, so it needs this apply of its own. From then on, deleting the bucket
+   deletes **every object version at once**: there is no window for snapshots.
+2. A second pull request deletes the resources (or `vault.tf`). You plan, read the
+   destroy lines, and apply. A KMS key is not deleted at once: it is scheduled for
+   deletion in 30 days and unusable from that moment. Within the window,
    `aws kms cancel-key-deletion --key-id <arn>` and then `aws kms enable-key --key-id
    <arn>` bring it back (a cancelled key returns disabled).
+
+**Incident kill switch.** To stop all use of a key at once (`aws kms disable-key`), first
+remove `NoDeletionOrDisable` from that key's policy (`aws kms put-key-policy`, or step 1
+above), then disable it. Commit the policy change afterwards, or the next plan puts the
+statement back. Disabling the unseal key keeps every Vault pod that restarts sealed.
 
 Without the unseal key, Vault's data and every snapshot are unreadable for good: only
 schedule its deletion after the in-cluster Vault and its snapshots are gone.
@@ -331,7 +384,7 @@ five findings in the cluster root that are deliberate:
 
 | Finding | Why it stays |
 | --- | --- |
-| AWS-0089 Vault snapshot bucket has no access logging | Server access logs would need a second bucket; CloudTrail records the management events, the bucket policy refuses every put that does not name its key, and the job's role can only put |
+| AWS-0089 Vault snapshot bucket has no access logging | Server access logs would need a second bucket. CloudTrail records only the bucket's management events (policy, encryption, versioning changes): `GetObject`, `PutObject` and `DeleteObjectVersion` are data events, not recorded without an S3 data-event trail. Reads show up only indirectly, as `Decrypt` events on the snapshot key (with the S3 bucket key, not one per read). The bucket policy refuses every put that does not name that key; the snapshot job's role (PR 4 of the Vault work) is to get put only. A data-event trail for this bucket is the upgrade if object access must be audited |
 | AWS-0040/0041 public API endpoint | `kubectl` from your machine; restricted to `endpoint_public_access_cidrs` (set it to your IP) |
 | AWS-0104 node egress to 0.0.0.0/0 | Nodes pull images and call AWS APIs |
 | AWS-0038 scheduler / controller-manager logs off | Audit, api and authenticator logs are on; the other two add CloudWatch cost for little value at this size |

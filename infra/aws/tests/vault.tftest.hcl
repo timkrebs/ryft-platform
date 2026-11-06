@@ -112,20 +112,39 @@ override_resource {
   }
 }
 
+# Every mocked policy document has the same json; this one gets its own, so a test can
+# tell which document a key carries.
+override_data {
+  target          = data.aws_iam_policy_document.vault_unseal_key
+  override_during = plan
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[],\"Id\":\"unseal\"}"
+  }
+}
+
 run "both_keys_rotate_wait_30_days_and_are_administered_by_the_account_only" {
   command = plan
 
   assert {
     condition = alltrue([for k in [aws_kms_key.vault_unseal, aws_kms_key.vault_snapshots] :
       k.enable_key_rotation == true && k.deletion_window_in_days == 30 && k.key_usage == "ENCRYPT_DECRYPT" &&
-      k.policy == data.aws_iam_policy_document.vault_keys.json && k.tags["ManagedBy"] == "terraform"
+      k.tags["ManagedBy"] == "terraform"
     ])
-    error_message = "both Vault keys rotate, wait 30 days before deletion, encrypt and decrypt, and carry the vault_keys policy and the common tags"
+    error_message = "both Vault keys rotate, wait 30 days before deletion, encrypt and decrypt, and carry the common tags"
   }
 
   assert {
     condition = (
-      length(data.aws_iam_policy_document.vault_keys.statement) == 1 &&
+      aws_kms_key.vault_unseal.policy == data.aws_iam_policy_document.vault_unseal_key.json &&
+      aws_kms_key.vault_snapshots.policy == data.aws_iam_policy_document.vault_keys.json &&
+      data.aws_iam_policy_document.vault_unseal_key.source_policy_documents == tolist([data.aws_iam_policy_document.vault_keys.json])
+    )
+    error_message = "the unseal key carries vault_unseal_key (vault_keys plus the optional allowlist), the snapshot key vault_keys"
+  }
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.vault_keys.statement) == 2 &&
       data.aws_iam_policy_document.vault_keys.statement[0].sid == "AccountAdministers" &&
       data.aws_iam_policy_document.vault_keys.statement[0].effect == "Allow" &&
       toset(data.aws_iam_policy_document.vault_keys.statement[0].actions) == toset(["kms:*"]) &&
@@ -135,7 +154,26 @@ run "both_keys_rotate_wait_30_days_and_are_administered_by_the_account_only" {
       toset(one(data.aws_iam_policy_document.vault_keys.statement[0].principals).identifiers) == toset(["arn:aws:iam::123456789012:root"]) &&
       length(data.aws_iam_policy_document.vault_keys.statement[0].condition) == 0
     )
-    error_message = "the key policy is the one AccountAdministers statement (the account root, kms:*): IAM policies decide who uses the keys, and no role is named"
+    error_message = "the only Allow is AccountAdministers (the account root, kms:*): IAM policies decide who uses the keys, and no role is named"
+  }
+
+  assert {
+    condition = (
+      data.aws_iam_policy_document.vault_keys.statement[1].sid == "NoDeletionOrDisable" &&
+      data.aws_iam_policy_document.vault_keys.statement[1].effect == "Deny" &&
+      toset(data.aws_iam_policy_document.vault_keys.statement[1].actions) == toset(["kms:ScheduleKeyDeletion", "kms:DisableKey"]) &&
+      toset(data.aws_iam_policy_document.vault_keys.statement[1].resources) == toset(["*"]) &&
+      length(data.aws_iam_policy_document.vault_keys.statement[1].principals) == 1 &&
+      one(data.aws_iam_policy_document.vault_keys.statement[1].principals).type == "AWS" &&
+      toset(one(data.aws_iam_policy_document.vault_keys.statement[1].principals).identifiers) == toset(["*"]) &&
+      length(data.aws_iam_policy_document.vault_keys.statement[1].condition) == 0
+    )
+    error_message = "both keys deny ScheduleKeyDeletion and DisableKey to every principal, unconditionally (PutKeyPolicy stays allowed: no lockout)"
+  }
+
+  assert {
+    condition     = length(data.aws_iam_policy_document.vault_unseal_key.statement) == 0
+    error_message = "without vault_unseal_allowed_principal_arns the unseal key has no allowlist statement"
   }
 
   assert {
@@ -301,22 +339,102 @@ run "prevent_destroy_on_every_key_and_bucket_in_vault_tf" {
     error_message = "vault.tf declares exactly two KMS keys and one S3 bucket"
   }
 
+  # The flag must be a line of its own inside lifecycle { }: "(?m)^[ \t]*" refuses a
+  # commented-out "# prevent_destroy = true".
   assert {
     condition = alltrue([
       for c in split("\nresource \"", file("${path.module}/vault.tf")) :
-      can(regex("lifecycle\\s*\\{[^}]*prevent_destroy\\s*=\\s*true", c)) if can(regex("^(aws_kms_key|aws_s3_bucket)\" \"", c))
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true", c)) if can(regex("^(aws_kms_key|aws_s3_bucket)\" \"", c))
     ])
-    error_message = "every aws_kms_key and aws_s3_bucket in vault.tf needs lifecycle { prevent_destroy = true }"
+    error_message = "every aws_kms_key and aws_s3_bucket in vault.tf needs lifecycle { prevent_destroy = true }, not commented out"
   }
 
-  # The pattern itself: it must not match a resource without the flag.
+  # The pattern itself: it matches the flag, and neither an alias (no lifecycle block)
+  # nor a commented-out flag.
   assert {
-    condition = !anytrue([
-      for c in split("\nresource \"", file("${path.module}/vault.tf")) :
-      can(regex("lifecycle\\s*\\{[^}]*prevent_destroy\\s*=\\s*true", c)) if startswith(c, "aws_kms_alias\" ")
-    ])
-    error_message = "the prevent_destroy pattern matched an alias, which has no lifecycle block: the check is broken"
+    condition = (
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true", "  lifecycle {\n    prevent_destroy = true\n  }\n")) &&
+      !can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true", "  lifecycle {\n    # prevent_destroy = true\n  }\n")) &&
+      !can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true", "  lifecycle {\n    // prevent_destroy = true\n  }\n")) &&
+      !anytrue([
+        for c in split("\nresource \"", file("${path.module}/vault.tf")) :
+        can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true", c)) if startswith(c, "aws_kms_alias\" ")
+      ])
+    )
+    error_message = "the prevent_destroy pattern is broken: it must match the flag and neither an alias nor a commented-out flag"
   }
+}
+
+run "the_unseal_allowlist_denies_every_other_principal_when_set" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = [
+      "arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-*",
+      "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*",
+    ]
+  }
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.vault_unseal_key.statement) == 1 &&
+      data.aws_iam_policy_document.vault_unseal_key.statement[0].sid == "OnlyListedPrincipalsUseTheUnsealKey" &&
+      data.aws_iam_policy_document.vault_unseal_key.statement[0].effect == "Deny" &&
+      toset(data.aws_iam_policy_document.vault_unseal_key.statement[0].actions) == toset(["kms:Decrypt", "kms:Encrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*"]) &&
+      toset(data.aws_iam_policy_document.vault_unseal_key.statement[0].resources) == toset(["*"]) &&
+      one(data.aws_iam_policy_document.vault_unseal_key.statement[0].principals).type == "AWS" &&
+      toset(one(data.aws_iam_policy_document.vault_unseal_key.statement[0].principals).identifiers) == toset(["*"]) &&
+      length(data.aws_iam_policy_document.vault_unseal_key.statement[0].condition) == 1 &&
+      one(data.aws_iam_policy_document.vault_unseal_key.statement[0].condition).test == "ArnNotLike" &&
+      one(data.aws_iam_policy_document.vault_unseal_key.statement[0].condition).variable == "aws:PrincipalArn" &&
+      tolist(one(data.aws_iam_policy_document.vault_unseal_key.statement[0].condition).values) == var.vault_unseal_allowed_principal_arns
+    )
+    error_message = "with the allowlist set, the unseal key denies Encrypt, Decrypt, ReEncrypt* and GenerateDataKey* to every principal whose ARN is not like one of the list"
+  }
+
+  assert {
+    condition = (
+      aws_kms_key.vault_unseal.policy == data.aws_iam_policy_document.vault_unseal_key.json &&
+      aws_kms_key.vault_snapshots.policy == data.aws_iam_policy_document.vault_keys.json &&
+      length(data.aws_iam_policy_document.vault_keys.statement) == 2
+    )
+    error_message = "the allowlist is on the unseal key only; the snapshot key keeps vault_keys"
+  }
+
+  assert {
+    condition     = output.vault_unseal_role_arn_pattern == "arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-*"
+    error_message = "the output names the pattern of the role infra/aws/kubernetes creates for the seal"
+  }
+}
+
+run "an_allowlist_without_vault_s_role_warns" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::123456789012:role/admin"]
+  }
+
+  expect_failures = [check.vault_unseal_allowlist_names_the_vault_role]
+}
+
+run "rejects_an_allowlist_entry_that_is_no_iam_arn" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["*"]
+  }
+
+  expect_failures = [var.vault_unseal_allowed_principal_arns]
+}
+
+run "rejects_an_allowlist_entry_for_any_account" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::*:role/ryft-prod-euc1-vault-unseal-*"]
+  }
+
+  expect_failures = [var.vault_unseal_allowed_principal_arns]
 }
 
 # The bucket policy's document names the snapshot key's ARN, so Terraform reads it only
