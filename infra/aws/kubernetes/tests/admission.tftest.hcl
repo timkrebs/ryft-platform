@@ -956,8 +956,11 @@ run "argo_scope_never_holds_vault_or_cert_manager" {
   command = plan
 
   assert {
-    condition     = toset(local.admission_argo_never) == toset(["vault", "cert-manager", "argocd", "kube-system"])
-    error_message = "the never-list must be exactly vault (the add-on namespace and vault.namespace), cert-manager (the release and vault.clusterResourceNamespace), argocd and kube-system"
+    condition = toset(local.admission_argo_never) == toset([
+      "vault", "cert-manager", "argocd", "kube-system",
+      "external-dns", "vault-secrets-operator-system", "amazon-cloudwatch", "monitoring", "default", "kube-public", "kube-node-lease",
+    ])
+    error_message = "the never-list must be vault, cert-manager, argocd, kube-system and every add-on namespace (S3): ${join(", ", local.admission_argo_never)}"
   }
 
   assert {
@@ -968,6 +971,23 @@ run "argo_scope_never_holds_vault_or_cert_manager" {
   assert {
     condition     = alltrue([for n in local.admission_defaults.argoScope.namespaceObjects : startswith(n, "ryft-") || n == "rabbitmq-system"])
     error_message = "every Namespace object Argo CD may create is one P1 holds to Pod Security restricted (ryft-* or rabbitmq-system)"
+  }
+}
+
+# S3: every namespace a Helm release of this root installs into is on the chart's own never-list (so a render
+# outside Terraform refuses it too), and argoScope.namespaces holds ryft-* or the operators' namespace only.
+# Five today: kube-system (ALB controller, Traefik), cert-manager (twice), external-dns, VSO's, amazon-cloudwatch.
+run "argo_scope_never_covers_every_addon_namespace" {
+  command = plan
+
+  assert {
+    condition     = length(local.admission_addon_namespaces) == 5 && length(local.admission_argo_never_uncovered) == 0
+    error_message = "an add-on namespace of infra/aws/kubernetes is not on the chart's never-list (argoScope.neverNamespaces): ${join(", ", local.admission_argo_never_uncovered)}"
+  }
+
+  assert {
+    condition     = length(local.admission_argo_scope_off_shape) == 0
+    error_message = "argoScope.namespaces holds a namespace that is neither ryft-* nor the operators' namespace: ${join(", ", local.admission_argo_scope_off_shape)}"
   }
 }
 
@@ -1144,21 +1164,372 @@ run "argo_rbac_gate_refuses_sync_impersonation" {
   }
 }
 
+# The allowlist (security review S1): each reviewer example, next to a rule the role really has, is not
+# narrowed; the named escalate and bind of argocd.tf is.
+run "argo_rbac_gate_admits_the_named_escalate_and_bind" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate", "bind"], resourceNames = ["rabbitmq-cluster-operator-role", "messaging-topology-manager-role"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"], resourceNames = ["messaging-topology-metrics-auth-role"] }, { nonResourceURLs = ["/metrics"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == true
+    error_message = "the four Roles escalate/bind and the one ClusterRole bind by name, /metrics get: narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_impersonates_service_accounts" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["serviceaccounts"], verbs = ["impersonate"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "impersonate on serviceaccounts is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_impersonates_users" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["users"], verbs = ["impersonate"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "impersonate on users is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_impersonates_groups" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["groups"], verbs = ["impersonate"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "impersonate on groups is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_patches_policy_bindings" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingadmissionpolicybindings"], verbs = ["patch"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "patch on validatingadmissionpolicybindings is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_deletes_policy_bindings" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingadmissionpolicybindings"], verbs = ["delete"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "delete on validatingadmissionpolicybindings is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_updates_policies" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["admissionregistration.k8s.io"], resources = ["validatingadmissionpolicies"], verbs = ["update"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "update on validatingadmissionpolicies is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_creates_mutating_policies" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["admissionregistration.k8s.io"], resources = ["mutatingadmissionpolicies", "mutatingadmissionpolicybindings"], verbs = ["create"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "create on the mutating admission policy kinds is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_escalates_every_cluster_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["escalate"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "escalate on every ClusterRole is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_binds_every_cluster_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "bind on every ClusterRole is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_binds_cluster_admin" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["bind"], resourceNames = ["cluster-admin"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "bind on a ClusterRole that is not the named one is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_escalates_the_named_cluster_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["clusterroles"], verbs = ["escalate", "bind"], resourceNames = ["messaging-topology-metrics-auth-role"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "escalate on the one ClusterRole it may only bind is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_escalates_every_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate", "bind"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "escalate and bind on Roles without resourceNames is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_escalates_another_role" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate"], resourceNames = ["admin"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "escalate on a Role that is not one of the four is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_escalates_roles_and_writes_bindings" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles", "rolebindings"], verbs = ["bind"], resourceNames = ["rabbitmq-cluster-operator-role"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "bind in a rule that also names another resource is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_creates_service_account_tokens" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["serviceaccounts/token"], verbs = ["create"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "create serviceaccounts/token is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_creates_pods_exec" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["pods/exec"], verbs = ["create"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "create pods/exec is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_holds_a_partial_subresource_wildcard" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["pods/*"], verbs = ["create"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "pods/* is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_holds_a_partial_resource_wildcard" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["apps"], resources = ["*/scale"], verbs = ["update"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "*/scale is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_holds_a_wildcard_resource_name" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["rbac.authorization.k8s.io"], resources = ["roles"], verbs = ["escalate"], resourceNames = ["rabbitmq-*"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a wildcard inside resourceNames is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_holds_a_partial_group_wildcard" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = ["*.k8s.io"], resources = ["configmaps"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a wildcard inside an API group is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_holds_a_verb_outside_the_list" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["configmaps"], verbs = ["deletecollection"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "deletecollection is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_reads_secrets" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { apiGroups = [""], resources = ["secrets"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "secrets is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_reads_another_non_resource_url" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { nonResourceURLs = ["/api/*"], verbs = ["get"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a non-resource URL other than /metrics is not narrowed"
+  }
+}
+
+run "argo_rbac_gate_refuses_writes_the_metrics_url" {
+  command = plan
+  module {
+    source = "./modules/argocd-values-guard"
+  }
+  variables {
+    values = { controller = { clusterRoleRules = { enabled = true, rules = [{ apiGroups = [""], resources = ["configmaps"], verbs = ["get", "patch"] }, { nonResourceURLs = ["/metrics"], verbs = ["get", "post"] }] } } }
+  }
+  assert {
+    condition     = output.controller_rbac_narrowed == false
+    error_message = "a verb other than get on /metrics is not narrowed"
+  }
+}
+
 # The rendered Argo CD RBAC is what the gate reads: no clusterRoleRules, or one with a wildcard, or sync
 # impersonation, is not narrowed.
 run "the_rbac_gate_reads_argocd_tf" {
   command = plan
 
   assert {
-    condition = local.admission_argo_rbac_narrowed == module.argocd_values_guard.controller_rbac_narrowed && local.admission_argo_rbac_narrowed == (
-      try(local.argocd_values.controller.clusterRoleRules.enabled, false) == true &&
-      !anytrue([
-        for r in try(local.argocd_values.controller.clusterRoleRules.rules, []) :
-        anytrue([for f in [try(r.apiGroups, []), try(r.resources, []), try(r.verbs, [])] : contains(f, "*")])
-      ]) &&
-      tostring(try(local.argocd_values.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
-    )
-    error_message = "without the variable the gate is exactly the rendered RBAC of argocd.tf (the guard module's output)"
+    condition     = local.admission_argo_rbac_narrowed == module.argocd_values_guard.controller_rbac_narrowed
+    error_message = "without the variable the gate is exactly the guard module's output on the values of argocd.tf"
+  }
+
+  # argocd.tf's controller rules are the allowlist (S1): the gate is open for them, and with no fault.
+  assert {
+    condition     = module.argocd_values_guard.controller_rbac_narrowed == true && length(module.argocd_values_guard.controller_rbac_faults) == 0
+    error_message = "argocd.tf's controller ClusterRole is not the allowlist of controller_rbac_narrowed: ${join("; ", module.argocd_values_guard.controller_rbac_faults)}"
   }
 
   assert {

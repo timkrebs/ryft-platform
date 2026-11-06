@@ -1219,9 +1219,21 @@ EOF
     else
       rec "claim-h-open" FAIL "unexpected: Role rc=$rc2, RoleBinding rc=$rc3, can-i get secrets -n kube-system=$can2: $(printf '%s %s' "$n2" "$n3" | cut -c1-300) (either escalate/bind by resourceNames on roles does not do what #47 assumes, or the hole is closed already)"
     fi
+  elif [ "$phase" = p6only ]; then
+    # P6 in Deny, P12 in Warn+Audit (the state between the two Step B PRs): P6 alone must refuse both, by
+    # name, so a P6 regression is not masked by P12 (security review S4).
+    local p6="ValidatingAdmissionPolicy 'ryft-operators-cluster'"
+    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "$p6" \
+      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qF "$p6" \
+      && [ "$can2" != yes ]; then
+      rec "claim-h-p6-only" PASS "with P6 in Deny and P12 in Warn+Audit the Role in kube-system and the self-binding are both refused by ryft-operators-cluster; the controller cannot read Secrets in kube-system (can-i: $can2)"
+    else
+      rec "claim-h-p6-only" FAIL "with P6 in Deny and P12 in Warn+Audit: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
+    fi
   else
     # P6 and P12 (kube-system is outside argoScope) both refuse these; the API server names one of them,
-    # in no fixed order (D206). The CEL harness pins both refusals ("P6 claim h: ...").
+    # in no fixed order (D206). The CEL harness pins both refusals ("P6 claim h: ..."), and claim-h-p6-only
+    # proves P6 alone, by name, with P12 in Warn+Audit.
     local by='ValidatingAdmissionPolicy .(ryft-operators-cluster|ryft-argo-scope).'
     if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qE "$by" \
       && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qE "$by" \
@@ -1234,4 +1246,34 @@ EOF
       rec "claim-h-guarded" FAIL "with P6 in Deny: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
     fi
   fi
+}
+
+# adm_argo_scope_actions <actions json>: patch the ryft-argo-scope binding (the admin, on the kind cluster)
+# and wait until the API server answers with it: a dry-run ConfigMap in kube-system as the controller is
+# refused by P12 under Deny and admitted (with a warning) under Warn+Audit.
+adm_argo_scope_actions() {
+  local actions=$1 i out want
+  kc patch validatingadmissionpolicybinding ryft-argo-scope --type=merge -p "{\"spec\":{\"validationActions\":$actions}}" >/dev/null 2>&1 || return 1
+  case "$actions" in *Deny*) want=refused ;; *) want=admitted ;; esac
+  for i in $(seq 1 30); do
+    if out=$(kca "$ARGO_CTRL" -n kube-system create configmap zz-claim-h-canary --dry-run=server 2>&1); then
+      [ "$want" = admitted ] && return 0
+    elif printf '%s' "$out" | grep -qF "ValidatingAdmissionPolicy 'ryft-argo-scope'"; then
+      [ "$want" = refused ] && return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Claim h with P12 in Warn+Audit and P6 in Deny (S4): P6 alone, by name. The binding goes back to Deny+Audit.
+adm_claim_h_p6_only() {
+  if ! adm_argo_scope_actions '["Warn","Audit"]'; then
+    rec "claim-h-p6-only" FAIL "the ryft-argo-scope binding could not be set to Warn+Audit, or the API server did not answer with it within 30 s"
+    adm_argo_scope_actions '["Deny","Audit"]' || true
+    return 0
+  fi
+  adm_claim_h p6only
+  adm_argo_scope_actions '["Deny","Audit"]' ||
+    rec "claim-h-p6-restore" FAIL "the ryft-argo-scope binding is not back in Deny+Audit within 30 s"
 }

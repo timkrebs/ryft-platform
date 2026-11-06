@@ -1412,7 +1412,11 @@ and `enabled: false` in `admission-values.yaml` is unchanged: merging P12 change
 No Argo CD identity writes an AppProject (Terraform's, B2). **Never in scope: `vault` and `cert-manager`** (nor
 `argocd` beyond the row above, nor `kube-system`): the chart refuses a render, and `admission.tf` a plan (a
 precondition, and `check "admission_argo_scope_never"` while disabled), whose `argoScope.namespaces` or
-`namespaceObjects` holds one of them (D206). So every Argo CD write in `vault` (the server's StatefulSet,
+`namespaceObjects` holds one of them (D206). The same holds for every add-on namespace
+(`argoScope.neverNamespaces`: `vault-secrets-operator-system`, `external-dns`, `amazon-cloudwatch`, `monitoring`,
+`default`, `kube-public`, `kube-node-lease`; the plan also fails while an add-on of `infra/aws/kubernetes` installs
+into a namespace that list misses), and `argoScope.namespaces` holds `ryft-*` or `rabbitmq-system` only. Every list
+the chart splices into the CEL must be a non-empty list of strings (a map or null fails the render). So every Argo CD write in `vault` (the server's StatefulSet,
 `vault-tls`, a NetworkPolicy, a ConfigMap) and in `cert-manager` (a Deployment, the `ryft-vault-ca` Secret) is a
 P12 refusal; the kind run has fixtures for both. P13's rule that Argo CD writes only `selfSigned` Issuers stays
 P13's: it judges content in the namespaces P12 admits (an `acme` or `vault` Issuer in `ryft-api` passes P12),

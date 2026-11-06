@@ -83,7 +83,30 @@ for ns in vault cert-manager argocd kube-system; do
 done
 refused "argoScope.namespaces must not hold vault-ns" --set vault.namespace=vault-ns --set "argoScope.namespaces={$scope,vault-ns}"
 refused "argoScope.namespaces must not hold cm-resources" --set vault.clusterResourceNamespace=cm-resources --set "argoScope.namespaces={$scope,cm-resources}"
-refused 'argoScope.namespaceObjects must hold ryft-* or rabbitmq-system Namespaces only' --set "argoScope.namespaces={$scope,team-x}" --set 'argoScope.namespaceObjects={ryft-web,team-x}'
+refused 'argoScope.namespaceObjects must hold ryft-* or rabbitmq-system Namespaces only' --set 'argoScope.namespaceObjects={ryft-web,team-x}'
+# S3 (security review): argoScope.namespaces has the same shape as namespaceObjects (ryft-* or the operators'
+# namespace), and the add-on namespaces are on the never-list too (vault-secrets-operator-system: a
+# Deployment as the VSO service account would write Secrets cluster-wide and reach vault unmatched).
+for ns in vault-secrets-operator-system monitoring amazon-cloudwatch external-dns default kube-public kube-node-lease; do
+  refused "argoScope.namespaces must not hold $ns" --set "argoScope.namespaces={$scope,$ns}"
+done
+refused 'argoScope.namespaces must hold ryft-* or rabbitmq-system namespaces only' --set "argoScope.namespaces={$scope,team-x}"
+refused 'argoScope.namespaces must hold ryft-* or rabbitmq-system namespaces only' --set 'argoScope.neverNamespaces={unused}' --set "argoScope.namespaces={$scope,monitoring}"
+refused 'argoScope.neverNamespaces must be a non-empty list of strings' --set argoScope.neverNamespaces=null
+refused 'argoScope.neverNamespaces must be a non-empty list of strings' --set 'argoScope.neverNamespaces={}'
+# S2 (security review): every list spliced into P12's CEL (and P1's) is a non-empty list of strings. A map
+# renders `in {map}`, which CEL answers on its keys (so {vault: x, kube-system: x} would admit writes there),
+# and null renders `in null`, a runtime error that refuses every Argo CD write (failurePolicy Fail).
+printf 'argoScope:\n  namespaces:\n    vault: x\n    kube-system: x\n' > "$tmp/map-ns.yaml"
+refused 'argoScope.namespaces must be a non-empty list of strings' -f "$tmp/map-ns.yaml"
+printf 'argoScope:\n  namespaces:\n    - ryft-api\n    - [kube-system]\n' > "$tmp/nested-ns.yaml"
+refused 'argoScope.namespaces must be a non-empty list of strings' -f "$tmp/nested-ns.yaml"
+for key in argoScope.namespaces argoScope.namespaceObjects argoScope.crdGroups operators.clusterRoleNamePrefixes operators.webhookConfigurations; do
+  refused "$key must be a non-empty list of strings" --set "$key=null"
+  printf '%s:\n  %s:\n    a: x\n' "${key%%.*}" "${key#*.}" > "$tmp/map.yaml"
+  refused "$key must be a non-empty list of strings" -f "$tmp/map.yaml"
+done
+refused 'argoScope.namespaces must be a non-empty list of strings' --set 'argoScope.namespaces={}'
 refused 'argoScope.namespaceObjects holds ryft-extra, which argoScope.namespaces does not' --set 'argoScope.namespaceObjects={ryft-web,rabbitmq-system,ryft-extra}'
 refused 'argoScope.namespaces must hold namespace names only' --set "argoScope.namespaces={$scope,ryft-*}"
 renders --set "argoScope.namespaces={$scope,ryft-extra}" --set 'argoScope.namespaceObjects={ryft-web,rabbitmq-system,ryft-extra}'

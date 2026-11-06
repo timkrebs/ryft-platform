@@ -158,18 +158,65 @@ output "violations" {
   value       = local.violations
 }
 
-# For P12's Deny gate (admission.tf, D206): the controller's ClusterRole is narrowed (clusterRoleRules on, no
-# "*" in any rule's apiGroups, resources or verbs) and sync impersonation is off. Not a violation (the
-# chart's default role is allowed for a release); a bool, so that tests/admission.tftest.hcl can run the
-# real expression through this module with other values.
+# For P12's Deny gate (admission.tf, D206): the controller's ClusterRole is the allowlist below, and sync
+# impersonation is off. Not a violation (the chart's default role is allowed for a release); a bool, so that
+# tests/admission.tftest.hcl can run the real expression through this module with other values.
+#
+# The allowlist (security review S1 of #121): a rule may hold only the verbs get, list, watch, create, update,
+# patch, delete, escalate and bind (no impersonate, deletecollection, approve, sign, ...); escalate and bind
+# only in a rule of their own on rbac.authorization.k8s.io with resourceNames, escalate/bind on the four
+# operator Roles and bind (not escalate) on the one ClusterRole; nothing on the admission policy kinds; no
+# subresource (serviceaccounts/token, pods/exec, .../scale) and no Secrets; non-resource URLs only /metrics
+# with get; no "*" inside any string. The names are argocd.tf's (argocd_operator_roles and
+# argocd_operator_bound_cluster_roles), repeated here on purpose: a new name is a change of this guard.
+locals {
+  rbac_verbs                 = ["get", "list", "watch", "create", "update", "patch", "delete", "escalate", "bind"]
+  rbac_escalate_bind_roles   = ["rabbitmq-cluster-leader-election-role", "messaging-topology-leader-election-role", "rabbitmq-cluster-operator-role", "messaging-topology-manager-role"]
+  rbac_bind_cluster_roles    = ["messaging-topology-metrics-auth-role"]
+  rbac_admission_policy_kind = ["validatingadmissionpolicies", "validatingadmissionpolicybindings", "mutatingadmissionpolicies", "mutatingadmissionpolicybindings"]
+
+  controller_rules = try(local.v.controller.clusterRoleRules.rules, [])
+  controller_rbac_faults = flatten([
+    for i, r in local.controller_rules : [
+      for fault in [
+        anytrue([for f in ["apiGroups", "resources", "verbs", "resourceNames", "nonResourceURLs"] :
+        anytrue([for x in try(tolist(r[f]), []) : strcontains(tostring(x), "*")])]) ? "a wildcard" : "",
+        length(setsubtract(try(tolist(r.verbs), []), local.rbac_verbs)) > 0 ? "a verb outside the allowlist: ${join(", ", setsubtract(try(tolist(r.verbs), []), local.rbac_verbs))}" : "",
+        length(try(tolist(r.verbs), [])) == 0 ? "no verbs" : "",
+        anytrue([for x in try(tolist(r.resources), []) : strcontains(tostring(x), "/")]) ? "a subresource" : "",
+        contains(try(tolist(r.resources), []), "secrets") ? "secrets" : "",
+        length(setintersection(try(tolist(r.resources), []), local.rbac_admission_policy_kind)) > 0 ? "an admission policy kind" : "",
+        # escalate or bind: a rule of its own, by name, on the four Roles (escalate, bind) or the one ClusterRole (bind)
+        length(setintersection(try(tolist(r.verbs), []), ["escalate", "bind"])) == 0 ? "" : (
+          # (lists compared as joined strings: a list(string) never equals a tuple literal)
+          join(",", try(tolist(r.apiGroups), [])) == "rbac.authorization.k8s.io" &&
+          length(setsubtract(try(tolist(r.verbs), []), ["escalate", "bind"])) == 0 &&
+          length(try(tolist(r.resourceNames), [])) > 0 &&
+          (
+            (join(",", try(tolist(r.resources), [])) == "roles" && length(setsubtract(try(tolist(r.resourceNames), []), local.rbac_escalate_bind_roles)) == 0) ||
+            (join(",", try(tolist(r.resources), [])) == "clusterroles" && join(",", try(tolist(r.verbs), [])) == "bind" && length(setsubtract(try(tolist(r.resourceNames), []), local.rbac_bind_cluster_roles)) == 0)
+          ) ? "" : "escalate or bind outside the named operator Roles and the one ClusterRole"
+        ),
+        # a non-resource rule: /metrics get, nothing else in it
+        !can(r.nonResourceURLs) ? "" : (
+          join(",", try(tolist(r.nonResourceURLs), [])) == "/metrics" && join(",", try(tolist(r.verbs), [])) == "get" && !can(r.resources) && !can(r.apiGroups)
+        ) ? "" : "a non-resource URL other than /metrics get",
+      ] : "rules[${i}]: ${fault}" if fault != ""
+    ]
+  ])
+}
+
+output "controller_rbac_faults" {
+  description = "Why the controller's ClusterRole is not the allowlist of controller_rbac_narrowed: one line per rule and fault; empty when it is."
+  value       = local.controller_rbac_faults
+}
+
 output "controller_rbac_narrowed" {
-  description = "true when the values render a narrowed controller ClusterRole (no wildcard) and leave application.sync.impersonation.enabled off: the condition admission.tf puts on argo-scope: deny."
+  description = "true when the values render the controller's ClusterRole as the allowlist (see the comment) and leave application.sync.impersonation.enabled off: the condition admission.tf puts on argo-scope: deny."
   value = (
     try(local.v.controller.clusterRoleRules.enabled, false) == true &&
-    !anytrue([
-      for r in try(local.v.controller.clusterRoleRules.rules, []) :
-      anytrue([for f in [try(r.apiGroups, []), try(r.resources, []), try(r.verbs, [])] : contains(f, "*")])
-    ]) &&
+    length(local.controller_rules) > 0 &&
+    length(local.controller_rbac_faults) == 0 &&
     tostring(try(local.v.configs.cm["application.sync.impersonation.enabled"], "false")) != "true"
   )
 }

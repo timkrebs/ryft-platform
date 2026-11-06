@@ -81,9 +81,15 @@ argoScope:
   # apps render into (ryft-web, ryft-smoke, ...); rabbitmq-system is operators.namespace, kept literal, a
   # different fact. admission.tf's check "admission_argo_scope" compares this list with the destinations
   # of deploy/argocd/apps, and the kind run dry-runs every rendered object as the controller.
-  # Never vault, cert-manager (and vault.clusterResourceNamespace), argocd.namespace or kube-system:
-  # the chart refuses a render that lists one here or in namespaceObjects (D206), and so does admission.tf.
+  # Never vault, cert-manager (and vault.clusterResourceNamespace), argocd.namespace, kube-system or one of
+  # neverNamespaces below: the chart refuses a render that lists one here or in namespaceObjects (D206), and
+  # so does admission.tf. Every entry is ryft-* or operators.namespace (the chart refuses anything else).
   namespaces: [ryft-api, ryft-ingest, ryft-migrate, ryft-notify, ryft-rabbitmq, ryft-scoring, ryft-smoke, ryft-web, rabbitmq-system]
+  # The add-ons' namespaces and the cluster's own, never in Argo CD's scope (S3, D206): a Deployment Argo CD
+  # writes in vault-secrets-operator-system could run as VSO's service account (Secrets write cluster-wide).
+  # admission.tf requires every add-on namespace of infra/aws/kubernetes (addons.tf, logs.tf) to be here or
+  # in the fixed list above. Required and non-empty.
+  neverNamespaces: [vault-secrets-operator-system, external-dns, amazon-cloudwatch, monitoring, default, kube-public, kube-node-lease]
   # Refuse a render of this chart that puts ryft-argo-scope in deny while the policies that close the
   # RBAC route (operators-cluster = P6, namespaces = P1, workloads-templates = P2) are not: P12 judges
   # names, not what a ClusterRole or a binding grants, so alone it leaves the route open. true everywhere

@@ -4281,6 +4281,17 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   harness cases that waited for P12 (the StatefulSet, `vault-tls` and a NetworkPolicy in `vault` as the
   controller) now expect P12's refusal; the kind run has a ConfigMap in `vault` and the `ryft-vault-ca` Secret
   in `cert-manager` as the controller.
+- **The scope's shape and the add-on namespaces (security review S2, S3):** the never-list also holds every add-on
+  namespace (`argoScope.neverNamespaces`: VSO's, ExternalDNS's, Fluent Bit's, `monitoring`, `default`, `kube-public`,
+  `kube-node-lease`; a Deployment Argo CD wrote in VSO's namespace could run as VSO's service account, which writes
+  Secrets cluster-wide and reaches `vault` without P12 matching). `admission.tf` builds its own list from the Helm
+  releases of its root and fails the check while one of them is missing from the chart's list. **And**
+  `argoScope.namespaces` holds `ryft-*` or the operators' namespace only (the explicit list stays). Not done: a
+  check that the list is a subset of the Argo CD destinations and the namespaces the apps render into (the
+  rendered namespaces are known to the kind run's dry-run, not to Terraform). Every list the chart splices into
+  CEL (`namespaces`, `namespaceObjects`, `crdGroups`, `neverNamespaces`, the operators' ClusterRole prefixes and
+  webhook names) must be a non-empty list of non-empty strings: a map renders `in {map}`, which CEL answers on
+  the keys, and null renders `in null`, a runtime error that refuses every Argo CD write under `Fail`.
 - **P13's Argo CD Issuer rule stays P13's:** P12 judges where, not what, and admits an Issuer in the namespaces
   it lists, so an `acme` or `vault` Issuer in `ryft-api` (which would make cert-manager send a Secret of that
   namespace to the server it names) is P13's to refuse. For a ClusterIssuer and anything in `vault` both
@@ -4293,10 +4304,18 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Deny gate:** `argo-scope: deny` requires the **general** `operators-cluster`, `namespaces` and
   `workloads-templates` bindings in deny, not their `-vault` twins (P12 judges names, not what a ClusterRole or
   binding grants: the RBAC route is closed when P6 and P12 are both in Deny), and a narrowed controller
-  ClusterRole rendered by `argocd.tf` (`controller.clusterRoleRules.enabled`, no `*`, no sync impersonation).
-  The chart fails the render, `admission.tf` fails the plan. The gate's expression is the argocd values guard's
-  output `controller_rbac_narrowed` (it judges the values `helm_release.argocd` takes; tests run it with a wildcard
-  verb, resource and group, the chart's default role and impersonation). On the tree since #47 the precondition
+  ClusterRole rendered by `argocd.tf` and no sync impersonation. The chart fails the render, `admission.tf`
+  fails the plan. The gate's expression is the argocd values guard's output `controller_rbac_narrowed`, an
+  **allowlist** since security review S1 (the first version caught only a literal `*`): every rule's verbs from
+  get, list, watch, create, update, patch, delete, escalate and bind; escalate and bind only in a rule of their
+  own with `resourceNames` (escalate/bind on the four operator Roles, bind on
+  `messaging-topology-metrics-auth-role`); nothing on the admission policy kinds (validating or mutating, and
+  their bindings); no subresource (`serviceaccounts/token`, `pods/exec`, `*/scale`), no Secrets; non-resource
+  URLs only `/metrics` with get; no `*` inside any string. `controller_rbac_faults` names the offending rule.
+  The names are repeated in the guard on purpose: a new operator Role is a change of the guard (CODEOWNERS). Tests run
+  each reviewer example through the module (each is not narrowed) and argocd.tf's rules (no fault). The
+  `admission_argo_rbac_narrowed` variable stays, for tests and rehearsals only; it is forbidden against
+  production (`check "admission_gate_override"`). On the tree since #47 the precondition
   reads the rendered role as narrowed (a test without the stand-in variable pins it); the owner applied #47 on 2026-11-06
   and checked that the controller cannot patch or delete `validatingadmissionpolicybindings` or impersonate,
   and can list Applications. The full kind mode must pass on a tree with #47, `argo-rbac` and `claim-i` not
@@ -4310,7 +4329,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Testing:** the CEL harness (every render as the controller, the projects and root as admin, the canaries,
   the first-key cases, the `vault` cases), the kind job (every render dry-run as the controller: 0 refused in
   Audit and Deny; P12-only fixtures, among them a `cert-manager` Deployment and a ConfigMap in `vault` as the
-  controller), the full run (no P12 finding through sync, hooks, restart and chart upgrade).
+  controller), the full run (no P12 finding through sync, hooks, restart and chart upgrade). Claim h runs a
+  third time with P12's binding in Warn+Audit and P6 in Deny (the state between the two Step B PRs) and
+  requires P6's refusal by name (`claim-h-p6-only`); with both in Deny either name passes, since the API
+  server names one of two refusals.
 - **Accepted:** reads (both Argo CD Roles read Secrets in `argocd`); writes inside the scope beyond the content
   rules, among them in-scope writes with cluster-wide effect (an Ingress for `api.ryftapp.de` with a Traefik
   router priority, a `redirectRegex` Middleware, a Service with `externalIPs`; follow-up T12-l6); the

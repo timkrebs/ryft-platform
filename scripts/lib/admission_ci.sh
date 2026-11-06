@@ -55,6 +55,7 @@ adm_ci_checks() {
   adm_claim_b
   adm_claim_c
   adm_claim_h guarded
+  adm_claim_h_p6_only
   endgroup
   adm_fixture_coverage
 }

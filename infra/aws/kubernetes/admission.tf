@@ -50,27 +50,52 @@ locals {
   # (the release in addons.tf, and the cluster resource namespace that holds the ryft-vault root CA),
   # Argo CD's own (rule 4 keeps it to Applications and events) and kube-system (aws-auth). P12's
   # namespace list and its Namespace objects hold none of them; the chart refuses the same render.
-  admission_argo_never = distinct([
-    kubernetes_namespace_v1.vault.metadata[0].name,
-    try(local.admission_file.vault.namespace, local.admission_defaults.vault.namespace),
+  # S3 (D206): and every namespace an add-on of this root installs into (addons.tf, logs.tf), with the chart's
+  # argoScope.neverNamespaces (the add-ons and the cluster's own: monitoring, default, kube-public, ...).
+  admission_addon_namespaces = distinct([
+    helm_release.aws_load_balancer_controller.namespace,
+    helm_release.traefik.namespace,
     helm_release.cert_manager.namespace,
-    try(local.admission_file.vault.clusterResourceNamespace, local.admission_defaults.vault.clusterResourceNamespace),
-    kubernetes_namespace_v1.argocd.metadata[0].name,
-    "kube-system",
+    helm_release.cluster_issuers.namespace,
+    helm_release.external_dns.namespace,
+    helm_release.vault_secrets_operator.namespace,
+    helm_release.fluent_bit.namespace,
   ])
+  # The chart's own never-list (what a render outside Terraform refuses too): its fixed part and neverNamespaces.
+  admission_argo_never_chart = distinct(concat([
+    try(local.admission_file.vault.namespace, local.admission_defaults.vault.namespace),
+    "cert-manager",
+    try(local.admission_file.vault.clusterResourceNamespace, local.admission_defaults.vault.clusterResourceNamespace),
+    local.admission_argocd_namespace,
+    "kube-system",
+  ], try(local.admission_argo_scope.neverNamespaces, [])))
+  admission_argo_never = distinct(concat([
+    kubernetes_namespace_v1.vault.metadata[0].name,
+    kubernetes_namespace_v1.argocd.metadata[0].name,
+  ], local.admission_addon_namespaces, local.admission_argo_never_chart))
   admission_argo_never_listed = sort(distinct([
     for n in concat(local.admission_argo_scope.namespaces, local.admission_argo_scope.namespaceObjects) : n
     if contains(local.admission_argo_never, n)
   ]))
+  # An add-on namespace the chart's never-list misses: the plan refuses it (check below), so that the chart's
+  # render guard is never weaker than this plan.
+  admission_argo_never_uncovered = sort([for n in local.admission_addon_namespaces : n if !contains(local.admission_argo_never_chart, n)])
+  # argoScope.namespaces holds ryft-* or the operators' namespace only (the explicit list stays).
+  admission_argo_scope_off_shape = sort([
+    for n in local.admission_argo_scope.namespaces : n
+    if !(startswith(n, "ryft-") || n == local.admission_operators_namespace)
+  ])
 
   # P12 in deny is only worth something when Argo CD's own RBAC cannot undo it: with the chart's
   # wildcard ClusterRole the controller can patch or delete the ryft-argo-scope binding (bindings are
   # exempt from admission) and impersonate. So argocd.tf must render a narrowed controller role
-  # (T12-f, #47: controller.clusterRoleRules.enabled with no "*" in any rule) and must not turn on
-  # sync impersonation (application.sync.impersonation.enabled: Argo CD would then write as other
-  # service accounts and P12 would match nothing). The variable is for tests; a check flags it. The
-  # expression is the guard module's output (it judges the values helm_release.argocd takes), so that
-  # tests/admission.tftest.hcl can run it with a wildcard rule, the chart's default role and impersonation.
+  # (T12-f, #47) that is the guard module's allowlist (D206, review S1: allowlisted verbs only, escalate
+  # and bind only by name on the operators' four Roles and bind on one ClusterRole, nothing on the
+  # admission policy kinds, no subresource, no Secrets, /metrics the only URL, no "*" in any string) and
+  # must not turn on sync impersonation (application.sync.impersonation.enabled: Argo CD would then
+  # write as other service accounts and P12 would match nothing). The variable is for tests only and
+  # forbidden against production; a check flags it. The expression is the guard module's output (it
+  # judges the values helm_release.argocd takes), so tests/admission.tftest.hcl runs it with each case.
   admission_argo_rbac_narrowed_rendered = module.argocd_values_guard.controller_rbac_narrowed
   admission_argo_rbac_narrowed          = coalesce(var.admission_argo_rbac_narrowed, local.admission_argo_rbac_narrowed_rendered)
 
@@ -229,14 +254,14 @@ resource "helm_release" "admission_policy" {
     # The namespaces Argo CD never writes in: an error of the plan whatever the action (the chart's render
     # fails on it too; the check below says the same while the release is disabled).
     precondition {
-      condition     = length(local.admission_argo_never_listed) == 0
-      error_message = "argoScope.namespaces or argoScope.namespaceObjects (admission-values.yaml or the chart's values) holds ${join(", ", local.admission_argo_never_listed)}: Argo CD never writes in vault, cert-manager, argocd or kube-system (D206)."
+      condition     = length(local.admission_argo_never_listed) == 0 && length(local.admission_argo_scope_off_shape) == 0
+      error_message = "argoScope.namespaces or argoScope.namespaceObjects (admission-values.yaml or the chart's values) holds ${join(", ", concat(local.admission_argo_never_listed, local.admission_argo_scope_off_shape))}: Argo CD never writes in vault, cert-manager, argocd, kube-system or an add-on's namespace, and its namespaces are ryft-* or the operators' (D206)."
     }
     # And P12 is worthless against a controller that can patch its binding: #47 (T12-f) must be merged and
     # applied, i.e. argocd.tf renders a narrowed controller role, before P12 goes to deny.
     precondition {
       condition     = !contains(local.admission_effective["argo-scope"], "Deny") || local.admission_argo_rbac_narrowed
-      error_message = "The argo-scope binding (P12) is set to deny, but argocd.tf does not render a narrowed controller ClusterRole (controller.clusterRoleRules.enabled with no wildcard rule: T12-f, #47) or turns on application.sync.impersonation.enabled: with the chart's wildcard role the controller can patch or delete the ryft-argo-scope binding and impersonate, so deny protects nothing. Merge and apply T12-f first."
+      error_message = "The argo-scope binding (P12) is set to deny, but argocd.tf does not render a narrowed controller ClusterRole (controller.clusterRoleRules.enabled and every rule inside the allowlist of the argocd values guard's controller_rbac_narrowed: T12-f, #47, D206; its output controller_rbac_faults names the rule) or turns on application.sync.impersonation.enabled: with the chart's wildcard role the controller can patch or delete the ryft-argo-scope binding and impersonate, so deny protects nothing. Merge and apply T12-f first."
     }
     precondition {
       condition     = !(contains(local.admission_effective["netpol"], "Deny") && local.admission_broker_egress_public)
@@ -286,8 +311,12 @@ check "admission_argo_scope" {
 # The same as the release's precondition, evaluated also while the release is disabled (count 0).
 check "admission_argo_scope_never" {
   assert {
-    condition     = length(local.admission_argo_never_listed) == 0
-    error_message = "argoScope.namespaces or argoScope.namespaceObjects holds ${join(", ", local.admission_argo_never_listed)}: Argo CD never writes in vault, cert-manager, argocd or kube-system (D206)."
+    condition     = length(local.admission_argo_never_listed) == 0 && length(local.admission_argo_scope_off_shape) == 0
+    error_message = "argoScope.namespaces or argoScope.namespaceObjects holds ${join(", ", concat(local.admission_argo_never_listed, local.admission_argo_scope_off_shape))}: Argo CD never writes in vault, cert-manager, argocd, kube-system or an add-on's namespace, and its namespaces are ryft-* or the operators' (D206)."
+  }
+  assert {
+    condition     = length(local.admission_argo_never_uncovered) == 0
+    error_message = "The add-on namespace(s) ${join(", ", local.admission_argo_never_uncovered)} of infra/aws/kubernetes are not in the chart's argoScope.neverNamespaces: add them there (D206), so that the chart's render refuses them too."
   }
 }
 

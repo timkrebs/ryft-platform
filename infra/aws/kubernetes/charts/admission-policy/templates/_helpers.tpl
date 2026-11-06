@@ -42,6 +42,15 @@ never matches a host name against the commonName). */ -}}
 {{- if not (hasKey $.Values.actions .) -}}{{- fail (printf "actions.%s is missing" .) -}}{{- end -}}
 {{- end -}}
 {{- /* P12: the controller's namespaces are an explicit list (an empty name or a wildcard would put every namespace in scope); the secret and key names are what the init exemption compares. */ -}}
+{{- /* S2 (D206): every list spliced into P12's CEL (and P1's) by toJson is a non-empty list of non-empty
+strings. A map would render `x in {map}`, which CEL answers on the map's keys (so {vault: x} would admit
+vault), and null renders `x in null`, a runtime error that refuses every Argo CD write under Fail. */ -}}
+{{- $lists := list (list "argoScope.namespaces" .Values.argoScope.namespaces) (list "argoScope.namespaceObjects" .Values.argoScope.namespaceObjects) (list "argoScope.crdGroups" .Values.argoScope.crdGroups) (list "argoScope.neverNamespaces" .Values.argoScope.neverNamespaces) (list "operators.clusterRoleNamePrefixes" .Values.operators.clusterRoleNamePrefixes) (list "operators.webhookConfigurations" .Values.operators.webhookConfigurations) -}}
+{{- range $p := $lists -}}
+{{- $v := index $p 1 -}}
+{{- if or (not (kindIs "slice" $v)) (eq (len $v) 0) -}}{{- fail (printf "%s must be a non-empty list of strings (a map or null splices into CEL as something else: `in` on a map tests its keys; D206)" (index $p 0)) -}}{{- end -}}
+{{- range $v -}}{{- if or (not (kindIs "string" .)) (not .) -}}{{- fail (printf "%s must be a non-empty list of strings, each a non-empty string (D206)" (index $p 0)) -}}{{- end -}}{{- end -}}
+{{- end -}}
 {{- range .Values.argoScope.namespaces -}}
 {{- if or (not .) (contains "*" .) -}}{{- fail "argoScope.namespaces must hold namespace names only (an empty name or a wildcard would put every namespace in Argo CD's scope)" -}}{{- end -}}
 {{- end -}}
@@ -50,12 +59,18 @@ judge images and peers, not who writes), cert-manager and its cluster resource n
 ryft-vault root CA, P13), Argo CD's own namespace (rule 4 keeps it to Applications and events) and
 kube-system (aws-auth). None may be in argoScope.namespaces or argoScope.namespaceObjects. Every
 Namespace object Argo CD may create is one P1 holds to Pod Security restricted (ryft-* or
-rabbitmq-system) and one it may then write in (argoScope.namespaces). */ -}}
-{{- $argoNever := list .Values.vault.namespace "cert-manager" .Values.vault.clusterResourceNamespace .Values.argocd.namespace "kube-system" -}}
+rabbitmq-system) and one it may then write in (argoScope.namespaces). S3: the add-on namespaces
+(argoScope.neverNamespaces: VSO's, ExternalDNS's, Fluent Bit's, monitoring, default, kube-public,
+kube-node-lease) are never in scope either, and argoScope.namespaces itself holds ryft-* or the operators'
+namespace only (the explicit list stays; admission.tf compares it with the add-ons of its root). */ -}}
+{{- $argoNever := concat (list .Values.vault.namespace "cert-manager" .Values.vault.clusterResourceNamespace .Values.argocd.namespace "kube-system") .Values.argoScope.neverNamespaces -}}
 {{- range $k := list "namespaces" "namespaceObjects" -}}
 {{- range (index $.Values.argoScope $k) -}}
-{{- if has . $argoNever -}}{{- fail (printf "argoScope.%s must not hold %s: Argo CD never writes in vault, cert-manager, %s or kube-system (D206)" $k . $.Values.argocd.namespace) -}}{{- end -}}
+{{- if has . $argoNever -}}{{- fail (printf "argoScope.%s must not hold %s: Argo CD never writes in vault, cert-manager, %s, kube-system or an add-on's namespace (argoScope.neverNamespaces; D206)" $k . $.Values.argocd.namespace) -}}{{- end -}}
 {{- end -}}
+{{- end -}}
+{{- range .Values.argoScope.namespaces -}}
+{{- if not (or (hasPrefix "ryft-" .) (eq . $.Values.operators.namespace)) -}}{{- fail (printf "argoScope.namespaces must hold ryft-* or %s namespaces only (an explicit list of them; D206), not %s" $.Values.operators.namespace .) -}}{{- end -}}
 {{- end -}}
 {{- range .Values.argoScope.namespaceObjects -}}
 {{- if not (or (hasPrefix "ryft-" .) (eq . "rabbitmq-system")) -}}{{- fail (printf "argoScope.namespaceObjects must hold ryft-* or rabbitmq-system Namespaces only (P1 holds those to Pod Security restricted), not %s" .) -}}{{- end -}}
