@@ -272,33 +272,68 @@ the system again: the blocks come back in `renderCss`, from `tokens.json`'s `dar
 ## D20 — Inter, committed under the OFL (2026-11-05; replaces D4 and D13, closes D14's font risk)
 
 The third part of the 2026-11-05 decision: the typographic design is set in Inter. Inter 4.1
-(SIL Open Font License 1.1) allows redistribution, so `Inter-Regular.woff2`,
-`Inter-Bold.woff2` and `OFL.txt` are committed in `src/fonts/` (from
-`https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip`; SHA-256 Regular
-`e06f6b1b…ae085`, Bold `fa888127…d95ea`, LICENSE `262481e8…4935a`). `scripts/fetch-fonts.mjs`,
-`config/fonts.json` and the `fonts` step of `dev` and `prebuild` are gone: a clone builds
-offline, and the public image (D14) no longer redistributes a font whose licence forbids it.
+(SIL Open Font License 1.1) allows redistribution and modification, so subsets of
+`Inter-Regular.woff2` and `Inter-Bold.woff2` and the licence as `OFL.txt` are committed in
+`src/fonts/`. `scripts/fetch-fonts.mjs`, `config/fonts.json` and the `fonts` step of `dev` and
+`prebuild` are gone: a clone builds offline, and the public image (D14) no longer
+redistributes a font whose licence forbids it.
+
+**Provenance.** `https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip`
+(SHA-256 `9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`), from which:
+
+| File in the zip | Bytes | SHA-256 |
+| --- | --- | --- |
+| `web/Inter-Regular.woff2` | 111,268 | `e06f6b1bc553aaea4e4668023ed0ab0a147129c3107f511bc7d03d361b0ae085` |
+| `web/Inter-Bold.woff2` | 114,840 | `fa888127b6da015b65569f0351f3b5c391ad928904951f1c20e9f8462a8d95ea` |
+| `LICENSE.txt` → `src/fonts/OFL.txt`, unchanged | 4,380 | `262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a` |
+
+**The committed files** (pinned by `tests/fonts.test.ts`, which also checks this table):
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `src/fonts/Inter-Regular.woff2` | 18,560 | `0fe23dbdad67636b8cf0018c9608c7c6fe870c58dfb0e06fa41d30beab890e39` |
+| `src/fonts/Inter-Bold.woff2` | 19,216 | `1713739f95d2e55b5a1aa463f0dca828826bd3342396ce6932d0017bd7462768` |
+
+Each is 443 glyphs for 303 code points: Basic Latin and Latin-1 (`U+0000-00FF`), the
+Windows-1252 extras (`ı Œ œ Š š Ÿ Ž ž`, `ʻ ʼ ˆ ˚ ˜`), General Punctuation (`U+2000-206F`), `₂`
+(SpO₂ on the privacy pages), `€`, `™`, the arrows `U+2190-2199`, `−`, `≈ ≠ ≤ ≥`, `○ ●`, `✓`
+and `U+FEFF`. Layout features kept: GSUB `calt`, `case`, `locl`, `tnum`; GPOS `kern`, `cpsp`.
+Hinting dropped. Name table complete (`--name-IDs='*'`), so the licence notice and URL
+(name IDs 13 and 14) travel inside each file as well as in `OFL.txt`. The formulas on
+`/science` (`σ`, `∑`, `⋅`) are MathML and set in the system's math font on purpose
+(`globals.css`), not in Inter.
+
+To regenerate, with fontTools 4.68.0 and Brotli 1.2.1 (`pip install fonttools==4.68.0
+brotli==1.2.1`), for `W` in `Regular` and `Bold`, from the zip's `web/` files:
+
+```bash
+pyftsubset web/Inter-$W.woff2 --flavor=woff2 \
+  --unicodes="U+0000-00FF,U+0131,U+0152-0153,U+0160-0161,U+0178,U+017D-017E,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2082,U+20AC,U+2122,U+2190-2199,U+2212,U+2248,U+2260,U+2264-2265,U+25CB,U+25CF,U+2713,U+FEFF" \
+  --layout-features="kern,cpsp,calt,case,locl,tnum" --name-IDs='*' \
+  --no-hinting --desubroutinize --output-file=src/fonts/Inter-$W.woff2
+```
+
+This reproduces both committed files byte for byte (checked 2026-11-06). The first subsets
+(2026-11-05, 18,408 and 18,988 bytes, `deea70cc…2498e90a` and `ffa48996…fff406d5`) were the same
+command without `U+2082` and without `--name-IDs='*'`, which also reproduces them byte for byte;
+adding `₂` added exactly one glyph and changed no other outline. A font change updates the
+two tables above and the pins in `tests/fonts.test.ts` in the same commit.
 
 `src/lib/fonts.ts` is `localFont` with 400 and 700, `--font-inter`, `display: swap`, both
-files preloaded (two files, about 110 KB each, where D4 chose not to preload three), and
-next/font's own metric-matched fallback (D13's hand-written `Satoshi Fallback` is deleted
-with the font). Only two weights exist: the app's type scale still says 500 for display,
-titles, headlines, metrics, labels and the wordmark, and those tokens stay as they are, so
-the browser's font matching resolves 500 to Regular and 600 to Bold; `font-synthesis: none`
-makes sure no face is faked. Emphasis (`strong`, the draft title, the TODO marker) moves
-from 500 to 700, since Medium no longer exists. `/licenses` lists Inter with the OFL text
-under the website; the app lists its own typeface itself.
+files preloaded (two files of about 19 KB; D4 chose not to preload three full files), and
+the hand-written metric-matched `'Inter Fallback'` (below) instead of next/font's computed one
+(D13's `Satoshi Fallback` is deleted with that font). Only two weights exist: the app's type
+scale still says 500 for display, titles, headlines, metrics, labels and the wordmark, and
+those tokens stay as they are, so the browser's font matching resolves 500 to Regular and 600
+to Bold; `font-synthesis: none` makes sure no face is faked. Emphasis (`strong`, the draft
+title, the TODO marker) moves from 500 to 700, since Medium no longer exists. `/licenses`
+lists Inter with the OFL text under the website; the app lists its own typeface itself.
 
-The committed files are **subsets** of the release files (the OFL allows modification):
-`pyftsubset` to Latin, Latin-1, Latin Extended-A, general punctuation, the arrows, `€`, `−`
-and the few symbols the site sets (`↗ · ° ′ →`), layout features kept (kern, liga, calt,
-tnum, case, ss01–03, …), hinting dropped — 30 KB and 31 KB instead of 111 KB and 115 KB.
-Reason: with the full files preloaded, Lighthouse's mobile run reported the hero text's
-LCP at 2.25 s (the text repaints when Inter arrives, and that repaint is the LCP), against
-the 1.5 s budget in `lighthouserc.json`; the subsets bring it to ~1.4–1.7 s depending on the
-server. To regenerate: download Inter 4.1, then
-`pyftsubset web/Inter-<W>.woff2 --flavor=woff2 --unicodes="U+0000-00FF,U+0100-017F,U+2000-206F,U+20AC,U+2190-2199,U+2212,…" --layout-features=… --no-hinting --desubroutinize`
-(the exact lists are in the commit that introduced them).
+**Why subsets.** With the full release files (111 KB and 115 KB) preloaded, Lighthouse's mobile
+run reported the hero text's LCP at 2.25 s (the text repaints when Inter arrives, and that
+repaint is the LCP), against the then 1.5 s budget in `lighthouserc.json`. A first, wider
+subset (Latin Extended-A and more features, about 30 KB a face) was replaced the same day by
+the one above.
 
 **Loading (measured, not guessed).** Lighthouse's mobile run (simulated slow 4G, `lighthouserc.json`)
 counts the repaint of a text block when its web font arrives as the LCP whenever that repaint
