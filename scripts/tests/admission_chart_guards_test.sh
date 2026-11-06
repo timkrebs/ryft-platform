@@ -45,7 +45,16 @@ refused "$cli" --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]0[.]
 renders --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$"
 grep -qF "c.image.matches(\"^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$\")" <(render --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$") ||
   fail "a pinned awsCli must appear in P2's vault branch"
-if render | grep -q 'aws-cli'; then fail "an empty awsCli must not appear in P2 (it would match every image)"; fi
+if render --set images.awsCli= | grep -q 'aws-cli'; then fail "an empty awsCli must not appear in P2 (it would match every image)"; fi
+# The default is the snapshot job's pin (vault.tf vault_snapshot_aws_cli_image), and only it.
+grep -qF 'c.image.matches("^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]39[.]5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292$")' <(render) ||
+  fail "the default awsCli must be the snapshot job's pinned AWS CLI"
+[ "$(render | grep -o 'aws-cli/aws-cli:[^@]*@sha256:[0-9a-f]*' | sort -u | wc -l | tr -d ' ')" = 1 ] || fail "the default render must admit exactly one AWS CLI reference"
+# The AWS CLI only under the snapshot job's service account (the one with AWS credentials).
+grep -qF '(has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == "vault-snapshot" && c.image.matches("^public[.]ecr[.]aws/aws-cli/' <(render) ||
+  fail "P2 must admit the AWS CLI only in a pod of the service account vault-snapshot"
+refused 'vault.snapshotServiceAccount is required with images.awsCli' --set vault.snapshotServiceAccount=
+renders --set vault.snapshotServiceAccount= --set images.awsCli=
 
 # The other guards of the vault values.
 refused 'vaultAddress is now vaultAddresses' --set vaultAddress=https://x
@@ -95,6 +104,6 @@ render --set vso.kvMount= --set vso.vaultNamespacePrefix= --set 'vaultAddresses=
 p4=$(yq 'select(.metadata.name == "ryft-vso" and .kind == "ValidatingAdmissionPolicy") | .spec.validations[2,3].expression' "$tmp/x.yaml")
 grep -qF '!has(variables.spec.namespace) &&' <<<"$p4" || fail "after the decommission a VaultAuth must carry no Vault namespace"
 grep -qF 'variables.spec.mount in [] ||' <<<"$p4" || fail "after the decommission the mount kv must be gone"
-grep -qF '["kv-operator","kv-root","kv-admin","kv-terraform","kv-default","kv-vault-snapshot"]' <<<"$p4" || fail "the reserved mounts are not refused"
+grep -qF '["kv-operator","kv-root","kv-admin","kv-terraform","kv-default","kv-vault-snapshot","kv-snapshot"]' <<<"$p4" || fail "the reserved mounts are not refused"
 grep -qF '"https://vault.vault.svc:8200"]' <(yq 'select(.metadata.name == "ryft-vso" and .kind == "ValidatingAdmissionPolicy") | .spec.validations[1].expression' "$tmp/x.yaml") || fail "the decommission keeps the in-cluster address"
 echo "✓ admission_chart_guards_test"

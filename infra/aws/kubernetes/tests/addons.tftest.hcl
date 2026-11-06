@@ -63,6 +63,17 @@ mock_provider "aws" {
   }
 }
 
+# infra/aws's snapshot key (alias/<cluster>-vault-snapshots): a key of its own, so the tests can tell it from the
+# unseal key the provider-wide mock returns.
+override_data {
+  target = data.aws_kms_alias.vault_snapshots
+  values = {
+    arn            = "arn:aws:kms:eu-central-1:123456789012:alias/ryft-prod-euc1-vault-snapshots"
+    target_key_id  = "7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"
+    target_key_arn = "arn:aws:kms:eu-central-1:123456789012:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"
+  }
+}
+
 mock_provider "helm" {}
 mock_provider "random" {
   mock_resource "random_password" {
@@ -1270,8 +1281,11 @@ run "vault_release_does_not_wait_and_starts_after_its_identity" {
     error_message = "helm_release.vault depends on the unseal pod identity association (credentials are injected at pod creation only) and on the extras (the TLS Secret and the default deny before the first pod)"
   }
   assert {
-    condition     = can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.cluster_issuers[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
-    error_message = "the extras' Certificates need the ryft-vault ClusterIssuer first"
+    condition = (
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.cluster_issuers[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", ""))) &&
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*module\\.vault_snapshot_pod_identity[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
+    )
+    error_message = "the extras' Certificates need the ryft-vault ClusterIssuer first, and the snapshot CronJob's pods the association (credentials are injected at pod creation only)"
   }
   assert {
     condition = alltrue([for r in ["kubernetes_namespace_v1\" \"vault", "helm_release\" \"vault_extras", "helm_release\" \"vault"] :
@@ -1352,17 +1366,20 @@ run "unseal_key_in_another_account_fails_the_plan" {
   expect_failures = [helm_release.vault]
 }
 
-run "vault_extras_peers_are_off_and_the_role_names_the_pods" {
+run "vault_extras_peers_off_by_default_and_the_role_names_the_pods" {
   command = plan
 
   assert {
     condition = (
       yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false &&
-      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.vso.enabled == false &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.collector.enabled == false
     )
-    error_message = "no ingress from VSO or the collector until the change that needs it (the chart's default and vault.tf's both say off)"
+    error_message = "no ingress from VSO until the first cutover; both peers are off in the chart's defaults"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false
+    error_message = "the collector may not reach 8200 (PUT /v1/sys/init is unauthenticated before the init) until var.vault_collector_peer is set after the operator's own init"
   }
   assert {
     condition = (
@@ -1370,6 +1387,22 @@ run "vault_extras_peers_are_off_and_the_role_names_the_pods" {
       strcontains(file("${path.module}/charts/vault-extras/templates/rbac.yaml"), "      - vault-{{ $i }}\n")
     )
     error_message = "the service-registration Role names the server pods and grants get, update and patch only"
+  }
+}
+
+run "vault_collector_peer_opens_only_the_collector" {
+  command = plan
+
+  variables {
+    vault_collector_peer = true
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false
+    )
+    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO off"
   }
 }
 
@@ -1400,4 +1433,143 @@ run "vault_server_certificate_names_every_service_and_pod" {
     condition     = yamldecode(file("${path.module}/charts/cluster-issuers/values.yaml")).vaultCA.enabled == true && strcontains(file("${path.module}/charts/cluster-issuers/templates/vault-ca.yaml"), "name: ryft-vault\n")
     error_message = "the cluster-issuers chart renders the ClusterIssuer ryft-vault by default"
   }
+}
+
+# --- The Raft snapshot CronJob (charts/vault-extras templates/snapshot.yaml, iam.tf; D192) ---
+# The render itself (script, securityContext, token) is scripts/tests/vault_extras_chart_test.sh's.
+
+run "vault_snapshot_role_may_only_put_snapshots" {
+  command = plan
+
+  assert {
+    condition = local.vault_snapshot_policy_statements == [
+      {
+        sid       = "PutSnapshots"
+        actions   = ["s3:PutObject"]
+        resources = ["arn:aws:s3:::ryft-prod-euc1-vault-snapshots-123456789012/snapshots/*"]
+        condition = [
+          { test = "StringEquals", variable = "s3:ResourceAccount", values = ["123456789012"] },
+          { test = "StringEquals", variable = "s3:x-amz-server-side-encryption-aws-kms-key-id", values = ["arn:aws:kms:eu-central-1:123456789012:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"] },
+        ]
+      },
+      {
+        sid       = "SnapshotDataKey"
+        actions   = ["kms:GenerateDataKey"]
+        resources = ["arn:aws:kms:eu-central-1:123456789012:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"]
+        condition = [
+          { test = "StringEquals", variable = "kms:ViaService", values = ["s3.eu-central-1.amazonaws.com"] },
+          { test = "StringEquals", variable = "kms:EncryptionContext:aws:s3:arn", values = ["arn:aws:s3:::ryft-prod-euc1-vault-snapshots-123456789012"] },
+        ]
+      },
+    ]
+    error_message = "the snapshot role: PutObject under snapshots/ of this account's bucket naming the snapshot key's ARN, and GenerateDataKey on that key through S3 in this region for this bucket; nothing else (no Get, List, Delete, Decrypt)"
+  }
+  assert {
+    condition     = length(distinct(flatten([for s in local.vault_snapshot_policy_statements : s.actions]))) == 2
+    error_message = "exactly two actions in the snapshot role"
+  }
+  assert {
+    condition     = data.aws_kms_alias.vault_snapshots.name == "alias/ryft-prod-euc1-vault-snapshots" && local.vault_snapshots_bucket == "ryft-prod-euc1-vault-snapshots-123456789012"
+    error_message = "the key and the bucket are infra/aws's (alias/<cluster>-vault-snapshots, <cluster>-vault-snapshots-<account>)"
+  }
+  assert {
+    condition     = !contains(flatten([for s in local.vault_snapshot_policy_statements : s.resources]), data.aws_kms_alias.vault_unseal.target_key_arn)
+    error_message = "the snapshot role never names the unseal key"
+  }
+  assert {
+    condition = (
+      module.vault_snapshot_pod_identity.associations["snapshot"].namespace == "vault" &&
+      module.vault_snapshot_pod_identity.associations["snapshot"].service_account == "vault-snapshot" &&
+      module.vault_snapshot_pod_identity.associations["snapshot"].cluster_name == "ryft-prod-euc1" &&
+      length(module.vault_snapshot_pod_identity.associations) == 1
+    )
+    error_message = "one association, to exactly vault/vault-snapshot (the CronJob's service account)"
+  }
+  assert {
+    condition = local.vault_snapshot_trust_conditions == [
+      { test = "StringEquals", variable = "aws:RequestTag/kubernetes-namespace", values = ["vault"] },
+      { test = "StringEquals", variable = "aws:RequestTag/kubernetes-service-account", values = ["vault-snapshot"] },
+      { test = "StringEquals", variable = "aws:RequestTag/eks-cluster-arn", values = ["arn:aws:eks:eu-central-1:123456789012:cluster/ryft-prod-euc1"] },
+    ]
+    error_message = "the trust policy requires Pod Identity's session tags for vault/vault-snapshot in this cluster"
+  }
+  assert {
+    condition = (
+      can(regex("\\n  trust_policy_conditions\\s*=\\s*local\\.vault_snapshot_trust_conditions\\n", replace(regex("(?s)module \"vault_snapshot_pod_identity\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/iam.tf"))[0], "/(?m)#.*$/", ""))) &&
+      can(regex("\\n  policy_statements\\s*=\\s*local\\.vault_snapshot_policy_statements\\n", replace(regex("(?s)module \"vault_snapshot_pod_identity\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/iam.tf"))[0], "/(?m)#.*$/", ""))) &&
+      !can(regex("attach_[a-z0-9_]+_policy\\s*=\\s*true", replace(replace(regex("(?s)module \"vault_snapshot_pod_identity\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/iam.tf"))[0], "/(?m)#.*$/", ""), "attach_custom_policy", "")))
+    )
+    error_message = "module.vault_snapshot_pod_identity gets exactly these statements and trust conditions, and no module-provided policy"
+  }
+}
+
+run "vault_snapshot_job_runs_every_6_hours_with_pinned_images" {
+  command = plan
+
+  assert {
+    condition     = yamldecode(helm_release.vault_extras.values[0]).snapshot.schedule == "17 */6 * * *"
+    error_message = "every 6 hours at minute 17 (RPO 6 h; VaultSnapshotStale pages at 13 h)"
+  }
+  assert {
+    condition = (
+      strcontains(file("${path.module}/charts/vault-extras/templates/snapshot.yaml"), "\n  concurrencyPolicy: Forbid\n") &&
+      strcontains(file("${path.module}/charts/vault-extras/templates/snapshot.yaml"), "\n  successfulJobsHistoryLimit: 3\n") &&
+      strcontains(file("${path.module}/charts/vault-extras/templates/snapshot.yaml"), "\n  failedJobsHistoryLimit: 3\n")
+    )
+    error_message = "the CronJob never overlaps a run (Forbid) and keeps three runs of each outcome"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.images.vault == "docker.io/hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2" &&
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.images.vault == "${yamldecode(helm_release.vault.values[0]).server.image.repository}:${yamldecode(helm_release.vault.values[0]).server.image.tag}"
+    )
+    error_message = "the init container runs the server's own pinned image (one pin, one P2 rule)"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault_extras.values[0]).snapshot.images.awsCli == "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
+    error_message = "the upload runs the AWS CLI 2.39.5 by its multi-arch index digest"
+  }
+  assert {
+    condition = alltrue([
+      for k in ["vault", "awsCli"] :
+      yamldecode(file("${path.module}/charts/admission-policy/values.yaml")).images[k] != "" &&
+      can(regex(yamldecode(file("${path.module}/charts/admission-policy/values.yaml")).images[k], yamldecode(helm_release.vault_extras.values[0]).snapshot.images[k]))
+    ])
+    error_message = "the admission chart's P2 (images.vault, images.awsCli) admits exactly the images the job runs: change both together"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.bucket == "ryft-prod-euc1-vault-snapshots-123456789012" &&
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.accountID == "123456789012" &&
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.region == "eu-central-1" &&
+      yamldecode(helm_release.vault_extras.values[0]).snapshot.keyARN == "arn:aws:kms:eu-central-1:123456789012:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"
+    )
+    error_message = "the job names the bucket, its owner account (--expected-bucket-owner), the region and the snapshot key's full ARN (not the alias, not the unseal key)"
+  }
+}
+
+run "snapshot_key_in_another_account_fails_the_plan" {
+  command = plan
+
+  override_data {
+    target = data.aws_kms_alias.vault_snapshots
+    values = {
+      target_key_arn = "arn:aws:kms:eu-central-1:210987654321:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"
+    }
+  }
+
+  expect_failures = [data.aws_kms_alias.vault_snapshots]
+}
+
+run "snapshot_key_in_another_region_fails_the_plan" {
+  command = plan
+
+  override_data {
+    target = data.aws_kms_alias.vault_snapshots
+    values = {
+      target_key_arn = "arn:aws:kms:us-east-1:123456789012:key/7e8f9a0b-1c2d-4e3f-9a8b-7c6d5e4f3a2b"
+    }
+  }
+
+  expect_failures = [data.aws_kms_alias.vault_snapshots]
 }

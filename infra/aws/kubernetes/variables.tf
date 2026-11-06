@@ -77,6 +77,12 @@ variable "admission_vault_namespaces_dir" {
   default     = null
 }
 
+variable "vault_collector_peer" {
+  description = "Admits the monitoring collector (alloy-deployment) to Vault's port 8200 for the metrics scrape (charts/vault-extras peers.collector, D194). Leave false until the operator's own init is done, the root token is revoked and the hard gates G1-G4 hold; set it false again before a restore into a fresh cluster (OPERATIONS -> Vault -> Disaster recovery)."
+  type        = bool
+  default     = false
+}
+
 variable "admission_enabled" {
   description = "Overrides `enabled` of admission-values.yaml for one plan (tests, a dry look at the release). null uses the file; the real switch is the reviewed file, so do not run an apply with this set."
   type        = bool

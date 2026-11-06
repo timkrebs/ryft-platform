@@ -1324,15 +1324,24 @@
     "kind": "CronJob",
     "metadata": {
       "name": "vault-snapshot",
-      "namespace": "vault"
+      "namespace": "vault",
+      "labels": {
+        "app.kubernetes.io/name": "vault-snapshot"
+      }
     },
     "spec": {
       "schedule": "17 */6 * * *",
       "timeZone": "Etc/UTC",
       "concurrencyPolicy": "Forbid",
+      "startingDeadlineSeconds": 3600,
       "successfulJobsHistoryLimit": 3,
       "failedJobsHistoryLimit": 3,
       "jobTemplate": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "vault-snapshot"
+          }
+        },
         "spec": {
           "backoffLimit": 2,
           "activeDeadlineSeconds": 600,
@@ -1346,6 +1355,7 @@
               "serviceAccountName": "vault-snapshot",
               "automountServiceAccountToken": false,
               "restartPolicy": "Never",
+              "enableServiceLinks": false,
               "securityContext": {
                 "runAsNonRoot": true,
                 "runAsUser": 100,
@@ -1359,7 +1369,8 @@
                 {
                   "name": "work",
                   "emptyDir": {
-                    "sizeLimit": "512Mi"
+                    "medium": "Memory",
+                    "sizeLimit": "64Mi"
                   }
                 },
                 {
@@ -1393,6 +1404,7 @@
                 {
                   "name": "snapshot",
                   "image": "docker.io/hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2",
+                  "imagePullPolicy": "IfNotPresent",
                   "env": [
                     {
                       "name": "VAULT_ADDR",
@@ -1405,15 +1417,33 @@
                     {
                       "name": "HOME",
                       "value": "/work"
+                    },
+                    {
+                      "name": "VAULT_AUTH_MOUNT",
+                      "value": "kubernetes"
+                    },
+                    {
+                      "name": "VAULT_ROLE",
+                      "value": "vault-snapshot"
                     }
                   ],
                   "command": [
                     "/bin/sh",
-                    "-ec"
+                    "-eu",
+                    "-c"
                   ],
                   "args": [
-                    "export VAULT_TOKEN=\"$(vault write -field=token auth/kubernetes/login role=vault-snapshot jwt=@/var/run/secrets/vault/token)\"\nvault operator raft snapshot save /work/snap\nvault token revoke -self\n"
+                    "umask 077\n# TERM/INT end the script through exit, so the EXIT trap runs; the long steps run in the\n# background so that `wait` returns at once on a signal.\ntrap 'exit 143' TERM INT\n# The token does not revoke itself: without the default policy it may not; it\n# expires with its 10-minute TTL.\ntrap 'rc=$?; [ \"$rc\" = 0 ] || rm -f /work/vault.snap' EXIT\n# Assigned first, then exported: `export X=\"$(...)\"` would hide a failed login from -e.\ntoken=$(vault write -field=token \"auth/$VAULT_AUTH_MOUNT/login\" role=\"$VAULT_ROLE\" jwt=@/var/run/secrets/vault/token)\nexport VAULT_TOKEN=\"$token\"\nvault operator raft snapshot save /work/vault.snap & wait $!\nvault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!\necho \"{\\\"@level\\\":\\\"info\\\",\\\"@message\\\":\\\"snapshot saved and inspected\\\",\\\"bytes\\\":$(wc -c </work/vault.snap)}\"\n"
                   ],
+                  "resources": {
+                    "requests": {
+                      "cpu": "50m",
+                      "memory": "128Mi"
+                    },
+                    "limits": {
+                      "memory": "320Mi"
+                    }
+                  },
                   "volumeMounts": [
                     {
                       "name": "work",
@@ -1432,36 +1462,67 @@
                   ],
                   "securityContext": {
                     "allowPrivilegeEscalation": false,
-                    "readOnlyRootFilesystem": true,
                     "capabilities": {
                       "drop": [
                         "ALL"
                       ]
-                    }
+                    },
+                    "readOnlyRootFilesystem": true
                   }
                 }
               ],
               "containers": [
                 {
                   "name": "upload",
-                  "image": "public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                  "image": "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292",
+                  "imagePullPolicy": "IfNotPresent",
                   "env": [
                     {
                       "name": "AWS_REGION",
                       "value": "eu-central-1"
                     },
                     {
+                      "name": "AWS_PAGER",
+                      "value": ""
+                    },
+                    {
+                      "name": "AWS_EC2_METADATA_DISABLED",
+                      "value": "true"
+                    },
+                    {
                       "name": "HOME",
                       "value": "/work"
+                    },
+                    {
+                      "name": "BUCKET",
+                      "value": "ryft-prod-euc1-vault-snapshots-123456789012"
+                    },
+                    {
+                      "name": "BUCKET_OWNER",
+                      "value": "123456789012"
+                    },
+                    {
+                      "name": "SNAPSHOT_KEY_ARN",
+                      "value": "arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
                     }
                   ],
                   "command": [
                     "/bin/sh",
-                    "-ec"
+                    "-eu",
+                    "-c"
                   ],
                   "args": [
-                    "key=\"snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap\"\naws s3api put-object --bucket \"$BUCKET\" --key \"$key\" --body /work/snap >/dev/null\n"
+                    "set -o pipefail\nf=/work/vault.snap\ntrap 'exit 143' TERM INT\ntrap 'rm -f \"$f\"' EXIT\n[ -s \"$f\" ] || { echo '{\"level\":\"error\",\"msg\":\"no snapshot to upload\"}' >&2; exit 1; }\nkey=\"snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap\"\nbytes=$(wc -c <\"$f\")\nsum=$(sha256sum \"$f\" | cut -d' ' -f1)\naws s3api put-object \\\n  --region \"$AWS_REGION\" \\\n  --bucket \"$BUCKET\" --expected-bucket-owner \"$BUCKET_OWNER\" \\\n  --key \"$key\" --body \"$f\" \\\n  --if-none-match '*' \\\n  --server-side-encryption aws:kms --ssekms-key-id \"$SNAPSHOT_KEY_ARN\" --bucket-key-enabled \\\n  --checksum-algorithm SHA256 \\\n  --metadata \"sha256=$sum\" \\\n  --output json >/dev/null & wait $!\necho \"{\\\"level\\\":\\\"info\\\",\\\"msg\\\":\\\"snapshot uploaded\\\",\\\"bucket\\\":\\\"$BUCKET\\\",\\\"key\\\":\\\"$key\\\",\\\"bytes\\\":$bytes,\\\"sha256\\\":\\\"$sum\\\"}\"\n"
                   ],
+                  "resources": {
+                    "requests": {
+                      "cpu": "50m",
+                      "memory": "128Mi"
+                    },
+                    "limits": {
+                      "memory": "320Mi"
+                    }
+                  },
                   "volumeMounts": [
                     {
                       "name": "work",
@@ -1470,12 +1531,12 @@
                   ],
                   "securityContext": {
                     "allowPrivilegeEscalation": false,
-                    "readOnlyRootFilesystem": true,
                     "capabilities": {
                       "drop": [
                         "ALL"
                       ]
-                    }
+                    },
+                    "readOnlyRootFilesystem": true
                   }
                 }
               ]

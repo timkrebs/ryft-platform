@@ -157,10 +157,12 @@ images:
   # digest: the Vault server (also the snapshot job's init container) and the AWS CLI that
   # uploads the snapshot. Anchored, with @sha256: (the chart refuses anything else: an empty
   # regex would match every image). A Vault upgrade changes this value first, in the same PR
-  # as the release's pin. awsCli stays empty until the snapshot job's PR verifies its version
-  # and digest; until then nothing in vault may run the AWS CLI (fail closed).
+  # as the release's pin. awsCli is the snapshot job's upload image, the same reference as
+  # local.vault_snapshot_aws_cli_image in vault.tf (AWS CLI 2.39.5, the multi-arch index digest;
+  # tests/addons.tftest.hcl compares the two), and only under vault.snapshotServiceAccount.
+  # Empty would admit no AWS CLI (fail closed).
   vault: '^docker[.]io/hashicorp/vault:2[.]2[.]1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2$'
-  awsCli: ""
+  awsCli: '^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]39[.]5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292$'
 
 # NetworkPolicy shapes (P3).
 netpol:
@@ -197,9 +199,9 @@ vso:
   vaultNamespacePrefix: admin/ryft/
   # Names that are never a service (infra/vault refuses them as keys of var.services, design
   # 1.1): kv-operator holds the demo password no role reads; the others share the root namespace
-  # with Vault's own names or the snapshot's. A namespace that maps to one (ryft-operator, default,
-  # ...) may not read that mount.
-  reservedServices: [operator, root, admin, terraform, default, vault-snapshot]
+  # with Vault's own names or the snapshot job's (role vault-snapshot, policy snapshot). A namespace
+  # that maps to one (ryft-operator, default, ...) may not read that mount.
+  reservedServices: [operator, root, admin, terraform, default, vault-snapshot, snapshot]
 
 # Namespace vault: the in-cluster Vault (a Terraform add-on, not an Argo CD app). P1 holds the
 # Namespace to Pod Security restricted, P2 to the two images above (images only: commands and
@@ -222,6 +224,9 @@ vso:
 #   Kubernetes CertificateSigningRequest for it.
 vault:
   namespace: vault
+  # The snapshot job's service account (charts/vault-extras, the Pod Identity association
+  # vault/vault-snapshot): P2 admits images.awsCli only in a pod that runs as it.
+  snapshotServiceAccount: vault-snapshot
   issuer: ryft-vault
   serverCertificate: vault-tls
   serverDNSNames:

@@ -12,9 +12,9 @@
 # restarts nothing (delete a standby, wait for it to rejoin and unseal, then the next; the active one last).
 #
 # Two releases: helm_release.vault_extras (charts/vault-extras: the server Certificate vault-tls, the inert
-# Certificate vault-ca whose ca.crt the operator's CLI trusts, the NetworkPolicies, the PodDisruptionBudget and the
-# service-registration Role) first, so the TLS Secret and the default-deny exist before the first pod; then the
-# upstream chart.
+# Certificate vault-ca whose ca.crt the operator's CLI trusts, the NetworkPolicies, the PodDisruptionBudget, the
+# service-registration Role and the Raft snapshot CronJob, D192) first, so the TLS Secret and the default-deny exist
+# before the first pod; then the upstream chart.
 
 locals {
   vault_namespace       = "vault"
@@ -62,8 +62,10 @@ locals {
   #  - listener: TLS only; tls_reload_interval (2.2.0+) reloads a renewed certificate; /v1/sys/metrics without a
   #    token on every node (D194). The NetworkPolicy admits selected peers only (charts/vault-extras), but traffic
   #    from the node's address (host-network pods such as the privileged alloy-daemonset, the kubelet) is likely
-  #    admitted by the VPC CNI regardless: the metrics are not secret, and nothing else on 8200 is unauthenticated
-  #    once Vault is initialised (design section 6).
+  #    admitted by the VPC CNI regardless. The metrics are not secret, but they are not all a peer reaches without a
+  #    token: before the init PUT /v1/sys/init (hence var.vault_collector_peer stays false until the operator's
+  #    own init), and after it sys/health, sys/seal-status, sys/leader, starting or cancelling a generate-root or
+  #    rekey attempt (completing one needs recovery shares) and the login endpoints (design section 6, G2).
   #  - retry_join: one block per pod, trusting the ryft-vault CA; no client certificate (the listener asks none).
   #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set here, so the seal
   #    does not depend on the AWS_REGION the EKS webhook injects; no credentials of any kind (the SDK's default
@@ -292,9 +294,17 @@ locals {
   vault_config_placeholders = ["HOSTNAME", "POD_IP", "HOST_IP", "API_ADDR", "TRANSIT_ADDR", "RAFT_ADDR"]
   vault_aws_credential_env  = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]
 
-  # The optional peers stay off until the change that needs them: VSO with the first cutover (until then nothing
-  # but the operator's port-forward needs the API, and before the init PUT /v1/sys/init is unauthenticated), the
-  # collector with the scrape (D194).
+  # The snapshot CronJob's upload image (D192): the AWS CLI v2, pinned by the multi-arch index digest of 2.39.5 (the
+  # newest 2.x on 2026-11-06; Amazon Linux 2023, entrypoint /usr/local/bin/aws, no USER: the pod sets 100:1000). The
+  # admission chart's P2 admits exactly this reference in `vault` (images.awsCli in charts/admission-policy); the
+  # two change together (tests/addons.tftest.hcl compares them).
+  vault_snapshot_aws_cli_image = "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
+
+  # VSO stays off until the first cutover (step 5a; until then nothing but the operator's port-forward needs the
+  # API). The collector (alloy-deployment, job ryft/vault in deploy/monitoring/k8s-monitoring.yaml, D194) is off
+  # until var.vault_collector_peer: the NetworkPolicy admits a peer to all of 8200, and before the init PUT
+  # /v1/sys/init is unauthenticated, so the peer opens only after the operator's own init (OPERATIONS -> Vault
+  # metrics (once)) and closes again for a restore into a fresh cluster (-> Vault -> Disaster recovery).
   vault_extras_values = {
     vpcCIDR  = var.vpc_cidr
     replicas = local.vault_replicas
@@ -304,7 +314,20 @@ locals {
     }
     peers = {
       vso       = { enabled = false }
-      collector = { enabled = false }
+      collector = { enabled = var.vault_collector_peer }
+    }
+    # Every 6 hours at minute 17 (RPO 6 h; OPERATIONS -> Vault -> Snapshots). The bucket and key are infra/aws's
+    # (iam.tf finds them); the job names the key by its full ARN, as the bucket policy and the role require.
+    snapshot = {
+      schedule = "17 */6 * * *"
+      images = {
+        vault  = "${local.vault_image.repository}:${local.vault_image.tag}"
+        awsCli = local.vault_snapshot_aws_cli_image
+      }
+      bucket    = local.vault_snapshots_bucket
+      keyARN    = data.aws_kms_alias.vault_snapshots.target_key_arn
+      accountID = local.account_id
+      region    = var.region
     }
   }
 
@@ -342,11 +365,18 @@ resource "helm_release" "vault_extras" {
 
   values = [yamlencode(local.vault_extras_values)]
 
-  # The ClusterIssuer ryft-vault (charts/cluster-issuers) signs the Certificates.
-  depends_on = [helm_release.cluster_issuers]
+  # The ClusterIssuer ryft-vault (charts/cluster-issuers) signs the Certificates. The snapshot role's association
+  # before the CronJob's first pod (the Pod Identity webhook injects credentials at pod creation only).
+  depends_on = [helm_release.cluster_issuers, module.vault_snapshot_pod_identity]
 
   lifecycle {
     prevent_destroy = true
+
+    # Both job images by digest: the admission chart's P2 admits nothing else in `vault`, and a tag can move.
+    precondition {
+      condition     = alltrue([for i in values(local.vault_extras_values.snapshot.images) : can(regex("^[a-z0-9./-]+:[0-9][0-9.]*@sha256:[0-9a-f]{64}$", i))])
+      error_message = "The snapshot CronJob's images must be pinned as <repository>:<version>@sha256:<64 hex>."
+    }
   }
 }
 

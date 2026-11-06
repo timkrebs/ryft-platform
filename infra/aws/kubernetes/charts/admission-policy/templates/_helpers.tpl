@@ -20,6 +20,7 @@ every image; P2 leaves an empty one out instead). */ -}}
 {{- $vns := .Values.vault.namespace -}}
 {{- if or (not $vns) (hasPrefix "ryft-" $vns) (eq $vns .Values.operators.namespace) (eq $vns .Values.argocd.namespace) -}}{{- fail "vault.namespace must be set and must not be a ryft-* namespace, the operators' or Argo CD's" -}}{{- end -}}
 {{- if not .Values.images.vault -}}{{- fail "images.vault is required (the Vault server's pinned image)" -}}{{- end -}}
+{{- if and .Values.images.awsCli (not .Values.vault.snapshotServiceAccount) -}}{{- fail "vault.snapshotServiceAccount is required with images.awsCli (P2 admits the AWS CLI only under that service account)" -}}{{- end -}}
 {{- range $k := list "vault" "awsCli" -}}
 {{- $re := index $.Values.images $k -}}
 {{- if and $re (not (regexMatch "^\\^([A-Za-z0-9/:_-]|\\[[.]\\])+@sha256:[0-9a-f]{64}\\$$" $re)) -}}{{- fail (printf "images.%s must be one literal image reference pinned by digest: ^<registry/repository:tag, a dot written [.]>@sha256:<64 hex>$" $k) -}}{{- end -}}
@@ -165,10 +166,13 @@ strings is an error), so every map value and list element goes through dyn().
 {{- end -}}
 
 {{- /* CEL: c.image matches one of the patterns namespace vault may run (constant patterns, one
-matches() each; an empty one is left out, because an empty pattern matches anything). */ -}}
+matches() each; an empty one is left out, because an empty pattern matches anything). The AWS
+CLI only in a pod of the snapshot job's service account (vault.snapshotServiceAccount), the
+only pod there that gets AWS credentials (the Pod Identity association vault/vault-snapshot). */ -}}
 {{- define "admission.cel.vaultImages" -}}
 {{- $out := list -}}
-{{- range $k := list "vault" "awsCli" -}}{{- with index $.Values.images $k -}}{{- $out = append $out (printf "c.image.matches(%s)" (. | toJson)) -}}{{- end -}}{{- end -}}
+{{- with .Values.images.vault -}}{{- $out = append $out (printf "c.image.matches(%s)" (. | toJson)) -}}{{- end -}}
+{{- with .Values.images.awsCli -}}{{- $out = append $out (printf "(has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName == %s && c.image.matches(%s))" ($.Values.vault.snapshotServiceAccount | toJson) (. | toJson)) -}}{{- end -}}
 {{- join " || " $out -}}
 {{- end -}}
 

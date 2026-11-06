@@ -42,6 +42,28 @@ destinations:
       name: ryft-secrets
       namespace: monitoring
 
+  # Vault's server log and its stdout audit device (D197, addendum-1 section 1.4): the one log
+  # stream this chart ships. Used only by podLogsViaLoki below, which is off: an unused
+  # destination renders nothing. The URL is the stack's Logs push URL (Grafana Cloud -> the
+  # stack -> Loki -> Details), and LOKI_USERNAME (the Logs user, a number, not a secret) joins
+  # ryft-secrets through infra/vault's service_secrets.monitoring before the switch. Same token
+  # as the metrics (GC_TOKEN, logs:write). Turning it on: docs/OPERATIONS.md -> Vault logs.
+  vault-logs:
+    type: loki
+    url: ""
+    auth:
+      type: basic
+      usernameKey: LOKI_USERNAME
+      passwordKey: GC_TOKEN
+    tenantIdKey: LOKI_USERNAME
+    tls: null
+    # One cluster label, not the chart's second k8s_cluster_name (the label policy below).
+    clusterLabels: [cluster]
+    secret:
+      create: false
+      name: ryft-secrets
+      namespace: monitoring
+
 clusterMetrics:
   enabled: true
   destinations: [admission-signals]
@@ -82,6 +104,61 @@ clusterMetrics:
 # The chart's self-report would add its own series to the new destination.
 selfReporting:
   enabled: false
+
+# ---- Vault's logs (D197, D198; addendum-1 sections 1.4 and 1.5) -----------------------------
+# The reviewed pipeline for namespace vault, and only that namespace: alloy-daemonset reads the
+# node's container log files (gather method "volumes", the filesystem-log-reader preset already
+# mounts them) and pushes to vault-logs. No connection to Vault, so no NetworkPolicy change.
+# Fleet Management's own pod-log pipeline must exclude `ryft-.*|vault` (a Grafana UI setting,
+# OPERATIONS -> Vault logs), or the lines arrive twice and shaped by remote config.
+# OFF until vault-logs has its URL and ryft-secrets has LOKI_USERNAME: with the key missing,
+# the daemonset's whole local config would fail to evaluate. Turning it on is one reviewed PR
+# (enabled: true plus the URL above), then `make monitoring-apply`.
+# Label policy (1.5): stream labels are cluster, namespace, pod, container, job="ryft/vault" and
+# stream = server | audit | other, nothing taken from a line's content, no structured metadata,
+# no rewriting of a line. A line with "@level" from container vault is the server log (hclog
+# JSON), "type" request/response is an audit entry, anything else other: the start script and
+# the snapshot job (its init container `snapshot` writes "@level" lines too, so the server match
+# names the container).
+podLogsViaLoki:
+  enabled: false
+  collector: alloy-daemonset
+  destinations: [vault-logs]
+  namespaces: [vault]
+  # The chart's defaults are maps, which an empty map does not replace: null removes each key.
+  labels:
+    app_kubernetes_io_name: null
+  annotations:
+    job: null
+  structuredMetadata:
+    k8s.pod.name: null
+    pod: null
+    service.instance.id: null
+  extraLogProcessingStages: |-
+    stage.json {
+      expressions = { tmp_vault_level = "\"@level\"", tmp_vault_type = "type" }
+    }
+    stage.labels {
+      values = { tmp_vault_level = "", tmp_vault_type = "" }
+    }
+    stage.static_labels {
+      values = { stream = "other", job = "ryft/vault" }
+    }
+    stage.match {
+      selector = "{tmp_vault_type=~\"request|response\"}"
+      stage.static_labels {
+        values = { stream = "audit" }
+      }
+    }
+    stage.match {
+      selector = "{tmp_vault_level=~\".+\", container=\"vault\"}"
+      stage.static_labels {
+        values = { stream = "server" }
+      }
+    }
+    stage.label_keep {
+      values = ["cluster", "namespace", "pod", "container", "stream", "job"]
+    }
 
 collectorCommon:
   alloy:
@@ -125,6 +202,150 @@ collectors:
     extraService:
       enabled: true
       name: otel-receiver
+    # ---- Vault (D194; docs/OBSERVABILITY.md -> Vault) ------------------------------------------
+    # Two scrapes of the chart's own on this collector, written to admission-signals like the
+    # admission scrapes, each with its own job label:
+    #   1. ryft/vault: /v1/sys/metrics?format=prometheus on every Vault server pod, port 8200,
+    #      without a token (unauthenticated_metrics_access on the listener, so each node answers
+    #      for itself, standbys and sealed nodes included). This collector is a pod-network peer,
+    #      so vault-extras' NetworkPolicy names its pods (peers.collector); the host-network
+    #      daemonset is not used for it. TLS with the ryft-vault CA from this namespace's own
+    #      vault-ca Secret (infra/vault generates its Certificate), server name vault.vault.svc
+    #      (on the certificate). Only the series the alerts and the dashboard row use are kept,
+    #      and Vault's own `cluster` label (its Raft cluster name) becomes vault_cluster: it
+    #      would otherwise win over the external label cluster="ryft-prod-euc1".
+    #   2. ryft/vault-state: kube-state-metrics' series for namespace vault (the snapshot
+    #      CronJob, the StatefulSet, the server pods' readiness, and kube_pod_labels with the
+    #      service-registration labels vault-initialized/-sealed/-active: the alerts' gate). Fleet's own KSM pipeline is
+    #      remote config and its default allow list has no pod readiness; the snapshot alert must
+    #      not depend on it (VaultSnapshotStale pages, D192). Restarts stay Fleet's
+    #      (PodRestarting), so no series is counted twice.
+    # Vault pods get no prometheus.io/* annotations: Fleet's annotation scrape over plain HTTP
+    # would only fail.
+    extraConfig: |-
+      discovery.kubernetes "ryft_vault" {
+        role = "pod"
+        namespaces {
+          names = ["vault"]
+        }
+        selectors {
+          role  = "pod"
+          label = "app.kubernetes.io/name=vault,component=server"
+        }
+      }
+
+      discovery.relabel "ryft_vault" {
+        targets = discovery.kubernetes.ryft_vault.targets
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_port_number"]
+          regex         = "8200"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+      }
+
+      prometheus.scrape "ryft_vault" {
+        targets         = discovery.relabel.ryft_vault.output
+        job_name        = "ryft/vault"
+        scheme          = "https"
+        metrics_path    = "/v1/sys/metrics"
+        params          = { "format" = ["prometheus"] }
+        scrape_interval = "60s"
+        scrape_timeout  = "10s"
+        tls_config {
+          ca_file              = "/etc/ryft/vault-ca/ca.crt"
+          server_name          = "vault.vault.svc"
+          insecure_skip_verify = false
+        }
+        clustering {
+          enabled = true
+        }
+        forward_to = [prometheus.relabel.ryft_vault.receiver]
+      }
+
+      prometheus.relabel "ryft_vault" {
+        rule {
+          source_labels = ["__name__"]
+          regex         = "up|scrape_samples_scraped|vault_core_(active|unsealed|handle_request_count|handle_login_request_count|in_flight_requests)|vault_autopilot_(healthy|failure_tolerance|node_healthy)|vault_audit_log_(request|response)_(failure|count)|vault_token_count(_by_policy|_by_ttl)?|vault_raft_leader_lastContact_(sum|count)"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["cluster"]
+          target_label  = "vault_cluster"
+        }
+        rule {
+          regex  = "cluster"
+          action = "labeldrop"
+        }
+        forward_to = [prometheus.remote_write.admission_signals.receiver]
+      }
+
+      discovery.kubernetes "ryft_vault_state" {
+        role = "endpoints"
+        namespaces {
+          names = ["monitoring"]
+        }
+        selectors {
+          role  = "endpoints"
+          label = "release=grafana-cloud,app.kubernetes.io/name=kube-state-metrics"
+        }
+      }
+
+      discovery.relabel "ryft_vault_state" {
+        targets = discovery.kubernetes.ryft_vault_state.targets
+        rule {
+          source_labels = ["__meta_kubernetes_endpoint_port_name"]
+          regex         = "http"
+          action        = "keep"
+        }
+      }
+
+      prometheus.scrape "ryft_vault_state" {
+        targets         = discovery.relabel.ryft_vault_state.output
+        job_name        = "ryft/vault-state"
+        scheme          = "http"
+        scrape_interval = "60s"
+        scrape_timeout  = "10s"
+        clustering {
+          enabled = true
+        }
+        forward_to = [prometheus.relabel.ryft_vault_state.receiver]
+      }
+
+      prometheus.relabel "ryft_vault_state" {
+        rule {
+          source_labels = ["__name__", "namespace"]
+          regex         = "(up|scrape_samples_scraped);.*|(kube_cronjob_status_last_(successful|schedule)_time|kube_statefulset_replicas|kube_statefulset_status_replicas(_ready|_updated)?|kube_pod_container_status_(ready|running)|kube_pod_labels);vault"
+          action        = "keep"
+        }
+        forward_to = [prometheus.remote_write.admission_signals.receiver]
+      }
+    includeDestinations: [admission-signals]
+    alloy:
+      mounts:
+        extra:
+          - name: vault-ca
+            mountPath: /etc/ryft/vault-ca
+            readOnly: true
+    controller:
+      volumes:
+        extra:
+          # optional: before infra/vault writes the Certificate (or if it is ever missing) the
+          # collector still starts; only the Vault scrape fails (VaultScrapeDown).
+          - name: vault-ca
+            secret:
+              secretName: vault-ca
+              optional: true
+              items:
+                - key: ca.crt
+                  path: ca.crt
 
 # Everything the onboarding deploys, on t3.large nodes (D64). OpenCost reads Grafana
 # Cloud's Prometheus with the same token: user and token from ryft-secrets
@@ -134,6 +355,14 @@ telemetryServices:
     deploy: true
   kube-state-metrics:
     deploy: true
+    # kube_pod_labels with Vault's service-registration labels (vault-initialized, vault-sealed,
+    # vault-active: the server writes them on its own pod, charts/vault-extras rbac.yaml) for
+    # the ryft-vault alerts' durable "this Vault has been initialised" gate (ryft/vault-state
+    # keeps the series of namespace vault only). A list replaces the chart's default, so the
+    # nodes entry is telemetry-services' default, unchanged.
+    metricLabelsAllowlist:
+      - nodes=[agentpool,alpha.eksctl.io/cluster-name,alpha.eksctl.io/nodegroup-name,beta.kubernetes.io/instance-type,cloud.google.com/gke-nodepool,cluster-name,ec2.amazonaws.com/Name,ec2.amazonaws.com/aws-autoscaling-groupName,ec2.amazonaws.com/aws-autoscaling-group-name,ec2.amazonaws.com/name,eks.amazonaws.com/nodegroup,k8s.io/cloud-provider-aws,karpenter.sh/nodepool,kubernetes.azure.com/cluster,kubernetes.io/arch,kubernetes.io/hostname,kubernetes.io/os,node.kubernetes.io/instance-type,topology.kubernetes.io/region,topology.kubernetes.io/zone]
+      - pods=[vault-initialized,vault-sealed,vault-active]
     # The policy bindings as metrics (design claim m): kube-state-metrics' own collector for
     # them (v2.20+, Kubernetes 1.30+), not custom-resource-state, which resolves kinds from
     # CRDs only and ignores built-in ones. The chart adds list/watch on the bindings to the

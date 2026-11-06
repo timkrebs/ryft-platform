@@ -12,3 +12,8 @@ acme_email = "you@example.com"
 # admission_break_glass = false   # true: every binding Warn+Audit (planned break-glass)
 # admission_actions     = {}      # e.g. { argocd = "audit" } for one plan only
 # admission_enabled     = null    # plan-only override of `enabled`; never apply with it set
+
+# Vault (D194): admits the monitoring collector to 8200 for the metrics scrape. true only after
+# your own init, with the root token revoked and the hard gates G1-G4 holding; false again
+# before a restore into a fresh cluster (docs/OPERATIONS.md -> Vault -> Disaster recovery).
+# vault_collector_peer = false

@@ -58,7 +58,8 @@ spec:
         - { protocol: TCP, port: 8200 }
     {{- end }}
     {{- if .Values.peers.collector.enabled }}
-    # The alloy-deployment collector's scrape of /v1/sys/metrics (unauthenticated on the listener, D194). This rule
+    # The alloy-deployment collector's scrape of /v1/sys/metrics (unauthenticated on the listener, D194). The port
+    # is all of the API, PUT /v1/sys/init included before the init: on only after the operator's own init. This rule
     # names its pods only; the host-network alloy-daemonset is not a pod-network peer and is not what it admits
     # (see the header for what the node's address can still reach).
     - from:
@@ -108,8 +109,8 @@ spec:
       ports:
         - { protocol: TCP, port: 80 }
 ---
-# The snapshot CronJob's pods (D192; the CronJob itself comes with the snapshots). Vault's API, S3 (no gateway
-# endpoint in the VPC; through the NAT), the Pod Identity agent. Nothing reaches them.
+# The snapshot CronJob's pods (D192, snapshot.yaml). Vault's API (vault-active), S3 (no gateway endpoint in the VPC;
+# through the NAT), the Pod Identity agent. Nothing reaches them.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
