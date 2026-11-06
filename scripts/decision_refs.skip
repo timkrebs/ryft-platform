@@ -24,5 +24,7 @@ D199 the Loki rule group ryft-vault-logs; the rules need lokitool and are a foll
 D200 the import service's operator objects as an Argo CD app (ticket V7a); not built
 D201 monitoring's operator objects as an Argo CD app in project ryft-monitoring (ticket V7b); not built
 D202 the Grafana Cloud collector as a Terraform helm_release (ticket V7c); not built
-D203 the recovery-key custody: a human procedure (OPERATIONS -> Vault -> Recovery keys), no code follows from it
 D205 the EKS endpoint narrowed after HCP is gone (ticket PR 6c); not built
+
+# A procedure of the owner's, with no code that follows from it.
+D203 the recovery-key custody: a human procedure (OPERATIONS -> Vault -> Recovery keys), no code follows from it

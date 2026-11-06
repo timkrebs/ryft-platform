@@ -558,8 +558,8 @@ Following `CLAUDE_FOLLOWUP_EKS_GOLIVE.md` step 2b, every workload has its own na
 ## D45 — infra/vault: corrected paths, generated credentials, one more namespace
 
 - **Amended by D186, D187:** on the CE side the per-namespace HCP layout is replaced by one `auth/kubernetes` mount and a
-  mount, policy and role per service; the long-lived `vault-auth` reviewer tokens go at the decommission (#145-#153, not
-  applied).
+  mount, policy and role per service; the long-lived `vault-auth` reviewer tokens go at the decommission (#145, #146, #147,
+  #151, #152, #153; not applied).
 
 The user's design stays: Kubernetes auth with a TokenReview reviewer per namespace,
 the Vault Secrets Operator per namespace, and Terraform owning the namespaces and
@@ -688,6 +688,9 @@ current code, so no day was scored with older rules (and the Frankfurt project w
 start empty as well).
 
 ## D51 — Grafana Cloud collector: the onboarding preset, isolated, token in Vault
+
+- **Amended by D201, D202 (decided, not built):** monitoring's operator objects become an Argo CD application in a project of
+  their own, and the collector a Terraform add-on that also owns the namespace.
 
 The user chose Grafana Cloud's Kubernetes Monitoring with the onboarding's full preset:
 a root, host-network Alloy DaemonSet with node log files, cgroups and storage mounted,
@@ -1589,6 +1592,9 @@ sent, and whether a second account shares its phone.
   whole platform through the project's rules.
 
 ## D95 — The app of apps: waves, migrate before, the smoke after, rollback by revert
+
+- **Amended by D200, D201 (decided, not built):** two more applications in wave 4 for the Vault operator objects of the import
+  service and of monitoring.
 
 - **Layout:** `deploy/argocd/root.yaml` (applied once by hand) syncs
   `deploy/argocd/apps`, one Application per unit. Wave 0: `vault-<svc>`, the generated
@@ -3846,7 +3852,12 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   bootstrap and before PR 3b four gates must hold (OPERATIONS → Vault → Hard gates):
   - **G1** D180 Step 0 (#47) applied, and P12 (#121), P13 and the `vault` branches of P1, P2 and P3 in **Deny**. Merged
     means disabled, then Audit; neither stops an Argo CD controller token from running a pod in `vault` as the service
-    account `vault`.
+    account `vault`. P12 cannot go to Deny alone: #121's chart render and `admission.tf` precondition refuse it unless P6
+    (`operators-cluster`), P1 (`namespaces`) and P2 (`workloads-templates`) are in Deny too, the **general** `ryft-*` bindings.
+    #121 is a stale draft (`4b9f739`; a trial merge with `main` conflicts in 19 files). Order: #47's Step 0 applied; #121 rebased
+    (it merges second: above chart 0.5.1, 18 bindings, 13 policies, P1's in-scope list reconciled); a fresh full-mode
+    `admission-e2e` run on a tree containing #47; #121 marked ready, reviewed, merged, its decision given a number (D206 is
+    next); the chart enabled; P6, P1, P2 to Deny, then P12. The `vault` bindings and P13 can go to Deny at any time.
   - **G2** the monitoring stack sits inside Vault's trust boundary (D194). Accept that or reduce it: the owner's call, **no
     decision is recorded here**.
   - **G3** never `vault login` through `kubectl exec`; `Initialized true` before the owner's own init means stop and wipe.
@@ -3857,7 +3868,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **State (2026-11-06):** #146 applied by the owner; #145, #151, #153 merged, **not applied**; nothing reads the in-cluster
   Vault. STATUS → Vault CE migration (2026-11) has the ordered steps.
 
-## D187 — Isolation by mount, role and policy instead of namespaces (#151; reserved names #147, #153)
+## D187 — Isolation by mount, role and policy instead of namespaces (amends D45; #151; reserved names #147, #153)
 
 - **Decision:** CE has no namespaces. Each service gets a KV v2 mount `kv-<svc>`, a policy `<svc>` that reads only
   `kv-<svc>/data/config` (rabbitmq also `kv-rabbitmq/data/amqp-user-*`; no `metadata`), and a role `<svc>` in the **one**
@@ -3896,7 +3907,9 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Consequences:** a chart or image change needs the owner's apply, and OnDelete updates are manual anyway (D204). The
   association, namespace, extras and chart order themselves in one apply. Disaster-recovery order: Argo CD's wave 0 waits for
   VSO. Chart 0.34.1 with Vault 2.2.1 is **not verified at runtime**.
-- **State:** merged, **not applied**. Plan expectation: 7 to add, 1 to change (`cluster_issuers` 0.2.0 → 0.3.0), 0 to destroy.
+- **State:** merged, **not applied**. Plan expectation **from `main`: 11 to add, 1 to change, 0 to destroy**: #145's seven plus
+  #153's four (`module.vault_snapshot_pod_identity`: role, policy, attachment, association); `vault_extras` is created at 0.2.0 with
+  the snapshot CronJob, which fails until the role `vault-snapshot` is written (D187); `cluster_issuers` 0.2.0 → 0.3.0 is the change.
 
 ## D189 — KMS auto-unseal through EKS Pod Identity; the keys and the bucket outlive the cluster (#146, #145, #153)
 
@@ -3919,8 +3932,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   `infra/vault` from state (hours, no credential lost). A teardown of `infra/aws` targets the cluster and the network and
   leaves the keys and the bucket. Rolling back #146 after the apply is wrong: deleting the blocks destroys the aliases and the
   bucket settings (infra/aws README → Destroying). Cost about +$2 a month. A `check` warns on a non-`ON_DEMAND` node group (D204).
-- **State:** **applied by the owner on 2026-11-06: 11 added**, in a run that also applied unplanned drift of the node group and
-  the cluster add-ons; the cluster stayed healthy and `make smoke-prod` was green. The pod-identity role and the association
+- **State:** **applied by the owner on 2026-11-06: 11 added, 7 changed, 0 destroyed.** The 7 were drift of the node group and the
+  add-ons (ENI/CNI, CoreDNS, kube-proxy, EBS CSI, pod identity agent, metrics-server, node group release 1.36.4-20261012 →
+  1.36.5-20261031), applied by mistake against #146's stop rule; the cluster stayed healthy and `make smoke-prod` was green (the
+  owner's report, not verified here; the seven addresses are in the HCP Terraform run log). The pod-identity role and the association
   come with #145 (not applied). **Not verified:** the credentials reaching the seal at runtime; that EKS sets the three
   request tags for this association; `UploadPart` is probably denied by the key-header rule (the job uses one `put-object`).
 
@@ -3989,19 +4004,21 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   (`bound_subject`, checked **fail-closed** after every write), and `max_age` 10 minutes. Tokens last 1 hour (2 at most) and are
   bound to `127.0.0.1`. The second factor is 2-Step Verification with security keys. An `enroll` role (5-minute tokens, deleted
   after use) reads the `sub`. No policy is attached to identity entities or groups. A login must not depend on Google alone
-  during an incident, so **break-glass is `vault operator generate-root`** with the recovery keys; every use pages, and a
-  foreign attempt in progress is cancelled and treated as an incident.
+  during an incident, so **break-glass is `vault operator generate-root`** with the recovery keys; a use is to page
+  (`VaultRootTokenUsed`, D199, **not built**: until then nothing pages and the drill finds the two root logins in the audit log),
+  and a foreign attempt in progress is cancelled and treated as an incident.
 - **Which Google account** (a dedicated Workspace user such as `vault-admin@ryftapp.de`, recommended, or the existing account
   hardened) is **an open question to the owner**, not decided.
 - **The bootstrap files** (OIDC config, policies `admin` and `terraform`, the token role `terraform`) are committed in
   `infra/vault/bootstrap/`, held to an exact allowlist by tests, and written into Vault by hand.
-- **The Terraform token** comes from the token role: policy `terraform` only, 1 hour, **not renewable**, `token_bound_cidrs
+- **The Terraform token** comes from the token role: policies `default` and `terraform` (allowed: `terraform`; disallowed: `admin`, `root`), 1 hour, **not renewable**, `token_bound_cidrs
   127.0.0.1/32`. The policy is generated and uses **exact paths only**, because Vault canonicalises policy names on write but
   matches ACL paths as written, so the design's globs were bypassable (`ADMIN`, `Terraform`, `admin%20`). It may write only
   the services' policies and `snapshot`, and only the services' roles and `vault-snapshot`, each role with its own policy,
   namespace and service account only; the auth mount stays `kubernetes` and in-cluster; no tune may switch audit HMAC off
   (`audit_non_hmac_*`, `passthrough_request_headers`, `allowed_response_headers`, `listing_visibility`, and `token_type` on the
-  auth mount). It has nothing on audit, seal, Raft, generate-root, OIDC, identities or tokens.
+  auth mount). It has nothing on audit, seal, Raft, generate-root, OIDC or identities, and on tokens only what `default` gives (look up, renew
+  and revoke itself; the role's token is not renewable).
 - **The token is still admin-equivalent for its hour:** it reads every credential, and a rewritten policy plus that role's
   Kubernetes token is any right. Residual: `vault secrets enable -audit-non-hmac-request-keys=…` succeeds under the token,
   because the keys travel inside `config` at creation. Covered by a `k8s.tf` test, the post-apply baseline and (not built) the
@@ -4070,8 +4087,8 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Amends D120:** its eleven policies become twelve; `vault` and the `ryft-vault` chain are inside the layer.
 - **State:** merged with `enabled: false` in `admission-values.yaml`: **nothing is live**, and the first apply of the chart
   starts all 17 bindings on `audit`. `make admission-celtest`: 960 cases, 0 failures. **Merge order with #121 (P12, chart
-  0.3.0, open):** whichever merges second bumps the chart above the other's version and sets the binding count to 18 and the
-  policy count to 13 (`--check` fails if missed). The VSO and alloy pod labels in the NetworkPolicy fixtures are placeholders.
+  0.3.0, an open stale draft):** #147 and #153 merged first, so #121 bumps above 0.5.1 and sets 18 bindings and 13 policies
+  (`--check` fails if missed); D186's G1 has the order for enabling and for Deny. The VSO and alloy pod labels in the NetworkPolicy fixtures are placeholders.
 
 ## D196 — Vault's probes, budget and placement: alive when sealed, ready only when serving (#145)
 
@@ -4083,7 +4100,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   chart defines after `VAULT_API_ADDR`).
 - **Own PDB** in `vault-extras` (the chart's PDB is off): `minAvailable` 2 (quorum) with `unhealthyPodEvictionPolicy:
   AlwaysAllow`. The trade-off: a pod that is not Ready can always be evicted, which keeps an uninitialised or sealed Vault
-  from blocking every drain, but an unsealed voter that flaps NotReady can be evicted while another pod is down. See D204.
+  from blocking every drain, but an unsealed voter that flaps NotReady can be evicted while another pod is down. **Amended by D204.**
 - **Placement:** one pod per node (the chart's anti-affinity) and per zone (`topologySpreadConstraints`, `minDomains` = the
   replicas, `DoNotSchedule`: with nodes in fewer zones than pods a pod stays Pending). `terminationGracePeriodSeconds: 30`.
   The service-registration Role is `get, update, patch` on `vault-0..2` only (the chart's had every pod in the namespace).
@@ -4131,8 +4148,8 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   to `sys/policies/acl/*`, `auth/kubernetes/(role|config)`, `sys/auth/*`, `sys/mounts/*` outside an apply window or by a token
   other than display name `token-terraform` (warning).
 - **Not built:** mimirtool cannot check Loki rules; the follow-up needs `lokitool` and a test over lines captured in the kind
-  run. Until it exists and the logs are switched on (D197), nothing watches `sys/audit*`, and the recovery-key drill (D203)
-  proves the page only through the metric alerts.
+  run. Until it exists and the logs are switched on (D197), nothing watches `sys/audit*`, and a use of the root token or of
+  generate-root pages nothing today.
 
 ## D200 — The import service's operator objects are an Argo CD application (amends D95's waves; the owner; **decided, not built**)
 
@@ -4170,12 +4187,13 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   where is in the password manager, not in the repository.** Paper shares are written from the screen, never through the
   clipboard. PGP-encrypted shares only with two hardware keys.
 - **Break-glass** is `vault operator generate-root` through a port-forward (D193). A yearly drill with two sets of three shares
-  covering all five proves every share and the alert. A lost or exposed place means a rekey the same day.
+  covering all five proves every share (the page, `VaultRootTokenUsed`, is D199 and not built: until then the drill finds the two
+  root logins in the audit log). A lost or exposed place means a rekey the same day.
 - **Note:** `docs/work/2026-11-05-vault-ce/addendum-1.md` §3 still names the places; the public docs are generic.
 
 ## D204 — Vault runs on on-demand nodes; node maintenance only with a rolled StatefulSet (amends D196; #146, #145, #153, the owner)
 
-- **Decision:** the node group stays `ON_DEMAND` (checked with `kubectl get nodes -L eks.amazonaws.com/capacityType`); a `check`
+- **Decision:** the node group stays `ON_DEMAND` (checked with `kubectl --context ryft-prod-euc1 get nodes -L eks.amazonaws.com/capacityType`); a `check`
   in `infra/aws` (`stateful_quorum_needs_on_demand`, #146) warns on Spot, because two interruptions at once lose the Raft
   (and RabbitMQ quorum-queue) quorum. Updates are `OnDelete`, so a drain recreates a pod from the current template: every chart
   or image change is rolled by hand (standbys first, step-down, the old active last) **before** node maintenance, and

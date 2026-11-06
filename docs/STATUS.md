@@ -279,8 +279,8 @@ builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backe
 ## Vault CE migration (2026-11)
 
 Moving every credential from HCP Vault Dedicated to Vault Community Edition 2.2.1 in namespace `vault` (plan, design and
-addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D203-D204 are cited by the code; D199-D202
-and D205 are decided and not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
+addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D204 are cited by the code; D203 is a procedure;
+D199-D202 and D205 are decided, not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
 **nothing reads the in-cluster Vault, and it does not exist in the cluster yet.** Every cluster command below names
 `--context ryft-prod-euc1` (the current context is production; D150).
 
@@ -288,13 +288,13 @@ and D205 are decided and not built). Written against `origin/main` `6d1f9fa` on 
 
 | PR | What | State |
 | --- | --- | --- |
-| #146 | `infra/aws`: the unseal key, a separate snapshot key and the snapshot bucket (D189), `NoDeletionOrDisable`, the Spot `check` (D204) | **Applied by the owner on 2026-11-06: 11 added.** The same run applied **unplanned drift of the node group and the cluster add-ons**; the cluster stayed healthy and `make smoke-prod` was green. The drift's details are the owner's, not recorded here |
-| #145 | `infra/aws/kubernetes`: Vault as a Terraform add-on (`vault.tf`, `iam.tf`, `charts/vault-extras`, `charts/cluster-issuers` 0.3.0, the injector exclusion) (D188, D190, D194, D196) | Merged, **not applied**. Expected plan: 7 to add, 1 to change, 0 to destroy |
+| #146 | `infra/aws`: the unseal key, a separate snapshot key and the snapshot bucket (D189), `NoDeletionOrDisable`, the Spot `check` (D204) | **Applied by the owner on 2026-11-06: 11 added, 7 changed, 0 destroyed.** The 7 were drift of the node group and the add-ons (ENI/CNI, CoreDNS, kube-proxy, EBS CSI, pod identity agent, metrics-server, node group release 1.36.4-20261012 → 1.36.5-20261031), applied by mistake against #146's stop rule ("if the plan shows any `~`, `-` or `-/+` line, stop"); the cluster stayed healthy and `make smoke-prod` was green (the owner's report, not verified here). The 7 addresses are in the HCP Terraform run log and are not recorded here |
+| #145 | `infra/aws/kubernetes`: Vault as a Terraform add-on (`vault.tf`, `iam.tf`, `charts/vault-extras`, `charts/cluster-issuers` 0.3.0, the injector exclusion) (D188, D190, D194, D196) | Merged, **not applied**. Expected plan **from `main`: 11 to add, 1 to change, 0 to destroy**: #145's seven (the unseal role, its policy, attachment and association, the namespace, `vault_extras`, `vault`) plus #153's four (`module.vault_snapshot_pod_identity`: role, policy, attachment, association `snapshot`); the one change is `cluster_issuers` 0.2.0 → 0.3.0. `vault_extras` is **created** at 0.2.0, with the CronJob |
 | #147 | Admission for `vault`: P1-P4 extended, P13 new, chart 0.5.0 (D195) | Merged, **disabled** (`enabled: false`); nothing live |
-| #148 | Test only: the `trainImport` characterisation no longer depends on today's date (it failed in every PR's `test` job from 2026-11-06) | Merged. Unrelated to Vault. The promote PR that follows rolls the five services as one image group with unchanged behaviour (not verified here) |
+| #148 | Test only: the `trainImport` characterisation no longer depends on today's date (it failed in every PR's `test` job from 2026-11-06) | Merged. Unrelated to Vault. The promote PR that followed is #149 ("deploy: images edef166", merged 2026-11-06 07:42 UTC; the five services d372b8f → edef166, one image group, behaviour unchanged); Argo CD's sync of it is not verified here |
 | #152 | `scripts/vault_diff.sh` (compares the two Vaults and a synced Secret; no value is ever printed; no `--save`; HCP's address pinned), `RYFT_VAULT=ce` in `lib/admin.sh` and `seed_demo.sh` | Merged; scripts on the operator's machine, nothing to apply |
 | #151 | `infra/vault`: the Kubernetes target beside HCP, the bootstrap files, the generated `vault-ca` Certificates, OPERATIONS → Vault (D187, D191, D193, D198, D203) | Merged, **not applied**. Both switches off. Expected plan: 9 to add, 9 to destroy (the generated files only) |
-| #153 | Snapshots (CronJob, role, bucket deny), metrics, 11 alerts in `ryft-vault`, switched-off log pipeline, admission chart 0.5.1 (D192, D194, D197) | Merged, **not applied**. Expected plans: `infra/aws` 0 to add, 1 to change; `infra/aws/kubernetes` 4 to add, 1 to change |
+| #153 | Snapshots (CronJob, role, bucket deny), metrics, 11 alerts in `ryft-vault`, switched-off log pipeline, admission chart 0.5.1 (D192, D194, D197) | Merged, **not applied**. Expected plans: `infra/aws` 0 to add, 1 to change (the bucket policy, `DenyPutWithoutIfNoneMatch`); its `infra/aws/kubernetes` part is already in #145's plan above (11 / 1 / 0) |
 
 A follow-up PR from branch `ops/vault-followups` (OPERATIONS, OBSERVABILITY, alerts) was in preparation by another agent
 when this was written: **no PR and no remote branch existed yet**, so it is not recorded here.
@@ -308,11 +308,20 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    is accepted ("Vault is as safe as the monitoring stack and VSO", D194) or reduced first; and the Google account of the Vault
    login, a dedicated Workspace user (recommended, OPERATIONS → Vault → The operator's Google account) or the existing one
    hardened.
-2. **G1, the admission layer.** #47's Step 0 applied (STATUS → Production hardening → deploy commands). #121 (P12; open,
-   draft) finished and merged; whichever of #121 and #147 merged second bumps the chart above the other's version and sets
-   18 bindings and 13 policies (`admission_intended.sh --check` fails if missed). The admission chart enabled and applied, then
-   P12, P13 and the `vault` bindings of P1, P2 and P3 moved to **Deny** in reviewed PRs (the `vault` bindings can go first and
-   alone). Verify with the G1 command in OPERATIONS → Vault → Hard gates. Enabling the chart changes the plan of step 6: read it.
+2. **G1, the admission layer.** P12 cannot go to Deny alone: #121's chart render and its `admission.tf` precondition refuse
+   `argo-scope` in Deny unless P6 (`operators-cluster`), P1 (`namespaces`) and P2 (`workloads-templates`) are in Deny too, and those
+   are the **general** `ryft-*` bindings, not the `vault` ones. #121 is a stale draft (head `4b9f739`; a trial merge with `main`
+   conflicts in 19 files). In order:
+   1. Apply #47's Step 0 (STATUS → Production hardening → deploy commands).
+   2. Rebase #121. It merges second: it bumps the chart above 0.5.1 (#147's and #153's), sets 18 bindings and 13 policies
+      (`admission_intended.sh --check` fails if missed) and reconciles P1's in-scope list with `argoScope.namespaceObjects`.
+   3. A fresh full-mode `admission-e2e` kind run on a tree that contains #47.
+   4. Mark #121 ready, review, merge, and give its decision a D-number (D206 is next).
+   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`).
+   6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can
+      go to Deny at any time, and alone.
+   Verify with the G1 command in OPERATIONS → Vault → Hard gates. **If step 6's plan shows `helm_release.admission_policy`, this
+   step's apply is not done: stop.**
 3. **Fleet Management and Beyla** (D197): the pod-log exclusion `ryft-.*` → `ryft-.*|vault` and Beyla's exclusion of `vault`
    (OPERATIONS → Before the Vault add-on is applied).
 4. **The injector exclusion** (#145): `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
@@ -320,27 +329,31 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    the injector's `NotIn` list carries every `ryft-*` namespace, `vault` and `vault-secrets-operator-system`.
 5. **Read-only checks:** `kubectl --context ryft-prod-euc1 get nodes -L topology.kubernetes.io/zone,eks.amazonaws.com/capacityType`
    (three zones, `ON_DEMAND`); `aws kms describe-key --key-id alias/ryft-prod-euc1-vault-unseal --region eu-central-1 --query 'KeyMetadata.[Arn,KeyState]' --output text`
-   (the ARN and `Enabled`).
-6. **Apply #145** from `main`: `terraform -chdir=infra/aws/kubernetes plan -out=vault-addon.tfplan` (7 / 1 / 0), `apply`, then
-   `rm infra/aws/kubernetes/vault-addon.tfplan`. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
+   (the ARN and `Enabled`). Optional here, required before the first snapshot (step 10): apply #153's `infra/aws` change now
+   (`terraform -chdir=infra/aws plan` is exactly **1 to change**, the bucket policy; see step 10 for the stop rule).
+6. **Apply #145** from `main`: `terraform -chdir=infra/aws/kubernetes plan -out=vault-addon.tfplan` (**11 / 1 / 0**: #145's seven plus #153's four; `vault_extras` is created at 0.2.0 with the CronJob), `apply`, then
+   `rm infra/aws/kubernetes/vault-addon.tfplan`. The CronJob fails until step 9 writes the role `vault-snapshot`: expected. Keep
+   steps 8-10 in one sitting, or do not load the `ryft-vault` alert group before step 10. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
    ready, in three nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1`, exactly five `AWS_*` variables
    in the pod, no `unable to set initial state`. Then the Explore check: `{namespace="vault"}` (Loki), Beyla series and Tempo
    return nothing, **before bootstrap step 3**. If `vault status` already shows `Initialized true` before your own init
    (G3): stop, treat it as a compromise, wipe the PVCs and EBS volumes.
-7. **Apply #151's plan:** `terraform -chdir=infra/vault plan -out=tfplan` (9 to add, 9 to destroy; no port-forward, no CA file,
+7. **Apply #151's plan.** Precondition first: `kubectl --context ryft-prod-euc1 get clusterissuer ryft-vault` READY True. Then `terraform -chdir=infra/vault plan -out=tfplan` (9 to add, 9 to destroy; no port-forward, no CA file,
    no `TF_VAR_vault_k8s_token`; HCP token only), `apply`; commit the nine regenerated overlays in a PR of their own
    (`vault: the vault-ca Certificates`); then `kubectl --context ryft-prod-euc1 apply -k deploy/k8s/overlays/vault-namespaces/monitoring`
    and the same for the import service's key (both are outside Argo CD). Verify: `kubectl --context ryft-prod-euc1 get certificate -A --field-selector metadata.name=vault-ca`
    shows 10 rows READY True; `kubectl --context ryft-prod-euc1 -n monitoring get secret vault-ca` exists. Optional:
-   `kubectl --context ryft-prod-euc1 apply -f deploy/argocd/project.yaml`. Precondition: `kubectl --context ryft-prod-euc1 get clusterissuer ryft-vault` READY True.
+   `kubectl --context ryft-prod-euc1 apply -f deploy/argocd/project.yaml`.
 8. **The bootstrap** (OPERATIONS → Vault → Bootstrap, ten steps) in a **standalone terminal**, never an agent's shell or the
    VS Code terminal: init (recovery keys 2-2-1, paper first), audit devices, policies and the token role, OIDC, the subject
    check, the Terraform token, **root revoked**, the share drill.
 9. **PR 3b** (`committed_write_k8s = true` alone, one switch per PR): plan and apply through the port-forward with the
    ephemeral token; `scripts/vault_diff.sh --context ryft-prod-euc1 --all --k8s-cacert ...` all equal; the baseline lists
    `vault-snapshot` with `[snapshot]` and `token_max_ttl` 600.
-10. **Apply #153:** `terraform -chdir=infra/aws plan` (1 to change: the bucket policy), apply; `terraform -chdir=infra/aws/kubernetes plan`
-    (4 to add, 1 to change), apply; only if `vault status` showed `Initialized true` from your own init, the root token is
+10. **Apply the rest of #153:** `terraform -chdir=infra/aws plan` must be **exactly 1 to change** (the bucket policy), then apply (skip
+    if done before step 6). Node-group or add-on changes in that plan mean the drift of #146's run has recurred: stop.
+    `infra/aws/kubernetes` has nothing left of #153 (it was in step 6) except the collector peer: only if `vault status` showed
+    `Initialized true` from your own init, the root token is
     revoked and G1-G4 hold, put `vault_collector_peer = true` into `infra/aws/kubernetes/terraform.tfvars` (a file entry, not
     `-var`), plan (1 to change), apply; `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` and the Explore checks of OPERATIONS
     → Vault metrics (`up{job="ryft/vault"}`, `up{job="ryft/vault-state"}`, `kube_pod_labels{namespace="vault",label_vault_initialized="true"}`
@@ -349,7 +362,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
     wait, logs of `upload`, `.status.lastSuccessfulTime`, delete the Job) and the create-only checks (a put without
     `If-None-Match` is denied; the second put with `--if-none-match '*'` answers 412).
 11. **Cutovers 5a-5i**, one PR per group, each with `vault_diff.sh --kv` and `--secret ... --vault hcp` equal before the switch and
-    `--secret` equal after; before 5a flip `peers.vso.enabled` (it is off); then 14 days of soak, a fresh `vault_diff.sh` with zero
+    `--secret` equal after; before 5a flip `peers.vso.enabled` (it is off; a PR and an apply, plan 1 to change on `helm_release.vault_extras`); then 14 days of soak, a fresh `vault_diff.sh` with zero
     differences, a restore drill, and **your explicit go** for PR 6 and 6b (decommission HCP and drop its provider); PR 6c then
     narrows the EKS endpoint (D205).
 12. **Logs, when you want them** (D197): accept Grafana's DPA, add the record-of-processing entry naming the transfer mechanisms,
@@ -359,8 +372,9 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
 
 - **Tickets not built:** V7a (the import service's operator objects as an Argo CD app, D200), V7b (monitoring's, project
   `ryft-monitoring`, D201), V7c (the collector as a Terraform `helm_release`, namespace handover, `make monitoring-apply`
-  removed, D202); cutovers 5a-5i; PR 6, 6b (decommission), 6c (EKS endpoint, D205). V7a and V7b come before 5i and 5h, V7c is
-  recommended before the collector changes.
+  removed, D202); PR 3b (`write_k8s`, step 9); cutovers 5a-5i; PR 6, 6b (decommission), 6c (EKS endpoint, D205). V7a and V7b come before 5i and 5h, V7c is
+  recommended before the collector changes. Until V7a and V7b exist, every regeneration of the monitoring and import-service
+  overlays needs the same hand `kubectl --context ryft-prod-euc1 apply -k deploy/k8s/overlays/vault-namespaces/<dir>`.
 - **Tickets for test-engineer:** the kind rehearsal of #145 in full mode (render under admission, real pods under
   `enforce=restricted` against a transit-sealed dev Vault, init and 3 voters, a deleted pod coming back, the service-registration
   labels with the narrowed Role, `cmctl renew` within 6 minutes without a restart, NetworkPolicy enforcement, disruption in
@@ -377,7 +391,13 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
   5e); the CEL harness's decommission fixture needs a literal HCP address when the api moves (5a); the stale comment on
   `reserved_service_names` in `infra/vault/targets.tf`; #121's follow-ups (flip three P12 cases, a guard that `vault` and
   `cert-manager` are never in `argoScope.namespaces`, a kind fixture of Argo writing in `vault`); `addendum-1.md` §3 still names
-  the recovery-key places.
+  the recovery-key places; #151's open question 4 (the public-443 egress also carries Google's OIDC discovery and JWKS; the
+  comment names only KMS); the `terraform` policy's paths left unaudited until the kind rehearsal (`sys/mounts` read, `sys/auth`
+  read, `auth/kubernetes/role` list, `sys/policies/acl` list, the tune `update` paths, and the probably-unneeded `sudo` on
+  `sys/mounts/kv-*`); #146's open question 2 (`prevent_destroy` on the bucket's versioning, SSE and policy resources); `argocd`
+  and the other add-on namespaces are not in the injector exclusion (#145's residual risk). Also open: list the seven drift
+  addresses of #146's run from the HCP Terraform log, to decide whether the node group release and the add-ons are now what
+  `infra/aws` should say.
 - The EKS public endpoint stays `0.0.0.0/0` until PR 6c.
 
 **Not verified** (each is marked "to verify" where the runbook uses it)
@@ -394,10 +414,12 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
   --from=cronjob` setting `lastSuccessfulTime`; auto-unseal after `restore -force` (the kind drill).
 - In the cluster: the scrape, the `alloy-deployment` and VSO pod labels, KSM's endpoint labels, `kube_pod_labels` with Vault's
   labels, `kubelet_volume_stats_*`, `vault_token_count*`; the Fleet UI paths and Beyla's exclusion syntax; the log pipeline end to end.
-- #146's applied state beyond the owner's report (11 added, smoke green): the drift applied in the same run is not described.
+- #146's applied state beyond the owner's report (11 added, 7 changed, smoke green): not checked here; the seven changed addresses
+  are not listed (HCP Terraform run log).
 
-**GitGuardian** is not a required check. It flags `--secret <service name>` as a "Generic CLI Secret": four incidents, all false
-positives to mark in the dashboard: three test lines of #152's first commit (`7670547`) and `docs/work/2026-11-05-vault-ce/addendum-1.md`
+**GitGuardian** is not a required check. It flags a service name after the secret flag of `vault_diff.sh` as a "Generic CLI Secret": five incidents, all false
+positives to mark in the dashboard: three test lines of #152's first commit (`7670547`), the occurrence in this PR's first commit
+`ca5dbb5` (incident 39736629; the later commit `61ebd02` cannot clear it) and `docs/work/2026-11-05-vault-ce/addendum-1.md`
 line 569 (the call of `vault_diff.sh` with the flag for the synced Secret, followed by the namespace name `monitoring`; already on
 main from #150). No secret is involved.
 
