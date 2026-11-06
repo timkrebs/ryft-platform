@@ -7,13 +7,25 @@
 #   vault login   # VAULT_ADDR set, an admin token
 #   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=sb_publishable_… SUPABASE_SECRET_KEY=sb_secret_… \
 #   ADMIN_API_KEY=$(terraform -chdir=infra/vault output -raw admin_api_key) scripts/seed_demo.sh
+#
+# RYFT_VAULT=ce reads the in-cluster Vault instead (Community Edition, no namespaces) through your
+# own port-forward (VAULT_ADDR=https://127.0.0.1:8200, VAULT_CACERT, a token): kv-operator/demo,
+# with VAULT_NAMESPACE removed for that call. The default (hcp) reads operator/demo in
+# DEMO_VAULT_NAMESPACE (admin/ryft), as before.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${SUPABASE_URL:?set SUPABASE_URL}" "${SUPABASE_ANON_KEY:?set SUPABASE_ANON_KEY}"
 : "${SUPABASE_SECRET_KEY:?set SUPABASE_SECRET_KEY (creates and resets the account)}"
 if [ -z "${DEMO_PASSWORD:-}" ]; then
-  DEMO_PASSWORD=$(VAULT_NAMESPACE=${DEMO_VAULT_NAMESPACE:-admin/ryft} vault kv get -mount=operator -field=password demo) \
-    || { echo "✗ seed_demo: no DEMO_PASSWORD and Vault did not give it (vault login, VAULT_ADDR; infra/vault applied?)" >&2; exit 1; }
+  case ${RYFT_VAULT:-hcp} in
+    hcp)
+      DEMO_PASSWORD=$(VAULT_NAMESPACE=${DEMO_VAULT_NAMESPACE:-admin/ryft} vault kv get -mount=operator -field=password demo) \
+        || { echo "✗ seed_demo: no DEMO_PASSWORD and Vault did not give it (vault login, VAULT_ADDR; infra/vault applied?)" >&2; exit 1; } ;;
+    ce)
+      DEMO_PASSWORD=$(unset VAULT_NAMESPACE; vault kv get -mount=kv-operator -field=password demo) \
+        || { echo "✗ seed_demo: no DEMO_PASSWORD and the in-cluster Vault did not give it (the port-forward, VAULT_ADDR, VAULT_CACERT, VAULT_TOKEN)" >&2; exit 1; } ;;
+    *) echo "✗ seed_demo: RYFT_VAULT is hcp (default) or ce, not \"$RYFT_VAULT\"" >&2; exit 1 ;;
+  esac
 fi
 export DEMO_PASSWORD
 exec python3 "$HERE/seed_demo.py"
