@@ -232,7 +232,11 @@ unchanged and a second language can come back without touching them.
 
 Consequences:
 - Older builds of the app link to `/de/privacy`, `/de/terms` and `/de/impressum`; nginx
-  answers every `/de/…` with a 301 to the English page (`e2e/routes.spec.ts`).
+  answers every `/de/…` with a 301 to the English page (`e2e/routes.spec.ts`), cached for an
+  hour. The redirect's capture is the decoded path, so it is held to the trailing-slash rule's
+  safe characters (platform #156): it starts with a letter or digit and holds only letters,
+  digits and `/ . _ -`, so Location is never `//host`, `/\host` or a header with a control
+  character; any other `/de/…` path is a 404 (`tests/nginx.test.ts`).
 - The English legal notice carried the VAT and consumer-dispute statements only by linking
   to the German page; they are ported into `content/legal/en/impressum.mdx` as they were.
 - `scripts/lib/policy.mjs` checks the English privacy page only. The repository's own guards

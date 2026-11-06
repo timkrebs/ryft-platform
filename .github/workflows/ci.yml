@@ -624,8 +624,9 @@ jobs:
         with:
           repository: timkrebs/ryft-app
           # Temporary (web D19): the site's tokens come from the app's monochrome light
-          # palette, which is timkrebs/ryft-app#100. Drop `ref` once that PR is on main.
-          ref: design/alpine-light-palette
+          # palette, timkrebs/ryft-app#100. Pinned to that PR's head commit (not its branch,
+          # which may be deleted) until #100 merges; then delete `ref` and CI reads the app's main.
+          ref: bb59d47abb6dfbf170ef72587107d92b5d93cc17
           path: app
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
