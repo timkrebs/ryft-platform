@@ -93,6 +93,19 @@ describe.skipIf(!built)('built site', () => {
     expect(directive('connect-src')).toEqual(["'none'"]);
   });
 
+  it('links every same-page #fragment to an id on that page (#menu-closed closes the menu)', () => {
+    const broken: string[] = [];
+    for (const f of html) {
+      const page = readFileSync(f, 'utf8');
+      const ids = new Set([...page.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]!));
+      for (const [, frag] of page.matchAll(/\shref="#([^"]*)"/g)) {
+        if (frag === 'menu-closed') continue;
+        if (!ids.has(frag!)) broken.push(`${relative(OUT, f)}: #${frag}`);
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
   it('is light only: one theme-color, no theme attribute, no dark screenshot (web D19)', () => {
     for (const f of html.filter((f) => !isAdminPage(f))) {
       const page = readFileSync(f, 'utf8');
