@@ -46,7 +46,11 @@ Two more are the in-cluster Vault's (D194; **Vault** under Alerts): `/v1/sys/met
 on each server pod over TLS with the ryft-vault CA (job `ryft/vault`; no token,
 `unauthenticated_metrics_access` on the listener; admitted by vault-extras' NetworkPolicy from the
 `alloy-deployment` pods only, and only once `vault_collector_peer` is set after the operator's own
-init: the peer reaches all of 8200, `PUT /v1/sys/init` included), and kube-state-metrics' series
+init: the peer reaches all of 8200, `PUT /v1/sys/init` included. The flag closes the pod-network
+path only: the host-network `alloy-daemonset` connects from its node's address, not as a pod the
+peer selects, and node-originated traffic very likely still reaches 8200 before the init (to
+verify on the cluster); OPERATIONS → Vault, G3 and Bootstrap step 1 ("`Initialized true` before
+your own init: stop") cover that case), and kube-state-metrics' series
 for namespace `vault` (job `ryft/vault-state`: the snapshot CronJob, the StatefulSet, the server
 pods' readiness and their service-registration labels). Both run on
 `alloy-deployment` and write through the same destination. Vault's own pod logs go to Grafana
@@ -197,7 +201,7 @@ JSON (`make synthetics-apply`), not the page.
 | `kube_cronjob_status_last_successful_time`, `kube_cronjob_status_last_schedule_time` | gauge | `cronjob` | kube-state-metrics (job `ryft/vault-state`, namespace `vault` only) | When the snapshot job last succeeded and was last scheduled (Unix seconds). The success series exists only after the first success. `VaultSnapshotStale` (pages at 13 h), `VaultSnapshotFailing`. |
 | `kube_statefulset_replicas`, `kube_statefulset_status_replicas`, `kube_statefulset_status_replicas_ready`, `kube_statefulset_status_replicas_updated` | gauge | `statefulset` | kube-state-metrics (`ryft/vault-state`) | The server StatefulSet: desired, existing, ready (unsealed and serving), at the current template (OnDelete: `VaultUpdatePending`). `replicas_ready` at 0 for 10 minutes is `VaultUnavailable`. |
 | `kube_pod_container_status_running`, `kube_pod_container_status_ready` | gauge | `pod`, `container` | kube-state-metrics (`ryft/vault-state`) | Per server container: running but not ready is `VaultSealed` (one pod) or `VaultSealedQuorum` (two or more). Fleet's own kube-state-metrics pipeline does not keep readiness, hence the scrape of its own. |
-| `kube_pod_labels` | gauge | `pod`, `label_vault_initialized`, `label_vault_sealed`, `label_vault_active` | kube-state-metrics (`ryft/vault-state`; `--metric-labels-allowlist=pods=[vault-initialized,vault-sealed,vault-active]`) | The labels Vault's service registration writes on its own pods (sealed or not). A server pod with `label_vault_initialized="true"` in the last hour, or a snapshot that has succeeded once, is the alerts' "Vault has been initialised" gate. |
+| `kube_pod_labels` | gauge | `pod`, `label_vault_initialized`, `label_vault_sealed`, `label_vault_active` | kube-state-metrics (`ryft/vault-state`; `--metric-labels-allowlist=pods=[vault-initialized,vault-sealed,vault-active]`) | The labels Vault's service registration writes on its own pods. At every process start it resets them to `vault-initialized=false`, `vault-sealed=true` and sets `vault-initialized=true` only when the node unseals, so the label means "unsealed at least once since this process started", not "initialised": a pod restarted and still sealed shows `"false"`. A server pod with `label_vault_initialized="true"` in the last hour, or a snapshot that has succeeded once, is the alerts' "Vault has been initialised" gate. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -414,7 +418,7 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | VaultAuditFailing | critical | a node failed to write an audit entry in the last 10 min (`increase()`, or a counter that appears above 0) | OPERATIONS → Vault alerts (VaultAuditFailing): `vault audit list -detailed`, the audit volume |
 | VaultVolumeFilling | warning | a Vault data or audit volume is over 80 % full, 15 min | OPERATIONS → Vault alerts (VaultVolumeFilling): patch the PVC only |
 | VaultUpdatePending | info | Vault pods run the previous template for 24 h (updateStrategy OnDelete: the next node drain would roll them, D204) | OPERATIONS → Vault alerts (VaultUpdatePending): the pod-by-pod restart |
-| VaultScrapeDown | warning | kube-state-metrics for vault (`ryft/vault-state`) is not scraped; or, once Vault has been initialised and while the StatefulSet exists, a server's scrape fails or is missing, or Fleet sends no kubelet volume stats for `vault`; 15 min: the Vault alerts are blind | OPERATIONS → Vault alerts (VaultScrapeDown): `vault_collector_peer`, the collector's `vault-ca` Secret, the NetworkPolicy peer |
+| VaultScrapeDown | warning | kube-state-metrics for vault (`ryft/vault-state`) is not scraped (not gated: rules loaded before the monitoring config warn until that scrape runs); or, once Vault has been initialised and while the StatefulSet exists, a server's scrape fails or is missing, or Fleet sends no kubelet volume stats for `vault`; 15 min: the Vault alerts are blind | OPERATIONS → Vault alerts (VaultScrapeDown): `vault_collector_peer`, the collector's `vault-ca` Secret, the NetworkPolicy peer |
 
 ### Admission
 
@@ -479,11 +483,16 @@ The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/
   operator's own init). `VaultSealed`, `VaultSealedQuorum`, `VaultUnavailable`,
   `VaultNoActiveNode` and the server and kubelet branches of `VaultScrapeDown` fire only once
   Vault has been initialised: a server pod labelled `vault-initialized=true` in the last hour
-  (`kube_pod_labels`; Vault's service registration writes the label, sealed or not), or a
-  snapshot that has succeeded once (the CronJob's `lastSuccessfulTime` stays in its status). The
-  second half holds through an outage of every pod (new pods carry no labels until Vault
-  starts), so a Vault down for a week keeps paging; a fresh or rebuilt cluster stays quiet until
-  its init.
+  (`kube_pod_labels`), or a snapshot that has succeeded once (the CronJob's `lastSuccessfulTime`
+  stays in its status). The label half is short-lived: Vault's service registration resets the
+  labels at every process start (`vault-initialized=false`, `vault-sealed=true`) and sets
+  `vault-initialized=true` again only on unseal, so the label means "unsealed at least once since
+  this process started". When every pod restarts and stays sealed (the KMS key unreachable, a
+  node group replaced), the label half lapses an hour after the last unsealed sample, and new
+  pods that never start carry no labels at all. Only the snapshot half holds through that, so a
+  Vault down for a week keeps paging only if a snapshot has succeeded: the first snapshot, taken
+  by hand right after the init (OPERATIONS → Vault metrics (once)), is a precondition of these
+  alerts, not an extra. A fresh or rebuilt cluster stays quiet until its init.
 - **Sealed: one warns, two page.** One sealed pod costs the failure tolerance, not the service
   (`VaultSealed`, warning); two or more of three leave no quorum (`VaultSealedQuorum`,
   critical, one alert instead of one per pod). `VaultUnavailable` covers the rest of "no server

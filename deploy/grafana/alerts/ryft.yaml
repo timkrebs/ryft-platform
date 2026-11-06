@@ -585,12 +585,17 @@ groups:
   # sealed is read from the pods' readiness (strict: only an unsealed active or standby node is
   # ready), not from vault_core_unsealed. Before the operator's init no pod is ever ready (D196),
   # and the collector may not reach the servers yet (var.vault_collector_peer): the rules that
-  # would fire on that are gated on "this Vault has been initialised", a state that survives an
-  # outage of every pod: a server pod labelled vault-initialized=true in the last hour (Vault's
-  # service registration writes the label, sealed or not; kube-state-metrics exports it as
-  # kube_pod_labels), or the snapshot CronJob has succeeded at least once (its status keeps
-  # lastSuccessfulTime). Restarts are PodRestarting's (group ryft), certificates
-  # CertificateExpiring's.
+  # would fire on that are gated on "this Vault has been initialised", in two halves. (1) A server
+  # pod labelled vault-initialized=true in the last hour (kube-state-metrics exports the label as
+  # kube_pod_labels). Vault's service registration resets its labels at every process start to
+  # initialized=false, sealed=true and sets vault-initialized=true again only when the node
+  # unseals, so the label means "unsealed at least once since this process started": after a
+  # restart of every pod that stays sealed it lapses an hour after the last unsealed sample.
+  # (2) The snapshot CronJob has succeeded at least once (its status keeps lastSuccessfulTime;
+  # last_over_time bridges a 6 h scrape gap): the half that survives an outage of every pod.
+  # The first snapshot is taken by hand right after the init (OPERATIONS.md → Vault metrics
+  # (once)) and is a precondition for these alerts. Restarts are PodRestarting's (group ryft),
+  # certificates CertificateExpiring's.
   - name: ryft-vault
     rules:
       - alert: VaultSealed
@@ -753,16 +758,23 @@ groups:
         # which secret, and the cause (a full audit volume, a broken device) gets worse, not
         # better. The counters are cumulative (Vault adds 0 or 1 on every request) and expire 2
         # minutes after the last request: increase() catches a failure on a live counter, and a
-        # counter that appears above 0 (no request for 2 minutes, then a failing one) counts too.
+        # counter that appears above 0 (no request for 2 minutes, then a failing one) counts too,
+        # one branch per named counter.
         expr: |
           max by (pod) (increase(vault_audit_log_request_failure{job="ryft/vault"}[10m])) > 0
             or
           max by (pod) (increase(vault_audit_log_response_failure{job="ryft/vault"}[10m])) > 0
             or
           max by (pod) (
-            {job="ryft/vault", __name__=~"vault_audit_log_(request|response)_failure"} > 0
+            vault_audit_log_request_failure{job="ryft/vault"} > 0
               unless
-            {job="ryft/vault", __name__=~"vault_audit_log_(request|response)_failure"} offset 10m
+            vault_audit_log_request_failure{job="ryft/vault"} offset 10m
+          )
+            or
+          max by (pod) (
+            vault_audit_log_response_failure{job="ryft/vault"} > 0
+              unless
+            vault_audit_log_response_failure{job="ryft/vault"} offset 10m
           )
         labels: { severity: critical }
         annotations:
@@ -800,7 +812,9 @@ groups:
         # var.vault_collector_peer), a server is not scraped (TLS: the collector's vault-ca Secret;
         # the NetworkPolicy peer) or Fleet's kubelet scrape sends no volume stats for vault
         # (VaultVolumeFilling). Those two count only while the StatefulSet exists (a restore
-        # removes it).
+        # removes it). The kube-state-metrics half is ungated: alerts loaded before the collector
+        # config warn until that scrape runs, so the monitoring goes first (OPERATIONS.md → Vault
+        # alerts).
         expr: |
           (max by (job) (up{job="ryft/vault-state"}) == 0 or absent(up{job="ryft/vault-state"}))
             or

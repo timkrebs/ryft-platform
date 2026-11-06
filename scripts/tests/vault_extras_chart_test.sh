@@ -184,8 +184,9 @@ eq "$tmp/default.yaml" "$POD | .spec.containers[0].env | map({\"key\": .name, \"
   "the upload names the bucket, its owner and the key's full ARN"
 script() { yq ea "$POD | .spec.$1.args[0]" "$tmp/default.yaml"; }
 for want in 'token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login"' 'export VAULT_TOKEN="$token"' "trap 'exit 143' TERM INT" \
-  "trap 'rc=\$?; [ \"\$rc\" = 0 ] || rm -f /work/vault.snap' EXIT" \
-  'vault operator raft snapshot save /work/vault.snap & wait $!' 'vault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!'; do
+  "trap 'rc=\$?; [ \"\$rc\" = 0 ] || rm -f /work/vault.snap /work/vault.snap.sha256' EXIT" \
+  'vault operator raft snapshot save /work/vault.snap & wait $!' 'vault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!' \
+  'sum=$(sha256sum /work/vault.snap)' '>/work/vault.snap.sha256'; do
   script initContainers[0] | grep -qF -- "$want" || fail "the snapshot script lacks: $want"
 done
 # The traps come before the login: a TERM during the login still ends through the EXIT trap.
@@ -200,9 +201,48 @@ eq "$tmp/default.yaml" "[$POD | (.spec.initContainers[], .spec.containers[]) | .
   "each container's memory limit holds the tmpfs snapshot (64Mi) as well"
 script initContainers[0] | grep -qF 'token revoke' && fail "the snapshot token may not revoke itself (no default policy): no revoke attempt"
 script initContainers[0] | grep -qE 'export VAULT_TOKEN="?\$\(' && fail "the login must be assigned before the export (export hides a failed substitution from -e)"
-for want in 'set -o pipefail' "trap 'exit 143' TERM INT" "trap 'rm -f \"\$f\"' EXIT" 'aws s3api put-object' "--if-none-match '*'" '--expected-bucket-owner "$BUCKET_OWNER"' \
-  '--server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN"' '--checksum-algorithm SHA256' '--key "$key"' 'key="snapshots/vault-'; do
+# The hash is taken between the save and the inspect: S3 then checks the upload against the bytes that were inspected.
+[ "$(script initContainers[0] | grep -nF 'raft snapshot save' | cut -d: -f1)" -lt "$(script initContainers[0] | grep -nF 'sum=$(sha256sum' | cut -d: -f1)" ] &&
+  [ "$(script initContainers[0] | grep -nF 'sum=$(sha256sum' | cut -d: -f1)" -lt "$(script initContainers[0] | grep -nF 'raft snapshot inspect' | cut -d: -f1)" ] ||
+  fail "the snapshot script must hash the snapshot after the save and before the inspect"
+for want in 'set -o pipefail' "trap 'exit 143' TERM INT" "trap 'rm -f \"\$f\" \"\$f.sha256\"' EXIT" 'aws s3api put-object' "--if-none-match '*'" '--expected-bucket-owner "$BUCKET_OWNER"' \
+  '--server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN"' '--checksum-sha256 "$b64"' '--metadata "sha256=$sum"' '--key "$key"' 'key="snapshots/vault-'; do
   script containers[0] | grep -qF -- "$want" || fail "the upload script lacks: $want"
+done
+# --checksum-algorithm would have the CLI hash the stream itself, not check the snapshot step's hash.
+script containers[0] | grep -qF -- '--checksum-algorithm' && fail "the upload must send the snapshot step's hash (--checksum-sha256), not let the CLI compute one"
+script containers[0] | grep -qF 'sha256sum' && fail "the upload must not hash the file again: the snapshot step's hash is the one S3 checks"
+# The upload script itself, with a stand-in aws on PATH, in this shell's sh and in bash (the image's /bin/sh is bash):
+# the hex hash becomes the base64 of the raw digest, and a missing or malformed hash stops it before any upload.
+up="$tmp/upload"; mkdir -p "$up/bin"
+cat >"$up/bin/aws" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >"$AWS_ARGS"
+EOF
+chmod +x "$up/bin/aws"
+script containers[0] | sed "s#/work/#$up/work/#g" >"$up/upload.sh"
+# sha256("vault snapshot\n"), in hex and as S3's base64 of the raw digest.
+HEX=9bc36d4e0712f591ff5624f2b3b170788f0865b22539d4c4c2e569d6caeb607b
+B64=m8NtTgcS9ZH/ViTys7FweI8IZbIlOdTEwuVp1srrYHs=
+upload() { # <shell> <hash file content or "-" for none>; prints the exit status
+  rm -rf "$up/work" "$up/args"; mkdir -p "$up/work"; printf 'vault snapshot\n' >"$up/work/vault.snap"
+  [ "$2" = - ] || printf '%s\n' "$2" >"$up/work/vault.snap.sha256"
+  local rc=0
+  PATH="$up/bin:$PATH" AWS_ARGS="$up/args" AWS_REGION=eu-central-1 BUCKET=b BUCKET_OWNER=123456789012 SNAPSHOT_KEY_ARN=k \
+    "$1" -eu "$up/upload.sh" >/dev/null 2>&1 || rc=$?
+  echo "$rc"
+}
+for sh in sh bash; do
+  command -v "$sh" >/dev/null || continue
+  [ "$(upload "$sh" "$HEX")" = 0 ] || fail "$sh: the upload script fails with a valid hash"
+  grep -qxF -- "$B64" "$up/args" && grep -qxF -- "--checksum-sha256" "$up/args" || fail "$sh: the upload does not send the hash as base64 ($B64)"
+  grep -qxF -- "sha256=$HEX" "$up/args" || fail "$sh: the upload's metadata does not carry the hex hash"
+  [ ! -e "$up/work/vault.snap" ] && [ ! -e "$up/work/vault.snap.sha256" ] || fail "$sh: the upload leaves the snapshot or its hash behind"
+  for bad in - "" "${HEX%?}" "${HEX}0" "$(printf %s "$HEX" | tr a-f A-F)" "zz${HEX#??}"; do
+    [ "$(upload "$sh" "$bad")" != 0 ] || fail "$sh: the upload accepts the hash '$bad'"
+    [ ! -e "$up/args" ] || fail "$sh: the upload calls aws with the hash '$bad'"
+    [ ! -e "$up/work/vault.snap" ] || fail "$sh: a refused upload leaves the snapshot behind"
+  done
 done
 script containers[0] | grep -qE 'aws s3 (cp|sync|mv)|create-multipart|upload-part' && fail "the upload must be one put-object (multipart would need kms:Decrypt)"
 

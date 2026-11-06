@@ -5,16 +5,20 @@ bucket. Two upstream images pinned by digest, no image of our own:
     with policy snapshot, infra/vault k8s.tf, bootstrap step 3b: read on sys/storage/raft/snapshot only) with a
     projected token for audience vault that lives 10 minutes, saves the snapshot from the ACTIVE node (vault-active;
     a save through a standby fails: "incomplete snapshot, unable to read SHA256SUMS.sealed file") and checks it with
-    `snapshot inspect`. The token is not revoked: the role (token_type service, token_no_default_policy, policy
-    snapshot only) gives it no right to `token revoke -self`, so it lives out its TTL (token_ttl = token_max_ttl =
-    10 minutes), within the pod's own lifetime. A failed or stopped run removes its partial snapshot on every exit
-    path, SIGTERM included (PID 1 sh ignores SIGTERM without a trap, so the kubelet's stop at activeDeadlineSeconds
+    `snapshot inspect`, hashing it (SHA-256, hex, /work/vault.snap.sha256) between the save and the check. The
+    token is not revoked: the role (token_type service, token_no_default_policy, policy snapshot only) gives it no
+    right to `token revoke -self`, so it lives out its TTL (token_ttl = token_max_ttl = 10 minutes), within the pod's
+    own lifetime. A failed or stopped run removes its partial snapshot and the hash on every exit path, SIGTERM
+    included (PID 1 sh ignores SIGTERM without a trap, so the kubelet's stop at activeDeadlineSeconds
     would otherwise wait out the grace period).
   - container `upload` (the AWS CLI): one put-object (a single PUT: no multipart, which would need kms:Decrypt),
     create-only (--if-none-match '*'; the bucket policy denies a put without it), only into the bucket of the expected
     account (--expected-bucket-owner; the role adds s3:ResourceAccount), encrypted with the snapshot key named by its
-    full ARN (the bucket policy and the role compare the header with it), with an S3-checked SHA-256
-    (--checksum-algorithm SHA256). It deletes the snapshot on every exit path.
+    full ARN (the bucket policy and the role compare the header with it), with the init container's SHA-256 as the
+    object's checksum (--checksum-sha256, base64 of the raw digest): S3 refuses the object unless the bytes it
+    receives have that hash, so the stored object is the snapshot that was hashed and then inspected.
+    (--checksum-algorithm SHA256 would have the CLI hash the stream at upload time instead, which checks the
+    transfer only.) It deletes the snapshot and its hash on every exit path.
 Credentials from EKS Pod Identity (association vault/vault-snapshot, infra/aws/kubernetes iam.tf): the Pod Identity
 webhook mounts its token (audience pods.eks.amazonaws.com) and sets AWS_CONTAINER_CREDENTIALS_FULL_URI and
 AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE in BOTH containers, so the init container could fetch the role's credentials
@@ -120,11 +124,15 @@ spec:
                   trap 'exit 143' TERM INT
                   # The token does not revoke itself: without the default policy it may not; it
                   # expires with its 10-minute TTL.
-                  trap 'rc=$?; [ "$rc" = 0 ] || rm -f /work/vault.snap' EXIT
+                  trap 'rc=$?; [ "$rc" = 0 ] || rm -f /work/vault.snap /work/vault.snap.sha256' EXIT
                   # Assigned first, then exported: `export X="$(...)"` would hide a failed login from -e.
                   token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login" role="$VAULT_ROLE" jwt=@/var/run/secrets/vault/token)
                   export VAULT_TOKEN="$token"
                   vault operator raft snapshot save /work/vault.snap & wait $!
+                  # Hashed before the check: the upload has S3 verify this hash, so the object stored is
+                  # these bytes, and a change after the hash fails the upload.
+                  sum=$(sha256sum /work/vault.snap)
+                  printf '%s\n' "${sum%% *}" >/work/vault.snap.sha256
                   vault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!
                   echo "{\"@level\":\"info\",\"@message\":\"snapshot saved and inspected\",\"bytes\":$(wc -c </work/vault.snap)}"
               resources:
@@ -153,18 +161,26 @@ spec:
                   set -o pipefail
                   f=/work/vault.snap
                   trap 'exit 143' TERM INT
-                  trap 'rm -f "$f"' EXIT
+                  trap 'rm -f "$f" "$f.sha256"' EXIT
                   [ -s "$f" ] || { echo '{"level":"error","msg":"no snapshot to upload"}' >&2; exit 1; }
+                  # The snapshot step's hash (hex). S3 takes base64 of the raw digest: each hex pair
+                  # becomes one byte through an octal printf escape (POSIX; no xxd in this image).
+                  sum=
+                  [ -s "$f.sha256" ] && IFS= read -r sum <"$f.sha256"
+                  case $sum in
+                    *[!0-9a-f]*|'') echo '{"level":"error","msg":"no valid hash from the snapshot step"}' >&2; exit 1 ;;
+                  esac
+                  [ "${#sum}" -eq 64 ] || { echo '{"level":"error","msg":"no valid hash from the snapshot step"}' >&2; exit 1; }
+                  b64=$(rest=$sum; while [ "${#rest}" -ge 2 ]; do h=${rest%"${rest#??}"}; rest=${rest#??}; printf "\\$(printf %03o "0x$h")"; done | base64)
                   key="snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap"
                   bytes=$(wc -c <"$f")
-                  sum=$(sha256sum "$f" | cut -d' ' -f1)
                   aws s3api put-object \
                     --region "$AWS_REGION" \
                     --bucket "$BUCKET" --expected-bucket-owner "$BUCKET_OWNER" \
                     --key "$key" --body "$f" \
                     --if-none-match '*' \
                     --server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN" --bucket-key-enabled \
-                    --checksum-algorithm SHA256 \
+                    --checksum-sha256 "$b64" \
                     --metadata "sha256=$sum" \
                     --output json >/dev/null & wait $!
                   echo "{\"level\":\"info\",\"msg\":\"snapshot uploaded\",\"bucket\":\"$BUCKET\",\"key\":\"$key\",\"bytes\":$bytes,\"sha256\":\"$sum\"}"

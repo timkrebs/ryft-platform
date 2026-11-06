@@ -37,8 +37,8 @@ locals {
   # Names a service may not have on the in-cluster Vault: policies and roles share the root namespace with Vault's
   # own (default, root), the bootstrap's (admin, terraform) and the snapshot job's (role vault-snapshot, policy
   # snapshot), and kv-operator holds the demo password (variables.tf validates var.services against this list). The
-  # admission chart's vso.reservedServices names the same list except snapshot; a kv-snapshot mount cannot exist
-  # while no service has that name.
+  # admission chart's vso.reservedServices names the same seven names (keep the two lists equal); a kv-snapshot
+  # mount cannot exist while no service has that name.
   reserved_service_names = ["default", "root", "admin", "terraform", "vault-snapshot", "snapshot", "operator"]
 }
 

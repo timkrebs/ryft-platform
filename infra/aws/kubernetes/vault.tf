@@ -366,8 +366,11 @@ resource "helm_release" "vault_extras" {
   values = [yamlencode(local.vault_extras_values)]
 
   # The ClusterIssuer ryft-vault (charts/cluster-issuers) signs the Certificates. The snapshot role's association
-  # before the CronJob's first pod (the Pod Identity webhook injects credentials at pod creation only).
-  depends_on = [helm_release.cluster_issuers, module.vault_snapshot_pod_identity]
+  # before the CronJob's first pod (the Pod Identity webhook injects credentials at pod creation only). The admission
+  # release before this one: a bump of the AWS CLI (or server) pin changes P2's images.awsCli and this chart's
+  # snapshot.images in one PR, and P2 must admit the new reference before the CronJob carries it (helm_release.vault
+  # follows through its own depends_on on this release). With admission off (count 0) the edge is empty.
+  depends_on = [helm_release.cluster_issuers, module.vault_snapshot_pod_identity, helm_release.admission_policy]
 
   lifecycle {
     prevent_destroy = true
