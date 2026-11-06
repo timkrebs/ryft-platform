@@ -1369,7 +1369,8 @@
                 {
                   "name": "work",
                   "emptyDir": {
-                    "sizeLimit": "512Mi"
+                    "medium": "Memory",
+                    "sizeLimit": "64Mi"
                   }
                 },
                 {
@@ -1432,15 +1433,15 @@
                     "-c"
                   ],
                   "args": [
-                    "umask 077\n# Assigned first, then exported: `export X=\"$(...)\"` would hide a failed login from -e.\ntoken=$(vault write -field=token \"auth/$VAULT_AUTH_MOUNT/login\" role=\"$VAULT_ROLE\" jwt=@/var/run/secrets/vault/token)\nexport VAULT_TOKEN=\"$token\"\ntrap 'vault token revoke -self >/dev/null 2>&1 || echo \"{\\\"@level\\\":\\\"warn\\\",\\\"@message\\\":\\\"snapshot token not revoked (expires with its TTL)\\\"}\"' EXIT\nvault operator raft snapshot save /work/vault.snap\nvault operator raft snapshot inspect /work/vault.snap >/dev/null\necho \"{\\\"@level\\\":\\\"info\\\",\\\"@message\\\":\\\"snapshot saved and inspected\\\",\\\"bytes\\\":$(wc -c </work/vault.snap)}\"\n"
+                    "umask 077\n# TERM/INT end the script through exit, so the EXIT trap runs; the long steps run in the\n# background so that `wait` returns at once on a signal.\ntrap 'exit 143' TERM INT\n# The token does not revoke itself: without the default policy it may not; it\n# expires with its 10-minute TTL.\ntrap 'rc=$?; [ \"$rc\" = 0 ] || rm -f /work/vault.snap' EXIT\n# Assigned first, then exported: `export X=\"$(...)\"` would hide a failed login from -e.\ntoken=$(vault write -field=token \"auth/$VAULT_AUTH_MOUNT/login\" role=\"$VAULT_ROLE\" jwt=@/var/run/secrets/vault/token)\nexport VAULT_TOKEN=\"$token\"\nvault operator raft snapshot save /work/vault.snap & wait $!\nvault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!\necho \"{\\\"@level\\\":\\\"info\\\",\\\"@message\\\":\\\"snapshot saved and inspected\\\",\\\"bytes\\\":$(wc -c </work/vault.snap)}\"\n"
                   ],
                   "resources": {
                     "requests": {
                       "cpu": "50m",
-                      "memory": "64Mi"
+                      "memory": "128Mi"
                     },
                     "limits": {
-                      "memory": "256Mi"
+                      "memory": "320Mi"
                     }
                   },
                   "volumeMounts": [
@@ -1511,7 +1512,7 @@
                     "-c"
                   ],
                   "args": [
-                    "f=/work/vault.snap\n[ -s \"$f\" ] || { echo '{\"level\":\"error\",\"msg\":\"no snapshot to upload\"}' >&2; exit 1; }\nkey=\"snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap\"\nbytes=$(wc -c <\"$f\")\nsum=$(sha256sum \"$f\" | cut -d' ' -f1)\naws s3api put-object \\\n  --region \"$AWS_REGION\" \\\n  --bucket \"$BUCKET\" --expected-bucket-owner \"$BUCKET_OWNER\" \\\n  --key \"$key\" --body \"$f\" \\\n  --if-none-match '*' \\\n  --server-side-encryption aws:kms --ssekms-key-id \"$SNAPSHOT_KEY_ARN\" --bucket-key-enabled \\\n  --metadata \"sha256=$sum\" \\\n  --output json >/dev/null\necho \"{\\\"level\\\":\\\"info\\\",\\\"msg\\\":\\\"snapshot uploaded\\\",\\\"bucket\\\":\\\"$BUCKET\\\",\\\"key\\\":\\\"$key\\\",\\\"bytes\\\":$bytes,\\\"sha256\\\":\\\"$sum\\\"}\"\n"
+                    "set -o pipefail\nf=/work/vault.snap\ntrap 'exit 143' TERM INT\ntrap 'rm -f \"$f\"' EXIT\n[ -s \"$f\" ] || { echo '{\"level\":\"error\",\"msg\":\"no snapshot to upload\"}' >&2; exit 1; }\nkey=\"snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap\"\nbytes=$(wc -c <\"$f\")\nsum=$(sha256sum \"$f\" | cut -d' ' -f1)\naws s3api put-object \\\n  --region \"$AWS_REGION\" \\\n  --bucket \"$BUCKET\" --expected-bucket-owner \"$BUCKET_OWNER\" \\\n  --key \"$key\" --body \"$f\" \\\n  --if-none-match '*' \\\n  --server-side-encryption aws:kms --ssekms-key-id \"$SNAPSHOT_KEY_ARN\" --bucket-key-enabled \\\n  --checksum-algorithm SHA256 \\\n  --metadata \"sha256=$sum\" \\\n  --output json >/dev/null & wait $!\necho \"{\\\"level\\\":\\\"info\\\",\\\"msg\\\":\\\"snapshot uploaded\\\",\\\"bucket\\\":\\\"$BUCKET\\\",\\\"key\\\":\\\"$key\\\",\\\"bytes\\\":$bytes,\\\"sha256\\\":\\\"$sum\\\"}\"\n"
                   ],
                   "resources": {
                     "requests": {
@@ -1519,7 +1520,7 @@
                       "memory": "128Mi"
                     },
                     "limits": {
-                      "memory": "256Mi"
+                      "memory": "320Mi"
                     }
                   },
                   "volumeMounts": [

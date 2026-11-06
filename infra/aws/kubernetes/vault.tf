@@ -62,8 +62,10 @@ locals {
   #  - listener: TLS only; tls_reload_interval (2.2.0+) reloads a renewed certificate; /v1/sys/metrics without a
   #    token on every node (D194). The NetworkPolicy admits selected peers only (charts/vault-extras), but traffic
   #    from the node's address (host-network pods such as the privileged alloy-daemonset, the kubelet) is likely
-  #    admitted by the VPC CNI regardless: the metrics are not secret, and nothing else on 8200 is unauthenticated
-  #    once Vault is initialised (design section 6).
+  #    admitted by the VPC CNI regardless. The metrics are not secret, but they are not all a peer reaches without a
+  #    token: before the init PUT /v1/sys/init (hence var.vault_collector_peer stays false until the operator's
+  #    own init), and after it sys/health, sys/seal-status, sys/leader, starting or cancelling a generate-root or
+  #    rekey attempt (completing one needs recovery shares) and the login endpoints (design section 6, G2).
   #  - retry_join: one block per pod, trusting the ryft-vault CA; no client certificate (the listener asks none).
   #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set here, so the seal
   #    does not depend on the AWS_REGION the EKS webhook injects; no credentials of any kind (the SDK's default
@@ -298,9 +300,11 @@ locals {
   # two change together (tests/addons.tftest.hcl compares them).
   vault_snapshot_aws_cli_image = "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
 
-  # VSO stays off until the first cutover (until then nothing but the operator's port-forward needs the API, and
-  # before the init PUT /v1/sys/init is unauthenticated). The collector is on with the scrape (D194,
-  # deploy/monitoring/k8s-monitoring.yaml: job ryft/vault).
+  # VSO stays off until the first cutover (step 5a; until then nothing but the operator's port-forward needs the
+  # API). The collector (alloy-deployment, job ryft/vault in deploy/monitoring/k8s-monitoring.yaml, D194) is off
+  # until var.vault_collector_peer: the NetworkPolicy admits a peer to all of 8200, and before the init PUT
+  # /v1/sys/init is unauthenticated, so the peer opens only after the operator's own init (OPERATIONS -> Vault
+  # metrics (once)) and closes again for a restore into a fresh cluster (-> Vault -> Disaster recovery).
   vault_extras_values = {
     vpcCIDR  = var.vpc_cidr
     replicas = local.vault_replicas
@@ -310,7 +314,7 @@ locals {
     }
     peers = {
       vso       = { enabled = false }
-      collector = { enabled = true }
+      collector = { enabled = var.vault_collector_peer }
     }
     # Every 6 hours at minute 17 (RPO 6 h; OPERATIONS -> Vault -> Snapshots). The bucket and key are infra/aws's
     # (iam.tf finds them); the job names the key by its full ARN, as the bucket policy and the role require.

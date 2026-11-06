@@ -1366,7 +1366,7 @@ run "unseal_key_in_another_account_fails_the_plan" {
   expect_failures = [helm_release.vault]
 }
 
-run "vault_extras_peers_vso_off_collector_on_and_the_role_names_the_pods" {
+run "vault_extras_peers_off_by_default_and_the_role_names_the_pods" {
   command = plan
 
   assert {
@@ -1378,8 +1378,8 @@ run "vault_extras_peers_vso_off_collector_on_and_the_role_names_the_pods" {
     error_message = "no ingress from VSO until the first cutover; both peers are off in the chart's defaults"
   }
   assert {
-    condition     = yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true
-    error_message = "the collector's scrape of /v1/sys/metrics (job ryft/vault, D194) is admitted: vault.tf turns peers.collector on with the scrape"
+    condition     = yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false
+    error_message = "the collector may not reach 8200 (PUT /v1/sys/init is unauthenticated before the init) until var.vault_collector_peer is set after the operator's own init"
   }
   assert {
     condition = (
@@ -1387,6 +1387,22 @@ run "vault_extras_peers_vso_off_collector_on_and_the_role_names_the_pods" {
       strcontains(file("${path.module}/charts/vault-extras/templates/rbac.yaml"), "      - vault-{{ $i }}\n")
     )
     error_message = "the service-registration Role names the server pods and grants get, update and patch only"
+  }
+}
+
+run "vault_collector_peer_opens_only_the_collector" {
+  command = plan
+
+  variables {
+    vault_collector_peer = true
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false
+    )
+    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO off"
   }
 }
 

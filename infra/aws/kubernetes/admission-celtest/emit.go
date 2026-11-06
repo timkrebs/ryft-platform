@@ -66,7 +66,8 @@ var notEmitted = map[string]string{
 	"vault: P13 a Kubernetes CSR for ryft-vault by cert-manager":                     "cert-manager's RBAC on certificatesigningrequests is not the point",
 	// The service account admission plugin refuses a Pod whose service account does not exist, and
 	// the kind run creates no vault/vault-snapshot; the CronJob cases pin the same image rule.
-	"vault: P2 a snapshot pod whose upload image is not the pin": "the kind run has no service account vault/vault-snapshot",
+	"vault: P2 a snapshot pod whose upload image is not the pin":  "the kind run has no service account vault/vault-snapshot",
+	"vault: P2 a pod of another service account with the AWS CLI": "the kind run has no service account vault/vault",
 	// The broker's NetworkPolicy carries the open 443 egress rule the committed values admit
 	// (brokerEgressPublic); the kind run's Deny variant closes it (the chart's guard), so the
 	// object would be refused for that rule first.

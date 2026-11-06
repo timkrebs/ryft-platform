@@ -105,7 +105,12 @@ func runVault(c *chart) {
 	add("P2 the AWS CLI's tag with another digest", admin, "CREATE", upload("public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:c6a538a5b1f1c0e5b9f4cbf0b6d1a5e9a0f7d2e3c4b5a6978877665544332211"), "P2: a container image")
 	add("P2 another AWS CLI version with the pinned digest", admin, "CREATE", upload("public.ecr.aws/aws-cli/aws-cli:2.39.4@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
 	add("P2 the AWS CLI from Docker Hub", admin, "CREATE", upload("docker.io/amazon/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
-	add("P2 the AWS CLI in the server StatefulSet (admitted: P2 judges the namespace's two images, not which container runs which)", admin, "CREATE", image("public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"))
+	cli := "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
+	// The AWS CLI only under the snapshot job's service account (the Pod Identity association's).
+	add("P2 the AWS CLI in the server StatefulSet (service account vault)", admin, "CREATE", image(cli), "P2: a container image")
+	add("P2 the snapshot CronJob under another service account", admin, "CREATE", set(cj(), "spec/jobTemplate/spec/template/spec/serviceAccountName", "vault"), "P2: a container image")
+	add("P2 the snapshot CronJob without a service account (default)", admin, "CREATE", del(cj(), "spec/jobTemplate/spec/template/spec/serviceAccountName"), "P2: a container image")
+	add("P2 the server image only, under another service account", admin, "CREATE", set(upload(vaultImg), "spec/jobTemplate/spec/template/spec/serviceAccountName", "default"))
 	snapPod := func() map[string]any {
 		p := podOf(cj(), nil)
 		// What the EKS Pod Identity webhook adds for the association vault/vault-snapshot.
@@ -116,6 +121,7 @@ func runVault(c *chart) {
 	}
 	add("P2 a snapshot pod with its projected vault token and the pod identity token", jobUser, "CREATE", snapPod())
 	add("P2 a snapshot pod whose upload image is not the pin", jobUser, "CREATE", set(snapPod(), "spec/containers/0/image", "public.ecr.aws/aws-cli/aws-cli:latest"), "P2: a container image")
+	add("P2 a pod of another service account with the AWS CLI", jobUser, "CREATE", set(snapPod(), "spec/serviceAccountName", "vault"), "P2: a container image")
 	add("P2 the AWS CLI in a RYFT namespace", argoCtl, "CREATE", set(find("Deployment", "ryft-notify", "notify"), "spec/template/spec/containers/0/image", "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
 	add("P2 the server image in a RYFT namespace", argoCtl, "CREATE", set(find("Deployment", "ryft-notify", "notify"), "spec/template/spec/containers/0/image", vaultImg), "P2: a container image")
 
@@ -199,7 +205,7 @@ func runVault(c *chart) {
 	for _, r := range []struct{ ns, mount string }{
 		{"ryft-operator", "kv-operator"}, {"ryft-root", "kv-root"}, {"ryft-admin", "kv-admin"},
 		{"ryft-terraform", "kv-terraform"}, {"default", "kv-default"}, {"ryft-vault-snapshot", "kv-vault-snapshot"},
-		{"vault-snapshot", "kv-vault-snapshot"},
+		{"vault-snapshot", "kv-vault-snapshot"}, {"ryft-snapshot", "kv-snapshot"},
 	} {
 		add(fmt.Sprintf("P4 the reserved mount %s read from %s", r.mount, r.ns), argoCtl, "CREATE", in(r.ns, r.mount), "P4: a VaultStaticSecret")
 	}

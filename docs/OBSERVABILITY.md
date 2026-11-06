@@ -45,8 +45,10 @@ token the Fleet pipelines write with.
 Two more are the in-cluster Vault's (D194; **Vault** under Alerts): `/v1/sys/metrics?format=prometheus`
 on each server pod over TLS with the ryft-vault CA (job `ryft/vault`; no token,
 `unauthenticated_metrics_access` on the listener; admitted by vault-extras' NetworkPolicy from the
-`alloy-deployment` pods only), and kube-state-metrics' series for namespace `vault` (job
-`ryft/vault-state`: the snapshot CronJob, the StatefulSet, the server pods' readiness). Both run on
+`alloy-deployment` pods only, and only once `vault_collector_peer` is set after the operator's own
+init: the peer reaches all of 8200, `PUT /v1/sys/init` included), and kube-state-metrics' series
+for namespace `vault` (job `ryft/vault-state`: the snapshot CronJob, the StatefulSet, the server
+pods' readiness and their service-registration labels). Both run on
 `alloy-deployment` and write through the same destination. Vault's own pod logs go to Grafana
 Cloud through a pipeline of the chart's, off until the Loki details are in Vault (**Logs → Vault's
 logs** below).
@@ -188,13 +190,14 @@ JSON (`make synthetics-apply`), not the page.
 | `vault_core_active` | gauge | `pod`, `vault_cluster` | Vault, every unsealed node (job `ryft/vault`) | 1 on the active node, 0 on a standby. A sealed node reports none (and Vault's gauges expire 2 minutes after their last update, `prometheus_retention_time`), so absence is not "standby". Vault's own `cluster` label (its Raft cluster name) is renamed `vault_cluster` by the scrape, so the external `cluster` label stays the cluster's. `VaultNoActiveNode`. |
 | `vault_core_unsealed` | gauge | `pod`, `vault_cluster` | Vault, every node | 1 unsealed, 0 sealed, but it expires with the retention, so the alerts read sealing from the pods' readiness instead (`kube_pod_container_status_ready`). Dashboard only. |
 | `vault_autopilot_healthy`, `vault_autopilot_failure_tolerance`, `vault_autopilot_node_healthy` | gauge | `node_id` (the last) | Vault, the active node only | Raft autopilot: the cluster's health, how many voters it may lose, each voter's health. `VaultRaftPeersBelow3` counts `node_healthy == 1` (`vault_raft_peers` expires and lags, not used). |
-| `vault_audit_log_request_failure`, `vault_audit_log_response_failure` | counter | `pod` | Vault, the active node | Audit entries that could not be written. They exist only while they move (2 minutes' retention), so `VaultAuditFailing` reads their presence above 0, not `increase()`. With every audit device failing, Vault refuses the request. |
+| `vault_audit_log_request_failure`, `vault_audit_log_response_failure` | counter | `pod` | Vault, the active node | Audit entries that could not be written. Cumulative: Vault adds 0 or 1 on every request, so the counter lives while requests come and expires 2 minutes after the last (retention). `VaultAuditFailing` (critical) reads `increase()` over 10 minutes, plus a counter that appears above 0 (no request for 2 minutes, then a failing one). With every audit device failing, Vault refuses the request. |
 | `vault_audit_log_request_count`, `vault_audit_log_response_count`, `vault_core_handle_request_count`, `vault_core_handle_login_request_count`, `vault_core_in_flight_requests` | counter, gauge | `pod` | Vault, the active node | Request and login volume (VSO's hourly refreshes and logins); dashboard only. Before the first cutover nearly 0. |
-| `vault_token_count`, `vault_token_count_by_policy`, `vault_token_count_by_ttl` | gauge | `policy`, `creation_ttl` | Vault, the active node | Live tokens. Vault emits these usage gauges every 10 minutes and they expire after 2, so the series has gaps: read it with `max_over_time(…[15m])`. Not seen in the local 2.2.1 check (a fresh dev cluster); confirm on the first scrape. A steady rise means a client that logs in without revoking (the snapshot job revokes its own). |
+| `vault_token_count`, `vault_token_count_by_policy`, `vault_token_count_by_ttl` | gauge | `policy`, `creation_ttl` | Vault, the active node | Live tokens. Vault emits these usage gauges every 10 minutes and they expire after 2, so the series has gaps: read it with `max_over_time(…[15m])`. Not seen in the local 2.2.1 check (a fresh dev cluster); confirm on the first scrape. A steady rise means a client that logs in more often than its tokens expire (the snapshot job's token, policy `snapshot`, cannot revoke itself and lives its 10 minutes: four a day, never more than one at a time). |
 | `vault_raft_leader_lastContact_sum`, `_count` | summary | `pod` | Vault, standbys | Heartbeat delay from the leader as a mean; a rise before `VaultRaftPeersBelow3` points at a CPU-starved node. |
 | `kube_cronjob_status_last_successful_time`, `kube_cronjob_status_last_schedule_time` | gauge | `cronjob` | kube-state-metrics (job `ryft/vault-state`, namespace `vault` only) | When the snapshot job last succeeded and was last scheduled (Unix seconds). The success series exists only after the first success. `VaultSnapshotStale` (pages at 13 h), `VaultSnapshotFailing`. |
-| `kube_statefulset_replicas`, `kube_statefulset_status_replicas`, `kube_statefulset_status_replicas_ready`, `kube_statefulset_status_replicas_updated` | gauge | `statefulset` | kube-state-metrics (`ryft/vault-state`) | The server StatefulSet: desired, existing, ready (unsealed and serving), at the current template (OnDelete: `VaultUpdatePending`). `replicas_ready` above 0 in the last 7 days is the "Vault has been initialised" gate of the alerts. |
-| `kube_pod_container_status_running`, `kube_pod_container_status_ready` | gauge | `pod`, `container` | kube-state-metrics (`ryft/vault-state`) | Per server container: running but not ready is `VaultSealed`. Fleet's own kube-state-metrics pipeline does not keep readiness, hence the scrape of its own. |
+| `kube_statefulset_replicas`, `kube_statefulset_status_replicas`, `kube_statefulset_status_replicas_ready`, `kube_statefulset_status_replicas_updated` | gauge | `statefulset` | kube-state-metrics (`ryft/vault-state`) | The server StatefulSet: desired, existing, ready (unsealed and serving), at the current template (OnDelete: `VaultUpdatePending`). `replicas_ready` at 0 for 10 minutes is `VaultUnavailable`. |
+| `kube_pod_container_status_running`, `kube_pod_container_status_ready` | gauge | `pod`, `container` | kube-state-metrics (`ryft/vault-state`) | Per server container: running but not ready is `VaultSealed` (one pod) or `VaultSealedQuorum` (two or more). Fleet's own kube-state-metrics pipeline does not keep readiness, hence the scrape of its own. |
+| `kube_pod_labels` | gauge | `pod`, `label_vault_initialized`, `label_vault_sealed`, `label_vault_active` | kube-state-metrics (`ryft/vault-state`; `--metric-labels-allowlist=pods=[vault-initialized,vault-sealed,vault-active]`) | The labels Vault's service registration writes on its own pods (sealed or not). A server pod with `label_vault_initialized="true"` in the last hour, or a snapshot that has succeeded once, is the alerts' "Vault has been initialised" gate. |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors. |
 
 ## Grafana dashboard — panel list
@@ -401,15 +404,17 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | AdmissionSignalsMissing | warning | no `up` for the API-server scrape or the bindings scrape for 15 min (also before the monitoring values are applied) | `kubectl -n monitoring get pods`, the collector log |
 | AdmissionScrapeDown | warning | `up == 0` for an admission target, 15 min | the same; remote_write errors in the collector log |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
-| VaultSealed | critical | a Vault server pod runs but is not ready for 5 min (sealed, or a standby that cannot reach the active node), once a pod was ready in the last 7 days | OPERATIONS → Vault alerts (VaultSealed): the pod's log, KMS, the unseal role |
-| VaultNoActiveNode | critical | the Vault scrape works and no node reports itself active, 2 min (same 7-day gate) | OPERATIONS → Vault alerts (VaultNoActiveNode) |
-| VaultRaftPeersBelow3 | warning | autopilot counts fewer than 3 healthy voters, 10 min | OPERATIONS → Vault alerts (VaultRaftPeersBelow3): which pod, its zone, `raft list-peers` |
-| VaultSnapshotStale | critical | no successful snapshot for 13 h, or none in 13 h of a Vault that was ready throughout (RPO 6 h; expiry would delete the last snapshot after 37 days) | OPERATIONS → Vault → Snapshots |
-| VaultSnapshotFailing | warning | the latest scheduled snapshot run started over 30 min ago and has not succeeded | OPERATIONS → Vault → Snapshots: the failed Job's logs |
-| VaultAuditFailing | warning | a node failed to write an audit entry in the last 10 min | OPERATIONS → Vault alerts (VaultAuditFailing): the audit volume, `vault audit list` |
-| VaultVolumeFilling | warning | a Vault data or audit volume is over 80 % full, 15 min | OPERATIONS → Vault alerts (VaultVolumeFilling) |
+| VaultSealed | warning | one Vault server pod runs but is not ready for 5 min (sealed, or a standby that cannot reach the active node), once Vault has been initialised | OPERATIONS → Vault alerts (VaultSealed) → Vault → A pod is sealed |
+| VaultSealedQuorum | critical | two or more server pods run but are not ready for 5 min: no quorum with 3 replicas (same gate) | OPERATIONS → Vault alerts (VaultSealedQuorum) → Vault → Quorum loss: the unseal key, its role |
+| VaultUnavailable | critical | no Vault server is ready for 10 min, whatever the reason (same gate) | OPERATIONS → Vault alerts (VaultUnavailable): sealed, Pending or crash-looping |
+| VaultNoActiveNode | critical | the Vault scrape works and no node reports itself active, 2 min (same gate) | OPERATIONS → Vault alerts (VaultNoActiveNode) → Vault → The leader is gone |
+| VaultRaftPeersBelow3 | warning | autopilot counts fewer than 3 healthy voters, 10 min (only with an active node) | OPERATIONS → Vault alerts (VaultRaftPeersBelow3): which pod, its zone, `raft list-peers` |
+| VaultSnapshotStale | critical | no successful snapshot for 13 h, or none in 13 h of a Vault that was ready throughout, while a server is ready (RPO 6 h; expiry would delete the last snapshot after 37 days) | OPERATIONS → Vault → Snapshots |
+| VaultSnapshotFailing | warning | the latest scheduled snapshot run started over 30 min ago and has not succeeded, or none has ever succeeded while a server is ready | OPERATIONS → Vault → Snapshots: the failed Job's logs |
+| VaultAuditFailing | critical | a node failed to write an audit entry in the last 10 min (`increase()`, or a counter that appears above 0) | OPERATIONS → Vault alerts (VaultAuditFailing): `vault audit list -detailed`, the audit volume |
+| VaultVolumeFilling | warning | a Vault data or audit volume is over 80 % full, 15 min | OPERATIONS → Vault alerts (VaultVolumeFilling): patch the PVC only |
 | VaultUpdatePending | info | Vault pods run the previous template for 24 h (updateStrategy OnDelete: the next node drain would roll them, D204) | OPERATIONS → Vault alerts (VaultUpdatePending): the pod-by-pod restart |
-| VaultScrapeDown | warning | kube-state-metrics for vault (`ryft/vault-state`) is not scraped, or a Vault server's scrape fails while the StatefulSet exists, 15 min: the Vault alerts are blind | OPERATIONS → Vault alerts (VaultScrapeDown): the collector's `vault-ca` Secret, the NetworkPolicy peer |
+| VaultScrapeDown | warning | kube-state-metrics for vault (`ryft/vault-state`) is not scraped; or, once Vault has been initialised and while the StatefulSet exists, a server's scrape fails or is missing, or Fleet sends no kubelet volume stats for `vault`; 15 min: the Vault alerts are blind | OPERATIONS → Vault alerts (VaultScrapeDown): `vault_collector_peer`, the collector's `vault-ca` Secret, the NetworkPolicy peer |
 
 ### Admission
 
@@ -469,18 +474,36 @@ The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/
   `vault_core_unsealed` expires two minutes later and it never reports `vault_core_active`
   (checked on 2.2.1). The readiness probe is strict (`/v1/sys/health?standbyok=true`: only an
   unsealed active or standby node is ready), so "running and not ready" is the signal.
-- **The 7-day gate.** Before the first init every pod runs and none is ready, by design
-  (D196). `VaultSealed` and `VaultNoActiveNode` fire only once a pod was ready in the last 7
-  days, so a fresh or rebuilt Vault stays quiet until it is initialised and a Vault down for
-  more than a week stops paging (by then it is a known outage).
+- **The "initialised" gate.** Before the first init every pod runs and none is ready, by design
+  (D196), and the collector may not reach the servers (`vault_collector_peer` is off until the
+  operator's own init). `VaultSealed`, `VaultSealedQuorum`, `VaultUnavailable`,
+  `VaultNoActiveNode` and the server and kubelet branches of `VaultScrapeDown` fire only once
+  Vault has been initialised: a server pod labelled `vault-initialized=true` in the last hour
+  (`kube_pod_labels`; Vault's service registration writes the label, sealed or not), or a
+  snapshot that has succeeded once (the CronJob's `lastSuccessfulTime` stays in its status). The
+  second half holds through an outage of every pod (new pods carry no labels until Vault
+  starts), so a Vault down for a week keeps paging; a fresh or rebuilt cluster stays quiet until
+  its init.
+- **Sealed: one warns, two page.** One sealed pod costs the failure tolerance, not the service
+  (`VaultSealed`, warning); two or more of three leave no quorum (`VaultSealedQuorum`,
+  critical, one alert instead of one per pod). `VaultUnavailable` covers the rest of "no server
+  ready" (Pending, crash loops).
+- **A lost audit write pages.** `VaultAuditFailing` is critical (the lead's call): the audit
+  trail is the one record of who read which secret, a failure means requests go unrecorded (or,
+  with both devices failing, refused), and its causes (a full audit volume, a broken device)
+  only get worse.
 - **The snapshot pages.** `VaultSnapshotStale` is critical at 13 hours (two missed runs): the
   bucket's lifecycle deletes snapshots 30 days after they were written and the versions 7 days
   later, so a job broken for 37 days leaves no snapshot to restore. It counts only while a pod
-  is ready; a never-successful job pages once Vault has been ready for 13 hours.
+  is ready (a Vault that is down pages as `VaultUnavailable`, and no snapshot can be taken);
+  a never-successful job pages once Vault has been ready for 13 hours, and
+  `VaultSnapshotFailing` warns 30 minutes after the first failed run.
 - **Blind is a warning, not silence.** `VaultScrapeDown` fires when kube-state-metrics' vault
-  scrape is gone (also before the monitoring values are applied) or a server's scrape fails;
-  the server scrape counts only while the StatefulSet exists, so a cluster without Vault is
-  quiet.
+  scrape is gone (also before the monitoring values are applied), when a server's scrape fails
+  or is missing, and when Fleet sends no `kubelet_volume_stats_*` for `vault` (VaultVolumeFilling
+  would be blind). The last two count only once Vault has been initialised and while the
+  StatefulSet exists, so a cluster without Vault, or one before its init, is quiet.
+  `VaultNoActiveNode` stays quiet while every server scrape fails (blind is not leaderless).
 - **Not here:** restarts (`PodRestarting` covers `vault`), the certificate
   (`CertificateExpiring` has no namespace filter), and the log-based rules (an audit device
   that stopped, a root-token login): Loki rules need `lokitool`, which `make alerts-check` does
@@ -488,8 +511,10 @@ The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/
 
 Series budget: about 25 from `ryft/vault` (three pods; the keep list in
 `deploy/monitoring/k8s-monitoring.yaml`, the autopilot and audit series from the active node
-only, token gauges per policy), about 15 from `ryft/vault-state` (one CronJob, one StatefulSet,
-three containers), and `up` plus `scrape_samples_scraped` per target: under 60 in total.
+only, token gauges per policy), about 18 from `ryft/vault-state` (one CronJob, one StatefulSet,
+three containers, three `kube_pod_labels`), and `up` plus `scrape_samples_scraped` per target:
+under 65 in total. The pod-label allowlist adds a `kube_pod_labels` series per pod cluster-wide
+in kube-state-metrics itself, but the scrape keeps namespace `vault` only.
 
 ## Baselines
 
@@ -652,14 +677,16 @@ personal data, and until 14 days after the deploy that stopped logging health va
 The one log stream that goes to Grafana Cloud on purpose (D197, D198): namespace `vault`, from
 `alloy-daemonset` (the node's log files) to the stack's Loki, through the chart's own
 `podLogsViaLoki` pipeline (`deploy/monitoring/k8s-monitoring.yaml`, **off** until the steps in
-OPERATIONS → Vault logs are done). Fleet Management's pod-log pipeline excludes `ryft-.*|vault`,
-so nothing of it arrives shaped by remote configuration.
+OPERATIONS → Vault logs are done). Fleet Management's pod-log pipeline excludes `ryft-.*|vault`
+and Beyla skips `vault`, both set before the Vault add-on is applied (OPERATIONS → Before the
+Vault add-on is applied, with the Explore check that `{namespace="vault"}` is empty), so
+nothing of it arrives shaped by remote configuration.
 
 | Stream label | Values |
 | --- | --- |
 | `cluster`, `namespace`, `pod`, `container` | from the pod (`namespace` is always `vault`) |
 | `job` | `ryft/vault` |
-| `stream` | `server` (Vault's JSON log, a line with `@level`), `audit` (the stdout audit device: a line with `type` `request` or `response`), `other` (the start script, the snapshot job) |
+| `stream` | `server` (Vault's JSON log: a line with `@level` from container `vault`), `audit` (the stdout audit device: a line with `type` `request` or `response`), `other` (the start script, the snapshot job: its init container's `@level` lines too) |
 
 Nothing else becomes a label or structured metadata, and no line is rewritten: a value inside
 a line (a path, an accessor) never turns into a stream. Queries:
@@ -677,7 +704,8 @@ policies (a service's Kubernetes role, the operator's admin identity), token acc
 Secret values, tokens and request or response bodies' values are HMAC-SHA256'd with the audit
 device's salt (Vault's default; no `hmac_accessor=false`, no unhashed keys), so a line names
 *which* secret was read by *whom*, never its value. No tester data: the testers never talk to
-Vault, and no RYFT service writes personal data into it.
+Vault. Vault does hold a little personal data as KV values (the e-mail addresses of the smoke
+user and of the App Review demo account); the audit lines carry those only as HMACs.
 
 **Data protection.**
 
@@ -685,16 +713,23 @@ Vault, and no RYFT service writes personal data into it.
   right (integrity and confidentiality of the processing systems, and detecting their misuse).
   The copy in Grafana Cloud survives the cluster and the audit volume, which a compromised
   Vault host could alter; access to the stack is limited to its members (OPERATIONS →
-  Monitoring: keep them to yourself).
+  Monitoring: keep them to yourself). It is **not** tamper-proof: anyone with a token that has
+  `logs:write` on the stack (`GC_TOKEN`, which the collectors hold) can push lines with
+  `stream="audit"`. It is evidence only together with the file device on the audit volume.
 - **Processor:** Grafana Labs, already the processor for the metrics (stack in London, D86;
-  the UK has an adequacy decision). The audit lines add personal data of one person, the
-  operator (a pseudonymous OIDC subject, D198, and the address of an operator session), and none of the
+  the UK is a third country with an adequacy decision, Art. 45 GDPR). The audit lines add
+  personal data of one person, the operator (a pseudonymous OIDC subject, D198; the client
+  address of an operator session is `127.0.0.1`, through the port-forward), and none of the
   testers. Retention is the stack's log retention (Grafana Cloud → the stack → Usage/limits).
 - **Your steps, before turning the pipeline on:** accept Grafana Labs' data processing
   agreement (grafana.com → Legal → DPA, in the organisation's settings), and add an entry to
   the record of processing activities: purpose "security monitoring of access to credentials",
-  categories "the operator's pseudonymous subject, IP addresses of operator sessions, service account names,
-  timestamps", recipient Grafana Labs (processor), the retention above, no transfer outside
-  the EU/UK.
+  categories "the operator's pseudonymous subject, client addresses (pod IPs; `127.0.0.1` for
+  operator sessions), service account names, timestamps, HMACs of KV values", recipient
+  Grafana Labs (processor), the retention above, and the transfers with their mechanisms: the
+  UK (the stack's region; adequacy decision) and the US entities and sub-processors Grafana's
+  DPA lists (the mechanism the DPA names for each, for example the EU-US Data Privacy Framework
+  or Standard Contractual Clauses). **To verify** against the DPA and its sub-processor list
+  before the entry is written; do not record "no transfer".
 - **The privacy policy does not change:** it covers the app's users, whose data never reaches
   Vault or its audit log.

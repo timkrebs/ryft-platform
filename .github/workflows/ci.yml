@@ -560,7 +560,9 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+        run: |
+          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA" infra/aws/kubernetes/charts/vault-extras
       # From here on every step that renders may only use git over file:// (see `manifests`). The
       # terraform step of the script, which downloads modules, lifts it for itself.
       - name: Git over file:// only, after the checkout

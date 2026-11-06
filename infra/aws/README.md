@@ -197,7 +197,9 @@ it). After Step A, reverting T12-g by git needs the break-glass.
 Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass` (bool),
 `admission_actions` (a one-plan override per binding), `admission_enabled` (a plan-only
 override of the file; never apply with it set) and `admission_scoped_rbac_file` (a test knob
-for the T12-g precondition).
+for the T12-g precondition). For Vault: `vault_collector_peer` (bool, default false), which
+admits the monitoring collector to Vault's 8200; true only after your own init (OPERATIONS →
+Vault metrics (once)), false again before a restore into a fresh cluster.
 
 Outputs: `admission_enabled` and `admission_binding_actions` (what each binding is given).
 Three `lifecycle.precondition`s on the release stop a plan that sets `argocd` to deny while
@@ -228,7 +230,9 @@ Chart values worth knowing (`charts/admission-policy/values.yaml`):
 - `images.vault`, `images.awsCli`: the anchored, digest-pinned image patterns P2 admits in
   `vault`. `awsCli` is the snapshot CronJob's upload image (AWS CLI 2.39.5 by index digest), the
   same reference as `vault_snapshot_aws_cli_image` in `kubernetes/vault.tf`; change both together
-  (`tests/addons.tftest.hcl` and `scripts/tests/vault_extras_chart_test.sh` compare them).
+  (`tests/addons.tftest.hcl` and `scripts/tests/vault_extras_chart_test.sh` compare them). P2
+  admits it only in a pod whose `serviceAccountName` is `vault.snapshotServiceAccount`
+  (`vault-snapshot`, the one with the Pod Identity association).
 - `vault.*`: what P13 lets the `ryft-vault` issuer sign (the server Certificate `vault-tls`
   with its DNS names, IPs and usages; the per-namespace CA Certificate `vault-ca` with the
   common name `vso.<namespace>` and no SAN), the one user that may create a CertificateRequest

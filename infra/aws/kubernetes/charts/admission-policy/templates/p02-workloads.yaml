@@ -5,14 +5,15 @@ what Argo applies) and `pods` (what controllers create at runtime), each twice: 
 (`-vault`, namespaceSelector In [vault]) and one for everything else (NotIn [vault]), so vault's
 can go to deny before the ryft-* steps B and C.
 
-In vault P2 judges images only: the Vault image running /bin/sh, under any service account, is
-admitted. What a pod there may do is bounded by RBAC (only Terraform writes in vault) and by P12
+In vault P2 judges images only (and the AWS CLI's service account): the Vault image running
+/bin/sh, under any service account, is admitted. What a pod there may do is bounded by RBAC (only Terraform writes in vault) and by P12
 (#121: Argo CD writes nothing in vault).
 
 Images: ryft-<svc> runs <registry>/<svc>:<7 hex> (ryft-smoke runs the migrate image),
 ryft-rabbitmq the broker's digest-pinned image, rabbitmq-system only the two operators
 with command [/manager], vault only images.vault and images.awsCli (both pinned by digest;
-an empty awsCli admits no AWS CLI); no image volumes anywhere. The ryft-* rules below on
+an empty awsCli admits no AWS CLI; the AWS CLI only in a pod whose serviceAccountName is
+vault.snapshotServiceAccount); no image volumes anywhere. The ryft-* rules below on
 commands, args, tokens and vault-auth-token do not apply in vault: the chart's start script
 is a command, and Vault (TokenReview) and the snapshot job (a projected token with audience
 vault) need their tokens. In ryft-*: no command (exec probes and

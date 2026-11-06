@@ -183,13 +183,25 @@ eq "$tmp/default.yaml" "$POD | .spec.containers[0].env | map({\"key\": .name, \"
   "{\"AWS_REGION\":\"eu-central-1\",\"BUCKET\":\"$BUCKET\",\"BUCKET_OWNER\":\"123456789012\",\"SNAPSHOT_KEY_ARN\":\"$KEY_ARN\"}" \
   "the upload names the bucket, its owner and the key's full ARN"
 script() { yq ea "$POD | .spec.$1.args[0]" "$tmp/default.yaml"; }
-for want in 'token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login"' 'export VAULT_TOKEN="$token"' "trap 'vault token revoke -self" \
-  'vault operator raft snapshot save /work/vault.snap' 'vault operator raft snapshot inspect /work/vault.snap'; do
+for want in 'token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login"' 'export VAULT_TOKEN="$token"' "trap 'exit 143' TERM INT" \
+  "trap 'rc=\$?; [ \"\$rc\" = 0 ] || rm -f /work/vault.snap' EXIT" \
+  'vault operator raft snapshot save /work/vault.snap & wait $!' 'vault operator raft snapshot inspect /work/vault.snap >/dev/null & wait $!'; do
   script initContainers[0] | grep -qF -- "$want" || fail "the snapshot script lacks: $want"
 done
+# The traps come before the login: a TERM during the login still ends through the EXIT trap.
+[ "$(script initContainers[0] | grep -nF "trap 'exit 143' TERM INT" | cut -d: -f1)" -lt "$(script initContainers[0] | grep -nF 'token=$(vault write' | cut -d: -f1)" ] ||
+  fail "the snapshot script must set its traps before the login"
+for c in initContainers containers; do
+  script "$c[0]" | sh -n || fail "the $c[0] script does not parse"
+done
+eq "$tmp/default.yaml" "[$POD | .spec.volumes[] | select(.name == \"work\") | .emptyDir]" '[{"medium":"Memory","sizeLimit":"64Mi"}]' \
+  "the snapshot lives in memory (64Mi), never on the node's disk"
+eq "$tmp/default.yaml" "[$POD | (.spec.initContainers[], .spec.containers[]) | .resources.limits.memory]" '["320Mi","320Mi"]' \
+  "each container's memory limit holds the tmpfs snapshot (64Mi) as well"
+script initContainers[0] | grep -qF 'token revoke' && fail "the snapshot token may not revoke itself (no default policy): no revoke attempt"
 script initContainers[0] | grep -qE 'export VAULT_TOKEN="?\$\(' && fail "the login must be assigned before the export (export hides a failed substitution from -e)"
-for want in 'aws s3api put-object' "--if-none-match '*'" '--expected-bucket-owner "$BUCKET_OWNER"' '--server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN"' \
-  '--key "$key"' 'key="snapshots/vault-'; do
+for want in 'set -o pipefail' "trap 'exit 143' TERM INT" "trap 'rm -f \"\$f\"' EXIT" 'aws s3api put-object' "--if-none-match '*'" '--expected-bucket-owner "$BUCKET_OWNER"' \
+  '--server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN"' '--checksum-algorithm SHA256' '--key "$key"' 'key="snapshots/vault-'; do
   script containers[0] | grep -qF -- "$want" || fail "the upload script lacks: $want"
 done
 script containers[0] | grep -qE 'aws s3 (cp|sync|mv)|create-multipart|upload-part' && fail "the upload must be one put-object (multipart would need kms:Decrypt)"

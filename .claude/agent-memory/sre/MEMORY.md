@@ -1,2 +1,0 @@
-- [Worktree hooks](feedback_worktree_hooks.md) — complex bash is refused in isolated runs; use scratchpad scripts and file tools
-- [Vault CE rollout](project_vault_ce_rollout.md) — PR order, owners, what ships off (logs), as of 2026-11-06
