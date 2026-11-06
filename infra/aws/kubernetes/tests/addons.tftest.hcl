@@ -1283,9 +1283,10 @@ run "vault_release_does_not_wait_and_starts_after_its_identity" {
   assert {
     condition = (
       can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.cluster_issuers[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", ""))) &&
-      can(regex("depends_on\\s*=\\s*\\[[^\\]]*module\\.vault_snapshot_pod_identity[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*module\\.vault_snapshot_pod_identity[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", ""))) &&
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.admission_policy[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
     )
-    error_message = "the extras' Certificates need the ryft-vault ClusterIssuer first, and the snapshot CronJob's pods the association (credentials are injected at pod creation only)"
+    error_message = "the extras' Certificates need the ryft-vault ClusterIssuer first, the snapshot CronJob's pods the association (credentials are injected at pod creation only), and a new AWS CLI pin P2's admission first (the admission release)"
   }
   assert {
     condition = alltrue([for r in ["kubernetes_namespace_v1\" \"vault", "helm_release\" \"vault_extras", "helm_release\" \"vault"] :

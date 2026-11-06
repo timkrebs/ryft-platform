@@ -124,6 +124,7 @@ snapshot restore into kind succeeds in CI; every alert has a test; HCP is delete
 3. Merge V2; check the pods (sealed, Running); init and bootstrap (V3 docs).
 4. `infra/vault` apply with the Kubernetes target through the port-forward; run `vault_diff.sh`.
 5. Load the alert rules (V4); first snapshot and its alert.
+   *(Superseded by D194: the first snapshot is taken by hand before the rules are loaded. Kept as the historical plan.)*
 6. Cutover groups, with the verify commands in each PR body.
 7. Soak 14 days; decommission.
 

@@ -2547,7 +2547,17 @@ repository cannot set them):
    instruments Go TLS inside the process and would record the request paths Vault serves.
 3. **Check, after #145's apply and before bootstrap step 3** (Vault → Bootstrap; step 4
    switches the audit devices on). In Explore, over the last hour:
-   - Loki: `{namespace="vault"}` returns nothing;
+   - Loki: `{namespace="vault", container=~".+"}` returns nothing (pod logs carry a `container`
+     label). The wider `{namespace="vault"}` may return two kinds of streams that are expected
+     and are not Vault's output: k8s-manifest-tail's (the Pod and StatefulSet objects of every
+     namespace, `vault`'s included, as manifests) and Kubernetes events (if a Fleet pipeline
+     collects them: scheduling, probe and volume events). Tell them apart in the label browser
+     (`job`, `service_name`, `source`); **to verify** the labels both carry on the stack. A
+     stream with a `container` label, or any line that looks like Vault's own (`@level`,
+     `@message`, audit JSON with `"type":"request"`), is the reason to stop. **Pass** only when
+     both hold: the narrowed query returns nothing, **and** every stream the wider
+     `{namespace="vault"}` returns is one of the two named kinds (manifest-tail or events);
+     a stream you cannot place is a stop as well;
    - Prometheus: `count by (__name__) ({k8s_namespace_name="vault"})` returns nothing (Beyla's
      series carry `k8s_namespace_name`; **to verify** the label name on one RYFT series);
    - Tempo: `{resource.k8s.namespace.name="vault"}` returns no trace.
@@ -2562,9 +2572,19 @@ labelled, and off until you switch it on.
 
 The in-cluster Vault is scraped by `alloy-deployment` (jobs `ryft/vault` and
 `ryft/vault-state`, OBSERVABILITY → Collection and → Vault). Once, after this PR's applies, in
-this order. Before it: #145 applied (three pods running, `0/1` ready), the hard gates G1-G4
-hold (Vault → Hard gates), #151 merged, the bootstrap done and PR 3b's apply has written the
-roles (the baseline in Vault → Terraform through the port-forward lists `vault-snapshot`).
+this order. Before it: #145 applied, the hard gates G1-G4 hold (Vault → Hard gates), #151
+merged, the bootstrap done (so the three pods are `1/1` ready and one is active; `0/1` is the
+state before the init only), PR 3b's apply has written the roles (the baseline in Vault →
+Terraform through the port-forward lists `vault-snapshot`), and **the first snapshot has been
+taken by hand** (Vault → Snapshots → The first snapshot: `lastSuccessfulTime` set).
+
+The last one is a precondition of the alerts, not an extra. Their "initialised" gate has two
+halves (OBSERVABILITY → Alerts → Vault): a pod labelled `vault-initialized=true` in the last
+hour, or a snapshot that has succeeded once. Vault resets that label to `false` at every
+process start and sets it back only on unseal, so when every pod restarts and stays sealed the
+label half lapses after an hour and only the snapshot half keeps `VaultSealedQuorum` and
+`VaultUnavailable` paging. Without a successful snapshot, a Vault that is down for more than an
+hour after a restart goes quiet.
 
 1. **The collector's CA.** The scrape trusts the ryft-vault CA from the Secret `vault-ca` in
    namespace `monitoring` (infra/vault generates a `vault-ca` Certificate per namespace, #151;
@@ -2580,8 +2600,8 @@ roles (the baseline in Vault → Terraform through the port-forward lists `vault
    shows `Initialized true` from **your own** init (bootstrap step 2), the root token is revoked
    (bootstrap step 9), and G1-G4 hold. Then `vault_collector_peer = true` in
    `infra/aws/kubernetes/terraform.tfvars` (yours, git-ignored; a `-var` would be undone by the
-   next plan without it), plan (`1 to change`: `helm_release.vault_extras`, the NetworkPolicy
-   `vault-server` gains the collector rule) and apply. The rule's selector must match the
+   next plan without it), plan (exactly `1 to change`: `helm_release.vault_extras`, the
+   NetworkPolicy `vault-server` gains the collector rule; anything else: stop) and apply. The rule's selector must match the
    running pods:
    `kubectl --context ryft-prod-euc1 -n monitoring get pods -l app.kubernetes.io/name=alloy-deployment`
    lists one pod.
@@ -2592,9 +2612,16 @@ roles (the baseline in Vault → Terraform through the port-forward lists `vault
    Vault's trust boundary; a started attempt shows in `vault operator generate-root -status`
    and in the audit stream. VSO's peer (`peers.vso`) stays off until the first cutover (#151,
    step 5a).
+   The variable closes the **pod-network** path only. The host-network `alloy-daemonset`
+   connects from its node's address, not as a pod the peer selects, and node-originated traffic
+   very likely still reaches 8200 before the init (**to verify** on the cluster). What covers
+   that path is G3 and bootstrap step 1: `Initialized true` before your own init, stop.
 3. `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` (the scrape, and kube-state-metrics with
    the pod labels `vault-initialized`, `vault-sealed`, `vault-active` in its
-   `--metric-labels-allowlist`), then `make alerts-apply` (group `ryft-vault`).
+   `--metric-labels-allowlist`), then `make alerts-apply` (group `ryft-vault`). In this order:
+   `VaultScrapeDown`'s kube-state-metrics half is not gated, so rules loaded before the
+   monitoring warn `ryft/vault-state` until that scrape runs (15 minutes after it starts
+   failing, and resolved as soon as it arrives).
 4. In Explore (Prometheus):
    - `up{job="ryft/vault"}` is 1 for each server pod, `up{job="ryft/vault-state"}` is 1, and
      `kube_statefulset_replicas{job="ryft/vault-state"}` is 3;
@@ -2658,6 +2685,14 @@ Group `ryft-vault` (OBSERVABILITY → Alerts → Vault). The Vault CLI below run
 shell (Vault, #151: the port-forward, `~/.config/ryft/vault-ca.pem`) with the admin login. The
 rules that would fire before the init are gated on "this Vault has been initialised": a server
 pod labelled `vault-initialized=true` in the last hour, or a snapshot that has succeeded once.
+The label means "unsealed at least once since this process started" (Vault resets it to `false`
+at every start; the source and its status are in OBSERVABILITY → Alerts → Vault, **to verify
+in the kind drill**), so after a restart of every pod that stays sealed only the snapshot half
+holds: the hand-run first snapshot (Vault metrics (once)) is what keeps these alerts alive then.
+
+**Known gap:** with the StatefulSet itself gone (deleted, or not yet recreated after a restore),
+`VaultUnavailable` and the server and kubelet branches of `VaultScrapeDown` are silent by design
+(they need its series); only `PodRestarting` and the snapshot alerts remain.
 The procedures for the states themselves are Vault's sections (#151); these entries say which
 one and what the alert adds.
 
@@ -2704,7 +2739,9 @@ one and what the alert adds.
   `OnDelete`). Until it is done no node maintenance: a drain would roll the pod unplanned (D204).
 - **VaultScrapeDown** (warning). `ryft/vault-state` missing: the collector
   (`kubectl --context ryft-prod-euc1 -n monitoring get pods`, its log), or the monitoring values
-  not applied. `ryft/vault` failing for a pod: `vault_collector_peer` still false (Vault
+  not applied (right after `make alerts-apply`: the rules went in before
+  `make monitoring-apply`; this half is not gated, apply the monitoring and it resolves).
+  `ryft/vault` failing for a pod: `vault_collector_peer` still false (Vault
   metrics (once), step 2), TLS in the collector's log (`x509`: the `vault-ca` Secret in
   `monitoring`, step 1), or a timeout (the vault-server NetworkPolicy's collector rule:
   `kubectl --context ryft-prod-euc1 -n vault get networkpolicy vault-server -o yaml`).
@@ -3490,20 +3527,53 @@ recovery" tutorial). It is **to verify** in the kind drill before it is ever use
 
 One pod's data volume is gone (EBS volume lost, zone gone for good) or holds stale data
 (530). The other two keep the quorum. Its node id (the pod name) is still a voter in the Raft
-configuration, so the failure tolerance is 0 until it is replaced:
+configuration, so the failure tolerance is 0 until it is replaced.
+
+**First, close the collector's path.** The replacement pod starts with a fresh claim and is
+**uninitialised** until `retry_join` has joined it to the cluster. Until then it answers
+`PUT /v1/sys/init` without a token (G3's risk) to anything that reaches its 8200. If that call
+lands, the node forms a cluster of its own, auto-unseals with the same awskms key, is labelled
+`vault-active` and joins the `vault-active` endpoints next to the real leader, splitting VSO's
+and the snapshot job's logins between two Vaults. So, by default, set the peer off before you
+start: `vault_collector_peer = false` in `infra/aws/kubernetes/terraform.tfvars`, plan (exactly
+`1 to change`, `helm_release.vault_extras`, the NetworkPolicy `vault-server` loses the
+collector rule; anything else: stop), apply. The server scrape fails until you turn it back on
+(`VaultScrapeDown` may warn). This **narrows** the window, it does not close it: the host-network
+`alloy-daemonset` reaches 8200 from its node's address whatever the variable says (Vault metrics
+(once), step 2; to verify), and so does anything else on a node. Keep the steps below short.
+
+Then, in the vault shell (the `svc/vault-active` port-forward and the admin login, G3; never
+`vault login` through `kubectl exec`):
 ```bash
 vault operator raft list-peers                  # vault-<n> Voter, not reachable
 vault operator raft remove-peer vault-<n>       # the admin login
 kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false
 kubectl --context ryft-prod-euc1 -n vault delete pod vault-<n>
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=10m
-vault operator raft list-peers                  # vault-<n> back as a voter
-vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
 ```
 The StatefulSet makes a fresh claim, and the pod joins by `retry_join` and receives the data
-from the leader. Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old
-EBS volume. It holds only barrier-encrypted data, but delete it in the EC2 console once the
-pod is healthy.
+from the leader. **Two checks before anything else**, once the pod is Ready:
+```bash
+vault operator raft list-peers                  # vault-<n> back as a Voter of this cluster
+kubectl --context ryft-prod-euc1 -n vault get endpoints vault-active -o jsonpath='{.subsets[*].addresses[*].ip}{"\n"}'
+# exactly one address: the leader's
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+```
+Both hold: put `vault_collector_peer = true` back (plan exactly `1 to change`, anything else:
+stop; apply) and check that `up{job="ryft/vault"}` is 1 for all three pods again.
+
+**Initialised alone** (`vault-<n>` missing from `list-peers`, or two addresses behind
+`vault-active`, or the new pod reporting `Initialized true` with a cluster of its own on its
+pod port-forward): treat it as G3, a compromise. In this order: first close the path (the peer
+stays `false`; if you had kept it on, set it off now as above) and stop every other change;
+then delete its claim and pod again (`kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false`,
+then the pod) so that it rejoins the real cluster; then find out who reached it (the EKS
+audit log for `pods/portforward` and `pods/exec` in `vault`, the node's connections) and
+check VSO's and the snapshot job's logins of that period against the real Vault's audit
+stream. Until it is understood, no secret is written.
+
+Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old EBS volume. It
+holds only barrier-encrypted data, but delete it in the EC2 console once the pod is healthy.
 
 ### Snapshots
 
@@ -3530,8 +3600,11 @@ lives in a memory-backed `emptyDir` (64 Mi) and is removed on every exit path, S
 included; a failed save removes its partial file.
 
 **Where.** `s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/vault-<UTC time>.snap`
-(eu-central-1), with the object's SHA-256 in its metadata (`x-amz-meta-sha256`) and as S3's
-own checksum (`--checksum-algorithm SHA256`: S3 verifies it on the upload). Kept 30 days,
+(eu-central-1), with the snapshot's SHA-256 twice: in its metadata (`x-amz-meta-sha256`, hex)
+and as S3's own checksum (`ChecksumSHA256`, base64 of the same digest). The init container
+hashes the snapshot between the save and the inspect; the upload sends that hash
+(`--checksum-sha256`), so S3 stores the object only if the bytes it receives have it: what is in
+the bucket is what was hashed and then inspected. Kept 30 days,
 then the noncurrent version 7 more (infra/aws `vault.tf`). The bucket and both keys outlive
 the cluster (`prevent_destroy`; the keys' policy denies deletion and disabling).
 
@@ -3554,11 +3627,14 @@ kubectl --context ryft-prod-euc1 -n vault get cronjob vault-snapshot   # LAST SC
 kubectl --context ryft-prod-euc1 -n vault get jobs -l app.kubernetes.io/name=vault-snapshot
 ```
 
-**The first snapshot** (the last step of this PR's apply order, after `make alerts-apply`).
-Before the init every scheduled run fails at the login (no role yet), and no alert fires then:
-no run has succeeded and no pod is ready. That holds only until the init. Once a server is
-ready, `VaultSnapshotFailing` warns 30 minutes after a failed run and `VaultSnapshotStale`
-pages after 13 hours without a success, so take the first one by hand right away:
+**The first snapshot** (right after the init and PR 3b's apply, before `make alerts-apply`: a
+precondition of the Vault alerts, Monitoring → Vault metrics (once)). Before the init every
+scheduled run fails at the login (no role yet), and no alert fires then: no run has succeeded
+and no pod is ready. That holds only until the init. Once a server is ready,
+`VaultSnapshotFailing` warns 30 minutes after a failed run and `VaultSnapshotStale` pages
+after 13 hours without a success; and until one run has succeeded, the alerts' "initialised"
+gate rests on the pod labels alone, which lapse an hour after every pod restarts sealed. So
+take the first one by hand right away:
 
 ```bash
 kubectl --context ryft-prod-euc1 -n vault create job --from=cronjob/vault-snapshot vault-snapshot-first
@@ -3568,8 +3644,12 @@ kubectl --context ryft-prod-euc1 -n vault logs job/vault-snapshot-first -c uploa
 aws s3api head-object --bucket ryft-prod-euc1-vault-snapshots-<account> --key <key> --region eu-central-1 \
   --checksum-mode ENABLED \
   --query '{sse: ServerSideEncryption, key: SSEKMSKeyId, bucketKey: BucketKeyEnabled, sha256: Metadata.sha256, s3sha256: ChecksumSHA256}'
+printf %s <sha256> | xxd -r -p | base64        # the hex digest as base64: must equal s3sha256
 kubectl --context ryft-prod-euc1 -n vault get cronjob vault-snapshot -o jsonpath='{.status.lastSuccessfulTime}{"\n"}'
 ```
+
+`sha256` (the metadata, hex, also in the upload's log line) and `s3sha256` (S3's checksum,
+base64) are one digest in two encodings; the `printf` line converts the first into the second.
 
 The last line must print a time: `create job --from` makes the CronJob the Job's owner, so the
 controller records its success, and this status is what the snapshot alerts read (and one
@@ -3612,7 +3692,9 @@ job's role cannot delete, and neither should you need to. It is empty and named
 | `incomplete snapshot, unable to read SHA256SUMS.sealed file` | the save reached a standby | `VAULT_ADDR` must be `vault-active` (the template) |
 | `AccessDenied` on `PutObject` | a missing header (key ARN, `If-None-Match`), the wrong account, or no credentials (the pod started before the association: the next run gets them) | the upload log's request; `aws eks list-pod-identity-associations --cluster-name ryft-prod-euc1 --namespace vault --region eu-central-1` |
 | `AccessDenied` mentioning `kms:Decrypt` | S3 asked for Decrypt when reusing the cached bucket key (not documented; the role holds GenerateDataKey only) | a reviewed PR adds `kms:Decrypt` with the same ViaService and context conditions to `vault_snapshot_policy_statements` |
-| `BadDigest` / `XAmzContentSHA256Mismatch` | the file changed or broke between the hash and the upload | none; the next run takes a new snapshot. Repeated: the node's memory |
+| `BadDigest` | the bytes S3 received do not have the snapshot step's hash (`--checksum-sha256`): the file changed or broke after the init container hashed it, in the `emptyDir` or on the way | none; the next run takes a new snapshot. Repeated: the node's memory |
+| `XAmzContentSHA256Mismatch` | the CLI signs the payload's hash before it sends (with a precomputed checksum it does not use the unsigned trailer): the file changed between that read and the send | as `BadDigest` |
+| `no valid hash from the snapshot step` (upload log) | `/work/vault.snap.sha256` is missing, empty or not 64 lowercase hex characters (a Job made from an edited template; the chart's init container always writes it) | the snapshot log; the next run |
 | `PreconditionFailed` (412) | an object of that name exists (two runs in one second) | none; the next run has a new name |
 | Job `DeadlineExceeded` | the Job ran over 10 minutes (the NAT, S3, a slow save). `activeDeadlineSeconds` is the Job's: at the deadline the Job fails and no further retry starts | the Job's events (`kubectl --context ryft-prod-euc1 -n vault describe job <job>`); the next schedule tries again |
 | Job `BackoffLimitExceeded` | three pods failed in a row (the first and two retries) | the logs of the last pod, as above |
@@ -3660,17 +3742,20 @@ next (the Terraform runs are yours):
    the file opens with the unseal key, so treat it as every secret. Your disk's encryption
    (FileVault) is what protects the deleted blocks; `shred` is no help on APFS (copy-on-write,
    SSD) and is not on stock macOS.
-5. **The collector peer on again**: `vault_collector_peer = true`, plan (`1 to change`) and
-   apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the restored Vault is
-   initialised, by your snapshot).
-6. **VSO syncs.** The restored Kubernetes auth reviews tokens as before (Vault's own service
+5. **The collector peer on again**: `vault_collector_peer = true`, plan (exactly `1 to change`,
+   anything else: stop) and apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the
+   restored Vault is initialised, by your snapshot).
+6. **The first snapshot by hand** (Snapshots → The first snapshot), right away. The rebuilt
+   CronJob has no `lastSuccessfulTime`, so until a run succeeds the alerts' "initialised" gate
+   rests on the pod labels alone, which lapse an hour after every pod restarts sealed.
+7. **VSO syncs.** The restored Kubernetes auth reviews tokens as before (Vault's own service
    account, D187): `kubectl --context ryft-prod-euc1 get vaultstaticsecrets -A` shows each
    synced within its `refreshAfter`. A plan of `infra/vault` shows what changed after the
    snapshot (a rotated secret, a new service): apply it.
-7. **Argo CD** syncs the workloads (app of apps); pods that started before their Secret
+8. **Argo CD** syncs the workloads (app of apps); pods that started before their Secret
    existed are restarted by VSO's `rolloutRestartTargets`, or by hand.
 
-RPO 6 h: secrets changed after the snapshot come back from step 6's plan (infra/vault holds
+RPO 6 h: secrets changed after the snapshot come back from step 7's plan (infra/vault holds
 them in its variables), so nothing is lost that Terraform knows.
 
 **The unseal key is lost** (deleted after its 30-day window, which the key policy forbids, or
@@ -3678,8 +3763,9 @@ the account is gone): no snapshot opens again. Initialise a new Vault: Vault →
 step 1, with the collector peer off as in step 2 above (the recovery keys and root token are
 the new bootstrap's). Then apply `infra/vault`: it recreates the mounts, auth, roles and
 policies and writes the KV values from its variables (`service_secrets` in
-`terraform.tfvars`, the values Terraform state holds). Then steps 5 to 7. Credentials that
-only lived in Vault (none by design today) would be lost.
+`terraform.tfvars`, the values Terraform state holds). Then steps 5 to 8, the first snapshot by
+hand (step 6) included: the new CronJob has no success yet. Credentials that only lived in
+Vault (none by design today) would be lost.
 
 **Restore drill: yearly, and after every change** to the seal, the snapshot job, the Vault
 version or the bucket's policies. Into kind on your machine, from the newest real snapshot:
