@@ -118,9 +118,13 @@ curl -sI https://api.ryftapp.de/v1/me                        # 401 without a tok
 
 If a pod is stuck in `CreateContainerConfigError`, its namespace has no `ryft-secrets`
 yet. `kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets` shows why: usually
-the Vault login. Check it by hand with `terraform -chdir=infra/vault output login_check`.
+the Vault login. Check it by hand with `terraform -chdir=infra/vault output login_check`
+(HCP only). For a namespace on the Vault in the cluster, in the vault shell (**Vault**):
+`vault write auth/kubernetes/login role=<svc> jwt="$(kubectl --context ryft-prod-euc1 -n ryft-<svc> create token <svc> --audience=vault --duration=10m)"`.
 Kubernetes auth needs HCP Vault to reach the EKS API (TokenReview), so
-`endpoint_public_access_cidrs` must admit Vault's egress addresses.
+`endpoint_public_access_cidrs` must admit Vault's egress addresses. A namespace already on
+the Vault in the cluster (**Vault**) reviews inside the cluster instead. Its login fails for
+other reasons: the role, `vault-ca`, or a sealed Vault.
 
 The public host only routes `/v1/*`; `/healthz`, `/readyz` and `/metrics` stay internal.
 Port 80 is not exposed at all, so clients must use `https://`.
@@ -2932,16 +2936,574 @@ resource "aws_cloudwatch_metric_alarm" "admission_writes" {
 Restrict to the audit stream if the filter matches too much (the group also holds the
 API server and authenticator logs, which are not JSON audit events and never match).
 
-<!-- BEGIN PR 4 (#153): the bodies of the stubs "### Snapshots" and "### Disaster recovery" under
-#151's "## Vault". Until #151 merges they stand here under a heading of their own. On merging
-origin/main after #151: replace #151's two stubs (each its "PR 4" comment and "(PR 4.)")
-with the two subsections below, then delete the "## Vault snapshots" heading, its paragraph
-and both BEGIN/END markers. -->
-## Vault snapshots and disaster recovery
+## Vault
 
-The two subsections that #151's `## Vault` (bootstrap, day 2, the failure cases) keeps for
-this PR. The vault shell, the hard gates and the bootstrap steps referred to below are that
-section's.
+Two Vaults during the migration (D186, D191). **HCP Vault Dedicated** (`admin/ryft/<svc>`)
+serves every namespace today. **Vault Community Edition in the cluster** (namespace `vault`,
+three Raft pods, KMS auto-unseal, `infra/aws/kubernetes/vault.tf`) takes them over one PR
+at a time. `infra/vault` writes both, from the same values, on every apply
+(`infra/vault/README.md` → The Vault in the cluster). Which one a namespace reads is in git:
+`local.committed_vso_on_k8s` in `infra/vault/targets.tf`, and the `address:` line of
+`deploy/k8s/overlays/vault-namespaces/<svc>/vault.yaml`. One switch per PR: `write_k8s` and
+`vso_on_k8s` never change in the same PR.
+
+The Vault in the cluster has no Ingress and no LoadBalancer. Every operator command below
+goes through `kubectl port-forward` on your machine, with the CA from the Secret
+`vault/vault-ca` (only `ca.crt`, never `vault-tls`, which holds the server's key).
+
+**Two shells, never mixed.** The *vault shell* exports `VAULT_ADDR`, `VAULT_CACERT` and
+`VAULT_TOKEN` for the Vault in the cluster and is for the vault CLI only. The *Terraform
+shell* has none of them (the HCP provider would read them) and holds only the HCP token and
+`TF_VAR_vault_k8s_token` (**Terraform through the port-forward**). `infra/vault/README.md` →
+Shell rules says the same.
+
+**Where these commands run.** In a standalone terminal (Terminal.app or iTerm) with session
+restore and scrollback saving off. Not in the VS Code integrated terminal (it restores
+scrollback), not in tmux or screen with logging, and never through an agent's or assistant's
+shell: init output, recovery keys, root and admin tokens and the OIDC client secret pass
+through it.
+
+```bash
+# The vault shell (each time). History off: tokens and the OIDC client secret pass through it.
+unset HISTFILE VAULT_TOKEN VAULT_NAMESPACE VAULT_SKIP_VERIFY VAULT_TLS_SERVER_NAME VAULT_CAPATH VAULT_CACERT_BYTES TF_VAR_vault_k8s_token
+umask 077 && mkdir -p ~/.config/ryft
+kubectl --context ryft-prod-euc1 -n vault get secret vault-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > ~/.config/ryft/vault-ca.pem
+openssl x509 -in ~/.config/ryft/vault-ca.pem -noout -subject -enddate   # the ryft-vault CA
+export VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem"
+kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200 >/dev/null &   # after the init
+```
+
+### Hard gates (before the bootstrap)
+
+Do not start the bootstrap, or the PR that switches `write_k8s` on, unless all four hold:
+
+- **G1. The admission layer guards `vault`.** D180 Step 0 (#47) applied, and P12 (#121),
+  P13 and the `vault` branches of P1, P2 and P3 in **Deny**. Merged is not enough: a
+  merged binding starts in Audit. Until all of them deny, an Argo CD controller token
+  can run a pod in `vault` as the service account `vault`, and so reach KMS, TokenReview
+  and the Raft data. Check:
+  ```bash
+  kubectl --context ryft-prod-euc1 get validatingadmissionpolicybindings \
+    -l 'admission.ryft.dev/key in (namespaces-vault,workloads-templates-vault,workloads-pods-vault,netpol-vault,vault-trust,argo-scope)' \
+    -o custom-columns='KEY:.metadata.labels.admission\.ryft\.dev/key,ACTIONS:.spec.validationActions,BREAKGLASS:.metadata.labels.admission\.ryft\.dev/break-glass'
+  # six or more rows covering all six keys, every ACTIONS [Deny Audit], BREAKGLASS <none>
+  for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i "$v" validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller; done
+  kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=system:serviceaccount:argocd:argocd-application-controller
+  # all three: no
+  ```
+- **G2. The monitoring stack is inside Vault's trust boundary.** alloy-daemonset is
+  privileged with hostPID, and alloy-operator and VSO read Secrets cluster-wide. Either
+  accept that in D186/D194 ("Vault is as safe as the monitoring stack and VSO"), or reduce
+  it first. The Art. 32 description must not claim Vault is isolated from the monitoring
+  vendor.
+- **G3. Never `vault login` inside a pod** (`kubectl exec`): it writes the token to
+  `~/.vault-token` on the pod's disk. Always use the port-forward, `-no-store` and
+  `VAULT_TOKEN` in a shell. **If `vault status` shows `Initialized true` before your own
+  init, stop.** Someone else initialised it and holds keys you don't have. Treat it as a
+  compromise: no secret goes in, and you wipe it (below).
+- **G4. `prevent_destroy`** on the namespace `vault` and both Helm releases (in #145).
+
+### The operator's Google account
+
+The admin login is one Google Workspace account, bound by its numeric subject. Whoever holds
+that account (and a port-forward) holds every RYFT credential. Today the Workspace's only
+user is the published support address and the super admin. Choose one, before step 7:
+
+- **A dedicated user** (recommended): for example `vault-admin@ryftapp.de`, not a super
+  admin, no mail alias, never published, 2-Step Verification with security keys only. The
+  admin role is bound to its subject.
+- **The existing account, hardened:** 2-Step Verification with security keys only, or
+  Google's Advanced Protection Program.
+
+Either way, use a dedicated browser profile for the Vault login (no extensions), so the
+OIDC callback and the Google session live nowhere else. **If the account is lost or
+compromised:** **Break-glass**, then
+`vault token revoke -mode=path auth/oidc` (every OIDC token at once), then
+`vault delete auth/oidc/role/admin`, or rebind it (step 7d, with the subject check) to an
+account you control. Then rotate the Google client secret (step 7a) and look through the
+audit stream for that subject's actions.
+
+### Bootstrap
+
+Once, from a clean checkout of `main` (`git status` empty). Precondition: the Vault add-on
+is applied and `kubectl --context ryft-prod-euc1 -n vault get pods -o wide` shows `vault-0`,
+`vault-1` and `vault-2` `Running`, `0/1` ready, in three zones. Uninitialised means not
+ready, by design (D196). Nothing below goes into a chat, a PR or a log. Start the vault
+shell above, but without the `svc/vault-active` port-forward: before the init no pod is
+ready, so the Service has no endpoint. Have all five share places at hand: the drill in step
+10 needs share 5 before it leaves the house.
+
+**1. All three uninitialised (G3).**
+```bash
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-0 8200:8200 >/dev/null &
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-1 8201:8200 >/dev/null &
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-2 8202:8200 >/dev/null &
+for p in 8200 8201 8202; do vault status -address="https://127.0.0.1:$p" | grep -E 'Seal Type|Initialized|Sealed'; done
+# each: Seal Type awskms, Initialized false, Sealed true
+```
+Any `Initialized true`: stop (G3). Wipe it. Delete the pods and their claims
+(`kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-0 audit-vault-0 …` for all
+three, then the pods), then the retained EBS volumes in the EC2 console. Before anything
+else, find out who reached the pods: the EKS audit log for `pods/portforward` and
+`pods/exec` in `vault`.
+
+**2. Init on vault-0.** KMS seals it, so these are **recovery** keys: they decrypt nothing,
+but any three of them make a root token.
+```bash
+vault operator init -recovery-shares=5 -recovery-threshold=3
+```
+Write the shares for paper (three of the five, **Recovery keys**) straight from the screen,
+never through the clipboard. Copy the two for 1Password into their items one at a time, then
+empty the clipboard: `pbcopy </dev/null`. Keep the initial root token only in this shell (next
+line). Then clear the terminal and its scrollback (⌘K).
+```bash
+read -rs VAULT_TOKEN && export VAULT_TOKEN      # paste the initial root token: not echoed, not in history
+pbcopy </dev/null
+```
+The default is no PGP (D203). With two hardware keys:
+`-recovery-pgp-keys=k1.asc,…,k5.asc -root-token-pgp-key=k1.asc` instead.
+
+**3. The joins.** `vault-1` and `vault-2` join by `retry_join` and unseal by KMS on their
+own, within a minute or two.
+```bash
+vault status                                    # Initialized true, Sealed false, HA Mode active
+vault operator raft list-peers                  # vault-0 leader, vault-1 and vault-2 follower, all Voter true
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # all 1/1, one vault-active=true
+```
+
+**4. Audit, before anything is written** (addendum 1.10, D198). There are two devices,
+and Vault keeps serving while one of them records. The options are explicit, so a changed
+default cannot switch raw logging on. A fresh Vault audits three request headers
+(`correlation-id`, `x-correlation-id`, `user-agent`); they go, so that no request header
+reaches the audit lines.
+```bash
+vault audit enable file file_path=/vault/audit/audit.log log_raw=false hmac_accessor=true format=json
+vault audit enable -path=stdout file file_path=stdout log_raw=false hmac_accessor=true format=json
+vault audit list -detailed                      # file/ and stdout/, log_raw false on both
+vault delete sys/config/auditing/request-headers/correlation-id
+vault delete sys/config/auditing/request-headers/x-correlation-id
+vault delete sys/config/auditing/request-headers/user-agent
+vault read sys/config/auditing/request-headers  # headers map[]
+```
+`stdout` goes to the node's container log, and from there by alloy-daemonset (namespace
+`vault` only) to Grafana Cloud Logs for 14 days (D197). `log_raw=true` on either device
+would hand every credential to a third party. If it ever happens, rotate everything
+(Data protection (logs) → Vault). **To verify** in kind: that 2.2.1 still enables audit
+devices over the API with these options, and that the three headers stay deleted after a
+pod restart (step 5 shows it: run the `read` again then).
+
+**5. Auto-unseal works without you.**
+```bash
+kubectl --context ryft-prod-euc1 -n vault delete pod vault-2       # its port-forward (8202) ends here
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-2 --timeout=5m
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 again
+vault read sys/config/auditing/request-headers  # still headers map[]
+```
+
+**6. The policies and the token role from git** (reviewed in `infra/vault/bootstrap/`,
+checked at every plan by `bootstrap.tf` and held to an allowlist by `tests/vault.tftest.hcl`):
+```bash
+vault policy write admin     infra/vault/bootstrap/admin.hcl
+vault policy write terraform infra/vault/bootstrap/terraform.hcl
+vault write auth/token/roles/terraform @infra/vault/bootstrap/token-role-terraform.json
+```
+Never attach a policy to the operator's entity or to a group (`identity/*`): `admin` comes
+from the OIDC role only, so deleting or rebinding that role is the whole revocation.
+
+**7. The operator's login: OIDC with Google Workspace** (D193, D198). The second factor is
+Google's 2-Step Verification (**The operator's Google account** first). The audit lines
+carry Google's numeric subject, never an email or a name.
+
+*7a. Google (console, once).*
+1. admin.google.com → Security → 2-Step Verification: **enforced** for the account, with
+   security keys only.
+2. console.cloud.google.com → a project in the `ryftapp.de` organisation (for example
+   `ryft-ops`; no API to enable) → Google Auth Platform (APIs & Services) → OAuth consent
+   screen / Branding: user type **Internal**, so only `ryftapp.de` accounts can sign in. App name
+   `RYFT Vault`, no scopes added.
+3. Clients (Credentials) → Create client → **Web application**, name `vault-cli`,
+   authorised redirect URI exactly `http://localhost:8250/oidc/callback` (the CLI's
+   listener). No JavaScript origin and no UI callback: the Vault UI cannot log in by OIDC,
+   deliberately.
+4. Put the client ID and secret into the 1Password item `RYFT Vault OIDC client`. The secret
+   goes into Vault in the next step and nowhere else: not git, not Terraform state.
+
+*7b. Vault.* The secret goes through stdin without a trailing newline (a pasted Enter would
+become part of it, and Google would refuse it):
+```bash
+vault auth enable -path=oidc -description="Google Workspace ryftapp.de" oidc
+read -rs S                                      # paste the client secret, Enter: not echoed
+printf %s "$S" | vault write auth/oidc/config @infra/vault/bootstrap/oidc-config.json oidc_client_id="<client id>" oidc_client_secret=-
+unset S; pbcopy </dev/null
+vault read auth/oidc/config                     # discovery URL accounts.google.com, the client id; no secret shown
+```
+**To verify** here: that Google's ID tokens carry `iss` exactly `https://accounts.google.com`
+(the `bound_issuer`; the first login fails otherwise).
+
+*7c. Your subject (`sub`).* A role with the `default` policy whose tokens last 5 minutes,
+only to read the number Google identifies you by. The role itself stays until you delete it
+(below):
+```bash
+vault write auth/oidc/role/enroll @infra/vault/bootstrap/oidc-role-enroll.json
+ENROLL="$(vault login -method=oidc -no-store -token-only role=enroll)"    # the browser profile: sign in as the Vault account
+VAULT_TOKEN="$ENROLL" vault token lookup -format=json | jq -r .data.display_name   # oidc-<digits>: the digits are your sub
+VAULT_TOKEN="$ENROLL" vault token revoke -self; unset ENROLL
+vault delete auth/oidc/role/enroll
+```
+Cross-check the digits with admin.google.com → Directory → Users → the account → its user ID
+in the URL (believed to equal the OIDC `sub`: **to verify** here; if they differ, stop).
+If the login fails on a missing `hd` claim, stop. Google should send `hd` for a Workspace
+account without the `email` scope (**to verify** here). If it fails on `auth_time` or
+`max_age`, Google did not report the sign-in time (**to verify** here). If it fails with
+`request originated from invalid CIDR` (or a plain `permission denied` right after the browser
+step), the port-forward did not arrive as `127.0.0.1`: the enroll role is bound like the
+others (below, after 7d). Every fix is a reviewed change to the role files, not an ad-hoc one.
+
+*7d. The admin role, bound to you, and a check that fails closed.* `bound_subject` is the
+only thing that ties `admin` to one person (the committed file has none, on purpose). Run the
+check after **every** write of this role, here and in **Break-glass**:
+```bash
+vault write auth/oidc/role/admin @infra/vault/bootstrap/oidc-role-admin.json bound_subject="<the digits>"
+vault read -field=bound_subject auth/oidc/role/admin | grep -Eq '^[0-9]{15,}$' || { vault delete auth/oidc/role/admin; echo "STOP: admin was not bound to a subject and is deleted"; }
+vault read auth/oidc/role/admin                 # user_claim sub, bound_subject, bound_claims hd=ryftapp.de, max_age 600, token_policies [admin], ttl 1h, max 2h, bound cidrs 127.0.0.1
+ADMIN="$(vault login -method=oidc -no-store -token-only role=admin)"
+VAULT_TOKEN="$ADMIN" vault token lookup | grep -E 'display_name|policies|ttl|bound_cidrs'   # oidc-<digits>, [admin default], ~1h, [127.0.0.1]
+```
+Keep the subject in the 1Password item too, not in git. It identifies you in every audit line.
+*The loopback binding.* Three files bind to `127.0.0.1/32`, the address a port-forward is
+believed to arrive from inside the pod: `oidc-role-enroll.json`, `oidc-role-admin.json` and
+`token-role-terraform.json`.
+- **Why it should hold.** The listener is `[::]:8200` with no `x_forwarded_for`, so Vault sees
+  the peer address of the connection. containerd's port-forward is believed to dial
+  `localhost` over tcp4 first, so that peer is `127.0.0.1`. A forwarded request after a
+  step-down (to `svc/vault-active`, a new pod) still arrives from `127.0.0.1`. If it arrives
+  as `::1` instead, all three bindings fail. Each of these is **to verify** in kind.
+- **How a mismatch shows.** First as a refused login at 7c, because the enroll role is bound
+  too. Later, the same can happen after a containerd or Kubernetes upgrade (**Break-glass**).
+- **The fix** is one reviewed change to all three files: drop `token_bound_cidrs`, or set the
+  address Vault reports. `tests/vault.tftest.hcl` pins the binding
+  (`the_admin_policy_and_the_login_hold_the_reviewed_shape`), so its asserts change in the same
+  commit.
+- **A wrong CIDR cannot lock you out at the bootstrap.** Both OIDC roles are first used in 7c
+  and 7d, while the root token from step 2 stays valid until step 9. Repair with it, then run
+  7c again. After step 9, generate-root needs no login (**Break-glass**).
+
+**8. What the terraform token can and cannot do.** It is admin-equivalent for its hour, not a
+sandbox (`bootstrap/terraform.hcl.tftpl` has the reasoning). It reads every credential, and it
+rewrites the policy of any role it manages (each service's, and `snapshot` of the snapshot
+job's `vault-snapshot`), which a Kubernetes token for that role's service account then turns
+into those rights. What it cannot do: write any other policy (`admin`, `terraform` or `default`
+in any spelling), give a role any but its own policy, namespace and service account, re-type the auth mount or point it outside the cluster,
+switch audit HMAC off on a tune, touch audit, seal, Raft, generate-root, the OIDC login,
+identities or tokens, renew itself or be used anywhere but through the port-forward. Mint one
+from the admin login and check:
+```bash
+TFTOK="$(VAULT_TOKEN="$ADMIN" vault token create -role=terraform -display-name=terraform -field=token)"
+for p in sys/mounts/kv-api sys/mounts/kv-api/tune kv-api/data/config auth/kubernetes/role/api sys/policies/acl/api \
+         sys/mounts/auth/kubernetes sys/mounts/auth/kubernetes/tune \
+         sys/policies/acl/ADMIN sys/policies/acl/Terraform sys/policies/acl/Default "sys/policies/acl/admin " \
+         sys/policies/acl/admin sys/policies/acl/Snapshot sys/policies/acl/other auth/kubernetes/role/other sys/mounts/kv-other \
+         sys/audit/file sys/config/auditing/request-headers auth/oidc/config auth/oidc/role/admin \
+         sys/storage/raft/snapshot sys/generate-root/attempt identity/entity auth/token/create; do
+  printf '%-40s %s\n' "$p" "$(VAULT_TOKEN="$ADMIN" vault token capabilities "$TFTOK" "$p")"
+done
+# the first seven: their capabilities (sys/mounts/auth/kubernetes read only); every one after them: deny
+VAULT_TOKEN="$ADMIN" vault token lookup "$TFTOK" | grep -E 'policies|renewable|ttl|bound_cidrs'   # [default terraform], false, ~1h, [127.0.0.1]
+VAULT_TOKEN="$TFTOK" vault write auth/kubernetes/role/api token_policies=admin bound_service_account_names=api bound_service_account_namespaces=ryft-api   # must say: permission denied
+VAULT_TOKEN="$TFTOK" vault token revoke -self; unset TFTOK
+```
+A capability listing does not show parameter limits: the `write` above probes one of them.
+Never run Terraform with `TF_LOG` at `DEBUG` or above while `TF_VAR_vault_k8s_token` is set:
+debug logs can carry request details, and the token must not reach a log file.
+
+**9. Revoke the root token.** From now on root exists only through **Break-glass**.
+```bash
+vault token revoke -self                        # VAULT_TOKEN is still the root token
+export VAULT_TOKEN="$ADMIN"
+for a in $(vault list -format=json auth/token/accessors | jq -r '.[]'); do
+  vault token lookup -format=json -accessor "$a" | jq -r 'select(.data.policies | index("root")) | .data.accessor'
+done                                            # prints nothing: no root token left
+vault list auth/oidc/role                       # admin only (enroll deleted in 7c)
+vault auth list                                 # token/, oidc/ only (kubernetes/ comes with PR 3b)
+vault token revoke -self; unset VAULT_TOKEN ADMIN
+kill $(jobs -p) 2>/dev/null                     # the remaining port-forwards (vault-2's ended in step 5)
+```
+
+**10. Verify every share once** (**Recovery keys** → Drill), now, while all five are still
+here. Then take the off-site share away, and record the custody line below. After that the
+next step is the PR that sets `committed_write_k8s = true` (PR 3b).
+
+### Recovery keys
+
+Vault unseals itself with KMS, and the five recovery keys decrypt nothing. Any three of them
+create a root token (`vault operator generate-root`), so three keys plus a port-forward are
+full control of every RYFT credential. Losing three removes the break-glass path. Terraform
+state still rebuilds every value: a fresh Vault and `infra/vault` from state, hours, no
+credential lost.
+
+One person holds them, in three places: one password manager vault and two on paper, one of
+them off site. No place holds more than two shares, so losing any one place leaves three and
+stealing any one yields at most two (D203). Which share is where, and the off-site place, are
+recorded in the 1Password break-glass vault, not in this public repository. Never record key
+material, a photo of it, or the map anywhere else.
+
+| Init date | Shares / threshold | PGP | Last verification |
+| --- | --- | --- | --- |
+| (after the bootstrap) | 5 / 3 | no | (after the bootstrap) |
+
+**Drill: yearly, and after every rekey.** Run **Break-glass** twice, with two different sets
+of three shares that together use all five. Revoke each token at once. Each run proves its
+shares and the audit path. Once the log rules exist (`VaultRootTokenUsed`, group
+`ryft-vault-logs`, D199: a follow-up to PR 4, which needs `lokitool`), it must fire both times;
+until then, find the two root logins in the `stdout` audit stream
+(`{namespace="vault", stream="audit"} | json | auth_display_name="root"` once Vault's log
+pipeline is on, OBSERVABILITY → Vault's logs). Update *Last verification*. Run
+it where all shares are (the off-site one comes home for the drill, or the drill goes to it).
+
+**A place is lost or exposed:** rekey the same day with three remaining shares, then
+redistribute all five:
+```bash
+vault operator rekey -target=recovery -init -key-shares=5 -key-threshold=3
+vault operator rekey -target=recovery -nonce=<nonce>      # three times, one share per prompt
+```
+
+### Break-glass
+
+When OIDC cannot log you in. The causes:
+- Google, the OAuth client, Vault's egress to Google, the OIDC config or the admin policy is
+  broken;
+- the Google account is lost;
+- the loopback binding stopped matching after a containerd or Kubernetes upgrade. The login
+  says `invalid CIDR`. Repair it as in 7d's *The loopback binding*, all three files at once.
+
+In the standalone
+terminal, through the vault shell and the `svc/vault-active` port-forward, with no login:
+```bash
+unset VAULT_TOKEN
+vault operator generate-root -status            # Started false. If true: see below, never continue that attempt
+OTP="$(vault operator generate-root -generate-otp)"
+vault operator generate-root -init -otp="$OTP"            # prints the nonce
+vault operator generate-root -nonce=<nonce>               # three times: one recovery key per prompt, never on the command line
+export VAULT_TOKEN="$(vault operator generate-root -decode=<encoded token> -otp="$OTP")"
+# repair: the OIDC config or role (step 7, and step 7d's subject check after any write of auth/oidc/role/admin),
+# the admin policy (step 6). Then:
+vault token revoke -self; unset VAULT_TOKEN OTP; pbcopy </dev/null
+```
+- **An attempt is already in progress** (`-status` says Started true, or `-init` refuses):
+  never type a share into it. Its OTP is someone else's, so your shares would make *their*
+  root token. `vault operator generate-root -cancel`, start your own, and treat it as an
+  incident: `sys/generate-root/attempt` is unauthenticated, so anyone with a path to 8200
+  could have started it. Find out who (the audit stream, the EKS audit log for
+  `pods/portforward` in `vault`).
+- With auto-unseal the command takes the **recovery** keys (**to verify** in the kind run).
+- There is no second standing login (no sealed userpass): one more credential for a rare,
+  audited path.
+- Note the date and the reason under **Recovery keys**.
+
+### Terraform through the port-forward
+
+Only once `committed_write_k8s = true` (`infra/vault/targets.tf`). Until then `infra/vault`
+plans and applies as before, with no port-forward, no CA file and no second token.
+
+```bash
+# Terminal 1
+kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200
+# Terminal 2: the Terraform shell
+unset HISTFILE VAULT_ADDR VAULT_CACERT VAULT_NAMESPACE VAULT_SKIP_VERIFY VAULT_TLS_SERVER_NAME VAULT_CAPATH VAULT_CACERT_BYTES VAULT_CLIENT_CERT VAULT_CLIENT_KEY TF_LOG
+ADMIN="$(VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" vault login -method=oidc -no-store -token-only role=admin)"
+export TF_VAR_vault_k8s_token="$(VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" VAULT_TOKEN="$ADMIN" \
+  vault token create -role=terraform -display-name=terraform -field=token)"
+export VAULT_TOKEN=…                            # the HCP admin token, for the default provider
+terraform -chdir=infra/vault plan -out=tfplan
+terraform -chdir=infra/vault apply tfplan       # the same shell: the ephemeral token is not in tfplan
+VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" VAULT_TOKEN="$ADMIN" vault token revoke -self   # revokes the child too
+unset ADMIN TF_VAR_vault_k8s_token VAULT_TOKEN
+```
+- The provider `vault.k8s` takes the address (`vault_k8s_address`, loopback only), the CA
+  file (`vault_k8s_ca_cert_file`, default `~/.config/ryft/vault-ca.pem`), TLS verification
+  and `TF_VAR_vault_k8s_token` from its configuration. It still reads `VAULT_NAMESPACE`,
+  `VAULT_TLS_SERVER_NAME`, `VAULT_CAPATH`, `VAULT_CACERT_BYTES`, the client-certificate
+  variables and `VAULT_MAX_RETRIES` from the environment, so the `unset` line above matters.
+- Never set `TF_LOG` to `DEBUG` or `TRACE` in this shell while the token is set.
+- **A service added or removed** changes the policy `terraform` (`bootstrap/terraform.hcl`,
+  rendered from a plan: `infra/vault/README.md` → `bootstrap/`). An apply the token's policy
+  does not cover stops on a 403 halfway, so the order is fixed:
+  - **adding a service:** commit the regenerated file, merge, `vault policy write terraform
+    infra/vault/bootstrap/terraform.hcl` with the admin login, then the apply;
+  - **removing a service:** the apply first, then write the narrower policy.
+- A plan that hangs or fails on `127.0.0.1:8200`: the port-forward died. A leader change
+  ends it (**The leader is gone**). Restart it and run the plan again.
+- The token lives one hour and cannot be renewed. A longer session needs a new one, and so
+  does an apply from an old `tfplan`.
+- **After every apply that wrote the Vault in the cluster: the baseline.** In the vault
+  shell, with the admin login:
+  ```bash
+  vault auth list -format=json | jq -r 'keys[]'                 # kubernetes/, oidc/, token/: nothing else
+  vault list auth/kubernetes/role                               # exactly the services and vault-snapshot
+  vault list auth/oidc/role                                     # admin
+  vault policy list                                             # admin, default, root, snapshot, terraform and the services
+  vault policy read snapshot                                    # read on sys/storage/raft/snapshot, nothing else
+  vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl, token_type, token_no_default_policy}'   # vault-snapshot, vault, [snapshot], 600, service, true
+  vault read -field=token_type sys/mounts/auth/kubernetes/tune  # default-service: the terraform token cannot tune it to batch
+  vault read -field=kubernetes_host auth/kubernetes/config      # https://kubernetes.default.svc
+  vault read -field=bound_subject auth/oidc/role/admin          # your digits
+  for m in $(vault secrets list -format=json | jq -r 'keys[] | select(startswith("kv-"))'); do
+    printf '%-16s %s\n' "$m" "$(vault read -format=json "sys/mounts/${m}tune" | jq -c '.data | {audit_non_hmac_request_keys, audit_non_hmac_response_keys, passthrough_request_headers, listing_visibility}')"
+  done                                                          # every value null or empty, listing hidden or empty
+  vault read -format=json sys/mounts/auth/kubernetes/tune | jq -c '.data | {audit_non_hmac_request_keys, audit_non_hmac_response_keys}'   # empty
+  ```
+  Anything else is an incident: the terraform token did it within its hour (the audit
+  stream names the token's accessor).
+- Compare the two Vaults before a cutover and after a sync (values never printed, only
+  fingerprints) with `scripts/vault_diff.sh`, which lands in PR #152 (separate; merge it
+  first or together with this one):
+  `scripts/vault_diff.sh --context ryft-prod-euc1 --kv <svc>` (HCP `kv/` against
+  `kv-<svc>/`, per key) and `scripts/vault_diff.sh --context ryft-prod-euc1 --secret <svc>`
+  (the live Secret `ryft-secrets` in `ryft-<svc>` against the Vault's key set).
+
+### Day 2
+
+**Applying a template change (`OnDelete`).** An apply of `infra/aws/kubernetes` that changes
+the StatefulSet's pod template (chart, image, values) restarts nothing. Roll it by hand the
+same day, one pod at a time, standbys first. Otherwise the next node drain rolls it for you
+(**Node maintenance**).
+```bash
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # e.g. 0/3
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active,controller-revision-hash
+# each standby (vault-active=false), one at a time:
+kubectl --context ryft-prod-euc1 -n vault delete pod <standby>
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/<standby> --timeout=5m
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 before the next
+# then the leader: hand leadership over, restart the port-forward, delete the old leader
+vault operator step-down                        # the admin login
+kubectl --context ryft-prod-euc1 -n vault delete pod <old leader>
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # 3/3
+```
+VSO's reads go to the `vault` Service (ready pods only), so they ride through each restart.
+
+**Audit HMAC stays on, monthly and after every apply.** The tune check of **Terraform through
+the port-forward** (the baseline): no mount and no auth method may list
+`audit_non_hmac_request_keys` or `audit_non_hmac_response_keys`. A key there puts that
+field's values into both audit devices, and so into Grafana Cloud, in clear. The policy
+terraform refuses them on a tune but cannot see inside a mount's creation.
+
+**Chart bumps.** The pin is `local.charts.vault` in `infra/aws/kubernetes/main.tf`
+(hashicorp/vault). Read the chart's changelog. Then diff the render
+(`helm template` of both versions with the values from `vault.tf`) and apply. Roll as above
+if the pod template changed. An image change goes into the same PR everywhere the digest
+is: `local.vault_image` in `vault.tf`, P2's `images.vault` in
+`charts/admission-policy/values.yaml` (with a chart version bump), `tests/addons.tftest.hcl`
+and the admission-celtest fixtures
+(`grep -rl <old digest> infra/aws/kubernetes`). P2 admits exactly one Vault image, so the
+release and the policy must move in one apply. Otherwise a pod recreated in between is refused.
+
+**Minor upgrades (CE).** Community Edition supports only the latest minor, which arrives
+every 6 to 20 weeks (D186). Plan an upgrade within a few weeks of each `.0`, after its
+first patch:
+1. Read the upgrade notes for every minor in between (raft, seal, audit and auth changes).
+2. Take a snapshot (**Snapshots**).
+3. Upgrade the kind rehearsal first.
+4. Bump the image (above), apply, and roll: standbys first, the leader last after
+   `step-down`.
+
+Never skip the roll and never run mixed versions longer than the roll takes.
+
+### Node maintenance
+
+The PodDisruptionBudget `vault-server` (charts/vault-extras) keeps `minAvailable: 2` of 3 with
+`unhealthyPodEvictionPolicy: AlwaysAllow` (D196). A drain never takes a second **ready**
+pod, but a pod that is not ready can always be evicted. So before any drain, node rotation
+or node-group update:
+```bash
+kubectl --context ryft-prod-euc1 -n vault get pods -o wide -L vault-active                 # all three 1/1
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # 3/3
+kubectl --context ryft-prod-euc1 -n vault get pdb vault-server                             # ALLOWED DISRUPTIONS 1
+vault operator raft autopilot state                                                        # Healthy true, Failure Tolerance 1
+```
+- `updatedReplicas` below `replicas` means an unrolled template change. A drain recreates the
+  pod from the **current** template: an unplanned upgrade in the middle of maintenance. Roll
+  first (**Day 2**).
+- One node at a time: wait for the pod to be back `1/1` and autopilot Healthy before the next.
+  A pod whose volume sits in the drained zone stays `Pending` until a node joins in that zone.
+  That is expected.
+- **Never `--force`** a drain or a managed node-group update on this cluster. It ignores
+  Vault's and RabbitMQ's budgets. A pod that cannot be evicted for 15 minutes fails a node-group
+  update (`PodEvictionFailure`). Find out why instead of forcing.
+
+### A pod is sealed
+
+Not ready (`0/1`), but alive. Liveness accepts sealed and uninitialised, so it is not
+restarted. The `vault` Services skip it. Recovery keys cannot unseal a KMS-sealed Vault,
+so don't try.
+```bash
+kubectl --context ryft-prod-euc1 -n vault logs vault-<n> --tail=100 | grep -iE 'seal|kms|credential'
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-<n> 8202:8200 >/dev/null &
+vault status -address=https://127.0.0.1:8202   # Sealed true
+```
+The cause is almost always KMS:
+- the Pod Identity association `vault/vault` or its role;
+- egress to KMS (NetworkPolicy `vault-server`, the NAT);
+- the key disabled or its policy changed (CloudTrail: `Decrypt` by `ryft-prod-euc1-vault-unseal`).
+
+Fix the cause, then delete the pod so that it starts and unseals again. One sealed pod
+costs the failure tolerance, not the service. Two sealed pods: **Quorum loss**.
+
+### The leader is gone
+
+The active pod died or was deleted, and a standby wins the election within seconds. The
+label `vault-active=true` moves, and so does `svc/vault-active`. A port-forward to it ends
+(restart it), and VSO reconnects on its own.
+```bash
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # exactly one true
+vault operator raft list-peers                  # a leader; the old one follower (or unreachable until it is back)
+```
+If no pod is `vault-active=true` for more than a minute, there is no quorum (**Quorum loss**).
+
+**Probe codes.** `/v1/sys/health` answers:
+
+| Code | Meaning | Ready | Alive |
+| --- | --- | --- | --- |
+| 200 | active, or standby with `standbyok` | yes | yes |
+| 429 | standby (without `standbyok`) | yes, via `standbyok` | yes |
+| 501 | not initialised | no | yes |
+| 503 | sealed | no | yes |
+| 474 | a standby that cannot reach the active node (port 8201, NetworkPolicy, certificate, leader gone) | no | yes |
+| 530 | a node removed from the Raft cluster (`remove-peer`) | no | yes |
+
+On 474, check the peers' 8201 path and the leader. On 530, the node's data is stale: treat
+it as **A lost volume**, but without the `remove-peer`, which already happened.
+
+### Quorum loss
+
+Two of three voters down: no leader, and nothing is read or written. Workloads keep their
+Kubernetes Secrets and keep running, but nothing syncs or rotates. Usually the nodes or
+pods come back, and Raft recovers by itself with no action. Watch it with
+`kubectl --context ryft-prod-euc1 -n vault get pods -o wide` and `list-peers` once a
+leader exists.
+
+If two volumes are gone for good, restore from a snapshot (**Disaster recovery**). The
+alternative is Raft's manual recovery (`raft/peers.json` on the survivor, Vault's "Outage
+recovery" tutorial). It is **to verify** in the kind drill before it is ever used here.
+
+### A lost volume
+
+One pod's data volume is gone (EBS volume lost, zone gone for good) or holds stale data
+(530). The other two keep the quorum. Its node id (the pod name) is still a voter in the Raft
+configuration, so the failure tolerance is 0 until it is replaced:
+```bash
+vault operator raft list-peers                  # vault-<n> Voter, not reachable
+vault operator raft remove-peer vault-<n>       # the admin login
+kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false
+kubectl --context ryft-prod-euc1 -n vault delete pod vault-<n>
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=10m
+vault operator raft list-peers                  # vault-<n> back as a voter
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+```
+The StatefulSet makes a fresh claim, and the pod joins by `retry_join` and receives the data
+from the leader. Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old
+EBS volume. It holds only barrier-encrypted data, but delete it in the EC2 console once the
+pod is healthy.
 
 ### Snapshots
 
@@ -3137,7 +3699,6 @@ version or the bucket's policies. Into kind on your machine, from the newest rea
 
 A CI variant with a synthetic snapshot (no production key) is test-engineer's ticket; it
 proves the mechanics, not that production's snapshots open.
-<!-- END PR 4 (#153) -->
 
 ## Terraform state
 
@@ -3462,6 +4023,25 @@ scripts/seed_demo.py`.
   in Grafana → Explore → Loki that `{namespace=~"ryft-.*"}` returns nothing.
 - **Who can read them:** the AWS account's administrators (CloudWatch, `kubectl logs`).
   Nobody else.
+- **Vault (the Vault in the cluster, namespace `vault`; D197, D198):** the one exception
+  that goes to Grafana Cloud. The server log (JSON, `info`) and the `stdout` audit device
+  go from the node's container log to the stack's hosted Logs (alloy-daemonset, namespace
+  `vault` only), **14 days**. The complete local record is `/vault/audit/audit.log` on each
+  pod's audit volume. No app user's data passes through Vault. Values, including the demo
+  and smoke users' emails, are HMAC'd in every audit line (`log_raw=false`,
+  `hmac_accessor=true`, set explicitly at the bootstrap). Paths and key names are system
+  data. The only personal data is the operator's: the display name `oidc-<Google subject>`
+  (a pseudonymous number, never an email or a name: `user_claim = "sub"`, no claim
+  mappings, `verbose_oidc_logging = false`, pinned by `infra/vault/bootstrap.tf`), the
+  entity id and the time of each admin action. **Who reads it:** the stack's members, Grafana
+  Labs (processor, UK), Fleet's remote config, and in the cluster anyone with `pods/log` in
+  `vault` (argocd-server's ClusterRole included, D180). `log_raw=true` on either device
+  would hand every credential to Grafana Labs in clear. If it happens, rotate every
+  credential and ask for deletion through Loki's delete API. The same holds for a mount or
+  auth method tuned with `audit_non_hmac_request_keys` or `audit_non_hmac_response_keys`:
+  that field's values then reach both devices in clear. The policy terraform refuses those
+  keys on a tune, and the post-apply baseline (OPERATIONS → Vault → Terraform through the
+  port-forward) reads every mount's tune back.
 
 ## Backups
 
