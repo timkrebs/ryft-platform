@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Real product screenshots from the app's captures (../../app/docs/screenshots), in every
 // size and format the pages use:
-//   public/screenshots/<id>-<scheme>-<width>.{avif,webp}   three widths
-//   public/screenshots/<id>-<scheme>.png                   one fallback
-//   src/data/screenshots.json                              sizes for <Screenshot>
-// Dark captures are shown in dark mode, light ones in light mode. The 1030 × 1500 Preview
+//   public/screenshots/<id>-light-<width>.{avif,webp}   three widths
+//   public/screenshots/<id>-light.png                   one fallback
+//   src/data/screenshots.json                           sizes for <Screenshot>
+// The light captures only: the site is light only (web D19). The 1030 × 1500 Preview
 // captures carry a canvas artefact top right, so they are cropped to the part a page shows.
 // Output is committed: the build doesn't need ../../app. RYFT_APP_DIR overrides ../../app.
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,7 +16,7 @@ const SOURCE = join(resolve(ROOT, process.env.RYFT_APP_DIR ?? '../../app'), 'doc
 const OUT = join(ROOT, 'public/screenshots');
 const DATA = join(ROOT, 'src/data/screenshots.json');
 
-/** id → source capture (without -dark/-light) and an optional vertical crop in source pixels. */
+/** id → source capture (without -light) and an optional vertical crop in source pixels. */
 const SHOTS = [
   { id: 'sleep', source: 'sleep', kind: 'screen' },
   { id: 'strain', source: 'strain', kind: 'screen' },
@@ -40,7 +40,7 @@ mkdirSync(join(ROOT, 'src/data'), { recursive: true });
 const data = {};
 for (const shot of SHOTS) {
   const widths = WIDTHS[shot.kind];
-  for (const scheme of ['dark', 'light']) {
+  for (const scheme of ['light']) {
     const file = join(SOURCE, `${shot.source}-${scheme}.png`);
     if (!existsSync(file)) throw new Error(`screenshots: ${file} is missing`);
     let image = sharp(file);
@@ -75,4 +75,4 @@ for (const shot of SHOTS) {
 }
 writeFileSync(DATA, `${JSON.stringify(data, null, 2)}\n`);
 const count = readdirSync(OUT).length;
-console.log(`screenshots: ${SHOTS.length} captures × 2 appearances → ${count} files in public/screenshots/.`);
+console.log(`screenshots: ${SHOTS.length} light captures → ${count} files in public/screenshots/.`);

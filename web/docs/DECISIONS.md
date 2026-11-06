@@ -216,3 +216,143 @@ Auth, both named in its footer; every other page still makes no request beyond t
 strings are for one operator, live in the bundle, outside `messages/{en,de}.json`, and there
 is no `/de/admin`: the page sits outside `[locale]`, so the two-language checks do not apply
 to it.
+
+## D18 — English only; the German pages are gone (2026-11-05; amends D8)
+
+The user's decision of 2026-11-05: the site moves to a monochrome, light-only, typographic
+design, English only for now; the restyle follows in the next PR on top of this one. German
+goes because every page, legal text, string and OG image existed twice, and a redesign of
+twenty-four pages is half the work of twelve. So: `src/app/[locale]`, `messages/de.json`,
+`content/legal/de`, `content/science/de.mdx` and `public/og/de.png` are deleted, with the
+language switch, the hreflang alternates, the German sitemap entries and
+`scripts/check-messages.mjs` (parity has nothing to compare; `tests/messages.test.ts`
+keeps the empty-string check). `src/lib/i18n.ts` keeps `Locale`, `messages()`,
+`localePath()` (now the identity) and `intlLocale()` (`en-GB`), so the views compile
+unchanged and a second language can come back without touching them.
+
+Consequences:
+- Older builds of the app link to `/de/privacy`, `/de/terms` and `/de/impressum`; nginx
+  answers every `/de/…` with a 301 to the English page (`e2e/routes.spec.ts`), cached for an
+  hour. The redirect's capture is the decoded path, so it is held to the trailing-slash rule's
+  safe characters (platform #156): it starts with a letter or digit and holds only letters,
+  digits and `/ . _ -`, so Location is never `//host`, `/\host` or a header with a control
+  character; any other `/de/…` path is a 404 (`tests/nginx.test.ts`).
+- The English legal notice carried the VAT and consumer-dispute statements only by linking
+  to the German page; they are ported into `content/legal/en/impressum.mdx` as they were.
+- `scripts/lib/policy.mjs` checks the English privacy page only. The repository's own guards
+  (`scripts/check_policy_in_force.sh`, `scripts/pin_images.sh`) looked for both languages
+  and are changed with this.
+- The privacy texts in force still mention "your choice of appearance" (D19); the wording is
+  the user's legal call and changes only with a new version.
+
+Would change if the user wants German back: `messages/de.json`, `content/legal/de` and a
+`[locale]` segment again, from this PR's parent commit.
+
+## D19 — Light only; no theme, no script on the site's pages (2026-11-05; replaces D5, amends D2)
+
+The same decision as D18: the new design is monochrome and light. There is one appearance,
+so there is nothing to switch. `tokens.css` carries the light value of every colour set in
+`:root` with `color-scheme: light`; the `[data-theme]` and `prefers-color-scheme` blocks are
+gone (`tokens.json` keeps both appearances, for the icon and OG scripts and for the day the
+app's dark pass lands). The theme switch, its two inline scripts (`src/lib/inline-scripts.ts`),
+the `ryft.theme` key in `localStorage` and the second `theme-color` meta are deleted; the
+screenshots show the light captures only, and the dark files leave `public/screenshots`.
+
+Consequences:
+- The site's pages ship no JavaScript at all. The marketing CSP says `script-src 'none'`; the
+  admin page keeps its one hash in its own policy (D15). D2's budget holds trivially.
+- Nothing is stored in the browser any more; the privacy texts still mention "your choice of
+  appearance", which is harmless over-disclosure and changes only with a new version (the
+  user's call).
+- The app's light `Warning` is `#8A8A8A`: 3.3:1 on white, enough for a mark (bars, borders,
+  fills), not for text. The warning tone of `Label` and the admin badge read in
+  `text-secondary`; `tests/contrast.test.ts` checks the light values, `warning` among the
+  marks at 3:1. The restyle decides how a warning looks.
+- `e2e/site.spec.ts` and `e2e/admin.spec.ts` run once per page, not per appearance.
+
+Would change if the app's monochrome dark pass lands and the user wants the site to follow
+the system again: the blocks come back in `renderCss`, from `tokens.json`'s `dark` values.
+
+## D20 — Inter, committed under the OFL (2026-11-05; replaces D4 and D13, closes D14's font risk)
+
+The third part of the 2026-11-05 decision: the typographic design is set in Inter. Inter 4.1
+(SIL Open Font License 1.1) allows redistribution and modification, so subsets of
+`Inter-Regular.woff2` and `Inter-Bold.woff2` and the licence as `OFL.txt` are committed in
+`src/fonts/`. `scripts/fetch-fonts.mjs`, `config/fonts.json` and the `fonts` step of `dev` and
+`prebuild` are gone: a clone builds offline, and the public image (D14) no longer
+redistributes a font whose licence forbids it.
+
+**Provenance.** `https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip`
+(SHA-256 `9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`), from which:
+
+| File in the zip | Bytes | SHA-256 |
+| --- | --- | --- |
+| `web/Inter-Regular.woff2` | 111,268 | `e06f6b1bc553aaea4e4668023ed0ab0a147129c3107f511bc7d03d361b0ae085` |
+| `web/Inter-Bold.woff2` | 114,840 | `fa888127b6da015b65569f0351f3b5c391ad928904951f1c20e9f8462a8d95ea` |
+| `LICENSE.txt` → `src/fonts/OFL.txt`, unchanged | 4,380 | `262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a` |
+
+**The committed files** (pinned by `tests/fonts.test.ts`, which also checks this table):
+
+| File | Bytes | SHA-256 |
+| --- | --- | --- |
+| `src/fonts/Inter-Regular.woff2` | 18,560 | `0fe23dbdad67636b8cf0018c9608c7c6fe870c58dfb0e06fa41d30beab890e39` |
+| `src/fonts/Inter-Bold.woff2` | 19,216 | `1713739f95d2e55b5a1aa463f0dca828826bd3342396ce6932d0017bd7462768` |
+
+Each is 443 glyphs for 303 code points: Basic Latin and Latin-1 (`U+0000-00FF`), the
+Windows-1252 extras (`ı Œ œ Š š Ÿ Ž ž`, `ʻ ʼ ˆ ˚ ˜`), General Punctuation (`U+2000-206F`), `₂`
+(SpO₂ on the privacy pages), `€`, `™`, the arrows `U+2190-2199`, `−`, `≈ ≠ ≤ ≥`, `○ ●`, `✓`
+and `U+FEFF`. Layout features kept: GSUB `calt`, `case`, `locl`, `tnum`; GPOS `kern`, `cpsp`.
+Hinting dropped. Name table complete (`--name-IDs='*'`), so the licence notice and URL
+(name IDs 13 and 14) travel inside each file as well as in `OFL.txt`. The formulas on
+`/science` (`σ`, `∑`, `⋅`) are MathML and set in the system's math font on purpose
+(`globals.css`), not in Inter.
+
+To regenerate, with fontTools 4.68.0 and Brotli 1.2.1 (`pip install fonttools==4.68.0
+brotli==1.2.1`), for `W` in `Regular` and `Bold`, from the zip's `web/` files:
+
+```bash
+pyftsubset web/Inter-$W.woff2 --flavor=woff2 \
+  --unicodes="U+0000-00FF,U+0131,U+0152-0153,U+0160-0161,U+0178,U+017D-017E,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2082,U+20AC,U+2122,U+2190-2199,U+2212,U+2248,U+2260,U+2264-2265,U+25CB,U+25CF,U+2713,U+FEFF" \
+  --layout-features="kern,cpsp,calt,case,locl,tnum" --name-IDs='*' \
+  --no-hinting --desubroutinize --output-file=src/fonts/Inter-$W.woff2
+```
+
+This reproduces both committed files byte for byte (checked 2026-11-06). The first subsets
+(2026-11-05, 18,408 and 18,988 bytes, `deea70cc…2498e90a` and `ffa48996…fff406d5`) were the same
+command without `U+2082` and without `--name-IDs='*'`, which also reproduces them byte for byte;
+adding `₂` added exactly one glyph and changed no other outline. A font change updates the
+two tables above and the pins in `tests/fonts.test.ts` in the same commit.
+
+`src/lib/fonts.ts` is `localFont` with 400 and 700, `--font-inter`, `display: swap`, both
+files preloaded (two files of about 19 KB; D4 chose not to preload three full files), and
+the hand-written metric-matched `'Inter Fallback'` (below) instead of next/font's computed one
+(D13's `Satoshi Fallback` is deleted with that font). Only two weights exist: the app's type
+scale still says 500 for display, titles, headlines, metrics, labels and the wordmark, and
+those tokens stay as they are, so the browser's font matching resolves 500 to Regular and 600
+to Bold; `font-synthesis: none` makes sure no face is faked. Emphasis (`strong`, the draft
+title, the TODO marker) moves from 500 to 700, since Medium no longer exists. `/licenses`
+lists Inter with the OFL text under the website; the app lists its own typeface itself.
+
+**Why subsets.** With the full release files (111 KB and 115 KB) preloaded, Lighthouse's mobile
+run reported the hero text's LCP at 2.25 s (the text repaints when Inter arrives, and that
+repaint is the LCP), against the then 1.5 s budget in `lighthouserc.json`. A first, wider
+subset (Latin Extended-A and more features, about 30 KB a face) was replaced the same day by
+the one above.
+
+**Loading (measured, not guessed).** Lighthouse's mobile run (simulated slow 4G, `lighthouserc.json`)
+counts the repaint of a text block when its web font arrives as the LCP whenever that repaint
+changes the block's size, so the font recipe decides the LCP figure more than the bytes do. Measured
+on this branch: full 111 KB files preloaded with next/font's computed fallback → LCP 2.25 s; 19 KB
+subsets preloaded, same fallback → 1.50 s flat; subsets not preloaded, next/font fallback → 1.65 s;
+not preloaded with a hand-written metric-matched fallback → 1.35 s on `/` but 1.5–1.8 s on the long
+pages, swinging run to run. The recipe kept: **subsets preloaded + the hand-written `'Inter
+Fallback'`** in `globals.css` (Arial-class local fonts with Inter's ascent/descent/size-adjust, as D13
+did before) and next/font's fallback off — LCP 1.5–1.65 s on every page, FCP 1.2 s, CLS 0. The LCP
+budget moves from 1.5 s to **1.8 s** for that reason only: first paint is 1.2 s everywhere, the
+performance score is 1.0, and the swap is what the number measures. The hero's two lines and the
+meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift.
+
+Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
+allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
+400/700 only, which removes the question. Would also change if a page needs glyphs outside
+the subset (Greek, Cyrillic, CJK): widen the unicode ranges, don't swap back to the full file.

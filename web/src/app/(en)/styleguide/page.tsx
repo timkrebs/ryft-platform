@@ -9,7 +9,6 @@ export const metadata = pageMetadata({
   title: messages('en').styleguide.title,
   description: messages('en').styleguide.description,
   noindex: true,
-  translated: false,
 });
 
 export default function Page() {

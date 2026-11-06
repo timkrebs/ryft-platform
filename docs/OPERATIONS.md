@@ -1808,7 +1808,7 @@ nothing on EKS, and there is no interim restart. A service's ConfigMap is genera
 `ryft-config-<hash>`, so a changed value renames it and rolls exactly the pods that read it.
 `manifests` runs `node web/scripts/check-policy-version.mjs --strict` (published version,
 pages, compose) and `scripts/check_policy_in_force.sh` (api and ingest agree, the pinned web
-commit serves the version at `/privacy`, newest page in both languages). If web is held or its build fails, the old version stays in force
+commit serves the version at `/privacy`, the newest English privacy page; the site is English only since web D18). If web is held or its build fails, the old version stays in force
 with the old site. The deploy PR body shows `privacy policy in force: A → B`.
 
 What to watch after the deploy PR merges (read-only):
@@ -1836,7 +1836,7 @@ and `hold.sh add`, in one commit), never as the pin alone. If a sync fails in th
 stuck while api and ingest are already on the new version, or the reverse), move web and the
 in-force pin back together in one commit; the check refuses a pair that disagrees.
 On a pull request `check_policy_in_force.sh` also refuses a version that becomes the one in
-force, or the published one in `config.env`, unless its page in both languages says exactly
+force, or the published one in `config.env`, unless its (English) page says exactly
 `status: published` (read as the site reads it; a tag, flow frontmatter or a block scalar
 refuse even when published). Anything else is a draft for this check. Going back to a version
 listed before the one in force now is allowed. So a policy PR stays red until `status:
@@ -3859,8 +3859,9 @@ limit and **web's pin** (this repository's short SHA, like the services', quoted
   `/train/history`, `/invite/*` (since 2026-10-21), `/auth/*`. The app's entitlements
   list `webcredentials:ryftapp.de` and `applinks:ryftapp.de`.
 - **Those paths in a browser** (a phone without the app) get an "Open in RYFT" page.
-- **The legal pages**, English at `/privacy`, `/terms`, `/support`, `/impressum`, German
-  under `/de/…`, each version of the privacy policy also at `/privacy/<version>`.
+- **The legal pages**, English only (web D18), at `/privacy`, `/terms`, `/support`,
+  `/impressum`, each version of the privacy policy also at `/privacy/<version>`. The German
+  pages are gone; `/de/…` (still linked by older app builds) answers 301 to the English path.
   `/privacy` is `PRIVACY_POLICY_URL`, its version `PRIVACY_POLICY_VERSION` (OPERATIONS →
   Beta).
 **A web release is a merge.** A PR that changes `web/` (checks `web-checks`, `web-e2e`,
@@ -3888,12 +3889,15 @@ back first, then investigate.
 kubectl -n argocd get applications ryft-platform                                   # Synced, Healthy
 kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo   # the deploy PR's pin, both pods
 V=$(sed -nE 's/^.*ryft-api,.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\1/p' deploy/k8s/overlays/eks/kustomization.yaml)   # the policy version in force
-for p in "" privacy terms support impressum de/privacy de/impressum privacy/$V day/2026-10-19 auth/callback invite/TEST; do
+for p in "" privacy terms support impressum privacy/$V day/2026-10-19 auth/callback invite/TEST; do
   curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
+for p in de/privacy de/terms de/impressum; do
+  curl -s -o /dev/null -w "%{http_code} %{redirect_url} /$p\n" https://ryftapp.de/$p; done          # 301 https://ryftapp.de/privacy (/terms, /impressum) each: older app builds (web D18)
 curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
 curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
 curl -s https://ryftapp.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
-curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
+curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -o "script-src [^;]*"          # script-src 'none': the marketing pages ship no script (web D19); no CSP error in the browser console
+curl -sI https://ryftapp.de/admin | grep -i content-security-policy | grep -o "sha256-" | wc -l              # 1: the admin page's one script (web D15), in its own policy
 curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -i location                                                      # https://ryftapp.de/
 curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
 ```

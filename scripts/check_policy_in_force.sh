@@ -9,14 +9,15 @@
 #    value; Go refuses 2026-11-31),
 #  - the version is not in web/content/legal/privacy-versions.json,
 #  - the web image's commit does not SERVE the version at /privacy: the site shows the newest
-#    page per language (web/src/lib/content.ts), so the newest
-#    web/content/legal/{en,de}/privacy/<version>.mdx there must be the version in force. A pin
+#    page (web/src/lib/content.ts), so the newest web/content/legal/en/privacy/<version>.mdx
+#    there must be the version in force (the site is English only since web D18; older
+#    commits also carry a German page, which is not checked). A pin
 #    that is not a commit of this history passes only when it is the known foreign pin
 #    f437747 (built in the archived ryft-web repository) AND the version is the first listed
 #    one: that image carries nothing newer. Any other sha must be exactly one commit here,
 #  - given a base ref (a pull request; it must resolve): the version in force, or the one in
-#    base's config.env, changes to a version whose page is not status: published in both
-#    languages (frontmatter read like the site does; only exactly "published" passes). An
+#    base's config.env, changes to a version whose page is not status: published
+#    (frontmatter read like the site does; only exactly "published" passes). An
 #    unchanged draft stays allowed, and so does going back to a version listed before the
 #    one in force now.
 # So rolling web back past a policy version fails until the in-force pin goes back too, and a
@@ -124,12 +125,13 @@ resolve_pin() { # <tag>: sets pin_kind (commit|foreign) and pin_full; returns 1 
 resolve_pin "$tag" || err "web is pinned to $tag, which is not exactly one commit of this history and not the known foreign pin $FOREIGN"
 full=$pin_full; tag_kind=$pin_kind
 in_history=; [ "$pin_kind" != commit ] || in_history=1
-# The pages of an image (<kind> <full sha> <lang> <version>). The foreign image carries a draft:
-# nothing in this tree is published for it.
+# The pages of an image (<kind> <full sha> <lang> <version>; the language loop is one entry
+# since web D18 and stays a loop for the day German comes back). The foreign image carries a
+# draft: nothing in this tree is published for it.
 page_at() { if [ "$1" = commit ]; then git show "$2:web/content/legal/$3/privacy/$4.mdx" 2>/dev/null; fi; }
 page() { page_at "$tag_kind" "$full" "$1" "$2"; }
 if [ -n "$in_history" ]; then
-  for lang in en de; do
+  for lang in en; do
     git cat-file -e "$full:web/content/legal/$lang/privacy/$v.mdx" 2>/dev/null \
       || err "the version in force, $v, has no $lang page in the pinned web image ($tag): web/content/legal/$lang/privacy/$v.mdx is missing there. Pin web to a commit that has it, or set the in-force pin back with it."
     # /privacy serves the newest file (web/src/lib/content.ts listMdx sorts and reverses).
@@ -141,8 +143,8 @@ else
 fi
 
 # Draft guard, on a pull request (a base ref is given). A version may BECOME the one in force, or
-# the published one in base's config.env, only when its page says status: published in both
-# languages. The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
+# the published one in base's config.env, only when its (English) page says status: published.
+# The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
 # on key or value, a trailing comment and spaces after the dashes are all normalised, and anything
 # that is not exactly "published" refuses. A version listed BEFORE the one that is in force now was
 # in force before, so going back to it is allowed (move web and the in-force pin back together).
@@ -178,7 +180,7 @@ if [ -n "$base" ]; then
   fi
   # 1. the version in force changes (the deploy PR, or a hand-made pin)
   if [ -n "$was" ] && [ "$was" != "$v" ] && ! listed_before "$v" "$was"; then
-    for lang in en de; do
+    for lang in en; do
       page "$lang" "$v" | published \
         || err "the version in force would change from $was to $v, and its $lang page in web $tag is not status: published. Publish the text first (the user's legal call), or go back to a version listed before $was."
     done
@@ -191,7 +193,7 @@ if [ -n "$base" ]; then
     [ -f "$f" ] || err "$f exists on $base but not in this change"
     new=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$f" | head -1)
     if [ "$old" != "$new" ] && ! listed_before "$new" "$old"; then
-      for lang in en de; do
+      for lang in en; do
         published < "web/content/legal/$lang/privacy/$new.mdx" \
           || err "$f changes PRIVACY_POLICY_VERSION from $old to $new, and the $lang page web/content/legal/$lang/privacy/$new.mdx is not status: published (or missing). A draft version on main blocks every deploy PR until it is published or web is held (scripts/hold.sh add web \"<reason>\")."
       done
@@ -205,7 +207,7 @@ if [ -n "$base" ]; then
   if [ -z "$base_web" ] && printf '%s\n' "$base_overlay" | grep -q 'ghcr.io/timkrebs/ryft/web'; then
     err "$overlay on $base has a ghcr.io/timkrebs/ryft/web entry whose newTag this check cannot read: it cannot tell what web published there. Keep the entry as '- name: ghcr.io/timkrebs/ryft/web' and 'newTag: \"<sha>\"'."
   fi
-  for lang in en de; do
+  for lang in en; do
     bv=$(git show "$base:deploy/k8s/base/api/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
     if [ -n "$bv" ] && git show "$base:web/content/legal/$lang/privacy/$bv.mdx" 2>/dev/null | published \
       && ! published < "web/content/legal/$lang/privacy/$bv.mdx"; then
@@ -215,7 +217,7 @@ if [ -n "$base" ]; then
   if [ -n "$base_web" ] && [ "$base_web" != "$tag" ]; then
     resolve_pin "$base_web" || err "the web pin on $base ($base_web) is not exactly one commit of this history and not $FOREIGN: cannot tell what it published"
     base_kind=$pin_kind; base_full=$pin_full
-    for lang in en de; do
+    for lang in en; do
       page_at "$base_kind" "$base_full" "$lang" "$v" | published || continue
       page "$lang" "$v" | published \
         || err "the $lang page of $v is status: published in the web image on $base ($base_web) but not in the one pinned now ($tag): rolling web back would bring the draft text back under the same version. Publish a new version, or keep web at or after $base_web."

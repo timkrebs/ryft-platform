@@ -22,15 +22,3 @@
   gap: 12px;
   margin-top: 8px;
 }
-
-.other {
-  display: grid;
-  gap: 8px;
-  margin-top: var(--section-spacing);
-  padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
-}
-
-.other h2 {
-  font-size: var(--type-headline);
-}

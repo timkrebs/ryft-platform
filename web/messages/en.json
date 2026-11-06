@@ -9,8 +9,6 @@
     "home": "RYFT, home",
     "mainNav": "Main",
     "footerNav": "Legal and support",
-    "language": "Language",
-    "theme": "Colour theme",
     "sampleData": "Sample data"
   },
   "nav": {
@@ -18,16 +16,6 @@
     "science": "Science",
     "beta": "Beta",
     "menu": "Menu"
-  },
-  "theme": {
-    "system": "System",
-    "light": "Light",
-    "dark": "Dark"
-  },
-  "language": {
-    "name": "English",
-    "switchLabel": "Deutsch",
-    "switchHint": "Diese Seite auf Deutsch"
   },
   "footer": {
     "privacy": "Privacy",
@@ -420,11 +408,11 @@
     "label": "Open source",
     "copyright": "RYFT, the app, this website and their designs: © {year} {holder}. All rights reserved.",
     "holderTodo": "TODO(user): rights holder, as in the legal notice",
-    "intro": "RYFT is built on open-source software and the Satoshi typeface. The app shows the same list under Profile → About → Licences.",
+    "intro": "RYFT is built on open-source software and the Inter typeface. The app shows the same list under Profile → About → Licences.",
     "app": "In the app",
-    "appIntro": "Swift packages at the versions the app pins, and the typeface.",
+    "appIntro": "Swift packages at the versions the app pins.",
     "web": "On this website",
-    "webIntro": "The packages this site is built with. What your browser loads is HTML, CSS and the Satoshi font; no third-party script.",
+    "webIntro": "The packages this site is built with. What your browser loads is HTML, CSS and the Inter typeface; no third-party script.",
     "source": "Source",
     "text": "Licence text",
     "noText": "The package ships no separate licence file; it declares {license}. See its source.",

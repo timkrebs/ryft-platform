@@ -16,6 +16,8 @@ const PUBLIC = join(ROOT, 'public');
 const tokens = JSON.parse(readFileSync(join(ROOT, 'src/styles/tokens.json'), 'utf8'));
 const graphite = tokens.colors.graphite.dark;
 const mist = tokens.colors.mist.dark;
+// The manifest's colours are the page's (light only, web D19), not the icon's.
+const page = tokens.colors.background.light;
 
 // The app icon's composition (icon-spec.swift): the outer ring's span is 0.963 of the tile,
 // so the tile is OUTER_SPAN / 0.963 box units wide, centred on the mark (negative padding).
@@ -58,8 +60,8 @@ const manifest = {
   start_url: '/',
   scope: '/',
   display: 'browser',
-  background_color: graphite,
-  theme_color: graphite,
+  background_color: page,
+  theme_color: page,
   icons: [
     { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
     { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },

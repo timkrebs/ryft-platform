@@ -19,7 +19,7 @@ for (const msg of warnings) {
   console.log(gha ? `::warning title=privacy policy version::${msg}` : `warn: ${msg}`);
 }
 if (problems.length === 0) {
-  console.log(`privacy policy: ${version} on the site (en, de) and in config.env (${source}).`);
+  console.log(`privacy policy: ${version} on the site and in config.env (${source}).`);
 } else {
   for (const msg of problems) {
     const level = strict ? 'error' : 'warning';

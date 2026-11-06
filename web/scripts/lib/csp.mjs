@@ -4,7 +4,7 @@
 // admin page's own (web D15).
 import { cspHash } from './html.mjs';
 
-/** The marketing policy: scripts only by hash, everything else only from this origin, nothing framed. */
+/** The marketing policy: no script (web D19; a hash only if one appears), everything else only from this origin, nothing framed. */
 export function policy(hashes) {
   return [
     "default-src 'none'",

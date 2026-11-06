@@ -22,7 +22,7 @@ const typeSamples: [keyof typeof tokens.type.scale, string][] = [
 export function StyleguidePage() {
   const colors = Object.entries(tokens.colors);
   return (
-    <PageShell locale="en" path="/styleguide" translated={false}>
+    <PageShell locale="en" path="/styleguide">
       <Container>
         <Section
           headingLevel={1}
@@ -52,16 +52,21 @@ export function StyleguidePage() {
           <Lockup tagline="Your whole health." />
         </Section>
 
-        <Section id="colors" title="Colours" intro={<p>{colors.length} colour sets from Assets.xcassets.</p>}>
+        <Section
+          id="colors"
+          title="Colours"
+          intro={
+            <p>
+              {colors.length} colour sets from Assets.xcassets, the light appearance (the site is light only).
+            </p>
+          }
+        >
           <ul className={styles.swatches}>
             {colors.map(([name, value]) => (
               <li key={name} className={styles.swatch}>
                 <span className={`${styles.chip} swatch-${name}`} aria-hidden="true" />
                 <span className={styles.swatchName}>--{name}</span>
-                <span className={styles.swatchValue}>
-                  dark {value.dark}
-                  {value.light !== value.dark && <> · light {value.light}</>}
-                </span>
+                <span className={styles.swatchValue}>{value.light}</span>
               </li>
             ))}
           </ul>
@@ -70,7 +75,7 @@ export function StyleguidePage() {
         <Section
           id="type"
           title="Type"
-          intro={<p>Satoshi, the app&apos;s scale in rem. Headings clamp between two steps.</p>}
+          intro={<p>Inter, the app&apos;s scale in rem. Headings clamp between two steps.</p>}
         >
           <dl className={styles.type}>
             {typeSamples.map(([name, sample]) => (

@@ -22,20 +22,20 @@ Then, from `web/` (or with the `make web-*` targets from the root: `web-test`, `
 `web-image`, `web-serve`, `web-e2e`, `web-tokens`):
 
 ```bash
-npm run fonts      # Satoshi from Fontshare into src/fonts/, verified by SHA-256 (git-ignored)
 npm run dev        # http://localhost:3000
 npm run build      # static site in out/ (postbuild: runtime removed, CSP hashes, brand check)
 ```
 
-`npm run dev` and `npm run build` fetch the fonts and the licence texts themselves when
-they're missing.
+`npm run dev` and `npm run build` fetch the app's licence texts themselves when they're
+missing. The typeface (Inter, SIL OFL 1.1) is committed in `src/fonts/`; nothing is fetched
+for it.
 
 ## The image
 
 ```bash
 npm run image      # docker or podman build → ryft-web:local
 npm run serve      # http://localhost:8080, read-only root FS, non-root, like the cluster
-npm run e2e        # Playwright against it: every page en/de, light/dark, axe, routes, headers
+npm run e2e        # Playwright against it: every page, axe, routes, headers
 npm run links      # internal and external links
 npm run lighthouse    # Lighthouse budgets, pinned @lhci/cli (CHROME_PATH=… if Chrome isn't found)
 npm run serve:stop
@@ -59,11 +59,11 @@ npm run typecheck && npm run lint && npm test && npm run build
 
 | Script | What it checks |
 | --- | --- |
-| `npm run lint` | ESLint, Prettier, the brand check, en/de message parity |
+| `npm run lint` | ESLint, Prettier, the brand check |
 | `npm run brand` | The denylisted brand in every file tracked under `web/`, `out/` and the last commit message (the git hooks in `../.githooks` run it on staged `web/` files and every commit message) |
 | `npm run tokens:check` | `src/styles/tokens.*` against `../../app/Ryft` |
 | `npm run licenses:check` | `config/app-packages.json` against the app's `Package.resolved` |
-| `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/k8s/base/{api,ingest}/config.env` (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): both languages have the page, it is the newest, api and ingest agree (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
+| `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/k8s/base/{api,ingest}/config.env` (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): the page exists, it is the newest, api and ingest agree (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
 | `npm test` | Vitest: brand matcher, contrast, mark, messages, legal ports, AASA, science version, CSP, the built site |
 
 ## Regenerating from the app
@@ -73,7 +73,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 | `npm run tokens` | A colour set, `Theme.swift` metrics or the type scale changed |
 | `npm run screenshots` | New captures in `../../app/docs/screenshots` |
 | `npm run icons` | The mark or the tokens changed (favicon, touch icon, manifest) |
-| `npm run og` | Copy or tokens of the OG images changed (needs Playwright's Chromium) |
+| `npm run og` | Copy or tokens of the OG image changed (needs Playwright's Chromium) |
 | `npm run licenses -- --sync` | The app's Swift packages changed |
 | `npm run brand:report` | Refresh `docs/BRAND_CHECK.md` for the app, this repository outside `web/`, and the shared docs |
 
@@ -81,18 +81,18 @@ Commit what they write.
 
 ## Publishing a legal page
 
-The texts are in `content/legal/{en,de}/`, ported from the platform's drafts. Each is a
+The texts are in `content/legal/en/` (English only, D18), ported from the platform's drafts. Each is a
 draft until you publish it: a banner, `noindex`, `TODO(user)` markers.
 
-1. Fill every `TODO(user)` in both languages and have the text reviewed.
+1. Fill every `TODO(user)` and have the text reviewed.
 2. In the front matter: delete `portedFrom`, set `status: published` and
    `effective: 'YYYY-MM-DD'`.
-3. A new privacy text is a new file, `privacy/<version>.mdx` in both languages, named
+3. A new privacy text is a new file, `privacy/<version>.mdx`, named
    `YYYY-MM-DD.mdx` (the old one stays: `/privacy/<old-version>` is what earlier consents
    point at), the version is appended to `content/legal/privacy-versions.json`, and
    `PRIVACY_POLICY_VERSION` in `deploy/k8s/base/{api,ingest}/config.env` and
-   `docker-compose.yml` changes to the same date in the same PR. So a policy PR is: the en
-   and de pages, `privacy-versions.json`, base `config.env` of api and ingest, and
+   `docker-compose.yml` changes to the same date in the same PR. So a policy PR is: the
+   page, `privacy-versions.json`, base `config.env` of api and ingest, and
    `docker-compose.yml`. Only on the user's decision: the app asks every user to consent
    again. `check:policy --strict` fails otherwise.
 4. Open a PR (`legal: publish privacy 2026-11-01`). The merge does not put the version into
@@ -103,18 +103,18 @@ draft until you publish it: a banner, `noindex`, `TODO(user)` markers.
 ## Layout
 
 ```text
-src/app/(en)/…        English routes at the root (the app's URLs)
-src/app/[locale]/…    the same routes under /de
+src/app/(en)/…        the site's routes (English only, D18; the app's URLs)
 src/app/(admin)/…     /admin, its own root layout (the operator's page)
 src/admin/            the admin page's script (TypeScript, bundled by esbuild into one inline script)
-src/views/            page bodies, shared by both
+src/views/            page bodies
 src/components/       mark, chrome, cards, charts, screenshots, prose
-src/lib/              i18n, metadata, content loading, the mark's geometry, inline scripts
+src/lib/              i18n, metadata, content loading, the mark's geometry, fonts
 src/styles/           tokens.css (generated), globals.css
+src/fonts/            Inter Regular and Bold (WOFF2) and OFL.txt
 content/              science and legal texts (MDX)
-messages/             UI strings, en and de
-public/               AASA, icons, OG images, screenshots
+messages/             UI strings (en.json)
+public/               AASA, icons, the OG image, screenshots
 nginx/                server config and security headers (csp.conf is generated)
-scripts/              tokens, fonts, screenshots, licences, postbuild, CSP, brand guard
+scripts/              tokens, screenshots, licences, postbuild, CSP, brand guard
 tests/, e2e/          Vitest, Playwright
 ```

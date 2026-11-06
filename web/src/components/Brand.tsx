@@ -1,7 +1,7 @@
 import { Mark } from './Mark';
 import styles from './Brand.module.css';
 
-/** "RYFT" in wide-tracked Satoshi, as the app's Wordmark (RyftHeader.swift). */
+/** "RYFT" wide-tracked, as the app's Wordmark (RyftHeader.swift). */
 export function Wordmark({ className }: { className?: string }) {
   return (
     <span className={`${styles.wordmark} ${className ?? ''}`} translate="no">

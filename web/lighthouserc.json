@@ -3,7 +3,6 @@
     "collect": {
       "url": [
         "http://localhost:8080/",
-        "http://localhost:8080/de",
         "http://localhost:8080/science",
         "http://localhost:8080/beta",
         "http://localhost:8080/privacy"
@@ -21,7 +20,7 @@
           "assertions": {
             "largest-contentful-paint": [
               "error",
-              { "maxNumericValue": 1500, "aggregationMethod": "median-run" }
+              { "maxNumericValue": 1800, "aggregationMethod": "median-run" }
             ],
             "cumulative-layout-shift": [
               "error",

@@ -99,7 +99,7 @@ render '"2026-11-02 # x"' '"2026-11-02 # x"' "\"$second\""; bad "an inline comme
 render '"2026-11-31"' '"2026-11-31"' "\"$both\"";   bad "a date that does not exist" "real calendar date"
 render '"2026-12-31"' '"2026-12-31"' "\"$second\""; bad "an unlisted version" "not in"
 render '"2026-11-02"' '"2026-11-02"' "\"$first\"";  bad "web rolled back past the version" "no en page"
-render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; bad "the German page is missing" "no de page"
+render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; ok "the English page alone (web D18: no German page is needed)"
 render '"2026-10-20"' '"2026-10-20"' "\"$second\""; bad "a newer page is served than the one in force" "serves 2026-11-02"
 render '"2026-10-20"' '"2026-10-20"' "\"$both\"";   bad "a newer page in en and de than the one in force" "serves 2026-12-01\|serves 2026-11-31"
 render '"2026-10-20"' '"2026-10-20"' '"f437747"';   ok "a pin outside this history with the first version"
@@ -123,18 +123,18 @@ render '"2026-10-20"' '"2026-10-20"' "\"$first\"";  ok "an unchanged version in 
 echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31","2027-01-01","2027-02-01"]' > $L/privacy-versions.json
 page en 2027-01-01; page de 2027-01-01; git add -A; git commit -qm "published 2027-01-01"; pub=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-01-01"' '"2027-01-01"' "\"$pub\""; ok "a change to a published page"
-page en 2027-02-01; page de 2027-02-01 draft; git add -A; git commit -qm "de draft"; dr=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft in German" "not status: published"
-page de 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
+page en 2027-02-01 draft; page de 2027-02-01; git add -A; git commit -qm "en draft"; dr=$(git rev-parse HEAD | cut -c1-7)
+render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft (a published German page does not count, web D18)" "not status: published"
+page en 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-02-01"' '"2027-02-01"' "\"$dq\""; bad "a quoted draft status" "not status: published"
 # the frontmatter is read the way the site reads it: only exactly "published" (after normalising) passes
 n=0
-variant() { # <name> <ok|bad> <printf format of the German page>
+variant() { # <name> <ok|bad> <printf format of the English page>
   n=$((n + 1)); local v; v=$(printf '2028-01-%02d' "$n")
   jq --arg v "$v" '. + [$v]' $L/privacy-versions.json > "$tmp/l.json"; mv "$tmp/l.json" $L/privacy-versions.json
-  page en "$v"
+  mkdir -p "$L/en/privacy"
   # shellcheck disable=SC2059
-  printf -- "$3" > "$L/de/privacy/$v.mdx"; git add -A; git commit -qm "variant $1"
+  printf -- "$3" > "$L/en/privacy/$v.mdx"; git add -A; git commit -qm "variant $1"
   render "\"$v\"" "\"$v\"" "\"$(git rev-parse HEAD | cut -c1-7)\""
   if [ "$2" = ok ]; then ok "$1"; else bad "$1" "not status: published"; fi
 }
@@ -177,8 +177,8 @@ mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_
 git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "config.env unchanged"
 for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-02-01\n' > $BC/$s/config.env; done
-bad "config.env moves to a version whose German page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
-page de 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
+bad "config.env moves to a version whose page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
+page en 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
 ok "config.env back to what base has"
 rm -f $BC/api/config.env; bad "config.env exists on base but not in this change" "exists on"
 printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/api/config.env

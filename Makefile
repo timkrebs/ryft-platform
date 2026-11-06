@@ -373,7 +373,7 @@ k8s-check-images:
 web-install:
 	cd web && npm ci && npx playwright install chromium
 
-# Typecheck, ESLint + Prettier + brand + messages parity, Vitest. Add REQUIRE_SIBLINGS=1 to make
+# Typecheck, ESLint + Prettier + brand, Vitest. Add REQUIRE_SIBLINGS=1 to make
 # a missing ../app an error instead of a skip.
 web-test:
 	cd web && npm run typecheck && npm run lint && npm test

@@ -3,9 +3,6 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import fonts from '../config/fonts.json';
-import { cspHash } from '../scripts/lib/html.mjs';
-import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
 const OUT = 'out';
@@ -25,13 +22,11 @@ const isAdminPage = (f: string) => relative(OUT, f) === 'admin.html';
 describe.skipIf(!built)('built site', () => {
   const html = built ? [...files(OUT)].filter((f) => f.endsWith('.html')) : [];
 
-  it('ships no script except our own inline ones', () => {
+  it('ships no script at all, except the admin bundle (web D15, D19)', () => {
     for (const f of html) {
       const scripts = [...readFileSync(f, 'utf8').matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]);
-      for (const attrs of scripts) {
-        expect(attrs, f).toMatch(/data-ryft/);
-        expect(attrs, f).not.toMatch(/\bsrc=/);
-      }
+      if (isAdminPage(f)) continue;
+      expect(scripts, f).toEqual([]);
     }
     expect([...files(OUT)].filter((f) => f.endsWith('.js'))).toEqual([]);
   });
@@ -42,13 +37,28 @@ describe.skipIf(!built)('built site', () => {
     expect(gzipSync(js).length).toBeLessThan(80 * 1024);
   });
 
-  it('serves Satoshi byte-identical to the pinned files', () => {
-    const pinned = new Set(Object.values(fonts.files).map((f) => f.sha256));
+  it('serves Inter Regular and Bold byte-identical to the committed files, preloaded', () => {
+    const committed = new Set(
+      ['Inter-Regular.woff2', 'Inter-Bold.woff2'].map((f) =>
+        createHash('sha256')
+          .update(readFileSync(join('src/fonts', f)))
+          .digest('hex'),
+      ),
+    );
     const served = [...files(OUT)].filter((f) => f.endsWith('.woff2'));
-    expect(served.length).toBe(3);
+    expect(served.length).toBe(2);
     for (const f of served) {
-      expect(pinned.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
+      expect(committed.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
     }
+    const page = readFileSync(join(OUT, 'index.html'), 'utf8');
+    // Both preloaded, and the fallback is the hand-written metric-matched one (D20).
+    expect(page.match(/<link rel="preload"[^>]*as="font"/g) ?? []).toHaveLength(2);
+    const css = [...files(OUT)]
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('');
+    expect(css).toMatch(/font-family:\s*["']?Inter Fallback/);
+    expect(page).not.toMatch(/Satoshi/i);
   });
 
   it('has no inline style attributes or <style> elements', () => {
@@ -69,13 +79,32 @@ describe.skipIf(!built)('built site', () => {
     }
   });
 
-  it('pins the marketing CSP: script-src is exactly the hashes of the two theme scripts', () => {
+  it("pins the marketing CSP: script-src 'none'", () => {
     // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
     // (or the admin bundle leaking into this policy) would widen it; this fails instead.
-    const csp = readFileSync('nginx/csp.conf', 'utf8');
-    const scriptSrc = /script-src ([^;]*);/.exec(csp)![1]!;
-    expect(scriptSrc.split(' ').sort()).toEqual([cspHash(THEME_INIT), cspHash(THEME_SWITCH)].sort());
-    expect(csp).toContain("connect-src 'none'");
+    const conf = readFileSync('nginx/csp.conf', 'utf8');
+    const csp = conf.match(/add_header Content-Security-Policy "([^"]*)" always;/)?.[1] ?? '';
+    const directive = (name: string) =>
+      csp
+        .split('; ')
+        .filter((d) => d === name || d.startsWith(`${name} `))
+        .map((d) => d.slice(name.length).trim());
+    expect(directive('script-src')).toEqual(["'none'"]);
+    expect(directive('connect-src')).toEqual(["'none'"]);
+  });
+
+  it('is light only: one theme-color, no theme attribute, no dark screenshot (web D19)', () => {
+    for (const f of html.filter((f) => !isAdminPage(f))) {
+      const page = readFileSync(f, 'utf8');
+      expect(page.match(/<meta name="theme-color"/g) ?? [], f).toHaveLength(1);
+      expect(page, f).not.toMatch(/data-theme|prefers-color-scheme|-dark(-\d+)?\.(png|avif|webp)/);
+    }
+    const css = [...files(OUT)]
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('');
+    expect(css).not.toMatch(/data-theme|prefers-color-scheme/);
+    expect(css).toContain('color-scheme:light');
   });
 
   describe('the admin page (the /admin exception, web D15)', () => {
@@ -90,10 +119,9 @@ describe.skipIf(!built)('built site', () => {
       for (const f of otherPages()) expect(readFileSync(f, 'utf8'), f).not.toContain('data-ryft="admin"');
     });
 
-    it('is noindex by meta tag and its own document: no theme scripts, no alternates', () => {
+    it('is noindex by meta tag and its own document: no alternates', () => {
       const p = page();
       expect(p).toMatch(/<meta name="robots" content="noindex, nofollow"/);
-      expect(p).not.toMatch(/data-ryft="theme-/);
       expect(p).not.toMatch(/<link rel="(alternate|canonical)"/);
       expect(p).toContain('<html lang="en"');
     });
@@ -128,29 +156,25 @@ describe.skipIf(!built)('built site', () => {
     const noindex = (f: string) =>
       /<meta name="robots" content="noindex/.test(readFileSync(join(OUT, f), 'utf8'));
     for (const f of ['open.html', '404.html', 'styleguide.html']) expect(noindex(f), f).toBe(true);
-    for (const f of ['privacy.html', 'de/privacy.html', 'terms.html', 'impressum.html', 'support.html']) {
+    for (const f of ['privacy.html', 'terms.html', 'impressum.html', 'support.html']) {
       const page = readFileSync(join(OUT, f), 'utf8');
-      if (/Draft — not yet in force|Entwurf – noch nicht in Kraft/.test(page))
-        expect(noindex(f), f).toBe(true);
+      if (/Draft — not yet in force/.test(page)) expect(noindex(f), f).toBe(true);
     }
     const sitemap = readFileSync(join(OUT, 'sitemap.xml'), 'utf8');
     for (const p of ['/styleguide', '/open', '/404']) expect(sitemap).not.toContain(`ryftapp.de${p}<`);
-    expect(sitemap).toContain('<loc>https://ryftapp.de/de/science</loc>');
+    expect(sitemap).toContain('<loc>https://ryftapp.de/science</loc>');
   });
 
-  it('links every translated page to its other language', () => {
-    for (const f of [
-      'index.html',
-      'science.html',
-      'beta.html',
-      'privacy.html',
-      'de.html',
-      'de/privacy.html',
-    ]) {
+  it('is English only: no German pages, no hreflang alternates (web D18)', () => {
+    expect(existsSync(join(OUT, 'de.html'))).toBe(false);
+    expect(existsSync(join(OUT, 'de'))).toBe(false);
+    for (const f of ['index.html', 'science.html', 'privacy.html']) {
       const page = readFileSync(join(OUT, f), 'utf8');
-      expect(page, f).toMatch(/<link rel="alternate" hrefLang="de"/);
-      expect(page, f).toMatch(/<link rel="alternate" hrefLang="en"/);
+      expect(page, f).not.toMatch(/hrefLang=/i);
+      expect(page, f).toContain('<html lang="en"');
+      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftapp\.de[/"]/);
     }
+    expect(readFileSync(join(OUT, 'sitemap.xml'), 'utf8')).not.toContain('/de');
   });
 
   it('lists the app’s and the site’s components with their licences on /licenses', () => {
@@ -160,11 +184,12 @@ describe.skipIf(!built)('built site', () => {
       'swift-crypto',
       '>next<',
       '>react<',
-      'Satoshi',
-      'ITF Free Font License',
+      '>Inter<',
+      'SIL Open Font License 1.1',
     ]) {
       expect(page).toContain(name);
     }
     expect(page).toContain('Permission is hereby granted');
+    expect(page).toContain('SIL OPEN FONT LICENSE Version 1.1');
   });
 });

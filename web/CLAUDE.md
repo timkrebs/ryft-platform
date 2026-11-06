@@ -17,13 +17,16 @@ here: read from it, never write there.
   CI); rules in `config/brand-denylist.json`. Refer to it as "the denylisted brand".
 - **Tokens come from the app.** Colours, radii, spacing, type scale and motion are
   generated from `../../app/Ryft` by `npm run tokens` into `src/styles/tokens.{css,json}`.
-  Never hard-code a colour in CSS or components; CI fails when the tokens drift.
+  The site is light only (D19): `tokens.css` carries the light values, no `[data-theme]`,
+  no `prefers-color-scheme`. Never hard-code a colour in CSS or components; CI fails when
+  the tokens drift.
 - **Static export only.** `output: 'export'`, no API routes, no proxy/middleware, no server
   runtime, no database. Pages render to HTML at build time; the postbuild removes the
-  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the only
-  client JS is `src/lib/inline-scripts.ts`. Every inline script is hashed into the CSP.
+  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the site's pages
+  ship no JavaScript at all (D19; `script-src 'none'`); the admin bundle is the one inline
+  script, hashed into its own CSP.
 - **No tracking.** No cookies, no analytics, no third-party requests (fonts self-hosted,
-  no CDNs), no forms. `localStorage` holds the theme choice and nothing else.
+  no CDNs), no forms, nothing in `localStorage` (the theme switch went with D19).
 - **The one exception: `/admin`** (the operator's page; web D15–D17). It is its own document
   (`src/app/(admin)`, a separate root layout, `noindex`, not linked, not in the sitemap or
   `robots.txt`) with ONE inline hashed script bundled by esbuild from `src/admin` (no framework,
@@ -46,23 +49,25 @@ here: read from it, never write there.
   (`overlays/eks`), once the pinned image carries the page. Only the user flips
   `status: draft` → `published`, and a new privacy version (`PRIVACY_POLICY_VERSION`) only
   on the user's decision: it asks every user to consent again. The new text, its entry in
-  `content/legal/privacy-versions.json` and the version bump go in one PR (the en and de
-  pages, `privacy-versions.json`, base `config.env` of api and ingest, `docker-compose.yml`);
+  `content/legal/privacy-versions.json` and the version bump go in one PR (the page,
+  `privacy-versions.json`, base `config.env` of api and ingest, `docker-compose.yml`);
   old versions keep their pages. The version goes into force with the web pin, not with the
   merge (the window is in `../docs/OPERATIONS.md`).
 - **Science numbers come from `../docs/SCORING.md` and `../docs/ARCHITECTURE.md`**, by
   hand, for the model version in `content/science/meta.json`. A test fails when the
   platform's model version moves.
 - **No medical claims.** RYFT is a wellness app, not a medical device; say so near scores.
-- **Two languages.** English at `/…`, German at `/de/…`, du-form like the app. Every
-  UI string in `messages/{en,de}.json` (same keys, checked).
-- **Fonts**: Satoshi WOFF2 files are fetched by `npm run fonts`, verified by hash and never
-  committed (ITF FFL: self-hosting yes, redistribution through repositories no, no subsetting).
+- **English only** (web D18). Every UI string in `messages/en.json`; `/de/…` redirects to the
+  English page for the app's older builds. German may come back; the views keep `Locale`.
+- **Fonts**: Inter 4.1, Regular and Bold, committed as WOFF2 in `src/fonts/` with its licence
+  (`OFL.txt`, SIL Open Font License 1.1, which allows redistribution; D20). No fetch step.
+  Only 400 and 700 exist; a token weight of 500/600 falls to the nearest face, nothing is
+  synthesised.
 
 ## Verify before every commit
 From the repository root:
 ```bash
-make web-test web-build   # typecheck, lint (ESLint, Prettier, brand, messages), Vitest, static export
+make web-test web-build   # typecheck, lint (ESLint, Prettier, brand), Vitest, static export
 make web-e2e              # builds the nginx image (Podman or Docker) and runs Playwright against it
 ```
 (`make web-install` once; `make hooks` once per clone.) The same from `web/` with `npm ci`,

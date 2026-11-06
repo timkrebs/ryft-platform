@@ -15,9 +15,8 @@ type Props = {
 };
 
 /**
- * A real capture from the app (scripts/screenshots.mjs): the light capture in light mode,
- * the dark one otherwise; AVIF, then WebP, then PNG. The theme switch retargets the
- * <source> media (`data-scheme`, `data-media`) when the visitor overrides the system.
+ * A real capture from the app (scripts/screenshots.mjs), the light one: the site is light
+ * only (web D19). AVIF, then WebP, then PNG.
  */
 export function Screenshot({ id, alt, sizes, priority = false, className }: Props) {
   const shot = shots[id];
@@ -27,7 +26,7 @@ export function Screenshot({ id, alt, sizes, priority = false, className }: Prop
   // next/image for the <img> attributes (dimensions, loading, decoding, priority); the
   // sizes are pre-generated, so it runs unoptimized. Its inline style is dropped (CSP).
   const { props } = getImageProps({
-    src: `/screenshots/${id}-dark.png`,
+    src: `/screenshots/${id}-light.png`,
     width: shot.width,
     height: shot.height,
     alt,
@@ -37,25 +36,11 @@ export function Screenshot({ id, alt, sizes, priority = false, className }: Prop
   });
   const { style: _style, ...img } = props;
   void _style;
-  const sources = [
-    ['light', '(prefers-color-scheme: light)'],
-    ['dark', 'all'],
-  ] as const;
   return (
     <picture className={className}>
-      {sources.flatMap(([scheme, media]) =>
-        (['avif', 'webp'] as const).map((ext) => (
-          <source
-            key={`${scheme}-${ext}`}
-            type={`image/${ext}`}
-            srcSet={srcSet(scheme, ext)}
-            sizes={sizes}
-            media={media}
-            data-scheme={scheme}
-            data-media={media}
-          />
-        )),
-      )}
+      {(['avif', 'webp'] as const).map((ext) => (
+        <source key={ext} type={`image/${ext}`} srcSet={srcSet('light', ext)} sizes={sizes} />
+      ))}
       {/* eslint-disable-next-line jsx-a11y/alt-text -- alt comes from getImageProps */}
       <img {...img} className={styles.img} />
     </picture>

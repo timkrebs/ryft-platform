@@ -2,21 +2,72 @@ import { expect, test } from '@playwright/test';
 
 // The URLs the app links to, the AASA, and how nginx answers around them.
 test.describe('routes the app depends on', () => {
-  for (const path of [
-    '/privacy',
-    '/terms',
-    '/support',
-    '/impressum',
-    '/de/impressum',
-    '/de/privacy',
-    '/de/terms',
-  ]) {
+  for (const path of ['/privacy', '/terms', '/support', '/impressum']) {
     test(`${path} is 200`, async ({ request }) => {
       const res = await request.get(path, { maxRedirects: 0 });
       expect(res.status()).toBe(200);
       expect(res.headers()['content-type']).toContain('text/html');
     });
   }
+
+  // The German pages are gone (web D18); older builds of the app still link to /de/….
+  test('the old German URLs redirect to the English page', async ({ request }) => {
+    for (const [from, to] of [
+      ['/de', '/'],
+      ['/de?x=1', '/?x=1'],
+      ['/de/privacy', '/privacy'],
+      ['/de/privacy?x=1&y=2', '/privacy?x=1&y=2'],
+      ['/de/terms', '/terms'],
+      ['/de/impressum', '/impressum'],
+      ['/de/support', '/support'],
+      ['/de/science', '/science'],
+      ['/de/beta', '/beta'],
+      ['/de/licenses', '/licenses'],
+      ['/de/privacy/2026-10-20', '/privacy/2026-10-20'],
+      ['/de/terms/2026-10-20', '/terms/2026-10-20'],
+      // The trailing slash goes first (to /de…), then the language: two hops, query kept.
+      ['/de/', '/de'],
+      ['/de/?x=1', '/de?x=1'],
+      ['/de/privacy/', '/de/privacy'],
+    ]) {
+      const res = await request.get(from, { maxRedirects: 0 });
+      expect(res.status(), from).toBe(301);
+      expect(res.headers()['location'], from).toBe(to);
+      if (!from.endsWith('/') && !from.includes('/?'))
+        expect(res.headers()['cache-control'], from).toBe('public, max-age=3600');
+    }
+    // Followed to the end, every old link lands on an English page.
+    for (const from of ['/de/', '/de/privacy/', '/de/impressum']) {
+      const res = await request.get(from);
+      expect(res.status(), from).toBe(200);
+      expect(new URL(res.url()).pathname, from).not.toMatch(/^\/de/);
+    }
+  });
+
+  // The /de rule builds Location from the decoded path, like the trailing-slash rule: nothing
+  // under /de/ may turn into "//host", "/\host" or a header with a control character.
+  test('a /de/… path never redirects off the site', async ({ request }) => {
+    for (const path of [
+      '/de/%5Cevil.com',
+      '/de/%09/evil.com',
+      '/de/%0d/evil.com',
+      '/de/%0a/evil.com',
+      '/de/%20x',
+      '/de//evil.com',
+      '/de/%2F%2Fevil.com',
+      '/de/a/%5Cb',
+    ]) {
+      const res = await request.get(path, { maxRedirects: 0 });
+      const location = res.headers()['location'];
+      if (res.status() === 404) {
+        expect(location, path).toBeUndefined();
+        continue;
+      }
+      expect(res.status(), path).toBe(301);
+      expect(location, path).toMatch(/^\/[A-Za-z0-9]/);
+      expect(location, path).not.toMatch(/[\\\s\x00-\x1f\x7f]/);
+    }
+  });
 
   test('apple-app-site-association is JSON, no redirect, no extension', async ({ request }) => {
     const res = await request.get('/.well-known/apple-app-site-association', { maxRedirects: 0 });
@@ -59,6 +110,8 @@ test.describe('routes the app depends on', () => {
   test('trailing slashes redirect to the canonical path, relatively', async ({ request }) => {
     for (const [from, to] of [
       ['/privacy/', '/privacy'],
+      ['/science/', '/science'],
+      ['/terms/2026-10-20/', '/terms/2026-10-20'],
       ['/privacy/?x=1', '/privacy?x=1'],
       ['/privacy/2026-10-26/', '/privacy/2026-10-26'],
       ['/licenses/', '/licenses'],
@@ -106,7 +159,7 @@ test.describe('routes the app depends on', () => {
   });
 
   test('unknown paths are 404 with the site’s 404 page', async ({ request }) => {
-    for (const path of ['/nope', '/de/nope', '/privacy/1999-01-01']) {
+    for (const path of ['/nope', '/privacy/1999-01-01']) {
       const res = await request.get(path);
       expect(res.status(), path).toBe(404);
       expect(await res.text(), path).toContain('Page not found');
@@ -120,9 +173,10 @@ test.describe('routes the app depends on', () => {
   });
 
   test('security headers and the CSP on pages and errors', async ({ request }) => {
-    for (const path of ['/', '/de/privacy', '/nope', '/auth/callback']) {
+    for (const path of ['/', '/privacy', '/nope', '/auth/callback']) {
       const h = (await request.get(path)).headers();
-      expect(h['content-security-policy'], path).toMatch(/script-src 'sha256-[^']+'/);
+      // No script on these pages (web D19), so no hash either.
+      expect(h['content-security-policy'], path).toContain("script-src 'none'");
       expect(h['content-security-policy'], path).not.toContain('unsafe-inline');
       expect(h['strict-transport-security'], path).toContain('max-age=31536000');
       expect(h['x-content-type-options'], path).toBe('nosniff');
@@ -138,9 +192,7 @@ test.describe('routes the app depends on', () => {
     expect((await request.get(css!)).headers()['cache-control']).toContain('immutable');
     expect((await request.get('/')).headers()['cache-control']).toBe('public, max-age=300');
     // The text in force is revalidated; a versioned text is fixed and may be cached.
-    for (const path of ['/privacy', '/de/privacy']) {
-      expect((await request.get(path)).headers()['cache-control'], path).toBe('no-cache');
-    }
+    expect((await request.get('/privacy')).headers()['cache-control']).toBe('no-cache');
     expect((await request.get('/privacy/2026-10-20')).headers()['cache-control']).toBe('public, max-age=300');
   });
 });

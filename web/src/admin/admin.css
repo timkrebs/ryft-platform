@@ -347,7 +347,8 @@
 }
 
 .adm-badge-warn {
-  color: var(--warning);
+  /* Warning is a mark colour, not a text colour (web D19, ui.module.css). */
+  color: var(--text-secondary);
 }
 
 .adm-badge-bad {

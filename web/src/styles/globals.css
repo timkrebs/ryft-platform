@@ -1,20 +1,19 @@
 /* Global styles. Every colour, radius, size and duration is a token from tokens.css
    (generated from the app); this file only decides where they go. */
 
-/* Satoshi's metric-matched fallback: the overrides next/font computes for Satoshi against
-   Arial, applied to every font that shares Arial's metrics, so the first paint has
-   Satoshi's line heights and widths on every platform and nothing moves when it swaps in:
-   Arial and Helvetica (Apple, Windows), Liberation Sans and Arimo (Linux; metric clones of
-   Arial), Roboto (Android; the same average width). */
+/* Inter's metric-matched fallback (the overrides next/font computes for Inter against Arial),
+   bound to every local font that shares Arial's metrics, so the first paint has Inter's line
+   heights and widths on every platform and nothing moves when Inter swaps in: Arial and
+   Helvetica (Apple, Windows), Liberation Sans and Arimo (Linux), Roboto (Android). */
 @font-face {
-  font-family: 'Satoshi Fallback';
+  font-family: 'Inter Fallback';
   src:
     local('Arial'), local('ArialMT'), local('Helvetica'), local('Liberation Sans'), local('LiberationSans'),
     local('Arimo'), local('Roboto'), local('Roboto-Regular');
-  ascent-override: 102.23%;
-  descent-override: 24.29%;
-  line-gap-override: 10.12%;
-  size-adjust: 98.8%;
+  ascent-override: 90.44%;
+  descent-override: 22.52%;
+  line-gap-override: 0%;
+  size-adjust: 107.12%;
 }
 
 *,
@@ -40,13 +39,16 @@ body {
   min-height: 100vh;
   background: var(--background);
   color: var(--text-primary);
+  /* Inter, Regular and Bold (web D20): a weight of 500 or 600 from the tokens resolves to the
+     nearest face (400 or 700); nothing is synthesised. */
   font-family:
-    var(--font-satoshi),
+    var(--font-inter),
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     sans-serif;
+  font-synthesis: none;
   font-size: var(--type-body);
   font-weight: var(--type-body-weight);
   line-height: 1.55;
@@ -98,10 +100,9 @@ a:hover {
   text-decoration-color: currentColor;
 }
 
-/* Emphasis in Medium, as the app does: Bold stays available but isn't fetched by any page,
-   which keeps the long texts at two font files (D4). */
+/* Emphasis in Bold: Inter ships in Regular and Bold here (D20). */
 strong {
-  font-weight: 500;
+  font-weight: 700;
   color: var(--text-primary);
 }
 

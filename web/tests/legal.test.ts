@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 const LEGAL = 'content/legal';
 // portedFrom paths are relative to the repository root (web/..); RYFT_ROOT overrides it.
 const RYFT = resolve(process.env.RYFT_ROOT ?? '..');
-const locales = ['en', 'de'] as const;
+const locales = ['en'] as const;
 
 type Front = {
   title: string;
@@ -74,8 +74,7 @@ const squash = (s: string) =>
     .trim();
 
 describe('legal content', () => {
-  it('exists for the same documents and versions in every language', () => {
-    expect(files('de').sort()).toEqual(files('en').sort());
+  it('exists for every document', () => {
     expect(files('en').sort()).toEqual(
       expect.arrayContaining([
         'impressum.mdx',
@@ -118,11 +117,4 @@ describe('legal content', () => {
       });
     }
   }
-
-  it('privacy and terms carry the same version in both languages', () => {
-    for (const doc of ['privacy', 'terms']) {
-      const versions = (l: string) => files(l).filter((f) => f.startsWith(`${doc}/`));
-      expect(versions('de')).toEqual(versions('en'));
-    }
-  });
 });
