@@ -66,15 +66,28 @@ unsealed once with its Pod Identity role (`infra/aws/kubernetes`, `vault/vault`)
 1. Check the role: `kubectl --context ryft-prod-euc1 -n vault exec vault-0 -- vault status`
    shows `Seal Type awskms` and `Sealed false`. CloudTrail shows `Decrypt` on the unseal key by
    a role named `<cluster>-vault-unseal-…`.
-2. In `terraform.tfvars`, list `terraform output -raw vault_unseal_role_arn_pattern` (the
-   module gives the role a generated suffix, hence the `*`). Add your own admin role's
-   pattern if you will ever restore a production snapshot outside the cluster, for example
-   in the kind drill with the same key.
+2. In `terraform.tfvars`, list Vault's role. Two forms:
+   - **stricter, preferred once the role exists:** its exact ARN,
+     `terraform -chdir=infra/aws/kubernetes output -raw vault_unseal_role_arn`. It has to be
+     updated if the role is ever recreated: the module gives it a new generated suffix;
+   - or the pattern `terraform -chdir=infra/aws output -raw vault_unseal_role_arn_pattern`
+     (`role/<cluster>-vault-unseal-*`), which survives a recreated role. ArnLike's `*` also
+     matches `/`, so the pattern admits any role whose path and name start with
+     `<cluster>-vault-unseal-` (`role/<cluster>-vault-unseal-x/anything`). Anyone who may
+     create IAM roles could make one that matches.
+
+   Add your own admin role if you will ever restore a production snapshot outside the
+   cluster, for example in the kind drill with the same key. For IAM Identity Center that is
+   `arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AdministratorAccess_*`
+   (the path may or may not hold a region segment; the `*` before the name covers both).
+   Check the exact ARN first with `aws iam list-roles --path-prefix /aws-reserved/ --query
+   'Roles[].Arn'`, and prefer it too.
 3. Plan (only the unseal key's `policy` changes in place) and apply. Then prove it: delete one
    standby pod and watch it come back unsealed.
 
-A `check` warns on every plan if the list names no `<cluster>-vault-unseal` role. The list is
-no barrier against an administrator: `AccountAdministers` keeps `kms:PutKeyPolicy`, so an
+A `check` warns on every plan if the list holds neither the exact pattern nor the role's exact
+ARN; a bare prefix without `-*` or a typo in the suffix matches no role, so it warns too. The
+list is no barrier against an administrator: `AccountAdministers` keeps `kms:PutKeyPolicy`, so an
 admin can rewrite the policy (CloudTrail records that). It also blocks every principal not
 listed, the account root and the restore drill's identity included. Rollback: set the list
 back to `[]` and apply.
@@ -314,20 +327,41 @@ be evicted, so a drain never waits on a broken rollout.
 
 Kubernetes creates AWS resources Terraform does not track: the NLB (from Traefik's
 Service), Route 53 records (ExternalDNS) and EBS volumes (PVCs). Tear down in reverse so
-the controllers are still running to clean up after themselves:
+the controllers are still running to clean up after themselves. **Each step only after the
+previous one succeeded.** If the cluster root is destroyed while Traefik's NLB still exists,
+the LB controller goes with EKS, the subnet and internet gateway deletes stall for about 20
+minutes on `DependencyViolation`, and the orphaned NLB keeps billing.
+
+**Step 0, once Vault runs in the cluster** (`infra/aws/kubernetes/vault.tf`): `infra/aws/kubernetes`
+refuses its destroy, because the `vault` namespace and both Vault releases carry
+`prevent_destroy`.
+1. Take a final Raft snapshot and check that it is in the bucket (OPERATIONS → Vault →
+   Snapshots).
+2. Merge a reviewed pull request that removes exactly the three `prevent_destroy = true`
+   lines in `infra/aws/kubernetes/vault.tf`, and apply it (the plan shows no change).
+
+Then:
 
 ```bash
-kubectl delete -k deploy/k8s/overlays/eks       # Ingress gone → ExternalDNS deletes api.ryftapp.de
-(cd infra/aws/kubernetes && terraform destroy)  # Traefik Service gone → LB controller deletes the NLB
-# gp3-encrypted retains volumes: delete the leftovers explicitly
-aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft \
+# 1. Workloads, then the add-ons; && stops at the first failure
+kubectl --context ryft-prod-euc1 delete -k deploy/k8s/overlays/eks && \
+  terraform -chdir=infra/aws/kubernetes destroy   # Ingress gone → ExternalDNS deletes api.ryftapp.de; Traefik gone → the LB controller deletes the NLB
+# check the NLB is gone before going on (empty output):
+aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, 'traefik')].LoadBalancerArn" --output text
+
+# 2. gp3-encrypted retains volumes: delete the leftovers explicitly. The EBS CSI driver tags
+#    each volume with its PVC's namespace (kubernetes.io/created-for/pvc/namespace); the
+#    workloads run in ryft-* namespaces
+aws ec2 describe-volumes --filters 'Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft-*' \
   --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
 # the vault namespace's volumes too (Raft data and audit): they hold Vault's seal-wrapped root
 # key, and the unseal key outlives the cluster, so a leftover volume stays readable
-aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=vault \
+aws ec2 describe-volumes --filters 'Name=tag:kubernetes.io/created-for/pvc/namespace,Values=vault' \
   --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
-(cd infra/aws && terraform apply -var deletion_protection=false && \
-  terraform destroy -target=module.eks -target=module.network)  # Vault's keys and bucket stay
+
+# 3. The cluster root, only after 1 succeeded
+terraform -chdir=infra/aws apply -var deletion_protection=false && \
+  terraform -chdir=infra/aws destroy -target=module.eks -target=module.network   # Vault's keys and bucket stay
 ```
 
 The zone in `infra/aws/dns` stays; it costs $0.50 a month and keeps the delegation intact.
@@ -341,10 +375,15 @@ rebuilt cluster unseals with the same key and can restore the old snapshots.
 `vault.tf` or reverting the pull request that added them removes the protection with it**,
 and the next plan destroys them. So, once applied, never revert that pull request. What
 holds then is the keys' own policy: `NoDeletionOrDisable` denies `kms:ScheduleKeyDeletion`
-and `kms:DisableKey` to everyone, the account root and Terraform included. Such a plan
-fails at the keys. But it has already destroyed the bucket's policy, public access block,
-encryption default and lifecycle and suspended its versioning, and the bucket itself fails with
-`BucketNotEmpty`. Read every `-` line of a plan here.
+and `kms:DisableKey` to everyone, the account root and Terraform included. Such an apply
+fails at the keys. Before that, it has already done this damage:
+- destroyed both **aliases** (`kms:DeleteAlias` is not denied). Every `infra/aws/kubernetes`
+  plan then fails on `data.aws_kms_alias` until they exist again;
+- destroyed the bucket's policy, public access block, encryption default and lifecycle,
+  and suspended its versioning. The bucket itself then fails with `BucketNotEmpty`.
+
+Restoring the blocks and applying re-creates the aliases and the bucket settings; the keys
+are still in the state. Read every `-` line of a plan here.
 
 To keep a resource in AWS but drop it from this root, replace its block with a `removed`
 block: `removed { from = aws_kms_key.vault_unseal  lifecycle { destroy = false } }`
@@ -363,10 +402,21 @@ Removing them for good is deliberate and takes separate, reviewed steps:
    `aws kms cancel-key-deletion --key-id <arn>` and then `aws kms enable-key --key-id
    <arn>` bring it back (a cancelled key returns disabled).
 
-**Incident kill switch.** To stop all use of a key at once (`aws kms disable-key`), first
-remove `NoDeletionOrDisable` from that key's policy (`aws kms put-key-policy`, or step 1
-above), then disable it. Commit the policy change afterwards, or the next plan puts the
-statement back. Disabling the unseal key keeps every Vault pod that restarts sealed.
+**Incident kill switch.** To stop all use of a key at once:
+1. Remove `NoDeletionOrDisable` from that key's policy by hand (`aws kms put-key-policy`).
+2. Run `aws kms disable-key --key-id <arn>`.
+3. **Commit `is_enabled = false` on that `aws_kms_key` at once**, in a reviewed pull request.
+   `is_enabled` defaults to `true`, so without it the next unrelated apply of this root
+   calls `EnableKey` (nothing denies that) and silently re-enables a compromised key.
+
+The same plan shows the key's `policy` going back to the committed one, with
+`NoDeletionOrDisable`. That is harmless: the key is already disabled, and keeping it disabled
+needs no `DisableKey` call. Before you apply it, check that the plan does **not** show
+`is_enabled: false -> true` on any key. A kill switch done only in code fails at
+`DisableKey` by design: step 1 has to come first.
+
+Disabling the unseal key keeps every Vault pod that restarts sealed. Disabling the
+snapshot key stops every upload and every restore.
 
 Without the unseal key, Vault's data and every snapshot are unreadable for good: only
 schedule its deletion after the in-cluster Vault and its snapshots are gone.

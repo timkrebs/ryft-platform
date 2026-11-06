@@ -37,8 +37,11 @@ budget_alert_emails = ["you@example.com"]
 
 # Vault's unseal key: only these principals may use it (off while empty). Enable it only after
 # the in-cluster Vault has unsealed once with its Pod Identity role (README → Unseal key
-# allowlist); a list without that role keeps every restarted Vault pod sealed.
+# allowlist); a list without that role keeps every restarted Vault pod sealed. Exact ARNs are
+# stricter than patterns (a * also matches /): the role's from
+# `terraform -chdir=infra/aws/kubernetes output -raw vault_unseal_role_arn`, yours from
+# `aws iam list-roles --path-prefix /aws-reserved/ --query 'Roles[].Arn'`.
 # vault_unseal_allowed_principal_arns = [
-#   "arn:aws:iam::111122223333:role/ryft-prod-euc1-vault-unseal-*", # terraform output vault_unseal_role_arn_pattern
-#   "arn:aws:iam::111122223333:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*", # your admin role, for restores
+#   "arn:aws:iam::111122223333:role/ryft-prod-euc1-vault-unseal-*", # or the exact role ARN
+#   "arn:aws:iam::111122223333:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AdministratorAccess_*", # your admin role, for restores
 # ]

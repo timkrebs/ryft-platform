@@ -87,14 +87,20 @@ data "aws_iam_policy_document" "vault_unseal_key" {
 }
 
 # Set the allowlist without Vault's role and the next Vault pod that starts stays sealed;
-# nothing fails at apply. Warn on every plan instead.
+# nothing fails at apply. Warn on every plan instead. Accepted: the exact pattern, or the
+# role's exact ARN (the name plus the module's generated suffix, no wildcard). A prefix
+# alone (no "-*") or a typo in the suffix matches no role, so it warns.
+locals {
+  vault_unseal_allowlist_names_the_vault_role = length(var.vault_unseal_allowed_principal_arns) == 0 || anytrue([
+    for a in var.vault_unseal_allowed_principal_arns :
+    a == local.vault_unseal_role_arn_pattern || can(regex("^arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal-[0-9a-f]+$", a))
+  ])
+}
+
 check "vault_unseal_allowlist_names_the_vault_role" {
   assert {
-    condition = length(var.vault_unseal_allowed_principal_arns) == 0 || anytrue([
-      for a in var.vault_unseal_allowed_principal_arns :
-      startswith(a, "arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal")
-    ])
-    error_message = "vault_unseal_allowed_principal_arns is set but names no role arn:${local.partition}:iam::${local.account_id}:role/${local.name}-vault-unseal-…: Vault could no longer unseal. Add \"${local.vault_unseal_role_arn_pattern}\"."
+    condition     = local.vault_unseal_allowlist_names_the_vault_role
+    error_message = "vault_unseal_allowed_principal_arns is set but names neither \"${local.vault_unseal_role_arn_pattern}\" nor the exact ARN of that role (terraform -chdir=infra/aws/kubernetes output -raw vault_unseal_role_arn): Vault could no longer unseal."
   }
 }
 

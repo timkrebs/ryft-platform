@@ -371,7 +371,7 @@ run "the_unseal_allowlist_denies_every_other_principal_when_set" {
   variables {
     vault_unseal_allowed_principal_arns = [
       "arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-*",
-      "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*",
+      "arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AdministratorAccess_*",
     ]
   }
 
@@ -415,6 +415,56 @@ run "an_allowlist_without_vault_s_role_warns" {
   }
 
   expect_failures = [check.vault_unseal_allowlist_names_the_vault_role]
+}
+
+# A prefix without "-*" matches no role (ArnNotLike compares the whole ARN), nor does a
+# typo in the pattern: both must warn like a missing entry.
+run "an_allowlist_with_only_the_bare_prefix_warns" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal"]
+  }
+
+  expect_failures = [check.vault_unseal_allowlist_names_the_vault_role]
+}
+
+run "an_allowlist_with_a_mistyped_pattern_warns" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-x*"]
+  }
+
+  expect_failures = [check.vault_unseal_allowlist_names_the_vault_role]
+}
+
+# The two accepted forms, and the rest pinned on the local the check reads (a passing
+# check leaves no trace a run could assert on).
+run "the_allowlist_check_accepts_the_exact_role_arn" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-20261106120000000000000001"]
+  }
+
+  assert {
+    condition     = local.vault_unseal_allowlist_names_the_vault_role
+    error_message = "the exact role ARN (the name plus the module's generated suffix) satisfies the check"
+  }
+}
+
+run "the_allowlist_check_accepts_the_output_pattern" {
+  command = plan
+
+  variables {
+    vault_unseal_allowed_principal_arns = ["arn:aws:iam::123456789012:role/ryft-prod-euc1-vault-unseal-*"]
+  }
+
+  assert {
+    condition     = local.vault_unseal_allowlist_names_the_vault_role
+    error_message = "the pattern from the output vault_unseal_role_arn_pattern satisfies the check"
+  }
 }
 
 run "rejects_an_allowlist_entry_that_is_no_iam_arn" {
