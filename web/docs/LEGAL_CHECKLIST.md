@@ -251,7 +251,9 @@ Not recipients of users' personal data:
 - **HashiCorp** (HCP Vault, HCP Terraform): service credentials and Terraform state, no user
   data.
 - **Let's Encrypt**: certificates for the domain.
-- **Fontshare**: the fonts are fetched at build time; visitors never contact it.
+- **Fonts**: none. Since web D20 the typeface (Inter, SIL Open Font License) is committed in the
+  repository and served from the site itself; nothing is fetched at build time, and visitors
+  contact no font service.
 
 ## 4. The version
 
