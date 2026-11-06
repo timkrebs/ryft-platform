@@ -1,31 +1,54 @@
 {{- /*
-P13 ryft-vault-trust (C, U; all namespaces, any writer): what the cert-manager ClusterIssuer
-ryft-vault (vault.issuer) may issue. That CA is the trust of every VaultConnection of the
-in-cluster Vault, so a leaf it signs for vault.vault.svc is a Vault server to VSO. Matched:
-every Certificate and CertificateRequest whose issuerRef names the issuer (whatever kind and
-group it claims: the shape below pins them, so a namespaced Issuer of the same name is refused
-too, never ignored). An Ingress or Gateway annotated with the issuer ends here as well: the
-Certificate cert-manager's ingress-shim writes is judged like any other.
+P13 ryft-vault-trust (C, U; all namespaces, any writer): the chain of the in-cluster Vault's CA.
+The cert-manager ClusterIssuer ryft-vault (vault.issuer) signs with the Secret ryft-vault-ca
+(vault.rootCASecret, in cert-manager's cluster resource namespace); every VaultConnection of the
+in-cluster Vault trusts the ca.crt of its namespace's Secret vault-ca, so a leaf with a SAN for
+vault.vault.svc under that CA is a Vault server to VSO.
 
-- A Certificate is either the server's, `<vault.namespace>/<serverCertificate>` (dnsNames and
-  ipAddresses only from the lists, usages only server auth and digital signature, its own
-  Secret), or `<namespace>/<caCertificate>` in any namespace (commonName vso.<namespace>, no
-  dnsNames, ipAddresses, URIs or e-mail addresses, no server auth, its own Secret: only the
-  Secret's ca.crt is used, the leaf is inert). Both are allowlists of spec keys, so isCA,
-  subject, literalSubject, uris, keystores, secretTemplate and any key a later CRD version adds
-  are refused. issuerRef is exactly the ClusterIssuer of cert-manager.io.
-- A CertificateRequest for the issuer comes only from cert-manager's controller (it creates one
-  for each judged Certificate). CEL cannot read the names inside a CSR, so a hand-made request
-  is refused whatever it asks for. Status (approval, the signed certificate) is a subresource
-  and not matched.
+Matched (everything else passes unjudged):
+- every Certificate and CertificateRequest (and certificaterequests/status) whose issuerRef names
+  the issuer, whatever kind and group it claims (the rules pin them: a namespaced Issuer of the
+  same name is refused, never ignored);
+- every Certificate whose secretName is vault-ca, vault-tls or ryft-vault-ca, whatever its issuer;
+- every Issuer and ClusterIssuer;
+- Kubernetes CertificateSigningRequests (create) for a signer clusterissuers.cert-manager.io/ryft-vault*.
 
-Not covered here: another Issuer or ClusterIssuer that names the same CA Secret (cert-manager
-namespace), and Kubernetes CertificateSigningRequests for signer
-clusterissuers.cert-manager.io/ryft-vault (cert-manager's CSR controllers are off unless their
-feature gate is set). Argo CD writing a well-shaped Certificate in vault is P12's (#121).
+Rules:
+- Certificates of the issuer: issuerRef is exactly the ClusterIssuer of cert-manager.io, and
+  only two exist. The server's, <vault.namespace>/<serverCertificate>: dnsNames, ipAddresses
+  and usages a subset of the lists, its own Secret. And <namespace>/<caCertificate> in any
+  namespace: commonName vso.<namespace>, no SAN of any kind (no dnsNames, ipAddresses, URIs or
+  e-mail addresses), its own Secret. Only the Secret's ca.crt is used; the leaf is no server
+  certificate because it bears no SAN (Go never matches a host name against the commonName), not
+  because of its usages (usages without server auth mean no EKU, which Go accepts for any
+  purpose). Both shapes are allowlists of spec keys, so isCA, subject, literalSubject, uris,
+  keystores, secretTemplate and any key a later CRD version adds are refused. An Ingress or
+  Gateway annotated with the issuer is refused through these rules (ingress-shim's Certificate
+  has another name), not through the CertificateRequest rule.
+- The reverse: a Secret vault-ca (any namespace) or vault/vault-tls only from a Certificate of
+  the issuer, and the Secret ryft-vault-ca only from the Certificate
+  <clusterResourceNamespace>/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+- Issuers: only the ClusterIssuer ryft-vault may sign with ca.secretName ryft-vault-ca, and it
+  is exactly that; ryft-vault-bootstrap is exactly selfSigned: {}. Argo CD's identities may
+  write only Issuers whose spec is exactly selfSigned: {} (the operators' webhook issuers in
+  rabbitmq-system), and no ClusterIssuer: an Issuer of type vault, venafi or acme names a server
+  and a Secret of its namespace (auth.tokenSecretRef, ...), and cert-manager sends that Secret's
+  value there.
+- A CertificateRequest for the issuer, and its status (approval, the signed certificate), only
+  from cert-manager's controller (vault.certManagerUser): CEL cannot read the names inside a
+  CSR, so a hand-made request is refused whatever it asks for. This holds exactly as long as
+  nothing else can act as that service account (its token, an exec into the controller).
+- No Kubernetes CertificateSigningRequest names the signer clusterissuers.cert-manager.io/ryft-vault
+  (or any signer that starts so): cert-manager's CSR controllers are off, and if a feature gate
+  turned them on, such a request would bypass the CertificateRequest rule.
+
+Not covered here: a Secret named ryft-vault-ca, vault-ca or vault-tls written directly (RBAC: only
+Terraform and cert-manager write Secrets there; P12 for Argo CD), and Argo CD writing a well-shaped
+Certificate in vault (P12, #121).
 */ -}}
 {{- $v := .Values.vault -}}
-{{ include "admission.policyHead" (dict "root" . "name" "ryft-vault-trust" "id" "P13" "summary" "what the ryft-vault issuer (the in-cluster Vault's CA) may issue") }}
+{{- $protected := list $v.caCertificate $v.serverCertificate $v.rootCASecret -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-vault-trust" "id" "P13" "summary" "the chain of the ryft-vault issuer (the in-cluster Vault's CA)") }}
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -33,49 +56,93 @@ spec:
       - apiGroups: ["cert-manager.io"]
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["certificates", "certificaterequests"]
+        resources: ["certificates", "certificaterequests", "certificaterequests/status", "issuers", "clusterissuers"]
+      - apiGroups: ["certificates.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["certificatesigningrequests"]
   matchConditions:
-    - name: names-the-vault-issuer
+    - name: the-vault-chain
       expression: |-
-        has(object.spec) && has(object.spec.issuerRef) && has(object.spec.issuerRef.name) &&
-        object.spec.issuerRef.name == {{ $v.issuer | toJson }}
+        has(dyn(object).spec) && (
+          request.kind.kind in ['Issuer', 'ClusterIssuer'] ||
+          (request.kind.kind == 'CertificateSigningRequest' && has(dyn(object).spec.signerName) &&
+           dyn(object).spec.signerName.startsWith({{ printf "clusterissuers.cert-manager.io/%s" $v.issuer | toJson }})) ||
+          (has(dyn(object).spec.issuerRef) && has(dyn(object).spec.issuerRef.name) &&
+           dyn(object).spec.issuerRef.name == {{ $v.issuer | toJson }}) ||
+          (request.kind.kind == 'Certificate' && has(dyn(object).spec.secretName) &&
+           dyn(object).spec.secretName in {{ $protected | toJson }}))
     {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
   variables:
     - name: reqKind
       expression: request.kind.kind
     - name: ns
       expression: request.namespace
+    - name: user
+      expression: request.userInfo.username
     - name: name
       expression: |-
-        has(object.metadata.name) ? object.metadata.name : ''
+        has(dyn(object).metadata.name) ? dyn(object).metadata.name : ''
     - name: spec
       expression: dyn(object).spec
+    - name: issuerName
+      expression: |-
+        has(variables.spec.issuerRef) && has(variables.spec.issuerRef.name) ? variables.spec.issuerRef.name : ''
+    # issuerRef names a ClusterIssuer of cert-manager.io and nothing else.
+    - name: clusterIssuerRef
+      expression: |-
+        has(variables.spec.issuerRef) && variables.spec.issuerRef.all(k, k in ['name', 'kind', 'group']) &&
+        has(variables.spec.issuerRef.kind) && variables.spec.issuerRef.kind == 'ClusterIssuer' &&
+        (!has(variables.spec.issuerRef.group) || variables.spec.issuerRef.group == 'cert-manager.io')
+    - name: secretName
+      expression: |-
+        has(variables.spec.secretName) ? variables.spec.secretName : ''
     - name: isServer
       expression: |-
         variables.ns == {{ $v.namespace | toJson }} && variables.name == {{ $v.serverCertificate | toJson }}
     - name: isCA
       expression: |-
         variables.name == {{ $v.caCertificate | toJson }}
+    # The spec is exactly selfSigned: {}.
+    - name: selfSignedOnly
+      expression: |-
+        variables.spec.all(k, k == 'selfSigned') && has(variables.spec.selfSigned) && size(variables.spec.selfSigned) == 0
+    - name: signsWithRoot
+      expression: |-
+        has(variables.spec.ca) && has(variables.spec.ca.secretName) && variables.spec.ca.secretName == {{ $v.rootCASecret | toJson }}
   validations:
     - expression: |-
-        variables.reqKind != 'CertificateRequest' || request.userInfo.username == {{ $v.certManagerUser | toJson }}
-      message: "P13: only cert-manager's controller may create or update a CertificateRequest for the issuer ryft-vault (CEL cannot read the names in a CSR)."
+        variables.reqKind != 'CertificateSigningRequest'
+      message: "P13: a Kubernetes CertificateSigningRequest for the signer clusterissuers.cert-manager.io/ryft-vault is refused (cert-manager signs only its own CertificateRequests)."
       reason: Forbidden
     - expression: |-
-        variables.reqKind != 'Certificate' ||
-        (variables.spec.issuerRef.all(k, k in ['name', 'kind', 'group']) &&
-         has(variables.spec.issuerRef.kind) && variables.spec.issuerRef.kind == 'ClusterIssuer' &&
-         (!has(variables.spec.issuerRef.group) || variables.spec.issuerRef.group == 'cert-manager.io'))
+        variables.reqKind != 'CertificateRequest' || variables.user == {{ $v.certManagerUser | toJson }}
+      message: "P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR)."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' || variables.issuerName != {{ $v.issuer | toJson }} || variables.clusterIssuerRef
       message: "P13: a Certificate for ryft-vault must name the ClusterIssuer ryft-vault of cert-manager.io."
       reason: Forbidden
     - expression: |-
-        variables.reqKind != 'Certificate' || variables.isServer || variables.isCA
+        variables.reqKind != 'Certificate' || variables.issuerName != {{ $v.issuer | toJson }} || variables.isServer || variables.isCA
       message: "P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' ||
+        !(variables.secretName == {{ $v.caCertificate | toJson }} || (variables.ns == {{ $v.namespace | toJson }} && variables.secretName == {{ $v.serverCertificate | toJson }})) ||
+        (variables.issuerName == {{ $v.issuer | toJson }} && variables.clusterIssuerRef)
+      message: "P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'Certificate' || variables.secretName != {{ $v.rootCASecret | toJson }} ||
+        (variables.ns == {{ $v.clusterResourceNamespace | toJson }} && variables.name == {{ $v.rootCASecret | toJson }} &&
+         variables.issuerName == {{ $v.bootstrapIssuer | toJson }} && variables.clusterIssuerRef)
+      message: "P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap."
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'Certificate' || !variables.isServer ||
         (variables.spec.all(k, k in ['secretName', 'duration', 'renewBefore', 'privateKey', 'usages', 'dnsNames', 'ipAddresses', 'issuerRef']) &&
-         has(variables.spec.secretName) && variables.spec.secretName == {{ $v.serverCertificate | toJson }} &&
+         variables.secretName == {{ $v.serverCertificate | toJson }} &&
          (!has(variables.spec.dnsNames) || variables.spec.dnsNames.all(n, n in {{ $v.serverDNSNames | toJson }})) &&
          (!has(variables.spec.ipAddresses) || variables.spec.ipAddresses.all(a, a in {{ $v.serverIPAddresses | toJson }})) &&
          (!has(variables.spec.usages) || variables.spec.usages.all(u, u in {{ $v.serverUsages | toJson }})))
@@ -84,10 +151,29 @@ spec:
     - expression: |-
         variables.reqKind != 'Certificate' || variables.isServer || !variables.isCA ||
         (variables.spec.all(k, k in ['secretName', 'commonName', 'duration', 'renewBefore', 'privateKey', 'usages', 'issuerRef']) &&
-         has(variables.spec.secretName) && variables.spec.secretName == {{ $v.caCertificate | toJson }} &&
+         variables.secretName == {{ $v.caCertificate | toJson }} &&
          has(variables.spec.commonName) && variables.spec.commonName == {{ $v.caCommonNamePrefix | toJson }} + variables.ns &&
          (!has(variables.spec.usages) || variables.spec.usages.all(u, u in {{ $v.caUsages | toJson }})))
-      message: "P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no names, no server auth, no CA, subject or other field."
+      message: "P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['Issuer', 'ClusterIssuer']) || !variables.signsWithRoot ||
+        (variables.reqKind == 'ClusterIssuer' && variables.name == {{ $v.issuer | toJson }})
+      message: "P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterIssuer' || variables.name != {{ $v.issuer | toJson }} ||
+        (variables.spec.all(k, k == 'ca') && variables.signsWithRoot && variables.spec.ca.all(k, k == 'secretName'))
+      message: "P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca."
+      reason: Forbidden
+    - expression: |-
+        variables.reqKind != 'ClusterIssuer' || variables.name != {{ $v.bootstrapIssuer | toJson }} || variables.selfSignedOnly
+      message: "P13: the ClusterIssuer ryft-vault-bootstrap must be exactly selfSigned: {}."
+      reason: Forbidden
+    - expression: |-
+        !(variables.reqKind in ['Issuer', 'ClusterIssuer']) || !(variables.user in {{ include "admission.cel.argoUsers" . }}) ||
+        (variables.reqKind == 'Issuer' && variables.selfSignedOnly)
+      message: "P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names)."
       reason: Forbidden
 ---
 {{ include "admission.binding" (dict "root" . "key" "vault-trust" "policy" "ryft-vault-trust" "id" "P13" "step" "A") }}

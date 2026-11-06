@@ -65,7 +65,7 @@ mock_provider "random" {
 mock_provider "kubernetes" {}
 
 # The cluster as it should look after a Phase 1 apply, and the chart's render of it: the
-# same twelve policies and thirteen bindings (P13 included), every binding Warn+Audit. The drift checks compare
+# same twelve policies and seventeen bindings (P13 included; P1, P2 twice and P3 also for vault), every binding Warn+Audit. The drift checks compare
 # the two; a run that wants to see a drift overrides one side.
 override_data {
   target = data.helm_template.admission
@@ -435,6 +435,58 @@ override_data {
         spec:
           policyName: ryft-vault-trust
           validationActions: [Warn, Audit]
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-namespaces-vault
+        spec:
+          policyName: ryft-namespaces
+          validationActions: [Warn, Audit]
+          matchResources:
+            namespaceSelector:
+              matchExpressions:
+                - { key: kubernetes.io/metadata.name, operator: In, values: [vault] }
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-workloads-templates-vault
+        spec:
+          policyName: ryft-workloads
+          validationActions: [Warn, Audit]
+          matchResources:
+            namespaceSelector:
+              matchExpressions:
+                - { key: kubernetes.io/metadata.name, operator: In, values: [vault] }
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-workloads-pods-vault
+        spec:
+          policyName: ryft-workloads
+          validationActions: [Warn, Audit]
+          matchResources:
+            namespaceSelector:
+              matchExpressions:
+                - { key: kubernetes.io/metadata.name, operator: In, values: [vault] }
+
+        ---
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: ryft-netpol-vault
+        spec:
+          policyName: ryft-netpol
+          validationActions: [Warn, Audit]
+          matchResources:
+            namespaceSelector:
+              matchExpressions:
+                - { key: kubernetes.io/metadata.name, operator: In, values: [vault] }
       EOT
     }
   }
@@ -477,6 +529,10 @@ override_data {
       { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
       { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+      { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+      { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+      { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+      { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
     ]
   }
 }
@@ -504,8 +560,8 @@ run "the_committed_file_names_every_binding_of_the_chart" {
   command = plan
 
   assert {
-    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 13
-    error_message = "admission-values.yaml must set an action for each of the chart's thirteen bindings (P1-P11 and P13, P2 twice)"
+    condition     = toset(keys(local.admission_file.actions)) == toset(local.admission_keys) && length(local.admission_keys) == 17
+    error_message = "admission-values.yaml must set an action for each of the chart's seventeen bindings (P1-P11 and P13, P2 twice, and the vault bindings of P1, P2 (twice) and P3)"
   }
 
   assert {
@@ -529,7 +585,7 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 13
+    condition     = alltrue([for k, v in local.admission_effective : v == ["Warn", "Audit"]]) && length(local.admission_effective) == 17
     error_message = "by default every binding is Warn+Audit"
   }
 
@@ -559,8 +615,8 @@ run "audit_by_default" {
   }
 
   assert {
-    condition     = length(local.admission_rendered_policies) == 12 && length(local.admission_rendered_bindings) == 13
-    error_message = "the mocked render holds the twelve policies and thirteen bindings the drift checks compare"
+    condition     = length(local.admission_rendered_policies) == 12 && length(local.admission_rendered_bindings) == 17
+    error_message = "the mocked render holds the twelve policies and seventeen bindings the drift checks compare"
   }
 }
 
@@ -706,14 +762,11 @@ run "vault_address_matches_the_generated_vault_yaml" {
     error_message = "the generated deploy/k8s/overlays/vault-namespaces/*/vault.yaml were not found: the test would compare nothing"
   }
 
+  # The check's own condition on the committed tree (a check failure is only a warning in a run, so
+  # the run asserts it; the runs below feed it bad trees and expect the check to fail).
   assert {
-    condition     = alltrue([for f, a in local.vault_address_by_file : length(a) == 1])
-    error_message = "every generated vault.yaml holds exactly one VaultConnection address"
-  }
-
-  assert {
-    condition     = length(local.vault_addresses) > 0 && alltrue([for a in local.vault_addresses : contains(local.admission_file.vaultAddresses, a)])
-    error_message = "every address in a generated vault.yaml (infra/vault) must be one of vaultAddresses in admission-values.yaml; P4 admits only those"
+    condition     = local.admission_vault_address_ok
+    error_message = "check.admission_vault_address fails on the committed tree: a generated vault.yaml (infra/vault) names an address that is not in vaultAddresses of admission-values.yaml, or holds not exactly one"
   }
 
   assert {
@@ -732,20 +785,49 @@ run "vault_address_matches_the_generated_vault_yaml" {
   }
 }
 
-# The cutover: a generated vault.yaml that names the in-cluster Vault passes the check while HCP's
-# files remain; an address in no list fails it.
+# The cutover: a tree where one namespace names the in-cluster Vault and another still HCP's passes
+# the check; an address in no list, or a file with two addresses, fails it.
 run "vault_address_check_admits_both_targets_during_the_cutover" {
   command = plan
 
-  assert {
-    condition     = alltrue([for a in ["https://vault.vault.svc:8200", local.admission_file.vaultAddresses[0]] : contains(local.admission_vault_allowed, a)])
-    error_message = "both the HCP address and the in-cluster address must be admitted while namespaces move one by one"
+  variables {
+    admission_vault_namespaces_dir = "tests/fixtures/vault-namespaces-cutover"
   }
 
   assert {
-    condition     = !contains(local.admission_vault_allowed, "https://vault.vault.svc.cluster.local:8200") && !contains(local.admission_vault_allowed, "http://vault.vault.svc:8200")
-    error_message = "only the exact in-cluster address infra/vault generates is admitted (not another spelling, never plain http)"
+    condition     = local.admission_vault_address_ok && length(local.vault_addresses) == 2
+    error_message = "a tree half moved to the in-cluster Vault must pass check.admission_vault_address"
   }
+}
+
+run "vault_address_check_refuses_a_foreign_address" {
+  command = plan
+
+  variables {
+    admission_vault_namespaces_dir = "tests/fixtures/vault-namespaces-foreign"
+  }
+
+  expect_failures = [check.admission_vault_address]
+}
+
+run "vault_address_check_refuses_two_addresses_in_one_file" {
+  command = plan
+
+  variables {
+    admission_vault_namespaces_dir = "tests/fixtures/vault-namespaces-two"
+  }
+
+  expect_failures = [check.admission_vault_address]
+}
+
+run "vault_address_check_refuses_an_empty_tree" {
+  command = plan
+
+  variables {
+    admission_vault_namespaces_dir = "tests/fixtures/no-such-dir"
+  }
+
+  expect_failures = [check.admission_vault_address]
 }
 
 run "argocd_and_vpc_values_follow_their_sources" {
@@ -818,6 +900,10 @@ run "drift_a_missing_binding" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }
@@ -849,6 +935,10 @@ run "drift_a_binding_left_in_the_wrong_action" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }
@@ -880,6 +970,10 @@ run "drift_a_binding_pointed_at_another_policy" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }
@@ -911,6 +1005,10 @@ run "drift_a_binding_patched_with_a_namespace_selector" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }
@@ -942,6 +1040,10 @@ run "server_defaults_are_not_drift" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }

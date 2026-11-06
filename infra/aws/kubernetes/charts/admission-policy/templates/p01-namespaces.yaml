@@ -51,4 +51,6 @@ spec:
       message: "P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none."
       reason: Forbidden
 ---
-{{ include "admission.binding" (dict "root" . "key" "namespaces" "policy" "ryft-namespaces" "id" "P1" "step" "B") }}
+{{ include "admission.binding" (dict "root" . "key" "namespaces" "policy" "ryft-namespaces" "id" "P1" "step" "B" "excludeNamespaces" (list .Values.vault.namespace)) }}
+---
+{{ include "admission.binding" (dict "root" . "key" "namespaces-vault" "policy" "ryft-namespaces" "suffix" "vault" "id" "P1" "step" "A" "namespaces" (list .Values.vault.namespace)) }}

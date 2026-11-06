@@ -2,7 +2,7 @@
 # op: create
 # as: kubernetes-admin
 # refused-by: ryft-vso
-# message: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service>, and set only the allowed keys.
+# message: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultStaticSecret
 metadata:

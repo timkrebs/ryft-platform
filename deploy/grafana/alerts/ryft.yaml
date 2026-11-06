@@ -431,19 +431,20 @@ groups:
         # server-side diff the app also turns OutOfSync (ArgoAppOutOfSync); this one names the
         # policy within minutes.
         expr: |
-          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding!~"ryft-(workloads-pods|operator-reach|auth-env)"})
+          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding!~"ryft-(workloads-pods|workloads-pods-vault|operator-reach|auth-env)"})
         labels: { severity: warning }
         annotations:
           summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) refused a request"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionPodDenied
-        # A Pod can be refused by P2's pods binding, by P5 (auth-env) and by P8 (operator-reach)
-        # (the design's step C row, critical), or by Pod Security's enforce mode. The check
+        # A Pod can be refused by P2's pods bindings (workloads-pods and vault's workloads-pods-vault),
+        # by P5 (auth-env) and by P8 (operator-reach) (the design's step C row, and vault's
+        # bootstrap gate, critical), or by Pod Security's enforce mode. The check
         # counter has no resource label, so P5's and P8's refusals of other objects page too.
         # A refused Pod means a re-create after a node loss or a rollout can be refused the same way.
         expr: |
           label_replace(
-            max by (policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding=~"ryft-(workloads-pods|operator-reach|auth-env)"}),
+            max by (policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding=~"ryft-(workloads-pods|workloads-pods-vault|operator-reach|auth-env)"}),
             "source", "ValidatingAdmissionPolicy", "policy_binding", ".*")
               or
           label_replace(
@@ -476,18 +477,18 @@ groups:
           summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }}); requests are admitted"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionBindingMissing
-        # Fewer than the chart's 13 ryft-* bindings exist (a binding deleted by hand, a release
+        # Fewer than the chart's 17 ryft-* bindings exist (a binding deleted by hand, a release
         # that lost objects, or kube-state-metrics blind), once bindings have existed in the
         # last day. A chart that was never enabled stays quiet; a deliberate rollback to
         # Phase 0 raises this for up to a day: silence it.
         expr: |
-          (count(count by (validatingadmissionpolicybinding) (kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"})) or vector(0)) < 13
+          (count(count by (validatingadmissionpolicybinding) (kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"})) or vector(0)) < 17
             and on ()
           count(last_over_time(kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"}[1d])) > 0
         for: 10m
         labels: { severity: critical }
         annotations:
-          summary: "{{ $value }} of 13 admission policy bindings exist"
+          summary: "{{ $value }} of 17 admission policy bindings exist"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
       - alert: AdmissionBindingNotDenying
         # A binding committed as deny (ryft:admission_binding_intended) has no Deny while

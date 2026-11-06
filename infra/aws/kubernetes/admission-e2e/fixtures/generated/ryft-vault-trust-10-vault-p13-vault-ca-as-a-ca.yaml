@@ -2,7 +2,7 @@
 # op: create
 # as: system:serviceaccount:argocd:argocd-application-controller
 # refused-by: ryft-vault-trust
-# message: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no names, no server auth, no CA, subject or other field.
+# message: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

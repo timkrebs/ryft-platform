@@ -29,8 +29,10 @@ netpol:
 
 # The action of each binding: audit (Warn+Audit) or deny (Deny+Audit). Deny is never
 # combined with Warn. Phase 1 is all audit; Phase 2 changes one step per reviewed PR:
-#   A: vso, operators-cluster, broker, vault-trust     B: namespaces, workloads-templates,
-#   netpol, auth-env, traefik   C: workloads-pods, operator-reach   D: argocd, argocd-operation
+#   A: vso, operators-cluster, broker, vault-trust, and the vault bindings (namespaces-vault,
+#   workloads-templates-vault, workloads-pods-vault, netpol-vault)
+#   B: namespaces, workloads-templates, netpol, auth-env, traefik
+#   C: workloads-pods, operator-reach   D: argocd, argocd-operation
 actions:
   vso: audit
   # P6 refuses the vendored cluster-wide ClusterRoles of both RabbitMQ operators, so T12-g
@@ -52,3 +54,10 @@ actions:
   # P13: what the in-cluster Vault's CA (ClusterIssuer ryft-vault) may issue. Nothing names
   # that issuer before the Vault add-on PR, so Audit flags nothing until then.
   vault-trust: audit
+  # P1, P2 and P3 in namespace vault only (the bindings above exclude vault). They go to deny
+  # before the Vault bootstrap, each in its own reviewed PR, whatever step the ryft-* bindings
+  # are at; nothing runs in vault before the add-on PR.
+  namespaces-vault: audit
+  workloads-templates-vault: audit
+  workloads-pods-vault: audit
+  netpol-vault: audit

@@ -71,6 +71,12 @@ variable "admission_scoped_rbac_file" {
   default     = null
 }
 
+variable "admission_vault_namespaces_dir" {
+  description = "The directory of the generated */vault.yaml whose VaultConnection addresses check.admission_vault_address compares with vaultAddresses: deploy/k8s/overlays/vault-namespaces. null uses that path; a test points it elsewhere."
+  type        = string
+  default     = null
+}
+
 variable "admission_enabled" {
   description = "Overrides `enabled` of admission-values.yaml for one plan (tests, a dry look at the release). null uses the file; the real switch is the reviewed file, so do not run an apply with this set."
   type        = bool

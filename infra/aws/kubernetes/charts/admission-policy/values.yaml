@@ -35,6 +35,13 @@ actions:
   argocd: audit               # P7  step D
   argocd-operation: audit     # P10 step D
   vault-trust: audit          # P13 step A
+  # Namespace vault has bindings of its own for the policies with a vault branch (the general
+  # bindings above exclude it), so they go to deny before the Vault bootstrap, independently of
+  # the ryft-* steps B and C.
+  namespaces-vault: audit           # P1 step A, vault only
+  workloads-templates-vault: audit  # P2 step A, vault only
+  workloads-pods-vault: audit       # P2 step A, vault only
+  netpol-vault: audit               # P3 step A, vault only
 
 # Argo CD: the identities P1, P6, P7 and P10 judge and the shapes P7 holds Applications to.
 argocd:
@@ -188,15 +195,31 @@ vso:
   # A VaultAuth's Vault namespace is absent (the in-cluster Vault has none) or starts with this
   # (HCP Vault: admin/ryft/<service>). The decommission sets "": then it must be absent.
   vaultNamespacePrefix: admin/ryft/
+  # Names that are never a service (infra/vault refuses them as keys of var.services, design
+  # 1.1): kv-operator holds the demo password no role reads; the others share the root namespace
+  # with Vault's own names or the snapshot's. A namespace that maps to one (ryft-operator, default,
+  # ...) may not read that mount.
+  reservedServices: [operator, root, admin, terraform, default, vault-snapshot]
 
 # Namespace vault: the in-cluster Vault (a Terraform add-on, not an Argo CD app). P1 holds the
-# Namespace to Pod Security restricted, P2 to the two images above, P3 judges its
+# Namespace to Pod Security restricted, P2 to the two images above (images only: commands and
+# service accounts in vault are bounded by RBAC and P12, not here), P3 judges its
 # NetworkPolicies (with the egress shapes the server needs), P4 admits caCertSecretRef
-# `caCertificate`, and P13 limits what the cert-manager ClusterIssuer `issuer` may issue: the
-# server's Certificate `serverCertificate` in this namespace with names from serverDNSNames
-# and serverIPAddresses only, and per namespace one `caCertificate` (commonName
-# vso.<namespace>, no names: its Secret's ca.crt is the VaultConnection's trust, the leaf is
-# inert). CertificateRequests for the issuer come from cert-manager's controller only.
+# `caCertificate`, and P13 guards the CA chain:
+# - what the ClusterIssuer `issuer` may issue: the server's Certificate `serverCertificate` in
+#   this namespace with names from serverDNSNames and serverIPAddresses only, and per namespace
+#   one `caCertificate` (commonName vso.<namespace>, no SAN of any kind: its Secret's ca.crt is
+#   the VaultConnection's trust; the leaf is no server certificate because it bears no SAN, not
+#   because of its usages: with usages but no server auth it has no EKU, which Go accepts for any
+#   purpose);
+# - the reverse: the Secrets `caCertificate` (any namespace) and vault/`serverCertificate` only
+#   from that issuer, and the root `rootCASecret` only as the Certificate of that name in
+#   clusterResourceNamespace, from `bootstrapIssuer`;
+# - Issuers: only `issuer` signs with `rootCASecret` (and is exactly that), `bootstrapIssuer` is
+#   exactly selfSigned, and Argo CD writes only selfSigned Issuers (an Issuer of another type can
+#   send a Secret of its namespace to the server it names);
+# - CertificateRequests for `issuer` (and their status) only as certManagerUser, and no
+#   Kubernetes CertificateSigningRequest for it.
 vault:
   namespace: vault
   issuer: ryft-vault
@@ -225,6 +248,14 @@ vault:
   caCertificate: vault-ca
   caCommonNamePrefix: vso.
   caUsages: [digital signature, key encipherment]
-  # Who may create and update a CertificateRequest that names the issuer (the request's names
-  # are inside the CSR, which CEL cannot read): cert-manager's controller (addons.tf).
+  # Who may create a CertificateRequest that names the issuer and write its status (the
+  # request's names are inside the CSR, which CEL cannot read): cert-manager's controller
+  # (addons.tf). The rule is exactly as strong as "nothing else runs as this service account":
+  # anyone who can mint its token or exec into the controller passes.
   certManagerUser: system:serviceaccount:cert-manager:cert-manager
+  # The root of the chain (charts/cluster-issuers, vaultCA): the Certificate and Secret
+  # ryft-vault-ca in cert-manager's cluster resource namespace, signed by the selfSigned
+  # ClusterIssuer ryft-vault-bootstrap; the ClusterIssuer `issuer` signs with that Secret.
+  rootCASecret: ryft-vault-ca
+  bootstrapIssuer: ryft-vault-bootstrap
+  clusterResourceNamespace: cert-manager

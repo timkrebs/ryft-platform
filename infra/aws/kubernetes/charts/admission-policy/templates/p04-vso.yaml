@@ -4,16 +4,20 @@ held to the shape infra/vault generates: keys are allowlisted per kind (the CRD-
 ones included: skipTLSVerify, kubernetes.tokenExpirationSeconds, destination.create and
 overwrite, hmacSecretData). Other secrets.hashicorp.com kinds are refused.
 
-Both shapes infra/vault generates are admitted while the namespaces move from HCP Vault to the
-in-cluster Vault, one cutover PR at a time: HCP (address HCP's, no CA, VaultAuth namespace
-under admin/ryft/, mount kv) and in-cluster (address https://vault.vault.svc:8200,
-caCertSecretRef vault-ca, no Vault namespace, mount kv-<service>, the service being the
-namespace without ryft-). Each object is judged alone, so a mix of the two in one namespace
-is not refused (it fails at login instead). The decommission sets vso.kvMount and
-vso.vaultNamespacePrefix to "" and leaves one address: then only the in-cluster shape passes.
+While the namespaces move from HCP Vault to the in-cluster Vault (one cutover PR at a time), P4
+admits the union of what infra/vault generates for either target, field by field: an address from
+vaultAddresses, caCertSecretRef absent or vault-ca, a VaultAuth namespace absent or under
+admin/ryft/, the mount kv or kv-<service> (the service is the namespace without ryft-; the
+reserved names in vso.reservedServices are never a service). The pairing is NOT enforced: each
+object is judged alone and fields are not tied to each other (HCP's address with vault-ca, the
+in-cluster address without a CA, or a mix of the two shapes in one namespace pass admission and
+fail closed later, at TLS or at login). The decommission sets vso.kvMount and
+vso.vaultNamespacePrefix to "" and leaves one address: then only the in-cluster fields pass.
 */ -}}
 {{- $kvMounts := list -}}
 {{- if .Values.vso.kvMount -}}{{- $kvMounts = append $kvMounts .Values.vso.kvMount -}}{{- end -}}
+{{- $reservedMounts := list -}}
+{{- range .Values.vso.reservedServices -}}{{- $reservedMounts = append $reservedMounts (printf "%s%s" $.Values.vso.kvMountPrefix .) -}}{{- end -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-vso" "id" "P4" "summary" "Vault Secrets Operator objects keep the shape infra/vault generates") }}
 spec:
   failurePolicy: Fail
@@ -66,10 +70,10 @@ spec:
         variables.reqKind != 'VaultStaticSecret' ||
         (variables.spec.all(k, k in ['vaultAuthRef', 'mount', 'type', 'path', 'refreshAfter', 'hmacSecretData', 'destination', 'rolloutRestartTargets']) &&
          has(variables.spec.vaultAuthRef) && !variables.spec.vaultAuthRef.contains('/') &&
-         has(variables.spec.mount) && (variables.spec.mount in {{ $kvMounts | toJson }} || variables.spec.mount == variables.serviceMount) &&
+         has(variables.spec.mount) && (variables.spec.mount in {{ $kvMounts | toJson }} || (variables.spec.mount == variables.serviceMount && !(variables.serviceMount in {{ $reservedMounts | toJson }}))) &&
          has(variables.spec.type) && variables.spec.type == 'kv-v2' &&
          (!has(variables.spec.rolloutRestartTargets) || variables.spec.rolloutRestartTargets.all(t, t.all(k, k in ['kind', 'name']))))
-      message: {{ if .Values.vso.kvMount }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service>, and set only the allowed keys."{{ else }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service>, and set only the allowed keys."{{ end }}
+      message: {{ if .Values.vso.kvMount }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys."{{ else }}"P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys."{{ end }}
       reason: Forbidden
     - expression: |-
         variables.reqKind != 'VaultStaticSecret' ||

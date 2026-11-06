@@ -1,0 +1,9 @@
+# Test input of admission.tftest.hcl: a namespace already moved to the in-cluster Vault.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: ryft-api
+spec:
+  address: "https://vault.vault.svc:8200"
+  caCertSecretRef: vault-ca

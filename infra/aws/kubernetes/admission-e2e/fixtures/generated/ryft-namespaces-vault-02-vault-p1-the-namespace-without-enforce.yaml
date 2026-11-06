@@ -1,0 +1,12 @@
+# fixture: vault: P1 the namespace without enforce
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-namespaces-vault
+# message: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  name: vault

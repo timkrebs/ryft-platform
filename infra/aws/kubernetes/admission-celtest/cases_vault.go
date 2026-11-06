@@ -171,6 +171,21 @@ func runVault(c *chart) {
 	del(amqp, "spec/rolloutRestartTargets")
 	add("P4 a broker user from kv-rabbitmq", argoCtl, "CREATE", amqp)
 	add("P4 an HCP VaultStaticSecret is still admitted (mount kv)", argoCtl, "CREATE", set(vs(), "spec/mount", "kv"))
+	// The reserved names (infra/vault refuses them as services): no namespace that maps to one may
+	// read that mount, so kv-operator (the demo password) and the rest stay unread.
+	in := func(ns, mount string) map[string]any {
+		o := set(set(set(vs(), "metadata/namespace", ns), "spec/vaultAuthRef", "vault"), "spec/mount", mount)
+		return del(o, "spec/rolloutRestartTargets")
+	}
+	for _, r := range []struct{ ns, mount string }{
+		{"ryft-operator", "kv-operator"}, {"ryft-root", "kv-root"}, {"ryft-admin", "kv-admin"},
+		{"ryft-terraform", "kv-terraform"}, {"default", "kv-default"}, {"ryft-vault-snapshot", "kv-vault-snapshot"},
+		{"vault-snapshot", "kv-vault-snapshot"},
+	} {
+		add(fmt.Sprintf("P4 the reserved mount %s read from %s", r.mount, r.ns), argoCtl, "CREATE", in(r.ns, r.mount), "P4: a VaultStaticSecret")
+	}
+	add("P4 kv-operators read from ryft-operators (not a reserved name)", argoCtl, "CREATE", in("ryft-operators", "kv-operators"))
+	add("P4 the mount kv still admitted in ryft-operator (HCP's, until the decommission)", argoCtl, "CREATE", in("ryft-operator", "kv"))
 
 	fmt.Println("== P13: what ryft-vault may issue")
 	tls := func() map[string]any { return fx("vault-certificate-tls") }
@@ -233,9 +248,92 @@ func runVault(c *chart) {
 	add("P13 vault-ca without a group (cert-manager's default)", argoCtl, "CREATE", del(ca(), "spec/issuerRef/group"))
 	upd("P13 an update that adds the server's name to vault-ca", argoCtl, set(ca(), "spec/dnsNames", jv(`["vault.vault.svc"]`)), ca(), caMsg)
 	upd("P13 an update that moves vault-ca to ryft-vault from another issuer", argoCtl, set(ca(), "spec/dnsNames", jv(`["vault.vault.svc"]`)), set(ca(), "spec/issuerRef/name", "ryft-internal"), caMsg)
-	add("P13 a Certificate of ryft-internal for vault.vault.svc is not P13's (VSO does not trust that CA)", admin, "CREATE", set(tls(), "spec/issuerRef/name", "ryft-internal"))
+	add("P13 a Certificate of ryft-internal for vault.vault.svc in another Secret is not P13's (VSO does not trust that CA)", admin, "CREATE", set(set(set(tls(), "metadata/name", "vault-internal-tls"), "spec/secretName", "vault-internal-tls"), "spec/issuerRef/name", "ryft-internal"))
 	deleting := set(set(set(ca(), "spec/dnsNames", jv(`["vault.vault.svc"]`)), "metadata/deletionTimestamp", "2026-11-05T10:00:00Z"), "metadata/finalizers", jv(`["x/y"]`))
 	upd("P13 a deleting bad Certificate loses its finalizer", cmUser, set(deepCopy(deleting), "metadata/finalizers", jv(`[]`)), deleting)
+	// has() guards: an absent list is no list to check.
+	add("P13 vault-tls with ipAddresses only (no dnsNames)", admin, "CREATE", del(tls(), "spec/dnsNames"))
+	add("P13 vault-tls with dnsNames only (no ipAddresses)", admin, "CREATE", del(tls(), "spec/ipAddresses"))
+	add("P13 vault-tls without usages (cert-manager's default)", admin, "CREATE", del(tls(), "spec/usages"))
+	add("P13 vault-tls without a secretName", admin, "CREATE", del(tls(), "spec/secretName"), server)
+	// The shape is keyed by the name: a vault-ca-shaped Certificate under another name is refused.
+	add("P13 a vault-ca-shaped Certificate under another name", argoCtl, "CREATE", set(ca(), "metadata/name", "vault-ca-2"), only)
+
+	fmt.Println("== P13: the reverse (the Secrets of the chain only from their issuer)")
+	rev := "P13: the Secrets vault-ca and vault/vault-tls may be written only"
+	rootMsg := "P13: the Secret ryft-vault-ca may be written only"
+	add("P13 vault-ca from ryft-internal", argoCtl, "CREATE", set(ca(), "spec/issuerRef/name", "ryft-internal"), rev)
+	add("P13 vault-ca from a selfSigned Issuer of its namespace", argoCtl, "CREATE", set(ca(), "spec/issuerRef", jv(`{"name":"selfsigned","kind":"Issuer"}`)), rev)
+	add("P13 another Certificate writing the Secret vault-ca", argoCtl, "CREATE", set(set(set(ca(), "metadata/name", "api-ca"), "spec/issuerRef/name", "ryft-internal"), "spec/commonName", "api-ca"), rev)
+	add("P13 vault/vault-tls from ryft-internal", admin, "CREATE", set(tls(), "spec/issuerRef/name", "ryft-internal"), rev)
+	add("P13 the Secret vault-tls from letsencrypt in vault, another Certificate", admin, "CREATE", set(set(tls(), "metadata/name", "vault-public"), "spec/issuerRef/name", "letsencrypt-prod"), rev)
+	add("P13 the Secret vault-tls outside vault is not P13's", argoCtl, "CREATE", set(set(set(set(tls(), "metadata/namespace", "ryft-api"), "metadata/name", "api-vault-tls"), "spec/issuerRef/name", "ryft-internal"), "spec/dnsNames", jv(`["api.ryft-api.svc"]`)))
+	root := func() map[string]any { return fx("vault-certificate-root") }
+	add("P13 the root CA as charts/cluster-issuers renders it", admin, "CREATE", root())
+	add("P13 the root CA updated", admin, "UPDATE", root())
+	add("P13 the root CA from another bootstrap issuer", admin, "CREATE", set(root(), "spec/issuerRef/name", "ryft-internal-bootstrap"), rootMsg)
+	add("P13 the root CA Secret written by another Certificate", admin, "CREATE", set(root(), "metadata/name", "ryft-vault-ca-2"), rootMsg)
+	add("P13 the root CA Secret in another namespace", admin, "CREATE", set(root(), "metadata/namespace", "ryft-api"), rootMsg)
+	add("P13 the root CA from a namespaced Issuer of the bootstrap's name", admin, "CREATE", set(root(), "spec/issuerRef/kind", "Issuer"), rootMsg)
+	add("P13 the root CA signed by ryft-vault itself", admin, "CREATE", set(root(), "spec/issuerRef/name", "ryft-vault"), rootMsg, only)
+	add("P13 the root CA without an issuerRef name (has() guard)", admin, "CREATE", del(root(), "spec/issuerRef/name"), rootMsg)
+
+	fmt.Println("== P13: Issuers and ClusterIssuers")
+	ci := func() map[string]any { return fx("vault-clusterissuer") }
+	boot := func() map[string]any { return fx("vault-clusterissuer-bootstrap") }
+	issuer := func(ns, name, spec string) map[string]any {
+		return jm(fmt.Sprintf(`{"apiVersion":"cert-manager.io/v1","kind":"Issuer","metadata":{"name":%q,"namespace":%q},"spec":%s}`, name, ns, spec))
+	}
+	clusterIssuer := func(name, spec string) map[string]any {
+		return jm(fmt.Sprintf(`{"apiVersion":"cert-manager.io/v1","kind":"ClusterIssuer","metadata":{"name":%q},"spec":%s}`, name, spec))
+	}
+	exact := "P13: the ClusterIssuer ryft-vault must be exactly"
+	onlySigner := "P13: only the ClusterIssuer ryft-vault may sign"
+	bootMsg := "P13: the ClusterIssuer ryft-vault-bootstrap must be exactly"
+	argoMsg := "P13: Argo CD may write only Issuers that are exactly selfSigned"
+	add("P13 ClusterIssuer ryft-vault as charts/cluster-issuers renders it", admin, "CREATE", ci())
+	add("P13 ClusterIssuer ryft-vault updated", admin, "UPDATE", ci())
+	add("P13 ClusterIssuer ryft-vault-bootstrap as rendered", admin, "CREATE", boot())
+	add("P13 ClusterIssuer ryft-vault-bootstrap updated", admin, "UPDATE", boot())
+	add("P13 ClusterIssuer ryft-vault as selfSigned", admin, "CREATE", set(ci(), "spec", jv(`{"selfSigned":{}}`)), exact)
+	add("P13 ClusterIssuer ryft-vault with another Secret", admin, "UPDATE", set(ci(), "spec/ca/secretName", "ryft-internal-ca"), exact)
+	add("P13 ClusterIssuer ryft-vault with OCSP servers", admin, "CREATE", set(ci(), "spec/ca/ocspServers", jv(`["http://ocsp.example.com"]`)), exact)
+	add("P13 ClusterIssuer ryft-vault with ca and acme", admin, "CREATE", set(ci(), "spec/acme", jv(`{"server":"https://acme.example.com","privateKeySecretRef":{"name":"k"},"solvers":[]}`)), exact)
+	add("P13 ClusterIssuer ryft-vault with an empty ca (has() guard)", admin, "CREATE", set(ci(), "spec/ca", jv(`{}`)), exact)
+	add("P13 another ClusterIssuer signing with ryft-vault-ca", admin, "CREATE", clusterIssuer("ryft-vault-2", `{"ca":{"secretName":"ryft-vault-ca"}}`), onlySigner)
+	add("P13 an Issuer in cert-manager signing with ryft-vault-ca", admin, "CREATE", issuer("cert-manager", "vault-ca-copy", `{"ca":{"secretName":"ryft-vault-ca"}}`), onlySigner)
+	add("P13 a namespaced Issuer named ryft-vault signing with ryft-vault-ca", admin, "CREATE", issuer("vault", "ryft-vault", `{"ca":{"secretName":"ryft-vault-ca"}}`), onlySigner)
+	add("P13 a CA ClusterIssuer of another Secret is not P13's", admin, "CREATE", clusterIssuer("ryft-internal", `{"ca":{"secretName":"ryft-internal-ca"}}`))
+	add("P13 an ACME ClusterIssuer by Terraform is not P13's (no ca: has() guard)", admin, "CREATE", clusterIssuer("letsencrypt-prod", `{"acme":{"server":"https://acme-v02.api.letsencrypt.org/directory","privateKeySecretRef":{"name":"letsencrypt-prod-account-key"},"solvers":[]}}`))
+	add("P13 an Issuer with a ca but no secretName is not P13's (has() guard)", admin, "CREATE", issuer("ryft-api", "x", `{"ca":{}}`))
+	add("P13 ClusterIssuer ryft-vault-bootstrap as a CA issuer", admin, "CREATE", set(boot(), "spec", jv(`{"ca":{"secretName":"ryft-internal-ca"}}`)), bootMsg)
+	add("P13 ClusterIssuer ryft-vault-bootstrap with CRL points", admin, "UPDATE", set(boot(), "spec/selfSigned/crlDistributionPoints", jv(`["http://crl.example.com"]`)), bootMsg)
+	add("P13 ClusterIssuer ryft-vault-bootstrap with an empty spec (has() guard)", admin, "CREATE", set(boot(), "spec", jv(`{}`)), bootMsg)
+	opIssuer := func() map[string]any { return issuer("rabbitmq-system", "selfsigned-issuer", `{"selfSigned":{}}`) }
+	add("P13 Argo CD writes the operators' selfSigned Issuer", argoCtl, "CREATE", opIssuer())
+	add("P13 argocd-server updates the operators' selfSigned Issuer", argoSrv, "UPDATE", opIssuer())
+	add("P13 Argo CD writes a CA Issuer", argoCtl, "CREATE", issuer("ryft-api", "api-ca", `{"ca":{"secretName":"amqp-client"}}`), argoMsg)
+	add("P13 Argo CD writes a Vault Issuer that sends ryft-secrets to another server", argoCtl, "CREATE",
+		issuer("rabbitmq-system", "selfsigned-issuer", `{"vault":{"server":"https://vault.example.com","path":"pki/sign/x","auth":{"tokenSecretRef":{"name":"ryft-secrets","key":"token"}}}}`), argoMsg)
+	add("P13 Argo CD writes an ACME Issuer", argoCtl, "CREATE", issuer("ryft-api", "acme", `{"acme":{"server":"https://acme.example.com","privateKeySecretRef":{"name":"ryft-secrets"},"solvers":[]}}`), argoMsg)
+	add("P13 Argo CD writes a selfSigned Issuer with CRL points", argoSrv, "CREATE", issuer("rabbitmq-system", "selfsigned-issuer", `{"selfSigned":{"crlDistributionPoints":["http://crl.example.com"]}}`), argoMsg)
+	add("P13 Argo CD writes an Issuer with an empty spec (has() guard)", argoCtl, "CREATE", issuer("rabbitmq-system", "selfsigned-issuer", `{}`), argoMsg)
+	add("P13 Argo CD writes a selfSigned ClusterIssuer", argoCtl, "CREATE", clusterIssuer("argo-selfsigned", `{"selfSigned":{}}`), argoMsg)
+	add("P13 Argo CD writes ClusterIssuer ryft-vault as rendered", argoCtl, "UPDATE", ci(), argoMsg)
+
+	fmt.Println("== P13: CertificateRequest status and Kubernetes CSRs")
+	sub("P13 cert-manager approves and signs a CertificateRequest (status)", cmUser, "status", cr(), cr())
+	sub("P13 the admin approves a CertificateRequest (status)", admin, "status", set(cr(), "status", jv(`{"conditions":[{"type":"Approved","status":"True","reason":"x","message":"y"}]}`)), cr(), "P13: only cert-manager's controller")
+	sub("P13 Argo CD writes a CertificateRequest's status", argoCtl, "status", cr(), cr(), "P13: only cert-manager's controller")
+	sub("P13 the status of another issuer's CertificateRequest is not judged", admin, "status", set(cr(), "spec/issuerRef/name", "ryft-internal"), set(cr(), "spec/issuerRef/name", "ryft-internal"))
+	csr := func() map[string]any { return fx("vault-csr-k8s") }
+	csrMsg := "P13: a Kubernetes CertificateSigningRequest for the signer"
+	add("P13 a Kubernetes CSR for ryft-vault by the admin", admin, "CREATE", csr(), csrMsg)
+	add("P13 a Kubernetes CSR for ryft-vault by cert-manager", cmUser, "CREATE", csr(), csrMsg)
+	add("P13 a Kubernetes CSR for ryft-vault-bootstrap", admin, "CREATE", set(csr(), "spec/signerName", "clusterissuers.cert-manager.io/ryft-vault-bootstrap"), csrMsg)
+	add("P13 a Kubernetes CSR for the API server's client signer is not P13's", admin, "CREATE", set(set(csr(), "spec/signerName", "kubernetes.io/kube-apiserver-client"), "spec/usages", jv(`["client auth"]`)))
+	add("P13 a Kubernetes CSR for ryft-internal is not P13's", admin, "CREATE", set(csr(), "spec/signerName", "clusterissuers.cert-manager.io/ryft-internal"))
+	add("P13 a Kubernetes CSR without a signerName is not judged (has() guard)", admin, "CREATE", del(csr(), "spec/signerName"))
 
 	fmt.Println("== the chart's RBAC and Argo CD in vault (P6 today; P12, #121, for the rest)")
 	add("P6 Terraform writes the discovery Role", admin, "CREATE", fx("vault-role-discovery"))
@@ -254,4 +352,30 @@ func runVault(c *chart) {
 	for _, t := range ts {
 		report(c, t.name, t.req, t.want)
 	}
+}
+
+// runDecom judges P4 as the decommission renders it (run.sh: vso.kvMount and
+// vso.vaultNamespacePrefix "", vaultAddresses only the in-cluster address): the in-cluster shape
+// passes, every HCP field is refused. Case names start with "decom: " (no kind fixture: the kind
+// run installs the committed values).
+func runDecom(c *chart) {
+	fmt.Println("== P4 after the decommission (the decommission's values)")
+	add := func(name string, obj map[string]any, want ...string) {
+		report(c, "decom: "+name, Req{User: argoCtl, Op: "CREATE", Obj: obj}, want)
+	}
+	vc := func() map[string]any { return fx("vault-vso-connection-api") }
+	va := func() map[string]any { return defaults(fx("vault-vso-auth-api")) }
+	vs := func() map[string]any { return defaults(fx("vault-vso-static-api")) }
+	hcp := find("VaultConnection", "ryft-api", "vault")["spec"].(map[string]any)["address"]
+	add("the in-cluster VaultConnection", vc())
+	add("the in-cluster VaultAuth", va())
+	add("the in-cluster VaultStaticSecret", vs())
+	add("the HCP address", set(vc(), "spec/address", hcp), "P4: a VaultConnection")
+	add("the HCP VaultConnection as generated today", find("VaultConnection", "ryft-api", "vault"), "P4: a VaultConnection")
+	add("an HCP Vault namespace", set(va(), "spec/namespace", "admin/ryft/api"), "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace")
+	add("an empty Vault namespace", set(va(), "spec/namespace", ""), "P4: a VaultAuth")
+	add("the mount kv", set(vs(), "spec/mount", "kv"), "P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one)")
+	add("an empty mount", set(vs(), "spec/mount", ""), "P4: a VaultStaticSecret")
+	add("another service's mount", set(vs(), "spec/mount", "kv-notify"), "P4: a VaultStaticSecret")
+	add("the in-cluster address without a CA (admitted: VSO fails TLS)", del(vc(), "spec/caCertSecretRef"))
 }
