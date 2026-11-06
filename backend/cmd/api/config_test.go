@@ -16,23 +16,6 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-func TestAdminOnly(t *testing.T) {
-	key := strings.Repeat("k", 40)
-	ok := adminOnly(key, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	for auth, want := range map[string]int{"Bearer " + key: 204, "Bearer " + key + "x": 401, "Bearer ": 401, "": 401,
-		key: 401, "Basic " + key: 401} {
-		r := httptest.NewRequest(http.MethodGet, "/v1/admin/flags", nil)
-		if auth != "" {
-			r.Header.Set("Authorization", auth)
-		}
-		rec := httptest.NewRecorder()
-		ok.ServeHTTP(rec, r)
-		if rec.Code != want {
-			t.Errorf("Authorization %q: %d, want %d", auth, rec.Code, want)
-		}
-	}
-}
-
 // The seeded flags, an admin change and the evaluation for two users.
 func TestRemoteConfig(t *testing.T) {
 	st := store.New(testPool(t))

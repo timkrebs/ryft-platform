@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "beta_access": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "short_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "beta_access",
+    "created_at",
+    "id",
+    "last_sync_at",
+    "provider",
+    "short_id"
+  ],
+  "title": "AdminUserBrief",
+  "type": "object"
+}

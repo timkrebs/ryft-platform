@@ -56,7 +56,7 @@ func TestConsentHistory(t *testing.T) {
 func TestInviteCodes(t *testing.T) {
 	st, pool := testStore(t)
 	ctx := context.Background()
-	inv, err := st.CreateInvite(ctx, "Anna", 2, nil)
+	inv, err := st.CreateInvite(ctx, NewInvite{Note: "Anna", MaxUses: 2, CreatedBy: "key"})
 	if err != nil || len(inv.Code) != 14 || !strings.HasPrefix(inv.Code, "RYFT-") || inv.Uses != 0 || inv.MaxUses != 2 {
 		t.Fatalf("create: %+v %v", inv, err)
 	}
@@ -79,37 +79,37 @@ func TestInviteCodes(t *testing.T) {
 		return id
 	}
 	a, b, c := newUser(), newUser(), newUser()
-	if used, err := st.RedeemInvite(ctx, a, strings.ToLower(inv.Code)); err != nil || !used {
+	if used, err := st.RedeemInvite(ctx, a, strings.ToLower(inv.Code), ""); err != nil || !used {
 		t.Fatalf("a: %v %v", used, err)
 	}
-	if used, err := st.RedeemInvite(ctx, a, "RYFT-2222-2222"); err != nil || used {
+	if used, err := st.RedeemInvite(ctx, a, "RYFT-2222-2222", ""); err != nil || used {
 		t.Fatalf("an account with access spends nothing, whatever it sends: %v %v", used, err)
 	}
-	if _, err := st.RedeemInvite(ctx, b, inv.Code); err != nil {
+	if _, err := st.RedeemInvite(ctx, b, inv.Code, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RedeemInvite(ctx, c, inv.Code); !errors.Is(err, ErrInvalidCode) {
+	if _, err := st.RedeemInvite(ctx, c, inv.Code, ""); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("used up: %v", err)
 	}
 	if ga, _, _ := st.GetUser(ctx, a); !ga.BetaAccess {
 		t.Fatal("a has access")
 	}
 	past := time.Now().Add(-time.Hour)
-	expired, _ := st.CreateInvite(ctx, "old", 5, &past)
-	if _, err := st.RedeemInvite(ctx, c, expired.Code); !errors.Is(err, ErrInvalidCode) {
+	expired, _ := st.CreateInvite(ctx, NewInvite{Note: "old", MaxUses: 5, ExpiresAt: &past, CreatedBy: "key"})
+	if _, err := st.RedeemInvite(ctx, c, expired.Code, ""); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("expired: %v", err)
 	}
-	if _, err := st.RedeemInvite(ctx, c, "RYFT-ZZZZ-ZZZZ"); !errors.Is(err, ErrInvalidCode) {
+	if _, err := st.RedeemInvite(ctx, c, "RYFT-ZZZZ-ZZZZ", ""); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("unknown: %v", err)
 	}
 	list, _ := st.Invites(ctx)
 	if len(list) != 2 || list[1].Uses != 2 {
 		t.Fatalf("list: %+v", list)
 	}
-	if err := st.DeleteInvite(ctx, inv.Code); err != nil || !errors.Is(st.DeleteInvite(ctx, inv.Code), ErrNotFound) {
-		t.Fatal("delete, then unknown")
+	if err := st.RevokeInvite(ctx, inv.Code); err != nil || st.RevokeInvite(ctx, inv.Code) != nil || !errors.Is(st.RevokeInvite(ctx, "RYFT-ZZZZ-ZZZZ"), ErrNotFound) {
+		t.Fatal("revoke, revoke again, then unknown")
 	}
 	if ga, _, _ := st.GetUser(ctx, a); !ga.BetaAccess {
-		t.Fatal("deleting the code keeps the access it gave")
+		t.Fatal("revoking the code keeps the access it gave")
 	}
 }

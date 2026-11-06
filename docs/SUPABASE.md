@@ -21,7 +21,11 @@ either.
    (a JWT from the `.p8`, valid at most six months) are only needed if a web sign-in
    is added later.
    - **Email accounts** (Authentication → Sign In / Providers → Email): enable *Email*,
-     turn on *Confirm email* and *Secure email change*. Under *Password*, set the
+     turn on *Confirm email* and *Secure email change* (**security-critical** for invites bound to an email:
+     with *Confirm email* off Supabase marks a sign-up's address confirmed at once, so anyone with a leaked invite link
+     could register the tester's address and redeem the code; the api also reads `mailer_autoconfirm` from the public
+     auth settings and refuses bound invites while it is on, D159; record the state in STATUS.md before the first
+     bound code). Under *Password*, set the
      minimum length to 10 and require letters and digits. Turn on *Leaked password
      protection* where the plan offers it.
    - **Redirects** (Authentication → URL Configuration): *Site URL*
@@ -50,10 +54,30 @@ either.
      relay address. Two accounts that already exist are merged by the operator
      (`OPERATIONS.md` → Two accounts for one person).
 
+   - **Multi-factor** (Authentication → Multi-Factor; for the operator's page `/admin`,
+     **security-critical**): *TOTP* enabled, and *Maximum enrolled factors* (project-wide; the
+     Management API's name is believed to be `mfa_max_enrolled_factors`, not verified in the dashboard)
+     set to **1**; the app uses no MFA. With one factor allowed, someone who has the admin password but
+     not the phone cannot add a factor of their own. Then the check V-MFA-1: an aal1 session of an
+     account with a verified factor must be refused a second enrolment. GoTrue checks the factor count
+     first, so with the limit at 1 the pass is `422 too_many_enrolled_mfa_factors`, and only with a limit
+     of 2 or more `403 insufficient_aal`; `200` means stop, anything else is inconclusive
+     (`OPERATIONS.md` → Beta → Admin sign-in has the steps). Under Hooks, no custom access token hook
+     may touch `app_metadata.role` (What the services check, below).
+
    Dashboard labels move between Supabase releases; the settings above are what
    matters.
+
+   **Security-critical for the admin page and for invites bound to an email** (D159, D162): *Confirm
+   email* ON and *Secure email change* ON (Email accounts above), *Maximum enrolled factors* 1 and the
+   V-MFA-1 check (Multi-factor above), and the Data API off (step 4). Record each state and the date in
+   STATUS.md before the role is granted or the first bound code is made. The api checks none of them for
+   sign-in; its only reaction is that it refuses to create or redeem a bound invite while the project's
+   `mailer_autoconfirm` is true or unknown (D159). Every one of them is yours to check.
 4. **Turn off the Data API** (Project Settings → Data API), or at least remove `public`
-   from the exposed schemas. Migration 0007 also revokes every table privilege from
+   from the exposed schemas (**security-critical** for the admin page, D162: the page's
+   publishable key is public and its `connect-src` reaches `/auth/v1/` only, but any client can use the key).
+   Migration 0007 also revokes every table privilege from
    `anon`, `authenticated` and `service_role` and enables RLS, but nothing should be
    exposed in the first place.
 5. **Session pooler** (Connect → Session pooler, port **5432**): copy the host
@@ -95,6 +119,17 @@ The user row is created on the first request (`store.EnsureUser`) with `email`,
 `app_metadata.provider` and `user_metadata.full_name` (where the app stores the Apple
 name), refreshed at most every five minutes. There is no foreign key to `auth.users`, so
 the same migrations run on plain Postgres.
+
+**Operator claims.** The same verifier also reads, for `/v1/admin/*` only (OPERATIONS → Beta →
+Admin sign-in): `app_metadata.role` (the operator role; `app_metadata` is writable only with the
+service key, so it is the one place the role is read from, never the top-level `role`, which
+stays `authenticated`, and never `user_metadata`, which the user can write), `aal` (`aal2`
+after a second factor) and the newest `amr` entry with method `totp` and its `timestamp`. They
+are read leniently: a claim of an unexpected shape reads as empty and never makes a token
+invalid, or one odd shape would sign every app user out. They grant nothing alone: the account
+also needs a row in `admin_accounts` (written only by the owner, in SQL) and the TOTP must be at
+most 12 hours old. Supabase must not have a custom access token hook that touches
+`app_metadata.role`.
 
 ## Account deletion
 

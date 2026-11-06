@@ -10,6 +10,17 @@ a Namespace is cluster-scoped whatever `request.namespace` holds (the API server
 name on UPDATE and DELETE), and the username is read through `has()` in the matchCondition. It amends
 `design.md` (P1–P11, D120, D151, D152) and does not replace it.
 
+**Update 2026-11-06 (the rebase onto #147 and #153; D206).** The chart is **0.6.0**, above #147's 0.5.0 and
+#153's 0.5.1: 13 policies and 18 bindings (P13 and the four `-vault` bindings came with the namespace `vault`;
+P12 has one binding for every namespace). `vault`, `cert-manager` (and `vault.clusterResourceNamespace`),
+`argocd` and `kube-system` are never in `argoScope.namespaces` or `namespaceObjects`: the chart fails the render
+and `admission.tf` the plan. P1's Argo CD rule and message read `argoScope.namespaceObjects`, whose entries must
+be `ryft-*` or `rabbitmq-system` (P1's restricted scope) and in `argoScope.namespaces`. The Deny gate names the
+general `operators-cluster`, `namespaces` and `workloads-templates` bindings, not their `-vault` twins. P13's
+"Argo CD writes only selfSigned Issuers" stays in P13 (content, in namespaces P12 admits). #47 is merged and was
+applied by the owner on 2026-11-06, so the RBAC gate reads `argocd.tf` as narrowed. Version numbers below
+(0.3.0, 0.3.1, "12 policies and 13 bindings") are those of the first round; read them as 0.6.0, 0.6.1 and 13/18.
+
 **Read for this note:**
 - `design.md` (revision 3 plus the D151 notes);
 - D120, D151 and D152;

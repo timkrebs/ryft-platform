@@ -565,14 +565,30 @@ adm_full_manual_syncs() {
   fi
 }
 
-# Claim i: resource.respectRBAC strict with no cluster-wide Secrets for the controller.
+# Claim i: resource.respectRBAC strict with no cluster-wide Secrets for the controller. Under strict the
+# controller's cache lists a kind cluster-wide or DROPS it WITHOUT a log line (the access review is made
+# for namespace "*", so the chart's Role in argocd does not count): no resource tree, no prune, no refresh
+# of the parent when a child changes. The log check alone cannot see that, so the run also asks, for the
+# kinds the apps render or the tree draws, whether the controller may list them in every namespace.
 adm_full_claim_i() {
-  local since=$1 setting can errs
+  local since=$1 setting can errs res missing=""
   setting=$(kc -n argocd get configmap argocd-cm -o jsonpath='{.data.resource\.respectRBAC}' 2>/dev/null)
   can=$(kca "$ARGO_CTRL" auth can-i list secrets -A 2>/dev/null | head -1)
   if [ "$setting" != strict ]; then
     rec "claim-i" SKIP "argocd-cm has no resource.respectRBAC: strict in this tree (T12-f)"
     return
+  fi
+  for res in applications.argoproj.io pods replicasets.apps statefulsets.apps deployments.apps jobs.batch configmaps services serviceaccounts \
+      horizontalpodautoscalers.autoscaling ingresses.networking.k8s.io networkpolicies.networking.k8s.io poddisruptionbudgets.policy \
+      certificates.cert-manager.io issuers.cert-manager.io middlewares.traefik.io vaultstaticsecrets.secrets.hashicorp.com \
+      rabbitmqclusters.rabbitmq.com queues.rabbitmq.com clusterroles.rbac.authorization.k8s.io roles.rbac.authorization.k8s.io \
+      customresourcedefinitions.apiextensions.k8s.io namespaces; do
+    [ "$(kca "$ARGO_CTRL" auth can-i list "$res" -A 2>/dev/null | head -1)" = yes ] || missing="$missing $res"
+  done
+  if [ -n "$missing" ]; then
+    rec "claim-i-list" FAIL "under respectRBAC strict the controller drops, silently, every kind it cannot list in all namespaces (no tree, no prune, no log line); it cannot list:$missing (kubectl auth can-i list <kind> -A --as=system:serviceaccount:argocd:argocd-application-controller)"
+  else
+    rec "claim-i-list" PASS "the controller may list every kind the apps render or the tree draws in all namespaces, so strict mode keeps them in its cache (applications.argoproj.io included: the chart's Role in argocd would not count)"
   fi
   # The controller's log since the run began, read into a file and checked for a failed read.
   if ! kc -n argocd logs statefulset/argocd-application-controller --since-time="$since" > "$WORK/log/argocd-controller.log" 2>"$WORK/log/argocd-controller.err"; then
@@ -581,7 +597,7 @@ adm_full_claim_i() {
   fi
   errs=$(grep -ciE 'forbidden|cannot (list|watch) resource' "$WORK/log/argocd-controller.log" || true)
   if [ "$can" = no ] && [ "$errs" = 0 ]; then
-    rec "claim-i" PASS "with resource.respectRBAC: strict the controller (cannot list Secrets cluster-wide: can-i $can) kept every Application's tree and health current through all syncs; no 'forbidden' or 'cannot list' in its log since the run began"
+    rec "claim-i" PASS "with resource.respectRBAC: strict the controller (cannot list Secrets cluster-wide: can-i $can) kept every Application's tree and health current through all syncs; no 'forbidden' or 'cannot list' in its log since the run began (strict mode drops a kind it may not list silently, hence claim-i-list)"
   else
     rec "claim-i" FAIL "respectRBAC strict: can-i list secrets -A = $can, $errs forbidden-like lines in the controller log: $(grep -iE 'forbidden|cannot (list|watch) resource' "$WORK/log/argocd-controller.log" | head -2 | cut -c1-300)"
   fi

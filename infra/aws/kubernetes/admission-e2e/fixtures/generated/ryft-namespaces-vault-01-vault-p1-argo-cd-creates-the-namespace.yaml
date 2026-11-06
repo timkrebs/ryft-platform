@@ -1,0 +1,15 @@
+# fixture: vault: P1 Argo CD creates the namespace
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+# refused-by: ryft-namespaces-vault
+# message: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+  name: vault

@@ -76,6 +76,9 @@ jobs:
               - 'backend/**'
               - '.golangci.yml'
               - 'docs/API.md'
+              # internal/config tests parse the committed config.env of the services (ADMIN_WEB_ORIGINS):
+              # a config-only change must run them.
+              - 'deploy/k8s/base/*/config.env'
               - 'scripts/coverage.sh'
               # amqpbus's replay tests run the script against the broker.
               - 'scripts/dlq.sh'
@@ -100,6 +103,9 @@ jobs:
             manifests:
               - 'deploy/**'
               - 'infra/vault/**'
+              # rendered by scripts/tests/vault_extras_chart_test.sh (the Terraform tests mock Helm)
+              - 'infra/aws/kubernetes/charts/vault-extras/**'
+              - 'infra/aws/kubernetes/charts/cluster-issuers/**'
               - 'scripts/**'
               - 'Makefile'
               - '.github/**'
@@ -121,6 +127,7 @@ jobs:
               - '.github/workflows/ci.yml'
             terraform:
               - 'infra/**'
+              - 'scripts/tests/argocd_release_guard_test.sh'
               # infra/aws/kubernetes' test compares its Vault address with these generated files
               - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
@@ -138,6 +145,7 @@ jobs:
               - 'scripts/install_kubectl.sh'
               - 'scripts/install_helm.sh'
               - 'scripts/check_chart_bump.sh'
+              - 'scripts/tests/admission_chart_guards_test.sh'
               - 'scripts/lib/kind_guard.sh'
               - 'scripts/lib/tracked_copy.sh'
               - 'scripts/lib/admission_*.sh'
@@ -161,6 +169,8 @@ jobs:
               - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
               - 'scripts/admission_intended.sh'
               - 'scripts/tests/admission_intended_test.sh'
+              - 'scripts/check_rule_groups.sh'
+              - 'scripts/tests/check_rule_groups_test.sh'
               - 'web/content/legal/**'
               - 'web/public/.well-known/**'
               - 'Makefile'
@@ -362,6 +372,11 @@ jobs:
       # the version and the checksum; `smoke` installs it the same way for the script tests).
       - run: ./scripts/install_yq.sh
       - run: make k8s-validate
+      # The Vault add-on's local charts as Helm renders them (vault-extras' policies, PDB and Role, the ryft-vault
+      # issuer), with yq and kubeconform: what tests/addons.tftest.hcl cannot see behind the mocked Helm provider.
+      # Helm pinned and checked as in `admission`; the script fails here (GITHUB_JOB=manifests) instead of skipping.
+      - run: ./scripts/install_helm.sh
+      - run: bash scripts/tests/vault_extras_chart_test.sh
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
@@ -469,6 +484,9 @@ jobs:
       - run: terraform validate
       - run: tflint --init && tflint --format compact
       - run: terraform test
+      # The release's lifecycle conditions (a set or a second values document must be refused): edits a copy.
+      - if: matrix.root == 'infra/aws/kubernetes'
+        run: bash "$GITHUB_WORKSPACE/scripts/tests/argocd_release_guard_test.sh"
 
   # Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) in a Lua VM with
   # exactly Argo CD's libraries (no string library), against table-driven objects. Reads
@@ -510,6 +528,7 @@ jobs:
       - run: ./scripts/synthetics.sh check
       - run: bash scripts/tests/synthetics_test.sh
       - run: bash scripts/tests/admission_intended_test.sh
+      - run: bash scripts/tests/check_rule_groups_test.sh
 
   # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
   # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the
@@ -541,7 +560,9 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+        run: |
+          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
+          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA" infra/aws/kubernetes/charts/vault-extras
       # From here on every step that renders may only use git over file:// (see `manifests`). The
       # terraform step of the script, which downloads modules, lifts it for itself.
       - name: Git over file:// only, after the checkout
@@ -556,6 +577,9 @@ jobs:
       - run: ./scripts/install_kind.sh
       - run: ./scripts/install_kubectl.sh
       - run: ./scripts/install_helm.sh
+      # The chart's guards: values it must refuse to render, and the bindings it must render.
+      - name: The admission chart's guards
+        run: bash scripts/tests/admission_chart_guards_test.sh
       # Terraform only to evaluate argocd.tf's values offline (scripts/lib/tf_values.sh): mock providers.
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:

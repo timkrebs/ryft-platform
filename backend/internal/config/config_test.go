@@ -107,12 +107,124 @@ func TestLoadAPNs(t *testing.T) {
 
 func TestLoadAdmin(t *testing.T) {
 	t.Setenv("ADMIN_API_KEY", "")
-	if k, err := LoadAdmin(); err != nil || k != "" {
-		t.Fatal("unset: off")
+	t.Setenv("ADMIN_WEB_ORIGINS", "")
+	t.Setenv("PUBLIC_WEB_URL", "")
+	if a, err := LoadAdmin(); err != nil || a.Key != "" || len(a.WebOrigins) != 0 || a.PublicWebURL != "https://ryftapp.de" {
+		t.Fatalf("unset: off, no CORS, the default site: %+v %v", a, err)
 	}
 	t.Setenv("ADMIN_API_KEY", "short")
 	if _, err := LoadAdmin(); err == nil {
 		t.Fatal("a short key is refused")
+	}
+}
+
+// ADMIN_WEB_ORIGINS: only bare origins the way a browser writes them; anything else stops the api.
+func TestLoadAdminWebOrigins(t *testing.T) {
+	t.Setenv("ADMIN_API_KEY", "")
+	t.Setenv("PUBLIC_WEB_URL", "")
+	for _, tc := range []struct {
+		name, env string
+		want      []string
+	}{
+		{"unset", "", nil},
+		{"blank", "  \t ", nil},
+		{"the site", "https://ryftapp.de", []string{"https://ryftapp.de"}},
+		{"trimmed, deduplicated, ordered", " https://ryftapp.de , http://localhost:3000,https://ryftapp.de",
+			[]string{"https://ryftapp.de", "http://localhost:3000"}},
+		{"loopback over http", "http://127.0.0.1:8080,http://[::1]:3000,http://localhost", []string{"http://127.0.0.1:8080", "http://[::1]:3000", "http://localhost"}},
+		{"explicit port", "https://admin.example.com:8443", []string{"https://admin.example.com:8443"}},
+		{"five", "https://a.de,https://b.de,https://c.de,https://d.de,https://e.de",
+			[]string{"https://a.de", "https://b.de", "https://c.de", "https://d.de", "https://e.de"}},
+	} {
+		t.Run("valid: "+tc.name, func(t *testing.T) {
+			t.Setenv("ADMIN_WEB_ORIGINS", tc.env)
+			a, err := LoadAdmin()
+			if err != nil || strings.Join(a.WebOrigins, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("%+v %v, want %v", a.WebOrigins, err, tc.want)
+			}
+		})
+	}
+	for name, env := range map[string]string{
+		"trailing slash":        "https://ryftapp.de/",
+		"a path":                "https://ryftapp.de/admin",
+		"a query":               "https://ryftapp.de?x=1",
+		"a fragment":            "https://ryftapp.de#x",
+		"userinfo":              "https://user:pw@ryftapp.de",
+		"http outside loopback": "http://ryftapp.de",
+		"http on a lookalike":   "http://localhost.evil.example",
+		"wildcard":              "*",
+		"wildcard subdomain":    "https://*.ryftapp.de",
+		"null":                  "null",
+		"no scheme":             "ryftapp.de",
+		"another scheme":        "ftp://ryftapp.de",
+		"upper-case host":       "https://RyftApp.de",
+		"upper-case scheme":     "HTTPS://ryftapp.de",
+		"default https port":    "https://ryftapp.de:443",
+		"default http port":     "http://localhost:80",
+		"empty port":            "https://ryftapp.de:",
+		"bad port":              "https://ryftapp.de:abc",
+		"empty entry":           "https://ryftapp.de,,https://b.de",
+		"trailing comma":        "https://ryftapp.de,",
+		"six origins":           "https://a.de,https://b.de,https://c.de,https://d.de,https://e.de,https://f.de",
+		"quoted":                `"https://ryftapp.de"`,
+		"inline comment":        "https://ryftapp.de # prod",
+		"semicolon list":        "https://ryftapp.de;https://b.de",
+		"host only colon":       "https://",
+	} {
+		t.Run("malformed: "+name, func(t *testing.T) {
+			t.Setenv("ADMIN_WEB_ORIGINS", env)
+			if a, err := LoadAdmin(); err == nil || !strings.Contains(err.Error(), "ADMIN_WEB_ORIGINS") {
+				t.Fatalf("%q must stop the api: %+v %v", env, a.WebOrigins, err)
+			}
+		})
+	}
+}
+
+func TestLoadAdminPublicWebURL(t *testing.T) {
+	t.Setenv("ADMIN_API_KEY", "")
+	t.Setenv("ADMIN_WEB_ORIGINS", "")
+	t.Setenv("PUBLIC_WEB_URL", "https://staging.example.com")
+	if a, err := LoadAdmin(); err != nil || a.PublicWebURL != "https://staging.example.com" {
+		t.Fatalf("%+v %v", a, err)
+	}
+	for _, bad := range []string{"https://ryftapp.de/", "ryftapp.de", "http://ryftapp.de", "https://ryftapp.de/invite"} {
+		t.Setenv("PUBLIC_WEB_URL", bad)
+		if _, err := LoadAdmin(); err == nil || !strings.Contains(err.Error(), "PUBLIC_WEB_URL") {
+			t.Errorf("%q must stop the api: %v", bad, err)
+		}
+	}
+}
+
+// The committed config line is parsed by the loader, so a value that would stop the api at start-up
+// cannot merge, and production's value never allows a plain-http origin.
+func TestCommittedAdminWebOrigins(t *testing.T) {
+	raw, err := os.ReadFile("../../../deploy/k8s/base/api/config.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(l, "ADMIN_WEB_ORIGINS=") {
+			lines = append(lines, l)
+		}
+		if strings.Contains(l, "ADMIN_WEB_ORIGINS") && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "ADMIN_WEB_ORIGINS=") {
+			t.Errorf("not a bare KEY=value line (kustomize keeps whatever else is on it): %q", l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one ADMIN_WEB_ORIGINS line in deploy/k8s/base/api/config.env, have %d", len(lines))
+	}
+	t.Setenv("ADMIN_API_KEY", "")
+	t.Setenv("PUBLIC_WEB_URL", "")
+	t.Setenv("ADMIN_WEB_ORIGINS", strings.TrimPrefix(lines[0], "ADMIN_WEB_ORIGINS="))
+	a, err := LoadAdmin()
+	if err != nil {
+		t.Fatalf("the committed value stops the api at start-up: %v", err)
+	}
+	for _, o := range a.WebOrigins {
+		if strings.HasPrefix(o, "http:") {
+			t.Errorf("production allows a plain-http origin: %s", o)
+		}
 	}
 }
 

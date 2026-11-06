@@ -206,11 +206,13 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 # neither tool has to be installed.
 # Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
 # grafana/mimirtool:2.16.0. alerts-apply hands the rules token to mimirtool.
+# scripts/check_rule_groups.sh holds every group to Grafana Cloud's 20 rules (neither tool knows it).
 PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
 	scripts/admission_intended.sh --check; \
+	scripts/check_rule_groups.sh deploy/grafana/alerts/ryft.yaml deploy/grafana/alerts/admission-intended.yaml; \
 	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
 	sed '/^namespace:/d' deploy/grafana/alerts/admission-intended.yaml > "$$d/admission-intended.rules.yaml"; \
 	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
@@ -235,7 +237,7 @@ load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
 # What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check. Then the decision references, which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
+# map check. Then the decision references (D165), which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
 # exits 0 unless it cannot work).
 # The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
 # different findings, so a mismatch is said out loud before the run.
@@ -249,7 +251,7 @@ lint:
 	./scripts/pkgmap.sh --check
 	./scripts/decision_refs.sh
 
-# After editing docs/API.md: the tests that read it (examples, Errors tables, quoted messages).
+# After editing docs/API.md (D167): the tests that read it (examples, Errors tables, quoted messages).
 # docs/ is outside the Go module, so the test cache does not see an edit; -count=1 re-runs them.
 check-api-doc:
 	cd backend && go test -count=1 -run 'APIDoc|DocChecker' ./internal/model/ ./internal/httpx/ ./internal/gate/
@@ -294,7 +296,7 @@ k8s-validate:
 	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
 	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh

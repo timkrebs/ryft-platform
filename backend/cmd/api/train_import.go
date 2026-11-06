@@ -67,69 +67,55 @@ type importRun struct {
 	source   string
 	loc      *time.Location
 	window   store.DayWindow
+	start    time.Time
 	plans    []store.ImportOutcome // Status "" until processed
 	sessions []store.ImportOutcome
 	bodies   []model.Session // the sessions as stored (normalised), for their starts
 }
 
+// newImportRun is the state of a request about to store its items: empty outcomes by index
+// and the window the days are queued in, counted from start (D128).
+func newImportRun(user uuid.UUID, req model.TrainImportRequest, loc *time.Location, start time.Time) *importRun {
+	from, to := train.ImportWindow(start, loc)
+	return &importRun{user: user, source: req.Source, loc: loc, window: store.DayWindow{From: from, To: to}, start: start,
+		plans: make([]store.ImportOutcome, len(req.Plans)), sessions: make([]store.ImportOutcome, len(req.Sessions)),
+		bodies: make([]model.Session, len(req.Sessions))}
+}
+
+// importCall is one request's plumbing through the steps: the answer, the request, the account
+// and the result label that the request's metric gets when it ends.
+type importCall struct {
+	w      http.ResponseWriter
+	r      *http.Request
+	user   model.User
+	result string
+}
+
+// trainImport is the order of the steps (D140): gates, decode and limits, the lease, the items,
+// the finish with the lease given back, the answer. A step that refuses has written the answer.
 func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
-	result := "invalid"
-	defer func() { metrics.TrainImports.WithLabelValues(result).Inc() }()
-	u := userOf(r)
-	// Before the body: a refused upload costs no parse (D129). On this route warn is on: no
-	// app build that cannot ask for consent calls it, so nothing is served without (S3).
-	consent := h.beta
-	if consent.Consent == config.ModeWarn {
-		consent.Consent = config.ModeOn
-	}
-	if !gate.Consent(w, r, consent, u, "api") {
+	c := &importCall{w: w, r: r, user: userOf(r), result: "invalid"}
+	defer func() { metrics.TrainImports.WithLabelValues(c.result).Inc() }()
+	if !h.importGates(c) {
 		return
 	}
-	// The app's switch, enforced here too (S4): an account the flag is off for imports nothing.
-	all, err := h.st.Flags(r.Context())
-	if err != nil {
-		result = importResult(r.Context(), err)
-		importUnavailable(w, r, err, result)
-		return
-	}
-	if !flags.Enabled(all, model.FlagTrainImport, u.ID) {
-		result = "disabled"
-		httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeImportNotEnabled, "the training import is not enabled for this account")
-		return
-	}
-	var req model.TrainImportRequest
-	if err := httpx.ReadJSON(w, r, &req, httpx.MaxBodyImport); err != nil {
-		httpx.WriteDecodeError(w, err)
-		return
-	}
-	if err := train.CheckImportRequest(req); err != nil {
-		failTrain(w, r, err, "import")
+	req, ok := importDecode(c)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
 	if len(req.Plans) == 0 && len(req.Sessions) == 0 {
-		result = "ok"
-		base, _ := h.st.ExpectedScoreSec(ctx) // its default when the estimate fails
-		httpx.WriteJSON(w, http.StatusOK, model.TrainImportResponse{Results: []model.ImportResult{}, DaysTouched: []string{},
-			Scoring: model.SyncScoring{QueuedDays: []string{}, ExpectedWithinSec: base}})
+		h.importNothing(c)
 		return
 	}
 	loc, err := h.location(r)
 	if err != nil {
-		result = "error"
+		c.result = "error"
 		httpx.Fail(w, r, err)
 		return
 	}
-	release, ok, err := h.st.AcquireImportLease(ctx, u.ID, store.ImportLeaseTTL)
-	if err != nil {
-		result = importResult(ctx, err)
-		importUnavailable(w, r, err, result)
-		return
-	}
+	release, ok := h.importLease(c)
 	if !ok {
-		result = "busy"
-		w.Header().Set("Retry-After", strconv.Itoa(importBusyRetry))
-		httpx.WriteCodedError(w, r, http.StatusTooManyRequests, model.CodeImportInProgress, "an import is already running")
 		return
 	}
 	// Given back before the answer is written (a retry right after it finds it free),
@@ -138,40 +124,134 @@ func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
 	free := func() { once.Do(func() { release(ctx) }) }
 	defer free()
 	start := time.Now()
-
-	from, to := train.ImportWindow(start, loc)
-	run := &importRun{user: u.ID, source: req.Source, loc: loc, window: store.DayWindow{From: from, To: to},
-		plans: make([]store.ImportOutcome, len(req.Plans)), sessions: make([]store.ImportOutcome, len(req.Sessions)),
-		bodies: make([]model.Session, len(req.Sessions))}
+	run := newImportRun(c.user.ID, req, loc, start)
 	// The items stop before the budget ends, so that the finish has its time inside it.
 	finish := cmp.Or(h.importFinish, importFinishTimeout)
-	itemsCtx := ctx
-	if dl, ok := ctx.Deadline(); ok {
-		var cancel context.CancelFunc
-		itemsCtx, cancel = context.WithDeadline(ctx, dl.Add(-finish))
-		defer cancel()
-	}
+	itemsCtx, stop := importItemsContext(ctx, finish)
+	defer stop()
 	stopped := h.importItems(itemsCtx, run, req)
 	// Once, also after a failure or when the client has gone: what is stored gets its days
 	// queued with its one event, then its records (D128).
 	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finish)
 	defer cancel()
+	end := h.importEnd(fctx, itemsCtx, r, run, stopped, free)
+	c.result = end.result
+	h.logImport(r, run, end.days, start, end.result)
+	importRespond(c, run, req, end)
+}
+
+// importGates are the account's: consent, then the flag, both before the body is read (D140:
+// the contract wins over the design's decode first; D129 and D141 for warn and the flag).
+func (h *handler) importGates(c *importCall) bool {
+	// Before the body: a refused upload costs no parse (D129). On this route warn is on: no
+	// app build that cannot ask for consent calls it, so nothing is served without (S3).
+	consent := h.beta
+	if consent.Consent == config.ModeWarn {
+		consent.Consent = config.ModeOn
+	}
+	if !gate.Consent(c.w, c.r, consent, c.user, "api") {
+		return false
+	}
+	// The app's switch, enforced here too (S4): an account the flag is off for imports nothing.
+	ctx := c.r.Context()
+	all, err := h.st.Flags(ctx)
+	if err != nil {
+		c.result = importResult(ctx, err)
+		importUnavailable(c.w, c.r, err, c.result)
+		return false
+	}
+	if !flags.Enabled(all, model.FlagTrainImport, c.user.ID) {
+		c.result = "disabled"
+		httpx.WriteCodedError(c.w, c.r, http.StatusForbidden, model.CodeImportNotEnabled, "the training import is not enabled for this account")
+		return false
+	}
+	return true
+}
+
+// importDecode reads the body within its limit and checks the request as a whole (sources,
+// counts, duplicates); the items are checked one by one later.
+func importDecode(c *importCall) (model.TrainImportRequest, bool) {
+	var req model.TrainImportRequest
+	if err := httpx.ReadJSON(c.w, c.r, &req, httpx.MaxBodyImport); err != nil {
+		httpx.WriteDecodeError(c.w, err)
+		return req, false
+	}
+	if err := train.CheckImportRequest(req); err != nil {
+		failTrain(c.w, c.r, err, "import")
+		return req, false
+	}
+	return req, true
+}
+
+// importNothing answers a request without items: a 200 with nothing, before any lease.
+func (h *handler) importNothing(c *importCall) {
+	c.result = "ok"
+	base, _ := h.st.ExpectedScoreSec(c.r.Context()) // its default when the estimate fails
+	httpx.WriteJSON(c.w, http.StatusOK, model.TrainImportResponse{Results: []model.ImportResult{}, DaysTouched: []string{},
+		Scoring: model.SyncScoring{QueuedDays: []string{}, ExpectedWithinSec: base}})
+}
+
+// importLease takes the user's one import at a time (D129): 429 import_in_progress when another
+// is running, 503 when the database fails. It returns the release, which is fenced by the
+// lease's own value and runs on its own context, so a request that ended frees only its lease (D132).
+func (h *handler) importLease(c *importCall) (func(context.Context), bool) {
+	ctx := c.r.Context()
+	release, ok, err := h.st.AcquireImportLease(ctx, c.user.ID, store.ImportLeaseTTL)
+	if err != nil {
+		c.result = importResult(ctx, err)
+		importUnavailable(c.w, c.r, err, c.result)
+		return nil, false
+	}
+	if !ok {
+		c.result = "busy"
+		c.w.Header().Set("Retry-After", strconv.Itoa(importBusyRetry))
+		httpx.WriteCodedError(c.w, c.r, http.StatusTooManyRequests, model.CodeImportInProgress, "an import is already running")
+		return nil, false
+	}
+	return release, true
+}
+
+// importItemsContext is the items' time: the request's 50 s less the finish's share of it, so
+// that the answer, a 503 included, goes out inside the server's write timeout (D140).
+func importItemsContext(ctx context.Context, finish time.Duration) (context.Context, context.CancelFunc) {
+	if dl, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(ctx, dl.Add(-finish))
+	}
+	return ctx, func() {}
+}
+
+// importSummary is what the request came to: the days it queued, the base of the estimate, the
+// error that stopped it (the items' or the finish's) and the result label of both.
+type importSummary struct {
+	days   []string
+	base   int
+	err    error
+	result string
+}
+
+// importEnd finishes what the items stored (fctx, D128), gives the lease back before the
+// answer is written, and sums the request up. The result is the items' unless they went well.
+func (h *handler) importEnd(fctx, itemsCtx context.Context, r *http.Request, run *importRun, stopped error, free func()) importSummary {
 	days, finished := h.finishImport(fctx, r, run)
 	base, _ := h.st.ExpectedScoreSec(fctx)
 	free()
-	metrics.TrainImportSeconds.Observe(time.Since(start).Seconds())
-	err = errors.Join(stopped, finished)
-	result = importResult(itemsCtx, stopped)
-	if result == "ok" {
-		result = importResult(fctx, finished)
+	metrics.TrainImportSeconds.Observe(time.Since(run.start).Seconds())
+	end := importSummary{days: days, base: base, err: errors.Join(stopped, finished), result: importResult(itemsCtx, stopped)}
+	if end.result == "ok" {
+		end.result = importResult(fctx, finished)
 	}
-	h.logImport(r, run, days, start, result)
-	if err != nil {
-		importUnavailable(w, r, err, result)
+	return end
+}
+
+// importRespond writes the answer: the 503 of an import that could not finish, else the
+// results in request order.
+func importRespond(c *importCall, run *importRun, req model.TrainImportRequest, end importSummary) {
+	if end.err != nil {
+		importUnavailable(c.w, c.r, end.err, end.result)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, model.TrainImportResponse{Results: run.results(req), DaysTouched: days,
-		Scoring: model.SyncScoring{QueuedDays: days, ExpectedWithinSec: train.ExpectedSeconds(base, len(days))}})
+	httpx.WriteJSON(c.w, http.StatusOK, model.TrainImportResponse{Results: run.results(req), DaysTouched: end.days,
+		Scoring: model.SyncScoring{QueuedDays: end.days, ExpectedWithinSec: train.ExpectedSeconds(end.base, len(end.days))}})
 }
 
 // importResult is the result label of an import that ended with err in ctx: ok, timeout
@@ -208,6 +288,14 @@ func importUnavailable(w http.ResponseWriter, r *http.Request, err error, result
 // each on its own (D131). A rejection is the item's; any other error stops the loop and is
 // returned: the items before it stay stored.
 func (h *handler) importItems(ctx context.Context, run *importRun, req model.TrainImportRequest) error {
+	if err := h.importPlans(ctx, run, req); err != nil {
+		return err
+	}
+	return h.importSessions(ctx, run, req)
+}
+
+// importPlans stores the plans in request order.
+func (h *handler) importPlans(ctx context.Context, run *importRun, req model.TrainImportRequest) error {
 	for i, p := range req.Plans {
 		if p.ID == uuid.Nil {
 			run.plans[i] = invalid(train.Problem{Msg: "id is required"})
@@ -223,6 +311,11 @@ func (h *handler) importItems(ctx context.Context, run *importRun, req model.Tra
 		}
 		run.plans[i] = out
 	}
+	return nil
+}
+
+// importSessions stores the sessions oldest first (T5), after the plans they may name.
+func (h *handler) importSessions(ctx context.Context, run *importRun, req model.TrainImportRequest) error {
 	var exIDs []uuid.UUID
 	for i, s := range req.Sessions {
 		run.bodies[i] = s.ToSession()
@@ -276,73 +369,117 @@ func invalid(err error) store.ImportOutcome {
 // exercise within the e1RM window after the newest of them, or no body weight of their own
 // after the oldest with one); all inside the window.
 func (h *handler) finishImport(ctx context.Context, r *http.Request, run *importRun) ([]string, error) {
-	var records []uuid.UUID
-	var scope []model.Session
-	changed := map[string]bool{}
-	var unchanged []string
+	f := run.stored()
+	pending, err := h.st.PendingAmong(ctx, run.user, f.unchanged)
+	if err != nil {
+		return nil, err
+	}
+	f.addPending(run, pending)
+	if err := h.addDependentDays(ctx, run, f); err != nil {
+		return nil, err
+	}
+	days := f.sortedDays()
+	if err := h.queueImport(ctx, r, run, days); err != nil {
+		return nil, err
+	}
+	if len(f.records) > 0 {
+		if err := h.recordsFor(ctx, run.user, uniqueIDs(f.records)); err != nil {
+			return nil, err
+		}
+	}
+	return days, nil
+}
+
+// importStored is what the stored items imply for the finish: the exercises whose records are
+// recomputed, the sessions whose scope moves other days, the days to queue, and the unchanged
+// sessions' days that may still be pending.
+type importStored struct {
+	records   []uuid.UUID
+	scope     []model.Session
+	changed   map[string]bool
+	unchanged []string
+}
+
+// stored reads the outcomes of the items that were processed (pure: no store call).
+func (run *importRun) stored() *importStored {
+	f := &importStored{changed: map[string]bool{}}
 	for i, o := range run.sessions {
 		switch o.Status {
 		case store.ImportCreated, store.ImportUpdated:
 			for _, d := range []string{o.Day, o.PreviousDay} {
 				if d != "" && run.window.Contains(d) {
-					changed[d] = true
+					f.changed[d] = true
 				}
 			}
-			scope = append(scope, run.bodies[i])
+			f.scope = append(f.scope, run.bodies[i])
 			if o.Replaced != nil {
-				scope = append(scope, *o.Replaced)
+				f.scope = append(f.scope, *o.Replaced)
 			}
 		case store.ImportUnchanged:
 			if run.window.Contains(o.Day) {
-				unchanged = append(unchanged, o.Day)
+				f.unchanged = append(f.unchanged, o.Day)
 			}
 		}
 		if o.Status != "" && o.Status != store.ImportRejected {
-			records = append(records, o.Exercises...)
+			f.records = append(f.records, o.Exercises...)
 		}
 	}
-	pending, err := h.st.PendingAmong(ctx, run.user, unchanged)
-	if err != nil {
-		return nil, err
-	}
+	return f
+}
+
+// addPending counts an unchanged session whose day an earlier attempt queued and scoring has
+// not finished like a changed one (D140).
+func (f *importStored) addPending(run *importRun, pending []string) {
 	for i, o := range run.sessions {
 		if o.Status == store.ImportUnchanged && slices.Contains(pending, o.Day) {
-			changed[o.Day] = true
-			scope = append(scope, run.bodies[i]) // its first attempt never got as far as the dependent days
+			f.changed[o.Day] = true
+			f.scope = append(f.scope, run.bodies[i]) // its first attempt never got as far as the dependent days
 		}
 	}
-	if d, ok := scoring.ScopeOf(scope); ok {
-		deps, err := h.st.DependentDays(ctx, run.user, store.DependentScope{Since: d.Since, Exercises: d.Exercises,
-			Through: d.Through, BodyweightSince: d.BodyweightSince}, run.window, run.loc)
-		if err != nil {
-			return nil, err
-		}
-		for _, day := range deps {
-			changed[day] = true
-		}
+}
+
+// addDependentDays adds the days of the user's other sessions that the changed ones can move.
+func (h *handler) addDependentDays(ctx context.Context, run *importRun, f *importStored) error {
+	d, ok := scoring.ScopeOf(f.scope)
+	if !ok {
+		return nil
 	}
-	days := make([]string, 0, len(changed))
-	for d := range changed {
+	deps, err := h.st.DependentDays(ctx, run.user, store.DependentScope{Since: d.Since, Exercises: d.Exercises,
+		Through: d.Through, BodyweightSince: d.BodyweightSince}, run.window, run.loc)
+	if err != nil {
+		return err
+	}
+	for _, day := range deps {
+		f.changed[day] = true
+	}
+	return nil
+}
+
+// sortedDays is the changed days, oldest first: the explicit list the event and the answer carry.
+func (f *importStored) sortedDays() []string {
+	days := make([]string, 0, len(f.changed))
+	for d := range f.changed {
 		days = append(days, d)
 	}
 	slices.Sort(days)
+	return days
+}
+
+// queueImport queues the days with the request's one event in one transaction, wakes the
+// outbox and drops the user's cached insights.
+func (h *handler) queueImport(ctx context.Context, r *http.Request, run *importRun, days []string) error {
 	m, err := events.Ingested(model.IngestedEvent{UserID: run.user, Days: days, Reason: model.ReasonImport, RequestID: requestID(r)}, "")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := h.st.FinishImport(ctx, run.user, days, m); err != nil {
-		return nil, err
+		return err
 	}
 	if len(days) > 0 && h.outbox != nil {
 		h.outbox.Kick()
 	}
 	h.cache.forget(run.user)
-	if len(records) > 0 {
-		if err := h.recordsFor(ctx, run.user, uniqueIDs(records)); err != nil {
-			return nil, err
-		}
-	}
-	return days, nil
+	return nil
 }
 
 func uniqueIDs(ids []uuid.UUID) []uuid.UUID {

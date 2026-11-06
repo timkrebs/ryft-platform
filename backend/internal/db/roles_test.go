@@ -48,7 +48,7 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 // journalTables are migration 0016's, betaTables 0017's onwards.
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
-	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox"}
+	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses"}
 )
 
 // trainTables are migration 0011's.
@@ -83,7 +83,9 @@ var grants = map[string]map[string][]string{
 		"behaviors": crud, "user_behaviors": crud, "journal_days": crud, "journal_entries": crud,
 		"consents": crud, "beta_invite_codes": crud, "user_sources": crud, "feedback": crud,
 		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
-		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"admin_accounts":   {"SELECT"}, // 0032: the owner writes it (the SQL editor), the api only reads
+		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
+		"exercises":        crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }

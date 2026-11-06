@@ -31,8 +31,8 @@ Ticket T12. Author: platform-architect. Status: **decided 2026-10-23** (the user
    every `ryft-*` namespace, `rabbitmq-system` and `argocd`. What's missing is protection of those
    labels.
 2. **Built-in ValidatingAdmissionPolicy (VAP) covers everything PSA can't express.** VAP rules are CEL
-   expressions. VAP is GA since 1.30, and EKS runs 1.36. The design has twelve policies, P1–P12 (P12, `ryft-argo-scope`, was added on
-   2026-11-04: see `p12-argo-scope.md`).
+   expressions. VAP is GA since 1.30, and EKS runs 1.36. The design has thirteen policies, P1–P13 (P12, `ryft-argo-scope`, was added on
+   2026-11-04: see `p12-argo-scope.md`; P13, `ryft-vault-trust`, with the namespace `vault`, D195).
    - No Kyverno or Gatekeeper.
    - No pods to run, and no webhook that can be down.
 3. **Terraform owns the policies, and the AppProjects if you agree.** Both come from
@@ -128,8 +128,8 @@ commands, NetworkPolicies, VSO or Argo objects.
 | e | `apiserver_validating_admission_policy_check_total` counts clean passes | **false** (T12-e review): only checks that found something are counted, so a quiet policy has no series. Liveness is the scrape's `up` | code review |
 | f | with SSD, a denial shows as a comparison error on the whole app (`ArgoAppOutOfSync`, not `ArgoSyncFailed`) | not tried (D151) | kind |
 | g | P7's whole-`spec` equality against a JSON-literal constant type-checks on the AppProject schema | **verified** (kind): `status.typeChecking` empty, the committed project passes, a widened one is refused | kind |
-| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind), including the negative test: without the policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it; with P6 in Deny both steps are refused | kind |
-| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | **verified, after one added rule** (D151): the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for its children for ever. #47 lacks the rule | kind |
+| h | narrowed controller RBAC, with `escalate`/`bind` limited by `resourceNames`, can still create the operators' roles | **verified** (kind) for the first version, including the negative test: without the policies the controller rewrote `rabbitmq-cluster-operator-role` and bound itself to it; with P6 in Deny both steps were refused. **Superseded:** the review showed that version was escalation-equivalent (three ClusterRoles in both lists), so the controller now holds the permissions of the operators' remaining ClusterRoles itself and has **no `escalate` on any ClusterRole** and `bind` on one name only (`messaging-topology-metrics-auth-role`, which Argo CD's all-objects dry-run needs on a fresh cluster: the first CI run of this round failed without it); `escalate`/`bind` stay on the four operator Roles by name, which match in every namespace. To be verified again: the ClusterRole rewrite is refused by RBAC alone (`claim-h-clusterrole`); a Role of an operator name in `kube-system` is written and bound without the policies (`claim-h-open`) and refused with P6 in Deny (`claim-h-guarded`) | kind, with a negative test (§3, Kind e2e) |
+| i | `resource.respectRBAC: strict` keeps the controller's cache working without cluster-wide Secrets | **verified, after one added rule** (D151, amended): the controller must also get, list and watch `applications.argoproj.io` cluster-wide. Without it the kind run still passed, because under strict the cache asks a self-subject access review for namespace `*` per kind and **silently drops** a kind it may not list (the chart's Role in `argocd` does not count); the root then catches up only at its periodic reconcile (about 3 minutes; Progressing for about 6 minutes in the run), a deleted child Application is not pruned, a hand edit of a child is seen late. The rule is in #47 now; `claim-i-list` checks `can-i list <kind> -A` for the kinds of the apps | kind |
 | j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5). Not tried (D151) | `terraform validate` |
 | k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | **answered** (kind, argo-cd chart 10.10.5): the full commit SHA of the revision the Application was compared with, which is `status.sync.revision`; P10's third alternative admits it, and `--revision <another sha>` is refused (D151) | kind |
 | l | the broker's 443 egress only reaches the API server inside the VPC | plausible. Not tried (D151) | production: T12-k's canary |
@@ -199,11 +199,90 @@ commands, NetworkPolicies, VSO or Argo objects.
 - T12-f narrows Argo CD's chart-default ClusterRoles before anything else is applied:
   - the controller may write only the two webhook-configuration resources of
     `admissionregistration.k8s.io`;
-  - the server may write nothing there;
-  - neither gets `secrets` get, `pods/exec` or `pods/ephemeralcontainers`;
+  - the server may write nothing cluster-wide, and nothing there;
+  - neither gets `secrets` get, `pods/exec`, `pods/ephemeralcontainers` or `impersonate`;
+  - the controller holds no `escalate` on a ClusterRole, and `bind` on one name only (it holds the
+    operators' ClusterRoles' permissions itself);
   - ApplicationSet is off.
 - The workloads hold no token (P2).
 - The operators' roles can't grant `admissionregistration.k8s.io` (P6).
+- **Limit of T12-f (what is true after #47 alone).** T12-f narrows what the Argo CD identities can
+  *grant themselves through RBAC*. It does not make a compromised Argo CD harmless, and the sentence
+  "Argo CD cannot switch off or bypass the admission layer" is **not true until P6 and P12 are both in Deny and #47 is applied**.
+  - **Closed by #47 (RBAC alone):** adding VAP/VAPB write to a ClusterRole and binding it. T12-f's first
+    version had `escalate`/`bind` on three operator ClusterRoles and was escalation-equivalent to
+    cluster-admin; the controller now holds those ClusterRoles' permissions (token and access reviews,
+    `/metrics` get) and has no `escalate` on any ClusterRole, and `bind` only on
+    `messaging-topology-metrics-auth-role`, which it cannot extend.
+  - **Open until P6 is in Deny:** `escalate` and `bind` on the four operator **Roles** are in a
+    ClusterRole, and `resourceNames` match in every namespace. The controller can write a Role of that
+    name in `kube-system` or `argocd` with Secrets and `pods/exec`, and bind itself. P6 admits Roles only
+    in `rabbitmq-system` and the four named ones in `ryft-rabbitmq`.
+  - **Also closed only by P6 in Deny:** (a) webhook-configuration `create` cannot be limited by name (the
+    first sync needs it): a configuration with a `url` would receive every matched object, Secrets and
+    Pods included, and could mutate Pods; P6 admits the four names, served from `rabbitmq-system`, on
+    `rabbitmq.com` only. (b) CRD `create` cannot be limited by name either (#47 limits `update` and
+    `patch` to the operators' 14 CRDs); P6 admits CRDs of `rabbitmq.com` without a conversion webhook.
+  - **Open until P6 and P12 are both in Deny (design gap, not a regression; the chart's `*` allowed all of it):** the controller
+    writes ConfigMaps, Deployments, Jobs, Services and ServiceAccounts in **every** namespace, and
+    no policy matches Argo CD's writes outside `ryft-*` and `rabbitmq-system` (P2: only those; P3, P5, P9:
+    `ryft-*`; P7: Argo CD's own kinds and Secrets in `argocd`). A stolen controller token can
+    - write `kube-system/aws-auth`: the cluster runs authentication mode `API_AND_CONFIG_MAP`, so an IAM
+      principal mapped to `system:masters` is cluster-admin without a Pod, and cluster-admin deletes the
+      bindings (claim a). Only P6 and P12 in Deny, or EKS authentication mode `API`, closes it;
+    - deploy into `cert-manager` as its ServiceAccount (Secrets cluster-wide, Route53 through Pod Identity:
+      a DNS-01 certificate for `api.ryftapp.de`), into `kube-system` as a controller-manager
+      ServiceAccount, or patch `argocd-cm`, `argocd-rbac-cm` and the `argocd-server` Deployment.
+    The controller's ConfigMap write cannot be narrowed by namespace in a ClusterRole; the options are
+    per-namespace RoleBindings (a separate decision) or P6 and P12 in Deny (P12, "argo-scope": Argo CD's identities write
+    namespaced objects only in `ryft-*` and `rabbitmq-system`, in `argocd` only `argoproj.io` objects
+    and Events, cluster-scoped objects only of the whitelisted kinds). P12 judges names only; it is built in #121, not here.
+  - **Not changed by #47:** the chart hard-codes the server's Role in `argocd` (create, update, patch,
+    delete on all Secrets, ConfigMaps, AppProjects, ApplicationSets). P7 refuses only Secrets labelled
+    `secret-type`, so a leaked token of the public UI can rewrite `argocd-secret`, `argocd-cm` and
+    `argocd-rbac-cm` today.
+  - **RBAC objects that outlive a stolen controller token (P6 and P12 in Deny close the create and update route, not the rest).** The controller
+    creates, updates, patches and deletes ClusterRoles, ClusterRoleBindings, Roles and RoleBindings with no
+    `resourceNames` (a fresh cluster needs `create`). Kubernetes' escalation check bounds what a written
+    role may hold (a subset of the controller's rights), not who it is bound to: with a stolen token one
+    writes a ClusterRole of that subset (ConfigMaps, Deployments, Jobs in every namespace) and binds it to
+    `system:serviceaccounts` or `system:authenticated` (`system:unauthenticated` is probably not effective
+    on EKS 1.36, where anonymous requests are, as far as known, admitted to the health endpoints only: not
+    verified); the grant outlives the token. A second route needs no binding write: a ClusterRole labelled
+    `rbac.authorization.k8s.io/aggregate-to-edit|admin|view` adds its rules (a subset of the controller's)
+    to roles already bound to others (an `aggregationRule` of its own would need `escalate`, which stays
+    closed). `delete` of any binding or ClusterRole is open too, and P6 matches only CREATE and UPDATE of the
+    operators' objects. Evaluated: `update`/`patch`/`delete` limited by `resourceNames` to the operators' 12
+    RBAC objects (create stays open). That narrows the rewrite and the delete but not a created ClusterRole
+    and binding of another name, and showing it safe needs the `full` kind run (the operators' sync with escalate, bind
+    and server-side apply of existing objects), which a pull request does not run. Not applied in #47: a
+    scoping choice (the PR stays a draft until a full-mode run anyway), and the narrowing does not close the
+    route; its own change, with that run. The create and update route closes with P6 and P12 together in Deny (P6 limits ClusterRole and
+    binding subjects and rules to the operators' names; P12 alone does not close it). Still open then: the
+    aggregation-label route, `delete` of RBAC objects, prune by name.
+  - **Sync impersonation stays off:** If `application.sync.impersonation.enabled` were ever turned on, all controller writes would move to other usernames and P12 (which judges names) would match nothing: the guard keeps refusing it (it is not an allowed `configs.cm` key, `configs.params` key or `controller` value, and `tests/addons.tftest.hcl` pins that).
+  - argocd-server cannot add RBAC (no write on RBAC kinds).
+  - **Beside the rules (guards added with #47):** `modules/argocd-values-guard`, a precondition of
+    `helm_release.argocd`: `extraObjects` kinds with their one apiVersion, no `{{` anywhere in the values
+    and the values ASCII only with no control character or escape, except newlines in the health Lua entries
+    (the chart renders many values with `tpl`, and a line break in an allowed value, U+2028, U+2029 and U+0085
+    included, starts another YAML document), `exec.enabled` false, `respectRBAC` strict, no `controller.roleRules`, `createClusterRoles` not false,
+    no `configs.rbac`/anonymous login/disabled auth, a key allowlist two levels deep plus the keys of a few
+    maps. The release takes the guard's output as its values (`values_yaml`), and a postcondition requires
+    exactly that (no `set*`, no second document, no postrender); it is a plan-time check only while the
+    release's inputs are known then, so no computed value may enter the release's values or `set*`. The kind
+    run adds `argo-bindings`, `argo-extra-objects` and `argo-inventory` (the whole render counted by kind and
+    namespace against an expected table), and `argo-tf-bindings` (a tripwire). A ClusterRoleBinding to
+    `cluster-admin` shipped as an extra object, or written in Terraform, passes every check on the two
+    ClusterRoles' rules. Not covered: the values of other allowed keys (reviewed), the content of an object of an expected kind, and a change to the
+    guard together with its tests, which only review catches.
+- **Structural options (future D97/D120 decisions, for you; not implemented).** (1) Move the operators'
+  ClusterRoles, ClusterRoleBindings and Roles out of Argo CD, into Terraform with the add-ons: Argo CD
+  then needs no `escalate` and no `bind` at all. (2) Keep Argo CD as it is but move the `escalate`/`bind`
+  rule into namespaced Roles in `rabbitmq-system` and `ryft-rabbitmq` (`extraObjects` of the Argo CD
+  release), so a Role of those names in `kube-system` is out of reach by RBAC alone; the price is that
+  the namespaces must exist before the Helm release (Terraform would own two namespaces that Argo's
+  `namespace.yaml` owns today).
 
 ```mermaid
 flowchart LR
@@ -409,11 +488,75 @@ flowchart LR
 - **Shovel, Federation and SchemaReplication are refused cluster-wide** (recommended), from every writer:
   they move messages off the cluster.
 
+**The namespace `vault` (Vault CE, chart 0.5.0)**
+- **Bindings of its own:** P1, P2 (templates and pods) and P3 each have a second binding,
+  `<name>-vault`, with `namespaceSelector` In `[vault]`; the general bindings carry NotIn `[vault]`.
+  One policy, two stagings: the vault bindings sit in step A and go to deny before the Vault
+  bootstrap (the plan's gate: P12, P13 and the vault branches of P1–P3 in Deny), independently of
+  the `ryft-*` steps B and C and of P3's broker guard. P4 and P13 need no split: P4 has nothing in
+  `vault`, P13 has a binding of its own and judges cluster-scoped kinds (ClusterIssuers, CSRs), which
+  a namespaceSelector never excludes.
+- **P1:** `vault` is in scope like `rabbitmq-system` and `argocd`: the PSA labels stay `restricted`.
+- **P2:** in `vault` only `images.vault` (the release's exact digest) and `images.awsCli` (the
+  snapshot CronJob, empty until that image is pinned, so the CronJob is refused until then). The
+  chart guard holds both to one literal reference with a full digest (`^`, `[.]` for a dot,
+  `@sha256:<64 hex>$`; no alternation, group, repetition or escape). **P2 judges images only in
+  `vault`:** the ryft-* command, args and token rules do not apply, so the Vault image running
+  `/bin/sh` under any service account is admitted. That boundary is RBAC (only Terraform writes
+  in `vault`) and P12 (Argo CD writes nothing there). The Vault image is refused in ryft-*.
+- **P3:** no ingress ipBlock in `vault`. Egress ipBlocks: the public shape on 443 only (no 5432), the
+  VPC CIDR on 443 (the API server, for the token review) and the Pod Identity agent
+  `169.254.170.23/32` on 80.
+- **P4, during the cutover:** P4 admits the union of the two shapes infra/vault generates, field by
+  field: an address from `vaultAddresses`, `caCertSecretRef` absent or `vault-ca`, a Vault namespace
+  absent or under `admin/ryft/`, the mount `kv` or `kv-<service>` (the namespace without `ryft-`).
+  **The pairing is not enforced:** HCP's address with `vault-ca`, the in-cluster address without a
+  CA, or a mix of shapes in one namespace pass admission and fail closed later (TLS or login). The
+  reserved names (`operator`, `root`, `admin`, `terraform`, `default`, `vault-snapshot`, as infra/vault
+  refuses them as services) are never a service: `ryft-operator` may not read `kv-operator` (the demo
+  password). The decommission empties `vso.kvMount` and `vso.vaultNamespacePrefix` and leaves one
+  address; then only the in-cluster fields pass (the harness judges that render too).
+
+**P13 `ryft-vault-trust`** (step A; C, U on cert-manager `certificates`, `certificaterequests`,
+`certificaterequests/status`, `issuers`, `clusterissuers`, and C on `certificatesigningrequests`)
+- **Matched:** a Certificate or CertificateRequest naming `ryft-vault` (whatever kind or group), a
+  Certificate whose `secretName` is `vault-ca`, `vault-tls` or `ryft-vault-ca` (whatever issuer),
+  every Issuer and ClusterIssuer, and a Kubernetes CSR whose `signerName` starts with
+  `clusterissuers.cert-manager.io/ryft-vault`.
+- **What the issuer signs:** `issuerRef` is the ClusterIssuer of `cert-manager.io`, and only two
+  Certificates: `vault/vault-tls` (keys allowlisted, `secretName` its name, DNS names, IPs and usages
+  a subset of the committed lists, never `isCA`) and `<namespace>/vault-ca` (keys allowlisted,
+  `secretName` its name, `commonName: vso.<namespace>`, **no SAN-bearing key**: no `dnsNames`,
+  `ipAddresses`, `uris` or `emailAddresses`). The invariant that keeps a `vault-ca` leaf from serving
+  as Vault is "no SAN" (Go never matches a host name against the commonName), not its usages: usages
+  without `server auth` mean no EKU at all, which Go accepts for any purpose. The `caUsages` guard is
+  defence in depth. An Ingress annotated with `ryft-vault` is refused by these rules (ingress-shim's
+  Certificate has another name), not by the CertificateRequest rule.
+- **The reverse:** the Secret `vault-ca` (any namespace) and `vault/vault-tls` only from a Certificate
+  of `ryft-vault`; the root Secret `ryft-vault-ca` only from the Certificate
+  `cert-manager/ryft-vault-ca` of the ClusterIssuer `ryft-vault-bootstrap`.
+- **Issuers:** only the ClusterIssuer `ryft-vault` signs with `ca.secretName: ryft-vault-ca`, and it is
+  exactly that (`spec` holds `ca`, `ca` holds `secretName`); `ryft-vault-bootstrap` is exactly
+  `selfSigned: {}`. **Argo CD's identities write only Issuers that are exactly `selfSigned: {}`** (the
+  operators' webhook issuers in `rabbitmq-system`) and no ClusterIssuer: an Issuer of type `vault`,
+  `venafi` or `acme` names a server and a Secret of its namespace (`auth.tokenSecretRef: ryft-secrets`),
+  and cert-manager sends that Secret's value to the server. This stays P13's with P12 (D206): P12
+  judges where, not what, and admits an Issuer in the namespaces of `argoScope.namespaces`; for a
+  ClusterIssuer and in `vault` both refuse (harmless: two messages for one write).
+- **Requests:** a CertificateRequest for `ryft-vault`, and a write of its status (approval, the
+  signed certificate), only as `system:serviceaccount:cert-manager:cert-manager`. That rule is exactly
+  as strong as "nothing else runs as that service account" (its token, an exec into the controller).
+  A Kubernetes CSR for a `ryft-vault*` signer is refused from everyone (cert-manager's CSR
+  controllers are off; turned on, they would bypass the CertificateRequest rule).
+- **Not held by P13:** a Secret `ryft-vault-ca`, `vault-ca` or `vault-tls` written directly (RBAC:
+  only Terraform and cert-manager write Secrets there), and Argo CD writing a well-shaped Certificate
+  in `vault` (P12).
+
 **P12 `ryft-argo-scope`** (C, U, D, CONNECT; every service account of `argocd`; full design in
 `p12-argo-scope.md`)
 - **Matched by the username prefix** `system:serviceaccount:argocd:`, on every resource and subresource
   in every namespace. No groups, no `userInfo.extra`, no field manager.
-- **Where the writers may write** (content stays P1–P11's):
+- **Where the writers may write** (content stays P1–P11's and P13's):
   - the controller: any resource in the explicit namespace list `argoScope.namespaces` (the apps'
     namespaces, no `ryft-` prefix); in `argocd` only Applications and events (events: create and update,
     never delete); cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs
@@ -425,6 +568,9 @@ flowchart LR
   - the chart's `argocd-redis-secret-init`: CREATE of Secret `argocd-redis`;
   - any other `argocd` service account: nothing. No subresource and no CONNECT, whoever the account.
 - **No AppProject write** from any Argo CD identity (B2: Terraform's). No finalizer carve-out.
+- **Never `vault` or `cert-manager`** (nor `argocd` beyond Applications and events, nor `kube-system`) in
+  `argoScope.namespaces` or `namespaceObjects`: the chart fails the render and `admission.tf` the plan
+  (D206). P12 has one binding for every namespace (no `-vault` twin); in `vault` it refuses every Argo CD write.
 - Step B, Warn+Audit in Phase 1 with the others. `admission_policy` depends on the argocd release.
 - **Deny gate (chart `fail` and `admission.tf` preconditions):** `argo-scope: deny` needs `operators-cluster`,
   `namespaces` and `workloads-templates` in deny (P12 judges names, not what a ClusterRole or binding grants;
@@ -435,7 +581,7 @@ flowchart LR
   as the controller must answer no (OPERATIONS → P12).
 - **Sync impersonation** (`application.sync.impersonation.enabled: true`) would make Argo CD apply as the
   AppProjects' service accounts and P12 would match nothing. It stays off; turning it on is a new decision.
-- **Not covered, named plainly:** in-scope writes with cluster-wide effect, which all 13 bindings admit:
+- **Not covered, named plainly:** in-scope writes with cluster-wide effect, which all 18 bindings admit:
   an Ingress for `api.ryftapp.de` with a Traefik `router.priority` annotation in `ryft-smoke`, a Middleware with a `redirectRegex` on `api.ryftapp.de`, or a Service with `externalIPs` in `ryft-web` (CVE-2020-8554). Follow-up T12-l6 (not built): P9 pins Ingress hosts per namespace, refuses Traefik router
   annotations except `router.middlewares`, pins a `redirectRegex` replacement to the service's own hosts;
   a new Service rule (ClusterIP only, no `externalIPs`, no `ExternalName`) for Argo-written Services.
@@ -516,8 +662,8 @@ T12-k (the broker's egress) lands before Step B.
 
 | Step | Policies | Why here |
 | --- | --- | --- |
-| A | P4, P6, P11 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`) |
-| B | P1, P2 `templates`, P3, P5, P9, P12 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods. P12's failure reaches every app, but its Audit signal is the clearest of all (any line is a finding) |
+| A | P4, P6, P11, P13, and the vault bindings of P1, P2 and P3 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`); P13 and the vault bindings only the Vault add-on (Terraform) and the issuers |
+| B | P1, P2 `templates`, P3, P5, P9, P12 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods. P12's failure reaches every app, but its Audit signal is the clearest of all (any line is a finding); it goes to deny only after the general P6, P1 and P2 bindings |
 | C | P2 `pods`, P8 | runtime: Pods for rollouts, scale-ups and drains, and the broker's reconcile; critical alert |
 | D | P7, P10 | Argo CD's own objects, last |
 
@@ -589,7 +735,16 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 - the operators and the broker (**one node, one replica**, not three workers: D151);
 - a real sync of every app, a hook run, a terminate-op, the broker's `rollout restart`;
   **not** a node drain (D151);
-- verification of claims a–d, g–i, k and m; **not** f, j, l (D151).
+- verification of claims a–d, g–i, k and m; **not** f, j, l (D151);
+- a **negative test** that pins the sequencing: with T12-f's RBAC and no policies, the controller
+  token cannot rewrite a ClusterRole to carry VAP/VAPB write (RBAC refuses it, `claim-h-clusterrole`),
+  but the `escalate`-write of a Role named `rabbitmq-cluster-operator-role` in `kube-system` with Secrets
+  and `pods/exec`, plus a self-bind, *succeeds*. It must flip to denied once P6 is in Deny;
+- `claim-i-list`: `can-i list <kind> -A` as the controller for the kinds of the apps (a kind it may not
+  list cluster-wide is dropped silently under strict);
+- the `admission` CI job also renders the argo-cd chart (10.10.5) with these values and checks the
+  rendered ClusterRoles (no `*`, no `secrets`, no `pods/exec`, no VAP/VAPB, nothing on
+  `admissionregistration.k8s.io` for the server), so chart drift is caught.
 
 ### Break-glass (you only, the cluster admin)
 
@@ -646,6 +801,7 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 | --- | --- | --- | --- |
 | P4 refuses | one `vault-<svc>` app and that namespace's Secret refresh; the root's later waves when it syncs | `ArgoAppOutOfSync`, VaultStaticSecret Degraded, `AdmissionPolicyDenied` | fix git, Vault or the chart |
 | P6 / P11 refuse | `rabbitmq-operators` / `broker-rabbitmq` (topology changes wait) | `ArgoAppOutOfSync` | chart first for upgrades |
+| P13 refuses | a `vault-tls` or `vault-ca` issue or renewal (the old certificate stays valid until it expires), an Issuer Argo CD syncs, a ClusterIssuer Terraform applies | the Certificate not Ready, a Terraform error, `AdmissionPolicyDenied` | fix the Certificate or the chart's `vault.*` values |
 | P1, P2 `templates`, P3, P5, P9 refuse | all of `ryft-platform` (every service and web deploy) or the broker app; P1 also an `infra/vault` apply | `ArgoAppOutOfSync`, a Terraform error | fix git or the chart; break-glass if a fix must ship |
 | P2 `pods` / P8 refuse | new Pods: rollouts, HPA scale-ups, drains, the broker's reconcile. Capacity can drop | `AdmissionPodDenied` (critical), `FailedCreate`, `ReconcileSuccess=False` | break-glass at once, then fix |
 | P7 refuses | Argo spec writes: root sync, UI edits. Status and auto-sync go on (carve-out) | the root's sync fails | break-glass, fix the chart |
@@ -660,7 +816,7 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 | Ticket | Owner | What | Order |
 | --- | --- | --- | --- |
 | T12-c | gitops-engineer | **`project.yaml` whitelists:** 23 kinds for `ryft`, 7 for `ryft-operators`. **`check_argocd.py`:** every rendered kind must be allowed by its project; L1, L2 and L4. Docs. | 1 |
-| T12-f | infra-engineer | **Argo CD RBAC:** controller and server `clusterRoleRules`, `resource.respectRBAC: strict`, ApplicationSet off, `escalate`/`bind` by `resourceNames`. | 1. Applied alone at Step 0, after the kind e2e; one full deploy watched before a and b |
+| T12-f | infra-engineer | **Argo CD RBAC:** controller and server `clusterRoleRules`, `resource.respectRBAC: strict`, ApplicationSet off, no `escalate` on any ClusterRole and `bind` on one (the permissions held instead), `escalate`/`bind` on the four operator Roles by name. | 1. Applied alone at Step 0, after the kind e2e; one full deploy watched before a and b |
 | T12-h | sre | **SDK injector:** exclude R in `deploy/monitoring/k8s-monitoring.yaml` (you apply). | 1, before Phase 1 |
 | T12-a | infra-engineer | **The `admission-policy` chart** (P1–P11), `admission.tf` and the values file (`enabled: false`). Tests: Audit by default; break-glass gives Warn+Audit; never Deny with Warn; the Vault address matches the generated `vault.yaml`. The `check` block. | 2 |
 | T12-b | infra-engineer | **B2, if chosen:** the `argocd-projects` chart from `project.yaml` (+ `root.yaml`), the same value into P7, `take_ownership` (`enabled: false`). Amends D95. | 2, after a |
@@ -679,7 +835,10 @@ kubectl get mutatingwebhookconfigurations \
   -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
 
 # 1. Step 0, T12-f alone (kind e2e passed; admission-values.yaml has enabled: false for both new releases)
-terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes
+terraform -chdir=infra/aws/kubernetes init                               # the values guard is a new local module
+terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan       # only helm_release.argocd changes; anything else, or any error: stop
+#    the human view prints the values as (sensitive value); the saved plan holds them in clear: read the rules with
+#    `terraform show -json argocd-rbac.tfplan | jq ... | yq ...` (docs/OPERATIONS.md, "Applying the narrowing"); the plan holds the admin hash: never commit it
 terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan
 #    then watch one full deploy (promote PR → sync → PreSync migrate → PostSync smoke) before going on
 kubectl -n argocd get applications

@@ -1,0 +1,30 @@
+case plan_database_failure
+
+== failure on the second plan
+status: 503
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Retry-After: 5
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"error":"the database is unavailable; send the same request again","request_id":"<rid>"}
+<eof>
+
+== state of user:a
+stored plan plan:good
+pending 
+lease held: false
+
+== metrics moved
+imports/error +1
+items/plan/created +1
+seconds/observations +1
+
+== log lines
+train import result=error plans=2 sessions=1 created=1 unchanged=0 updated=0 rejected=0 days=0 level=INFO
+request failed status=503 level=ERROR
+http status=503 code=<nil> route=POST /v1/train/import

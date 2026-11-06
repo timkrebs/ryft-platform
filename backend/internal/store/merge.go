@@ -45,7 +45,7 @@ func (s *Store) ScoredDays(ctx context.Context, id uuid.UUID) (int, error) {
 }
 
 // MergeUsers moves everything of from to to, in one transaction (D90): raw data,
-// devices and push tokens, Train, the journal, sources, feedback; a consent and
+// devices and push tokens, Train, the journal, sources, feedback, the codes it redeemed; a consent and
 // beta access only when to has none. Where both have the same row (a sample, a
 // device id, a session id, a journal day), to's is kept and from's dropped.
 // Scores are not moved: the caller rescores to. from itself is left for the
@@ -233,6 +233,11 @@ func (m merger) run(res *MergeResult) error {
 	}
 	res.Tables = append(res.Tables, MergeTable{Table: "user_sources", Moved: n, Rule: "merged per name and kind, the later last_seen"})
 	if err := add(m.move("feedback", "true", "all moved")); err != nil {
+		return err
+	}
+	// Which codes the accounts redeemed: the same code on both is one use of it, to's row kept.
+	if err := add(m.move("beta_invite_uses", `NOT EXISTS (SELECT 1 FROM beta_invite_uses t WHERE t.user_id = $2 AND t.code = s.code)`,
+		"same code: to's kept")); err != nil {
 		return err
 	}
 	// A consent and beta access only when to has none: the same person gave them.

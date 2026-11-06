@@ -1,7 +1,7 @@
 {{- /*
 P12 ryft-argo-scope (C, U, D, CONNECT; every service account of the argocd namespace). WHERE
-Argo CD's identities may write, whatever the object holds (the content stays P1-P11's). Design:
-docs/work/2026-10-23-admission/p12-argo-scope.md; D-entry "P12".
+Argo CD's identities may write, whatever the object holds (the content stays P1-P11's and P13's). Design:
+docs/work/2026-10-23-admission/p12-argo-scope.md; D206.
  - Match: every resource and subresource (the resource rule star-slash-star), every operation, in every namespace. The
    one matchCondition is the requester: the username starts with system:serviceaccount:<argocd
    namespace>:. The username comes from authentication (a bound token, or impersonation, which

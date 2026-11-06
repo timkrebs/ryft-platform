@@ -1,11 +1,17 @@
 {{- /*
-P3 ryft-netpol (C, U in ryft-*; D only for default-deny). default-deny stays the empty
-podSelector with Ingress+Egress and no rules, and cannot be deleted unless its namespace
-is terminating. Every other rule has ports (each with a port) and a peer; a
+P3 ryft-netpol (C, U in ryft-* and vault; D only for default-deny). default-deny stays the
+empty podSelector with Ingress+Egress and no rules, and cannot be deleted unless its
+namespace is terminating. Every other rule has ports (each with a port) and a peer; a
 namespaceSelector is matchLabels with the one key kubernetes.io/metadata.name; ipBlock has
 two shapes (the VPC CIDR for ingress on 9090/15692 and for ryft-rabbitmq's egress on 443,
 and 0.0.0.0/0 with the five private ranges excepted for egress on 443/5432); endPort only
 for 35672-35682 on the podSelector rules of ryft-rabbitmq (never next to an ipBlock). rabbitmq-system has no NetworkPolicy and is outside (a follow-up).
+Namespace vault (vault.namespace) has its own egress ipBlock shapes and no other: the VPC
+CIDR on 443 (the API server: TokenReview, service registration), the Pod Identity agent
+(netpol.podIdentityAgentCIDR) on 80, and the public shape on 443 only (KMS, S3); no ingress
+ipBlock at all (8200 is never opened to the VPC range, D51's reasoning). Two bindings: netpol
+(every namespace but vault) and netpol-vault (namespaceSelector In [vault]), so vault's can go to
+deny before the ryft-* step B and independently of netpol.brokerEgressPublic.
 */ -}}
 {{ include "admission.policyHead" (dict "root" . "name" "ryft-netpol" "id" "P3" "summary" "NetworkPolicy shapes in RYFT namespaces") }}
 spec:
@@ -18,7 +24,7 @@ spec:
         resources: ["networkpolicies"]
   matchConditions:
     - name: ryft-namespace
-      expression: request.namespace.startsWith('ryft-')
+      expression: request.namespace.startsWith('ryft-') || request.namespace == {{ .Values.vault.namespace | toJson }}
     - name: delete-only-default-deny
       expression: request.operation != 'DELETE' || oldObject.metadata.name == 'default-deny'
     {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
@@ -35,6 +41,8 @@ spec:
         has(variables.spec.egress) ? variables.spec.egress : []
     - name: broker
       expression: request.namespace == {{ .Values.broker.namespace | toJson }}
+    - name: inVault
+      expression: request.namespace == {{ .Values.vault.namespace | toJson }}
   validations:
     - expression: request.operation != 'DELETE' || has(namespaceObject.metadata.deletionTimestamp)
       message: "P3: default-deny can be deleted only together with its namespace."
@@ -66,19 +74,22 @@ spec:
     - expression: |-
         request.operation == 'DELETE' ||
         variables.ingress.all(r, !has(r.from) || r.from.all(q, !has(q.ipBlock) ||
-          (q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }} && !has(q.ipBlock.except) &&
+          (!variables.inVault && q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }} && !has(q.ipBlock.except) &&
            has(r.ports) && r.ports.all(p, has(p.port) && p.port in [9090, 15692]))))
-      message: "P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692."
+      message: "P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault."
       reason: Forbidden
     - expression: |-
         request.operation == 'DELETE' ||
         variables.egress.all(r, !has(r.to) || r.to.all(q, !has(q.ipBlock) ||
           (q.ipBlock.cidr == '0.0.0.0/0' && has(q.ipBlock.except) && size(q.ipBlock.except) == {{ len .Values.netpol.privateRanges }} &&
            {{ .Values.netpol.privateRanges | toJson }}.all(x, x in q.ipBlock.except) &&
-           has(r.ports) && r.ports.all(p, has(p.port) && p.port in [443, 5432])) ||
+           has(r.ports) && r.ports.all(p, has(p.port) && p.port in (variables.inVault ? [443] : [443, 5432]))) ||
           (variables.broker && !has(q.ipBlock.except) && has(r.ports) && r.ports.all(p, has(p.port) && p.port == 443) &&
-           (q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }}{{ if .Values.netpol.brokerEgressPublic }} || q.ipBlock.cidr == '0.0.0.0/0'{{ end }}))))
-      message: "P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule."
+           (q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }}{{ if .Values.netpol.brokerEgressPublic }} || q.ipBlock.cidr == '0.0.0.0/0'{{ end }})) ||
+          (variables.inVault && !has(q.ipBlock.except) && has(r.ports) &&
+           ((q.ipBlock.cidr == {{ .Values.vpcCIDR | toJson }} && r.ports.all(p, has(p.port) && p.port == 443)) ||
+            (q.ipBlock.cidr == {{ .Values.netpol.podIdentityAgentCIDR | toJson }} && r.ports.all(p, has(p.port) && p.port == 80))))))
+      message: "P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80."
       reason: Forbidden
     - expression: |-
         request.operation == 'DELETE' ||
@@ -91,4 +102,6 @@ spec:
       message: "P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors."
       reason: Forbidden
 ---
-{{ include "admission.binding" (dict "root" . "key" "netpol" "policy" "ryft-netpol" "id" "P3" "step" "B") }}
+{{ include "admission.binding" (dict "root" . "key" "netpol" "policy" "ryft-netpol" "id" "P3" "step" "B" "excludeNamespaces" (list .Values.vault.namespace)) }}
+---
+{{ include "admission.binding" (dict "root" . "key" "netpol-vault" "policy" "ryft-netpol" "suffix" "vault" "id" "P3" "step" "A" "namespaces" (list .Values.vault.namespace)) }}

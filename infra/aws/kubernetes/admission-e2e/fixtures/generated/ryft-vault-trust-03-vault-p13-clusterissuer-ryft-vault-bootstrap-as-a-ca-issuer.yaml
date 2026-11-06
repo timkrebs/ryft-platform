@@ -1,0 +1,12 @@
+# fixture: vault: P13 ClusterIssuer ryft-vault-bootstrap as a CA issuer
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: the ClusterIssuer ryft-vault-bootstrap must be exactly selfSigned: {}.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-vault-bootstrap
+spec:
+  ca:
+    secretName: ryft-internal-ca

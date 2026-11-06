@@ -118,9 +118,13 @@ curl -sI https://api.ryftapp.de/v1/me                        # 401 without a tok
 
 If a pod is stuck in `CreateContainerConfigError`, its namespace has no `ryft-secrets`
 yet. `kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets` shows why: usually
-the Vault login. Check it by hand with `terraform -chdir=infra/vault output login_check`.
+the Vault login. Check it by hand with `terraform -chdir=infra/vault output login_check`
+(HCP only). For a namespace on the Vault in the cluster, in the vault shell (**Vault**):
+`vault write auth/kubernetes/login role=<svc> jwt="$(kubectl --context ryft-prod-euc1 -n ryft-<svc> create token <svc> --audience=vault --duration=10m)"`.
 Kubernetes auth needs HCP Vault to reach the EKS API (TokenReview), so
-`endpoint_public_access_cidrs` must admit Vault's egress addresses.
+`endpoint_public_access_cidrs` must admit Vault's egress addresses. A namespace already on
+the Vault in the cluster (**Vault**) reviews inside the cluster instead. Its login fails for
+other reasons: the role, `vault-ca`, or a sealed Vault.
 
 The public host only routes `/v1/*`; `/healthz`, `/readyz` and `/metrics` stay internal.
 Port 80 is not exposed at all, so clients must use `https://`.
@@ -254,6 +258,25 @@ break-glass below.
    `KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh`. Once a day the deploy watch (below) looks for a deploy that
    did not happen.
 
+**Staging a backend change (D175).** An open promote PR holds nothing: it merges itself once its checks pass, and
+when the next promote PR opens, promote closes every older open `deploy/*` PR as superseded (step 2). On 2026-11-05 the
+promote PR #124 (the scoring and notify lifecycle change) was left unmerged; the next one, #130, closed it with
+"Superseded by deploy: images dc1fcd4" (and merged when its checks passed, 3 minutes after it opened). So to make a change wait for a step of yours
+(alert rules loaded, a soak after the previous stage), **hold the image group, not one promote PR**:
+
+1. One stage per image group and per rollout: the five services images roll together (D107), so a services change that
+   needs a soak is its own rollout; do not merge the next stage's change into that window.
+2. Before the merge that builds the change, merge a PR with `./scripts/hold.sh add services "<reason>"` (the reason is public:
+   an issue number and nothing else, see the rollback steps below). While the hold stands CI builds no services images and
+   no promote PR opens for the group ("Proof that the hold works", below). The deploy watch fails a hold older than 7 days.
+3. Merge the change. The group does not deploy. Do your steps now (for example `make alerts-apply` from an up-to-date main,
+   then confirm in Grafana that the rules are listed).
+4. Release the hold with `./scripts/hold.sh rm services`: two merges, the second being the promote PR (below, "Release a
+   hold"). Watch the rollout as that change's PR asks. Rollback is the same hold mechanism (`pin_images.sh` and
+   `hold.sh add` in one commit).
+
+Closing a promote PR, or switching its auto-merge off, is not a hold: a newer promote PR is a new PR.
+
 **The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
 
 ```bash
@@ -265,6 +288,313 @@ argocd app list
 argocd app get ryft-platform                                        # objects, hooks, the last operation
 argocd app diff ryft-platform                                       # git vs. cluster
 ```
+
+**What Argo CD may no longer do** (T12-f, D120). Its ClusterRoles are written in
+`infra/aws/kubernetes/argocd.tf` (the chart's defaults give the controller `*` and the
+server delete/get/patch on everything). **What is true after this change alone:** a compromised
+controller can no longer hand itself write on the admission policies through RBAC (no `escalate`
+on a ClusterRole, `bind` on one fixed name), the public server can write nothing cluster-wide, and neither holds Secrets,
+`pods/exec` or `impersonate`. **What is not:** a compromised Argo CD can still reach cluster-admin
+by other routes (`kube-system/aws-auth`, workloads in `cert-manager` and `kube-system`), and so can
+still switch the admission layer off. That closes only when **P6 and P12** ("operators-cluster" and
+"argo-scope") are **both** in Deny and this change is applied (P12 judges names, and the chart and
+`admission.tf` refuse it in Deny otherwise); for `aws-auth` alone, also with EKS authentication mode `API`. It is not a sandbox: read
+"What stays open" below before you rely on it. Each rule has a reason; what a
+missing one looks like is under "A missing rule" below (a missing write fails the sync with
+`forbidden`; a missing read is a comparison error; a missing cluster-wide list is silent):
+
+| Who | Rule | Why |
+| --- | --- | --- |
+| controller | get, list, watch, create, update, patch, delete on configmaps, services, serviceaccounts, Deployments, HPAs, Jobs, Ingresses, NetworkPolicies, PDBs, Traefik Middlewares and ServersTransports, cert-manager Certificates and Issuers, the Vault Secrets Operator's VaultAuth, VaultConnection and VaultStaticSecret, the nine `rabbitmq.com` kinds | What `kustomize build` of the paths in `deploy/argocd/apps` renders. Jobs: the PreSync migrate and PostSync smoke hooks (created, and deleted by `BeforeHookCreation`). Server-side apply and the server-side diff need `patch` |
+| controller | get, list, watch on pods, ReplicaSets, StatefulSets | The resource tree (read only) |
+| controller | get, list, watch on `applications.argoproj.io`, cluster-wide | Under `respectRBAC: strict` the cache lists a kind in all namespaces or drops it **silently**. The chart's Role in `argocd` (full rights on Applications there) does not count: the access review is made for namespace `*`. Without this rule a child Application's change does not refresh `ryft-root` until its periodic reconcile (about 3 minutes; the kind run showed the root Progressing for about 6 minutes while every child was Healthy), a child whose file was deleted from git is **not pruned**, and a hand edit of a child is seen only at the root's reconcile (D151, amended) |
+| controller | get, list, watch, create, update, patch on namespaces; no `delete` | Namespaces `ryft-web`, `rabbitmq-system` (and the project's others). Deleting one removes everything in it, the broker's data included, so pruning one is an admin's act |
+| controller | get, list, watch, create on CustomResourceDefinitions; update and patch only on the operators' 14 names (`*.rabbitmq.com`); no `delete` | The operators' CRDs (project `ryft-operators`). Create cannot be limited by name; update and patch can, so no other CRD (a conversion webhook on `applications.argoproj.io`, say) can be rewritten. Under P6 in Deny a CRD must be of `rabbitmq.com` without a conversion webhook anyway |
+| controller | all verbs on ClusterRoles, ClusterRoleBindings, Roles, RoleBindings | The operators' app (`deploy/rabbitmq/operators`) |
+| controller | `create` on `tokenreviews` and `subjectaccessreviews`; `get` on the non-resource URL `/metrics` | The three permissions of the operators' remaining ClusterRoles (`messaging-topology-metrics-auth-role`, `-metrics-reader`; the `rabbitmq-cluster-service-binding-role` needs only rabbitmq.com reads, which it has). Kubernetes lets you write or bind a role whose permissions you hold, so Argo CD needs **no `escalate` on any ClusterRole**, and `bind` on one name only (next row). This replaces T12-f's first version, where `escalate`/`bind` on three ClusterRoles let the controller add write on VAP/VAPB to one and bind itself to it. Holding these three is harmless: token and access reviews, the metrics endpoint |
+| controller | `bind` (no `escalate`) on the ClusterRole `messaging-topology-metrics-auth-role` only | The topology operator's ClusterRoleBinding refers to it. Argo CD dry-runs every object of a sync before applying any, so on a fresh cluster the binding is checked while its ClusterRole does not exist; with `bind` the API server does not resolve the role (the first CI kind run of this round failed exactly there without it). Without `escalate` the controller cannot add a rule to the role, so binding it gives nothing beyond token and access reviews |
+| controller | `escalate` and `bind` on `roles`, only the four names `rabbitmq-cluster-operator-role`, `messaging-topology-manager-role` and the two leader-election Roles | The operators' Roles hold Secrets, `pods/exec`, leases, which Argo CD must not hold. **A ClusterRole's `resourceNames` apply in every namespace**: see "What stays open" |
+| controller | get, list, watch, create on the two webhook-configuration resources; update, patch, delete only on the four operator-owned names | The operators' two Mutating and two ValidatingWebhookConfigurations. Create is needed (the first sync, and one after a deletion, applies an object that does not exist yet: the API server authorizes that as `create`) and cannot be limited by name. Never `ValidatingAdmissionPolicy` or `-Binding` |
+| controller | nothing on `secrets` in the cluster, `pods/exec`, `pods/ephemeralcontainers`, `impersonate`, `deletecollection`, no other non-resource URL | No Secret is in git (VSO makes them). Its own Secrets in `argocd` come from the namespaced Role |
+| server | get on the same kinds (and pods/log), list on events | The UI's live manifests, logs and the Events tab. **No write at all cluster-wide**: it writes Applications and its audit Events in `argocd`, where the chart's Role grants it (checked in the v3.5.6 source: `LogAppEvent`/`LogResourceEvent` create in the Argo CD namespace; the render shows the Role) |
+| server | no write on workloads | The UI is public (D103): a leaked server token must not rewrite a pod template, delete pods or forge an Event in another namespace. No runbook uses the UI for restarts or deletes (the broker restart, D98, is `kubectl`); they are the cluster admin's |
+| both | `resource.respectRBAC: strict`; `exec.enabled: false` | The controller then skips resource types it may not list instead of failing on them (see the applications row for the price); no terminal in the UI |
+| ApplicationSet | controller at 0 replicas (this chart version has no enabled flag) | Applications are the files in `deploy/argocd/apps` |
+
+The test for all this is an **allowlist** (`tests/addons.tftest.hcl`: verbs, kinds per API group,
+non-resource URLs, `resourceNames` never empty, `escalate`/`bind` only on named Roles, the server
+read-only), and `scripts/lib/admission_lib.sh` checks the rendered ClusterRoles the same way in the kind
+run. A new kind or verb fails them until it is added on purpose.
+
+The rules are not the only thing that decides what Argo CD may do, so more guards stand beside the
+allowlist:
+
+- `modules/argocd-values-guard`, wired into `helm_release.argocd` as a **precondition** (a violation is an
+  error of `plan` and `apply`; a `check` block would only warn, and the apply would go on). It allows:
+  `extraObjects` of the kinds NetworkPolicy and Middleware only, each in `argocd`, each with its one
+  apiVersion; **no `{{` anywhere in the values** (the chart renders many values with `tpl`: a template
+  expression in an `extraObjects` apiVersion renders a whole other object, one in an ingress annotation
+  runs `lookup` with Terraform's credentials); **ASCII only, no control character or escape, no template delimiters,
+  except newlines in the Lua health entries of `configs.cm`** (a line break in `ingressClassName`,
+  `global.domain` or `global.image.tag` ends the value in the rendered YAML and starts another document;
+  so do U+2028, U+2029 and U+0085, which `jsonencode` writes as escapes or raw; keys are covered too);
+  `exec.enabled` false and `resource.respectRBAC` strict; no `controller.roleRules`; `createClusterRoles` not false
+  (the chart then renders no ClusterRole and every check on the rules passes for want of an object); no
+  `configs.rbac`, anonymous login or `server.disable.auth`; and a key allowlist **two levels deep**, plus
+  the keys of `global.image`, `global.logging`, `global.networkPolicy` (create must stay true),
+  `configs.cm` (three settings and the health customizations), `configs.params`, `configs.secret`,
+  `server.ingress` and its annotations. Below that (the values of those keys, other charts' keys) it checks
+  only for `{{`, non-ASCII characters and control characters or their escapes. Its dangerous variants are canned test cases in `tests/addons.tftest.hcl`:
+  a variant nobody wrote down is not tested for.
+- **Sync impersonation stays off.** If `application.sync.impersonation.enabled` were ever turned on, all controller writes would move to other usernames and P12 (which judges names) would match nothing: the guard keeps refusing it (it is not an allowed `configs.cm` key, `configs.params` key or `controller` value, and `tests/addons.tftest.hcl` pins that).
+- **The release takes the guard's output.** The module returns the document it checked
+  (`values_yaml = yamlencode(var.values)`); `helm_release.argocd` uses `values = [module...values_yaml]`,
+  and a **postcondition** requires that to be the release's only values, with no `set`, `set_list`,
+  `set_sensitive` or `postrender`. So a map renamed behind the guard's back, or a `merge` in the release,
+  reaches Helm only if the postcondition is edited away. `scripts/tests/argocd_release_guard_test.sh`
+  shows these fail (it edits a copy of the module: a `set`, a second document with a wildcard role, a
+  renamed base map merged afterwards, a merge in the release, a guard violation). Limits: a postcondition
+  is checked at plan time only when the release's inputs are known then, which is true today (nothing
+  computed is in the values or the `set` arguments); with a computed input it fails only after the apply
+  has started. **Review checklist: no computed value in the release's values or `set*`.** And a PR that
+  changes the guard module together with the tests and the script's anchors is caught only by human
+  review (`.github/CODEOWNERS`: everything is `@timkrebs`'s).
+- The kind run: `argo-bindings` (the render holds only the chart's own role bindings, none to
+  `cluster-admin`), `argo-extra-objects` (`helm template -s templates/extra-manifests.yaml` yields exactly as
+  many documents as `extraObjects` lists, each a NetworkPolicy or Middleware in `argocd`) and
+  **`argo-inventory`**: the whole render counted by (kind, namespace) must equal the table
+  `ARGO_INVENTORY_EXPECTED` in `scripts/lib/admission_lib.sh` (48 objects: ConfigMap 7, ServiceAccount 5,
+  RoleBinding 5, Role 5, NetworkPolicy 5, Service 4, Deployment 4, CRD 3, Middleware 2, ClusterRoleBinding
+  2, ClusterRole 2, StatefulSet, Secret, Job and Ingress 1 each; all in `argocd` or cluster-scoped). It is
+  the backstop for a value that the guard allows and that still renders another object: a DaemonSet or a
+  ClusterRoleBinding adds a line. **What the guard does not check:** the values of allowed keys other than the ones pinned above
+  (`admin.enabled`, the `router.middlewares` annotation value, `global.image.tag`, resource sizes) pass and are
+  protected by review and, for what Argo CD may do, by the two ClusterRoles' allowlist. It does not look inside an object of an expected kind (a Deployment's
+  image, an Ingress's rules); the drift and invariant checks cover the two ClusterRoles only. A chart bump
+  or a component turned on changes the table on purpose, in the same PR.
+- `argo-tf-bindings`: a **tripwire**, not a guard. It reads the module's `*.tf` for a `kubernetes_*role_binding*`
+  resource or a RoleBinding manifest that names an argocd identity or one of the groups
+  `system:serviceaccounts`, `system:authenticated`, `system:unauthenticated`, and for a
+  `kubernetes_manifest`/`kubectl_manifest` whose manifest is not a literal (it cannot read
+  `yamldecode(file(...))`; a human must). A binding built from locals or another module passes it.
+
+**What stays open (stated plainly).** The admission layer is not protected by Argo CD's RBAC alone.
+
+1. **The controller is still powerful outside `ryft-*`** (design gap, not a regression; P12 below).
+   It has create, update, patch and delete on Deployments, Jobs, ConfigMaps, Services and
+   ServiceAccounts in **every** namespace, and no admission policy matches Argo CD's writes outside
+   `ryft-*` and `rabbitmq-system` (P2 covers only those; P3, P5, P9 only `ryft-*`; P7 only Argo CD's own
+   kinds and Secrets in `argocd`). With a stolen controller token an attacker can, for example,
+   - deploy a workload in `cert-manager` as the cert-manager ServiceAccount (it reads Secrets
+     cluster-wide and holds Route53 rights through Pod Identity: a DNS-01 certificate for
+     `api.ryftapp.de`);
+   - deploy in `kube-system` as a controller-manager ServiceAccount;
+   - patch `argocd-cm` or `argocd-rbac-cm` (anonymous admin on the public UI, D103) or the
+     `argocd-server` Deployment;
+   - **write `kube-system/aws-auth`.** The cluster runs authentication mode `API_AND_CONFIG_MAP` (the
+     admission chart's `values.yaml` says so beside `clusterRoleWrites`), so a ConfigMap write there
+     maps an IAM principal of the attacker's to `system:masters`: cluster-admin with no Pod needed,
+     which then deletes the policy bindings (claim a: bindings are exempt from admission). This is
+     the worst of the routes and needs only the controller's ConfigMap write.
+
+   The controller's ConfigMap write cannot be narrowed here: the apps write ConfigMaps only in `ryft-*`
+   and `rabbitmq-system`, but a ClusterRole rule cannot be scoped to namespaces, so the honest options are
+   per-namespace RoleBindings (a separate decision: one Role and RoleBinding per namespace, kept in
+   step with the apps, and the namespaces must exist first) or P6 and P12 both in Deny. The rule is unchanged: the render
+   shows the apps need it. For `aws-auth` alone, EKS authentication mode `API` (access entries) removes
+   the route.
+
+   Neither the narrowed ClusterRoles nor P1 to P11 stop this. It closes only with **P6 and P12 both in Deny**
+   (P12, "argo-scope": Argo CD's own identities may write namespaced objects only in `ryft-*` and
+   `rabbitmq-system`, in `argocd` only `argoproj.io` objects and Events, and cluster-scoped objects only
+   of the whitelisted kinds; it judges names only), and this change applied. Until then the
+   controller token is, in effect, an admin of the workloads of every namespace, and through them of
+   whatever those ServiceAccounts reach (Secrets included).
+2. **A Role of an operator name in any namespace, until P6 is in Deny.** The `escalate` and `bind` on
+   the four Role names are in a ClusterRole, so they match in **every** namespace: without P6 the
+   controller can write a Role named `rabbitmq-cluster-operator-role` (any rules, Secrets and
+   `pods/exec` included) in `kube-system` or `argocd` and bind itself to it. (`escalate` by name is
+   checked with the name in the request URL, so it works for an update, a patch and a **server-side
+   apply** create, which is what Argo CD does and what the kind run uses; a plain POST create
+   carries no name and is refused, so a client-side `kubectl apply` of a new Role fails.) This is the vector the
+   kind run's `claim-h-open` shows. P6 in Deny admits Roles and RoleBindings only in `rabbitmq-system`
+   and the four named objects in `ryft-rabbitmq` (`p06-operators-cluster.yaml`). T12-f's first version
+   also let the controller add write on VAP/VAPB to a ClusterRole and bind it; that route is now closed
+   by RBAC alone (`claim-h-clusterrole`), because the controller holds no `escalate` on any
+   ClusterRole and its one `bind` is on a role it cannot extend.
+3. **What else P6 in Deny closes besides escalate/bind:** (a) creating a webhook configuration cannot be
+   limited by name: a Mutating or ValidatingWebhookConfiguration with a `url` would receive every
+   matched object, Secrets and Pods included, and could mutate Pods; P6 admits only the four names,
+   served from `rabbitmq-system`, on `rabbitmq.com` only. (b) Creating a CRD cannot be limited by name
+   either (updating one now can, to the operators' 14); P6 admits only CRDs of `rabbitmq.com` without a
+   conversion webhook. Until P6 is in Deny both stay possible for a compromised controller.
+4. **Secrets in `argocd`.** The chart's Role (get, list, watch on Secrets and ConfigMaps, full rights on
+   Applications and AppProjects, all in `argocd`) stays the chart's: a compromised controller reads the
+   admin hash and the repository credentials.
+5. **Not changed by #47: the server's Role in `argocd`.** argo-cd 10.10.5 hard-codes it (no values
+   setting): create, update, patch and delete on all Secrets, ConfigMaps, AppProjects and ApplicationSets
+   (and Applications) in `argocd`. P7 refuses only Secrets labelled `secret-type`. So a leaked token of
+   the public UI (D103) can rewrite `argocd-secret` (`admin.password`, `server.secretkey`), `argocd-cm`
+   (`users.anonymous.enabled`) and `argocd-rbac-cm` (`policy.default: role:admin`) today, exactly as
+   before. Only P6 and P12 in Deny (the server writes Applications and Events in `argocd` only) or a chart that
+   stops granting it changes that.
+6. **RBAC objects that outlive a stolen controller token (not narrowed here; P6 and P12 in Deny close the create and update route, not the rest).**
+   The controller has create, update, patch and delete on `clusterroles`, `clusterrolebindings`, `roles`
+   and `rolebindings` with **no `resourceNames`**, because Argo CD must create the operators' RBAC objects
+   on a fresh cluster. Kubernetes' escalation check limits what a role it writes may hold (a subset of
+   the controller's own rights, plus what it may `escalate`/`bind`), but not where it is bound. So a
+   stolen controller token can write a ClusterRole holding a subset of the controller's rights (it can
+   write ConfigMaps, Deployments and Jobs in every namespace, see 1) and bind it with a ClusterRoleBinding
+   to `system:serviceaccounts` (every pod in the cluster) or `system:authenticated` (every authenticated
+   caller). `system:unauthenticated` is probably not effective on EKS 1.36, where anonymous requests are, as
+   far as we know, admitted to the health endpoints only: not verified here, so do not rely on it either way.
+   That grant stays when the token is rotated or Argo CD is reinstalled, and it hands those rights to every
+   pod or caller. **A second route needs no binding write at all:** a ClusterRole labelled
+   `rbac.authorization.k8s.io/aggregate-to-edit`, `-admin` or `-view` adds its rules (a subset of the
+   controller's) to the roles that are already bound to others; an `aggregationRule` of its own would need
+   `escalate`, which stays closed, but the labelled rules need none. Also, `delete` of **any**
+   ClusterRoleBinding or ClusterRole is open (including `system:*` ones that are not protected from
+   deletion, and the bindings of other add-ons), and P6 matches only CREATE and UPDATE of the operators'
+   own objects, not deletes or objects of other names. This is a design gap of the same kind as 1 (the chart's
+   `*` allowed it and more); T12-f does not close it.
+
+   *Evaluated, not implemented:* restrict `update`, `patch` and `delete` on the four RBAC kinds to
+   `resourceNames` (the operators' ClusterRoles `messaging-topology-metrics-auth-role`,
+   `-metrics-reader`, `rabbitmq-cluster-service-binding-role`, the ClusterRoleBinding
+   `messaging-topology-metrics-auth-rolebinding`, the four Roles and their four RoleBindings: 12 names in
+   all, from `kubectl kustomize deploy/rabbitmq/operators`), and leave `create` open (Kubernetes cannot
+   name an object by `create`).
+   That closes the rewrite and delete of every other object, but **not the route above**: a *created*
+   ClusterRole and ClusterRoleBinding of any other name remain possible, so it narrows, it does not close.
+   It was not applied here, and that is a **scoping choice**, not a proof of unsafety: the narrowing would
+   have to be shown against Argo CD's own flows (the operators' sync with its RBAC objects, escalate/bind,
+   server-side apply of existing objects by name), which only the `full` mode of the kind harness
+   exercises (`admission-e2e` workflow, dispatched by hand; the pull request's `admission` job runs `ci`
+   mode). This PR stays a draft until a full-mode run passes anyway; the narrowing is better its own change
+   with its own run, since it does not close the route. What closes the create and update route is
+   **P6 and P12 together in Deny** (P6 limits the ClusterRoles and bindings that Argo CD's identities
+   create or update, their subjects and rules, to the operators' names; P12 keeps those identities to the
+   whitelisted kinds; P12 alone does not close it). **What stays open even then:** the aggregation-label
+   route, `delete` of RBAC objects (P6 matches CREATE and UPDATE only; P12 "does not cover" it), and prune
+   by name.
+
+*Evaluated, not implemented:* move the `escalate`/`bind` rule out of the cluster-wide ClusterRole into
+**namespaced Roles in `rabbitmq-system` and `ryft-rabbitmq`**, shipped as `extraObjects` of the Argo CD
+release (a Role there, `roles`/`rolebindings` writes and `escalate`/`bind` on the four names, and a
+RoleBinding to the controller's ServiceAccount). Then a Role of those names in `kube-system` is out of
+reach by RBAC alone and the controller's ClusterRole holds no `escalate` on any ClusterRole and no `bind`
+on a Role (the one `bind` on `messaging-topology-metrics-auth-role` would stay). The price: the
+namespaces must exist before the Helm release is applied, so Terraform would own `rabbitmq-system` and
+`ryft-rabbitmq` (the operators' `namespace.yaml` is synced by Argo today, with labels and the broker's
+Pod Security level: a second owner, which this repository avoids), or the release needs a two-step
+apply. The structural option is still to put the operators' RBAC into Terraform with the other add-ons.
+A later decision.
+
+The namespaced Roles in `argocd` stay the chart's (Secrets and ConfigMaps there are
+Argo CD's own state: the admin account, repository credentials, `argocd-cm`).
+
+What an operator does instead:
+
+- **A shell in a pod, or an ephemeral debug container:** the cluster admin's job (your own
+  AWS identity and `kubectl exec` / `kubectl debug`). The Argo CD UI has no terminal.
+- **Read a Secret:** `kubectl get secret` as admin; Argo CD cannot show it.
+- **Delete a namespace or a CRD:** `kubectl delete` as admin, after the commit that removes
+  it from git; the sync reports it as an orphan to prune and stays OutOfSync until then.
+- **Anything on admission policies:** only `terraform apply` (`infra/aws/kubernetes`).
+- **A new kind in a path of `deploy/argocd/apps`:** add its rule to `argocd.tf` (and the allowlist in
+  `tests/addons.tftest.hcl`) and apply that first (Terraform plan: only `helm_release.argocd`), then
+  merge the manifests; otherwise the sync fails with `forbidden` on that kind. **A kind that Argo CD
+  must also see in its tree or prune needs `list` and `watch` cluster-wide**, not only in one namespace.
+- **A new operator Role (or one that changes) needs Server-Side Apply.** `escalate`/`bind` by `resourceNames`
+  is checked with the name in the request URL, which an update, a patch and a server-side apply carry and a
+  plain POST create does not. The applications set `ServerSideApply=true`; a manual sync with "Server-Side
+  Apply" unticked in the UI's sync dialog is refused with `forbidden` for these Roles. Leave it ticked.
+- **The UI cannot show the live manifest of a webhook configuration any more** (intended): argocd-server has
+  nothing on `admissionregistration.k8s.io`. The diff of the application and `kubectl get` as admin still do.
+- **Applying the narrowing (Step 0).** **Order with #121 (P12): P12 must not go to Deny before this change is applied** and these three read-only checks answer no, each as `--as=system:serviceaccount:argocd:argocd-application-controller --context ryft-prod-euc1`: `kubectl auth can-i patch validatingadmissionpolicybindings`, `kubectl auth can-i delete validatingadmissionpolicybindings`, `kubectl auth can-i impersonate users`. From a clean `main` at the merged commit (`git status` empty), run
+  `terraform -chdir=infra/aws/kubernetes init` first: the guard is a new local module, and without `init`
+  `validate` and `plan` stop with "Module not installed". Then `plan -out=argocd-rbac.tfplan`: it must show
+  only `helm_release.argocd` changing; **if anything else is in the plan, stop**, and stop on any error from
+  the release ("the Argo CD values carry something they must not", "the release takes the checked values
+  document of the guard module and nothing else").
+  The human plan view prints the release's values as `(sensitive value)` (the admin password's bcrypt hash
+  is in them), **but the saved plan holds them in clear**, and that is the primary evidence. Read the
+  rules out of it, printing no secret (never print `.configs.secret`; the plan file holds the admin bcrypt
+  hash, keep it out of git and out of chat; `*.tfplan` is ignored):
+
+  ```bash
+  terraform -chdir=infra/aws/kubernetes show -json argocd-rbac.tfplan \
+    | jq -r '.resource_changes[] | select(.address=="helm_release.argocd") | .change.after.values[0]' \
+    | yq -o=json '{"top": keys, "controller": .controller.clusterRoleRules, "server": .server.clusterRoleRules, "extra": [.extraObjects[] | .kind + "/" + .metadata.namespace]}'
+  # the same with .change.before (what is deployed now, for the diff); and no `set`:
+  terraform -chdir=infra/aws/kubernetes show -json argocd-rbac.tfplan \
+    | jq '.resource_changes[] | select(.address=="helm_release.argocd") | .change.after | {set, set_list, set_sensitive, n_values: (.values | length)}'
+  ```
+
+  Expect: `top` the ten keys applicationSet, configs, controller, dex, extraObjects, global, notifications,
+  redis, repoServer, server; controller 25 rules and server 13, both `enabled: true`; `extra`
+  NetworkPolicy/argocd and two Middleware/argocd; `set*` null and `n_values` 1. Both commands were run
+  unchanged on a real saved plan (helm provider 3.3.0): `.change.after.values` is a list of one YAML string,
+  in clear in `show -json` (`after_sensitive.values` is `[true]`, which is why the human view hides it),
+  `set`, `set_list`, `set_sensitive` and `postrender` are null, and the output matched this exactly. They need
+  mikefarah `yq` v4. `.change.before` is what the state says was last applied, not necessarily the live
+  release (a release changed by hand does not show there). **Delete `argocd-rbac.tfplan` after the apply: it
+  holds the admin bcrypt hash.** The second evidence is `helm template` of the chart with the
+  evaluated values (`scripts/lib/tf_values.sh . argocd_values out.json`, then `helm template argocd argo-cd
+  --version 10.10.5 -n argocd -f out.json`; no credentials, mock providers) and the kind run of the PR
+  (`argo-rbac-drift-*`, the invariants, `argo-bindings`, `argo-extra-objects`, `argo-inventory`). After the apply,
+  `kubectl get clusterrole argocd-application-controller -o yaml` has no `*` rule (read-only).
+
+**Check that no kind is silently dropped.** Under `respectRBAC: strict` the controller asks the API
+server (a self-subject access review for namespace `*`, verb `list`) once per kind and drops, **without
+a log line**, every kind it may not list in all namespaces: no resource tree for it, no prune of it, no
+refresh of its parent when it changes. For every kind a path renders (and `applications.argoproj.io`):
+
+```bash
+kubectl auth can-i list applications.argoproj.io -A \
+  --as=system:serviceaccount:argocd:argocd-application-controller   # must say yes; same for each kind
+```
+
+The kind run does this for the kinds of the apps (`claim-i-list`). The pattern is in D151 (amended).
+
+**A missing rule** shows up differently by the verb it lacks:
+
+| Missing | What you see |
+| --- | --- |
+| `get`/`list`/`watch` of a rendered kind | the app has the condition `ComparisonError`, its sync status is `Unknown` (not OutOfSync), and Grafana's `ArgoAppOutOfSync` (warning) fires only after 30 minutes. The old release keeps running; nothing new is deployed. `argocd app get <app>` names the kind |
+| a write (`create`, `update`, `patch`, `delete`) | the sync fails with `forbidden` in its result; the `ArgoSyncFailed` alert (critical) fires once the retries are used up |
+| `list`/`watch` cluster-wide only (the cache) | **nothing**: no condition, no log line. A child does not refresh its parent, a deleted child is not pruned, a tree is incomplete. Only the `can-i` check above and `claim-i-list` see it |
+
+- **Where it shows:** `argocd app get <app>` names the refused kind. A controller log line
+  `Failed to ... forbidden` or a sync condition `ComparisonError` means a rule is missing (and a missing
+  cluster-wide list shows nowhere, see above).
+- **Roll back the narrowing (break-glass; it does not depend on Argo CD).** This is Terraform and Helm
+  as your own AWS identity; do not use Argo CD, and do not wait for a CI run. These are your commands;
+  nobody runs them for you:
+
+  ```bash
+  git switch main && git pull
+  git switch -c revert-argocd-rbac
+  git revert <squash-sha>            # this repository squash-merges: the PR is ONE commit on main, no -m.
+                                     # (A real merge commit would need `git revert -m 1 <merge-sha>`;
+                                     # `git log --oneline -3 -- infra/aws/kubernetes/argocd.tf` shows which.)
+  terraform -chdir=infra/aws/kubernetes plan -target=helm_release.argocd -out=argocd-rollback.tfplan
+  terraform -chdir=infra/aws/kubernetes apply argocd-rollback.tfplan
+  # afterwards: push the branch and open the revert PR, so git matches the cluster
+  ```
+
+  The plan must show only `helm_release.argocd` changing (the chart returns to its default roles).
+  **`-target` also plans the resources `helm_release.argocd` depends on: if anything else is in the plan,
+  stop** and read why before you apply (a plan file applies exactly what it lists).
+  Rolling back also lifts the ground P12 stands on: do not roll back while P12 is in Deny (#121 refuses P12 in
+  Deny unless the controller role is rendered narrowed); put P12 back to Audit first.
+  The squash revert is the whole change: it removes the values guard and the release's lifecycle
+  conditions together with the narrowed rules. A **partial hand rollback** (say only
+  `clusterRoleRules.enabled = false`) is refused by that guard on purpose; do not edit around it. **If the
+  revert conflicts with later edits of `argocd.tf`, stop** and resolve it in review; do not apply a plan from
+  a half-reverted tree.
+  Watch the Argo CD UI (`https://argocd.ryftapp.de`) and `argocd app list`: every application Synced and
+  Healthy again, `kubectl -n argocd get pods` all Ready after the controller restarts.
 
 **Pause** (a deploy must not happen now, or break-glass): the root re-applies every
 Application from git, so pause it first, then the one application:
@@ -861,7 +1191,7 @@ holds and privacy-version literals; any doubt, and a base without the script, ru
    offline), its two ClusterRoles compared with the rules of the values and checked against T12-f's list.
 5. The chart in Audit (the committed values) and in Deny (every binding, `brokerEgressPublic: false`).
    After each install the API server must hold exactly the policies and bindings `helm template`
-   renders with the same values (12 and 13 today; nothing is accepted on an empty answer), every policy
+   renders with the same values (13 and 18 today; nothing is accepted on an empty answer), every policy
    must be type-checked without warnings (P12's `status.typeChecking` is read back on its own: it matches
    `resources: ["*/*"]`, `scope: "*"`, so it is expected to be present and empty), and a canary fixture
    must be answered as the variant says (polled for 30 s). Then every Application's render (and the
@@ -996,10 +1326,13 @@ three workers, Traefik, the Vault auth, the real images, claims f, j and l (D151
   `tf_values.sh` refuses.
 - `argo-rbac-drift-*`: the chart renders other rules than `argocd.tf` gives it (an argo-cd bump changed
   `clusterRoleRules`): fix `argocd.tf`. `argo-rbac-invariants`: a rule T12-f forbids is back.
-- `claim-h-open` fails: with the narrowed RBAC and no policies the controller can no longer rewrite
-  `rabbitmq-cluster-operator-role` and bind itself (escalate/bind by `resourceNames` do not do what
-  #47 assumes, or the hole is closed): re-read T12-f. `claim-h-guarded` fails: P6 does not stop the
-  escalation; **do not set P6 or P7 to Deny** until it does.
+- `claim-h-clusterrole` fails: with the narrowed RBAC and no policy the controller could rewrite a
+  ClusterRole to carry write on the admission policies, i.e. it holds `escalate` on a ClusterRole, or `bind`
+  on one other than `messaging-topology-metrics-auth-role`, or the permissions of one of those, again:
+  fix `argocd.tf`. `claim-h-open` fails: the controller could not write a Role of an operator name
+  in `kube-system` and bind itself (escalate/bind by `resourceNames` on roles do not do what the docs
+  assume, or the hole is closed): re-read T12-f. `claim-h-guarded` fails: P6 does not stop the Role
+  vector; **do not set P6 or P7 to Deny** until it does.
 - `claim-a` fails: the API server runs admission on policy objects (or the canary policy never became
   live); the break-glass is not safe, stop. `claim-b` / `claim-c`: P6 does not see webhook
   configurations / P8 does not see `pods/exec`; the design leaned on both. `claim-d`: the audit
@@ -1024,9 +1357,10 @@ three workers, Traefik, the Vault auth, the real images, claims f, j and l (D151
   `CELTEST_EMIT=<dir> admission-celtest/run.sh` (copy the output to
   `admission-e2e/fixtures/generated`; CI diffs it). The message shows which rule answered instead.
 - `full-*`: `full-sync-*` an app did not reach Synced/Healthy (the summary names the failing
-  operation: a refusal by a policy reads "denied request" in it; with `respectRBAC: strict` an Application
-  that waits for ever on its children means the controller lacks `applications.argoproj.io` get, list and
-  watch); `full-findings-*` a validation failure that no stage explains: a policy refuses something
+  operation: a refusal by a policy reads "denied request" in it; with `respectRBAC: strict` a root that
+  stays Progressing for minutes while its children are Healthy means the controller lacks
+  `applications.argoproj.io` get, list and watch cluster-wide: the kind is dropped from its cache without a
+  log line, and the root only catches up at its periodic reconcile, about 3 minutes; see `claim-i-list`); `full-findings-*` a validation failure that no stage explains: a policy refuses something
   production does (fix the chart before Deny); `full-broker-restart` P2's exemption of the D98 restart does
   not hold; `full-terminate-op` P10 or P7 blocks the operations of OPERATIONS -> Deploy;
   `full-operator-logs-*` / `full-operators-can-i` a scoped Role lacks a verb (T12-g) or the operators still
@@ -1042,8 +1376,8 @@ again each time; the table is in the design too):
 | c: P8 matches CONNECT on `pods/exec` | holds (refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it) |
 | d: dry runs carry `validation_failure` | holds (audit level Metadata; `requestURI` has `dryRun=All`) |
 | g: P7's whole-`spec` equality type-checks | holds (`status.typeChecking` empty; the project as committed passes, a widened one is refused) |
-| h: escalate/bind by `resourceNames` | the negative test: without policies the controller rewrites `rabbitmq-cluster-operator-role` and binds itself to it, then may write the bindings; with P6 in Deny both steps are refused. Positive: the narrowed role syncs the operators' ClusterRoles, Roles, bindings and webhooks |
-| i: `respectRBAC: strict` without cluster-wide Secrets | holds, **after** one added rule: the controller must also get, list and watch `applications.argoproj.io` cluster-wide, or the app-of-apps waits for the health of its children for ever (#47 lacks it) |
+| h: escalate/bind by `resourceNames` | the negative test, run again for the rules without `escalate` on any ClusterRole (and `bind` on one name only): the ClusterRole route (rewrite a ClusterRole of an operator name to carry VAP/VAPB write, bind it) is refused by RBAC itself (`claim-h-clusterrole`); the Role route (a Role of an operator name in `kube-system` with Secrets and `pods/exec`, bound to the controller) succeeds without the policies (`claim-h-open`) and is refused with P6 in Deny (`claim-h-guarded`). Positive: the narrowed role syncs the operators' ClusterRoles, Roles, bindings and webhooks |
+| i: `respectRBAC: strict` without cluster-wide Secrets | holds. The first kind run (before `applications.argoproj.io` get/list/watch was added to the controller) passed it too, for a reason the log hides: the cache lists a kind cluster-wide or drops it **silently**, the chart's Role in `argocd` does not count (the review is for namespace `*`), and the root's `GetManagedLiveObjs` falls back to a GET by name. So the run showed no `forbidden`, only a root Progressing for about 6 minutes; a deleted child would not have been pruned. `claim-i-list` now asks `can-i list <kind> -A` for the kinds of the apps |
 | k: what argocd-server writes as a sync's revision | the full commit SHA of the target revision (the revision the Application was compared with, i.e. `status.sync.revision`), not `main`: P10's third alternative admits it and a manual `--revision <other sha>` is refused (D151) |
 | m: kube-state-metrics exports the bindings | custom-resource-state: **no**, it exports CustomResourceDefinitions only (v2.20.0, D151). The native collector `validatingadmissionpolicybindings` does: 13 `info` series for the 13 `ryft-*` bindings and their live actions (`claim-m-native`), which is the source of the T12-e alerts |
 | n: Argo CD's controller and server write only P12's allowlist | holds (`make admission-e2e` MODE=full: no `ryft-argo-scope` line through the first sync in Audit, and none through sync, hooks, terminate-op, restart and chart upgrade in Deny) |
@@ -1058,13 +1392,13 @@ yq: `scripts/install_kind.sh`, `install_kubectl.sh`, `install_helm.sh`, `install
 sha256 in each). An operator or argo-cd upgrade: the kind run on its tree first, the chart before the
 operator (OPERATIONS -> RabbitMQ).
 
-### Admission policy P12 `ryft-argo-scope`: where Argo CD may write (D120, chart 0.3.0)
+### Admission policy P12 `ryft-argo-scope`: where Argo CD may write (D120, D206, chart 0.6.0)
 
 P12 (`docs/work/2026-10-23-admission/p12-argo-scope.md`) matches every write of every service account of
 the `argocd` namespace (the username starts with `system:serviceaccount:argocd:`; groups, `userInfo.extra`
 and field managers are not used, so impersonation in the kind run tests the real thing) and holds it to
-where Argo CD's apps render. What the objects contain stays P1-P11's. Chart 0.3.0 has 12 policies and 13
-bindings; the binding is `ryft-argo-scope` (key `argo-scope`, step B), shipped in Warn+Audit like the others,
+where Argo CD's apps render. What the objects contain stays P1-P11's and P13's. Chart 0.6.0 has 13 policies and 18
+bindings (P12 one, for every namespace); the binding is `ryft-argo-scope` (key `argo-scope`, step B), shipped in Warn+Audit like the others,
 and `enabled: false` in `admission-values.yaml` is unchanged: merging P12 changes nothing in production.
 
 | Requester | May write |
@@ -1075,14 +1409,22 @@ and `enabled: false` in `admission-values.yaml` is unchanged: merging P12 change
 | any other `argocd` service account | nothing |
 | everybody | no subresource and no CONNECT (`pods/exec`, `deployments/scale`, `serviceaccounts/token`, ...) |
 
-No Argo CD identity writes an AppProject (Terraform's, B2). A refusal reads `denied request: P12: ...` in a
+No Argo CD identity writes an AppProject (Terraform's, B2). **Never in scope: `vault` and `cert-manager`** (nor
+`argocd` beyond the row above, nor `kube-system`): the chart refuses a render, and `admission.tf` a plan (a
+precondition, and `check "admission_argo_scope_never"` while disabled), whose `argoScope.namespaces` or
+`namespaceObjects` holds one of them (D206). So every Argo CD write in `vault` (the server's StatefulSet,
+`vault-tls`, a NetworkPolicy, a ConfigMap) and in `cert-manager` (a Deployment, the `ryft-vault-ca` Secret) is a
+P12 refusal; the kind run has fixtures for both. P13's rule that Argo CD writes only `selfSigned` Issuers stays
+P13's: it judges content in the namespaces P12 admits (an `acme` or `vault` Issuer in `ryft-api` passes P12),
+and for a ClusterIssuer both refuse. A refusal reads `denied request: P12: ...` in a
 sync (Deny), or as a comparison error of the whole app under server-side diff; in Audit it is a warning and a
 `ryft-argo-scope` line in the audit log. Under Deny each finding is an attack or a missing exemption: the
 legitimate set is small and known.
 
-**Rollout.** Merge order: #47 (Argo CD's narrowed RBAC, with its own wording fixed), the user's Step 0, then this
-PR (chart 0.3.0, disabled), then Phase 1 with P12 in Warn+Audit next to P1-P11 (same apply, same 7 days), then
-Deny at Step B. Two items join the Phase 1 exit checklist (design 3): (11) `kubectl -n argocd rollout restart
+**Rollout.** Merge order: #47 (Argo CD's narrowed RBAC; merged 2026-11-05, Step 0 applied by the owner on
+2026-11-06), #147 and #153 (namespace `vault`, P13, chart 0.5.1), then this PR (#121, chart 0.6.0, disabled),
+then Phase 1 with P12 in Warn+Audit next to P1-P11 and P13 (same apply, same 7 days), then Deny at Step B, after
+the general P6, P1 and P2 bindings (not their `-vault` twins). Two items join the Phase 1 exit checklist (design 3): (11) `kubectl -n argocd rollout restart
 deployment/argocd-server statefulset/argocd-application-controller` shows no `ryft-argo-scope` finding;
 (12) an apply of `helm_release.argocd` (the pre-upgrade hook) shows none. The daily query of "Admission policy
 signals" filtered on `ryft-argo-scope`: zero lines is the exit condition for P12.
@@ -1133,14 +1475,14 @@ later recreate of the Secret). One consequence: `-target=helm_release.admission_
 applying a targeted break-glass or restore, and do not leave an Argo CD chart bump unapplied.
 
 **Rollback** is a forward change: `scripts/check_chart_bump.sh` needs a higher version, so removing P12 ships as
-0.3.1 without the template, in the same PR as the `argo-scope` key of `admission-values.yaml`, the generated
-recording rules and the binding count (back to 12). There is no data and no down-migration.
+0.6.1 without the template, in the same PR as the `argo-scope` key of `admission-values.yaml`, the generated
+recording rules and the counts (back to 12 policies and 17 bindings). There is no data and no down-migration.
 
 **What P12 does not cover** (accepted, design "What P12 does not cover"): reads (both Argo CD Roles read Secrets in
 `argocd`); writes inside the scope beyond P2-P11's content rules; the controller's choice of revision; the
 admission objects themselves (RBAC holds them); every other identity (operators: P8, VSO: P4/P5; cert-manager,
 Traefik, ExternalDNS, the nodes: none); a merged malicious commit (review is the control, D95). Named plainly:
-some in-scope writes take effect cluster-wide and all 13 bindings admit them (an Ingress for `api.ryftapp.de` with
+some in-scope writes take effect cluster-wide and all 18 bindings admit them (an Ingress for `api.ryftapp.de` with
 a Traefik `router.priority` annotation in `ryft-smoke`, a Middleware with a `redirectRegex` on `api.ryftapp.de`, a
 Service with `externalIPs` in `ryft-web`, CVE-2020-8554; follow-up T12-l6: P9 pins Ingress hosts and router
 annotations, a Service rule for Argo-written Services); P7 and P10 are in Deny only at Step D, so until then a stolen
@@ -1526,10 +1868,10 @@ Every namespace starts with `default-deny` (no ingress, no egress) and `allow-dn
 
 | Workload | In | Out |
 | --- | --- | --- |
-| ingest, api | 8080 from Traefik in `kube-system` (or ingress-nginx in `ingress-nginx`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | RabbitMQ (`ryft-rabbitmq`, 5671), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
-| scoring | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 to public addresses |
-| notify | 9090 from `monitoring` (and the VPC range on EKS) | RabbitMQ (5671), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
-| web (`ryft-web`) | 8080 from Traefik | nothing |
+| ingest, api | 8080 from Traefik in `kube-system` (and from the PostSync smoke pod in `ryft-smoke`); 9090 (`/metrics`) from namespace `monitoring`, and on EKS from the VPC range (the host-network collector) | RabbitMQ (`ryft-rabbitmq`, 5671), TCP 443 + 5432 to public addresses (Supabase Auth, the pooler) |
+| scoring | 9090 from `monitoring` (and the VPC range on EKS); 8080 from the PostSync smoke pod in `ryft-smoke` (readiness) | RabbitMQ (5671), TCP 5432 to public addresses |
+| notify | 9090 from `monitoring` (and the VPC range on EKS); 8080 from the PostSync smoke pod in `ryft-smoke` (readiness) | RabbitMQ (5671), TCP 5432 (the pooler) and 443 (APNs: `api.push.apple.com`, `api.sandbox.push.apple.com`) to public addresses |
+| web (`ryft-web`) | 8080 from Traefik in `kube-system` | nothing |
 | rabbitmq | 5671 from the `ingest`, `scoring`, `api` and `notify` pods, each in its own namespace; 15671 from the Topology Operator; 15692 (metrics) from the VPC range; the Erlang ports from its own nodes | its own nodes, the Kubernetes API (peer discovery) |
 | migrate | nothing | TCP 5432 to public addresses |
 | postgres (`local-postgres`) | 5432 from the five client namespaces and the backup pods | nothing |
@@ -1674,9 +2016,63 @@ curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=2026-10-21"
 ```bash
 # A code for one person (or max_uses for a group), optionally expiring:
 curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
-  -d '{"note": "Anna", "max_uses": 1, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
-curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # uses so far
+  -d '{"note": "TestFlight wave 2", "max_uses": 20, "expires_at": "2026-12-31T23:59:59Z"}' | jq -r .code    # RYFT-7K3M-QX9P
+curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites | jq                           # status and uses so far, emails masked
+curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/invites?emails=1" | jq '.[] | {code, status, email, uses_by}'   # who, with addresses
+# REVOKE (since 2026-11-05 DELETE no longer removes the row): the code stays listed as "revoked", nobody redeems it
+# any more, accounts that used it keep their access. 204 again if it was revoked already; 404 for an unknown code.
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites/RYFT-7K3M-QX9P
+```
+
+**A code for one person (bound to an email).**
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN" $API/v1/admin/invites \
+  -d '{"note": "Anna", "email": "anna@example.com", "expires_at": "2026-11-19T10:00:00Z"}' | jq '{code, link, expires_at}'
+```
+
+It is single use, **expires** (14 days when `expires_at` is left out, at most 90 days away) and only the account whose
+**Supabase-confirmed** email is that address can redeem it (D159). Use the address the tester signs in with; a Sign
+in with Apple "Hide My Email" address matches only a code made for exactly that relay address, so leave `email` out
+when you do not have it. Everyone else gets the same `422 "invalid or used code"` as for a wrong code, and a tester
+whose account lookup fails at Supabase gets `503` and sends again (a log line `invite email lookup failed`; unbound
+codes never depend on it). The address and the note are cleared 30 days after the code stopped being redeemable (D161;
+`ryft_invite_email_purge_total`, alert `InviteEmailPurgeFailing`); a person's name does not belong in the note of an
+unbound code, which is never cleared and has no hard delete (SQL: `UPDATE beta_invite_codes SET note = '' WHERE
+code = 'RYFT…'`).
+
+**Before the first bound code (security-critical, two checks).**
+
+1. **Supabase → Authentication → Sign In / Providers → Email: *Confirm email* ON and *Secure email change* ON**
+   (SUPABASE.md → checklist 3). With *Confirm email* off, Supabase marks a sign-up's address confirmed at once, and
+   anyone who has a leaked link could sign up with the tester's address and redeem the code. Record the state you saw
+   and the date in STATUS.md.
+2. **The api agrees:** `ryft_invite_binding_available` is 1 and the first `invite binding` line after the deploy says
+   `state: ok` (`kubectl -n ryft-api logs -l app=api | grep '"invite binding"'`, read-only). The api reads the
+   project's public setting `mailer_autoconfirm` at start and every hour, and while it is true, unreadable or the api
+   has no Supabase admin key, `POST /v1/admin/invites` with an `email` answers `422` with the reason and a bound code
+   cannot be redeemed (the same single `422`; `503` while the setting is unreadable). That is a safety net, not the
+   check: do check 1 yourself.
+3. **The privacy text names the stored address** (PRIVACY_POLICY_VERSION, a separate PR, decision U3): until it is
+   published, no bound codes in production.
+
+**Rollback of 0033** (re-pinning the images from before). **First, before the images are re-pinned, in the SQL
+editor as owner:** the old image reads no `email`, so every open bound code would otherwise be a code anyone can
+use. This revokes them (the old image refuses a revoked code through `expires_at`):
+
+```sql
+UPDATE beta_invite_codes SET revoked_at = now(), expires_at = LEAST(COALESCE(expires_at, now()), now())
+WHERE email IS NOT NULL AND revoked_at IS NULL;
+```
+
+Then re-pin. Revoked codes stay refused, and redemptions in the window get no `beta_invite_uses` row. After rolling
+forward, make new bound codes (the revoked ones stay revoked) and add the missing rows (safe to repeat):
+
+```sql
+INSERT INTO beta_invite_uses (code, user_id, at)
+SELECT u.beta_invite_code, u.id, COALESCE(u.beta_access_at, now())
+FROM users u JOIN beta_invite_codes c ON c.code = u.beta_invite_code
+ON CONFLICT DO NOTHING;
 ```
 
 **Whose data is broken.** `scripts/beta_report.sh` prints one line per tester from
@@ -1700,6 +2096,206 @@ from the environment, else `terraform -chdir=infra/vault output -raw admin_api_k
 Vault (`VAULT_NAMESPACE=admin/ryft/api vault kv get -mount=kv -field=ADMIN_API_KEY
 config`); they say which one they used, and what to log in to when none works. `API_URL`
 defaults to production.
+
+### Admin sign-in
+
+`/v1/admin/*` takes two bearers (docs/API.md → Admin routes): the key above (scripts, smoke;
+compared first, in constant time, independent of Supabase), or the Supabase access token of
+an operator, for the operator's web page. A token is accepted only when **all** of these
+hold: `app_metadata.role` is `"admin"` (never the top-level `role`, never `user_metadata`,
+which the user can write), the user has a row in `admin_accounts` and no tombstone, and the
+token is `aal2` with a TOTP at most 12 hours old. Everything else is one identical `401`
+(the reason is only in the log: `admin auth rejected`, `reason` and the access line's `code`).
+One exception, plainly: a token whose key id the api does not know, while the signing keys were
+fetched less than a minute ago, answers `503` (`jwks_refresh_limited`, `Retry-After: 5`), not `401`.
+Anyone can send such a token, so a `503` on an admin route can be provoked and is not by itself an
+outage: it means the api could not complete a key fetch (or the allow-list check) for that token,
+which includes a fetch that ran past its 1 s. It is kept on purpose (D184: a `401` there was
+considered and rejected). A client that hangs up no longer counts as a failed fetch (D184), so it
+cannot turn later answers into `jwks_unavailable`. A real operator without a fresh second factor gets `403 mfa_required` (and an audit row);
+an operator's token on merge, flag writes, user detail or resync-hint gets `403` (key-only routes,
+audited). The token's answers for the users list and the feedback are a projection without the
+health-derived, device and diagnostic fields (API.md); the key gets the whole answers.
+
+**What changes on deploy, and for whom.** The token path admits nobody until an `admin_accounts`
+row exists *and* the account has the role, and CORS is off while `ADMIN_WEB_ORIGINS` is empty.
+For key callers (scripts, `make smoke-prod`) three small things change: more than 10 requests a
+second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
+and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
+SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
+row exists so that revoking takes effect at once, not so that two parties must agree. **Before the
+first row, run `make alerts-apply`** (the user's step; it needs `GRAFANA_PROM_URL`,
+`GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN`): alert rules reach Grafana only through that manual
+apply, and `AdminWebUsed` is how a use you did not make is noticed (the lost-phone detection), so
+the token path must not be opened before it is loaded.
+
+```sql
+update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
+insert into public.admin_accounts (user_id, note) values ('<admin uuid>', 'operator') on conflict do nothing;
+```
+
+A role set this way appears only in tokens issued after the update: sign in again on the page.
+The api only reads `admin_accounts`; it is operator configuration, not user data (account
+deletion does not touch it; a deleted account's tombstone refuses the row). Which pages may
+read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
+list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page can, scripts are
+unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
+test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
+second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
+never logged; the map is bounded only by evicting a bucket idle for 10 minutes and needs a cap
+before IPv6 clients arrive), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
+the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
+
+**Setting up the operator account (once, in this order).** Before step 1 the Supabase project must be set as
+SUPABASE.md → checklist says for the admin page (Data API off, TOTP on, maximum enrolled factors 1, *Confirm
+email* and *Secure email change* on), and `make alerts-apply` must have run (above).
+
+1. **A dedicated admin account:** Supabase → Authentication → Users → *Add user*, an address used for nothing
+   else and **not** your Apple ID address (Supabase links identities of the same verified email, so an app sign-in
+   with Apple could land in it), a long random password from the password manager, *Auto confirm*. Note its UUID.
+   Grant nothing yet.
+2. **Enrol the TOTP on the live page:** open `https://ryftapp.de/admin`, sign in, scan the QR code (or open the
+   `otpauth://` link; the page has no copy button for the secret on purpose) and enter the code. The page then
+   says "This account is not an operator account." and ends this session only (`scope=local`): expected, the
+   account has no role yet.
+3. **V-MFA-1** (blocking): with an **aal1** session of this account, which now has a verified factor, enrolling
+   a second factor must be refused. **Which refusal you get depends on the factor limit**, because GoTrue checks
+   the count first (`validateFactors` in its `internal/api/mfa.go`, as read in the review of #139; not run against
+   the project here):
+   - *Maximum enrolled factors* is **1** (the setting this page needs): **pass** = `422`, `error_code`
+     `too_many_enrolled_mfa_factors`. That shows the limit holds; it does not reach the aal check.
+   - The limit is **2 or more**: **pass** = `403`, `error_code` `insufficient_aal` (the aal check itself).
+   - `200`: **fail**. Stop, delete the factor the answer names (below), and do not grant the role.
+   - Anything else (a `401` from a failed sign-in, a `429`, a `5xx`, another `error_code`): **inconclusive**; fix
+     the cause and run it again.
+
+   Optional, to test the aal check itself: set the limit to 2, run the probe (expect `403 insufficient_aal`), set
+   it back to 1 and run it again (expect `422 too_many_enrolled_mfa_factors`). Either way below is enough:
+   - Devtools on `https://ryftapp.de/admin`: sign in with the password and stop at "Enter your code" (the tab now
+     holds the aal1 session), then in the console (the page's CSP allows exactly this origin and path; put in the
+     two values of `web/config/admin.json`):
+     ```js
+     (async () => {
+       const s = JSON.parse(sessionStorage.getItem('ryft.admin.session') ?? 'null');
+       if (!s?.access_token) return console.log('no session in this tab: sign in and stop at "Enter your code"');
+       const r = await fetch('<supabaseUrl>/auth/v1/factors', {
+         method: 'POST',
+         headers: {
+           apikey: '<supabaseKey>',
+           Authorization: `Bearer ${s.access_token}`,
+           'Content-Type': 'application/json',
+         },
+         body: JSON.stringify({ factor_type: 'totp', friendly_name: 'v-mfa-1-probe' }),
+       });
+       console.log(r.status, await r.text());
+     })();
+     ```
+     After a `200`, delete it from the same console with `fetch('<supabaseUrl>/auth/v1/factors/<id>', { method:
+     'DELETE', headers: { apikey: '<supabaseKey>', Authorization: `Bearer ${s.access_token}` } })` (read `s` again
+     as above).
+   - `curl` from the repository root. The password is read without echo, stays out of the shell history and off
+     every command line (`printf` is a shell builtin; `jq` reads it from stdin):
+     ```bash
+     KEY=$(jq -r .supabaseKey web/config/admin.json)
+     AUTH=$(jq -r .supabaseUrl web/config/admin.json)/auth/v1
+     read -r EMAIL; read -rs PASSWORD
+     TOKEN=$(printf '%s' "$PASSWORD" | jq -Rs --arg e "$EMAIL" '{email: $e, password: .}' |
+       curl -s "$AUTH/token?grant_type=password" -H "apikey: $KEY" -H 'Content-Type: application/json' --data-binary @- |
+       jq -r .access_token)
+     unset PASSWORD
+     if [ -z "$TOKEN" ] || [ "$TOKEN" = null ]; then
+       echo 'sign-in failed: no token, so the probe would prove nothing'
+     else
+       curl -s -w '\n%{http_code}\n' "$AUTH/factors" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN" \
+         -H 'Content-Type: application/json' -d '{"factor_type":"totp","friendly_name":"v-mfa-1-probe"}'
+     fi
+     # only after a 200, before the unset: the id is the answer's "id"
+     # curl -s -X DELETE "$AUTH/factors/<id>" -H "apikey: $KEY" -H "Authorization: Bearer $TOKEN"
+     unset TOKEN
+     ```
+   Record the answer (status and `error_code`), the factor limit it ran under and the date in STATUS.md.
+4. **Grant the role and the row** with the two SQL statements above (as owner, by id).
+5. **Sign in again** on the page (the role is only in tokens issued after the update): password, then the code;
+   the Invites list loads.
+
+**Using the page.** The session lives in that tab's `sessionStorage` and is cleared when the tab leaves `/admin`
+(web D16): closing the tab, going to another page, typing a URL **and a browser reload or pull to refresh** sign you
+out (password and code again, about 20 seconds); switching sections (`#users`, `#audit`) does not. The page asks for
+the code again when the api answers `mfa_required` (the TOTP is older than 12 hours; that path is tested against
+the e2e stub only, **not verified** on the live project). **Sign out ends every session of that account
+(`scope=global`)**, not only this tab (access tokens already issued live out their hour, so revoking at once is the
+`admin_accounts` row); so does *Use another account* on the code screens. That other devices are signed out is
+GoTrue's documented behaviour, **not verified** here. "Not an operator account" and a second `401` end only the page's
+own session (`scope=local`). The Audit tab shows the admin calls of the last 7 days (read-only); flag changes, merge,
+user detail and resync-hint stay with the key and the scripts. A lost phone: the runbook below (**not verified**: no run of
+it is recorded).
+
+**Evidence that the page works in production:** merged (#128), pinned (#138, web `bb74830`), confirmed by the owner on
+2026-11-05 (pasted output): the web pods rolled, `/admin` answers `200` with the admin CSP and `Cache-Control:
+no-store`, `/` keeps `connect-src 'none'`, the api rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the `OPTIONS`
+preflight `204` with `access-control-allow-origin: https://ryftapp.de`), and the operator's sign-in on the page worked.
+
+**Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
+a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
+guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sign-in attacks.
+`AdminWebUsed` (info): the page was used; if it was not you, act (below). A real operator refused
+for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
+audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
+means the api could not complete the check: a signing-key fetch that failed or took longer than a
+second, the allow-list lookup in the database, or an unknown key id inside the refresh limit
+(above). It is not proof of an outage (`Retry-After: 5`; `AuthUnavailable` pages for a failed fetch,
+D184); the key keeps working. CloudWatch Logs Insights, log group
+`/ryft/ryft-prod-euc1/containers` (OBSERVABILITY → In CloudWatch):
+
+```text
+# refused bearers, by reason (missing, not_a_token, expired, signature, unknown_key, not_admin, not_allowed, …)
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth rejected"
+| stats count() by data.reason, bin(10m)
+
+# who passed with a token (the page was used): every admin line names its actor; the access line
+# carries the operator's user_id and the route
+fields @timestamp, data.admin_actor, data.msg, data.route
+| filter data.service = "api" and data.admin_actor like /^user:/
+
+# a real operator without a fresh second factor (a stolen password with no second factor looks like this)
+fields @timestamp, data.admin_actor, data.reason
+| filter data.service = "api" and data.msg = "admin second factor required"
+
+# signing keys or the allow-list check unreachable
+fields @timestamp, data.reason
+| filter data.service = "api" and data.msg = "admin auth unavailable"
+
+# the audit row could not be written (the call was answered; GET /v1/admin/audit lacks it)
+fields @timestamp, data.action, data.err
+| filter data.service = "api" and data.msg = "admin audit write failed"
+
+# the api refused to start over its admin settings (a malformed ADMIN_WEB_ORIGINS)
+fields @timestamp, data.err
+| filter data.service = "api" and data.msg = "admin config"
+```
+
+**The api crash-loops after an `ADMIN_WEB_ORIGINS` change** (the `admin config` line above, `level`
+ERROR): revert the `config.env` line in git (a PR); the new ConfigMap hash rolls the api again. Pods
+that are still ready keep serving while the new ones fail, so check `argocd app get` and the
+rollout before anything else. **A flood of `429`s on `/v1/admin/*`:** look at
+`ryft_rate_limited_total{class="admin_ip"}` and `AdminUnauthorized`; the limit already caps what one
+address costs (no token check, no database call). If it persists, a Traefik IP deny is a change to
+the Argo-managed Middleware in git; nothing does it automatically.
+
+**Lost phone, or any doubt about the admin account** (immediate, in this order):
+
+1. SQL editor, as owner: `delete from admin_accounts where user_id = '<admin uuid>';` — takes
+   effect on the next request, whatever the token's lifetime.
+2. Supabase → Authentication → Users → the admin account: *Ban user*, so no new token is issued
+   (verify in the dashboard that the ban is shown; tokens already issued live out their hour, which
+   is why step 1 comes first). Ending its sessions as the owner is `delete from auth.sessions
+   where user_id = '<admin uuid>';` — check the table and the column in the dashboard's schema view
+   first. Then remove the MFA factor and change the password (also in the dashboard).
+3. What happened since: `curl -s -H "Authorization: Bearer $ADMIN" "$API/v1/admin/audit?since=<day of the loss>" | jq '.[] | select(.actor.kind=="user")'`
+   (the rows with status `403` and a user actor are refusals for want of a second factor).
+4. To restore: lift the ban, enrol again from a trusted device, sign in again (a new `app_metadata.role` only
+   appears in tokens issued after the update), then insert the row again.
 
 **Tracing a request** a tester reports by its id:
 
@@ -1983,10 +2579,15 @@ restarts both collectors when it changes. It is never passed on a command line:
    `helm upgrade --install grafana-cloud grafana/k8s-monitoring --version 4.5.3`.
 5. **In Grafana Cloud:**
    - In the Fleet Management pipelines for pod logs, exclude namespaces matching
-     `ryft-.*`; RYFT's logs go to CloudWatch.
+     `ryft-.*`; RYFT's logs go to CloudWatch. With the Vault add-on the regex becomes
+     `ryft-.*|vault`, and Beyla skips `vault` too, both before #145 is applied (**Before the
+     Vault add-on is applied**, below).
    - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
      point (email and the Grafana mobile app) and a notification policy for
-     `severity` `critical`, `warning` and `info`.
+     `severity` `critical`, `warning` and `info`. If the load fails with
+     `per-user rules per rule group limit (limit: 20 actual: N) exceeded`, a group holds more
+     than the stack's 20 rules and nothing was loaded: split it in `ryft.yaml` (OBSERVABILITY
+     → Alerts; `make alerts-check` catches this before the load) and run it again from main.
    - Create the external site checks (**Synthetic Monitoring, once**, below).
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      single `alloy` collector before 2026-10-19).
@@ -2055,6 +2656,192 @@ reporting, `SyntheticsMissing` (one alert per job) is the alert. Menu names in G
 app move now and then: what you need is the Config page of the Synthetics app, which
 shows the backend address and the access tokens.
 
+### Before the Vault add-on is applied (#145)
+
+**Mandatory, before `infra/aws/kubernetes` applies the Vault add-on (#145).** Vault's pods log
+from their first start, and the collectors that Fleet Management steers take every namespace
+they are not told to skip. Two settings in Grafana Cloud, by hand (remote configuration; the
+repository cannot set them):
+
+1. **Pod logs: exclude `vault`.** Grafana Cloud → your stack → Connections → Collector → Fleet
+   Management → the pipelines → the pod-log pipeline of `alloy-daemonset` (the one that drops
+   `ryft-.*` today, step 5 above). In its namespace rule, change the regex `ryft-.*` to
+   `ryft-.*|vault` and save. Fleet Management hands the new pipeline revision to the
+   collector at its next poll; the collector's page in Fleet Management shows the revision it
+   runs. Menu names move: what you need is the pipeline that holds the `ryft-.*` exclusion.
+2. **Beyla: exclude `vault`.** In the same place, the Beyla pipeline (application
+   observability, Alloy's `beyla.ebpf`): add namespace `vault` to its discovery exclusions
+   (in Alloy syntax a `discovery { exclude_instrument { kubernetes { namespace = "vault" } } }`
+   block, or the UI's equivalent; **to verify** against the pipeline's current syntax). Beyla
+   instruments Go TLS inside the process and would record the request paths Vault serves.
+3. **Check, after #145's apply and before bootstrap step 3** (Vault → Bootstrap; step 4
+   switches the audit devices on). In Explore, over the last hour:
+   - Loki: `{namespace="vault"}` returns nothing;
+   - Prometheus: `count by (__name__) ({k8s_namespace_name="vault"})` returns nothing (Beyla's
+     series carry `k8s_namespace_name`; **to verify** the label name on one RYFT series);
+   - Tempo: `{resource.k8s.namespace.name="vault"}` returns no trace.
+
+   If anything shows up, stop: fix the pipeline, and delete what arrived with a Loki delete
+   request (the stack's settings) before you go on.
+
+Vault's own log pipeline (**Vault logs** below) is the one optional later step: reviewed,
+labelled, and off until you switch it on.
+
+### Vault metrics (once)
+
+The in-cluster Vault is scraped by `alloy-deployment` (jobs `ryft/vault` and
+`ryft/vault-state`, OBSERVABILITY → Collection and → Vault). Once, after this PR's applies, in
+this order. Before it: #145 applied (three pods running, `0/1` ready), the hard gates G1-G4
+hold (Vault → Hard gates), #151 merged, the bootstrap done and PR 3b's apply has written the
+roles (the baseline in Vault → Terraform through the port-forward lists `vault-snapshot`).
+
+1. **The collector's CA.** The scrape trusts the ryft-vault CA from the Secret `vault-ca` in
+   namespace `monitoring` (infra/vault generates a `vault-ca` Certificate per namespace, #151;
+   `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` applies it with the namespace's operator
+   objects). The volume is optional, so the collector starts without it and only the scrape
+   fails (`VaultScrapeDown`). Check:
+   `kubectl --context ryft-prod-euc1 -n monitoring get secret vault-ca`.
+2. **The NetworkPolicy peer, only after your own init.** `peers.collector` admits the
+   `alloy-deployment` pods to all of port 8200, so it follows the variable
+   `vault_collector_peer` (infra/aws/kubernetes, default `false`). Before the init,
+   `PUT /v1/sys/init` is unauthenticated: a collector that Fleet Management steers could
+   initialise Vault and hold its keys (G3). Set it only when all of these hold: `vault status`
+   shows `Initialized true` from **your own** init (bootstrap step 2), the root token is revoked
+   (bootstrap step 9), and G1-G4 hold. Then `vault_collector_peer = true` in
+   `infra/aws/kubernetes/terraform.tfvars` (yours, git-ignored; a `-var` would be undone by the
+   next plan without it), plan (`1 to change`: `helm_release.vault_extras`, the NetworkPolicy
+   `vault-server` gains the collector rule) and apply. The rule's selector must match the
+   running pods:
+   `kubectl --context ryft-prod-euc1 -n monitoring get pods -l app.kubernetes.io/name=alloy-deployment`
+   lists one pod.
+   Even initialised, 8200 answers more than the metrics without a token: `sys/health`,
+   `sys/seal-status`, `sys/leader`, starting or cancelling a `sys/generate-root` or
+   `sys/rekey` attempt (completing one needs recovery shares), and the login endpoints
+   (`auth/kubernetes/login`, the OIDC role's auth URL). G2 accepts the monitoring stack inside
+   Vault's trust boundary; a started attempt shows in `vault operator generate-root -status`
+   and in the audit stream. VSO's peer (`peers.vso`) stays off until the first cutover (#151,
+   step 5a).
+3. `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` (the scrape, and kube-state-metrics with
+   the pod labels `vault-initialized`, `vault-sealed`, `vault-active` in its
+   `--metric-labels-allowlist`), then `make alerts-apply` (group `ryft-vault`).
+4. In Explore (Prometheus):
+   - `up{job="ryft/vault"}` is 1 for each server pod, `up{job="ryft/vault-state"}` is 1, and
+     `kube_statefulset_replicas{job="ryft/vault-state"}` is 3;
+   - `kube_pod_labels{job="ryft/vault-state", namespace="vault", label_vault_initialized="true"}`
+     has three series: the alerts' "initialised" gate. None: kube-state-metrics runs without the
+     new allowlist
+     (`kubectl --context ryft-prod-euc1 -n monitoring get deploy -l app.kubernetes.io/name=kube-state-metrics -o yaml | grep metric-labels-allowlist`);
+   - `vault_core_active` is 1 on one pod;
+   - `kubelet_volume_stats_capacity_bytes{namespace="vault"}` and
+     `kubelet_volume_stats_used_bytes{namespace="vault"}` have six series each (`data-vault-N`,
+     `audit-vault-N`). They come from Fleet Management's kubelet pipeline (remote
+     configuration), not from these values. Missing: VaultVolumeFilling is blind and
+     VaultScrapeDown warns `kubelet volume stats`. Either add them to that pipeline's allow
+     list, or drop VaultVolumeFilling and VaultScrapeDown's kubelet branch in a PR (the design:
+     no alert on a series that does not arrive).
+
+### Vault logs
+
+**First, what the audit devices write** (the vault shell, admin login; Vault → Bootstrap step 4):
+
+```bash
+vault audit list -detailed     # file/ and stdout/, both log_raw=false and hmac_accessor=true, format json
+```
+
+Anything else (`log_raw=true` above all) stops here: rotate everything (Data protection (logs)
+→ Vault), whether or not the pipeline below is on.
+
+Vault's server log and its stdout audit device go to the stack's Loki through the chart's
+own pipeline (`podLogsViaLoki` in `deploy/monitoring/k8s-monitoring.yaml`, namespace `vault`
+only), with the stream labels `cluster`, `namespace`, `pod`, `container`, `job="ryft/vault"`
+and `stream` (`server`: an `@level` line of container `vault`; `audit`; `other`: the start
+script and the snapshot job, whose init container writes `@level` lines too), nothing taken
+from a line's content. It ships **off**. The Fleet Management exclusions are already in place
+(**Before the Vault add-on is applied**). Turning it on, the optional later step, once
+(Grafana's DPA and the record of processing first, see OBSERVABILITY → Logs → Vault's logs):
+
+1. Grafana Cloud → the stack → Loki → Details: note the URL
+   (`https://logs-prod-<NN>.grafana.net`, the push path is `/loki/api/v1/push`) and the User
+   (a number). Check that the access policy of `GC_TOKEN` has `logs:write` (Access policies →
+   the Kubernetes Monitoring policy); add the scope if not.
+2. Add the user to `service_secrets.monitoring` in `infra/vault/terraform.tfvars` as
+   `LOKI_USERNAME = "<number>"`, plan and apply `infra/vault`, then confirm the key arrived
+   (names only):
+   `kubectl --context ryft-prod-euc1 -n monitoring get secret ryft-secrets -o jsonpath='{.data}' | jq 'keys'`.
+   Without the key the daemonset's whole local configuration fails, its node metrics and the
+   Fleet pipelines included: never set `enabled: true` before this step.
+3. A PR that sets `destinations[vault-logs].url` to the push URL and `podLogsViaLoki.enabled`
+   to `true`, merged; then `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`.
+4. Check in Explore (Loki): `{namespace="vault", stream="server"}` shows Vault's log,
+   `{namespace="vault", stream="audit"}` the audit entries (values HMAC'd),
+   `{namespace="vault", container=~"snapshot|upload"}` only `stream="other"`, and
+   `{namespace=~"ryft-.*"}` is still empty. Label browser: no label beyond the six.
+
+Rollback: `podLogsViaLoki.enabled: false` and `make monitoring-apply`; the lines already in
+Loki age out with the stack's retention (delete them earlier with a Loki delete request in
+the stack's settings if needed).
+
+### Vault alerts
+
+Group `ryft-vault` (OBSERVABILITY → Alerts → Vault). The Vault CLI below runs in the vault
+shell (Vault, #151: the port-forward, `~/.config/ryft/vault-ca.pem`) with the admin login. The
+rules that would fire before the init are gated on "this Vault has been initialised": a server
+pod labelled `vault-initialized=true` in the last hour, or a snapshot that has succeeded once.
+The procedures for the states themselves are Vault's sections (#151); these entries say which
+one and what the alert adds.
+
+- **VaultSealed** (warning, one pod). Vault → **A pod is sealed**. Which pod:
+  `kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active,vault-sealed`. `474` in the
+  probe events is a standby without the active node: Vault → **The leader is gone** (probe
+  codes). A pod that started before its Pod Identity association gets no credentials until it
+  is recreated (`aws eks list-pod-identity-associations --cluster-name ryft-prod-euc1 --namespace vault --region eu-central-1`).
+- **VaultSealedQuorum** (critical, two or more pods). Vault → **Quorum loss**. Several sealed
+  at once point at the shared cause, the unseal key or its role:
+  `aws kms describe-key --key-id alias/ryft-prod-euc1-vault-unseal --region eu-central-1`
+  (`Enabled`, not `PendingDeletion`) and CloudTrail's `Decrypt` by `ryft-prod-euc1-vault-unseal`.
+- **VaultUnavailable** (critical, no server ready for 10 minutes, whatever the reason).
+  `kubectl --context ryft-prod-euc1 -n vault get pods -o wide` and `describe` the pods: sealed
+  (Running, `0/1`: Vault → **A pod is sealed** / **Quorum loss**), Pending (no node in the
+  volume's zone), a crash loop (`logs --previous`). VSO keeps the Secrets it synced; nothing
+  renews or rotates until a server is back.
+- **VaultNoActiveNode** (critical). Vault → **The leader is gone**, and with two voters down
+  **Quorum loss**. Each node's view, no token needed:
+  `for i in 0 1 2; do kubectl --context ryft-prod-euc1 -n vault exec vault-$i -- vault status; done`.
+  It stays quiet while every server scrape fails (that is VaultScrapeDown: blind, not
+  leaderless).
+- **VaultRaftPeersBelow3** (warning). `vault operator raft autopilot state` names the unhealthy
+  voter; `kubectl --context ryft-prod-euc1 -n vault get pods -o wide` its node and zone. A
+  Pending pod waits for a node in its zone. A volume lost for good: Vault → **A lost volume**.
+- **VaultAuditFailing** (critical). A node failed to write an audit entry in the last 10
+  minutes: requests go unrecorded, and with both devices failing Vault refuses them.
+  `vault audit list -detailed` (both devices, `log_raw=false`); the audit volume:
+  `kubectl --context ryft-prod-euc1 -n vault exec <pod> -- df -h /vault/audit`. A full volume
+  is VaultVolumeFilling's case, below; a broken `stdout` device shows in the pod's log.
+- **VaultVolumeFilling** (warning). Which claim: `data-vault-N` (Raft; BoltDB grows with
+  history) or `audit-vault-N` (the audit file only grows). Expand **the PVC only**
+  (gp3-encrypted allows expansion; ask first, it is a change):
+  `kubectl --context ryft-prod-euc1 -n vault patch pvc <claim> -p '{"spec":{"resources":{"requests":{"storage":"<new size>"}}}}'`,
+  then watch `kubectl --context ryft-prod-euc1 -n vault get pvc <claim>` reach the new size.
+  **Leave vault.tf as it is:** a StatefulSet's `volumeClaimTemplates` are immutable, so a new
+  `dataStorage`/`auditStorage` there fails the apply. If a template change is ever needed (a
+  new size for future pods, a new storage class): delete the StatefulSet without its pods
+  (`kubectl --context ryft-prod-euc1 -n vault delete statefulset vault --cascade=orphan`; the
+  pods keep running and serving), apply `infra/aws/kubernetes` with the new template (the
+  release recreates the StatefulSet, which adopts the pods), then roll as Vault → Day 2. Ask
+  first; with every pod `1/1` and autopilot Healthy before.
+- **VaultUpdatePending** (info, after 24 h). Vault → **Day 2** (applying a template change,
+  `OnDelete`). Until it is done no node maintenance: a drain would roll the pod unplanned (D204).
+- **VaultScrapeDown** (warning). `ryft/vault-state` missing: the collector
+  (`kubectl --context ryft-prod-euc1 -n monitoring get pods`, its log), or the monitoring values
+  not applied. `ryft/vault` failing for a pod: `vault_collector_peer` still false (Vault
+  metrics (once), step 2), TLS in the collector's log (`x509`: the `vault-ca` Secret in
+  `monitoring`, step 1), or a timeout (the vault-server NetworkPolicy's collector rule:
+  `kubectl --context ryft-prod-euc1 -n vault get networkpolicy vault-server -o yaml`).
+  `kubelet volume stats`: Fleet's kubelet pipeline sends none for `vault` (step 4).
+- **PodRestarting** for a vault pod: the previous container's log
+  (`kubectl --context ryft-prod-euc1 -n vault logs <pod> --previous`); an OOM kill is the
+  512 Mi limit in vault.tf.
+
 ## Admission policy signals
 
 The admission policies (D120, `docs/work/2026-10-23-admission/design.md`) write what they
@@ -2070,7 +2857,7 @@ comes from `deploy/grafana/alerts/admission-intended.yaml`, generated from
 
 ```bash
 make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1   # helm upgrade of grafana-cloud; only kube-state-metrics rolls (its collectors list), Alloy reloads its ConfigMap
-make alerts-apply          # both rule files: ryft (group ryft-admission) and ryft-admission (the committed actions)
+make alerts-apply          # both rule files: ryft (groups ryft, ryft-pipeline, ryft-ops, ryft-admission) and ryft-admission (the committed actions)
 ```
 
 Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMissing` fires
@@ -2086,9 +2873,9 @@ Apply the monitoring values first: until the scrapes report, `AdmissionSignalsMi
 - `pod_security_evaluations_total{decision="deny"}` and
   `apiserver_validating_admission_policy_check_total` have series only after the first
   refusal or finding: absent is normal, there is no series for a clean pass.
-  `kube_validatingadmissionpolicybinding_info` has 13 `ryft-*` series once the chart is enabled,
+  `kube_validatingadmissionpolicybinding_info` has 18 `ryft-*` series once the chart is enabled,
   `kube_validatingadmissionpolicybinding_validation_action` one per live action, and
-  `ryft:admission_binding_intended` 13 whether or not the chart is enabled.
+  `ryft:admission_binding_intended` 18 whether or not the chart is enabled.
 - The binding alerts are quiet until bindings exist; the counter alerts are quiet until a
   `ryft-*` policy finds something.
 
@@ -2167,7 +2954,7 @@ blocked now, the fast path under **Break-glass** below. With server-side diff th
 turns OutOfSync (`ArgoAppOutOfSync`); this alert names the policy minutes earlier.
 
 **AdmissionPodDenied** (critical). A Pod, or what looks like one, was refused: by
-`ryft-workloads-pods` (P2), `ryft-operator-reach` (P8) or `ryft-auth-env` (P5), the design's
+`ryft-workloads-pods` or `ryft-workloads-pods-vault` (P2), `ryft-operator-reach` (P8) or `ryft-auth-env` (P5), the design's
 step C class plus P5, or by Pod Security's enforce mode (live today, with or without the
 chart). The check counter has no resource label, so a P5 or P8 refusal of a Secret or a Role
 pages too. A Pod refused now means a node loss, a rollout or a scale-up cannot re-create it:
@@ -2189,7 +2976,7 @@ expression meeting an object shape it did not expect, so the fix is the chart, n
 object: for the critical one bring the binding to audit through the Break-glass fast path to
 restore writes, then correct the expression (`admission-celtest` reproduces it) and apply.
 
-**AdmissionBindingMissing** (critical). Fewer than 13 `ryft-*` bindings exist for 10 minutes
+**AdmissionBindingMissing** (critical). Fewer than 18 `ryft-*` bindings exist for 10 minutes
 while bindings existed within the last day. A binding that is gone means its policy judges
 nothing (silently open). Compare with what is live, and check that the metric is not the
 blind one:
@@ -2198,7 +2985,7 @@ kubectl get validatingadmissionpolicybindings -o name | sort
 kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics
 ```
 Helm does not see out-of-band changes (a deleted binding is not a diff to it), so a plain
-apply restores nothing. The restore is the replace under **Restore** below. All 13 gone with
+apply restores nothing. The restore is the replace under **Restore** below. All 18 gone with
 the chart switched off on purpose (back to Phase 0) raises this for up to a day: silence it
 in Grafana Alerting.
 
@@ -2284,6 +3071,770 @@ resource "aws_cloudwatch_metric_alarm" "admission_writes" {
 ```
 Restrict to the audit stream if the filter matches too much (the group also holds the
 API server and authenticator logs, which are not JSON audit events and never match).
+
+## Vault
+
+Two Vaults during the migration (D186, D191). **HCP Vault Dedicated** (`admin/ryft/<svc>`)
+serves every namespace today. **Vault Community Edition in the cluster** (namespace `vault`,
+three Raft pods, KMS auto-unseal, `infra/aws/kubernetes/vault.tf`) takes them over one PR
+at a time. `infra/vault` writes both, from the same values, on every apply
+(`infra/vault/README.md` → The Vault in the cluster). Which one a namespace reads is in git:
+`local.committed_vso_on_k8s` in `infra/vault/targets.tf`, and the `address:` line of
+`deploy/k8s/overlays/vault-namespaces/<svc>/vault.yaml`. One switch per PR: `write_k8s` and
+`vso_on_k8s` never change in the same PR.
+
+The Vault in the cluster has no Ingress and no LoadBalancer. Every operator command below
+goes through `kubectl port-forward` on your machine, with the CA from the Secret
+`vault/vault-ca` (only `ca.crt`, never `vault-tls`, which holds the server's key).
+
+**Two shells, never mixed.** The *vault shell* exports `VAULT_ADDR`, `VAULT_CACERT` and
+`VAULT_TOKEN` for the Vault in the cluster and is for the vault CLI only. The *Terraform
+shell* has none of them (the HCP provider would read them) and holds only the HCP token and
+`TF_VAR_vault_k8s_token` (**Terraform through the port-forward**). `infra/vault/README.md` →
+Shell rules says the same.
+
+**Where these commands run.** In a standalone terminal (Terminal.app or iTerm) with session
+restore and scrollback saving off. Not in the VS Code integrated terminal (it restores
+scrollback), not in tmux or screen with logging, and never through an agent's or assistant's
+shell: init output, recovery keys, root and admin tokens and the OIDC client secret pass
+through it.
+
+```bash
+# The vault shell (each time). History off: tokens and the OIDC client secret pass through it.
+unset HISTFILE VAULT_TOKEN VAULT_NAMESPACE VAULT_SKIP_VERIFY VAULT_TLS_SERVER_NAME VAULT_CAPATH VAULT_CACERT_BYTES TF_VAR_vault_k8s_token
+umask 077 && mkdir -p ~/.config/ryft
+kubectl --context ryft-prod-euc1 -n vault get secret vault-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > ~/.config/ryft/vault-ca.pem
+openssl x509 -in ~/.config/ryft/vault-ca.pem -noout -subject -enddate   # the ryft-vault CA
+export VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem"
+kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200 >/dev/null &   # after the init
+```
+
+### Hard gates (before the bootstrap)
+
+Do not start the bootstrap, or the PR that switches `write_k8s` on, unless all four hold:
+
+- **G1. The admission layer guards `vault`.** D180 Step 0 (#47) applied, and P12 (#121),
+  P13 and the `vault` branches of P1, P2 and P3 in **Deny**. Merged is not enough: a
+  merged binding starts in Audit. Until all of them deny, an Argo CD controller token
+  can run a pod in `vault` as the service account `vault`, and so reach KMS, TokenReview
+  and the Raft data. Check:
+  ```bash
+  kubectl --context ryft-prod-euc1 get validatingadmissionpolicybindings \
+    -l 'admission.ryft.dev/key in (namespaces-vault,workloads-templates-vault,workloads-pods-vault,netpol-vault,vault-trust,argo-scope)' \
+    -o custom-columns='KEY:.metadata.labels.admission\.ryft\.dev/key,ACTIONS:.spec.validationActions,BREAKGLASS:.metadata.labels.admission\.ryft\.dev/break-glass'
+  # six or more rows covering all six keys, every ACTIONS [Deny Audit], BREAKGLASS <none>
+  for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i "$v" validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller; done
+  kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=system:serviceaccount:argocd:argocd-application-controller
+  # all three: no
+  ```
+- **G2. The monitoring stack is inside Vault's trust boundary.** alloy-daemonset is
+  privileged with hostPID, and alloy-operator and VSO read Secrets cluster-wide. Either
+  accept that in D186/D194 ("Vault is as safe as the monitoring stack and VSO"), or reduce
+  it first. The Art. 32 description must not claim Vault is isolated from the monitoring
+  vendor.
+- **G3. Never `vault login` inside a pod** (`kubectl exec`): it writes the token to
+  `~/.vault-token` on the pod's disk. Always use the port-forward, `-no-store` and
+  `VAULT_TOKEN` in a shell. **If `vault status` shows `Initialized true` before your own
+  init, stop.** Someone else initialised it and holds keys you don't have. Treat it as a
+  compromise: no secret goes in, and you wipe it (below).
+- **G4. `prevent_destroy`** on the namespace `vault` and both Helm releases (in #145).
+
+### The operator's Google account
+
+The admin login is one Google Workspace account, bound by its numeric subject. Whoever holds
+that account (and a port-forward) holds every RYFT credential. Today the Workspace's only
+user is the published support address and the super admin. Choose one, before step 7:
+
+- **A dedicated user** (recommended): for example `vault-admin@ryftapp.de`, not a super
+  admin, no mail alias, never published, 2-Step Verification with security keys only. The
+  admin role is bound to its subject.
+- **The existing account, hardened:** 2-Step Verification with security keys only, or
+  Google's Advanced Protection Program.
+
+Either way, use a dedicated browser profile for the Vault login (no extensions), so the
+OIDC callback and the Google session live nowhere else. **If the account is lost or
+compromised:** **Break-glass**, then
+`vault token revoke -mode=path auth/oidc` (every OIDC token at once), then
+`vault delete auth/oidc/role/admin`, or rebind it (step 7d, with the subject check) to an
+account you control. Then rotate the Google client secret (step 7a) and look through the
+audit stream for that subject's actions.
+
+### Bootstrap
+
+Once, from a clean checkout of `main` (`git status` empty). Precondition: the Vault add-on
+is applied and `kubectl --context ryft-prod-euc1 -n vault get pods -o wide` shows `vault-0`,
+`vault-1` and `vault-2` `Running`, `0/1` ready, in three zones. Uninitialised means not
+ready, by design (D196). Nothing below goes into a chat, a PR or a log. Start the vault
+shell above, but without the `svc/vault-active` port-forward: before the init no pod is
+ready, so the Service has no endpoint. Have all five share places at hand: the drill in step
+10 needs share 5 before it leaves the house.
+
+**1. All three uninitialised (G3).**
+```bash
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-0 8200:8200 >/dev/null &
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-1 8201:8200 >/dev/null &
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-2 8202:8200 >/dev/null &
+for p in 8200 8201 8202; do vault status -address="https://127.0.0.1:$p" | grep -E 'Seal Type|Initialized|Sealed'; done
+# each: Seal Type awskms, Initialized false, Sealed true
+```
+Any `Initialized true`: stop (G3). Wipe it. Delete the pods and their claims
+(`kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-0 audit-vault-0 …` for all
+three, then the pods), then the retained EBS volumes in the EC2 console. Before anything
+else, find out who reached the pods: the EKS audit log for `pods/portforward` and
+`pods/exec` in `vault`.
+
+**2. Init on vault-0.** KMS seals it, so these are **recovery** keys: they decrypt nothing,
+but any three of them make a root token.
+```bash
+vault operator init -recovery-shares=5 -recovery-threshold=3
+```
+Write the shares for paper (three of the five, **Recovery keys**) straight from the screen,
+never through the clipboard. Copy the two for 1Password into their items one at a time, then
+empty the clipboard: `pbcopy </dev/null`. Keep the initial root token only in this shell (next
+line). Then clear the terminal and its scrollback (⌘K).
+```bash
+read -rs VAULT_TOKEN && export VAULT_TOKEN      # paste the initial root token: not echoed, not in history
+pbcopy </dev/null
+```
+The default is no PGP (D203). With two hardware keys:
+`-recovery-pgp-keys=k1.asc,…,k5.asc -root-token-pgp-key=k1.asc` instead.
+
+**3. The joins.** `vault-1` and `vault-2` join by `retry_join` and unseal by KMS on their
+own, within a minute or two.
+```bash
+vault status                                    # Initialized true, Sealed false, HA Mode active
+vault operator raft list-peers                  # vault-0 leader, vault-1 and vault-2 follower, all Voter true
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # all 1/1, one vault-active=true
+```
+
+**4. Audit, before anything is written** (addendum 1.10, D198). There are two devices,
+and Vault keeps serving while one of them records. The options are explicit, so a changed
+default cannot switch raw logging on. A fresh Vault audits three request headers
+(`correlation-id`, `x-correlation-id`, `user-agent`); they go, so that no request header
+reaches the audit lines.
+```bash
+vault audit enable file file_path=/vault/audit/audit.log log_raw=false hmac_accessor=true format=json
+vault audit enable -path=stdout file file_path=stdout log_raw=false hmac_accessor=true format=json
+vault audit list -detailed                      # file/ and stdout/, log_raw false on both
+vault delete sys/config/auditing/request-headers/correlation-id
+vault delete sys/config/auditing/request-headers/x-correlation-id
+vault delete sys/config/auditing/request-headers/user-agent
+vault read sys/config/auditing/request-headers  # headers map[]
+```
+`stdout` goes to the node's container log, and from there by alloy-daemonset (namespace
+`vault` only) to Grafana Cloud Logs for 14 days (D197). `log_raw=true` on either device
+would hand every credential to a third party. If it ever happens, rotate everything
+(Data protection (logs) → Vault). **To verify** in kind: that 2.2.1 still enables audit
+devices over the API with these options, and that the three headers stay deleted after a
+pod restart (step 5 shows it: run the `read` again then).
+
+**5. Auto-unseal works without you.**
+```bash
+kubectl --context ryft-prod-euc1 -n vault delete pod vault-2       # its port-forward (8202) ends here
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-2 --timeout=5m
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 again
+vault read sys/config/auditing/request-headers  # still headers map[]
+```
+
+**6. The policies and the token role from git** (reviewed in `infra/vault/bootstrap/`,
+checked at every plan by `bootstrap.tf` and held to an allowlist by `tests/vault.tftest.hcl`):
+```bash
+vault policy write admin     infra/vault/bootstrap/admin.hcl
+vault policy write terraform infra/vault/bootstrap/terraform.hcl
+vault write auth/token/roles/terraform @infra/vault/bootstrap/token-role-terraform.json
+```
+Never attach a policy to the operator's entity or to a group (`identity/*`): `admin` comes
+from the OIDC role only, so deleting or rebinding that role is the whole revocation.
+
+**7. The operator's login: OIDC with Google Workspace** (D193, D198). The second factor is
+Google's 2-Step Verification (**The operator's Google account** first). The audit lines
+carry Google's numeric subject, never an email or a name.
+
+*7a. Google (console, once).*
+1. admin.google.com → Security → 2-Step Verification: **enforced** for the account, with
+   security keys only.
+2. console.cloud.google.com → a project in the `ryftapp.de` organisation (for example
+   `ryft-ops`; no API to enable) → Google Auth Platform (APIs & Services) → OAuth consent
+   screen / Branding: user type **Internal**, so only `ryftapp.de` accounts can sign in. App name
+   `RYFT Vault`, no scopes added.
+3. Clients (Credentials) → Create client → **Web application**, name `vault-cli`,
+   authorised redirect URI exactly `http://localhost:8250/oidc/callback` (the CLI's
+   listener). No JavaScript origin and no UI callback: the Vault UI cannot log in by OIDC,
+   deliberately.
+4. Put the client ID and secret into the 1Password item `RYFT Vault OIDC client`. The secret
+   goes into Vault in the next step and nowhere else: not git, not Terraform state.
+
+*7b. Vault.* The secret goes through stdin without a trailing newline (a pasted Enter would
+become part of it, and Google would refuse it):
+```bash
+vault auth enable -path=oidc -description="Google Workspace ryftapp.de" oidc
+read -rs S                                      # paste the client secret, Enter: not echoed
+printf %s "$S" | vault write auth/oidc/config @infra/vault/bootstrap/oidc-config.json oidc_client_id="<client id>" oidc_client_secret=-
+unset S; pbcopy </dev/null
+vault read auth/oidc/config                     # discovery URL accounts.google.com, the client id; no secret shown
+```
+**To verify** here: that Google's ID tokens carry `iss` exactly `https://accounts.google.com`
+(the `bound_issuer`; the first login fails otherwise).
+
+*7c. Your subject (`sub`).* A role with the `default` policy whose tokens last 5 minutes,
+only to read the number Google identifies you by. The role itself stays until you delete it
+(below):
+```bash
+vault write auth/oidc/role/enroll @infra/vault/bootstrap/oidc-role-enroll.json
+ENROLL="$(vault login -method=oidc -no-store -token-only role=enroll)"    # the browser profile: sign in as the Vault account
+VAULT_TOKEN="$ENROLL" vault token lookup -format=json | jq -r .data.display_name   # oidc-<digits>: the digits are your sub
+VAULT_TOKEN="$ENROLL" vault token revoke -self; unset ENROLL
+vault delete auth/oidc/role/enroll
+```
+Cross-check the digits with admin.google.com → Directory → Users → the account → its user ID
+in the URL (believed to equal the OIDC `sub`: **to verify** here; if they differ, stop).
+If the login fails on a missing `hd` claim, stop. Google should send `hd` for a Workspace
+account without the `email` scope (**to verify** here). If it fails on `auth_time` or
+`max_age`, Google did not report the sign-in time (**to verify** here). If it fails with
+`request originated from invalid CIDR` (or a plain `permission denied` right after the browser
+step), the port-forward did not arrive as `127.0.0.1`: the enroll role is bound like the
+others (below, after 7d). Every fix is a reviewed change to the role files, not an ad-hoc one.
+
+*7d. The admin role, bound to you, and a check that fails closed.* `bound_subject` is the
+only thing that ties `admin` to one person (the committed file has none, on purpose). Run the
+check after **every** write of this role, here and in **Break-glass**:
+```bash
+vault write auth/oidc/role/admin @infra/vault/bootstrap/oidc-role-admin.json bound_subject="<the digits>"
+vault read -field=bound_subject auth/oidc/role/admin | grep -Eq '^[0-9]{15,}$' || { vault delete auth/oidc/role/admin; echo "STOP: admin was not bound to a subject and is deleted"; }
+vault read auth/oidc/role/admin                 # user_claim sub, bound_subject, bound_claims hd=ryftapp.de, max_age 600, token_policies [admin], ttl 1h, max 2h, bound cidrs 127.0.0.1
+ADMIN="$(vault login -method=oidc -no-store -token-only role=admin)"
+VAULT_TOKEN="$ADMIN" vault token lookup | grep -E 'display_name|policies|ttl|bound_cidrs'   # oidc-<digits>, [admin default], ~1h, [127.0.0.1]
+```
+Keep the subject in the 1Password item too, not in git. It identifies you in every audit line.
+*The loopback binding.* Three files bind to `127.0.0.1/32`, the address a port-forward is
+believed to arrive from inside the pod: `oidc-role-enroll.json`, `oidc-role-admin.json` and
+`token-role-terraform.json`.
+- **Why it should hold.** The listener is `[::]:8200` with no `x_forwarded_for`, so Vault sees
+  the peer address of the connection. containerd's port-forward is believed to dial
+  `localhost` over tcp4 first, so that peer is `127.0.0.1`. A forwarded request after a
+  step-down (to `svc/vault-active`, a new pod) still arrives from `127.0.0.1`. If it arrives
+  as `::1` instead, all three bindings fail. Each of these is **to verify** in kind.
+- **How a mismatch shows.** First as a refused login at 7c, because the enroll role is bound
+  too. Later, the same can happen after a containerd or Kubernetes upgrade (**Break-glass**).
+- **The fix** is one reviewed change to all three files: drop `token_bound_cidrs`, or set the
+  address Vault reports. `tests/vault.tftest.hcl` pins the binding
+  (`the_admin_policy_and_the_login_hold_the_reviewed_shape`), so its asserts change in the same
+  commit.
+- **A wrong CIDR cannot lock you out at the bootstrap.** Both OIDC roles are first used in 7c
+  and 7d, while the root token from step 2 stays valid until step 9. Repair with it, then run
+  7c again. After step 9, generate-root needs no login (**Break-glass**).
+
+**8. What the terraform token can and cannot do.** It is admin-equivalent for its hour, not a
+sandbox (`bootstrap/terraform.hcl.tftpl` has the reasoning). It reads every credential, and it
+rewrites the policy of any role it manages (each service's, and `snapshot` of the snapshot
+job's `vault-snapshot`), which a Kubernetes token for that role's service account then turns
+into those rights. What it cannot do: write any other policy (`admin`, `terraform` or `default`
+in any spelling), give a role any but its own policy, namespace and service account, re-type the auth mount or point it outside the cluster,
+switch audit HMAC off on a tune, touch audit, seal, Raft, generate-root, the OIDC login,
+identities or tokens, renew itself or be used anywhere but through the port-forward. Mint one
+from the admin login and check:
+```bash
+TFTOK="$(VAULT_TOKEN="$ADMIN" vault token create -role=terraform -display-name=terraform -field=token)"
+for p in sys/mounts/kv-api sys/mounts/kv-api/tune kv-api/data/config auth/kubernetes/role/api sys/policies/acl/api \
+         sys/mounts/auth/kubernetes sys/mounts/auth/kubernetes/tune \
+         sys/policies/acl/ADMIN sys/policies/acl/Terraform sys/policies/acl/Default "sys/policies/acl/admin " \
+         sys/policies/acl/admin sys/policies/acl/Snapshot sys/policies/acl/other auth/kubernetes/role/other sys/mounts/kv-other \
+         sys/audit/file sys/config/auditing/request-headers auth/oidc/config auth/oidc/role/admin \
+         sys/storage/raft/snapshot sys/generate-root/attempt identity/entity auth/token/create; do
+  printf '%-40s %s\n' "$p" "$(VAULT_TOKEN="$ADMIN" vault token capabilities "$TFTOK" "$p")"
+done
+# the first seven: their capabilities (sys/mounts/auth/kubernetes read only); every one after them: deny
+VAULT_TOKEN="$ADMIN" vault token lookup "$TFTOK" | grep -E 'policies|renewable|ttl|bound_cidrs'   # [default terraform], false, ~1h, [127.0.0.1]
+VAULT_TOKEN="$TFTOK" vault write auth/kubernetes/role/api token_policies=admin bound_service_account_names=api bound_service_account_namespaces=ryft-api   # must say: permission denied
+VAULT_TOKEN="$TFTOK" vault token revoke -self; unset TFTOK
+```
+A capability listing does not show parameter limits: the `write` above probes one of them.
+Never run Terraform with `TF_LOG` at `DEBUG` or above while `TF_VAR_vault_k8s_token` is set:
+debug logs can carry request details, and the token must not reach a log file.
+
+**9. Revoke the root token.** From now on root exists only through **Break-glass**.
+```bash
+vault token revoke -self                        # VAULT_TOKEN is still the root token
+export VAULT_TOKEN="$ADMIN"
+for a in $(vault list -format=json auth/token/accessors | jq -r '.[]'); do
+  vault token lookup -format=json -accessor "$a" | jq -r 'select(.data.policies | index("root")) | .data.accessor'
+done                                            # prints nothing: no root token left
+vault list auth/oidc/role                       # admin only (enroll deleted in 7c)
+vault auth list                                 # token/, oidc/ only (kubernetes/ comes with PR 3b)
+vault token revoke -self; unset VAULT_TOKEN ADMIN
+kill $(jobs -p) 2>/dev/null                     # the remaining port-forwards (vault-2's ended in step 5)
+```
+
+**10. Verify every share once** (**Recovery keys** → Drill), now, while all five are still
+here. Then take the off-site share away, and record the custody line below. After that the
+next step is the PR that sets `committed_write_k8s = true` (PR 3b).
+
+### Recovery keys
+
+Vault unseals itself with KMS, and the five recovery keys decrypt nothing. Any three of them
+create a root token (`vault operator generate-root`), so three keys plus a port-forward are
+full control of every RYFT credential. Losing three removes the break-glass path. Terraform
+state still rebuilds every value: a fresh Vault and `infra/vault` from state, hours, no
+credential lost.
+
+One person holds them, in three places: one password manager vault and two on paper, one of
+them off site. No place holds more than two shares, so losing any one place leaves three and
+stealing any one yields at most two (D203). Which share is where, and the off-site place, are
+recorded in the 1Password break-glass vault, not in this public repository. Never record key
+material, a photo of it, or the map anywhere else.
+
+| Init date | Shares / threshold | PGP | Last verification |
+| --- | --- | --- | --- |
+| (after the bootstrap) | 5 / 3 | no | (after the bootstrap) |
+
+**Drill: yearly, and after every rekey.** Run **Break-glass** twice, with two different sets
+of three shares that together use all five. Revoke each token at once. Each run proves its
+shares and the audit path. Once the log rules exist (`VaultRootTokenUsed`, group
+`ryft-vault-logs`, D199: a follow-up to PR 4, which needs `lokitool`), it must fire both times;
+until then, find the two root logins in the `stdout` audit stream
+(`{namespace="vault", stream="audit"} | json | auth_display_name="root"` once Vault's log
+pipeline is on, OBSERVABILITY → Vault's logs). Update *Last verification*. Run
+it where all shares are (the off-site one comes home for the drill, or the drill goes to it).
+
+**A place is lost or exposed:** rekey the same day with three remaining shares, then
+redistribute all five:
+```bash
+vault operator rekey -target=recovery -init -key-shares=5 -key-threshold=3
+vault operator rekey -target=recovery -nonce=<nonce>      # three times, one share per prompt
+```
+
+### Break-glass
+
+When OIDC cannot log you in. The causes:
+- Google, the OAuth client, Vault's egress to Google, the OIDC config or the admin policy is
+  broken;
+- the Google account is lost;
+- the loopback binding stopped matching after a containerd or Kubernetes upgrade. The login
+  says `invalid CIDR`. Repair it as in 7d's *The loopback binding*, all three files at once.
+
+In the standalone
+terminal, through the vault shell and the `svc/vault-active` port-forward, with no login:
+```bash
+unset VAULT_TOKEN
+vault operator generate-root -status            # Started false. If true: see below, never continue that attempt
+OTP="$(vault operator generate-root -generate-otp)"
+vault operator generate-root -init -otp="$OTP"            # prints the nonce
+vault operator generate-root -nonce=<nonce>               # three times: one recovery key per prompt, never on the command line
+export VAULT_TOKEN="$(vault operator generate-root -decode=<encoded token> -otp="$OTP")"
+# repair: the OIDC config or role (step 7, and step 7d's subject check after any write of auth/oidc/role/admin),
+# the admin policy (step 6). Then:
+vault token revoke -self; unset VAULT_TOKEN OTP; pbcopy </dev/null
+```
+- **An attempt is already in progress** (`-status` says Started true, or `-init` refuses):
+  never type a share into it. Its OTP is someone else's, so your shares would make *their*
+  root token. `vault operator generate-root -cancel`, start your own, and treat it as an
+  incident: `sys/generate-root/attempt` is unauthenticated, so anyone with a path to 8200
+  could have started it. Find out who (the audit stream, the EKS audit log for
+  `pods/portforward` in `vault`).
+- With auto-unseal the command takes the **recovery** keys (**to verify** in the kind run).
+- There is no second standing login (no sealed userpass): one more credential for a rare,
+  audited path.
+- Note the date and the reason under **Recovery keys**.
+
+### Terraform through the port-forward
+
+Only once `committed_write_k8s = true` (`infra/vault/targets.tf`). Until then `infra/vault`
+plans and applies as before, with no port-forward, no CA file and no second token.
+
+```bash
+# Terminal 1
+kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200
+# Terminal 2: the Terraform shell
+unset HISTFILE VAULT_ADDR VAULT_CACERT VAULT_NAMESPACE VAULT_SKIP_VERIFY VAULT_TLS_SERVER_NAME VAULT_CAPATH VAULT_CACERT_BYTES VAULT_CLIENT_CERT VAULT_CLIENT_KEY TF_LOG
+ADMIN="$(VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" vault login -method=oidc -no-store -token-only role=admin)"
+export TF_VAR_vault_k8s_token="$(VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" VAULT_TOKEN="$ADMIN" \
+  vault token create -role=terraform -display-name=terraform -field=token)"
+export VAULT_TOKEN=…                            # the HCP admin token, for the default provider
+terraform -chdir=infra/vault plan -out=tfplan
+terraform -chdir=infra/vault apply tfplan       # the same shell: the ephemeral token is not in tfplan
+VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem" VAULT_TOKEN="$ADMIN" vault token revoke -self   # revokes the child too
+unset ADMIN TF_VAR_vault_k8s_token VAULT_TOKEN
+```
+- The provider `vault.k8s` takes the address (`vault_k8s_address`, loopback only), the CA
+  file (`vault_k8s_ca_cert_file`, default `~/.config/ryft/vault-ca.pem`), TLS verification
+  and `TF_VAR_vault_k8s_token` from its configuration. It still reads `VAULT_NAMESPACE`,
+  `VAULT_TLS_SERVER_NAME`, `VAULT_CAPATH`, `VAULT_CACERT_BYTES`, the client-certificate
+  variables and `VAULT_MAX_RETRIES` from the environment, so the `unset` line above matters.
+- Never set `TF_LOG` to `DEBUG` or `TRACE` in this shell while the token is set.
+- **A service added or removed** changes the policy `terraform` (`bootstrap/terraform.hcl`,
+  rendered from a plan: `infra/vault/README.md` → `bootstrap/`). An apply the token's policy
+  does not cover stops on a 403 halfway, so the order is fixed:
+  - **adding a service:** commit the regenerated file, merge, `vault policy write terraform
+    infra/vault/bootstrap/terraform.hcl` with the admin login, then the apply;
+  - **removing a service:** the apply first, then write the narrower policy.
+- A plan that hangs or fails on `127.0.0.1:8200`: the port-forward died. A leader change
+  ends it (**The leader is gone**). Restart it and run the plan again.
+- The token lives one hour and cannot be renewed. A longer session needs a new one, and so
+  does an apply from an old `tfplan`.
+- **After every apply that wrote the Vault in the cluster: the baseline.** In the vault
+  shell, with the admin login:
+  ```bash
+  vault auth list -format=json | jq -r 'keys[]'                 # kubernetes/, oidc/, token/: nothing else
+  vault list auth/kubernetes/role                               # exactly the services and vault-snapshot
+  vault list auth/oidc/role                                     # admin
+  vault policy list                                             # admin, default, root, snapshot, terraform and the services
+  vault policy read snapshot                                    # read on sys/storage/raft/snapshot, nothing else
+  vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl, token_type, token_no_default_policy}'   # vault-snapshot, vault, [snapshot], 600, service, true
+  vault read -field=token_type sys/mounts/auth/kubernetes/tune  # default-service: the terraform token cannot tune it to batch
+  vault read -field=kubernetes_host auth/kubernetes/config      # https://kubernetes.default.svc
+  vault read -field=bound_subject auth/oidc/role/admin          # your digits
+  for m in $(vault secrets list -format=json | jq -r 'keys[] | select(startswith("kv-"))'); do
+    printf '%-16s %s\n' "$m" "$(vault read -format=json "sys/mounts/${m}tune" | jq -c '.data | {audit_non_hmac_request_keys, audit_non_hmac_response_keys, passthrough_request_headers, listing_visibility}')"
+  done                                                          # every value null or empty, listing hidden or empty
+  vault read -format=json sys/mounts/auth/kubernetes/tune | jq -c '.data | {audit_non_hmac_request_keys, audit_non_hmac_response_keys}'   # empty
+  ```
+  Anything else is an incident: the terraform token did it within its hour (the audit
+  stream names the token's accessor).
+- Compare the two Vaults before a cutover and after a sync (values never printed, only
+  fingerprints) with `scripts/vault_diff.sh`, which lands in PR #152 (separate; merge it
+  first or together with this one):
+  `scripts/vault_diff.sh --context ryft-prod-euc1 --kv <svc>` (HCP `kv/` against
+  `kv-<svc>/`, per key) and `scripts/vault_diff.sh --context ryft-prod-euc1 --secret <svc>`
+  (the live Secret `ryft-secrets` in `ryft-<svc>` against the Vault's key set).
+
+### Day 2
+
+**Applying a template change (`OnDelete`).** An apply of `infra/aws/kubernetes` that changes
+the StatefulSet's pod template (chart, image, values) restarts nothing. Roll it by hand the
+same day, one pod at a time, standbys first. Otherwise the next node drain rolls it for you
+(**Node maintenance**).
+```bash
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # e.g. 0/3
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active,controller-revision-hash
+# each standby (vault-active=false), one at a time:
+kubectl --context ryft-prod-euc1 -n vault delete pod <standby>
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/<standby> --timeout=5m
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 before the next
+# then the leader: hand leadership over, restart the port-forward, delete the old leader
+vault operator step-down                        # the admin login
+kubectl --context ryft-prod-euc1 -n vault delete pod <old leader>
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # 3/3
+```
+VSO's reads go to the `vault` Service (ready pods only), so they ride through each restart.
+
+**Audit HMAC stays on, monthly and after every apply.** The tune check of **Terraform through
+the port-forward** (the baseline): no mount and no auth method may list
+`audit_non_hmac_request_keys` or `audit_non_hmac_response_keys`. A key there puts that
+field's values into both audit devices, and so into Grafana Cloud, in clear. The policy
+terraform refuses them on a tune but cannot see inside a mount's creation.
+
+**Chart bumps.** The pin is `local.charts.vault` in `infra/aws/kubernetes/main.tf`
+(hashicorp/vault). Read the chart's changelog. Then diff the render
+(`helm template` of both versions with the values from `vault.tf`) and apply. Roll as above
+if the pod template changed. An image change goes into the same PR everywhere the digest
+is: `local.vault_image` in `vault.tf`, P2's `images.vault` in
+`charts/admission-policy/values.yaml` (with a chart version bump), `tests/addons.tftest.hcl`
+and the admission-celtest fixtures
+(`grep -rl <old digest> infra/aws/kubernetes`). P2 admits exactly one Vault image, so the
+release and the policy must move in one apply. Otherwise a pod recreated in between is refused.
+
+**Minor upgrades (CE).** Community Edition supports only the latest minor, which arrives
+every 6 to 20 weeks (D186). Plan an upgrade within a few weeks of each `.0`, after its
+first patch:
+1. Read the upgrade notes for every minor in between (raft, seal, audit and auth changes).
+2. Take a snapshot (**Snapshots**).
+3. Upgrade the kind rehearsal first.
+4. Bump the image (above), apply, and roll: standbys first, the leader last after
+   `step-down`.
+
+Never skip the roll and never run mixed versions longer than the roll takes.
+
+### Node maintenance
+
+The PodDisruptionBudget `vault-server` (charts/vault-extras) keeps `minAvailable: 2` of 3 with
+`unhealthyPodEvictionPolicy: AlwaysAllow` (D196). A drain never takes a second **ready**
+pod, but a pod that is not ready can always be evicted. So before any drain, node rotation
+or node-group update:
+```bash
+kubectl --context ryft-prod-euc1 -n vault get pods -o wide -L vault-active                 # all three 1/1
+kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # 3/3
+kubectl --context ryft-prod-euc1 -n vault get pdb vault-server                             # ALLOWED DISRUPTIONS 1
+vault operator raft autopilot state                                                        # Healthy true, Failure Tolerance 1
+```
+- `updatedReplicas` below `replicas` means an unrolled template change. A drain recreates the
+  pod from the **current** template: an unplanned upgrade in the middle of maintenance. Roll
+  first (**Day 2**).
+- One node at a time: wait for the pod to be back `1/1` and autopilot Healthy before the next.
+  A pod whose volume sits in the drained zone stays `Pending` until a node joins in that zone.
+  That is expected.
+- **Never `--force`** a drain or a managed node-group update on this cluster. It ignores
+  Vault's and RabbitMQ's budgets. A pod that cannot be evicted for 15 minutes fails a node-group
+  update (`PodEvictionFailure`). Find out why instead of forcing.
+
+### A pod is sealed
+
+Not ready (`0/1`), but alive. Liveness accepts sealed and uninitialised, so it is not
+restarted. The `vault` Services skip it. Recovery keys cannot unseal a KMS-sealed Vault,
+so don't try.
+```bash
+kubectl --context ryft-prod-euc1 -n vault logs vault-<n> --tail=100 | grep -iE 'seal|kms|credential'
+kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-<n> 8202:8200 >/dev/null &
+vault status -address=https://127.0.0.1:8202   # Sealed true
+```
+The cause is almost always KMS:
+- the Pod Identity association `vault/vault` or its role;
+- egress to KMS (NetworkPolicy `vault-server`, the NAT);
+- the key disabled or its policy changed (CloudTrail: `Decrypt` by `ryft-prod-euc1-vault-unseal`).
+
+Fix the cause, then delete the pod so that it starts and unseals again. One sealed pod
+costs the failure tolerance, not the service. Two sealed pods: **Quorum loss**.
+
+### The leader is gone
+
+The active pod died or was deleted, and a standby wins the election within seconds. The
+label `vault-active=true` moves, and so does `svc/vault-active`. A port-forward to it ends
+(restart it), and VSO reconnects on its own.
+```bash
+kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # exactly one true
+vault operator raft list-peers                  # a leader; the old one follower (or unreachable until it is back)
+```
+If no pod is `vault-active=true` for more than a minute, there is no quorum (**Quorum loss**).
+
+**Probe codes.** `/v1/sys/health` answers:
+
+| Code | Meaning | Ready | Alive |
+| --- | --- | --- | --- |
+| 200 | active, or standby with `standbyok` | yes | yes |
+| 429 | standby (without `standbyok`) | yes, via `standbyok` | yes |
+| 501 | not initialised | no | yes |
+| 503 | sealed | no | yes |
+| 474 | a standby that cannot reach the active node (port 8201, NetworkPolicy, certificate, leader gone) | no | yes |
+| 530 | a node removed from the Raft cluster (`remove-peer`) | no | yes |
+
+On 474, check the peers' 8201 path and the leader. On 530, the node's data is stale: treat
+it as **A lost volume**, but without the `remove-peer`, which already happened.
+
+### Quorum loss
+
+Two of three voters down: no leader, and nothing is read or written. Workloads keep their
+Kubernetes Secrets and keep running, but nothing syncs or rotates. Usually the nodes or
+pods come back, and Raft recovers by itself with no action. Watch it with
+`kubectl --context ryft-prod-euc1 -n vault get pods -o wide` and `list-peers` once a
+leader exists.
+
+If two volumes are gone for good, restore from a snapshot (**Disaster recovery**). The
+alternative is Raft's manual recovery (`raft/peers.json` on the survivor, Vault's "Outage
+recovery" tutorial). It is **to verify** in the kind drill before it is ever used here.
+
+### A lost volume
+
+One pod's data volume is gone (EBS volume lost, zone gone for good) or holds stale data
+(530). The other two keep the quorum. Its node id (the pod name) is still a voter in the Raft
+configuration, so the failure tolerance is 0 until it is replaced:
+```bash
+vault operator raft list-peers                  # vault-<n> Voter, not reachable
+vault operator raft remove-peer vault-<n>       # the admin login
+kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false
+kubectl --context ryft-prod-euc1 -n vault delete pod vault-<n>
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=10m
+vault operator raft list-peers                  # vault-<n> back as a voter
+vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
+```
+The StatefulSet makes a fresh claim, and the pod joins by `retry_join` and receives the data
+from the leader. Keep `audit-vault-<n>` unless it is lost too. gp3-encrypted retains the old
+EBS volume. It holds only barrier-encrypted data, but delete it in the EC2 console once the
+pod is healthy.
+
+### Snapshots
+
+**What.** A Raft snapshot of the whole Vault every 6 hours (`17 */6 * * *` UTC; **RPO 6 h**):
+every secret, mount, policy, auth method and role, the audit device configuration, the live
+tokens. Vault encrypts it with its own keyring, which opens only after an unseal with the
+unseal key (`alias/ryft-prod-euc1-vault-unseal`): a snapshot without that key is unreadable.
+S3 encrypts it a second time with the snapshot key (`alias/ryft-prod-euc1-vault-snapshots`).
+
+**How.** The CronJob `vault/vault-snapshot` (charts/vault-extras, D192). Its init container
+(the server's image) logs in through Kubernetes auth with a projected token for audience
+`vault` that lives 10 minutes, as the role **`vault-snapshot`** (bound to the service account
+`vault/vault-snapshot`, audience `vault`, `token_ttl` = `token_max_ttl` = 10 minutes, no
+default policy) with the policy **`snapshot`** (read on `sys/storage/raft/snapshot`, nothing
+else). infra/vault creates both (#151, `k8s.tf`); PR 3b's apply writes them. It saves the
+snapshot from the active node (`vault-active`; a save through a standby is incomplete) and
+checks it with `vault operator raft snapshot inspect`. The token is not revoked: without the
+default policy it may not revoke itself, so it expires with its TTL. The upload container (the
+AWS CLI, pinned by digest; P2 admits it only under the service account `vault-snapshot`) puts
+it with one `aws s3api put-object` under the job's Pod Identity role (iam.tf
+`vault_snapshot_pod_identity`: `s3:PutObject` under `snapshots/` and `kms:GenerateDataKey` on
+the snapshot key through S3, nothing else; it cannot read, list or delete). The snapshot
+lives in a memory-backed `emptyDir` (64 Mi) and is removed on every exit path, SIGTERM
+included; a failed save removes its partial file.
+
+**Where.** `s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/vault-<UTC time>.snap`
+(eu-central-1), with the object's SHA-256 in its metadata (`x-amz-meta-sha256`) and as S3's
+own checksum (`--checksum-algorithm SHA256`: S3 verifies it on the upload). Kept 30 days,
+then the noncurrent version 7 more (infra/aws `vault.tf`). The bucket and both keys outlive
+the cluster (`prevent_destroy`; the keys' policy denies deletion and disabling).
+
+**Write conditions** (each enforced twice, by the request and by a policy):
+
+| Condition | The job sends | Enforced by |
+| --- | --- | --- |
+| create-only: no overwrite of an existing snapshot | `--if-none-match '*'` (a put to an existing name answers `412`) | bucket policy `DenyPutWithoutIfNoneMatch` (no `If-None-Match` header: denied, for everyone; also blocks CopyObject and multipart parts) |
+| the bucket belongs to this account | `--expected-bucket-owner <account>` | the role's `s3:ResourceAccount` condition |
+| encrypted with the snapshot key, named by its full ARN | `--server-side-encryption aws:kms --ssekms-key-id <key ARN> --bucket-key-enabled` | bucket policy `DenyPutWithoutSnapshotKey` and the role's `s3:x-amz-server-side-encryption-aws-kms-key-id` condition |
+| the data key only through S3, only for this bucket | (S3 asks KMS) | the role's `kms:ViaService = s3.eu-central-1.amazonaws.com` and `kms:EncryptionContext:aws:s3:arn = <bucket ARN>` |
+| TLS | the CLI's default | bucket policy `DenyInsecureTransport` |
+
+**List** (your AWS identity; the job's role cannot list):
+
+```bash
+terraform -chdir=infra/aws/kubernetes output -raw vault_snapshot_list_command   # prints the command
+aws s3 ls s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/ --region eu-central-1 | tail -5
+kubectl --context ryft-prod-euc1 -n vault get cronjob vault-snapshot   # LAST SCHEDULE, LAST SUCCESSFUL
+kubectl --context ryft-prod-euc1 -n vault get jobs -l app.kubernetes.io/name=vault-snapshot
+```
+
+**The first snapshot** (the last step of this PR's apply order, after `make alerts-apply`).
+Before the init every scheduled run fails at the login (no role yet), and no alert fires then:
+no run has succeeded and no pod is ready. That holds only until the init. Once a server is
+ready, `VaultSnapshotFailing` warns 30 minutes after a failed run and `VaultSnapshotStale`
+pages after 13 hours without a success, so take the first one by hand right away:
+
+```bash
+kubectl --context ryft-prod-euc1 -n vault create job --from=cronjob/vault-snapshot vault-snapshot-first
+kubectl --context ryft-prod-euc1 -n vault wait --for=condition=complete job/vault-snapshot-first --timeout=10m
+kubectl --context ryft-prod-euc1 -n vault logs job/vault-snapshot-first -c snapshot   # "snapshot saved and inspected"
+kubectl --context ryft-prod-euc1 -n vault logs job/vault-snapshot-first -c upload     # "snapshot uploaded", key and sha256
+aws s3api head-object --bucket ryft-prod-euc1-vault-snapshots-<account> --key <key> --region eu-central-1 \
+  --checksum-mode ENABLED \
+  --query '{sse: ServerSideEncryption, key: SSEKMSKeyId, bucketKey: BucketKeyEnabled, sha256: Metadata.sha256, s3sha256: ChecksumSHA256}'
+kubectl --context ryft-prod-euc1 -n vault get cronjob vault-snapshot -o jsonpath='{.status.lastSuccessfulTime}{"\n"}'
+```
+
+The last line must print a time: `create job --from` makes the CronJob the Job's owner, so the
+controller records its success, and this status is what the snapshot alerts read (and one
+half of their "initialised" gate). Empty: wait a minute and look again (the controller writes
+it after the Job completes). Still empty: keep the Job, look at
+`kubectl --context ryft-prod-euc1 -n vault describe cronjob vault-snapshot` (events), and
+check that the next scheduled run sets it. Once it is set:
+`kubectl --context ryft-prod-euc1 -n vault delete job vault-snapshot-first`.
+
+`SSEKMSKeyId` must be the snapshot key's ARN (`aws kms describe-key --key-id alias/ryft-prod-euc1-vault-snapshots --region eu-central-1 --query KeyMetadata.Arn`).
+Then prove both create-only rules once, with your own identity:
+
+```bash
+KEY_ARN="$(aws kms describe-key --key-id alias/ryft-prod-euc1-vault-snapshots --region eu-central-1 --query KeyMetadata.Arn --output text)"
+B=ryft-prod-euc1-vault-snapshots-<account>
+# 1. Without If-None-Match: must answer AccessDenied (the bucket policy). If it succeeds, the
+#    policy is not applied: delete the object and apply infra/aws.
+aws s3api put-object --bucket "$B" --key snapshots/policy-check --body /dev/null \
+  --server-side-encryption aws:kms --ssekms-key-id "$KEY_ARN" --region eu-central-1
+# 2. With it, twice: the first succeeds, the second must answer PreconditionFailed (412).
+aws s3api put-object --bucket "$B" --key snapshots/policy-check-412 --body /dev/null --if-none-match '*' \
+  --server-side-encryption aws:kms --ssekms-key-id "$KEY_ARN" --region eu-central-1
+aws s3api put-object --bucket "$B" --key snapshots/policy-check-412 --body /dev/null --if-none-match '*' \
+  --server-side-encryption aws:kms --ssekms-key-id "$KEY_ARN" --region eu-central-1
+unset KEY_ARN B
+```
+
+The test object stays until the lifecycle expires it (30 days, then 7 for the version): the
+job's role cannot delete, and neither should you need to. It is empty and named
+`policy-check-412`, so nothing mistakes it for a snapshot.
+
+**When a run fails** (`VaultSnapshotFailing`, then `VaultSnapshotStale` pages at 13 h):
+`kubectl --context ryft-prod-euc1 -n vault logs job/<job> -c snapshot` (or `-c upload`).
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `permission denied` / `invalid role name` at `auth/kubernetes/login` | the role `vault-snapshot` is missing in Vault (PR 3b not applied), or its audience or bound service account differs | infra/vault's role (#151 `k8s.tf`: audience `vault`, `vault/vault-snapshot`, policy `snapshot`); the baseline in Vault → Terraform through the port-forward |
+| `permission denied` at `sys/storage/raft/snapshot` | the policy `snapshot` changed, or the role lost it | `vault policy read snapshot` (read on `sys/storage/raft/snapshot` only) |
+| `connection refused` / `no such host` on `vault-active` | no active node (sealed, uninitialised) | VaultSealed / VaultNoActiveNode first |
+| `incomplete snapshot, unable to read SHA256SUMS.sealed file` | the save reached a standby | `VAULT_ADDR` must be `vault-active` (the template) |
+| `AccessDenied` on `PutObject` | a missing header (key ARN, `If-None-Match`), the wrong account, or no credentials (the pod started before the association: the next run gets them) | the upload log's request; `aws eks list-pod-identity-associations --cluster-name ryft-prod-euc1 --namespace vault --region eu-central-1` |
+| `AccessDenied` mentioning `kms:Decrypt` | S3 asked for Decrypt when reusing the cached bucket key (not documented; the role holds GenerateDataKey only) | a reviewed PR adds `kms:Decrypt` with the same ViaService and context conditions to `vault_snapshot_policy_statements` |
+| `BadDigest` / `XAmzContentSHA256Mismatch` | the file changed or broke between the hash and the upload | none; the next run takes a new snapshot. Repeated: the node's memory |
+| `PreconditionFailed` (412) | an object of that name exists (two runs in one second) | none; the next run has a new name |
+| Job `DeadlineExceeded` | the Job ran over 10 minutes (the NAT, S3, a slow save). `activeDeadlineSeconds` is the Job's: at the deadline the Job fails and no further retry starts | the Job's events (`kubectl --context ryft-prod-euc1 -n vault describe job <job>`); the next schedule tries again |
+| Job `BackoffLimitExceeded` | three pods failed in a row (the first and two retries) | the logs of the last pod, as above |
+
+### Disaster recovery
+
+The way back when the cluster, or Vault's volumes, are gone. Order, each step done before the
+next (the Terraform runs are yours):
+
+1. **`infra/aws`**: the VPC, EKS, the unseal and snapshot keys and the bucket. The keys and
+   the bucket normally survive (prevent_destroy, the keys' deny); a plan that wants to create
+   them means they are gone, see *The unseal key is lost* below.
+2. **The collector peer off.** `vault_collector_peer = false` in
+   `infra/aws/kubernetes/terraform.tfvars` **before** the next step: the new Vault comes up
+   uninitialised, and `PUT /v1/sys/init` must reach nobody but you (Vault metrics (once),
+   step 2). The same before every restore into a fresh, uninitialised cluster.
+3. **`infra/aws/kubernetes`**: the add-ons, the Vault add-on among them. Vault comes up
+   uninitialised (three pods running, 0/1 ready), the snapshot CronJob with it (its runs fail
+   until step 4). Check G3 (Vault → Hard gates): `Initialized false` on all three before
+   your init.
+4. **Restore the latest snapshot** into the new Vault, in the vault shell (Vault, #151), with
+   a port-forward to `pod/vault-0` (no pod is ready, so `vault-active` has no endpoint yet):
+
+   ```bash
+   aws s3 ls s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/ --region eu-central-1 | tail -3
+   aws s3 cp s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/<newest> ./vault.snap --region eu-central-1
+   vault operator raft snapshot inspect vault.snap        # offline; a corrupt file fails here
+   kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-0 8200:8200 >/dev/null &
+   vault status                                            # Initialized false (G3)
+   vault operator init -recovery-shares=1 -recovery-threshold=1   # a throwaway root token and recovery key
+   read -rs VAULT_TOKEN && export VAULT_TOKEN              # the throwaway root token, not echoed
+   vault operator raft snapshot restore -force vault.snap
+   unset VAULT_TOKEN
+   vault status                                            # Sealed false, HA Mode active
+   ```
+
+   `-force` because the new cluster's keys differ from the snapshot's (without it:
+   `could not verify hash file`). The snapshot brings back the old cluster's keyring, wrapped
+   by the same unseal key, so Vault unseals with KMS as before; a node that stays sealed is
+   deleted once (`kubectl --context ryft-prod-euc1 -n vault delete pod vault-N`). From now on the
+   **old** recovery keys, the old admin identity and the old root token (if one was kept) apply;
+   the throwaway token is gone with the old state. vault-1 and vault-2 joined vault-0 at the
+   init and follow it (`vault operator raft list-peers`, three voters). Check
+   `vault audit list -detailed`, `vault auth list`, `vault secrets list`. Then `rm vault.snap`:
+   the file opens with the unseal key, so treat it as every secret. Your disk's encryption
+   (FileVault) is what protects the deleted blocks; `shred` is no help on APFS (copy-on-write,
+   SSD) and is not on stock macOS.
+5. **The collector peer on again**: `vault_collector_peer = true`, plan (`1 to change`) and
+   apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the restored Vault is
+   initialised, by your snapshot).
+6. **VSO syncs.** The restored Kubernetes auth reviews tokens as before (Vault's own service
+   account, D187): `kubectl --context ryft-prod-euc1 get vaultstaticsecrets -A` shows each
+   synced within its `refreshAfter`. A plan of `infra/vault` shows what changed after the
+   snapshot (a rotated secret, a new service): apply it.
+7. **Argo CD** syncs the workloads (app of apps); pods that started before their Secret
+   existed are restarted by VSO's `rolloutRestartTargets`, or by hand.
+
+RPO 6 h: secrets changed after the snapshot come back from step 6's plan (infra/vault holds
+them in its variables), so nothing is lost that Terraform knows.
+
+**The unseal key is lost** (deleted after its 30-day window, which the key policy forbids, or
+the account is gone): no snapshot opens again. Initialise a new Vault: Vault → Bootstrap from
+step 1, with the collector peer off as in step 2 above (the recovery keys and root token are
+the new bootstrap's). Then apply `infra/vault`: it recreates the mounts, auth, roles and
+policies and writes the KV values from its variables (`service_secrets` in
+`terraform.tfvars`, the values Terraform state holds). Then steps 5 to 7. Credentials that
+only lived in Vault (none by design today) would be lost.
+
+**Restore drill: yearly, and after every change** to the seal, the snapshot job, the Vault
+version or the bucket's policies. Into kind on your machine, from the newest real snapshot:
+
+1. `kind create cluster --name vault-drill`, then one Vault 2.2.1 (the pinned image) with Raft,
+   a writable `/vault/audit` (the restored file audit device writes there) and
+   `seal "awskms"` naming the unseal key's ARN, with your own short-lived AWS credentials in
+   the pod (`aws configure export-credentials --format env` into a Secret; if
+   `vault_unseal_allowed_principal_arns` is set in infra/aws, your role must be on it).
+2. Step 4's commands against it (download, inspect, init, `restore -force`, `vault status`).
+3. Pass: unsealed, `vault operator raft list-peers` answers, `vault audit list` and
+   `vault secrets list` show production's mounts, and one `vault kv metadata get` of a service
+   path has its versions. Note the date and the minutes it took in `docs/STATUS.md`.
+4. `kind delete cluster --name vault-drill`, `rm vault.snap`, delete the credentials Secret's
+   source file (FileVault protects what `rm` leaves on the disk). The drill held every
+   production secret unsealed on your machine.
+
+A CI variant with a synthetic snapshot (no production key) is test-engineer's ticket; it
+proves the mechanics, not that production's snapshots open.
 
 ## Terraform state
 
@@ -2608,6 +4159,25 @@ scripts/seed_demo.py`.
   in Grafana → Explore → Loki that `{namespace=~"ryft-.*"}` returns nothing.
 - **Who can read them:** the AWS account's administrators (CloudWatch, `kubectl logs`).
   Nobody else.
+- **Vault (the Vault in the cluster, namespace `vault`; D197, D198):** the one exception
+  that goes to Grafana Cloud. The server log (JSON, `info`) and the `stdout` audit device
+  go from the node's container log to the stack's hosted Logs (alloy-daemonset, namespace
+  `vault` only), **14 days**. The complete local record is `/vault/audit/audit.log` on each
+  pod's audit volume. No app user's data passes through Vault. Values, including the demo
+  and smoke users' emails, are HMAC'd in every audit line (`log_raw=false`,
+  `hmac_accessor=true`, set explicitly at the bootstrap). Paths and key names are system
+  data. The only personal data is the operator's: the display name `oidc-<Google subject>`
+  (a pseudonymous number, never an email or a name: `user_claim = "sub"`, no claim
+  mappings, `verbose_oidc_logging = false`, pinned by `infra/vault/bootstrap.tf`), the
+  entity id and the time of each admin action. **Who reads it:** the stack's members, Grafana
+  Labs (processor, UK), Fleet's remote config, and in the cluster anyone with `pods/log` in
+  `vault` (argocd-server's ClusterRole included, D180). `log_raw=true` on either device
+  would hand every credential to Grafana Labs in clear. If it happens, rotate every
+  credential and ask for deletion through Loki's delete API. The same holds for a mount or
+  auth method tuned with `audit_non_hmac_request_keys` or `audit_non_hmac_response_keys`:
+  that field's values then reach both devices in clear. The policy terraform refuses those
+  keys on a tune, and the post-apply baseline (OPERATIONS → Vault → Terraform through the
+  port-forward) reads every mount's tune back.
 
 ## Backups
 

@@ -1,0 +1,20 @@
+# fixture: vault: P3 default-deny with a rule
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-netpol-vault
+# message: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: vault
+spec:
+  egress:
+  - ports:
+    - port: 8200
+    to:
+    - podSelector: {}
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress

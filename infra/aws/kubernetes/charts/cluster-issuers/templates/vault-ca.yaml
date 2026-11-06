@@ -1,0 +1,45 @@
+{{- /*
+Vault's own CA (D190, amends D98): a second root beside ryft-internal, so that the per-namespace vault-ca
+Certificates (whose Secrets give each namespace its ca.crt for VSO's VaultConnection) are not leaves of the CA the
+broker trusts for mutual TLS. A self-signed bootstrap issuer signs one ten-year ECDSA root in the cert-manager
+namespace; the CA ClusterIssuer ryft-vault signs from it: vault/vault-tls (the server) and <ns>/vault-ca (inert
+leaves). Until then any Certificate in any namespace may name ryft-vault: the admission chart's P13 (not yet in
+Deny) will limit what may. Nothing outside the cluster trusts it; the
+operator's CLI gets ca.crt from vault/vault-ca.
+*/}}
+{{- if .Values.vaultCA.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-vault-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ryft-vault-ca
+  namespace: {{ .Release.Namespace }}
+spec:
+  isCA: true
+  commonName: RYFT Vault CA
+  secretName: ryft-vault-ca
+  duration: 87600h # ten years; rotating it re-issues vault-tls and every vault-ca below it
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    name: ryft-vault-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ryft-vault
+spec:
+  ca:
+    secretName: ryft-vault-ca
+{{- end }}

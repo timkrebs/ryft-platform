@@ -1,0 +1,51 @@
+# Set by infra/aws/kubernetes/vault.tf.
+# The VPC's CIDR: the EKS API server's private ENIs (TokenReview, service registration).
+vpcCIDR: ""
+# server.ha.replicas: the pods vault-0 .. vault-<replicas-1> (the service-registration Role names them).
+replicas: 3
+tls:
+  # Every Service and pod name of the server (vault.tf, local.vault_dns_names), and 127.0.0.1 for the port-forward.
+  dnsNames: []
+  ipAddresses: []
+
+# The clients that may reach Vault's API (8200), each off until the change that needs it: the operator with the
+# first cutover (before that, only the operator's port-forward talks to Vault, and before the init anyone on 8200
+# could call the unauthenticated PUT /v1/sys/init), the collector after the operator's own init (D194; vault.tf sets
+it from var.vault_collector_peer: the rule admits all of 8200, not only the metrics). The labels are the
+# charts' own pod labels: vault-secrets-operator 1.6.0 (vso.chart.selectorLabels plus control-plane) and
+# k8s-monitoring 4.5.3's alloy-deployment collector (nameOverride = the collector's name). Check them against the
+# cluster before switching one on:
+#   kubectl --context ryft-prod-euc1 -n vault-secrets-operator-system get pods --show-labels
+#   kubectl --context ryft-prod-euc1 -n monitoring get pods --show-labels
+peers:
+  vso:
+    enabled: false
+    namespace: vault-secrets-operator-system
+    podLabels:
+      app.kubernetes.io/name: vault-secrets-operator
+      control-plane: controller-manager
+  collector:
+    enabled: false
+    namespace: monitoring
+    podLabels:
+      app.kubernetes.io/name: alloy-deployment
+
+# The Raft snapshot CronJob (templates/snapshot.yaml, D192; OPERATIONS -> Vault -> Snapshots). Every field is set by
+# vault.tf; the template fails on an empty one rather than render a job that cannot upload.
+snapshot:
+  # Cron, in Etc/UTC. Every 6 hours = RPO 6 h; VaultSnapshotStale pages at 13 h (two missed runs).
+  schedule: ""
+  images:
+    # The server's image (the init container: login, save, inspect) and the AWS CLI (the upload), each
+    # <repository>:<version>@sha256:<digest>. The admission chart's P2 admits exactly these two in vault.
+    vault: ""
+    awsCli: ""
+  # infra/aws's bucket, the account that owns it, the snapshot key's full ARN (not the alias: the bucket policy and
+  # the role compare the header with the ARN) and the region.
+  bucket: ""
+  accountID: ""
+  keyARN: ""
+  region: ""
+  # Vault's Kubernetes auth mount and the role (infra/vault): read on sys/storage/raft/snapshot only, a short token.
+  authMount: kubernetes
+  role: vault-snapshot

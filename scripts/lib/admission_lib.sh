@@ -132,7 +132,8 @@ EOF
 
 # The namespaces, labelled as infra/vault (kubernetes_namespace_v1.service), argocd.tf and the
 # overlays create them: ryft-<service> and monitoring from the generated vault-namespaces
-# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd.
+# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd, and
+# vault (the in-cluster Vault's, created by infra/aws/kubernetes; the P2, P3 and P13 fixtures act there).
 adm_create_namespaces() {
   local out="$WORK/namespaces.yaml" d svc ns level sa line
   : > "$out"
@@ -171,6 +172,15 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 EOF
   # cert-manager: P12's canary (a Deployment there, created as Argo CD's controller, is refused; as
   # the admin it is admitted) needs the namespace, or the API server answers NotFound before
@@ -198,7 +208,7 @@ EOF
     done < <(yq 'select(.kind == "VaultAuth") | .spec.kubernetes.serviceAccount + " " + .metadata.namespace' "$d")
   done
   if kc apply -f "$out" >"$WORK/log/namespaces.out" 2>&1; then
-    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, monitoring)"
+    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, vault, monitoring)"
   else
     rec "namespaces" FAIL "$(tail -3 "$WORK/log/namespaces.out")"
   fi
@@ -253,25 +263,154 @@ adm_check_argo_rbac() {
     local name=argocd-application-controller
     [ "$who" = controller ] || name=argocd-server
     jq -S '[.controller.clusterRoleRules.rules, .server.clusterRoleRules.rules][0:0] | .' "$ARGO_VALUES" >/dev/null
-    jq -S --arg w "$who" '.[$w].clusterRoleRules.rules | map(. + {apiGroups: .apiGroups, resources: .resources, verbs: .verbs} | del(.resourceNames | select(. == null))) | sort_by(tojson)' "$ARGO_VALUES" > "$want"
+    jq -S --arg w "$who" '.[$w].clusterRoleRules.rules | map(with_entries(select(.value != null))) | sort_by(tojson)' "$ARGO_VALUES" > "$want"
     local got="$WORK/argo-got-$who.json"
-    jq -S --arg n "$name" '.[] | select(.metadata.name == $n) | .rules | map(del(.resourceNames | select(. == null))) | sort_by(tojson)' "$roles" > "$got"
+    jq -S --arg n "$name" '.[] | select(.metadata.name == $n) | .rules | map(with_entries(select(.value != null))) | sort_by(tojson)' "$roles" > "$got"
     if jq -e -n --slurpfile a "$want" --slurpfile b "$got" '$a[0] == $b[0]' >/dev/null; then
       rec "argo-rbac-drift-$who" PASS "the rendered ClusterRole $name carries exactly the $who rules of argocd.tf ($(jq 'length' "$got") rules)"
     else
       rec "argo-rbac-drift-$who" FAIL "the rendered ClusterRole $name differs from the $who rules of argocd.tf (the chart changed what clusterRoleRules renders?): $(diff "$want" "$got" | head -6 | tr '\n' ' ')"
     fi
   done
-  # Invariants of the design (D120): no wildcard; nothing on secrets, pods/exec, pods/ephemeralcontainers,
-  # serviceaccounts/token; no write on the admission policies and their bindings; the server writes only
-  # events and applications.
+  # Invariants of the design (D120), mirrored from tests/addons.tftest.hcl (an ALLOWLIST of verbs, a
+  # denylist of what must never appear): verbs only get, list, watch, create, update, patch, delete,
+  # escalate, bind (no impersonate, deletecollection, approve, sign, '*'); no '*' anywhere; nothing on
+  # secrets, nodes, */proxy, pods/exec, pods/attach, pods/portforward, pods/ephemeralcontainers,
+  # serviceaccounts/token, certificatesigningrequests (+ approval), signers, the admission policies and
+  # their bindings; escalate and bind only on roles (bind alone also on one ClusterRole), only by name; a resourceNames list is never empty;
+  # the only non-resource URL is the controller's get on /metrics.
   bad=$(jq -r '.[] | .metadata.name as $n | .rules[] | select(
-      (.verbs | index("*")) or (.resources // [] | index("*")) or (.apiGroups // [] | index("*")) or (.nonResourceURLs // [] | length > 0)
-      or ((.resources // []) | any(. == "secrets" or . == "pods/exec" or . == "pods/ephemeralcontainers" or . == "serviceaccounts/token" or . == "validatingadmissionpolicies" or . == "validatingadmissionpolicybindings" or . == "mutatingadmissionpolicies" or . == "mutatingadmissionpolicybindings"))
-    ) | $n + ": " + (.resources // [] | join(","))' "$roles")
-  if [ -z "$bad" ]; then rec "argo-rbac-invariants" PASS "no wildcard, no secrets, no pods/exec, no ephemeralcontainers, no serviceaccounts/token, nothing on the admission policies or bindings"; else rec "argo-rbac-invariants" FAIL "$bad"; fi
-  bad=$(jq -r '.[] | select(.metadata.name == "argocd-server") | .rules[] | select((.verbs | any(. == "create" or . == "update" or . == "patch" or . == "delete" or . == "escalate" or . == "bind" or . == "impersonate")) and (((.resources // []) | all(. == "events" or . == "applications")) | not)) | (.resources // [] | join(","))' "$roles")
-  if [ -z "$bad" ]; then rec "argo-rbac-server-readonly" PASS "argocd-server writes only events and applications"; else rec "argo-rbac-server-readonly" FAIL "argocd-server may write: $bad"; fi
+      ((.verbs // []) | any(. as $v | ["get","list","watch","create","update","patch","delete","escalate","bind"] | index($v) | not))
+      or ((.verbs // []) | length == 0)
+      or ((.apiGroups // []) | any(contains("*"))) or ((.resources // []) | any(contains("*"))) or ((.resourceNames // []) | any(contains("*")))
+      or ((.resources // []) | any(. == "secrets" or . == "pods/exec" or . == "pods/attach" or . == "pods/portforward" or . == "pods/ephemeralcontainers" or . == "serviceaccounts/token"
+            or . == "nodes" or startswith("nodes/") or endswith("/proxy") or . == "signers" or startswith("certificatesigningrequests")
+            or . == "validatingadmissionpolicies" or . == "validatingadmissionpolicybindings" or . == "mutatingadmissionpolicies" or . == "mutatingadmissionpolicybindings"))
+      or (((.verbs // []) | any(. == "escalate" or . == "bind")) and ((((.resources // []) == ["roles"]) or (((.resources // []) == ["clusterroles"]) and (.verbs == ["bind"]))) | not))
+      or (((.verbs // []) | any(. == "escalate" or . == "bind")) and ((.resourceNames // []) | length == 0))
+      or (has("resourceNames") and ((.resourceNames // []) | length == 0))
+      or (has("nonResourceURLs") and (($n == "argocd-application-controller" and (.nonResourceURLs == ["/metrics"]) and (.verbs == ["get"])) | not))
+    ) | $n + ": " + ((.resources // .nonResourceURLs // []) | join(",")) + " [" + ((.verbs // []) | join(",")) + "]"' "$roles")
+  if [ -z "$bad" ]; then rec "argo-rbac-invariants" PASS "verbs from the allowlist only, no wildcard, no secrets, nodes, proxy, pods/exec, attach, portforward, ephemeralcontainers, serviceaccounts/token, CSR or signers, nothing on the admission policies or bindings, escalate never on a ClusterRole, bind only by name, the only non-resource URL is the controller's /metrics get"; else rec "argo-rbac-invariants" FAIL "$bad"; fi
+  bad=$(jq -r '.[] | select(.metadata.name == "argocd-server") | .rules[] | select((.verbs // []) | any(. as $v | ["get","list","watch"] | index($v) | not)) | (.resources // [] | join(",")) + " [" + (.verbs | join(",")) + "]"' "$roles")
+  if [ -z "$bad" ]; then rec "argo-rbac-server-readonly" PASS "argocd-server holds read verbs only (it writes Applications and Events in the argocd namespace through the chart's Role)"; else rec "argo-rbac-server-readonly" FAIL "argocd-server may write: $bad"; fi
+}
+
+# The render's role bindings are the chart's own and nothing else: a ClusterRoleBinding to cluster-admin
+# that came in through extraObjects (or any value) passes every rule check on the two ClusterRoles, which
+# look at rules only. Each (Cluster)RoleBinding of the render has the name of the (Cluster)Role it refers
+# to, and that name is one of the chart's seven. Runs on the chart's default render too.
+adm_check_argo_bindings() {
+  [ -n "${ARGO_RENDER:-}" ] || { rec "argo-bindings" SKIP "no render"; return 0; }
+  local bad
+  bad=$(yq -o=json -I0 'select(.kind == "ClusterRoleBinding" or .kind == "RoleBinding")' "$ARGO_RENDER" | jq -rs '
+    ["argocd-application-controller","argocd-applicationset-controller","argocd-repo-server","argocd-server","argocd-redis-secret-init"] as $own
+    | .[] | select(
+        (.metadata.name != .roleRef.name)
+        or ((.roleRef.name | IN($own[])) | not)
+        or (.roleRef.kind != (if .kind == "ClusterRoleBinding" then "ClusterRole" else "Role" end))
+        or (.kind == "ClusterRoleBinding" and (.roleRef.name | IN("argocd-application-controller","argocd-server") | not))
+      ) | .kind + " " + .metadata.name + " -> " + .roleRef.kind + " " + .roleRef.name')
+  if [ -z "$bad" ]; then rec "argo-bindings" PASS "the render binds only the chart's own roles to their own names (no cluster-admin, no extra binding)"; else rec "argo-bindings" FAIL "a role binding in the render that is not the chart's: $bad"; fi
+}
+
+# The whole render, counted: what the chart renders with the values of argocd.tf is exactly this
+# inventory of (kind, namespace), cluster-scoped objects with "-". A value that is allowed by the guard
+# and still renders another object (a line break in a string, a template) adds a line here. Recomputed
+# from `helm template argocd argo-cd --version 10.10.5 -n argocd -f <values>`; a chart bump, or a
+# component turned on, changes it on purpose, in the same PR.
+ARGO_INVENTORY_EXPECTED='ClusterRole - 2
+ClusterRoleBinding - 2
+ConfigMap argocd 7
+CustomResourceDefinition - 3
+Deployment argocd 4
+Ingress argocd 1
+Job argocd 1
+Middleware argocd 2
+NetworkPolicy argocd 5
+Role argocd 5
+RoleBinding argocd 5
+Secret argocd 1
+Service argocd 4
+ServiceAccount argocd 5
+StatefulSet argocd 1'
+
+# adm_check_argo_inventory: the render (ARGO_RENDER) against ARGO_INVENTORY_EXPECTED (or $ARGO_INVENTORY,
+# for the tests). Only for the values of argocd.tf: the chart's defaults render another set.
+adm_check_argo_inventory() {
+  [ -n "${ARGO_RENDER:-}" ] || { rec "argo-inventory" SKIP "no render"; return 0; }
+  [ -n "${ARGO_VALUES:-}" ] || { rec "argo-inventory" SKIP "no values of argocd.tf: the chart's defaults render another set"; return 0; }
+  local want got diffs
+  want=$(printf '%s\n' "${ARGO_INVENTORY:-$ARGO_INVENTORY_EXPECTED}" | sort)
+  got=$(yq -o=json -I0 '.' "$ARGO_RENDER" | jq -rs 'map(select(. != null)) | map((.kind // "?") + " " + (.metadata.namespace // "-")) | group_by(.) | map(.[0] + " " + (length | tostring)) | .[]' | sort)
+  if [ "$got" = "$want" ]; then
+    rec "argo-inventory" PASS "the render holds exactly the expected $(printf '%s\n' "$want" | awk '{n += $NF} END {print n}') objects ($(printf '%s\n' "$want" | wc -l | tr -d ' ') kinds), all in argocd or cluster-scoped"
+  else
+    diffs=$(diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | grep '^[<>]' | tr '\n' ';' || true)
+    rec "argo-inventory" FAIL "the render differs from the expected inventory (< expected, > rendered): $diffs"
+  fi
+}
+
+# What the chart renders from extraObjects (templates/extra-manifests.yaml, which runs every entry through
+# `tpl`): exactly as many documents as the values list, each a NetworkPolicy or a Middleware in argocd. A
+# template expression inside an allowed kind (apiVersion: "...{{ ... | b64dec }}") can render a whole other
+# object, which the values guard cannot see once it is expanded; this looks at the result.
+#   adm_check_argo_extra_docs <rendered-file> <expected count>
+adm_check_argo_extra_docs() {
+  local f=$1 want=$2 got bad
+  got=$(yq -o=json -I0 '.' "$f" | jq -s 'map(select(. != null)) | length')
+  bad=$(yq -o=json -I0 '.' "$f" | jq -rs 'map(select(. != null)) | .[] | select(((.kind == "NetworkPolicy" or .kind == "Middleware") and .metadata.namespace == "argocd") | not) | (.kind // "?") + " " + (.metadata.namespace // "-") + "/" + (.metadata.name // "?")')
+  if [ "$got" != "$want" ]; then
+    rec "argo-extra-objects" FAIL "extraObjects render $got documents, the values list $want"
+  elif [ -n "$bad" ]; then
+    rec "argo-extra-objects" FAIL "an extra object that is not a NetworkPolicy or Middleware in argocd: $bad"
+  else
+    rec "argo-extra-objects" PASS "the $want extraObjects render as $want NetworkPolicy/Middleware documents in argocd, nothing else"
+  fi
+}
+
+# adm_check_argo_extra_objects: renders only templates/extra-manifests.yaml with the values of argocd.tf
+# and checks it (adm_check_argo_extra_docs). Needs the values; with the chart's defaults there are none.
+adm_check_argo_extra_objects() {
+  [ -n "${ARGO_VALUES:-}" ] || { rec "argo-extra-objects" SKIP "no values of argocd.tf (the chart's defaults ship no extra object)"; return 0; }
+  local repo ver want out="$WORK/argocd-extra.yaml"
+  repo=$(chart_repo argocd); ver=$(chart_version argocd)
+  want=$(jq '(.extraObjects // []) | length' "$ARGO_VALUES")
+  if [ "$want" = 0 ]; then rec "argo-extra-objects" PASS "the values list no extra object"; return 0; fi
+  if ! helm template argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -s templates/extra-manifests.yaml > "$out" 2>"$WORK/log/argo-extra.err"; then
+    rec "argo-extra-objects" FAIL "helm template -s templates/extra-manifests.yaml: $(head -c 300 "$WORK/log/argo-extra.err")"
+    return 0
+  fi
+  adm_check_argo_extra_docs "$out" "$want"
+}
+
+# A binding written in Terraform (kubernetes_role_binding, kubernetes_cluster_role_binding, their _v1
+# forms, or a manifest of kind RoleBinding / ClusterRoleBinding) that names an argocd identity, or the
+# groups system:serviceaccounts / system:authenticated / system:unauthenticated, bypasses
+# every check on the two ClusterRoles' rules, and the render above does not contain it (Terraform applies
+# it, not the chart). Tripwire over the module's *.tf (top-level blocks, as `terraform fmt` writes them,
+# comment lines skipped); a binding that names no argocd identity is not this check's business.
+adm_check_argo_tf_bindings() {
+  local dir="$REPO/$K8S_DIR_REL" hits
+  [ -d "$dir" ] || { rec "argo-tf-bindings" SKIP "$K8S_DIR_REL is not in the tree"; return 0; }
+  hits=$(find "$dir" -type f -name '*.tf' ! -path '*/.terraform/*' | sort | while IFS= read -r f; do
+    awk -v file="${f#"$dir"/}" '
+      /^(resource|data)[ \t]+"/ { split($0, p, "\""); type = p[2]; blk = ""; inblk = 1 }
+      inblk && $0 !~ /^[ \t]*(#|\/\/)/ { blk = blk "\n" $0 }
+      inblk && /^}/ {
+        inblk = 0
+        # the resource types for a binding, or any resource (a manifest) that says RoleBinding / ClusterRoleBinding
+        isbind = (type ~ /^kubernetes_(cluster_)?role_?binding/ || blk ~ /(Cluster)?RoleBinding/)
+        if (isbind && blk ~ /argocd/)
+          printf "%s: %s names an argocd identity\n", file, type
+        else if (isbind && blk ~ /system:(serviceaccounts|authenticated|unauthenticated)/)
+          printf "%s: %s binds a broad group (system:serviceaccounts, system:authenticated or system:unauthenticated)\n", file, type
+        # a manifest the tripwire cannot read (manifest = local.x, yamldecode(file(...))) is reviewed by hand
+        if (type ~ /^(kubernetes|kubectl)_manifest$/ && blk !~ /kind[ \t]*=[ \t]*"/)
+          printf "%s: %s takes a manifest that is not a literal: review it by hand\n", file, type
+      }' "$f"
+  done)
+  if [ -z "$hits" ]; then rec "argo-tf-bindings" PASS "no role binding in $K8S_DIR_REL names an argocd identity or a broad group, and no manifest resource it cannot read"; else rec "argo-tf-bindings" FAIL "$hits"; fi
 }
 
 # The RBAC objects that make the impersonated identities real: the service accounts, the two
@@ -606,7 +745,7 @@ EOF
     ($2 == "refused" || $2 == "warned") {
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/rabbitmq-cluster-operator-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a (Role or )?ClusterRole of the operators (must not (hold a wildcard verb|grant Secrets))/) next
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/messaging-topology-manager-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a ClusterRole of the operators (is read-only|must not grant Secrets)/) next
-      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432, or the broker.s 443 rule/) next
+      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432 \(443 in vault\), the broker.s 443 rule/) next
       printf "%s %s by %s (%s); ", $1, $3, $4, substr($5, 1, 80)
     }' "$WORK/dry-all-$variant.tsv")
   if [ -n "$unexplained" ]; then
@@ -982,17 +1121,26 @@ EOF
   fi
 }
 
-# Claim h, the NEGATIVE test of T12-f: the application controller's escalate on a few named
-# ClusterRoles plus bind on them is escalation-equivalent. Without the policies it succeeds: the
-# controller rewrites rabbitmq-cluster-operator-role to carry write on the admission policies and
-# binds itself to it, after which it may write them. With P6 in Deny both steps are refused (the role
-# carries what no operator role may; the binding names a subject that is not an operator service
-# account). Run as the real service account (no fixture group): its RBAC is what is tested.
-# Needs the narrowed role (escalate/bind by resourceNames); with the chart default (wildcard) the
-# first phase succeeds trivially and the check says so.
+# Claim h, the NEGATIVE test of T12-f. The application controller holds NO escalate on any ClusterRole
+# (it holds what the operators' ClusterRoles contain instead, and bind on the one the topology operator's
+# binding names), but it still has escalate and bind on the four operator Roles by name, and a
+# ClusterRole's resourceNames match in EVERY namespace. The vectors use server-side apply, as Argo CD does
+# (ServerSideApply=true): the name is then in the request URL; a client-side create is a POST without a
+# name, which `escalate` by resourceNames does not authorize. Two vectors,
+# both as the real service account (no fixture group): its RBAC is what is tested.
+#   1. The ClusterRole vector (T12-f's first version had it open): rewrite a ClusterRole of an operator
+#      name to carry write on the admission policies. Kubernetes' own escalation check refuses it with
+#      NO policy in place (phase open): the controller does not hold those rights and may not escalate.
+#   2. The Role vector, still open until P6 is in Deny: write a Role named rabbitmq-cluster-operator-role
+#      in kube-system with Secrets and pods/exec, and bind itself to it. Without the policies both
+#      succeed and the controller can read Secrets in kube-system; with P6 in Deny both are refused (the
+#      Role is outside rabbitmq-system and the broker's namespace; the binding names a subject that is no
+#      operator service account).
+# With the chart-default (wildcard) role of a tree without T12-f vector 1 succeeds trivially, and the
+# check says so.
 adm_claim_h() {
   local phase=$1   # open | guarded
-  local tmp="$WORK/claim-h" out1 out2 can
+  local tmp="$WORK/claim-h" out1 out2 out3 out4 can can2 rc1 rc2 rc3 rc4
   mkdir -p "$tmp"
   cat > "$tmp/role.yaml" <<'EOF'
 apiVersion: rbac.authorization.k8s.io/v1
@@ -1003,17 +1151,9 @@ rules:
     resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
     verbs: ["create", "update", "patch", "delete"]
 EOF
-  cat > "$tmp/binding.yaml" <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata: { name: rabbitmq-cluster-operator-role }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: rabbitmq-cluster-operator-role }
-subjects:
-  - { kind: ServiceAccount, name: argocd-application-controller, namespace: argocd }
-EOF
-  # The operators' role as it is in the cluster (read-only here, made by the admin: P6 judges Argo
-  # CD's writers only), then the controller's two steps.
-  cat > "$tmp/benign.yaml" <<'EOF2'
+  # The operators' ClusterRole as it would be in the cluster (read-only; made by the admin: P6 judges
+  # Argo CD's writers only).
+  cat > "$tmp/benign.yaml" <<'EOF'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata: { name: rabbitmq-cluster-operator-role }
@@ -1021,38 +1161,69 @@ rules:
   - apiGroups: ["rabbitmq.com"]
     resources: ["rabbitmqclusters"]
     verbs: ["get", "list", "watch"]
-EOF2
-  kc delete -f "$tmp/binding.yaml" --ignore-not-found >/dev/null 2>&1
-  kc delete -f "$tmp/role.yaml" --ignore-not-found >/dev/null 2>&1
-  kc apply -f "$tmp/benign.yaml" >/dev/null 2>&1
-  out1=$(kca "$ARGO_CTRL" apply -f "$tmp/role.yaml" 2>&1); local rc1=$?
-  out2=$(kca "$ARGO_CTRL" apply -f "$tmp/binding.yaml" 2>&1); local rc2=$?
-  can=$(kca "$ARGO_CTRL" auth can-i create validatingadmissionpolicybindings 2>/dev/null | head -1)
-  # clean up whatever was created, as the admin
-  kc delete -f "$tmp/binding.yaml" --ignore-not-found >/dev/null 2>&1
-  kc delete -f "$tmp/role.yaml" --ignore-not-found >/dev/null 2>&1
+EOF
+  cat > "$tmp/ns-role.yaml" <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: rabbitmq-cluster-operator-role, namespace: kube-system }
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+EOF
+  cat > "$tmp/ns-binding.yaml" <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: rabbitmq-cluster-operator-rolebinding, namespace: kube-system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: rabbitmq-cluster-operator-role }
+subjects:
+  - { kind: ServiceAccount, name: argocd-application-controller, namespace: argocd }
+EOF
+  kc delete -f "$tmp/ns-binding.yaml" --ignore-not-found >/dev/null 2>&1
+  kc delete -f "$tmp/ns-role.yaml" --ignore-not-found >/dev/null 2>&1
+  kc delete clusterrole rabbitmq-cluster-operator-role --ignore-not-found >/dev/null 2>&1
+  rc1=; out1=; can=
   if [ "$phase" = open ]; then
-    if [ "$rc1" = 0 ] && [ "$rc2" = 0 ] && [ "$can" = yes ]; then
-      rec "claim-h-open" PASS "without the policies the controller rewrote rabbitmq-cluster-operator-role (escalate), bound itself to it (bind) and could then write ValidatingAdmissionPolicyBindings: the hole exists in $([ "${NARROWED_RBAC:-0}" = 1 ] && echo "T12-f's narrowed RBAC (stated in #47)" || echo "the chart-default RBAC")"
-    elif [ "${NARROWED_RBAC:-0}" = 1 ] && [ "$rc1" != 0 ]; then
-      rec "claim-h-open" FAIL "with T12-f's RBAC and no policies the controller could not rewrite the operator role (rc=$rc1: $(printf '%s' "$out1" | tr '\n' ' ' | cut -c1-200)): either escalate by resourceNames does not do what #47 assumes, or the hole is closed already"
+    kc apply -f "$tmp/benign.yaml" >/dev/null 2>&1
+    out1=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/role.yaml" 2>&1); rc1=$?
+    can=$(kca "$ARGO_CTRL" auth can-i create validatingadmissionpolicybindings 2>/dev/null | head -1)
+    kc delete clusterrole rabbitmq-cluster-operator-role --ignore-not-found >/dev/null 2>&1
+  fi
+  out2=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/ns-role.yaml" 2>&1); rc2=$?
+  out3=$(kca "$ARGO_CTRL" apply --server-side -f "$tmp/ns-binding.yaml" 2>&1); rc3=$?
+  can2=$(kca "$ARGO_CTRL" auth can-i get secrets -n kube-system 2>/dev/null | head -1)
+  # clean up whatever was created, as the admin
+  kc delete -f "$tmp/ns-binding.yaml" --ignore-not-found >/dev/null 2>&1
+  kc delete -f "$tmp/ns-role.yaml" --ignore-not-found >/dev/null 2>&1
+  local n1 n2 n3
+  n1=$(printf '%s' "$out1" | tr -s ' \n' '  ')
+  n2=$(printf '%s' "$out2" | tr -s ' \n' '  ')
+  n3=$(printf '%s' "$out3" | tr -s ' \n' '  ')
+  if [ "$phase" = open ]; then
+    # Vector 1: refused by RBAC itself.
+    if [ "${NARROWED_RBAC:-0}" != 1 ]; then
+      rec "claim-h-clusterrole" INFO "this tree has the chart-default RBAC: the controller's ClusterRole rewrite $([ "$rc1" = 0 ] && echo succeeded || echo "was refused (rc=$rc1)"), as it does until T12-f narrows it"
+    elif [ "$rc1" != 0 ] && printf '%s' "$n1" | grep -qiE 'forbidden|attempting to grant' && [ "$can" != yes ]; then
+      rec "claim-h-clusterrole" PASS "with T12-f's RBAC and NO policy the controller cannot rewrite a ClusterRole of an operator name to carry write on the admission policies (rc=$rc1, Kubernetes' escalation check: $(printf '%s' "$n1" | cut -c1-160)); can-i create validatingadmissionpolicybindings: $can"
     else
-      rec "claim-h-open" FAIL "unexpected: role rc=$rc1, binding rc=$rc2, can-i=$can: $(printf '%s %s' "$out1" "$out2" | tr '\n' ' ' | cut -c1-300)"
+      rec "claim-h-clusterrole" FAIL "with T12-f's RBAC and no policy the ClusterRole rewrite was not refused by RBAC (rc=$rc1, can-i=$can): $(printf '%s' "$n1" | cut -c1-200)"
+    fi
+    # Vector 2: open without the policies.
+    if [ "$rc2" = 0 ] && [ "$rc3" = 0 ] && [ "$can2" = yes ]; then
+      rec "claim-h-open" PASS "without the policies the controller wrote a Role named rabbitmq-cluster-operator-role in kube-system (escalate by name, valid in every namespace), bound itself to it (bind) and could then read Secrets there: the hole that remains until P6 is in Deny"
+    else
+      rec "claim-h-open" FAIL "unexpected: Role rc=$rc2, RoleBinding rc=$rc3, can-i get secrets -n kube-system=$can2: $(printf '%s %s' "$n2" "$n3" | cut -c1-300) (either escalate/bind by resourceNames on roles does not do what #47 assumes, or the hole is closed already)"
     fi
   else
-    local n1 n2
-    n1=$(printf '%s' "$out1" | tr -s ' \n' '  ')
-    n2=$(printf '%s' "$out2" | tr -s ' \n' '  ')
-    if [ "$rc1" != 0 ] && printf '%s' "$n1" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
-      && [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
-      && { [ "${NARROWED_RBAC:-0}" != 1 ] || [ "$can" != yes ]; }; then
-      if [ "${NARROWED_RBAC:-0}" = 1 ]; then
-        rec "claim-h-guarded" PASS "with P6 in Deny the role rewrite and the self-binding are both refused (ryft-operators-cluster); the controller cannot write ValidatingAdmissionPolicyBindings (can-i: $can)"
-      else
-        rec "claim-h-guarded" PASS "with P6 in Deny the role rewrite and the self-binding are both refused (ryft-operators-cluster); this tree has the chart-default RBAC, which T12-f narrows"
-      fi
+    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
+      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
+      && [ "$can2" != yes ]; then
+      rec "claim-h-guarded" PASS "with P6 in Deny the Role in kube-system and the self-binding are both refused (ryft-operators-cluster); the controller cannot read Secrets in kube-system (can-i: $can2)"
     else
-      rec "claim-h-guarded" FAIL "with P6 in Deny: role rc=$rc1 ($(printf '%s' "$n1" | cut -c1-200)), binding rc=$rc2, can-i=$can"
+      rec "claim-h-guarded" FAIL "with P6 in Deny: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
     fi
   fi
 }

@@ -130,6 +130,27 @@ kind: ConfigMap
 metadata: { name: aws-auth, namespace: kube-system }
 data: { mapRoles: "[]" }
 # ----
+# fixture: P12 the controller creates a ConfigMap in vault (never in argoScope.namespaces, D206)
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: argo-scope-vault, namespace: vault }
+data: { config.hcl: "ui = true" }
+# ----
+# fixture: P12 the controller creates the ryft-vault root CA Secret in cert-manager (never in argoScope.namespaces, D206)
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+apiVersion: v1
+kind: Secret
+metadata: { name: ryft-vault-ca, namespace: cert-manager }
+type: kubernetes.io/tls
+stringData: { tls.crt: stand-in, tls.key: stand-in }
+# ----
 # fixture: P12 the chart's redis-secret-init creates Secret argocd-redis
 # op: create
 # as: system:serviceaccount:argocd:argocd-redis-secret-init

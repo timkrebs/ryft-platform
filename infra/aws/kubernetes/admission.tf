@@ -1,5 +1,7 @@
-# Admission policies for ryft-prod-euc1 (D120): twelve ValidatingAdmissionPolicies P1-P12
-# and their thirteen bindings, from the local chart charts/admission-policy, in kube-system. The
+# Admission policies for ryft-prod-euc1 (D120): thirteen ValidatingAdmissionPolicies (P1-P13: P12
+# is where Argo CD's identities may write, D206; P13 the in-cluster Vault's CA) and their eighteen
+# bindings (P1, P2 twice and P3 once more for namespace vault alone, so those go to deny on their
+# own), from the local chart charts/admission-policy, in kube-system. The
 # production values are committed in admission-values.yaml (a reviewed PR, then your apply);
 # `enabled: false` there creates nothing. Bindings are exempt from admission, so RBAC guards
 # them (T12-f) and the break-glass is yours alone: kubectl patch or delete a binding, then
@@ -44,6 +46,23 @@ locals {
   admission_operators_namespace = try(local.admission_file.operators.namespace, local.admission_defaults.operators.namespace)
   admission_argo_scope          = merge(local.admission_defaults.argoScope, try(local.admission_file.argoScope, {}))
 
+  # Namespaces Argo CD never writes in (D206): the in-cluster Vault's (this root's add-on), cert-manager's
+  # (the release in addons.tf, and the cluster resource namespace that holds the ryft-vault root CA),
+  # Argo CD's own (rule 4 keeps it to Applications and events) and kube-system (aws-auth). P12's
+  # namespace list and its Namespace objects hold none of them; the chart refuses the same render.
+  admission_argo_never = distinct([
+    kubernetes_namespace_v1.vault.metadata[0].name,
+    try(local.admission_file.vault.namespace, local.admission_defaults.vault.namespace),
+    helm_release.cert_manager.namespace,
+    try(local.admission_file.vault.clusterResourceNamespace, local.admission_defaults.vault.clusterResourceNamespace),
+    kubernetes_namespace_v1.argocd.metadata[0].name,
+    "kube-system",
+  ])
+  admission_argo_never_listed = sort(distinct([
+    for n in concat(local.admission_argo_scope.namespaces, local.admission_argo_scope.namespaceObjects) : n
+    if contains(local.admission_argo_never, n)
+  ]))
+
   # P12 in deny is only worth something when Argo CD's own RBAC cannot undo it: with the chart's
   # wildcard ClusterRole the controller can patch or delete the ryft-argo-scope binding (bindings are
   # exempt from admission) and impersonate. So argocd.tf must render a narrowed controller role
@@ -76,13 +95,21 @@ locals {
   admission_broker_egress_public = try(local.admission_file.netpol.brokerEgressPublic, local.admission_defaults.netpol.brokerEgressPublic)
 
   # The VaultConnections infra/vault generates: every file must hold exactly one address
-  # (quotes stripped); a check and a test compare it with admission-values.yaml.
-  vault_namespaces_dir = "${path.module}/../../../deploy/k8s/overlays/vault-namespaces"
+  # (quotes stripped), and every address must be one of admission-values.yaml's
+  # vaultAddresses (HCP's or the in-cluster Vault's during the cutover); a check and a test.
+  vault_namespaces_dir = coalesce(var.admission_vault_namespaces_dir, "${path.module}/../../../deploy/k8s/overlays/vault-namespaces")
   vault_address_by_file = {
     for f in fileset(local.vault_namespaces_dir, "*/vault.yaml") :
     f => [for m in regexall("(?m)^\\s+address:\\s*\"?([^\"\\s]+)\"?\\s*$", file("${local.vault_namespaces_dir}/${f}")) : m[0]]
   }
-  vault_addresses = distinct(flatten(values(local.vault_address_by_file)))
+  vault_addresses         = distinct(flatten(values(local.vault_address_by_file)))
+  admission_vault_allowed = try(tolist(local.admission_file.vaultAddresses), [])
+  admission_vault_address_ok = (
+    length(local.vault_address_by_file) > 0 &&
+    alltrue([for f, a in local.vault_address_by_file : length(a) == 1]) &&
+    length(local.admission_vault_allowed) > 0 &&
+    alltrue([for a in local.vault_addresses : contains(local.admission_vault_allowed, a)])
+  )
 
   # Handed to the chart. The file's keys but `enabled`, with the full action map.
   admission_values = merge(
@@ -204,6 +231,12 @@ resource "helm_release" "admission_policy" {
       )
       error_message = "The argo-scope binding (P12) is set to deny, but operators-cluster (P6), namespaces (P1) or workloads-templates (P2) is not: P12 alone leaves the RBAC route open (a ClusterRole rewrite, a binding to system:authenticated). Put those three in deny first."
     }
+    # The namespaces Argo CD never writes in: an error of the plan whatever the action (the chart's render
+    # fails on it too; the check below says the same while the release is disabled).
+    precondition {
+      condition     = length(local.admission_argo_never_listed) == 0
+      error_message = "argoScope.namespaces or argoScope.namespaceObjects (admission-values.yaml or the chart's values) holds ${join(", ", local.admission_argo_never_listed)}: Argo CD never writes in vault, cert-manager, argocd or kube-system (D206)."
+    }
     # And P12 is worthless against a controller that can patch its binding: #47 (T12-f) must be merged and
     # applied, i.e. argocd.tf renders a narrowed controller role, before P12 goes to deny.
     precondition {
@@ -232,12 +265,8 @@ check "admission_values" {
 
 check "admission_vault_address" {
   assert {
-    condition = (
-      length(local.vault_address_by_file) > 0 &&
-      alltrue([for f, a in local.vault_address_by_file : length(a) == 1]) &&
-      length(local.vault_addresses) == 1 && local.vault_addresses[0] == local.admission_file.vaultAddress
-    )
-    error_message = "vaultAddress in admission-values.yaml differs from the VaultConnections infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml), or a file does not hold exactly one address. P4 would refuse them all (or none)."
+    condition     = local.admission_vault_address_ok
+    error_message = "A VaultConnection infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml) names an address that is not in vaultAddresses of admission-values.yaml, or a file does not hold exactly one address. P4 would refuse it."
   }
 }
 
@@ -256,6 +285,14 @@ check "admission_argo_scope" {
       alltrue([for n in local.admission_app_destinations : contains(local.admission_argo_scope.namespaces, n)])
     )
     error_message = "argocd.namespace in admission-values.yaml differs from the namespace of the argocd release (P12 would match no Argo CD request), or argoScope.namespaces does not cover the operators' namespace or the destination of an Application in deploy/argocd/apps (P12 would refuse its sync), or lists a Namespace object outside its own scope (Argo CD could create the Namespace and nothing in it)."
+  }
+}
+
+# The same as the release's precondition, evaluated also while the release is disabled (count 0).
+check "admission_argo_scope_never" {
+  assert {
+    condition     = length(local.admission_argo_never_listed) == 0
+    error_message = "argoScope.namespaces or argoScope.namespaceObjects holds ${join(", ", local.admission_argo_never_listed)}: Argo CD never writes in vault, cert-manager, argocd or kube-system (D206)."
   }
 }
 
@@ -304,7 +341,7 @@ check "admission_binding_drift" {
 check "admission_policy_drift" {
   assert {
     condition = !local.admission_enabled ? true : (
-      length(local.admission_rendered_policies) == 12 &&
+      length(local.admission_rendered_policies) == 13 &&
       length(local.admission_live_policies) == length(local.admission_rendered_policies) &&
       alltrue([
         for name, want in local.admission_rendered_policies : (

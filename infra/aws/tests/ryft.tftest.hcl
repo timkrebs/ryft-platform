@@ -176,6 +176,19 @@ run "rejects_unknown_capacity_type" {
   expect_failures = [var.node_group]
 }
 
+# A warning, not an error: Spot stays possible, but the Vault and RabbitMQ quorums are at risk.
+run "spot_nodes_warn_for_the_stateful_quorums" {
+  command = plan
+
+  variables {
+    node_group = {
+      capacity_type = "SPOT"
+    }
+  }
+
+  expect_failures = [check.stateful_quorum_needs_on_demand]
+}
+
 run "rejects_invalid_api_cidr" {
   command = plan
 

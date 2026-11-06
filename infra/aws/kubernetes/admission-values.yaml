@@ -7,9 +7,14 @@
 # Flipping it back to false destroys the release (and with it every policy).
 enabled: false
 
-# The Vault address P4 holds every VaultConnection to. A terraform test compares it with
-# the VaultConnections infra/vault generates (deploy/k8s/overlays/vault-namespaces/*/vault.yaml).
-vaultAddress: https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200
+# The Vault addresses P4 admits on a VaultConnection: HCP Vault's and the in-cluster Vault's,
+# while the namespaces move one cutover PR at a time (this list must be applied before the
+# first one); the decommission leaves the second. A check and a terraform test hold every
+# VaultConnection infra/vault generates (deploy/k8s/overlays/vault-namespaces/*/vault.yaml)
+# to this list.
+vaultAddresses:
+  - https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200
+  - https://vault.vault.svc:8200
 
 # Argo CD's identities, as P1, P6, P7 and P10 judge them.
 argocd:
@@ -24,8 +29,10 @@ netpol:
 
 # The action of each binding: audit (Warn+Audit) or deny (Deny+Audit). Deny is never
 # combined with Warn. Phase 1 is all audit; Phase 2 changes one step per reviewed PR:
-#   A: vso, operators-cluster, broker          B: namespaces, workloads-templates, netpol,
-#   auth-env, traefik, argo-scope   C: workloads-pods, operator-reach   D: argocd, argocd-operation
+#   A: vso, operators-cluster, broker, vault-trust, and the vault bindings (namespaces-vault,
+#   workloads-templates-vault, workloads-pods-vault, netpol-vault)
+#   B: namespaces, workloads-templates, netpol, auth-env, traefik, argo-scope (after P6, P1, P2)
+#   C: workloads-pods, operator-reach   D: argocd, argocd-operation
 actions:
   vso: audit
   # P6 refuses the vendored cluster-wide ClusterRoles of both RabbitMQ operators, so T12-g
@@ -50,3 +57,13 @@ actions:
   # release depends on helm_release.argocd (admission.tf) so that on a fresh cluster Argo CD has
   # written its first server.secretkey before any policy exists.
   argo-scope: audit
+  # P13: what the in-cluster Vault's CA (ClusterIssuer ryft-vault) may issue. Nothing names
+  # that issuer before the Vault add-on PR, so Audit flags nothing until then.
+  vault-trust: audit
+  # P1, P2 and P3 in namespace vault only (the bindings above exclude vault). They go to deny
+  # before the Vault bootstrap, each in its own reviewed PR, whatever step the ryft-* bindings
+  # are at; nothing runs in vault before the add-on PR.
+  namespaces-vault: audit
+  workloads-templates-vault: audit
+  workloads-pods-vault: audit
+  netpol-vault: audit

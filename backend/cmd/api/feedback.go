@@ -105,7 +105,15 @@ func (a admin) feedback(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	auditDetail(r, "n", len(list))
-	a.h.log.InfoContext(r.Context(), "admin feedback read", "since", since, "n", len(list), "admin_key", a.keyID)
+	a.info(r, "admin feedback read", "since", since, "n", len(list))
+	if !wholeView(r) {
+		brief := make([]model.FeedbackBrief, 0, len(list))
+		for _, f := range list {
+			brief = append(brief, f.Brief())
+		}
+		httpx.WriteJSON(w, 200, brief)
+		return
+	}
 	httpx.WriteJSON(w, 200, list)
 }
 
@@ -142,7 +150,7 @@ func (a admin) resolveFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
-	a.h.log.InfoContext(r.Context(), "feedback resolved", "feedback_id", id, "admin_key", a.keyID)
+	a.info(r, "feedback resolved", "feedback_id", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -159,6 +167,14 @@ func (a admin) users(w http.ResponseWriter, r *http.Request) {
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	auditDetail(r, "emails", emails)
 	auditDetail(r, "n", len(list))
-	a.h.log.InfoContext(r.Context(), "admin users read", "emails", emails, "n", len(list), "admin_key", a.keyID)
+	a.info(r, "admin users read", "emails", emails, "n", len(list))
+	if !wholeView(r) {
+		brief := make([]model.AdminUserBrief, 0, len(list))
+		for _, u := range list {
+			brief = append(brief, u.Brief())
+		}
+		httpx.WriteJSON(w, 200, brief)
+		return
+	}
 	httpx.WriteJSON(w, 200, list)
 }

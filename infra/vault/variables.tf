@@ -38,10 +38,60 @@ variable "vault_address_for_cluster" {
   }
 }
 
+# Kept only for its validation: a terraform.tfvars that still sets it fails the plan instead of being ignored.
+# tflint-ignore: terraform_unused_declarations
 variable "vault_ca_bundle_b64" {
-  description = "Base64 PEM CA bundle for the Vault listener, if it is not publicly trusted; written into the VaultConnection"
+  description = "Retired (HCP's listener is publicly trusted). Must stay empty: every generated namespace has a cert-manager Certificate vault-ca whose Secret of the same name is the in-cluster Vault's trust (D190). The variable goes with the HCP provider (PR 6b)."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.vault_ca_bundle_b64 == ""
+    error_message = "vault_ca_bundle_b64 must be empty: the generated Certificate vault-ca writes the Secret vault-ca in every namespace, and a literal Secret of that name would fight cert-manager. HCP Vault Dedicated needs no CA bundle."
+  }
+}
+
+# The in-cluster Vault (provider vault.k8s, providers.tf), reached from the operator's machine through
+# `kubectl port-forward` only (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). Used only while
+# local.write_k8s is true (targets.tf).
+variable "vault_k8s_address" {
+  description = "The in-cluster Vault as Terraform reaches it: the local end of the port-forward to svc/vault-active."
+  type        = string
+  default     = "https://127.0.0.1:8200"
+
+  validation {
+    condition     = can(regex("^https://(127\\.0\\.0\\.1|localhost):[0-9]{1,5}$", var.vault_k8s_address))
+    error_message = "vault_k8s_address must be the port-forward's local end, https://127.0.0.1:<port> (or https://localhost:<port>): the in-cluster Vault is not reachable any other way, and any other address could be HCP's."
+  }
+}
+
+variable "vault_k8s_ca_cert_file" {
+  description = "PEM file with the ryft-vault CA (ca.crt of the Secret vault-ca in namespace vault). Read only while write_k8s is true."
+  type        = string
+  default     = "~/.config/ryft/vault-ca.pem"
+}
+
+variable "vault_k8s_token" {
+  description = "Token for the in-cluster Vault: policy terraform, 1 hour (docs/OPERATIONS.md -> Vault). Only from TF_VAR_vault_k8s_token in the shell that runs Terraform, never in a file. Ephemeral: written neither to the plan nor to the state, so it is needed again at apply."
+  type        = string
+  sensitive   = true
+  ephemeral   = true
+  default     = null
+
+  validation {
+    # Without it the provider would fall back to VAULT_TOKEN, the HCP admin token, and send it to the port-forward.
+    condition     = !local.write_k8s || try(length(var.vault_k8s_token) > 0, false)
+    error_message = "write_k8s is true (targets.tf): set TF_VAR_vault_k8s_token to the 1-hour terraform token of the in-cluster Vault (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward)."
+  }
+}
+
+variable "test_override_targets" {
+  description = "terraform test only: replaces the committed switches of targets.tf. Never set it in terraform.tfvars or TF_VAR_* (check.targets_come_from_git warns)."
+  type = object({
+    write_k8s  = bool
+    vso_on_k8s = list(string)
+  })
+  default = null
 }
 
 # One entry per workload. Each gets: a Vault namespace <project>/<name>, a Kubernetes
@@ -117,6 +167,17 @@ variable "services" {
   validation {
     condition     = length([for s in values(var.services) : s if s.database == "owner"]) <= 1 && length([for s in values(var.services) : s if s.amqp == "server"]) <= 1
     error_message = "At most one service may hold the database owner, and at most one may be the RabbitMQ server."
+  }
+  # A name is a policy name on the in-cluster Vault, and Vault lower-cases and trims policy names on write while
+  # its ACL matches paths as written (bootstrap/terraform.hcl.tftpl): only names that are already canonical.
+  validation {
+    condition     = alltrue([for name in keys(var.services) : can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", name))])
+    error_message = "A service name must be lower-case letters, digits and inner hyphens (^[a-z0-9]([-a-z0-9]*[a-z0-9])?$): it becomes a Kubernetes namespace, a Vault policy, role and mount name."
+  }
+  # On the in-cluster Vault a service's name is its policy, its role and its mount kv-<name> in the root namespace.
+  validation {
+    condition     = length(setintersection(keys(var.services), local.reserved_service_names)) == 0
+    error_message = "A service may not be named default, root, admin, terraform, vault-snapshot, snapshot or operator: on the in-cluster Vault those are Vault's own policies, the bootstrap's (admin, terraform), the snapshot job's role and policy, and kv-operator (the demo password)."
   }
 }
 

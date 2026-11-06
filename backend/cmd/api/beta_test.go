@@ -79,7 +79,7 @@ func TestConsentAndInviteAPI(t *testing.T) {
 	}
 
 	// Invite codes through the admin routes and the user's redeem.
-	a := admin{h: h, keyID: keyFingerprint("k")}
+	a := admin{h: h}
 	r := httptest.NewRequest(http.MethodPost, "/v1/admin/invites", strings.NewReader(`{"note": "Anna", "max_uses": 1}`))
 	cr := httptest.NewRecorder()
 	a.createInvite(cr, r)
@@ -112,8 +112,8 @@ func TestConsentAndInviteAPI(t *testing.T) {
 	dr := httptest.NewRecorder()
 	d := httptest.NewRequest(http.MethodDelete, "/v1/admin/invites/"+inv.Code, nil)
 	d.SetPathValue("code", inv.Code)
-	a.deleteInvite(dr, d)
+	a.revokeInvite(dr, d)
 	if dr.Code != 204 {
-		t.Fatalf("delete: %d", dr.Code)
+		t.Fatalf("revoke: %d", dr.Code)
 	}
 }

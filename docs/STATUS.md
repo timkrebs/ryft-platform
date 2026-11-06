@@ -72,6 +72,357 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Production hardening (2026-11)
+
+Run of 2026-11-04 and 2026-11-05: Phase 0 (safety net), Phase 1 (docs in code) and part of Phase 2 (structure) of
+`docs/work/2026-11-04-production-hardening/plan.md`, plus the admission and admin-web work that ran beside it. Written at the
+close-out against `origin/main` `7b439df`; every number below comes from a pull request named next to it or from a
+command run for this note, and "not verified" means exactly that. Decisions: D148–D152 (earlier) and D163–D183 (this
+close-out); D162 is the `/admin` page (#128), D185 the NetworkPolicy peers (#140, written in #139); D184 is proposed in
+#141 (open). Updated after the close-out with the admin-web merges of 2026-11-05 (#135, #136, #128, #138, #140) and the
+owner's checks of that evening. Behaviour is unchanged except where D174 says otherwise
+(A2: four accepted changes), where D150 changed the DLQ replay (a redelivery) and the operator scripts (they name their
+cluster), where D182 re-scoped the RabbitMQ operators (once synced), and where the admin work added routes and CORS
+(D153–D161, #136).
+
+**Done**
+
+- **Golden scoring fixtures** (#90, D149; CI guard #93): six synthetic users × 30 days (2026-10-05 to 2026-11-03, across
+  the Berlin and New York clock changes), every `daily_scores` column plus the `workouts` and `sessions` rows scoring
+  writes; `make golden-update` refuses while `ModelVersion` is unchanged unless the generator's inputs changed (and then
+  only for those users; `ModelVersion` is still `2026.10.3`). Every Phase 2 PR below
+  passed them unchanged.
+- **Coverage gate** (#89, D148): relative, fails on a drop of more than 1.0 point of the `internal/` total against main's
+  newest push run. **Baseline 77.30 %** (the first push run after #89, run 41792584785); **81.35 %** on main at
+  `d924dd7` (run 42034721046; both read from the runs' `coverage` artifacts for this note).
+- **Load baseline** (#97, D166; numbers in `docs/OBSERVABILITY.md` → Baselines): the median of three runs on one laptop
+  (Apple M4 Pro, a 4-vCPU podman VM, one replica of everything): `POST /v1/sync` p50 520 ms, p95 4.3 s, p99 4.5 s;
+  `GET /v1/days` p50 16.5 ms, p95 221 ms, p99 652 ms; 0 % errors; `ryft_sync_to_score_seconds` p95 2.4 s. **Caveats:** the
+  runs are bimodal (sync p95 1.3 to 4.6 s across the three runs; a quieter machine gave 83 and 73 ms), a laptop is not
+  production, n = 50 syncs per run makes p95 and p99 single events. Only the error rate is a gate; no nightly job exists.
+- **Contract tests** (#87, #100, D167): 108 schema snapshots (104 in #87; counted in `backend/internal/model/testdata/schemas` on main now), API.md examples decoded, the Errors tables tied to the
+  `model.Code*` constants and the Swift mirror, `make check-api-doc`.
+- **Docs in code** (Phase 1; #94, #95, #96, #99, #102; D163–D165): a `doc.go` per package, revive `exported` on with no
+  `//nolint` for revive (other linters have some), the package map generated into `docs/ARCHITECTURE.md` (`scripts/pkgmap.sh --check`), import rules R1–R13 as
+  a test, `make lint`, and a warning-only check that every decision is cited from code.
+- **Structure** (Phase 2):
+  - A1 `internal/app` (#105, D168–D173).
+  - A2 scoring and notify on `app.Run` (#117, D174; `ServiceExited` and the extended `Panics`, rules in `deploy/grafana/alerts/`).
+  - B1 `model.go` split into 14 files, proven by `scripts/check_pure_move.sh` (#110, D176).
+  - C1 `computeDay` in steps (#111, #112), C2 `ApplySync` in steps (#122, #123), C4 `trainImport` in steps (#119, #120),
+    each as characterisation tests on the old code followed by the refactor with unchanged goldens (D177).
+- **Longest functions and files over 800 lines, before and after.** Measured for this note with a go/ast walk over
+  non-test files under `backend/` (a function's first to last line; the method of `phase2-design.md`'s appendix, which
+  reproduced that note's numbers for the base), base `69d1838` (before A1, B1, C1, C2, C4) and `d924dd7`:
+
+  | | before (`69d1838`) | after (`d924dd7`) |
+  | --- | --- | --- |
+  | functions over 80 lines | 15 | 10 |
+  | functions over 40 lines | 77 | 80 |
+  | longest function | `scoring.computeDay` 278 | `cmd/api` `main` 184 (163 before; the growth was not analysed) |
+  | non-test files over 800 lines | 3: `model/model.go` 1 453, `store/train.go` 1 378, `store/store.go` 1 148 | 2: `store/train.go` 1 378, `store/store.go` 1 152 |
+  | non-test files, lines | 132, 24 249 | 158, 27 413 (new code since the base, such as `internal/app` and the admin work; not broken down) |
+
+  Per refactor, from the PR bodies: `computeDay` 278 to 28 lines, `ApplySync` 136 to 14, `trainImport` 101 to 45 (and
+  `finishImport` 69 to 21), scoring `main` 132 to 24, notify `main` 81 to 16. The 40 count rose because new code was added
+  (A3 and L1 are not done); no "after" number exists from any PR other than these.
+- **Admission and CI follow-ups merged this run:** #53 (a replayed dead letter is a redelivery; operator scripts name their
+  cluster, D150), #57 (the `admission` job and a kind end-to-end run, D151/D152), #114 and #116 (the kind-run scripts as a
+  tripwire, D181), #51 (both operators namespace-scoped, D182), #55 (admission signals scraped and alerted, D183), #131
+  (alert groups under Grafana Cloud's 20-rule limit, D179), #107 (the licence snapshot in step with the app).
+- **Admin web, backend half** (#126 admin sign-in by Supabase token with MFA, CORS, audit actor, D153–D158; #127 invites for
+  a person, revoke, who redeemed, D159–D161; migrations 0032 and 0033).
+- **Admin web, the page and its config** (2026-11-05): #135 merged 13:39 UTC (the secret-scan allowlist for the page's
+  publishable key, U4); #136 merged 13:55 UTC (`ADMIN_WEB_ORIGINS=https://ryftapp.de`); #128 merged 15:48 UTC (the `/admin`
+  page, D162, web D15–D17) and pinned by #138 (16:04 UTC, web `bb74830`); #140 merged 17:27 UTC (the unused ingress-nginx
+  peer removed from the api, ingest and web NetworkPolicies, D185). The docs as built are #139 (API.md audit row and page
+  column, `design.md` corrections, OPERATIONS → Admin sign-in setup order and V-MFA-1, SUPABASE.md checklist).
+
+**Live in production as of 2026-11-05** (the pins of `deploy/k8s/overlays/eks`: services `dc344e1`, web `bb74830` (#138)
+on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **not verified** from this session):
+
+- Services at `dc344e1` (#134): A2 (reached the pin with #130, `dc1fcd4`, 10:22 UTC; see D175), the B1, C1, C2 and C4
+  refactors, #126 and #127.
+- **The admin page works** (`https://ryftapp.de/admin`): merged (#128), pinned (#138), **confirmed by the owner on
+  2026-11-05** (pasted output): the web pods rolled; `/admin` answers `200` with the admin CSP and `Cache-Control:
+  no-store`; `/` keeps `connect-src 'none'`; the api rolled with #136's `ADMIN_WEB_ORIGINS` (`admin routes enabled` with
+  `"web_origins":1`, the `OPTIONS` preflight on `/v1/admin/invites` `204` with `access-control-allow-origin:
+  https://ryftapp.de`); the operator's sign-in on the page worked, so the owner did the account setup (OPERATIONS → Beta →
+  Admin sign-in). **V-MFA-1 result: not recorded.** Whether `make alerts-apply` ran before the first row (D158) is **not
+  verified**. Also **not verified**: `mfa_required` after 12 h on the live project, the effect of *Sign out*
+  (`scope=global`) on other devices, the lost-phone runbook.
+- **NetworkPolicies without the ingress-nginx peer** (#140, D185): Argo CD updates the three policies in place, no pod
+  restarts. #140's read-only post-sync checks were given to the owner; the result is **not verified**.
+- **Invites with a bound email** exist since migration 0033. A bound code is created or redeemed only while the api's
+  `invite binding` state is `ok` (Confirm email on at Supabase, read as `mailer_autoconfirm` from the project; D159); the
+  log line `invite binding` after the deploy is the evidence, and **reading it from the live pods is not verified here**.
+  D159 also says bound codes are not to be created in production before the privacy text (#129, the user's decision U3)
+  is published, and not before the rollout of the image with 0033 has completed on all api pods.
+- **Alert rules in Grafana Cloud:** #131's body (10:47 UTC) says `make alerts-apply` had been refused by the 20-rule limit
+  and `ServiceExited` and the extended `Panics` were not live. Whether the user has re-run it since is **not verified**.
+
+**Merged but NOT applied**
+
+- **#47** (Argo CD's ClusterRoles narrowed, admission Step 0; D180), merged 2026-11-05 10:12 UTC: nothing reaches the
+  cluster until the user plans and applies `infra/aws/kubernetes`. The commands and the checks that come first are in
+  OPERATIONS → "Applying the narrowing (Step 0)"; in short, from a clean `main` (the stop rules are in that text):
+
+  ```bash
+  terraform -chdir=infra/aws/kubernetes init                           # the values guard is a new local module
+  terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan   # only helm_release.argocd may change
+  terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan       # then delete argocd-rbac.tfplan: it holds a password hash
+  ```
+
+  **P12 (#121) must not go to Deny before this is applied** and the three `kubectl auth can-i` answers in that text are no.
+  Until it is applied the chart's `*` ClusterRoles are the live ones.
+
+- **#55** (admission signals, T12-e; D183), merged 2026-11-04: the scrape and the kube-state-metrics collector are in
+  `deploy/monitoring/k8s-monitoring.yaml`, which reaches the cluster only through the owner's monitoring apply, and the
+  admission alert rules only through `make alerts-apply`. **Needed only if not yet run (not verified):** until the monitoring
+  apply has run, the native `validatingadmissionpolicybindings` collector and the API-server admission scrape do not exist
+  in the cluster.
+
+  ```bash
+  make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1        # the owner's step; KSM restarts once, Alloy reloads its ConfigMap
+  make alerts-apply                                         # GRAFANA_* variables as for any alert load
+  # Grafana Explore, from #55's body: 1 per API server endpoint plus one for KSM
+  up{job=~"ryft/kube-apiserver-admission|ryft/admission-bindings"}
+  ```
+
+- **#51** (both RabbitMQ operators namespace-scoped; D182), merged 2026-11-04: `deploy/argocd/project.yaml` is applied by hand
+  and #51's body asks for that **before** the merge (`kubectl diff -f deploy/argocd/project.yaml` shows only the added
+  `ryft-rabbitmq` destination, then `kubectl apply` it); Argo CD then syncs `rabbitmq-operators` and both operators restart
+  once. Whether that was done, and the post-sync checks of OPERATIONS → RabbitMQ → "After an operator sync" (both operators
+  Running, no new `forbidden`, the broker `ALLREPLICASREADY`, every topology object Ready, `kubectl auth can-i list secrets
+  -A --as=system:serviceaccount:rabbitmq-system:rabbitmq-cluster-operator` answers `no`), is **not verified**. Needed only
+  if not yet done.
+
+**Open**
+
+- **#118** (draft): EKS authentication mode `API`, inert until the user sets it in `terraform.tfvars`; one-way.
+- **#121** (draft): admission policy P12 `ryft-argo-scope`, chart 0.3.0, ships disabled (`admission-values.yaml` still says
+  `enabled: false`). Its Deny gate needs P6, P1 and P2 in Deny (`operators-cluster`, `namespaces`, `workloads-templates`)
+  and a narrowed controller role rendered by `argocd.tf` (#47 applied); the chart fails the render and `admission.tf` the
+  plan otherwise. Kind run 42004326289 on its head: 83 pass, 0 fail, 2 skipped (`argo-rbac`, `claim-i`: that tree has no
+  #47). Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
+- **V-MFA-1 result: not recorded.** The owner did the operator setup; please record the probe's status and `error_code`, the
+  factor limit it ran under and the date here (OPERATIONS → Beta → Admin sign-in, step 3: with *Maximum enrolled factors* 1
+  the pass is `422 too_many_enrolled_mfa_factors`, with 2 or more `403 insufficient_aal`; `200` means stop). The Supabase
+  states (Data API off, maximum enrolled factors 1, *Confirm email* and *Secure email change* on) are not recorded here
+  either (SUPABASE.md → checklist).
+- **#141** (open): the unknown-key-id follow-up below.
+- **#129** (draft): the privacy text for an invite address, the user's decision U3. A new `PRIVACY_POLICY_VERSION` makes every
+  account consent again; under `CONSENT_ENFORCE=warn` (this file records `warn` until the app ships its consent screen, D87; the
+  live Vault value is not verified here) uploads still pass, and scoring keeps running (#129's body).
+- **Proposed, not decided** (drafts; no D-entry until they merge): #118 proposes to switch to authentication mode `API`
+  after read-only checks, a recovery identity outside Identity Center and a plan that shows one in-place update of
+  `aws_eks_cluster.this[0]`, with admins pinned in `admin_principal_arns`; its text calls it irreversible and says a missing
+  node access entry is an immediate user-facing outage. #121 proposes a twelfth policy that lets Argo CD's service accounts
+  write only where its apps render (the controller in an explicit namespace list, `argocd-server` Applications and events
+  plus the first `server.secretkey`), failurePolicy Fail, and states that access reviews are exempt from policies since
+  Kubernetes 1.30 (read from the kube-apiserver sources; its kind run saw P12 refuse neither review, D183).
+
+**Queued follow-ups** (nothing here has a PR yet unless named)
+
+- Small fixes: a foreign-key violation (SQLSTATE 23503) should map to `ErrNotFound` in the scoring handler (no `23503`
+  handling exists under `backend/`, checked with grep); `eventFailed` in `cmd/ingest/main.go`; the trends `422` message (these
+  three come from the close-out hand-off and are not traced to a PR body); the P1, P6, P7 and P8 CEL templates read
+  `request.userInfo.username` without `has()` (checked in the templates; P12 guards it); `httpx.TestInstrumentLabelsByInnerRouteAcrossRequestCopies`
+  fails at `-count>1` and passes at `-count=1` (#105's body); `Add(0)` for the counters whose first event no alert sees
+  (listed under Technical below, and the holes named in D174); `samples_7d` and `coverage` are documented in API.md and absent
+  from the Go types (`docDrift`, #87); `loadNight`'s `mean`/`last` read a store error as a missing value (#112).
+- Documentation: superseded notes for D15, D16 (its third bullet points to D185 since #139; the first, Prometheus on 8080, is also stale), D18, D27, D33, D44 and D84 (the hand-off's list; D15 is in
+  `scripts/decision_refs.skip`); `../app/Ryft/Networking/Models.swift` line 2 names `model/model.go` (the app repo, #110);
+  the "Not covered (yet)" sentence in `docs/ARCHITECTURE.md` still says admission policy is not covered, while the chart
+  exists and is disabled; the grouping leftovers #110 lists. The `Models.swift` and `ARCHITECTURE.md` lines are not edited here.
+- Citations still missing for `scripts/decision_refs.sh` (5 warnings: D168, D169, D170, D172, D178): cite D168 to D172 in
+  `backend/internal/app/doc.go` and D178 at the clock-change sites, batched with the next backend change (a `backend/` edit
+  rolls every service, so it is not done in a documentation PR). D175 and D177 are process rules, in
+  `scripts/decision_refs.skip` with a reason; the other new decisions are cited from scripts, `.golangci.yml`, the
+  `Makefile`, the alert rules and the monitoring values (comments only).
+- Phase 2, not built: A3 api and ingest through `app.Run`, A4 the delivery in hand finishes on shutdown (amqpbus), A5 `/readyz`
+  and the ordered shutdown for api and ingest, A6 settings in one place, A7 the 5 s drain delay, L1 `funlen` lint, B2 the
+  error taxonomy, B3 the store split, B4, C3 the ingest sync in steps. Stage each as D175 says (hold the group first).
+- The clock-change days (D178): the `AddDate` helper in `touchedDays`, `deleteSamples`, `deleteWorkouts` and `planFold`, with its own D-entry.
+- Phases 3 to 5 are queued, none started: request deadlines and `statement_timeout`; goroutine lifecycle; broker audit and
+  prefetch 1; JWKS stale-while-revalidate; idempotency tests per consumer; RLS tests, where **a decision is needed from the
+  user** (the service roles' policies are `USING (true)`, D42, so "user A cannot read user B through a service role" fails
+  by design: re-scope the test or add per-user RLS); govulncheck and dependabot for the Go modules; a nightly load job;
+  build info and pprof; SLOs; a database audit and retention; the restore drill.
+- Admin-web follow-ups: **an unknown key id on an admin route** still answers `503 jwks_refresh_limited` within the refresh
+  limit (OPERATIONS → Admin sign-in). Mapping it to the generic `401` was considered and rejected (D184 in #141, open); the
+  root cause, a client hang-up counted as a failed key fetch, is fixed in #141. Open until #141 merges. The privacy text should
+  name `api.ryftapp.de` with the PR that ships PR2's wording. Settled: the ingress-nginx rule (#140, D185), the stale
+  `docs/API.md` audit row and the `design.md` corrections (#139).
+
+**Deploy commands for what is open** (the user's; every cluster command names its cluster, D150):
+
+```bash
+# #47 Step 0: above (terraform init, plan -out, apply of that file).
+# #55, only if not yet run: the monitoring apply, then the alert rules (the GRAFANA_* variables of OPERATIONS → Monitoring set)
+make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
+git pull --ff-only && make alerts-apply
+# #51, only if not yet done: kubectl --context ryft-prod-euc1 diff -f deploy/argocd/project.yaml (only the added destination), then apply it,
+# and the checks of OPERATIONS → RabbitMQ → "After an operator sync".
+# The admin page: done by the owner on 2026-11-05 (sign-in works). Still to record: the V-MFA-1 result (OPERATIONS → Beta → Admin sign-in, step 3).
+# #140, read-only after the sync (its body): the ingress-nginx peer is gone and traffic still passes Traefik
+kubectl --context ryft-prod-euc1 get networkpolicy -n ryft-api -o yaml | grep -c ingress-nginx      # 0 (also -n ryft-ingest, -n ryft-web)
+curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftapp.de/v1/me   # 401
+make smoke-prod
+```
+
+**Gotcha: a newer promote PR supersedes a held one.** On 2026-11-05 the promote PR #124 (A2) had its auto-merge switched
+off at 06:53:06 UTC to stage the rollout, and sat open; promote closed it as "Superseded by deploy: images dc1fcd4" when the next promote PR (#130) opened, and #130
+merged itself. To stage a backend change, hold the group (`./scripts/hold.sh add services "<reason>"`) before the merge that
+builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backend change".
+
+## Vault CE migration (2026-11)
+
+Moving every credential from HCP Vault Dedicated to Vault Community Edition 2.2.1 in namespace `vault` (plan, design and
+addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D204 are cited by the code; D203 is a procedure;
+D199-D202 and D205 are decided, not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
+**nothing reads the in-cluster Vault, and it does not exist in the cluster yet.** Every cluster command below names
+`--context ryft-prod-euc1` (the current context is production; D150).
+
+**Merged (2026-11-06)**
+
+| PR | What | State |
+| --- | --- | --- |
+| #146 | `infra/aws`: the unseal key, a separate snapshot key and the snapshot bucket (D189), `NoDeletionOrDisable`, the Spot `check` (D204) | **Applied by the owner on 2026-11-06: 11 added, 7 changed, 0 destroyed.** The 7 were drift of the node group and the add-ons (ENI/CNI, CoreDNS, kube-proxy, EBS CSI, pod identity agent, metrics-server, node group release 1.36.4-20261012 → 1.36.5-20261031), applied by mistake against #146's stop rule ("if the plan shows any `~`, `-` or `-/+` line, stop"); the cluster stayed healthy and `make smoke-prod` was green (the owner's report, not verified here). The 7 addresses are in the HCP Terraform run log and are not recorded here |
+| #145 | `infra/aws/kubernetes`: Vault as a Terraform add-on (`vault.tf`, `iam.tf`, `charts/vault-extras`, `charts/cluster-issuers` 0.3.0, the injector exclusion) (D188, D190, D194, D196) | Merged, **not applied**. Expected plan **from `main`: 11 to add, 1 to change, 0 to destroy**: #145's seven (the unseal role, its policy, attachment and association, the namespace, `vault_extras`, `vault`) plus #153's four (`module.vault_snapshot_pod_identity`: role, policy, attachment, association `snapshot`); the one change is `cluster_issuers` 0.2.0 → 0.3.0. `vault_extras` is **created** at 0.2.0, with the CronJob |
+| #147 | Admission for `vault`: P1-P4 extended, P13 new, chart 0.5.0 (D195) | Merged, **disabled** (`enabled: false`); nothing live |
+| #148 | Test only: the `trainImport` characterisation no longer depends on today's date (it failed in every PR's `test` job from 2026-11-06) | Merged. Unrelated to Vault. The promote PR that followed is #149 ("deploy: images edef166", merged 2026-11-06 07:42 UTC; the five services d372b8f → edef166, one image group, behaviour unchanged); Argo CD's sync of it is not verified here |
+| #152 | `scripts/vault_diff.sh` (compares the two Vaults and a synced Secret; no value is ever printed; no `--save`; HCP's address pinned), `RYFT_VAULT=ce` in `lib/admin.sh` and `seed_demo.sh` | Merged; scripts on the operator's machine, nothing to apply |
+| #151 | `infra/vault`: the Kubernetes target beside HCP, the bootstrap files, the generated `vault-ca` Certificates, OPERATIONS → Vault (D187, D191, D193, D198, D203) | Merged, **not applied**. Both switches off. Expected plan: 9 to add, 9 to destroy (the generated files only) |
+| #153 | Snapshots (CronJob, role, bucket deny), metrics, 11 alerts in `ryft-vault`, switched-off log pipeline, admission chart 0.5.1 (D192, D194, D197) | Merged, **not applied**. Expected plans: `infra/aws` 0 to add, 1 to change (the bucket policy, `DenyPutWithoutIfNoneMatch`); its `infra/aws/kubernetes` part is already in #145's plan above (11 / 1 / 0) |
+
+A follow-up PR from branch `ops/vault-followups` (OPERATIONS, OBSERVABILITY, alerts) was in preparation by another agent
+when this was written: **no PR and no remote branch existed yet**, so it is not recorded here.
+
+**Your steps, in order** (nothing below has been run; each plan must match the number named, anything else is a stop)
+
+The order follows the lead's: gates first, then the add-on. Strictly, #145's and #153's bodies require the Fleet, Beyla
+and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
+
+1. **Two decisions that are yours** (no D-entry records them): G2, whether the monitoring stack inside Vault's trust boundary
+   is accepted ("Vault is as safe as the monitoring stack and VSO", D194) or reduced first; and the Google account of the Vault
+   login, a dedicated Workspace user (recommended, OPERATIONS → Vault → The operator's Google account) or the existing one
+   hardened.
+2. **G1, the admission layer.** P12 cannot go to Deny alone: #121's chart render and its `admission.tf` precondition refuse
+   `argo-scope` in Deny unless P6 (`operators-cluster`), P1 (`namespaces`) and P2 (`workloads-templates`) are in Deny too, and those
+   are the **general** `ryft-*` bindings, not the `vault` ones. #121 is a stale draft (head `4b9f739`; a trial merge with `main`
+   conflicts in 19 files). In order:
+   1. Apply #47's Step 0 (STATUS → Production hardening → deploy commands).
+   2. Rebase #121. It merges second: it bumps the chart above 0.5.1 (#147's and #153's), sets 18 bindings and 13 policies
+      (`admission_intended.sh --check` fails if missed) and reconciles P1's in-scope list with `argoScope.namespaceObjects`.
+   3. A fresh full-mode `admission-e2e` kind run on a tree that contains #47.
+   4. Mark #121 ready, review, merge, and give its decision a D-number (D206 is next).
+   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`).
+   6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can
+      go to Deny at any time, and alone.
+   Verify with the G1 command in OPERATIONS → Vault → Hard gates. **If step 6's plan shows `helm_release.admission_policy`, this
+   step's apply is not done: stop.**
+3. **Fleet Management and Beyla** (D197): the pod-log exclusion `ryft-.*` → `ryft-.*|vault` and Beyla's exclusion of `vault`
+   (OPERATIONS → Before the Vault add-on is applied).
+4. **The injector exclusion** (#145): `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
+   `kubectl --context ryft-prod-euc1 get mutatingwebhookconfigurations -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'`:
+   the injector's `NotIn` list carries every `ryft-*` namespace, `vault` and `vault-secrets-operator-system`.
+5. **Read-only checks:** `kubectl --context ryft-prod-euc1 get nodes -L topology.kubernetes.io/zone,eks.amazonaws.com/capacityType`
+   (three zones, `ON_DEMAND`); `aws kms describe-key --key-id alias/ryft-prod-euc1-vault-unseal --region eu-central-1 --query 'KeyMetadata.[Arn,KeyState]' --output text`
+   (the ARN and `Enabled`). Optional here, required before the first snapshot (step 10): apply #153's `infra/aws` change now
+   (`terraform -chdir=infra/aws plan` is exactly **1 to change**, the bucket policy; see step 10 for the stop rule).
+6. **Apply #145** from `main`: `terraform -chdir=infra/aws/kubernetes plan -out=vault-addon.tfplan` (**11 / 1 / 0**: #145's seven plus #153's four; `vault_extras` is created at 0.2.0 with the CronJob), `apply`, then
+   `rm infra/aws/kubernetes/vault-addon.tfplan`. The CronJob fails until step 9 writes the role `vault-snapshot`: expected. Keep
+   steps 8-10 in one sitting, or do not load the `ryft-vault` alert group before step 10. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
+   ready, in three nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1`, exactly five `AWS_*` variables
+   in the pod, no `unable to set initial state`. Then the Explore check: `{namespace="vault"}` (Loki), Beyla series and Tempo
+   return nothing, **before bootstrap step 3**. If `vault status` already shows `Initialized true` before your own init
+   (G3): stop, treat it as a compromise, wipe the PVCs and EBS volumes.
+7. **Apply #151's plan.** Precondition first: `kubectl --context ryft-prod-euc1 get clusterissuer ryft-vault` READY True. Then `terraform -chdir=infra/vault plan -out=tfplan` (9 to add, 9 to destroy; no port-forward, no CA file,
+   no `TF_VAR_vault_k8s_token`; HCP token only), `apply`; commit the nine regenerated overlays in a PR of their own
+   (`vault: the vault-ca Certificates`); then `kubectl --context ryft-prod-euc1 apply -k deploy/k8s/overlays/vault-namespaces/monitoring`
+   and the same for the import service's key (both are outside Argo CD). Verify: `kubectl --context ryft-prod-euc1 get certificate -A --field-selector metadata.name=vault-ca`
+   shows 10 rows READY True; `kubectl --context ryft-prod-euc1 -n monitoring get secret vault-ca` exists. Optional:
+   `kubectl --context ryft-prod-euc1 apply -f deploy/argocd/project.yaml`.
+8. **The bootstrap** (OPERATIONS → Vault → Bootstrap, ten steps) in a **standalone terminal**, never an agent's shell or the
+   VS Code terminal: init (recovery keys 2-2-1, paper first), audit devices, policies and the token role, OIDC, the subject
+   check, the Terraform token, **root revoked**, the share drill.
+9. **PR 3b** (`committed_write_k8s = true` alone, one switch per PR): plan and apply through the port-forward with the
+   ephemeral token; `scripts/vault_diff.sh --context ryft-prod-euc1 --all --k8s-cacert ...` all equal; the baseline lists
+   `vault-snapshot` with `[snapshot]` and `token_max_ttl` 600.
+10. **Apply the rest of #153:** `terraform -chdir=infra/aws plan` must be **exactly 1 to change** (the bucket policy), then apply (skip
+    if done before step 6). Node-group or add-on changes in that plan mean the drift of #146's run has recurred: stop.
+    `infra/aws/kubernetes` has nothing left of #153 (it was in step 6) except the collector peer: only if `vault status` showed
+    `Initialized true` from your own init, the root token is
+    revoked and G1-G4 hold, put `vault_collector_peer = true` into `infra/aws/kubernetes/terraform.tfvars` (a file entry, not
+    `-var`), plan (1 to change), apply; `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` and the Explore checks of OPERATIONS
+    → Vault metrics (`up{job="ryft/vault"}`, `up{job="ryft/vault-state"}`, `kube_pod_labels{namespace="vault",label_vault_initialized="true"}`
+    three series, `vault_core_active`, six `kubelet_volume_stats_*` series each; if those are absent drop `VaultVolumeFilling`
+    and the kubelet branch of `VaultScrapeDown`); `make alerts-apply`; the first snapshot by hand (`kubectl --context ryft-prod-euc1 -n vault create job --from=cronjob/vault-snapshot vault-snapshot-first`,
+    wait, logs of `upload`, `.status.lastSuccessfulTime`, delete the Job) and the create-only checks (a put without
+    `If-None-Match` is denied; the second put with `--if-none-match '*'` answers 412).
+11. **Cutovers 5a-5i**, one PR per group, each with `vault_diff.sh --kv` and `--secret ... --vault hcp` equal before the switch and
+    `--secret` equal after; before 5a flip `peers.vso.enabled` (it is off; a PR and an apply, plan 1 to change on `helm_release.vault_extras`); then 14 days of soak, a fresh `vault_diff.sh` with zero
+    differences, a restore drill, and **your explicit go** for PR 6 and 6b (decommission HCP and drop its provider); PR 6c then
+    narrows the EKS endpoint (D205).
+12. **Logs, when you want them** (D197): accept Grafana's DPA, add the record-of-processing entry naming the transfer mechanisms,
+    put `LOKI_USERNAME` into `infra/vault`, then a PR with the Loki URL and `podLogsViaLoki.enabled: true`.
+
+**Open**
+
+- **Tickets not built:** V7a (the import service's operator objects as an Argo CD app, D200), V7b (monitoring's, project
+  `ryft-monitoring`, D201), V7c (the collector as a Terraform `helm_release`, namespace handover, `make monitoring-apply`
+  removed, D202); PR 3b (`write_k8s`, step 9); cutovers 5a-5i; PR 6, 6b (decommission), 6c (EKS endpoint, D205). V7a and V7b come before 5i and 5h, V7c is
+  recommended before the collector changes. Until V7a and V7b exist, every regeneration of the monitoring and import-service
+  overlays needs the same hand `kubectl --context ryft-prod-euc1 apply -k deploy/k8s/overlays/vault-namespaces/<dir>`.
+- **Tickets for test-engineer:** the kind rehearsal of #145 in full mode (render under admission, real pods under
+  `enforce=restricted` against a transit-sealed dev Vault, init and 3 voters, a deleted pod coming back, the service-registration
+  labels with the narrowed Role, `cmctl renew` within 6 minutes without a restart, NetworkPolicy enforcement, disruption in
+  three zones); the kind restore drill in CI (three Raft pods, MinIO, the 412 on a second put, `restore -force`); the fake
+  `ryft-vault-logs` lines for D199.
+- **The Loki rules** (`ryft-vault-logs`, D199) need `lokitool`; until they exist nothing watches `sys/audit*`.
+- **Decisions for the owner:** G2 and the Workspace user (steps 1); whether the PDB stays `minAvailable: 2` with `AlwaysAllow`
+  (shipped) or moves to `IfHealthyBudget` (D204); whether a later PR flips `vault_collector_peer` to `true` by default.
+- **Privacy:** Grafana Labs' DPA, the record of processing with the transfer mechanisms (UK adequacy, US entities; to verify), and
+  the Art. 32 wording that must not claim Vault is isolated from the monitoring vendor.
+- **Smaller follow-ups from the reviews:** pin the unseal key ID in the precondition; `aws:SourceIp` or a KMS VPC endpoint for
+  the unseal calls; vendor the chart tarball; a wider values precondition; `aws:SourceAccount`/`aws:SourceArn` trust conditions
+  once verified; a test tying `images.vault` to the release's pin; the `ryft_admin` bearer token in curl's argv (before cutover
+  5e); the CEL harness's decommission fixture needs a literal HCP address when the api moves (5a); the stale comment on
+  `reserved_service_names` in `infra/vault/targets.tf`; #121's follow-ups (flip three P12 cases, a guard that `vault` and
+  `cert-manager` are never in `argoScope.namespaces`, a kind fixture of Argo writing in `vault`); `addendum-1.md` §3 still names
+  the recovery-key places; #151's open question 4 (the public-443 egress also carries Google's OIDC discovery and JWKS; the
+  comment names only KMS); the `terraform` policy's paths left unaudited until the kind rehearsal (`sys/mounts` read, `sys/auth`
+  read, `auth/kubernetes/role` list, `sys/policies/acl` list, the tune `update` paths, and the probably-unneeded `sudo` on
+  `sys/mounts/kv-*`); #146's open question 2 (`prevent_destroy` on the bucket's versioning, SSE and policy resources); `argocd`
+  and the other add-on namespaces are not in the injector exclusion (#145's residual risk). Also open: list the seven drift
+  addresses of #146's run from the HCP Terraform log, to decide whether the node group release and the add-ons are now what
+  `infra/aws` should say.
+- The EKS public endpoint stays `0.0.0.0/0` until PR 6c.
+
+**Not verified** (each is marked "to verify" where the runbook uses it)
+
+- Pod Identity credentials reaching the `awskms` seal at runtime on 2.2.1, and that EKS sets the three session tags the trust
+  policy requires; Pod Identity in a CronJob pod.
+- Chart 0.34.1 with Vault 2.2.1 (the chart is tested up to 2.0.4); Pod Security `restricted` admitting the pods; `$(VAULT_K8S_POD_NAME)`
+  expanding; `tls_reload_interval` picking up a renewal; the service-registration Role at runtime; the PDB and zone spread under
+  a real drain; the VPC CNI and egress to `169.254.170.23`; the plans against the real providers (mocks only).
+- That 2.2.1 enables audit devices over the API with these options; Google's `iss`, `hd` and `auth_time`; the Admin console user ID
+  equal to the OIDC `sub`; the loopback binding of the three bound files; generate-root under auto-unseal and the `peers.json`
+  recovery.
+- S3 conditional writes and the SHA-256 checksum against the bucket policy; `kms:Decrypt` for a cached bucket key; `create job
+  --from=cronjob` setting `lastSuccessfulTime`; auto-unseal after `restore -force` (the kind drill).
+- In the cluster: the scrape, the `alloy-deployment` and VSO pod labels, KSM's endpoint labels, `kube_pod_labels` with Vault's
+  labels, `kubelet_volume_stats_*`, `vault_token_count*`; the Fleet UI paths and Beyla's exclusion syntax; the log pipeline end to end.
+- #146's applied state beyond the owner's report (11 added, 7 changed, smoke green): not checked here; the seven changed addresses
+  are not listed (HCP Terraform run log).
+
+**GitGuardian** is not a required check. It flags a service name after the secret flag of `vault_diff.sh` as a "Generic CLI Secret": five incidents, all false
+positives to mark in the dashboard: three test lines of #152's first commit (`7670547`), the occurrence in this PR's first commit
+`ca5dbb5` (incident 39736629; the later commit `61ebd02` cannot clear it) and `docs/work/2026-11-05-vault-ce/addendum-1.md`
+line 569 (the call of `vault_diff.sh` with the flag for the synced Secret, followed by the namespace name `monitoring`; already on
+main from #150). No secret is involved.
+
 ## Done
 
 | Item | What | Where |
@@ -476,17 +827,23 @@ Technical:
   security-reviewed three rounds): Pod Security labels plus ValidatingAdmissionPolicy (CEL), owned by
   Terraform in `infra/aws/kubernetes`, Warn+Audit first, then Deny in four steps by blast radius.
   Decided (D120): Terraform owns the AppProjects, both operators namespace-scoped, `admission`
-  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k
-  in progress; nothing reaches the cluster before your applies (the note's §5 commands).
+  required, the SDK injector excludes `ryft-*`, break-glass is your binding patch. Tickets T12-a…k:
+  see "Production hardening (2026-11)" above for what merged (#47, #51, #55, #57, #114, #116) and what is open
+  (#121, #118); nothing reaches the cluster before your applies (the note's §5 commands).
   **T12-d (the kind run) is done** on `ci/admission-kind` (D151, D152): CI's required job `admission`
   (`scripts/admission_e2e.sh --mode ci`, ~5 min; skipped for promote PRs and their merge) and the
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11
-  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **Open before
-  Step 0:** #47 (`infra/argocd-rbac`) lacks `{ apiGroups = ["argoproj.io"], resources = ["applications"],
-  verbs = ["get", "list", "watch"] }` in `argocd_controller_rules` (claim i: with
-  `respectRBAC: strict` the root app otherwise waits for ever); T12-e needs another binding-state signal
-  (claim m is disproved: KSM exports no built-in kinds); P7 must not go to break-glass assuming P10 blocks
+  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **#47 is merged,
+  not applied (D180; Step 0 is yours):** it had lacked `{ apiGroups = ["argoproj.io"], resources =
+  ["applications"], verbs = ["get", "list", "watch"] }` in `argocd_controller_rules`; the rule is in it (claim
+  i did not wait for ever: under `respectRBAC: strict` the kind is dropped from the cache silently, so the
+  root lagged by minutes and a deleted child would not be pruned; D151 amended). #47 also dropped
+  `escalate`/`bind` on ClusterRoles, tightened CRD update and the server's cluster-wide writes, and
+  states what stays open until P6 and P12 are both in Deny (docs/OPERATIONS.md "What stays open"). T12-e is merged
+  (#55) and live after the monitoring apply: its binding-state signal
+  is kube-state-metrics' native `validatingadmissionpolicybindings` collector (claim m is disproved only for custom-resource-state,
+  which exports CRD kinds only; D183 amends D151); P7 must not go to break-glass assuming P10 blocks
   `--repo` (P10 no longer does). Not tried by the kind run: a node drain, three workers, claims f, j and l.
 - **Node 26 for web** on or after 2026-10-28: Docker tag and digest, `.nvmrc`, `engines`,
   `@types/node` in one PR (D108).

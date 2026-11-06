@@ -62,6 +62,22 @@ var notEmitted = map[string]string{
 	"P12 controller creates an APIService":              "an APIService needs a caBundle or insecureSkipTLSVerify",
 	"P12 server creates an APIService":                  "an APIService needs a caBundle or insecureSkipTLSVerify",
 	"P12 controller creates an ApplicationSet":          "ApplicationSet needs generators and a template",
+	// Whether the API server keeps an image volume source depends on the ImageVolume feature gate of
+	// kind's release; the harness pins the rule (in ryft-* and in vault).
+	"vault: P2 an image volume": "an image volume source depends on kind's ImageVolume feature gate",
+	// cert-manager's webhook (after the policies) or RBAC would refuse these in kind's Audit run.
+	"vault: P13 ClusterIssuer ryft-vault with an empty ca (has() guard)":             "a CA issuer needs secretName",
+	"vault: P13 ClusterIssuer ryft-vault-bootstrap with an empty spec (has() guard)": "an issuer needs one type",
+	"vault: P13 Argo CD writes an Issuer with an empty spec (has() guard)":           "an issuer needs one type",
+	"vault: P13 the root CA without an issuerRef name (has() guard)":                 "issuerRef.name is required",
+	"vault: P13 vault-tls without a secretName":                                      "secretName is required",
+	"vault: P13 Argo CD writes a selfSigned ClusterIssuer":                           "Argo CD's controller has no RBAC on clusterissuers",
+	"vault: P13 Argo CD writes ClusterIssuer ryft-vault as rendered":                 "Argo CD's controller has no RBAC on clusterissuers",
+	"vault: P13 a Kubernetes CSR for ryft-vault by cert-manager":                     "cert-manager's RBAC on certificatesigningrequests is not the point",
+	// The service account admission plugin refuses a Pod whose service account does not exist, and
+	// the kind run creates no vault/vault-snapshot; the CronJob cases pin the same image rule.
+	"vault: P2 a snapshot pod whose upload image is not the pin":  "the kind run has no service account vault/vault-snapshot",
+	"vault: P2 a pod of another service account with the AWS CLI": "the kind run has no service account vault/vault",
 	// The broker's NetworkPolicy carries the open 443 egress rule the committed values admit
 	// (brokerEgressPublic); the kind run's Deny variant closes it (the chart's guard), so the
 	// object would be refused for that rule first.
@@ -72,10 +88,12 @@ func maybeEmit(name string, r Req, res []Result) {
 	if os.Getenv("CELTEST_EMIT") == "" {
 		return
 	}
-	if r.Op != "CREATE" || r.Sub != "" || r.Obj == nil || len(res) == 0 {
+	// A case judged on one binding alone (Req.Only) models a request no API server sends as such
+	// (a create without a name is refused by validation first), so the kind run cannot replay it.
+	if r.Op != "CREATE" || r.Sub != "" || r.Obj == nil || len(res) == 0 || r.Only != "" {
 		return
 	}
-	if strings.Contains(name, "(before T12-g)") || strings.HasPrefix(name, "cost:") {
+	if strings.Contains(name, "(before T12-g)") || strings.HasPrefix(name, "cost:") || strings.HasPrefix(name, "decom:") {
 		return
 	}
 	if _, bad := notEmitted[name]; bad || opensBrokerEgress(r.Obj) {

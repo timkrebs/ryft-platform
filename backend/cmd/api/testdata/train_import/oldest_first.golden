@@ -1,0 +1,35 @@
+case oldest_first
+
+== newest, oldest, middle
+status: 200
+header Cache-Control: no-store
+header Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+header Content-Type: application/json
+header Referrer-Policy: no-referrer
+header Strict-Transport-Security: max-age=31536000; includeSubDomains
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: DENY
+header X-Request-Id: <rid>
+body: {"results":[{"kind":"session","id":"0546913a-1d8a-54a7-aff8-f966acb6ef70","status":"created"},{"kind":"session","id":"61f4dcb2-e583-59f7-9674-8bffe9128800","status":"created"},{"kind":"session","id":"f9fa45fb-db4e-5f80-bc6b-acc43768728d","status":"created"}],"days_touched":["D-30","D-20","D-10"],"scoring":{"queued_days":["D-30","D-20","D-10"],"expected_within_sec":36}}
+<eof>
+
+== state of user:a
+stored session session:a origin=import day=D-30 sets=1
+stored session session:mid origin=import day=D-20 sets=1
+stored session session:newest origin=import day=D-10 sets=1
+outbox ingested reason=import days=D-30,D-20,D-10 user=user:a request=#1 session_id_set=false
+pending D-30,D-20,D-10
+lease held: false
+record exercise:squat e1rm=128.3 from session:newest
+record exercise:squat max_reps=5 from session:a
+record exercise:squat max_volume=550 from session:newest
+record exercise:squat max_weight=110 from session:newest
+
+== metrics moved
+imports/ok +1
+items/session/created +3
+seconds/observations +1
+
+== log lines
+train import result=ok plans=0 sessions=3 created=3 unchanged=0 updated=0 rejected=0 days=3 level=INFO
+http status=200 code=<nil> route=POST /v1/train/import

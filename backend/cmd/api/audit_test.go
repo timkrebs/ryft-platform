@@ -19,7 +19,7 @@ func TestAdminAccessGrantIsAudited(t *testing.T) {
 	h, u, st := journalHandler(t)
 	ctx := context.Background()
 	key := "test-admin-key-0123456789abcdef0123456789"
-	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, key, 5*time.Second))
+	srv := httpx.Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), adminRoutes(h, adminOptions{Key: key, Timeout: 5 * time.Second}))
 	do := func(method, path, bearer string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, nil)
 		if bearer != "" {
