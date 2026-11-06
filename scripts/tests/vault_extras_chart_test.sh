@@ -212,7 +212,7 @@ done
 # --checksum-algorithm would have the CLI hash the stream itself, not check the snapshot step's hash.
 script containers[0] | grep -qF -- '--checksum-algorithm' && fail "the upload must send the snapshot step's hash (--checksum-sha256), not let the CLI compute one"
 script containers[0] | grep -qF 'sha256sum' && fail "the upload must not hash the file again: the snapshot step's hash is the one S3 checks"
-# The upload script itself, with a stand-in aws on PATH, in this shell's sh and in bash (the image's /bin/sh is bash):
+# The upload script itself, with a stand-in aws on PATH, in bash (the image's /bin/sh) and this host's sh if it has pipefail:
 # the hex hash becomes the base64 of the raw digest, and a missing or malformed hash stops it before any upload.
 up="$tmp/upload"; mkdir -p "$up/bin"
 cat >"$up/bin/aws" <<'EOF'
@@ -232,8 +232,12 @@ upload() { # <shell> <hash file content or "-" for none>; prints the exit status
     "$1" -eu "$up/upload.sh" >/dev/null 2>&1 || rc=$?
   echo "$rc"
 }
+# The script sets pipefail, which the image's bash has and dash (CI's sh) has not: a shell without it is skipped for
+# the whole script, and the conversion line alone runs in sh (POSIX) as well.
+conv=$(script containers[0] | grep -F 'b64=$(')
+[ "$(sh -c "sum=$HEX; $conv; printf %s \"\$b64\"")" = "$B64" ] || fail "sh: the hex to base64 conversion is not POSIX"
 for sh in sh bash; do
-  command -v "$sh" >/dev/null || continue
+  command -v "$sh" >/dev/null && "$sh" -c 'set -o pipefail' 2>/dev/null || continue
   [ "$(upload "$sh" "$HEX")" = 0 ] || fail "$sh: the upload script fails with a valid hash"
   grep -qxF -- "$B64" "$up/args" && grep -qxF -- "--checksum-sha256" "$up/args" || fail "$sh: the upload does not send the hash as base64 ($B64)"
   grep -qxF -- "sha256=$HEX" "$up/args" || fail "$sh: the upload's metadata does not carry the hex hash"
