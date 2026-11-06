@@ -1,24 +1,31 @@
 # Status — ryftapp.de (web/)
 
-## 2026-11-05 — the "Alpine" restyle (branches `web/english-light-inter` → `web/alpine`, not yet merged)
+## 2026-11-06 — the "Alpine" restyle (branch `web/alpine`, PR #143, stacked on `web/english-light-inter`, not yet merged)
 
 Done, on top of D18–D20 (English only, light only, Inter):
 - Monochrome typographic system (D21): `--web-*` scale in `globals.css`, hairline sections with
-  numbered eyebrows, square ↗ buttons, the black ticker band, `<details>` menu, CSS-only pricing
-  toggle. Home rebuilt in nine sections with HTML/SVG mock screens (`src/components/Mockups.tsx`);
-  Beta, Science, Legal, Licences, Open, 404, Styleguide and `/admin` restyled on the same tokens.
+  numbered eyebrows, square ↗ buttons, the black ticker band (one move of four seconds, none
+  under Reduce Motion), a script-free `:target` menu on narrow screens (D22). Home rebuilt in
+  nine sections with HTML/SVG mock screens (`src/components/Mockups.tsx`); Beta, Science,
+  Legal, Licences, Open, 404, Styleguide and `/admin` restyled on the same tokens.
 - Hero statement "Engineered for peak."; pricing section with Free and RYFT Plus (price TBA until launch).
-- Checked here: typecheck, ESLint, Prettier, brand, `tokens:check` against
+- Review fixes (D22): focus ring in paper on the ink band, the menu closes when a link in it
+  is followed, the hero reflows at 320 px, axe judges rendered sections, the OG card
+  (`public/og/en.png`) in the new design.
+- Checked locally: typecheck, ESLint, Prettier, brand, `tokens:check` against
   `ryft-app@design/alpine-light-palette`, Vitest (unit + `tests/output.test.ts` on the export),
-  `next build`, and headless-Chrome renders of `/`, `/beta`, `/science`, `/privacy`, `/admin` at
-  1440 and `/` at 390.
+  `next build`, Playwright against the nginx image (Podman). CI runs Playwright and Lighthouse
+  on the PR (`web-e2e`).
 
 Open:
-- Merge order: ryft-app `design/alpine-light-palette` (ADR 0015) first, or CI's `tokens:check`
-  fails on these branches; `.github/workflows/ci.yml` line 631 (`check-messages.mjs`) must go.
-- Not run here: Playwright e2e (`make web-e2e`), Lighthouse, `npm run og` (needs Chromium via
-  Playwright) — `public/og/en.png` is still the old dark card; `docs/screenshots/*` are stale.
+- Merge order: #142 first, then this PR. Until timkrebs/ryft-app#100 merges, the ci.yml app
+  checkout points at a pinned ref (`design/alpine-light-palette`); after #100 merges, the
+  `ref:` line in ci.yml is removed in a follow-up commit.
+- `docs/screenshots/*` still show the old design.
 - Plus price and features are placeholders (TBA, "more depth") until the launch decision.
+- Copy waiting for the owner's decision: the "Works with" row, the pricing lines ("0 €
+  forever", "Founder price for beta testers", "never behind a paywall"), "Deletion is
+  immediate" and "removes everything … at once".
 - App follow-ups from ADR 0015: band/zone fill levels instead of hue, outlined destructive
   actions, Inter, radius 0, the hero statement in the app.
 

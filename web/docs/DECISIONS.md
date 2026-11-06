@@ -346,7 +346,9 @@ Fallback'`** in `globals.css` (Arial-class local fonts with Inter's ascent/desce
 did before) and next/font's fallback off — LCP 1.5–1.65 s on every page, FCP 1.2 s, CLS 0. The LCP
 budget moves from 1.5 s to **1.8 s** for that reason only: first paint is 1.2 s everywhere, the
 performance score is 1.0, and the swap is what the number measures. The hero's two lines and the
-meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift.
+meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift;
+since D22 the statement's size keeps each line inside the screen and the meta line stacks and may
+wrap below 25rem (WCAG 1.4.10 wins over the shift there).
 
 Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
@@ -360,7 +362,11 @@ typographic landing page after the "Alpine" reference the user named — Inter B
 with −0.07 em tracking for every heading, Regular with +0.08 em for labels, 1 px ink rules
 instead of filled cards and shadows, square buttons with the ↗ arrow, numbered sections
 (`02 / SCORES`), and the app shown as monochrome mock screens rather than captures. The
-spec and the section mapping live in the RYFT project doc `docs/ALPINE_STYLE.md`.
+home page, in order: the hero (meta line, the statement, lead and actions, the Today mock),
+the ticker and "Works with", 02 Scores (the spec grid), 03 Systems (three mocks), 04
+Principles, 05 Start, the facts band, 06 Privacy, 07 Pricing, 08 FAQ, 09 Beta (the ink
+band) and the footer with the wordmark set large. The other pages take the same parts:
+numbered `Section`s, hairline lists, the long texts in `prose.module.css`.
 
 What stays from the app's tokens: every colour (the light palette of ryft-app ADR 0015),
 motion, and the app's own type scale (still generated into `tokens.css`, still used by the
@@ -374,11 +380,12 @@ tokens are no longer referenced; the restyled app will set them to 0 and the gen
 emitting them). `--rule-soft` is derived from `--separator` for the hero's guide lines.
 
 Components: `Section` takes a `number` and renders the eyebrow `02 / LABEL`; `Eyebrow`,
-`Marquee` (the black ticker band, CSS animation, still under Reduce Motion) and the
+`Marquee` (the black ticker band; one move of four seconds, none under Reduce Motion, D22) and the
 `inverse`/`inverseOutline` button variants are new; `DeviceFrame` is a thick ink outline
 with a small radius; `Mockups.tsx` draws Today, Sleep and Strain in HTML/SVG from sample
 data (no inline styles: the marketing CSP has no `style-src 'unsafe-inline'`, so bars are
-SVG rects). The header's narrow-screen menu is a `<details>`, so the site still ships no script. The hero reads "Engineered for
+SVG rects). The header's narrow-screen menu is a panel shown while it is the `:target`
+(D22), so the site still ships no script. The hero reads "Engineered for
 peak." (the user's choice); the tagline stays in the footer and the lock-up until the app
 changes it.
 
@@ -391,3 +398,44 @@ on the legal pages (`profile-account-light`); the other light captures stay in
 
 Would change if the user wants the hero figure to be a real capture again once the app is
 monochrome: `TodayScreen` is one component to swap for `Screenshot`.
+
+## D22 — Review fixes of the restyle: menu, ticker, reflow, focus on ink (2026-11-06; amends D21)
+
+The security and code review of the restyle found five things a static, script-free page has
+to solve with CSS alone; the calls made:
+
+- **Menu.** The `<details>` menu stayed open after an anchor tap and lay over the section it
+  had just scrolled to. It is now a panel shown while it is the URL's `:target`: "Menu" links
+  to `#site-menu`, any link in the panel moves the target (so it closes as the page scrolls),
+  and "Close" links to `#menu-closed`, a fragment no element has, which closes it without
+  scrolling. Costs, accepted because the marketing pages ship no script (D19): Escape does not
+  close it, `aria-expanded` cannot be kept true, so it is not set (the link has
+  `aria-controls`), and each open and close is a history entry (Back reopens it once). The
+  call to action ("Join the beta") is the panel's last item. Header links get a negative
+  `scroll-margin-top` equal to the root's `scroll-padding-top`: without it, focusing a link
+  in the sticky header scrolled the page up by a screen's worth (it did so before this too).
+  `e2e/home.spec.ts` follows a link from the open menu at 390 and 768 px.
+- **Ticker.** An endless loop needs a pause control (WCAG 2.2.2) and a control needs a
+  script. It moves once instead: one copy to the left in four seconds after a one-second
+  delay, then stands still exactly where a static band would look the same; under Reduce
+  Motion it never moves. Pinned in `e2e/home.spec.ts` (one iteration, done within 5 s, no
+  animation under Reduce Motion).
+- **Reflow.** At 320 px the statement was cut and the meta line truncated. The statement's
+  size is `clamp(2rem, 15vw, var(--web-display))` (unchanged from about 375 px up), and the
+  meta line stacks and may wrap below 25rem. The hero facts carry a marker each, so a wrapped
+  line no longer starts with a separator; the last principle drops its own rule.
+- **Focus on ink.** The focus ring is ink; on the download band it vanished. Inside `.download`,
+  `.planPlus` and `.sectionInverse` it is paper (`--on-accent`); an e2e test tabs to the band
+  and checks the ring's contrast against it.
+- **axe and `content-visibility`.** Sections below the fold are skipped until they come near
+  the viewport, so axe judged colours on unrendered boxes and the full-page captures showed
+  empty frames. `e2e/site.spec.ts` keeps the console (CSP) check on the page as served and runs
+  axe and the capture in a second context that bypasses the CSP only to add one style,
+  `content-visibility: visible`. `font-synthesis: none` is checked there too.
+
+The OG card (`npm run og`) follows the design: ink on paper, the hero's words from
+`messages/en.json`, the committed Inter subsets. A visible "sample data" caption sits under
+the scores grid.
+
+Would change if the site ever ships a script for the menu: then a disclosure button with
+`aria-expanded` and Escape replaces the `:target` panel.
