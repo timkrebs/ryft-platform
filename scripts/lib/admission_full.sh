@@ -650,7 +650,7 @@ adm_full_ksm_native() {
     sleep 5
   done
   if adm_full_ksm_compare "$mf" "$bj"; then
-    rec "claim-m-native" PASS "kube-state-metrics' native collector matches the cluster binding by binding: $ADM_KSM_DETAIL (the alert AdmissionBindingMissing counts the info series against 13). This release is given rbac.extraRules, so the run does not show that the chart adds the RBAC; that holds by the chart's source for 8.6.0 (the ClusterRole rule and --resources=validatingadmissionpolicybindings are rendered)"
+    rec "claim-m-native" PASS "kube-state-metrics' native collector matches the cluster binding by binding: $ADM_KSM_DETAIL (the alert AdmissionBindingMissing counts the info series against 18). This release is given rbac.extraRules, so the run does not show that the chart adds the RBAC; that holds by the chart's source for 8.6.0 (the ClusterRole rule and --resources=validatingadmissionpolicybindings are rendered)"
   else
     rec "claim-m-native" FAIL "the native collector differs from the cluster: $ADM_KSM_DETAIL"
   fi
