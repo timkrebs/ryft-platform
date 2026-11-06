@@ -21,6 +21,8 @@ noted. 45 `TODO(user)` in all: privacy 11 + 11, terms 5 + 5, support 2 + 2, Impr
 You don't want your name, home address, personal email or phone publicly available. So
 **none of them goes into the texts, this repository, its variables or commits**, and the
 markers that ask for them stay open: U1, U5, U6, U7, U12 below, and the Impressum.
+(Superseded for U1, U6 and U7: the owner published the name, address and phone in the
+Impressum and the legal texts and closed them on 2026-11-06.)
 
 They conflict with what the drafts are built to say. The privacy policy names the
 controller's identity and contact (Art. 13(1)(a) GDPR); the German Impressum asks for a name
@@ -66,11 +68,12 @@ Facts that bear on it:
 | S8 | Minimum age 13 | PR #10 (privacy §9, terms §4) |
 | — | The beta is invite-only, no public TestFlight link | `TESTFLIGHT_URL` stays unset |
 
-**Still open:** the name and postal address (U1, the Impressum, terms §1; section 0), the
-supervisory authority (U4), the review of the legal bases (U3, now also the website's), the
-basis for Supabase access from outside the EU, the mail service (name, where, DPA), the
-Impressum's § 18(2) MStV person and phone replacement (U6–U7; U8 is answered),
-terms §8–§10 (U9–U11), the feedback route on the support page (S9), whether the old Ireland
+**Closed by the owner on 2026-11-06:** U1, U6 and U7 (the published Impressum, privacy §1 and
+terms §1 answer them); U8 is answered too.
+
+**Still open:** the supervisory authority (U4), the review of the legal bases (U3, now also
+the website's), the basis for Supabase access from outside the EU, the mail service (name,
+where, DPA), terms §8–§10 (U9–U11), the feedback route on the support page (S9), whether the old Ireland
 project is deleted (S1), an SMTP provider for Supabase's emails (S2), whether sent `outbox`
 rows are deleted (S5), and the privacy version (section 4).
 
@@ -78,13 +81,13 @@ rows are deleted (S5), and the privacy version (section 4).
 
 | # | Where | What is needed |
 | --- | --- | --- |
-| U1 | privacy §1 (l. 13); terms §1 (l. 12); Impressum "Provider"/"Angaben gemäß § 5 DDG" (en l. 14, de l. 12) | Controller and provider: full name (or company), postal address that can be served (*ladungsfähige Anschrift*), email address. The same person in all three. |
+| U1 | privacy §1 (2026-10-26, l. 11); terms §1 (2026-10-20, l. 10); Impressum "Provider" (l. 12) | **Closed by the owner (2026-11-06).** Answered by the published texts: the same person, Tim Krebs, Feldwieser Str. 52, 83236 Übersee, in all three; the email `support@ryftapp.de` in privacy §1 and the Impressum (terms §1 links the Impressum). |
 | U2 | privacy §1 (l. 13) | **Answered (2026-10-21): none.** The text will say none is designated. Whether one is required (Art. 37 GDPR, § 38 BDSG) is your reviewer's to confirm. |
 | U3 | privacy §4 (l. 38) | The legal review of the bases listed in §4. The draft names them as the system works; it does not settle them. |
 | U4 | privacy §7 (l. 59) | The competent supervisory authority (it follows from where the controller is established, usually your federal state's data protection authority). |
 | U5 | privacy §7 (l. 59) | The email address for privacy requests. |
-| U6 | Impressum "Contact" (en l. 18, de l. 16) | Email, and a second fast way to reach you (e.g. phone). |
-| U7 | Impressum § 18(2) MStV (en l. 22, de l. 20) | Name and address of the person responsible for the content. |
+| U6 | Impressum "Contact" (l. 16) | **Closed by the owner (2026-11-06).** Answered by the published Impressum: email `support@ryftapp.de` and a phone number as the second fast way. |
+| U7 | Impressum § 18(2) MStV (l. 20) | **Closed by the owner (2026-11-06).** Answered by the published Impressum: "Tim Krebs, address as above" (the provider's address). |
 | U8 | Impressum (en l. 22–28) | **Answered, and ported (2026-11-05, web D18).** Your answers were published in the German Impressum; with the German pages gone they are in the English one, translated without a change of meaning: no VAT identification number ("None."), and the § 36 VSBG statement that RYFT is neither obliged nor willing to take part in proceedings before a consumer arbitration board. |
 | U9 | terms §8 (l. 40) | How the beta ends, and how long before that testers are told. |
 | U10 | terms §9 (l. 44) | The liability clause, reviewed for German law. The draft's note stays true: liability for intent, gross negligence and injury to life, body or health cannot be excluded. |
