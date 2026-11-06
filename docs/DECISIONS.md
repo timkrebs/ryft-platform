@@ -3974,7 +3974,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   holding every credential.
 - **State:** merged; both switches off. Expected plan with the committed defaults: 9 to add, 9 to destroy, all generated files.
 
-## D192 — Raft snapshots every 6 hours to S3 by two pinned upstream images; the upload is create-only (#153, #146, #151)
+## D192 — Raft snapshots every 6 hours to S3 by two pinned upstream images; the upload is create-only (#153, #146, #151, #155)
 
 - **Decision:** a CronJob `vault/vault-snapshot` in `vault-extras` (`17 */6 * * *`, `concurrencyPolicy: Forbid`, Job deadline
   600 s, Pod Security `restricted`). RPO is 6 hours. An init container (the server's own image) logs in with Kubernetes auth as
@@ -3982,7 +3982,15 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   **does not revoke** its token (no default policy; it expires in 10 minutes). The snapshot lives in a memory-backed
   `emptyDir` and is removed on every exit, SIGTERM included. An upload container (AWS CLI 2.39.5, multi-arch index digest) does
   one `aws s3api put-object` with `--if-none-match '*'`, `--expected-bucket-owner`, `--server-side-encryption aws:kms
-  --ssekms-key-id <full ARN>`, `--bucket-key-enabled` and `--checksum-algorithm SHA256`. Not a custom image or Go code.
+  --ssekms-key-id <full ARN>`, `--bucket-key-enabled` and `--checksum-sha256`. Not a custom image or Go code.
+- **The checksum (#155, vault-extras 0.2.1):** the init container hashes the snapshot (SHA-256, hex, a file beside it in the
+  `emptyDir`) between the save and the inspect. The upload checks that hash (64 lowercase hex characters), converts it to
+  base64 of the raw digest with POSIX `printf` octal escapes (no `xxd` in the CLI image), checks the result is 44
+  characters, and sends it as `--checksum-sha256`; the hex value stays in the metadata `sha256`. S3 stores the object only if
+  the bytes it receives have that hash, so the stored object is what was hashed and then inspected. Replaces
+  `--checksum-algorithm SHA256`, with which the CLI hashed the stream itself at upload time (an unsigned trailer) and so
+  checked the transfer only. With a precomputed checksum the CLI signs the payload, so `XAmzContentSHA256Mismatch` is
+  possible again beside `BadDigest` (OPERATIONS → Vault → Snapshots).
 - **The job's AWS role** (`vault_snapshot_pod_identity`, `infra/aws/kubernetes`): `s3:PutObject` on `<bucket>/snapshots/*`
   (with `s3:ResourceAccount` and the key-ID condition) and `kms:GenerateDataKey` on the snapshot key (`kms:ViaService` = S3,
   encryption context = the bucket). No get, list, delete or decrypt. The Pod Identity token is mounted in **both**
@@ -4031,7 +4039,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   port-forward: if it is `::1`, all three bound files fail at the first login, which does not lock the bootstrap out);
   generate-root under auto-unseal.
 
-## D194 — Vault metrics without a token, admitted by NetworkPolicy to named peers; the alerts are gated on "initialised" (#145, #153)
+## D194 — Vault metrics without a token, admitted by NetworkPolicy to named peers; the alerts are gated on "initialised" (#145, #153, #155)
 
 - **Decision:** `unauthenticated_metrics_access` on the listener lets every node answer `/v1/sys/metrics` (standbys would
   redirect, and a scrape token would live where Fleet's remote config can read it, D51). The `alloy-deployment` collector
@@ -4055,7 +4063,17 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   `VaultSnapshotStale` (critical), `VaultSnapshotFailing`, `VaultAuditFailing` (**critical**), `VaultVolumeFilling`,
   `VaultUpdatePending` (info, D204) and `VaultScrapeDown`. The 7-day readiness gate is replaced by "this Vault has been
   initialised" (a pod labelled `vault-initialized=true` in the last hour, or a CronJob success, which outlasts an outage of
-  every pod), so an uninitialised Vault (D196) pages nothing. `PodRestarting` covers `ryft-.*|vault`; `CertificateExpiring`
+  every pod), so an uninitialised Vault (D196) pages nothing.
+- **Amended (#155): the label half is not durable.** Vault's Kubernetes service registration starts every process as
+  initialized=false, sealed=true and sets `vault-initialized=true` again only on unseal (as read from Vault's source in the
+  #153 re-read; to verify in the kind drill). The label therefore means "unsealed at least once since this process
+  started": after every pod restarts and stays sealed it lapses an hour after the last unsealed sample, and only the
+  snapshot success holds the gate. So the **first snapshot, by hand, is a precondition of the alerts**: right after the
+  init and PR 3b's apply, before `make alerts-apply`, and again after every restore or re-bootstrap (a rebuilt CronJob
+  has no `lastSuccessfulTime`). The collector peer closes the pod-network path only; the host-network `alloy-daemonset`
+  very likely still reaches 8200 (to verify), so G3's "`Initialized true` before your own init: stop" covers the rest.
+  Known gap: with the StatefulSet gone, `VaultUnavailable` and the server and kubelet branches of `VaultScrapeDown` are
+  silent by design. `PodRestarting` covers `ryft-.*|vault`; `CertificateExpiring`
   covers `vault/vault-tls`. Series budget under 65.
 - **State:** merged (#145, #153), **not applied**. **Not verified in the cluster:** the scrape, the `alloy-deployment` and
   VSO pod labels, KSM's endpoint labels, `kube_pod_labels` with Vault's labels, `kubelet_volume_stats_*` from Fleet (if absent,
