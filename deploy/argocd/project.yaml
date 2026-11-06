@@ -45,6 +45,8 @@ spec:
       # controller, not git (seen in the kind test of the broker).
       - { kind: Secret, name: ryft-secrets }
       - { kind: Secret, name: vault-auth-token }
+      # cert-manager's, from the vault-ca Certificate in every vault-namespaces overlay (D190).
+      - { kind: Secret, name: vault-ca }
       - { kind: Secret, name: rabbitmq-tls }
       - { kind: Secret, name: rabbitmq-ryftapp-de-tls }
       - { kind: Secret, name: amqp-client }

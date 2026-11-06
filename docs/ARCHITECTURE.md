@@ -175,7 +175,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
 | `internal/app` | owns a long-running service's lifecycle: it starts the pool, the broker, consumers and HTTP in order and stops them in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 4 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
-| `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 4 files |
+| `internal/auth` | owns bearer verification for /v1 (Supabase JWT, or a shared key in development), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 5 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 1 file |
 | `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 9 files (Postgres) |
@@ -189,7 +189,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
 | `internal/logx/logcheck` | owns the test-side half of "no health values in logs": it checks captured log lines against the keys each message may carry. | none | 1 file |
-| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, events/amqpbus, gate, httpx, notify, scoring, store |
+| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, auth, events/amqpbus, gate, httpx, notify, scoring, store |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
@@ -356,8 +356,12 @@ Everything above is a starting point with sensible constants; the tests in
 ## Namespaces and trust
 
 Every workload is its own security domain: a Kubernetes namespace, a service account, a
-Vault namespace with its own Kubernetes auth mount, and credentials usable only for
-what that workload does. No credential is shared, and none is broader than its user.
+Vault identity of its own, and credentials usable only for what that workload does. No
+credential is shared, and none is broader than its user. On HCP Vault the identity is a
+Vault namespace with its own Kubernetes auth mount. On the Vault in the cluster
+(Community Edition, no namespaces) it is a mount, a role and a policy: `kv-<svc>/`, the
+role `<svc>` in the one `auth/kubernetes`, and a policy that reads `kv-<svc>/data/config`
+and nothing else (D187).
 
 ```text
               Internet ──TLS── Traefik (kube-system)
@@ -378,14 +382,18 @@ what that workload does. No credential is shared, and none is broader than its u
 
   Vault (HCP): admin/ryft/{ingest,scoring,api,notify,rabbitmq,migrate,smoke}, each with auth/kubernetes
   bound to its namespace + service account, kv/config = that workload's keys only.
+  Vault (CE, namespace vault, 3 Raft pods, KMS auto-unseal; during the migration, D191):
+  auth/kubernetes with role <svc> bound to its namespace + service account, kv-<svc>/config,
+  the same values. Each namespace's VaultConnection names exactly one of the two.
   The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
 ```
 
 - **Identity:** each pod runs as its own service account, without an automounted
   Kubernetes token (no workload calls the Kubernetes API). The operator requests
   short-lived, audience-`vault` tokens for that account and logs into that namespace's
-  Vault mount. Vault confirms each token through the cluster's TokenReview. A role is
-  bound to exactly one namespace and one service account.
+  Vault mount (on CE: that service's role in the shared mount). Vault confirms each
+  token through the cluster's TokenReview. A role is bound to exactly one namespace and
+  one service account.
 - **Secrets:** `infra/vault` generates the database and broker passwords and writes each
   one only into the namespaces that need it (`infra/vault/README.md`); the broker's
   users get theirs in `ryft-rabbitmq` (`amqp-user-<service>`, for the Topology Operator).

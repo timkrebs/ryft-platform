@@ -26,5 +26,7 @@ locals {
     vault_secrets_operator       = { repository = "https://helm.releases.hashicorp.com", chart = "vault-secrets-operator", version = "1.6.0" }
     aws_for_fluent_bit           = { repository = "https://aws.github.io/eks-charts", chart = "aws-for-fluent-bit", version = "0.2.0" }
     argocd                       = { repository = "https://argoproj.github.io/argo-helm", chart = "argo-cd", version = "10.10.5" }
+    # 0.34.1 is tested up to Vault 2.0.4; it runs 2.2.1 here (vault.tf, D186), outside the chart's matrix.
+    vault = { repository = "https://helm.releases.hashicorp.com", chart = "vault", version = "0.34.1" }
   }
 }

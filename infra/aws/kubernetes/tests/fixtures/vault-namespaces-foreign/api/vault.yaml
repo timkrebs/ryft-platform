@@ -1,0 +1,8 @@
+# Test input of admission.tftest.hcl: a VaultConnection naming an address in no vaultAddresses list.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: ryft-api
+spec:
+  address: "https://vault.example.com:8200"

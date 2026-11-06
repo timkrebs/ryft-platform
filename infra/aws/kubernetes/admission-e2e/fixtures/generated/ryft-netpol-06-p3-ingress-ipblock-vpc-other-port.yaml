@@ -2,7 +2,7 @@
 # op: create
 # as: system:serviceaccount:argocd:argocd-application-controller
 # refused-by: ryft-netpol
-# message: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+# message: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

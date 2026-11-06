@@ -1,0 +1,138 @@
+{{- /*
+Namespace vault (design section 6, D194): no pod-network peer reaches or leaves a pod unless a policy below allows
+it (D44: both ways), as in every RYFT namespace. Namespaces are selected by kubernetes.io/metadata.name.
+
+What these policies do not govern: `kubectl port-forward` (the stream enters the pod's network namespace through
+the kubelet and arrives on loopback; the operator's bootstrap and Terraform use it, as the broker's UI does in
+OPERATIONS), and traffic from the node's own address, which the EKS VPC CNI admits for the kubelet's probes and very
+likely for any host-network process on that node too (the privileged alloy-daemonset among them). So the peers
+below are the selected pod-network clients, not everything that can reach 8200. No ipBlock rule for the VPC range is
+added on 8200 (D51's reasoning for 9090).
+*/}}
+{{- $server := dict "app.kubernetes.io/name" "vault" "component" "server" }}
+{{- $snapshot := dict "app.kubernetes.io/name" "vault-snapshot" }}
+{{- $vpc := required "vpcCIDR is required" .Values.vpcCIDR }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The server: who reaches Vault, and what Vault reaches.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-server
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {{- toYaml $server | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- if .Values.peers.vso.enabled }}
+    # The Vault Secrets Operator does every login and read: the workloads' only client of the API.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ required "peers.vso.namespace is required" .Values.peers.vso.namespace }} } }
+          podSelector:
+            matchLabels: {{- required "peers.vso.podLabels is required" .Values.peers.vso.podLabels | toYaml | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+    {{- end }}
+    {{- if .Values.peers.collector.enabled }}
+    # The alloy-deployment collector's scrape of /v1/sys/metrics (unauthenticated on the listener, D194). The port
+    # is all of the API, PUT /v1/sys/init included before the init: on only after the operator's own init. This rule
+    # names its pods only; the host-network alloy-daemonset is not a pod-network peer and is not what it admits
+    # (see the header for what the node's address can still reach).
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ required "peers.collector.namespace is required" .Values.peers.collector.namespace }} } }
+          podSelector:
+            matchLabels: {{- required "peers.collector.podLabels is required" .Values.peers.collector.podLabels | toYaml | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+    {{- end }}
+    # The snapshot CronJob (D192): raft snapshot save on the active node.
+    - from:
+        - podSelector:
+            matchLabels: {{- toYaml $snapshot | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+    # The peers: retry_join and request forwarding (8200), Raft and the cluster port (8201).
+    - from:
+        - podSelector:
+            matchLabels: {{- toYaml $server | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+        - { protocol: TCP, port: 8201 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {{- toYaml $server | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+        - { protocol: TCP, port: 8201 }
+    # The Kubernetes API: TokenReview for every VSO login, and service_registration's pod labels. The API server's
+    # private ENIs sit in the VPC, so 443 is open to the VPC only (the broker's T12-k shape).
+    - to:
+        - ipBlock: { cidr: {{ $vpc }} }
+      ports:
+        - { protocol: TCP, port: 443 }
+    # AWS KMS (kms.<region>.amazonaws.com, through the NAT): DescribeKey at every start, Decrypt at the unseal. Public
+    # addresses only; NetworkPolicy cannot match host names, so the port is the limit.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }
+    # The EKS Pod Identity agent on the node: the credentials for KMS.
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+---
+# The snapshot CronJob's pods (D192, snapshot.yaml). Vault's API (vault-active), S3 (no gateway endpoint in the VPC;
+# through the NAT), the Pod Identity agent. Nothing reaches them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-snapshot
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: {{- toYaml $snapshot | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {{- toYaml $server | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }

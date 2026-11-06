@@ -9,12 +9,9 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        # Traefik in kube-system (infra/aws/kubernetes; k3s's default; D24)
+        # Traefik in kube-system (infra/aws/kubernetes; k3s's default; D24): the only Ingress peer on 8080 (D185)
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
           podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
-        # ingress-nginx, if you run that instead
-        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
-          podSelector: { matchLabels: { app.kubernetes.io/name: ingress-nginx } }
       ports:
         - { protocol: TCP, port: 8080 }
     - from:

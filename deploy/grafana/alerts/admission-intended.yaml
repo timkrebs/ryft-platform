@@ -42,3 +42,18 @@ groups:
       - record: ryft:admission_binding_intended
         expr: vector(1)
         labels: { validatingadmissionpolicybinding: ryft-argocd-operation, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-vault-trust, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-namespaces-vault, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-workloads-templates-vault, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-workloads-pods-vault, intended_action: audit }
+      - record: ryft:admission_binding_intended
+        expr: vector(1)
+        labels: { validatingadmissionpolicybinding: ryft-netpol-vault, intended_action: audit }

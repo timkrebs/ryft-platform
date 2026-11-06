@@ -131,3 +131,15 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 165
 }
+
+variable "vault_unseal_allowed_principal_arns" {
+  description = "If set, only these principals (ARN patterns, matched with ArnNotLike against aws:PrincipalArn) may encrypt or decrypt with Vault's unseal key; the key policy denies everyone else. Empty = off. Must include Vault's role (output vault_unseal_role_arn_pattern), or Vault cannot unseal at its next start"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([for a in var.vault_unseal_allowed_principal_arns :
+    can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/*?-]+$", a))])
+    error_message = "vault_unseal_allowed_principal_arns must be IAM role or user ARN patterns of one account, e.g. arn:aws:iam::111122223333:role/ryft-prod-euc1-vault-unseal-*."
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "role_type": "oidc",
+  "user_claim": "sub",
+  "bound_claims_type": "string",
+  "bound_claims": { "hd": "ryftapp.de" },
+  "oidc_scopes": [],
+  "allowed_redirect_uris": ["http://localhost:8250/oidc/callback"],
+  "verbose_oidc_logging": false,
+  "max_age": 600,
+  "token_policies": ["default"],
+  "token_no_default_policy": false,
+  "token_type": "service",
+  "token_ttl": 300,
+  "token_max_ttl": 300,
+  "token_bound_cidrs": ["127.0.0.1/32"]
+}

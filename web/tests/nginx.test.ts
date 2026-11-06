@@ -35,6 +35,8 @@ describe('nginx access log', () => {
 
 // Two CSPs (web D15): nginx does not merge add_header across levels, so each location that
 // sets a header includes a snippet again; exactly one of the two, and only /admin the admin one.
+const DE_RULE = '~ "^/de(?:/([A-Za-z0-9][A-Za-z0-9/._-]*))?$"';
+
 describe('nginx locations and the two security-header snippets', () => {
   const server = conf.slice(conf.indexOf('server {'));
   const locations = [...server.matchAll(/^ {4}location ([^{]+)\{([\s\S]*?)^ {4}\}/gm)].map((m) => ({
@@ -84,6 +86,116 @@ describe('nginx locations and the two security-header snippets', () => {
     // No add_header: the server-level headers (CSP included) are inherited.
     expect(body).not.toMatch(/add_header/);
     expect(conf).toMatch(/gzip_static on;/);
+  });
+
+  // An open redirect: nginx captures from the decoded path, so "/%5Cevil.com/" once became
+  // "Location: /\evil.com" (another host to a browser) and %09 or %0D landed in the header.
+  it('redirects only to literal paths or the safe trailing-slash capture', () => {
+    const redirects = locations.filter((l) => /\breturn 30[1278]\b/.test(l.body));
+    for (const l of redirects) {
+      const target = l.body.match(/return 30[1278] ([^;]+);/)![1]!;
+      if (!target.includes('$')) {
+        expect(target, l.name).toMatch(/^\/[A-Za-z0-9]/);
+        continue;
+      }
+      if (l.name === DE_RULE) {
+        // The old German URLs (web D18): "/" plus the same safe capture, never empty-led.
+        expect(target).toBe('/$1$is_args$args');
+        continue;
+      }
+      expect(l.name).toBe('~ "^(/[A-Za-z0-9][A-Za-z0-9/._-]*)/$"');
+      expect(target).toBe('$1$is_args$args');
+    }
+    expect(conf).not.toMatch(/^\s*rewrite\s/m);
+  });
+
+  // The /de redirect (web D18) builds Location from a decoded capture too: "/" + $1, so $1 must
+  // start with a letter or digit and hold only safe characters, or "/de/%5Cevil.com" became
+  // "Location: /\evil.com" and "/de/%2F%2Fevil.com" "Location: //evil.com".
+  it('sends /de/… to the English path only through the safe capture', () => {
+    const names = locations.map((l) => l.name);
+    const i = names.indexOf(DE_RULE);
+    expect(i, 'the /de rule').toBeGreaterThan(-1);
+    // After both trailing-slash rules: /de/ goes to /de first, then here.
+    expect(i).toBeGreaterThan(names.indexOf('~ "^/.+/$"'));
+    const de = new RegExp(DE_RULE.slice(3, -1));
+    const target = (path: string) => {
+      const m = path.match(de);
+      return m ? `/${m[1] ?? ''}` : null;
+    };
+    // nginx matches the decoded, slash-merged path: these must not match (they are 404s).
+    for (const path of [
+      '/de/\\evil.com',
+      '/de/\t/evil.com',
+      '/de/\r/evil.com',
+      '/de/\n/evil.com',
+      '/de/ x',
+      '/de//evil.com',
+      '/de/a/\\b',
+      '/de/.hidden',
+      '/deutsch',
+    ]) {
+      expect(target(path), JSON.stringify(path)).toBeNull();
+    }
+    for (const [from, to] of [
+      ['/de', '/'],
+      ['/de/privacy', '/privacy'],
+      ['/de/terms', '/terms'],
+      ['/de/impressum', '/impressum'],
+      ['/de/support', '/support'],
+      ['/de/science', '/science'],
+      ['/de/beta', '/beta'],
+      ['/de/licenses', '/licenses'],
+      ['/de/privacy/2026-10-20', '/privacy/2026-10-20'],
+      // merge_slashes turns "/de//evil.com" into this before matching: a same-site path.
+      ['/de/evil.com', '/evil.com'],
+    ]) {
+      expect(target(from), from).toBe(to);
+    }
+    // Whatever matches, Location is "/" or "/" + a letter or digit: never "//" or "/\".
+    for (const path of ['/de', '/de/a', '/de/a/b.c_d-e']) {
+      expect(target(path)).toMatch(/^\/(?:[A-Za-z0-9][A-Za-z0-9/._-]*)?$/);
+    }
+    expect(locations[i]!.body).toContain('add_header Cache-Control "public, max-age=3600" always;');
+  });
+
+  it('never captures a host, a backslash, space or control character for Location', () => {
+    const names = locations.map((l) => l.name);
+    const i = names.indexOf('~ "^(/[A-Za-z0-9][A-Za-z0-9/._-]*)/$"');
+    expect(i).toBeGreaterThan(-1);
+    // The rest of the trailing-slash paths are 404s, right after it.
+    expect(names[i + 1]).toBe('~ "^/.+/$"');
+    expect(locations[i + 1]!.body).toMatch(/^\s*return 404;\s*$/);
+
+    const redirect = new RegExp(names[i]!.slice(3, -1));
+    // nginx matches the decoded, slash-merged path.
+    for (const path of [
+      '/\\evil.com/',
+      '/\t/evil.com/',
+      '/\r/evil.com/',
+      '/\n/evil.com/',
+      '/ /evil.com/',
+      '/a/\\evil.com/',
+      '//evil.com/',
+      '/./',
+      '/_next/static/',
+      '/',
+    ]) {
+      expect(redirect.test(path), JSON.stringify(path)).toBe(false);
+    }
+    for (const [from, to] of [
+      ['/privacy/', '/privacy'],
+      ['/privacy/2026-10-26/', '/privacy/2026-10-26'],
+      ['/licenses/', '/licenses'],
+      ['/de/', '/de'],
+      ['/de/science/', '/de/science'],
+      ['/a//', '/a/'],
+      ['/x//y/', '/x//y'],
+    ]) {
+      const m = from.match(redirect);
+      expect(m?.[1], from).toBe(to);
+      expect(m![1], from).toMatch(/^\/[A-Za-z0-9][A-Za-z0-9/._-]*$/);
+    }
   });
 
   it('keeps the policies apart: each header file includes only its own', () => {

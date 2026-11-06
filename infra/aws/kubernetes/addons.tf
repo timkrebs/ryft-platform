@@ -121,8 +121,9 @@ resource "helm_release" "cert_manager" {
   depends_on = [module.cert_manager_pod_identity]
 }
 
-# ClusterIssuers letsencrypt-staging and letsencrypt-prod, from a local chart
-# because kubernetes_manifest would need the cert-manager CRDs at plan time.
+# ClusterIssuers letsencrypt-staging and letsencrypt-prod, the internal CA ryft-internal
+# (D98) and Vault's CA ryft-vault (D190), from a local chart because kubernetes_manifest
+# would need the cert-manager CRDs at plan time.
 resource "helm_release" "cluster_issuers" {
   name      = "cluster-issuers"
   namespace = "cert-manager"

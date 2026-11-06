@@ -1,0 +1,16 @@
+# fixture: vault: P13 a Kubernetes CSR for ryft-vault by the admin
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: a Kubernetes CertificateSigningRequest for the signer clusterissuers.cert-manager.io/ryft-vault is refused (cert-manager signs only its own CertificateRequests).
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: vault-tls-by-hand
+spec:
+  expirationSeconds: 86400
+  request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQkFUQ0JxUUlCQURBYU1SZ3dGZ1lEVlFRRERBOTJZWFZzZEM1MllYVnNkQzV6ZG1Nd1dUQVRCZ2NxaGtqTwpQUUlCQmdncWhrak9QUU1CQndOQ0FBVFdPM3RTb200V0o1UGI4VjhVSHdFakEzK3pIdHFnd1kxeTQvclJTcDhCCkFnOFJVckx5WTRHQm0wOThKUzRnRmNtT1g5OXRwcld4NWlTWFBTejkzQVBYb0Mwd0t3WUpLb1pJaHZjTkFRa08KTVI0d0hEQWFCZ05WSFJFRUV6QVJnZzkyWVhWc2RDNTJZWFZzZEM1emRtTXdDZ1lJS29aSXpqMEVBd0lEUndBdwpSQUlnYWR6enIvdzlVUmpCMVkvS3VuNUZIZFh6OHl3SXFyQVJVaVU5cFFxSU1Da0NJRlJkQkdjdEd0c3pacmp2CnI0V1lZRXdCblZuSmYxY1JYdHZyazdqbXR3c0MKLS0tLS1FTkQgQ0VSVElGSUNBVEUgUkVRVUVTVC0tLS0tCg==
+  signerName: clusterissuers.cert-manager.io/ryft-vault
+  usages:
+  - digital signature
+  - server auth

@@ -6,7 +6,7 @@ Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
 | Root | What | Lifetime |
 | --- | --- | --- |
 | `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only) | long-lived; survives cluster rebuilds |
-| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons | the cluster |
+| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons; Vault's KMS keys and snapshot bucket | the cluster; the Vault keys and bucket outlive it (`prevent_destroy`) |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
 The zone has its own root so destroying the cluster never changes the nameservers at
@@ -16,16 +16,18 @@ be configured from a cluster created in the same apply.
 ```
 infra/aws/
 ├── terraform.tf providers.tf locals.tf main.tf variables.tf outputs.tf
+├── vault.tf                   Vault's unseal key, snapshot key and snapshot bucket (prevent_destroy)
 ├── terraform.tfvars.example   copy to terraform.tfvars (git-ignored)
 ├── modules/
 │   ├── network/               VPC, subnets, NAT, flow logs   (terraform-aws-modules/vpc v6)
 │   └── eks/                   cluster, node group, add-ons, EBS CSI Pod Identity role
 │                                                             (terraform-aws-modules/eks v21)
 ├── tests/ryft.tftest.hcl      terraform test, providers mocked
+├── tests/vault.tftest.hcl     the Vault keys and bucket (mocked; greps prevent_destroy)
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
-    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11 + bindings (D120)
+    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11, P13 + bindings (D120)
     ├── admission.tf admission-values.yaml   the release (off), its committed values, the checks
     └── tests/addons.tftest.hcl tests/admission.tftest.hcl
 ```
@@ -43,9 +45,52 @@ infra/aws/
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
+| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
+| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
+
+### Unseal key allowlist (optional, off by default)
+
+Without it, any identity in the account whose IAM policy allows `kms:Decrypt` on `*` (an
+administrator, a broad CI role) can use Vault's unseal key. `vault_unseal_allowed_principal_arns`
+adds a Deny to the unseal key's policy: `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*` and
+`kms:GenerateDataKey*` for every principal whose `aws:PrincipalArn` is not like one of the
+listed patterns. The snapshot key is not affected.
+
+It is off because a wrong list fails silently: nothing breaks at apply, but the next Vault
+pod that starts cannot unseal and stays sealed. Turn it on only after the in-cluster Vault has
+unsealed once with its Pod Identity role (`infra/aws/kubernetes`, `vault/vault`):
+
+1. Check the role: `kubectl --context ryft-prod-euc1 -n vault exec vault-0 -- vault status`
+   shows `Seal Type awskms` and `Sealed false`. CloudTrail shows `Decrypt` on the unseal key by
+   a role named `<cluster>-vault-unseal-…`.
+2. In `terraform.tfvars`, list Vault's role. Two forms:
+   - **stricter, preferred once the role exists:** its exact ARN,
+     `terraform -chdir=infra/aws/kubernetes output -raw vault_unseal_role_arn`. It has to be
+     updated if the role is ever recreated: the module gives it a new generated suffix;
+   - or the pattern `terraform -chdir=infra/aws output -raw vault_unseal_role_arn_pattern`
+     (`role/<cluster>-vault-unseal-*`), which survives a recreated role. ArnLike's `*` also
+     matches `/`, so the pattern admits any role whose path and name start with
+     `<cluster>-vault-unseal-` (`role/<cluster>-vault-unseal-x/anything`). Anyone who may
+     create IAM roles could make one that matches.
+
+   Add your own admin role if you will ever restore a production snapshot outside the
+   cluster, for example in the kind drill with the same key. For IAM Identity Center that is
+   `arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_AdministratorAccess_*`
+   (the path may or may not hold a region segment; the `*` before the name covers both).
+   Check the exact ARN first with `aws iam list-roles --path-prefix /aws-reserved/ --query
+   'Roles[].Arn'`, and prefer it too.
+3. Plan (only the unseal key's `policy` changes in place) and apply. Then prove it: delete one
+   standby pod and watch it come back unsealed.
+
+A `check` warns on every plan if the list holds neither the exact pattern nor the role's exact
+ARN; a bare prefix without `-*` or a typo in the suffix matches no role, so it warns too. The
+list is no barrier against an administrator: `AccountAdministers` keeps `kms:PutKeyPolicy`, so an
+admin can rewrite the policy (CloudTrail records that). It also blocks every principal not
+listed, the account root and the restore drill's identity included. Rollback: set the list
+back to `[]` and apply.
 
 ## Usage
 
@@ -108,17 +153,26 @@ the name at the NLB within a minute or two.
 
 ## Admission policies (D120)
 
-`infra/aws/kubernetes/admission.tf` installs eleven built-in ValidatingAdmissionPolicies
-(P1–P11) and twelve bindings (P2 has one for templates and one for Pods) from the local
+`infra/aws/kubernetes/admission.tf` installs twelve built-in ValidatingAdmissionPolicies
+(P1–P11, P13) and seventeen bindings (P2 has one for templates and one for Pods; P1, P2 and P3
+have a second set for namespace `vault` alone) from the local
 chart `charts/admission-policy`, as the release `admission-policy` in `kube-system`. They
 judge what PSA cannot: images per namespace, commands and service account tokens, the
 auth-mode keys, NetworkPolicy and Traefik shapes, the Vault Secrets Operator objects, the
-RabbitMQ operators' cluster power and reach, the broker, and Argo CD's own objects. No pods
+RabbitMQ operators' cluster power and reach, the broker, Argo CD's own objects, and the chain
+of the `ryft-vault` issuer (P13: what it signs, which issuer may write the CA's Secrets, and
+that Argo CD writes only selfSigned Issuers). The namespace `vault` is in scope for P1–P3 (PSA
+restricted labels, the pinned images only: P2 judges images there, not commands, and egress to
+the VPC CIDR on 443 and the Pod Identity agent on 80) through the bindings
+`ryft-namespaces-vault`, `ryft-workloads-templates-vault`, `ryft-workloads-pods-vault` and
+`ryft-netpol-vault` (`namespaceSelector` In `[vault]`; the general ones carry NotIn), so
+those go to deny before the Vault bootstrap, whatever step the `ryft-*` rollout is at. No pods
 run for them and no webhook can be down; the cost is nil (API server CPU only).
 
 **It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.
-It also holds the Vault address P4 pins (a test compares it with the generated
-`deploy/k8s/overlays/vault-namespaces/*/vault.yaml`), Argo CD's service account names and
+It also holds the Vault addresses P4 admits, `vaultAddresses` (HCP's and the in-cluster
+`https://vault.vault.svc:8200` while the namespaces move; a check requires every generated
+`deploy/k8s/overlays/vault-namespaces/*/vault.yaml` to carry one of them), Argo CD's service account names and
 the action of each binding, `audit` or `deny`:
 
 | `actions` value | `validationActions` | Meaning |
@@ -143,7 +197,9 @@ it). After Step A, reverting T12-g by git needs the break-glass.
 Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass` (bool),
 `admission_actions` (a one-plan override per binding), `admission_enabled` (a plan-only
 override of the file; never apply with it set) and `admission_scoped_rbac_file` (a test knob
-for the T12-g precondition).
+for the T12-g precondition). For Vault: `vault_collector_peer` (bool, default false), which
+admits the monitoring collector to Vault's 8200; true only after your own init (OPERATIONS →
+Vault metrics (once)), false again before a restore into a fresh cluster.
 
 Outputs: `admission_enabled` and `admission_binding_actions` (what each binding is given).
 Three `lifecycle.precondition`s on the release stop a plan that sets `argocd` to deny while
@@ -171,7 +227,22 @@ Chart values worth knowing (`charts/admission-policy/values.yaml`):
   the `argocd` binding on `audit` until then.
 - `netpol.brokerEgressPublic`: `true` while `ryft-rabbitmq` still has its 443 egress rule
   open to `0.0.0.0/0`; the PR that narrows it (T12-k) sets it to `false`.
-- `breakGlass`, `actions`, `vpcCIDR`, `vaultAddress`: set from the file and the variables.
+- `images.vault`, `images.awsCli`: the anchored, digest-pinned image patterns P2 admits in
+  `vault`. `awsCli` is the snapshot CronJob's upload image (AWS CLI 2.39.5 by index digest), the
+  same reference as `vault_snapshot_aws_cli_image` in `kubernetes/vault.tf`; change both together
+  (`tests/addons.tftest.hcl` and `scripts/tests/vault_extras_chart_test.sh` compare them). P2
+  admits it only in a pod whose `serviceAccountName` is `vault.snapshotServiceAccount`
+  (`vault-snapshot`, the one with the Pod Identity association).
+- `vault.*`: what P13 lets the `ryft-vault` issuer sign (the server Certificate `vault-tls`
+  with its DNS names, IPs and usages; the per-namespace CA Certificate `vault-ca` with the
+  common name `vso.<namespace>` and no SAN), the one user that may create a CertificateRequest
+  or write its status, and the root of the chain (`rootCASecret`, `bootstrapIssuer`,
+  `clusterResourceNamespace`) that only its own Certificate and the ClusterIssuer may use.
+- `vso.reservedServices`: the names infra/vault refuses as services; no namespace that maps to
+  one may read `kv-<name>` (P4).
+- `vso.kvMountPrefix`: the in-cluster Vault's mount per service (`kv-<service>`); `vso.kvMount`
+  and `vso.vaultNamespacePrefix` hold the HCP shape until the decommission empties them.
+- `breakGlass`, `actions`, `vpcCIDR`, `vaultAddresses`: set from the file and the variables.
 
 Render and check the chart without a cluster (the values file is the CI input too):
 
@@ -258,7 +329,11 @@ admission-policy <last deployed revision>`. The full runbook comes with the late
 
 Roughly $350–370 per month in eu-central-1 before data transfer: control plane ~$73,
 3 × t3.large ~$210, NAT gateway ~$38, NLB ~$16, three public IPv4 addresses ~$11, Route 53
-zone $0.50, plus EBS volumes and CloudWatch logs. Graviton nodes (`t4g.medium`,
+zone $0.50, plus EBS volumes and CloudWatch logs. Vault's two KMS keys add $2 a month,
+rising to $4 after the first yearly rotation and $6 after the second (AWS bills each new
+key version for two rotations, then stops); its requests stay in the free 20,000 a month,
+and the snapshot bucket (four objects of well under 1 MB a day, 30 days) costs cents.
+Graviton nodes (`t4g.medium`,
 `AL2023_ARM_64_STANDARD`; the RYFT images are multi-arch) and Spot capacity
 (`node_group.capacity_type = "SPOT"`) cut the node share.
 
@@ -278,18 +353,99 @@ be evicted, so a drain never waits on a broken rollout.
 
 Kubernetes creates AWS resources Terraform does not track: the NLB (from Traefik's
 Service), Route 53 records (ExternalDNS) and EBS volumes (PVCs). Tear down in reverse so
-the controllers are still running to clean up after themselves:
+the controllers are still running to clean up after themselves. **Each step only after the
+previous one succeeded.** If the cluster root is destroyed while Traefik's NLB still exists,
+the LB controller goes with EKS, the subnet and internet gateway deletes stall for about 20
+minutes on `DependencyViolation`, and the orphaned NLB keeps billing.
+
+**Step 0, once Vault runs in the cluster** (`infra/aws/kubernetes/vault.tf`): `infra/aws/kubernetes`
+refuses its destroy, because the `vault` namespace and both Vault releases carry
+`prevent_destroy`.
+1. Take a final Raft snapshot and check that it is in the bucket (OPERATIONS → Vault →
+   Snapshots).
+2. Merge a reviewed pull request that removes exactly the three `prevent_destroy = true`
+   lines in `infra/aws/kubernetes/vault.tf`, and apply it (the plan shows no change).
+
+Then:
 
 ```bash
-kubectl delete -k deploy/k8s/overlays/eks       # Ingress gone → ExternalDNS deletes api.ryftapp.de
-(cd infra/aws/kubernetes && terraform destroy)  # Traefik Service gone → LB controller deletes the NLB
-# gp3-encrypted retains volumes: delete the leftovers explicitly
-aws ec2 describe-volumes --filters Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft \
+# 1. Workloads, then the add-ons; && stops at the first failure
+kubectl --context ryft-prod-euc1 delete -k deploy/k8s/overlays/eks && \
+  terraform -chdir=infra/aws/kubernetes destroy   # Ingress gone → ExternalDNS deletes api.ryftapp.de; Traefik gone → the LB controller deletes the NLB
+# check the NLB is gone before going on (empty output):
+aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, 'traefik')].LoadBalancerArn" --output text
+
+# 2. gp3-encrypted retains volumes: delete the leftovers explicitly. The EBS CSI driver tags
+#    each volume with its PVC's namespace (kubernetes.io/created-for/pvc/namespace); the
+#    workloads run in ryft-* namespaces
+aws ec2 describe-volumes --filters 'Name=tag:kubernetes.io/created-for/pvc/namespace,Values=ryft-*' \
   --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
-(cd infra/aws && terraform apply -var deletion_protection=false && terraform destroy)
+# the vault namespace's volumes too (Raft data and audit): they hold Vault's seal-wrapped root
+# key, and the unseal key outlives the cluster, so a leftover volume stays readable
+aws ec2 describe-volumes --filters 'Name=tag:kubernetes.io/created-for/pvc/namespace,Values=vault' \
+  --query 'Volumes[].VolumeId' --output text   # then: aws ec2 delete-volume --volume-id …
+
+# 3. The cluster root, only after 1 succeeded
+terraform -chdir=infra/aws apply -var deletion_protection=false && \
+  terraform -chdir=infra/aws destroy -target=module.eks -target=module.network   # Vault's keys and bucket stay
 ```
 
 The zone in `infra/aws/dns` stays; it costs $0.50 a month and keeps the delegation intact.
+
+**Vault's keys and bucket stay too.** They carry `prevent_destroy`, so a plain
+`terraform destroy` of this root stops with "Instance cannot be destroyed"; the targets
+above leave them alone. `infra/aws/kubernetes` finds them again by name, and a Vault in a
+rebuilt cluster unseals with the same key and can restore the old snapshots.
+
+`prevent_destroy` guards only while its block is in the file. **Deleting the block, deleting
+`vault.tf` or reverting the pull request that added them removes the protection with it**,
+and the next plan destroys them. So, once applied, never revert that pull request. What
+holds then is the keys' own policy: `NoDeletionOrDisable` denies `kms:ScheduleKeyDeletion`
+and `kms:DisableKey` to everyone, the account root and Terraform included. Such an apply
+fails at the keys. Before that, it has already done this damage:
+- destroyed both **aliases** (`kms:DeleteAlias` is not denied). Every `infra/aws/kubernetes`
+  plan then fails on `data.aws_kms_alias` until they exist again;
+- destroyed the bucket's policy, public access block, encryption default and lifecycle,
+  and suspended its versioning. The bucket itself then fails with `BucketNotEmpty`.
+
+Restoring the blocks and applying re-creates the aliases and the bucket settings; the keys
+are still in the state. Read every `-` line of a plan here.
+
+To keep a resource in AWS but drop it from this root, replace its block with a `removed`
+block: `removed { from = aws_kms_key.vault_unseal  lifecycle { destroy = false } }`
+(one per resource; the plan shows "will no longer be managed", no destroy).
+
+Removing them for good is deliberate and takes separate, reviewed steps:
+
+1. A pull request drops `NoDeletionOrDisable` from `vault_keys` (and, for the bucket,
+   sets `force_destroy = true`). You apply it: only the key policies and the bucket's
+   `force_destroy` change. `force_destroy` must be in the state before the bucket is
+   destroyed, so it needs this apply of its own. From then on, deleting the bucket
+   deletes **every object version at once**: there is no window for snapshots.
+2. A second pull request deletes the resources (or `vault.tf`). You plan, read the
+   destroy lines, and apply. A KMS key is not deleted at once: it is scheduled for
+   deletion in 30 days and unusable from that moment. Within the window,
+   `aws kms cancel-key-deletion --key-id <arn>` and then `aws kms enable-key --key-id
+   <arn>` bring it back (a cancelled key returns disabled).
+
+**Incident kill switch.** To stop all use of a key at once:
+1. Remove `NoDeletionOrDisable` from that key's policy by hand (`aws kms put-key-policy`).
+2. Run `aws kms disable-key --key-id <arn>`.
+3. **Commit `is_enabled = false` on that `aws_kms_key` at once**, in a reviewed pull request.
+   `is_enabled` defaults to `true`, so without it the next unrelated apply of this root
+   calls `EnableKey` (nothing denies that) and silently re-enables a compromised key.
+
+The same plan shows the key's `policy` going back to the committed one, with
+`NoDeletionOrDisable`. That is harmless: the key is already disabled, and keeping it disabled
+needs no `DisableKey` call. Before you apply it, check that the plan does **not** show
+`is_enabled: false -> true` on any key. A kill switch done only in code fails at
+`DisableKey` by design: step 1 has to come first.
+
+Disabling the unseal key keeps every Vault pod that restarts sealed. Disabling the
+snapshot key stops every upload and every restore.
+
+Without the unseal key, Vault's data and every snapshot are unreadable for good: only
+schedule its deletion after the in-cluster Vault and its snapshots are gone.
 
 ## Checks
 
@@ -300,10 +456,11 @@ trivy config --tf-vars terraform.tfvars.example .
 ```
 
 `terraform test` mocks every provider; nothing touches AWS or the cluster. trivy reports
-four findings in the cluster root that are deliberate:
+five findings in the cluster root that are deliberate:
 
 | Finding | Why it stays |
 | --- | --- |
+| AWS-0089 Vault snapshot bucket has no access logging | Server access logs would need a second bucket. CloudTrail records only the bucket's management events (policy, encryption, versioning changes): `GetObject`, `PutObject` and `DeleteObjectVersion` are data events, not recorded without an S3 data-event trail. Reads show up only indirectly, as `Decrypt` events on the snapshot key (with the S3 bucket key, not one per read). The bucket policy refuses every put that does not name that key; the snapshot job's role (PR 4 of the Vault work) is to get put only. A data-event trail for this bucket is the upgrade if object access must be audited |
 | AWS-0040/0041 public API endpoint | `kubectl` from your machine; restricted to `endpoint_public_access_cidrs` (set it to your IP) |
 | AWS-0104 node egress to 0.0.0.0/0 | Nodes pull images and call AWS APIs |
 | AWS-0038 scheduler / controller-manager logs off | Audit, api and authenticator logs are on; the other two add CloudWatch cost for little value at this size |

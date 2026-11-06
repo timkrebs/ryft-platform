@@ -132,7 +132,8 @@ EOF
 
 # The namespaces, labelled as infra/vault (kubernetes_namespace_v1.service), argocd.tf and the
 # overlays create them: ryft-<service> and monitoring from the generated vault-namespaces
-# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd.
+# directories, ryft-web and rabbitmq-system from the manifests Argo CD applies, argocd, and
+# vault (the in-cluster Vault's, created by infra/aws/kubernetes; the P2, P3 and P13 fixtures act there).
 adm_create_namespaces() {
   local out="$WORK/namespaces.yaml" d svc ns level sa line
   : > "$out"
@@ -171,6 +172,15 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 EOF
   { echo ---; cat "$REPO/deploy/k8s/services/web/namespace.yaml"; } >> "$out"
   { echo ---; kubectl kustomize "$REPO/deploy/rabbitmq/operators" | yq 'select(.kind == "Namespace")'; } >> "$out"
@@ -187,7 +197,7 @@ EOF
     done < <(yq 'select(.kind == "VaultAuth") | .spec.kubernetes.serviceAccount + " " + .metadata.namespace' "$d")
   done
   if kc apply -f "$out" >"$WORK/log/namespaces.out" 2>&1; then
-    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, monitoring)"
+    rec "namespaces" PASS "$(kc get ns -l 'pod-security.kubernetes.io/enforce' -o name | wc -l | tr -d ' ') namespaces with Pod Security labels (ryft-*, ryft-web, rabbitmq-system, argocd, vault, monitoring)"
   else
     rec "namespaces" FAIL "$(tail -3 "$WORK/log/namespaces.out")"
   fi
@@ -673,7 +683,7 @@ EOF
     ($2 == "refused" || $2 == "warned") {
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/rabbitmq-cluster-operator-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a (Role or )?ClusterRole of the operators (must not (hold a wildcard verb|grant Secrets))/) next
       if (scoped == 0 && $1 == "rabbitmq-operators" && $3 == "ClusterRole -/messaging-topology-manager-role" && $4 == "ryft-operators-cluster" && $5 ~ /^P6: a ClusterRole of the operators (is read-only|must not grant Secrets)/) next
-      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432, or the broker.s 443 rule/) next
+      if (pub == 1 && v == "deny" && $1 == "broker-rabbitmq" && $3 == "NetworkPolicy ryft-rabbitmq/rabbitmq" && $4 == "ryft-netpol" && $5 ~ /^P3: an egress ipBlock must be 0.0.0.0\/0 with the private ranges excepted on 443\/5432 \(443 in vault\), the broker.s 443 rule/) next
       printf "%s %s by %s (%s); ", $1, $3, $4, substr($5, 1, 80)
     }' "$WORK/dry-all-$variant.tsv")
   if [ -n "$unexplained" ]; then
