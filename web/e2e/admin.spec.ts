@@ -127,6 +127,9 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
       '/',
       '/privacy',
       '/beta',
+      // The old German URLs answer 301 (web D18) with the same headers.
+      '/de',
+      '/de/privacy',
       '/invite/TEST',
       '/auth/callback',
       '/no-such-page',
@@ -145,6 +148,11 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
       for (const [name, want] of Object.entries(COMMON)) {
         if (typeof want === 'string') expect(res.headers()[name], `${path} ${name}`).toBe(want);
         else expect(res.headers()[name], `${path} ${name}`).toMatch(want);
+      }
+      // The /de redirect is cached for an hour, not forever (a bare 301 is kept indefinitely).
+      if (path.startsWith('/de')) {
+        expect(res.status(), path).toBe(301);
+        expect(res.headers()['cache-control'], path).toBe('public, max-age=3600');
       }
     }
   });

@@ -22,13 +22,33 @@ Open:
 - App follow-ups from ADR 0015: band/zone fill levels instead of hue, outlined destructive
   actions, Inter, radius 0, the hero statement in the app.
 
+## 2026-11-06 — English only, light only, Inter (branch `web/english-light-inter`, PR #142, not yet merged)
+
+D18–D20: the German pages are gone (`/de/…` answers 301 to the English page, cached for an
+hour), one light appearance, no script on the marketing pages (`script-src 'none'`; `/admin`
+keeps its one hash in its own policy), Inter 4.1 Regular and Bold committed as pinned subsets
+(D20, `tests/fonts.test.ts`). Where the tables below say otherwise, they record the site as it
+was checked on 2026-10-21 and are marked so; the pages, the checks and the counts of this
+branch are in this section.
+
+| Check (this branch, locally) | Result |
+| --- | --- |
+| Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path | `e2e/routes.spec.ts` against the nginx image |
+| Pages | 16 static pages, English only | `next build`; Playwright on every page |
+| CSP | Marketing: `script-src 'none'`, the build fails if a script appears (`scripts/csp.mjs`); `/admin`: one hash | `tests/output.test.ts`, `e2e/admin.spec.ts` |
+| Fonts | Inter subsets, 18,560 and 19,216 bytes, hashes pinned; OFL 1.1 | `tests/fonts.test.ts` |
+| Licences | 8 Swift packages + Inter (OFL); the npm production packages + Inter | `npm run licenses:check` |
+
+Not refreshed here: `docs/screenshots/*` and the comparison below still show the old
+two-appearance design until the restyle (`web/alpine`, #143).
+
 ---
 
 As of 2026-10-21. **Live on `https://ryftapp.de` since 2026-10-21, 20:32 CEST**: the
 platform's `2cc55ef` (ryft-platform #3) runs `ghcr.io/timkrebs/ryft/web:f437747` (public,
 D14) instead of the ConfigMap site. (Historical: until 2026-10-21 `main` lived at `github.com/timkrebs/ryft-web`; the site is now `web/` of `timkrebs/ryft-platform`, platform D107.)
 
-## Live, and how it was checked (2026-10-21, against production)
+## Live, and how it was checked (2026-10-21, against production; historical: before D18, `/de…` now answers 301)
 
 | Check | Result |
 | --- | --- |
@@ -48,24 +68,24 @@ had expired).
 
 | Area | State | Checked by |
 | --- | --- | --- |
-| Pages | Landing, science, beta, privacy (+ `/privacy/2026-10-20`), terms (+ version), impressum, support, licences — each in English and German; `/open` (app-link fallback), 404, `/styleguide` | 24 static pages; Playwright on every page and language |
-| App URLs | `/privacy`, `/terms`, `/support`, `/impressum`, `/de/impressum`, `/auth/callback`, `/day/*`, `/sleep/*`, `/insights/*`, `/train/*`, `/invite/*` all 200 from the nginx image | `e2e/routes.spec.ts` against the image |
+| Pages | Landing, science, beta, privacy (+ versions), terms (+ version), impressum, support, licences, English only since D18 (2026-10-21: in English and German, 24 pages); `/open` (app-link fallback), 404, `/styleguide` | 16 static pages; Playwright on every page |
+| App URLs | `/privacy`, `/terms`, `/support`, `/impressum`, `/auth/callback`, `/day/*`, `/sleep/*`, `/insights/*`, `/train/*`, `/invite/*` all 200 from the nginx image; `/de/privacy`, `/de/terms`, `/de/impressum` 301 to the English page (D18) | `e2e/routes.spec.ts` against the image |
 | AASA | Everything the platform's copy covers, plus `/invite/*` (the app's, 2026-10-21); `application/json`, no redirect, covers every URL `AppRoute.url` creates | `tests/aasa.test.ts`, `e2e/routes.spec.ts` |
 | Brand rule | 0 hard findings in the repository, the built site and commit messages; pre-commit and commit-msg hooks; CI | `npm run brand`, `tests/brand.test.ts` (48 cases) |
 | Brand report | `docs/BRAND_CHECK.md`: nothing user-facing in app/ or plattform/; 48 internal hits | `npm run brand:report` |
-| Tokens | 23 colours, six metrics, three durations, the type scale, from `../../app/Ryft` | `npm run tokens:check`; WCAG contrast of every text pair in both themes (`tests/contrast.test.ts`) |
+| Tokens | 23 colours, six metrics, three durations, the type scale, from `../../app/Ryft` | `npm run tokens:check`; WCAG contrast of every text pair in the light values (`tests/contrast.test.ts`; both themes until D19) |
 | Legal | The platform's drafts ported to MDX, every `TODO(user)` kept, draft banner, `noindex`; versioned privacy/terms | `tests/legal.test.ts`: the text of each port equals its platform draft word for word |
 | Privacy version | `2026-10-20` on the site and in the platform's api and ingest `config.env` | `npm run check:policy` |
 | Science | Model `2026.10.1`, formulas from `SCORING.md`, `ARCHITECTURE.md` and the scoring code | `tests/science.test.ts` fails when SCORING.md's version moves |
-| Licences | 8 Swift packages at their pinned revisions + Satoshi; 166 npm production packages + Satoshi; full texts | `npm run licenses:check`, `tests/output.test.ts` |
-| JavaScript | 1.4 KB of inline JS on every page (theme), no framework runtime (D2) | `tests/output.test.ts` (< 80 KB), Lighthouse `resource-summary:script` |
+| Licences | 8 Swift packages at their pinned revisions + Inter (OFL 1.1, D20; Satoshi until then); the npm production packages + Inter; full texts | `npm run licenses:check`, `tests/output.test.ts` |
+| JavaScript | None on the marketing pages since D19 (until then 1.4 KB of inline theme JS); the admin page's one bundle; no framework runtime (D2) | `tests/output.test.ts` (< 80 KB), Lighthouse `resource-summary:script` |
 | Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/de`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page |
 | Lighthouse scores | Performance 100, Accessibility 100, Best Practices 100, SEO 92 (indexable pages; see below) | same |
-| Accessibility | axe: 0 serious or critical on 22 pages × dark/light × desktop/phone | `e2e/site.spec.ts` (88 tests) |
+| Accessibility | axe: 0 serious or critical on every page × desktop/phone, light only since D19 (2026-10-21: 22 pages × dark/light) | `e2e/site.spec.ts` |
 | Links | 246 links, internal and external, all reachable | `npm run links` |
 | Image | nginx-unprivileged 1.30.6, uid 101, read-only root FS; Trivy: 0 high or critical | `npm run image && npm run serve`, Trivy 0.76.0 locally |
 | Secrets | gitleaks: no leaks in history | gitleaks 8.30.1 locally |
-| CSP | Two script hashes, no `unsafe-inline`, Trusted Types; no violations on any page | `tests/csp.test.ts`, console checks in `e2e/site.spec.ts` |
+| CSP | Marketing `script-src 'none'` since D19 (until then two script hashes), no `unsafe-inline`, Trusted Types; no violations on any page | `tests/csp.test.ts`, `tests/output.test.ts`, console checks in `e2e/site.spec.ts` |
 
 Locally, every step CI runs passed on 2026-10-20 (macOS, Podman 6.1, Chrome for
 Lighthouse); the Checks job was also replayed from a clean copy of the tracked files.
@@ -107,9 +127,8 @@ the package is not public.
 - **SEO 92, not 100**: Lighthouse fetches `robots.txt` from inside the page, and the CSP's
   `connect-src 'none'` blocks that. Crawlers fetch it directly (it's served, 200).
 - **No brotli** (D7).
-- **German state words** on /science (ausgeglichen, angespannt, erschöpft) are translations
-  of the API's `balanced`, `strained`, `depleted`; the app doesn't show these words in
-  German yet. Align them when it does.
+- **German state words** on /science: gone with the German pages (D18). If German comes
+  back, align them with the app's.
 
 ## Screenshots
 

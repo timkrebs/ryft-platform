@@ -375,12 +375,12 @@ jobs:
       # environment `deploy` and reads the deploy App's key, no external reusable workflow, no
       # `secrets: inherit`, no test hooks of the scripts.
       - run: ./scripts/check_workflows.sh
-      # The privacy policy version that api and ingest name in config.env has its page in
-      # English and German on the site, and the site has no page the platform does not
+      # The privacy policy version that api and ingest name in config.env has its page on the
+      # site (English only since web D18), and the site has no page the platform does not
       # name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
       # The version in force on EKS (the overlay's pin, moved by promote with the web pin):
-      # api and ingest agree and the pinned web commit serves it at /privacy (newest page, English and German).
+      # api and ingest agree and the pinned web commit serves it at /privacy (the newest English page).
       # On a pull request it also refuses to put a draft text into force (an unchanged one stays).
       - name: The privacy policy in force has its page
         env:
@@ -609,7 +609,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: timkrebs/ryft-app
-          # Temporary (web D19/D21): the site's tokens come from the app's monochrome light
+          # Temporary (web D19): the site's tokens come from the app's monochrome light
           # palette, which is timkrebs/ryft-app#100. Drop `ref` once that PR is on main.
           ref: design/alpine-light-palette
           path: app
@@ -685,7 +685,7 @@ jobs:
             aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
             image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:ci
       - run: npx playwright install --with-deps chromium
-      - name: Playwright (every page, en + de, light + dark, axe)
+      - name: Playwright (every page, routes, headers, axe)
         run: npx playwright test
         env:
           BASE_URL: http://localhost:8080
@@ -699,7 +699,7 @@ jobs:
           retention-days: 14
       - name: Links (internal and external)
         run: npm run links
-      - name: Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS)
+      - name: Lighthouse (mobile; LCP < 1.8 s, < 80 KB JS)
         run: npm run lighthouse
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

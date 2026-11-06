@@ -143,8 +143,8 @@ else
 fi
 
 # Draft guard, on a pull request (a base ref is given). A version may BECOME the one in force, or
-# the published one in base's config.env, only when its page says status: published in both
-# languages. The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
+# the published one in base's config.env, only when its (English) page says status: published.
+# The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
 # on key or value, a trailing comment and spaces after the dashes are all normalised, and anything
 # that is not exactly "published" refuses. A version listed BEFORE the one that is in force now was
 # in force before, so going back to it is allowed (move web and the in-force pin back together).
