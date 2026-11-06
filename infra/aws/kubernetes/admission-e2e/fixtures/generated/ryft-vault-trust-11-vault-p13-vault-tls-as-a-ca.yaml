@@ -1,0 +1,47 @@
+# fixture: vault: P13 vault-tls as a CA
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-tls
+  namespace: vault
+spec:
+  dnsNames:
+  - vault
+  - vault.vault
+  - vault.vault.svc
+  - vault.vault.svc.cluster.local
+  - vault-active
+  - vault-active.vault.svc
+  - vault-active.vault.svc.cluster.local
+  - vault-standby
+  - vault-standby.vault.svc
+  - vault-internal
+  - vault-internal.vault.svc
+  - vault-0.vault-internal
+  - vault-1.vault-internal
+  - vault-2.vault-internal
+  - vault-0.vault-internal.vault.svc
+  - vault-1.vault-internal.vault.svc
+  - vault-2.vault-internal.vault.svc
+  - localhost
+  duration: 8760h
+  ipAddresses:
+  - 127.0.0.1
+  isCA: true
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: ryft-vault
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  renewBefore: 720h
+  secretName: vault-tls
+  usages:
+  - server auth
+  - digital signature

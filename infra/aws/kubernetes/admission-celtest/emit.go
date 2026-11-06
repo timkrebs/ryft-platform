@@ -52,6 +52,18 @@ var notEmitted = map[string]string{
 	"P2 image volume":                                    "the volume mount names a volume the case replaced",
 	"P2 projected token":                                 "the volume mount names a volume the case replaced",
 	"P6 crd of another group":                            "a CRD's name must be its plural.group",
+	// Whether the API server keeps an image volume source depends on the ImageVolume feature gate of
+	// kind's release; the harness pins the rule (in ryft-* and in vault).
+	"vault: P2 an image volume": "an image volume source depends on kind's ImageVolume feature gate",
+	// cert-manager's webhook (after the policies) or RBAC would refuse these in kind's Audit run.
+	"vault: P13 ClusterIssuer ryft-vault with an empty ca (has() guard)":             "a CA issuer needs secretName",
+	"vault: P13 ClusterIssuer ryft-vault-bootstrap with an empty spec (has() guard)": "an issuer needs one type",
+	"vault: P13 Argo CD writes an Issuer with an empty spec (has() guard)":           "an issuer needs one type",
+	"vault: P13 the root CA without an issuerRef name (has() guard)":                 "issuerRef.name is required",
+	"vault: P13 vault-tls without a secretName":                                      "secretName is required",
+	"vault: P13 Argo CD writes a selfSigned ClusterIssuer":                           "Argo CD's controller has no RBAC on clusterissuers",
+	"vault: P13 Argo CD writes ClusterIssuer ryft-vault as rendered":                 "Argo CD's controller has no RBAC on clusterissuers",
+	"vault: P13 a Kubernetes CSR for ryft-vault by cert-manager":                     "cert-manager's RBAC on certificatesigningrequests is not the point",
 	// The broker's NetworkPolicy carries the open 443 egress rule the committed values admit
 	// (brokerEgressPublic); the kind run's Deny variant closes it (the chart's guard), so the
 	// object would be refused for that rule first.
@@ -65,7 +77,7 @@ func maybeEmit(name string, r Req, res []Result) {
 	if r.Op != "CREATE" || r.Sub != "" || r.Obj == nil || len(res) == 0 {
 		return
 	}
-	if strings.Contains(name, "(before T12-g)") || strings.HasPrefix(name, "cost:") {
+	if strings.Contains(name, "(before T12-g)") || strings.HasPrefix(name, "cost:") || strings.HasPrefix(name, "decom:") {
 		return
 	}
 	if _, bad := notEmitted[name]; bad || opensBrokerEgress(r.Obj) {

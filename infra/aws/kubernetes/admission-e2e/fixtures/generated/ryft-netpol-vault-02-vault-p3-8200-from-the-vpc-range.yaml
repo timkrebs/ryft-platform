@@ -1,0 +1,87 @@
+# fixture: vault: P3 8200 from the VPC range
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-netpol-vault
+# message: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-server
+  namespace: vault
+spec:
+  egress:
+  - ports:
+    - port: 8200
+      protocol: TCP
+    - port: 8201
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+          component: server
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+  - ports:
+    - port: 80
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 169.254.170.23/32
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: alloy-deployment
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault-snapshot
+    ports:
+    - port: 8200
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+          component: server
+    ports:
+    - port: 8200
+      protocol: TCP
+    - port: 8201
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+      component: server
+  policyTypes:
+  - Ingress
+  - Egress

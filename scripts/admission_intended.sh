@@ -2,7 +2,8 @@
 # The committed action of each admission binding as a recording rule (T12-e, D120).
 #
 #   scripts/admission_intended.sh            write deploy/grafana/alerts/admission-intended.yaml
-#   scripts/admission_intended.sh --check    fail when that file differs from what the values give
+#   scripts/admission_intended.sh --check    fail when that file differs from what the values give,
+#                                            or AdmissionBindingMissing counts another number of bindings
 #
 # Source: `actions:` in infra/aws/kubernetes/admission-values.yaml (key: audit|deny; the
 # binding is named ryft-<key>). kube-state-metrics cannot read the chart's labels from a
@@ -15,7 +16,22 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 values=${ADMISSION_VALUES:-$root/infra/aws/kubernetes/admission-values.yaml}
 out=${ADMISSION_INTENDED_OUT:-$root/deploy/grafana/alerts/admission-intended.yaml}
 chart_values=${ADMISSION_CHART_VALUES:-$root/infra/aws/kubernetes/charts/admission-policy/values.yaml}
-want_bindings=12  # the 12 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml)
+alerts=${ADMISSION_ALERTS:-$root/deploy/grafana/alerts/ryft.yaml}
+want_bindings=17  # the 17 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml); check_alert holds the two together
+
+# AdmissionBindingMissing counts the ryft-* bindings against a constant (`< N` and "of N" in its
+# summary). Both must equal want_bindings, so a PR that adds a binding cannot merge with a stale
+# threshold (two PRs that each add one would otherwise both pass and leave the alert one short).
+check_alert() {
+  local block lt of
+  block=$(awk '/- alert: AdmissionBindingMissing$/ { on = 1; next } on && /- alert: / { exit } on { print }' "$alerts")
+  lt=$(printf '%s\n' "$block" | sed -n 's/.*or vector(0)) < \([0-9][0-9]*\)$/\1/p' | head -1)
+  of=$(printf '%s\n' "$block" | sed -n 's/.*summary: "{{ $value }} of \([0-9][0-9]*\) admission policy bindings exist".*/\1/p' | head -1)
+  if [ "$lt" != "$want_bindings" ] || [ "$of" != "$want_bindings" ]; then
+    echo "admission_intended: AdmissionBindingMissing in $alerts counts '< ${lt:-?}' and 'of ${of:-?}', the chart has $want_bindings bindings" >&2
+    exit 1
+  fi
+}
 
 action_keys() { # the keys under `actions:`, one per line, duplicates kept
   awk '
@@ -78,6 +94,7 @@ case "${1:-}" in
     cp "$tmp" "$out"
     ;;
   --check)
+    check_alert
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
     render > "$tmp"

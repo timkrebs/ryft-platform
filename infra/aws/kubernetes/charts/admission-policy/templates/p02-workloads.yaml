@@ -1,11 +1,21 @@
 {{- /*
 P2 ryft-workloads (C, U): Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Job and
-CronJob in ryft-* and rabbitmq-system. Two bindings: `templates` (everything but Pod,
-what Argo applies) and `pods` (what controllers create at runtime).
+CronJob in ryft-*, rabbitmq-system and vault. Two bindings: `templates` (everything but Pod,
+what Argo applies) and `pods` (what controllers create at runtime), each twice: one for vault
+(`-vault`, namespaceSelector In [vault]) and one for everything else (NotIn [vault]), so vault's
+can go to deny before the ryft-* steps B and C.
+
+In vault P2 judges images only: the Vault image running /bin/sh, under any service account, is
+admitted. What a pod there may do is bounded by RBAC (only Terraform writes in vault) and by P12
+(#121: Argo CD writes nothing in vault).
 
 Images: ryft-<svc> runs <registry>/<svc>:<7 hex> (ryft-smoke runs the migrate image),
 ryft-rabbitmq the broker's digest-pinned image, rabbitmq-system only the two operators
-with command [/manager]; no image volumes anywhere. In ryft-*: no command (exec probes and
+with command [/manager], vault only images.vault and images.awsCli (both pinned by digest;
+an empty awsCli admits no AWS CLI); no image volumes anywhere. The ryft-* rules below on
+commands, args, tokens and vault-auth-token do not apply in vault: the chart's start script
+is a command, and Vault (TokenReview) and the snapshot job (a projected token with audience
+vault) need their tokens. In ryft-*: no command (exec probes and
 exec lifecycle hooks count as commands), args only [smoke] on the migrate image in
 ryft-smoke, automountServiceAccountToken false, no projected token, nothing that refers to
 Secret vault-auth-token, and on Pods no kube-api-access-* volume.
@@ -33,7 +43,7 @@ spec:
       {{- include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE")) | nindent 6 }}
   matchConditions:
     - name: ryft-or-operators-namespace
-      expression: request.namespace.startsWith('ryft-') || request.namespace == {{ .Values.operators.namespace | toJson }}
+      expression: request.namespace.startsWith('ryft-') || request.namespace in {{ list .Values.operators.namespace .Values.vault.namespace | toJson }}
     {{- include "admission.cond.finalizerRemoval" . | nindent 4 }}
     - name: not-a-broker-restart
       # D98's fallback: kubectl rollout restart statefulset rabbitmq-server. The only
@@ -87,6 +97,7 @@ spec:
         variables.allContainers.all(c,
           variables.ns == {{ .Values.broker.namespace | toJson }} ? c.image.matches({{ .Values.images.broker | toJson }}) :
           variables.ns == {{ .Values.operators.namespace | toJson }} ? c.image.matches({{ .Values.images.operators | toJson }}) :
+          variables.ns == {{ .Values.vault.namespace | toJson }} ? ({{ include "admission.cel.vaultImages" . }}) :
           (c.image.startsWith(variables.imagePrefix) && c.image.substring(size(variables.imagePrefix)).matches('^[0-9a-f]{7}$')))
       message: "P2: a container image is not the one this namespace may run."
       reason: Forbidden
@@ -151,6 +162,11 @@ spec:
       message: "P2: an ephemeral container in a RYFT namespace must not mount a service account token or use Secret vault-auth-token."
       reason: Forbidden
 ---
-{{ include "admission.binding" (dict "root" . "key" "workloads-templates" "policy" "ryft-workloads" "suffix" "templates" "id" "P2" "step" "B" "rules" (include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE")))) }}
+{{- $vaultNs := list .Values.vault.namespace }}
+{{ include "admission.binding" (dict "root" . "key" "workloads-templates" "policy" "ryft-workloads" "suffix" "templates" "id" "P2" "step" "B" "rules" (include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE"))) "excludeNamespaces" $vaultNs) }}
 ---
-{{ include "admission.binding" (dict "root" . "key" "workloads-pods" "policy" "ryft-workloads" "suffix" "pods" "id" "P2" "step" "C" "rules" (include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE")))) }}
+{{ include "admission.binding" (dict "root" . "key" "workloads-pods" "policy" "ryft-workloads" "suffix" "pods" "id" "P2" "step" "C" "rules" (include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE"))) "excludeNamespaces" $vaultNs) }}
+---
+{{ include "admission.binding" (dict "root" . "key" "workloads-templates-vault" "policy" "ryft-workloads" "suffix" "templates-vault" "id" "P2" "step" "A" "rules" (include "admission.rules.templates" (dict "ops" (list "CREATE" "UPDATE"))) "namespaces" $vaultNs) }}
+---
+{{ include "admission.binding" (dict "root" . "key" "workloads-pods-vault" "policy" "ryft-workloads" "suffix" "pods-vault" "id" "P2" "step" "A" "rules" (include "admission.rules.pods" (dict "ops" (list "CREATE" "UPDATE"))) "namespaces" $vaultNs) }}

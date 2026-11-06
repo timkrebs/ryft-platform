@@ -2,7 +2,7 @@
 # op: create
 # as: system:serviceaccount:argocd:argocd-application-controller
 # refused-by: ryft-netpol
-# message: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+# message: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

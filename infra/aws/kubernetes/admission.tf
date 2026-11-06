@@ -1,5 +1,7 @@
-# Admission policies for ryft-prod-euc1 (D120): eleven ValidatingAdmissionPolicies P1-P11
-# and their bindings, from the local chart charts/admission-policy, in kube-system. The
+# Admission policies for ryft-prod-euc1 (D120): twelve ValidatingAdmissionPolicies (P1-P11 and
+# P13, the in-cluster Vault's CA) and their seventeen bindings (P1, P2 twice and P3 once more for
+# namespace vault alone, so those go to deny on their own), from the local chart
+# charts/admission-policy, in kube-system. The
 # production values are committed in admission-values.yaml (a reviewed PR, then your apply);
 # `enabled: false` there creates nothing. Bindings are exempt from admission, so RBAC guards
 # them (T12-f) and the break-glass is yours alone: kubectl patch or delete a binding, then
@@ -46,13 +48,21 @@ locals {
   admission_broker_egress_public = try(local.admission_file.netpol.brokerEgressPublic, local.admission_defaults.netpol.brokerEgressPublic)
 
   # The VaultConnections infra/vault generates: every file must hold exactly one address
-  # (quotes stripped); a check and a test compare it with admission-values.yaml.
-  vault_namespaces_dir = "${path.module}/../../../deploy/k8s/overlays/vault-namespaces"
+  # (quotes stripped), and every address must be one of admission-values.yaml's
+  # vaultAddresses (HCP's or the in-cluster Vault's during the cutover); a check and a test.
+  vault_namespaces_dir = coalesce(var.admission_vault_namespaces_dir, "${path.module}/../../../deploy/k8s/overlays/vault-namespaces")
   vault_address_by_file = {
     for f in fileset(local.vault_namespaces_dir, "*/vault.yaml") :
     f => [for m in regexall("(?m)^\\s+address:\\s*\"?([^\"\\s]+)\"?\\s*$", file("${local.vault_namespaces_dir}/${f}")) : m[0]]
   }
-  vault_addresses = distinct(flatten(values(local.vault_address_by_file)))
+  vault_addresses         = distinct(flatten(values(local.vault_address_by_file)))
+  admission_vault_allowed = try(tolist(local.admission_file.vaultAddresses), [])
+  admission_vault_address_ok = (
+    length(local.vault_address_by_file) > 0 &&
+    alltrue([for f, a in local.vault_address_by_file : length(a) == 1]) &&
+    length(local.admission_vault_allowed) > 0 &&
+    alltrue([for a in local.vault_addresses : contains(local.admission_vault_allowed, a)])
+  )
 
   # Handed to the chart. The file's keys but `enabled`, with the full action map.
   admission_values = merge(
@@ -178,12 +188,8 @@ check "admission_values" {
 
 check "admission_vault_address" {
   assert {
-    condition = (
-      length(local.vault_address_by_file) > 0 &&
-      alltrue([for f, a in local.vault_address_by_file : length(a) == 1]) &&
-      length(local.vault_addresses) == 1 && local.vault_addresses[0] == local.admission_file.vaultAddress
-    )
-    error_message = "vaultAddress in admission-values.yaml differs from the VaultConnections infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml), or a file does not hold exactly one address. P4 would refuse them all (or none)."
+    condition     = local.admission_vault_address_ok
+    error_message = "A VaultConnection infra/vault generated (deploy/k8s/overlays/vault-namespaces/*/vault.yaml) names an address that is not in vaultAddresses of admission-values.yaml, or a file does not hold exactly one address. P4 would refuse it."
   }
 }
 
@@ -223,7 +229,7 @@ check "admission_binding_drift" {
 check "admission_policy_drift" {
   assert {
     condition = !local.admission_enabled ? true : (
-      length(local.admission_rendered_policies) == 11 &&
+      length(local.admission_rendered_policies) == 12 &&
       length(local.admission_live_policies) == length(local.admission_rendered_policies) &&
       alltrue([
         for name, want in local.admission_rendered_policies : (

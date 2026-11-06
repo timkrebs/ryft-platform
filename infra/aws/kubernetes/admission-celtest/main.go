@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/admission"
@@ -52,6 +53,54 @@ var kinds = map[string]kindInfo{
 	"ApplicationSet":  {"argoproj.io", "v1alpha1", "applicationsets"},
 	"RabbitmqCluster": {"rabbitmq.com", "v1beta1", "rabbitmqclusters"}, "Shovel": {"rabbitmq.com", "v1beta1", "shovels"},
 	"Federation": {"rabbitmq.com", "v1beta1", "federations"}, "Queue": {"rabbitmq.com", "v1beta1", "queues"},
+	"Certificate": {"cert-manager.io", "v1", "certificates"}, "CertificateRequest": {"cert-manager.io", "v1", "certificaterequests"},
+	"Issuer": {"cert-manager.io", "v1", "issuers"}, "ClusterIssuer": {"cert-manager.io", "v1", "clusterissuers"},
+	"CertificateSigningRequest": {"certificates.k8s.io", "v1", "certificatesigningrequests"},
+}
+
+// The cluster-scoped kinds of the map above: a binding's namespaceSelector never excludes them
+// (a Namespace is matched on its own labels).
+var clusterScoped = map[string]bool{
+	"Namespace": true, "CustomResourceDefinition": true, "ClusterRole": true, "ClusterRoleBinding": true,
+	"MutatingWebhookConfiguration": true, "ValidatingWebhookConfiguration": true,
+	"ClusterIssuer": true, "CertificateSigningRequest": true,
+}
+
+// nsSelected follows the API server's namespaceSelector of a binding (the webhook matcher it
+// shares): an empty or absent selector selects everything, a cluster-scoped object other than a
+// Namespace is never excluded, a Namespace is matched on its own labels (the old object's on a
+// DELETE), anything else on its namespace's. The API server sets kubernetes.io/metadata.name on
+// every Namespace before admission, so the harness adds it.
+func nsSelected(b *v1.ValidatingAdmissionPolicyBinding, kind, ns string, r Req) bool {
+	if b.Spec.MatchResources == nil || b.Spec.MatchResources.NamespaceSelector == nil {
+		return true
+	}
+	sel, err := metav1.LabelSelectorAsSelector(b.Spec.MatchResources.NamespaceSelector)
+	must(err)
+	if sel.Empty() || (clusterScoped[kind] && kind != "Namespace") {
+		return true
+	}
+	lbl := map[string]string{}
+	var src map[string]any
+	switch {
+	case kind == "Namespace" && r.Obj != nil:
+		src = r.Obj
+	case kind == "Namespace":
+		src = r.Old
+	default:
+		src = r.NsObj
+	}
+	if src != nil {
+		if md, ok := src["metadata"].(map[string]any); ok {
+			if l, ok := md["labels"].(map[string]any); ok {
+				for k, v := range l {
+					lbl[k], _ = v.(string)
+				}
+			}
+		}
+	}
+	lbl["kubernetes.io/metadata.name"] = ns
+	return sel.Matches(labels.Set(lbl))
 }
 
 type compiled struct {
@@ -216,6 +265,9 @@ func (c *chart) eval(r Req) []Result {
 		}
 		if b.Spec.MatchResources != nil && len(b.Spec.MatchResources.ResourceRules) > 0 &&
 			!ruleMatches(b.Spec.MatchResources.ResourceRules, info, r.Sub, r.Op) {
+			continue
+		}
+		if !nsSelected(b, kind, ns, r) {
 			continue
 		}
 		var obj, old *unstructured.Unstructured
@@ -543,6 +595,13 @@ func main() {
 	runNegative(c)
 	runArgo(c)
 	runHardening(c)
+	runVault(c)
+	// The decommission's render (run.sh writes it): P4 with only the in-cluster shape.
+	decom := os.Getenv("CELTEST_DECOM_CHART")
+	if decom == "" {
+		panic("CELTEST_DECOM_CHART is not set: run the harness through run.sh")
+	}
+	runDecom(loadChart(decom))
 	checkGolden()
 	writeFixtures()
 	fmt.Println("cases:", len(results), "failures:", failures)

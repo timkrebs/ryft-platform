@@ -1,0 +1,25 @@
+# fixture: vault: P13 vault-ca as a CA
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-vault-trust
+# message: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-ca
+  namespace: ryft-api
+spec:
+  commonName: vso.ryft-api
+  duration: 8760h
+  isCA: true
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: ryft-vault
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  secretName: vault-ca
+  usages:
+  - digital signature
