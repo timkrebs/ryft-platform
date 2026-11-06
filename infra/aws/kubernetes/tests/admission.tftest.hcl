@@ -1226,6 +1226,7 @@ run "drift_a_missing_binding" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
         { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
@@ -1236,6 +1237,19 @@ run "drift_a_missing_binding" {
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing=ryft-vso extra= policyName= actions= match="
+    error_message = "the live list of this run must differ from the render in exactly: missing=ryft-vso"
+  }
 }
 
 run "drift_a_binding_left_in_the_wrong_action" {
@@ -1261,6 +1275,7 @@ run "drift_a_binding_left_in_the_wrong_action" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
         { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
@@ -1271,6 +1286,19 @@ run "drift_a_binding_left_in_the_wrong_action" {
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing= extra= policyName= actions=ryft-workloads-pods match="
+    error_message = "the live list of this run must differ from the render in exactly: actions=ryft-workloads-pods"
+  }
 }
 
 run "drift_a_binding_pointed_at_another_policy" {
@@ -1296,6 +1324,7 @@ run "drift_a_binding_pointed_at_another_policy" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
         { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
@@ -1306,6 +1335,19 @@ run "drift_a_binding_pointed_at_another_policy" {
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing= extra= policyName=ryft-netpol actions= match="
+    error_message = "the live list of this run must differ from the render in exactly: policyName=ryft-netpol"
+  }
 }
 
 run "drift_a_binding_patched_with_a_namespace_selector" {
@@ -1331,6 +1373,7 @@ run "drift_a_binding_patched_with_a_namespace_selector" {
         { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
         { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
@@ -1341,6 +1384,19 @@ run "drift_a_binding_patched_with_a_namespace_selector" {
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing= extra= policyName= actions= match=ryft-netpol"
+    error_message = "the live list of this run must differ from the render in exactly: match=ryft-netpol"
+  }
 }
 
 run "server_defaults_are_not_drift" {
@@ -1405,11 +1461,29 @@ run "drift_p12_binding_patched_with_a_namespace_selector" {
         { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
         { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "NotIn", values = ["kube-system"] }] } } } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
       ]
     }
   }
 
   expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing= extra= policyName= actions= match=ryft-argo-scope"
+    error_message = "the live list of this run must differ from the render in exactly: match=ryft-argo-scope"
+  }
 }
 
 run "operators_cluster_deny_needs_t12g" {
@@ -1475,12 +1549,28 @@ run "drift_a_missing_policy" {
         { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       ]
     }
   }
 
   expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing=ryft-argocd extra= validations= matchConditions= variables= match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: missing=ryft-argocd"
+  }
 }
 
 run "drift_an_edited_policy" {
@@ -1505,10 +1595,404 @@ run "drift_an_edited_policy" {
         { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
         { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
       ]
     }
   }
 
   expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra= validations=ryft-vso matchConditions= variables= match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: validations=ryft-vso"
+  }
+}
+
+run "drift_a_policy_with_an_edited_match_condition" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "false" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra= validations= matchConditions=ryft-argo-scope variables= match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: matchConditions=ryft-argo-scope"
+  }
+}
+
+run "drift_a_policy_with_an_edited_variable" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "false" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra= validations= matchConditions= variables=ryft-namespaces match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: variables=ryft-namespaces"
+  }
+}
+
+run "drift_a_policy_with_narrowed_match_rules" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["configmaps"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra= validations= matchConditions= variables= match=ryft-argo-scope failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: match=ryft-argo-scope"
+  }
+}
+
+run "drift_a_policy_set_to_ignore_failures" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Ignore", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra= validations= matchConditions= variables= match= failurePolicy=ryft-operators-cluster"
+    error_message = "the live list of this run must differ from the render in exactly: failurePolicy=ryft-operators-cluster"
+  }
+}
+
+run "drift_a_binding_renamed" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_bindings
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso-old" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { policyName = "ryft-operators-cluster", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-broker" }, spec = { policyName = "ryft-broker", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-templates" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["deployments"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-netpol" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { policyName = "ryft-auth-env", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-traefik" }, spec = { policyName = "ryft-traefik", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-pods" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["pods"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing=ryft-vso extra=ryft-vso-old policyName= actions= match="
+    error_message = "the live list of this run must differ from the render in exactly: missing=ryft-vso, extra=ryft-vso-old"
+  }
+}
+
+run "drift_a_policy_renamed" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-old" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing=ryft-argocd extra=ryft-argocd-old validations= matchConditions= variables= match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: missing=ryft-argocd, extra=ryft-argocd-old"
+  }
+}
+
+# A binding the chart does not render (labelled part-of=admission-policy, left from a rename or written by
+# hand) is drift too; only the count comparison sees it.
+run "drift_an_extra_binding" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_bindings
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { policyName = "ryft-operators-cluster", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-broker" }, spec = { policyName = "ryft-broker", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-templates" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["deployments"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-netpol" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { policyName = "ryft-auth-env", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-traefik" }, spec = { policyName = "ryft-traefik", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-workloads-pods" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { resourceRules = [{ resources = ["pods"], operations = ["CREATE"] }] } } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { policyName = "ryft-operator-reach", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd" }, spec = { policyName = "ryft-argocd", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { policyName = "ryft-argocd-operation", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { policyName = "ryft-argo-scope", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { policyName = "ryft-vault-trust", validationActions = ["Warn", "Audit"] } },
+        { metadata = { name = "ryft-namespaces-vault" }, spec = { policyName = "ryft-namespaces", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-templates-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-workloads-pods-vault" }, spec = { policyName = "ryft-workloads", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-netpol-vault" }, spec = { policyName = "ryft-netpol", validationActions = ["Warn", "Audit"], matchResources = { namespaceSelector = { matchExpressions = [{ key = "kubernetes.io/metadata.name", operator = "In", values = ["vault"] }] } } } },
+        { metadata = { name = "ryft-stray" }, spec = { policyName = "ryft-vso", validationActions = ["Warn", "Audit"] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_binding_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s policyName=%s actions=%s match=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_bindings), keys(local.admission_live_bindings)))),
+      join(",", sort(setsubtract(keys(local.admission_live_bindings), keys(local.admission_rendered_bindings)))),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if w.spec.policyName != try(local.admission_live_bindings[n].spec.policyName, w.spec.policyName)])),
+      join(",", sort([for n, w in local.admission_rendered_bindings : n if toset(w.spec.validationActions) != toset(try(local.admission_live_bindings[n].spec.validationActions, w.spec.validationActions))])),
+      join(",", sort([for n, w in local.admission_norm.rendered_bindings : n if w != try(local.admission_norm.live_bindings[n], w)]))
+    ) == "missing= extra=ryft-stray policyName= actions= match="
+    error_message = "the live list of this run must differ from the render in exactly: extra=ryft-stray"
+  }
+}
+
+run "drift_an_extra_policy" {
+  command = plan
+
+  variables {
+    admission_enabled = true
+  }
+
+  override_data {
+    target = data.kubernetes_resources.admission_policies
+    values = {
+      objects = [
+        { metadata = { name = "ryft-vso" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operators-cluster" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-broker" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-namespaces" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-workloads" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-netpol" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-auth-env" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-traefik" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-operator-reach" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argocd-operation" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-argo-scope" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["*/*"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-vault-trust" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+        { metadata = { name = "ryft-stray" }, spec = { failurePolicy = "Fail", matchConstraints = { resourceRules = [{ resources = ["things"], operations = ["CREATE"] }] }, matchConditions = [{ name = "m", expression = "true" }], variables = [{ name = "v", expression = "true" }], validations = [{ expression = "true" }] } },
+      ]
+    }
+  }
+
+  expect_failures = [check.admission_policy_drift, check.admission_enabled_override]
+
+  # The guard: the live list differs from the render in exactly the one change of this run, so the
+  # check can only fail on the comparison under test (never on a short list).
+  assert {
+    condition = format("missing=%s extra=%s validations=%s matchConditions=%s variables=%s match=%s failurePolicy=%s",
+      join(",", sort(setsubtract(keys(local.admission_rendered_policies), keys(local.admission_live_policies)))),
+      join(",", sort(setsubtract(keys(local.admission_live_policies), keys(local.admission_rendered_policies)))),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in w.spec.validations : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.validations, w.spec.validations) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.matchConditions, []) : v.expression]) != jsonencode([for v in try(local.admission_live_policies[n].spec.matchConditions, try(w.spec.matchConditions, [])) : v.expression])])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if jsonencode([for v in try(w.spec.variables, []) : [v.name, v.expression]]) != jsonencode([for v in try(local.admission_live_policies[n].spec.variables, try(w.spec.variables, [])) : [v.name, v.expression]])])),
+      join(",", sort([for n, w in local.admission_norm.rendered_policies : n if w != try(local.admission_norm.live_policies[n], w)])),
+      join(",", sort([for n, w in local.admission_rendered_policies : n if w.spec.failurePolicy != try(local.admission_live_policies[n].spec.failurePolicy, w.spec.failurePolicy)]))
+    ) == "missing= extra=ryft-stray validations= matchConditions= variables= match= failurePolicy="
+    error_message = "the live list of this run must differ from the render in exactly: extra=ryft-stray"
+  }
 }

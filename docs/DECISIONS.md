@@ -3677,7 +3677,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Consequences:** a renamed or dropped group stays live in Grafana until it is deleted there. Nothing is deployed to the
   cluster by the change; the rules reach Grafana only through the user's `make alerts-apply`.
 
-## D180 — Argo CD's ClusterRoles are an allowlist, and everything else that decides what it may do is guarded (T12-f; amends D120; #47, merged 2026-11-05, **not applied**)
+## D180 — Argo CD's ClusterRoles are an allowlist, and everything else that decides what it may do is guarded (T12-f; amends D120; #47, merged 2026-11-05, **applied by the owner 2026-11-06**)
 
 - **Decision:** the application controller's and argocd-server's ClusterRoles in `infra/aws/kubernetes/argocd.tf` are
   explicit rules derived from every synced render (25 controller rules, 13 server rules at merge; server read-only
@@ -3700,7 +3700,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   them narrows but does not close the route of a written ClusterRole bound to `system:serviceaccounts` or
   `system:authenticated` (or an aggregation-labelled ClusterRole). Not applying it is a scoping choice, not a proof of
   unsafety; it is documented as open (OPERATIONS → "What stays open", item 6).
-- **What is true once this is applied (today the chart's `*` role is the live one):** a stolen controller token can no
+- **What is true now that this is applied (since 2026-11-06 the narrowed roles are the live ones, not the chart's `*`):** a stolen controller token can no
   longer grant itself write on the admission policies through RBAC. "Argo CD cannot switch off the admission layer" is **not** true until P6 and P12 are both in Deny and this
   change is applied (P12 is #121, open; P12 judges names only, so the RBAC route needs P6 and P12 together). With
   authentication mode `API` (#118, open) the `aws-auth` route closes too.
@@ -3708,8 +3708,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   rollback is refused by it on purpose. A new operator Role needs Server-Side Apply; the UI no longer shows the live
   manifest of a webhook configuration. The plan's human view hides the values but the saved plan holds them in clear (the
   admin password's bcrypt hash): never commit or paste `argocd-rbac.tfplan`, delete it after the apply.
-- **State:** merged; `terraform apply` of `infra/aws/kubernetes` is the user's Step 0 (OPERATIONS → Deploy and roll back →
-  "What Argo CD may no longer do", and the PR body). **Kind runs:** the last full-mode `admission-e2e` run on #47 was
+- **State:** merged, and **applied by the owner on 2026-11-06** (Step 0, OPERATIONS → Deploy and roll back → "What Argo CD
+  may no longer do"). The owner's checks: the controller's ClusterRole holds no `*`, the 11 Applications are Synced, the
+  controller cannot patch or delete `validatingadmissionpolicybindings` and cannot impersonate, and it can list
+  Applications (D206). **Kind runs:** the last full-mode `admission-e2e` run on #47 was
   42004329007 on `c5af15b` (success). The final head `0f1402c` changed the comments of `argocd.tf` only (plus 23 lines of
   tests and docs); there was **no full-mode run on it**. The ci-mode `admission` job passed on `0f1402c`. The PR was marked
   ready at 10:11:33 UTC and merged at 10:12:20 UTC on 2026-11-05.
@@ -4109,6 +4111,9 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   starts all 17 bindings on `audit`. `make admission-celtest`: 960 cases, 0 failures. **Merge order with #121 (P12, chart
   0.3.0, an open stale draft):** #147 and #153 merged first, so #121 bumps above 0.5.1 and sets 18 bindings and 13 policies
   (`--check` fails if missed); D186's G1 has the order for enabling and for Deny. The VSO and alloy pod labels in the NetworkPolicy fixtures are placeholders.
+- **Amended by D206:** P12 `ryft-argo-scope` joins the layer (chart 0.6.0, 13 policies, 18 bindings); `vault`, `cert-manager`
+  and `clusterResourceNamespace` are never in Argo CD's scope, so "Argo CD writing a well-shaped Certificate in `vault`" above is
+  refused by P12.
 
 ## D196 — Vault's probes, budget and placement: alive when sealed, ready only when serving (#145)
 
@@ -4177,6 +4182,9 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   pattern, the project's `ryft-*` destinations, the controller's ClusterRole and P12 already admit it, so it gains no power.
   The owner's `kubectl apply -k` for it ends; its workload is not in git yet.
 - **State:** not built. Acceptance: the app Synced and Healthy with no diff at adoption, before cutover 5i.
+- **Amended by D206:** P12 does **not** already admit it. `argoScope.namespaces` is an explicit list that leaves out the import
+  service's namespace on purpose, so V7a needs that namespace added to `argoScope.namespaces` (a reviewed chart change) first;
+  `check "admission_argo_scope"` fails the plan while an Application's destination is missing from the list.
 
 ## D201 — monitoring's operator objects are an Argo CD application in a project of their own (amends D51, D95; the owner; **decided, not built**)
 
@@ -4186,6 +4194,10 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   like every other group. **Rejected:** deploying the collector chart on merge through Argo CD or a CI identity.
 - **State:** not built; the project is applied by hand (D95), and the admission values change with an apply of
   `infra/aws/kubernetes`.
+- **Amended by D206:** P12 has no carve-out by kind today; it admits every namespaced object in the namespaces it lists, and
+  `monitoring` is not one of them. V7b needs a P12 change first (an entry that admits only those four kinds in `monitoring`,
+  with harness cases and a chart bump); adding `monitoring` to `argoScope.namespaces` instead would let a stolen controller
+  token write anything next to the collector, and is not the decision.
 
 ## D202 — The Grafana Cloud collector is a Terraform add-on in `infra/aws/kubernetes`, which also owns namespace `monitoring` (amends D51, D94's add-on list; the owner; **decided, not built**)
 
@@ -4237,7 +4249,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **State:** after the decommission (PR 6), as PR 6c, in one reviewed tfvars edit, a plan with one in-place update, the
   owner's apply and a 24-hour watch. Not started.
 
-## D206 — P12: Argo CD's identities write only where its apps render (amends D120, D195; #121)
+## D206 — P12: Argo CD's identities write only where its apps render (amends D120, D195, D200, D201; #121)
 
 - **Why (2026-11-04):** the #47 re-review found that the controller's narrowed ClusterRole still
   writes ConfigMaps, Services, ServiceAccounts, Deployments and Jobs in every namespace, and the
@@ -4273,6 +4285,11 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   it lists, so an `acme` or `vault` Issuer in `ryft-api` (which would make cert-manager send a Secret of that
   namespace to the server it names) is P13's to refuse. For a ClusterIssuer and anything in `vault` both
   refuse: two messages for one write, harmless (no ordering between policies, either one refuses in Deny).
+- **Amends D200 and D201:** neither app is admitted by P12 as it stands. D200's app for the import service needs
+  `argoScope.namespaces` to list the import service's namespace first (left out on purpose: its own Vault credentials, no
+  Argo CD app today). D201's app in `monitoring` needs a P12 change first (an entry for exactly those four kinds in
+  `monitoring`; P12 has no per-kind carve-out, and listing `monitoring` would admit everything there). Either is a chart
+  change with harness cases, merged before the app.
 - **Deny gate:** `argo-scope: deny` requires the **general** `operators-cluster`, `namespaces` and
   `workloads-templates` bindings in deny, not their `-vault` twins (P12 judges names, not what a ClusterRole or
   binding grants: the RBAC route is closed when P6 and P12 are both in Deny), and a narrowed controller

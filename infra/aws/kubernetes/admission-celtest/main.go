@@ -268,6 +268,11 @@ type Req struct {
 	// A Namespace create: the request path has no namespace, so the API server may send none. The
 	// harness otherwise gives a Namespace its own name, as the apiserver does for UPDATE and DELETE.
 	NoNs bool
+	// Collection: a DELETECOLLECTION. The API server's validating admission judges it once per item, as
+	// a DELETE whose oldObject is the item and whose name is the collection request's (empty); the
+	// namespace is the request path's (none for a cluster-scoped kind). A Namespace item is still
+	// selected on its own labels, as the namespace matcher reads the object.
+	Collection bool
 	// Only: judge the verdict of this binding alone (a request the harness models loosely enough that
 	// another policy errors on it, which no real API server sends).
 	Only string
@@ -307,6 +312,13 @@ func (c *chart) eval(r Req) []Result {
 	if r.NoNs {
 		ns = ""
 	}
+	itemName := name
+	if r.Collection {
+		name = ""
+		if kind == "Namespace" {
+			ns = ""
+		}
+	}
 	var out []Result
 	for _, b := range c.bindings {
 		cp := c.policies[b.Spec.PolicyName]
@@ -321,7 +333,7 @@ func (c *chart) eval(r Req) []Result {
 		// create may carry none).
 		selNs := ns
 		if kind == "Namespace" {
-			selNs = name
+			selNs = itemName
 		}
 		if !nsSelected(b, kind, selNs, r) {
 			continue

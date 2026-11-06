@@ -515,7 +515,7 @@ adm_cluster_names() {
 }
 
 # adm_wait_policies <variant>: (1) the API server holds exactly the chart's policies and bindings (the
-# names of `helm template` with the same values: 12 and 13 today), asked again while kubectl fails or
+# names of `helm template` with the same values: 13 and 18 today, chart 0.6.0), asked again while kubectl fails or
 # the sets differ; (2) every policy has been looked at by the type checker (status.observedGeneration
 # == generation and status.typeChecking present) and carries no warnings; (3) the policies are enforced:
 # one known fixture is refused (deny) or warned about (audit), polled for 30 s at most.
@@ -561,7 +561,7 @@ adm_check_argo_scope_policy() {
   local variant=$1 json=$2 p
   p=$(printf '%s' "$json" | jq -c '.items[] | select(.metadata.name == "ryft-argo-scope") | {resources: .spec.matchConstraints.resourceRules[0].resources, scope: .spec.matchConstraints.resourceRules[0].scope, observed: ((.status.observedGeneration // 0) == .metadata.generation), typeChecking: .status.typeChecking}' 2>/dev/null)
   if [ -z "$p" ]; then
-    rec "argo-scope-policy-$variant" SKIP "the chart renders no ryft-argo-scope (a chart older than 0.3.0)"
+    rec "argo-scope-policy-$variant" SKIP "the chart renders no ryft-argo-scope (a chart older than 0.6.0)"
     return 0
   fi
   if printf '%s' "$p" | jq -e '.resources == ["*/*"] and .scope == "*" and .observed and .typeChecking != null and ((.typeChecking.expressionWarnings // []) | length == 0)' >/dev/null 2>&1; then
@@ -1042,7 +1042,8 @@ EOF
 }
 
 # Claim b: webhook configurations are not exempt, so P6 sees them. In Deny the controller creating a
-# webhook configuration that is none of the operators' is refused by P6 (and the carve-out names are not).
+# webhook configuration of an operator's name (cluster-operator-validating-webhook-configuration, which P12
+# admits) with content that is not the operator's is refused by P6, and P6 alone answers.
 adm_claim_b() {
   local f="$FIXTURE_DIR/claims/claim-b-webhook.yaml" norm
   adm_run_fixture "$f" deny

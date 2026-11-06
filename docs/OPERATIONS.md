@@ -1371,7 +1371,7 @@ again each time; the table is in the design too):
 
 | Claim | Result |
 | --- | --- |
-| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 13 policies and 18 bindings (chart 0.6.0, run 42236430990) |
+| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 13 policies and 18 bindings (chart 0.6.0, run 42253117997) |
 | b: P6 sees webhook configurations | holds |
 | c: P8 matches CONNECT on `pods/exec` | holds (refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it) |
 | d: dry runs carry `validation_failure` | holds (audit level Metadata; `requestURI` has `dryRun=All`) |
@@ -1424,8 +1424,9 @@ legitimate set is small and known.
 **Rollout.** Merge order: #47 (Argo CD's narrowed RBAC; merged 2026-11-05, Step 0 applied by the owner on
 2026-11-06), #147 and #153 (namespace `vault`, P13, chart 0.5.1), then this PR (#121, chart 0.6.0, disabled),
 then Phase 1 with P12 in Warn+Audit next to P1-P11 and P13 (same apply, same 7 days), then Deny at Step B, after
-the general P6, P1 and P2 bindings (not their `-vault` twins). Two items join the Phase 1 exit checklist (design 3): (11) `kubectl -n argocd rollout restart
-deployment/argocd-server statefulset/argocd-application-controller` shows no `ryft-argo-scope` finding;
+the general P6, P1 and P2 bindings (not their `-vault` twins). Two items join the Phase 1 exit checklist (design 3): (11) `kubectl --context ryft-prod-euc1 -n argocd rollout restart
+deployment/argocd-server statefulset/argocd-application-controller` (a production write: both components restart, yours to
+run) shows no `ryft-argo-scope` finding;
 (12) an apply of `helm_release.argocd` (the pre-upgrade hook) shows none. The daily query of "Admission policy
 signals" filtered on `ryft-argo-scope`: zero lines is the exit condition for P12.
 
@@ -1436,12 +1437,26 @@ binding grants: an UPDATE of `rabbitmq-cluster-operator-role` to `*/*/*` or a Cl
 `system:authenticated` passes P12 and only P6 refuses it; the route is closed when **P6 and P12 are both in
 Deny**), and unless `argocd.tf` renders a narrowed controller ClusterRole with no wildcard (#47 merged **and
 applied**) and leaves `application.sync.impersonation.enabled` off (on, Argo CD would write as other service
-accounts and P12 would match nothing). Before the PR, by hand, each must answer **no**:
+accounts and P12 would match nothing). The gate is the argocd values guard's `controller_rbac_narrowed`, an
+allowlist: verbs only from get, list, watch, create, update, patch, delete, escalate and bind; `escalate` and `bind`
+only with `resourceNames` on the named operator Roles and the one ClusterRole; nothing on the admission policy or
+binding kinds; no `impersonate`, no `serviceaccounts/token`, no `*` inside any string (D206). Before the PR, by hand
+(read-only), each must answer **no**:
 
 ```bash
-for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i $v validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller; done
-kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=system:serviceaccount:argocd:argocd-application-controller
+SA=system:serviceaccount:argocd:argocd-application-controller
+for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i $v validatingadmissionpolicybindings --as=$SA; done
+kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=$SA
+kubectl --context ryft-prod-euc1 auth can-i escalate clusterroles --as=$SA
+kubectl --context ryft-prod-euc1 auth can-i bind clusterroles --as=$SA
+kubectl --context ryft-prod-euc1 auth can-i create serviceaccounts/token -A --as=$SA
+kubectl --context ryft-prod-euc1 auth can-i create pods/exec -A --as=$SA
+# all seven: no
 ```
+
+`admission_argo_rbac_narrowed` (a variable that stands in for the rendered role) exists for the tests and a
+rehearsal plan only. **Using it against production is forbidden**: `check "admission_gate_override"` warns on every
+plan that sets it; never apply such a plan.
 
 and the full kind mode (`gh workflow run admission-e2e.yml --ref <branch> -f ref=<branch>`) must pass on a tree that
 contains #47, with `argo-rbac` and `claim-i` not skipped (on a tree without #47 they SKIP, and P12 in deny
@@ -1459,8 +1474,8 @@ Every argo-cd chart upgrade gets the kind run
 (`-replace=random_password.argocd_admin`); the UI's password change and `argocd cert add` / `gpg add` are
 refused under Deny.
 
-**Break-glass** is the binding patch, as for every binding (it always works, claim a): `kubectl patch
-validatingadmissionpolicybinding ryft-argo-scope --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'`,
+**Break-glass** is the binding patch, as for every binding (it always works, claim a): `kubectl --context ryft-prod-euc1 patch
+validatingadmissionpolicybinding ryft-argo-scope --type=merge -p '{"spec":{"validationActions":["Warn","Audit"]}}'` (a production write, yours),
 then a chart PR and your apply; restore with the replace under "Restore". Never through Argo CD: a blocked
 Argo CD cannot change the chart and does not stand between you and the fix. If `helm_release.argocd` is the change
 being refused (at its pre-upgrade hook), the **binding patch is the only way**: `-var='admission_break_glass=true'`
@@ -1474,9 +1489,14 @@ later recreate of the Secret). One consequence: `-target=helm_release.admission_
 `helm_release.argocd` and what it depends on into the plan if they have pending changes. Read the plan before
 applying a targeted break-glass or restore, and do not leave an Argo CD chart bump unapplied.
 
-**Rollback** is a forward change: `scripts/check_chart_bump.sh` needs a higher version, so removing P12 ships as
-0.6.1 without the template, in the same PR as the `argo-scope` key of `admission-values.yaml`, the generated
-recording rules and the counts (back to 12 policies and 17 bindings). There is no data and no down-migration.
+**Rollback** is `git revert` of this PR's merge, as one forward change (chart 0.6.1, since
+`scripts/check_chart_bump.sh` needs a higher version; back to 12 policies and 17 bindings). A partial removal is not a
+rollback: `admission.tf` indexes `local.admission_effective["argo-scope"]` in two preconditions (keyed from the
+chart's `values.yaml` actions), so dropping only the `argo-scope` key fails the plan. A hand removal must take, in one
+PR: the template and the `argo-scope` action keys (chart and `admission-values.yaml`); the P12 preconditions, `check
+"admission_argo_scope"`, `check "admission_argo_scope_never"`, the `admission_argo_*` locals and the `depends_on` of
+`admission.tf`; the P12 runs of `tests/admission.tftest.hcl`; the generated recording rules and the counts. `argoScope`
+in the chart's values **stays**: P1 and `_helpers.tpl` read it. There is no data and no down-migration.
 
 **What P12 does not cover** (accepted, design "What P12 does not cover"): reads (both Argo CD Roles read Secrets in
 `argocd`); writes inside the scope beyond P2-P11's content rules; the controller's choice of revision; the
@@ -3048,6 +3068,9 @@ apply and `admission_break_glass=false`:
 terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -out=admission.tfplan -var='admission_break_glass=false'
 terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 ```
+The plan must show only `helm_release.admission_policy`. If `helm_release.argocd` is in it (the release's
+`depends_on` pulls it in when it has pending changes), stop: do not apply, delete the plan file, and resolve the argocd
+change first.
 
 **AdmissionSignalsMissing / AdmissionScrapeDown** (warning). The API-server scrape or the
 bindings scrape reports nothing for 15 minutes, or `up` is 0. The alerts above are blind
@@ -3071,7 +3094,9 @@ so a plain apply changes nothing; replace the release:
 terraform -chdir=infra/aws/kubernetes plan -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]' -out=admission.tfplan
 terraform -chdir=infra/aws/kubernetes apply admission.tfplan
 ```
-A replace uninstalls the release and installs it again: every policy and binding is gone for
+The plan must show only `helm_release.admission_policy` (one replace). If `helm_release.argocd` is in it (the
+release's `depends_on` pulls it in when it has pending changes), stop: do not apply, delete the plan file, and resolve the
+argocd change first. A replace uninstalls the release and installs it again: every policy and binding is gone for
 a moment, so the cluster is unprotected (and with `Fail` policies and no bindings, nothing is
 refused) until the install finishes. Do it in a quiet minute, not mid-incident. A release stuck
 in `pending-upgrade`: `helm -n kube-system history admission-policy`, then `rollback`.
@@ -3160,9 +3185,14 @@ Do not start the bootstrap, or the PR that switches `write_k8s` on, unless all f
     -l 'admission.ryft.dev/key in (namespaces-vault,workloads-templates-vault,workloads-pods-vault,netpol-vault,vault-trust,argo-scope)' \
     -o custom-columns='KEY:.metadata.labels.admission\.ryft\.dev/key,ACTIONS:.spec.validationActions,BREAKGLASS:.metadata.labels.admission\.ryft\.dev/break-glass'
   # six or more rows covering all six keys, every ACTIONS [Deny Audit], BREAKGLASS <none>
-  for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i "$v" validatingadmissionpolicybindings --as=system:serviceaccount:argocd:argocd-application-controller; done
-  kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=system:serviceaccount:argocd:argocd-application-controller
-  # all three: no
+  SA=system:serviceaccount:argocd:argocd-application-controller
+  for v in patch delete; do kubectl --context ryft-prod-euc1 auth can-i "$v" validatingadmissionpolicybindings --as=$SA; done
+  kubectl --context ryft-prod-euc1 auth can-i impersonate users --as=$SA
+  kubectl --context ryft-prod-euc1 auth can-i escalate clusterroles --as=$SA
+  kubectl --context ryft-prod-euc1 auth can-i bind clusterroles --as=$SA
+  kubectl --context ryft-prod-euc1 auth can-i create serviceaccounts/token -A --as=$SA
+  kubectl --context ryft-prod-euc1 auth can-i create pods/exec -A --as=$SA
+  # all seven: no (read-only checks)
   ```
 - **G2. The monitoring stack is inside Vault's trust boundary.** alloy-daemonset is
   privileged with hostPID, and alloy-operator and VSO read Secrets cluster-wide. Either

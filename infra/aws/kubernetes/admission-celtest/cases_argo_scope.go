@@ -306,20 +306,22 @@ func runArgoScope(c *chart) {
 		set(set(withKey(), "metadata/ownerReferences", ownerRef), "metadata/finalizers", []any{"example.com/hold"}),
 		set(set(sec(base(), lbl(), nil), "metadata/ownerReferences", ownerRef), "metadata/finalizers", []any{"example.com/hold"}))
 
-	// DELETECOLLECTION reaches admission as a DELETE with an empty name (and no object): cluster-scoped is
-	// refused by rule 5, namespaced in scope is admitted, outside scope refused; no CEL error in any case.
-	// Judged on ryft-argo-scope alone (the other policies are not modelled for a request without an object).
-	dcol := func(name, user, kind, ns string, want ...string) {
-		raw(name, Req{User: user, Op: "DELETE", ResKind: kind, Ns: ns, Only: "ryft-argo-scope"}, want...)
+	// DELETECOLLECTION: the API server's validating admission judges each item as a DELETE whose
+	// oldObject is the item and whose name is the collection request's (empty). Every policy is evaluated:
+	// cluster-scoped is refused by rule 5, namespaced in scope is admitted, outside scope refused, and no
+	// policy errors on the empty name.
+	dcol := func(name, user string, item map[string]any, want ...string) {
+		raw(name, Req{User: user, Op: "DELETE", Old: item, Collection: true}, want...)
 	}
-	dcol("P12 controller deletes a collection of ConfigMaps in ryft-api", argoCtl, "ConfigMap", "ryft-api")
-	dcol("P12 controller deletes a collection of Applications in argocd", argoCtl, "Application", "argocd")
-	dcol("P12 controller deletes a collection of ConfigMaps in kube-system", argoCtl, "ConfigMap", "kube-system", r4)
-	dcol("P12 controller deletes a collection of Secrets in argocd", argoCtl, "Secret", "argocd", r4)
-	dcol("P12 controller deletes a collection of ClusterRoles", argoCtl, "ClusterRole", "", r5)
-	dcol("P12 controller deletes a collection of Namespaces", argoCtl, "Namespace", "", r5)
-	dcol("P12 server deletes a collection of Applications in argocd", argoSrv, "Application", "argocd")
-	dcol("P12 server deletes a collection of ConfigMaps in argocd", argoSrv, "ConfigMap", "argocd", r3)
+	dcol("P12 controller deletes a collection of ConfigMaps in ryft-api", argoCtl, cm("ryft-api", "c"))
+	dcol("P12 controller deletes a collection of Applications in argocd", argoCtl, app("vault-api"))
+	dcol("P12 controller deletes a collection of ConfigMaps in kube-system", argoCtl, cm("kube-system", "c"), r4)
+	dcol("P12 controller deletes a collection of Secrets in argocd", argoCtl, mk("v1", "Secret", "argocd", "argocd-secret"), r4)
+	dcol("P12 controller deletes a collection of ClusterRoles", argoCtl, mk("rbac.authorization.k8s.io/v1", "ClusterRole", "", "rabbitmq-cluster-operator-role"), r5)
+	dcol("P12 controller deletes a collection of Namespaces", argoCtl, mk("v1", "Namespace", "", "ryft-api"), r5, "P1: Argo CD may write only the Namespaces")
+	// P12 admits it (Applications in argocd); P7 refuses argocd-server's delete of an Application, per item as for a single DELETE.
+	dcol("P12 server deletes a collection of Applications in argocd", argoSrv, app("vault-api"), "P7: argocd-server must not delete Applications.")
+	dcol("P12 server deletes a collection of ConfigMaps in argocd", argoSrv, cm("argocd", "c"), r3)
 
 	// ---- rule 2: the other service accounts of argocd
 	crt("P12 redis-secret-init creates Secret argocd-redis", argoRedisInit, mk("v1", "Secret", "argocd", "argocd-redis"))
@@ -366,6 +368,8 @@ func runArgoScope(c *chart) {
 	// A create with no metadata at all, of a kind rule 5 judges by name: the `name` variable must read
 	// object.metadata through has() (no CEL error) and fall back to '', which is in no allowlist, so rule 5
 	// refuses it. Judged on ryft-argo-scope alone: the other policies error on such an object in the harness.
+	// No API server sends this (object metadata is validated before validating admission runs), so these
+	// two are the only cases left with Only: a test of P12's has() guards, not of a real request.
 	noMeta := func(kind, apiVersion string) map[string]any {
 		return map[string]any{"apiVersion": apiVersion, "kind": kind}
 	}

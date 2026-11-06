@@ -286,7 +286,7 @@ commands, NetworkPolicies, VSO or Argo objects.
 
 ```mermaid
 flowchart LR
-  TF["terraform apply (user)<br/>infra/aws/kubernetes"] -->|admission-policy| POL["VAP + bindings P1–P12"]
+  TF["terraform apply (user)<br/>infra/aws/kubernetes"] -->|admission-policy| POL["VAP + bindings P1–P13"]
   TF -->|argocd-projects| PRJ["AppProjects (+ root.yaml)"]
   PF["deploy/argocd/project.yaml"] -->|file + yamldecode| TF
   GIT["git main: deploy/**"] --> ARGO["Argo CD controller / UI"]
@@ -687,7 +687,7 @@ T12-k (the broker's egress) lands before Step B.
   `scripts/admission_intended.sh` generates from `admission-values.yaml`; `make alerts-check`
   fails when the two differ.
 - Alerts:
-  - `AdmissionBindingMissing` (critical, fewer than 13 `ryft-*` bindings on the P12 branch; 12 before it);
+  - `AdmissionBindingMissing` (critical, fewer than 18 `ryft-*` bindings with P12, chart 0.6.0; 17 before it);
   - `AdmissionBindingNotDenying` (warning, 10 min: a deny binding without `Deny` while others deny);
   - `AdmissionBindingDrift` (warning, 2 h: the other mismatches);
   - `AdmissionBreakGlass` (warning, 4 h: no binding has `Deny` although some are committed as deny).

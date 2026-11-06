@@ -313,7 +313,9 @@ check "admission_enabled_override" {
 # resource rules of each binding; match constraints, conditions, variables and validations of
 # each policy. Restore with
 #   terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'
-# (quoted: zsh globs the brackets; a replace uninstalls every policy for a moment). It also
+# (quoted: zsh globs the brackets; a replace uninstalls every policy for a moment). The plan must show
+# only helm_release.admission_policy: if helm_release.argocd is in it (depends_on pulls it in when it has
+# pending changes), stop and do not apply (OPERATIONS -> Restore). It also
 # warns once, before the first apply after `enabled: true`, that nothing is there yet.
 check "admission_binding_drift" {
   assert {
