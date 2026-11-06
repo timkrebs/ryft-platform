@@ -29,12 +29,17 @@ locals {
   # are the isolation, D187). The generator and k8s.tf read the same names.
   k8s_kv_mount = { for name in keys(var.services) : name => "kv-${name}" }
 
-  # Names a service may not have on the in-cluster Vault: policies share the root namespace with Vault's own
-  # (default, root), the bootstrap's (admin, terraform) and the snapshot job's (vault-snapshot, PR 4), and
-  # kv-operator holds the demo password
-  # (variables.tf validates var.services against this list; the admission chart's vso.reservedServices is the
-  # same list).
-  reserved_service_names = ["default", "root", "admin", "terraform", "vault-snapshot", "operator"]
+  # The snapshot CronJob's identity on the in-cluster Vault (charts/vault-extras, k8s.tf): role vault-snapshot,
+  # bound to vault/vault-snapshot, carrying policy snapshot. k8s.tf and the terraform policy's render
+  # (bootstrap.tf) read these names, so the token can write exactly this role and this policy.
+  k8s_snapshot = { name = "vault-snapshot", policy = "snapshot", service_account = "vault-snapshot", k8s_ns = "vault" }
+
+  # Names a service may not have on the in-cluster Vault: policies and roles share the root namespace with Vault's
+  # own (default, root), the bootstrap's (admin, terraform) and the snapshot job's (role vault-snapshot, policy
+  # snapshot), and kv-operator holds the demo password (variables.tf validates var.services against this list). The
+  # admission chart's vso.reservedServices names the same list except snapshot; a kv-snapshot mount cannot exist
+  # while no service has that name.
+  reserved_service_names = ["default", "root", "admin", "terraform", "vault-snapshot", "snapshot", "operator"]
 }
 
 # The override exists for terraform test only (a test cannot set a local). Set anywhere else it takes the switches

@@ -9,13 +9,13 @@
 # usable from 127.0.0.1 only (the port-forward), a child of the operator's admin login.
 #
 # What this token is: admin-equivalent for its hour, not a sandbox. It reads every credential (read on the KV data
-# is needed: the provider reads each secret back), and it rewrites the policy of any service it manages, which a
-# Kubernetes token for that service's account (anyone with cluster access) then turns into those rights. What the
-# lines below take away is the cheap paths around that:
+# is needed: the provider reads each secret back), and it rewrites the policy of any role it manages (the services'
+# and the snapshot job's), which a Kubernetes token for that role's service account (anyone with cluster access)
+# then turns into those rights. What the lines below take away is the cheap paths around that:
 #   - Exact paths only, no globs on policies, roles or mounts. Vault matches ACL paths case-sensitively but
 #     lower-cases and trims a policy's name when it writes it, so a glob with a few denies would let `ADMIN`,
 #     `Terraform` or `default ` overwrite the protected policies. With exact paths only the names below exist.
-#   - A role may carry only its own service's policy and trust only its own namespace and service account
+#   - A role may carry only its own policy and trust only its own namespace and service account
 #     (allowed_parameters; Vault checks policy names element by element after the same lower-casing).
 #   - The auth mount stays type kubernetes, and its config keeps the in-cluster API server, so the login cannot be
 #     re-pointed at a TokenReview server outside the cluster.
@@ -258,7 +258,8 @@ path "auth/kubernetes/config" {
   }
 }
 
-# One role per service (vault_kubernetes_auth_backend_role): its own policy, namespace and service account only.
+# One role per service and the snapshot job's (vault_kubernetes_auth_backend_role): its own policy, namespace and
+# service account only.
 path "auth/kubernetes/role" {
   capabilities = ["list"]
 }
@@ -361,8 +362,20 @@ path "auth/kubernetes/role/whoop-import" {
     "*"                                      = []
   }
 }
+path "auth/kubernetes/role/vault-snapshot" {
+  capabilities = ["create", "read", "update", "delete"]
+  allowed_parameters = {
+    token_policies                           = ["snapshot"]
+    policies                                 = ["snapshot"]
+    bound_service_account_names              = ["vault-snapshot"]
+    bound_service_account_namespaces         = ["vault"]
+    bound_service_account_namespace_selector = [""]
+    "*"                                      = []
+  }
+}
 
-# One policy per service (vault_policy); no other name, so never admin, terraform or default in any spelling.
+# One policy per service and the snapshot job's (vault_policy); no other name, so never admin, terraform or
+# default in any spelling.
 path "sys/policies/acl" {
   capabilities = ["list"]
 }
@@ -391,5 +404,8 @@ path "sys/policies/acl/smoke" {
   capabilities = ["create", "read", "update", "delete"]
 }
 path "sys/policies/acl/whoop-import" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+path "sys/policies/acl/snapshot" {
   capabilities = ["create", "read", "update", "delete"]
 }

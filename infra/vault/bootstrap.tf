@@ -13,10 +13,15 @@ locals {
   }
 
   # The terraform policy names every managed object by its exact path (no globs: Vault matches ACL paths
-  # case-sensitively but canonicalises policy names on write, the template's header), so it follows the services.
+  # case-sensitively but canonicalises policy names on write, the template's header), so it follows the services
+  # and the snapshot job's role and policy (k8s.tf).
   bootstrap_terraform_policy_rendered = templatefile("${path.module}/bootstrap/terraform.hcl.tftpl", {
-    mounts   = concat([for name in sort(keys(local.services)) : local.k8s_kv_mount[name]], ["kv-operator"])
-    services = [for name in sort(keys(local.services)) : { name = name, service_account = local.services[name].service_account, k8s_ns = local.services[name].k8s_ns }]
+    mounts = concat([for name in sort(keys(local.services)) : local.k8s_kv_mount[name]], ["kv-operator"])
+    roles = concat(
+      [for name in sort(keys(local.services)) : { name = name, policy = name, service_account = local.services[name].service_account, k8s_ns = local.services[name].k8s_ns }],
+      [local.k8s_snapshot],
+    )
+    policies = concat(sort(keys(local.services)), [local.k8s_snapshot.policy])
   })
 
   # The policies as the tests read them: every `path "..."` wherever it stands (indented or not), and each block's

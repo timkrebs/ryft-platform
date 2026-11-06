@@ -9,6 +9,8 @@
 #   policy <svc>           read kv-<svc>/data/config, nothing else (the broker also its users' amqp-user-*)
 #   kv-<svc>/ (v2)         the same secrets as HCP's kv/ in admin/ryft/<svc>, from the same locals and random_*
 #   kv-operator/ (v2)      the demo password; no role's policy names it
+#   role vault-snapshot    the snapshot CronJob (vault/vault-snapshot, charts/vault-extras): policy snapshot, which
+#                          saves a Raft snapshot and nothing else
 #
 # No mount or auth backend here sets audit_non_hmac_*, passthrough_request_headers, allowed_response_headers or
 # listing_visibility (tests/vault.tftest.hcl): the first two would put secret values into both audit devices in
@@ -127,5 +129,31 @@ resource "vault_kv_secret_v2" "k8s_demo" {
   data_json           = jsonencode({ email = var.demo_email, password = random_password.demo.result })
 }
 
-# Not here: the snapshot CronJob's policy and role vault-snapshot (PR 4, with the job). The name stays reserved
-# (targets.tf), and PR 4 adds it to bootstrap/terraform.hcl.tftpl if this root is to write it.
+# The snapshot CronJob's identity (charts/vault-extras, PR 4; local.k8s_snapshot): it may save a snapshot and
+# nothing else. Restore is `update` on the same path, break-glass only, with the admin login. The job's projected
+# token lives 10 minutes, and so does the Vault token it gets.
+resource "vault_policy" "k8s_snapshot" {
+  count    = local.write_k8s ? 1 : 0
+  provider = vault.k8s
+
+  name   = local.k8s_snapshot.policy
+  policy = <<-HCL
+    path "sys/storage/raft/snapshot" {
+      capabilities = ["read"]
+    }
+  HCL
+}
+
+resource "vault_kubernetes_auth_backend_role" "k8s_snapshot" {
+  count    = local.write_k8s ? 1 : 0
+  provider = vault.k8s
+
+  backend                          = vault_auth_backend.k8s[0].path
+  role_name                        = local.k8s_snapshot.name
+  bound_service_account_names      = [local.k8s_snapshot.service_account]
+  bound_service_account_namespaces = [local.k8s_snapshot.k8s_ns]
+  audience                         = "vault"
+  token_policies                   = [vault_policy.k8s_snapshot[0].name]
+  token_ttl                        = 600
+  token_max_ttl                    = 600
+}

@@ -177,7 +177,7 @@ variable "services" {
   # On the in-cluster Vault a service's name is its policy, its role and its mount kv-<name> in the root namespace.
   validation {
     condition     = length(setintersection(keys(var.services), local.reserved_service_names)) == 0
-    error_message = "A service may not be named default, root, admin, terraform, vault-snapshot or operator: on the in-cluster Vault those are Vault's own policies, the bootstrap's (admin, terraform), the snapshot job's, and kv-operator (the demo password)."
+    error_message = "A service may not be named default, root, admin, terraform, vault-snapshot, snapshot or operator: on the in-cluster Vault those are Vault's own policies, the bootstrap's (admin, terraform), the snapshot job's role and policy, and kv-operator (the demo password)."
   }
 }
 

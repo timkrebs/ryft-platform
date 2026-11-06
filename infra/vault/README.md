@@ -142,13 +142,16 @@ auth/kubernetes   (Vault reviews tokens as its own SA; no reviewer JWT)
 ├── role api      ◀── SA api in ns ryft-api only, audience vault ──▶ VSO in ryft-api
 │   policy api:   read kv-api/data/config
 ├── role rabbitmq     policy rabbitmq: kv-rabbitmq/data/config, kv-rabbitmq/data/amqp-user-*
-└── …             one role, one policy and one kv-<svc>/ per entry in services
+├── …             one role, one policy and one kv-<svc>/ per entry in services
+└── role vault-snapshot ◀── SA vault-snapshot in ns vault only, audience vault, 10-minute tokens
+    policy snapshot: read sys/storage/raft/snapshot, nothing else (restore is break-glass, admin)
 kv-<svc>/config   the same values as kv/config in admin/ryft/<svc> (same locals, same random_*)
 kv-operator/demo  the App Review demo password (no workload policy names kv-operator)
 ```
 
-The snapshot job's policy and role `vault-snapshot` come with the job (PR 4); the name is
-reserved already.
+The snapshot CronJob (`charts/vault-extras`, #153) logs in as `vault-snapshot`. Both names
+are reserved: no service may be called `vault-snapshot` or `snapshot`. The job can succeed only
+after PR 3b's first write of this Vault and the apply of #153, in that order.
 
 | HCP (`admin/ryft/<svc>`) | CE (the Vault in the cluster) |
 | --- | --- |
@@ -191,11 +194,12 @@ it would fight the Certificate for the same Secret.
   variable is ephemeral, so it is in neither plan nor state.
 
 **What that token is.** Admin-equivalent for its hour, not a sandbox: it reads every
-credential (the provider reads each secret back), and it rewrites the policy of any service
-this root manages, which a Kubernetes token for that service's account turns into those
-rights. The policy (`bootstrap/terraform.hcl`) takes away the cheap paths around that: exact
-paths only (no `ADMIN`, `Terraform` or `default ` spellings of the protected policies), a
-role carries only its own service's policy, namespace and service account, the auth mount
+credential (the provider reads each secret back), and it rewrites the policy of any role
+this root manages (the services' and the snapshot job's), which a Kubernetes token for that
+role's service account turns into those rights. The policy (`bootstrap/terraform.hcl`) takes
+away the cheap paths around that: exact paths only (no `ADMIN`, `Terraform` or `default `
+spellings of the protected policies), a role carries only its own policy, namespace and
+service account, the auth mount
 stays `kubernetes` and in-cluster, no tune may switch audit HMAC off, and nothing on audit,
 seal, Raft, generate-root, OIDC, identities or tokens. After every apply that wrote it,
 `docs/OPERATIONS.md` → Vault → Terraform through the port-forward has a baseline check.

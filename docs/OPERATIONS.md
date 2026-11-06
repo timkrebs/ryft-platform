@@ -2987,10 +2987,10 @@ The tokens are bound to `127.0.0.1`, the address a port-forward arrives from ins
 
 **8. What the terraform token can and cannot do.** It is admin-equivalent for its hour, not a
 sandbox (`bootstrap/terraform.hcl.tftpl` has the reasoning). It reads every credential, and it
-rewrites the policy of any service it manages, which a Kubernetes token for that service's
-account then turns into those rights. What it cannot do: write any other policy (`admin`,
-`terraform` or `default` in any spelling), give a role any but its own service's policy,
-namespace and service account, re-type the auth mount or point it outside the cluster,
+rewrites the policy of any role it manages (each service's, and `snapshot` of the snapshot
+job's `vault-snapshot`), which a Kubernetes token for that role's service account then turns
+into those rights. What it cannot do: write any other policy (`admin`, `terraform` or `default`
+in any spelling), give a role any but its own policy, namespace and service account, re-type the auth mount or point it outside the cluster,
 switch audit HMAC off on a tune, touch audit, seal, Raft, generate-root, the OIDC login,
 identities or tokens, renew itself or be used anywhere but through the port-forward. Mint one
 from the admin login and check:
@@ -2999,7 +2999,7 @@ TFTOK="$(VAULT_TOKEN="$ADMIN" vault token create -role=terraform -display-name=t
 for p in sys/mounts/kv-api sys/mounts/kv-api/tune kv-api/data/config auth/kubernetes/role/api sys/policies/acl/api \
          sys/mounts/auth/kubernetes sys/mounts/auth/kubernetes/tune \
          sys/policies/acl/ADMIN sys/policies/acl/Terraform sys/policies/acl/Default "sys/policies/acl/admin " \
-         sys/policies/acl/admin sys/policies/acl/other auth/kubernetes/role/other sys/mounts/kv-other \
+         sys/policies/acl/admin sys/policies/acl/Snapshot sys/policies/acl/other auth/kubernetes/role/other sys/mounts/kv-other \
          sys/audit/file sys/config/auditing/request-headers auth/oidc/config auth/oidc/role/admin \
          sys/storage/raft/snapshot sys/generate-root/attempt identity/entity auth/token/create; do
   printf '%-40s %s\n' "$p" "$(VAULT_TOKEN="$ADMIN" vault token capabilities "$TFTOK" "$p")"
@@ -3121,9 +3121,11 @@ unset ADMIN TF_VAR_vault_k8s_token VAULT_TOKEN
   shell, with the admin login:
   ```bash
   vault auth list -format=json | jq -r 'keys[]'                 # kubernetes/, oidc/, token/: nothing else
-  vault list auth/kubernetes/role                               # exactly the services
+  vault list auth/kubernetes/role                               # exactly the services and vault-snapshot
   vault list auth/oidc/role                                     # admin
-  vault policy list                                             # admin, default, root, terraform and the services
+  vault policy list                                             # admin, default, root, snapshot, terraform and the services
+  vault policy read snapshot                                    # read on sys/storage/raft/snapshot, nothing else
+  vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl}'   # vault-snapshot, vault, [snapshot], 600
   vault read -field=kubernetes_host auth/kubernetes/config      # https://kubernetes.default.svc
   vault read -field=bound_subject auth/oidc/role/admin          # your digits
   for m in $(vault secrets list -format=json | jq -r 'keys[] | select(startswith("kv-"))'); do

@@ -427,7 +427,7 @@ run "k8s_target_is_off_by_default" {
       length(vault_auth_backend.k8s) + length(vault_kubernetes_auth_backend_config.k8s) + length(vault_mount.k8s_kv) +
       length(vault_policy.k8s_service) + length(vault_kubernetes_auth_backend_role.k8s_service) +
       length(vault_kv_secret_v2.k8s_config) + length(vault_kv_secret_v2.k8s_amqp_user) + length(vault_mount.k8s_operator) +
-      length(vault_kv_secret_v2.k8s_demo)
+      length(vault_kv_secret_v2.k8s_demo) + length(vault_policy.k8s_snapshot) + length(vault_kubernetes_auth_backend_role.k8s_snapshot)
     ) == 0
     error_message = "with write_k8s false (the committed default) nothing is written to the in-cluster Vault"
   }
@@ -444,6 +444,12 @@ run "k8s_target_is_off_by_default" {
       !strcontains(f.content, "argocd.argoproj.io/sync-wave") && !strcontains(f.content, "kind: Secret")
     ])
     error_message = "every namespace, monitoring and the import service included, gets its Certificate vault-ca and nothing else new: no CA reference, no in-cluster address, no waves, no literal Secret"
+  }
+  # The Vault metrics scrape (#153, deploy/monitoring) reads the Secret vault-ca in namespace monitoring.
+  assert {
+    condition = length(local_file.vso) == length(var.services) && strcontains(local_file.vso["monitoring"].content,
+    "kind: Certificate\nmetadata:\n  name: vault-ca\n  namespace: monitoring\n") && strcontains(local_file.vso["monitoring"].content, "  secretName: vault-ca\n")
+    error_message = "one generated file per service, and monitoring's requests the Secret vault-ca in namespace monitoring (the Vault metrics scrape reads it)"
   }
   assert {
     condition     = output.vso_targets.write_k8s == false && alltrue([for k, t in output.vso_targets.services : t == "hcp"]) && length(output.vso_targets.services) == length(var.services)
@@ -543,6 +549,52 @@ run "roles_trust_one_namespace_and_one_service_account_on_k8s" {
   assert {
     condition     = tolist(vault_kubernetes_auth_backend_role.k8s_service["monitoring"].bound_service_account_namespaces) == tolist(["monitoring"])
     error_message = "the collector's role is bound to namespace monitoring (no ryft- prefix)"
+  }
+}
+
+# The snapshot CronJob (charts/vault-extras, PR 4) logs in as role vault-snapshot from vault/vault-snapshot with a
+# 10-minute projected token for audience vault, and may save a snapshot, nothing else (restore is break-glass).
+run "the_snapshot_job_saves_a_snapshot_and_nothing_else" {
+  command = plan
+
+  variables {
+    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
+    vault_k8s_token       = "terraform-token"
+  }
+  expect_failures = [check.targets_come_from_git]
+
+  assert {
+    condition     = length(vault_policy.k8s_snapshot) == 1 && vault_policy.k8s_snapshot[0].name == "snapshot" && vault_policy.k8s_snapshot[0].policy == "path \"sys/storage/raft/snapshot\" {\n  capabilities = [\"read\"]\n}\n"
+    error_message = "policy snapshot is read on sys/storage/raft/snapshot and nothing else (no update: that is restore; no sudo, no other path)"
+  }
+  assert {
+    condition = (
+      length(vault_kubernetes_auth_backend_role.k8s_snapshot) == 1 &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].backend == "kubernetes" &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].role_name == "vault-snapshot" &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_names) == tolist(["vault-snapshot"]) &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_namespaces) == tolist(["vault"]) &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].audience == "vault" &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_policies) == tolist(["snapshot"]) &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_ttl == 600 && vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_max_ttl == 600
+    )
+    error_message = "role vault-snapshot is bound to vault/vault-snapshot, audience vault, policy snapshot only, tokens of 10 minutes at most"
+  }
+  assert {
+    condition = toset(concat([for p in values(vault_policy.k8s_service) : p.name], [for p in vault_policy.k8s_snapshot : p.name])) == toset(concat(keys(var.services), ["snapshot"])) && toset(concat(
+      [for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [for r in vault_kubernetes_auth_backend_role.k8s_snapshot : r.role_name]
+    )) == toset(concat(keys(var.services), ["vault-snapshot"]))
+    error_message = "the in-cluster Vault gets exactly one policy per service plus snapshot, and one role per service plus vault-snapshot"
+  }
+  # What this root writes is exactly what its token may write: the policy and role paths of bootstrap/terraform.hcl.
+  assert {
+    condition = (
+      toset([for p in local.bootstrap_policy_paths.terraform : trimprefix(p, "sys/policies/acl/") if startswith(p, "sys/policies/acl/")]) ==
+      toset(concat([for p in values(vault_policy.k8s_service) : p.name], [for p in vault_policy.k8s_snapshot : p.name])) &&
+      toset([for p in local.bootstrap_policy_paths.terraform : trimprefix(p, "auth/kubernetes/role/") if startswith(p, "auth/kubernetes/role/")]) ==
+      toset(concat([for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [for r in vault_kubernetes_auth_backend_role.k8s_snapshot : r.role_name]))
+    )
+    error_message = "the terraform policy names exactly the policies and roles k8s.tf writes: a missing one is a 403 at the apply, an extra one a right nobody uses"
   }
 }
 
@@ -777,6 +829,19 @@ run "reserved_service_names_are_refused" {
   expect_failures = [var.services]
 }
 
+# The snapshot job's policy is snapshot: a service of that name would share it.
+run "the_snapshot_policy_name_is_reserved" {
+  command = plan
+
+  variables {
+    services = {
+      api      = { database = "role", amqp = "client" }
+      snapshot = { workload_kind = "" }
+    }
+  }
+  expect_failures = [var.services]
+}
+
 run "the_port_forward_is_the_only_address" {
   command = plan
 
@@ -818,8 +883,8 @@ run "the_k8s_resources_and_only_they_use_the_k8s_provider" {
     condition = length(local.k8s_kv_mount) > 0 && alltrue([
       for b in regexall("(?ms)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\" \\{\\n(.*?)^\\}$", file("k8s.tf")) :
       startswith(b[0], "vault_") && can(regex("(?m)^  provider += vault\\.k8s$", b[2]))
-    ]) && length(regexall("(?m)^resource ", file("k8s.tf"))) == 9
-    error_message = "every resource block in k8s.tf (9) is a vault_ resource with provider = vault.k8s"
+    ]) && length(regexall("(?m)^resource ", file("k8s.tf"))) == 11
+    error_message = "every resource block in k8s.tf (11) is a vault_ resource with provider = vault.k8s"
   }
   assert {
     condition = length(local.k8s_kv_mount) > 0 && alltrue([
@@ -883,9 +948,13 @@ run "the_terraform_policy_is_an_exact_allowlist" {
       merge([for s in keys(var.services) : {
         "auth/kubernetes/role/${s}" = "\"create\", \"read\", \"update\", \"delete\""
         "sys/policies/acl/${s}"     = "\"create\", \"read\", \"update\", \"delete\""
-      }]...)
+      }]...),
+      {
+        "auth/kubernetes/role/vault-snapshot" = "\"create\", \"read\", \"update\", \"delete\""
+        "sys/policies/acl/snapshot"           = "\"create\", \"read\", \"update\", \"delete\""
+      }
     ))
-    error_message = "the terraform policy names exactly the paths it needs, each with exactly its capabilities: one mount, tune, data and metadata path per kv-<svc> and kv-operator, one role and one policy per service, the one auth mount; no glob on a policy, role or mount, nothing else"
+    error_message = "the terraform policy names exactly the paths it needs, each with exactly its capabilities: one mount, tune, data and metadata path per kv-<svc> and kv-operator, one role and one policy per service plus the snapshot job's (vault-snapshot, snapshot), the one auth mount; no glob on a policy, role or mount, nothing else"
   }
   assert {
     condition = alltrue([for p, body in local.bootstrap_policy_blocks.terraform :
@@ -898,11 +967,12 @@ run "the_terraform_policy_is_an_exact_allowlist" {
         ) : p == "auth/kubernetes/config" ? (
         length(compact(split("\n", body))) == 5 && can(regex("\\n  allowed_parameters = \\{\\n    kubernetes_host = \\[\"https://kubernetes\\.default\\.svc\"\\]\\n    \"\\*\" += \\[\\]\\n  \\}\\n", body))
         ) : startswith(p, "auth/kubernetes/role/") ? (
+        # [policy, service account, namespace]: the snapshot job's literally, a service's from its locals.
         length(compact(split("\n", body))) == 9 && alltrue([for kv in [
-          ["token_policies", trimprefix(p, "auth/kubernetes/role/")],
-          ["policies", trimprefix(p, "auth/kubernetes/role/")],
-          ["bound_service_account_names", local.services[trimprefix(p, "auth/kubernetes/role/")].service_account],
-          ["bound_service_account_namespaces", local.services[trimprefix(p, "auth/kubernetes/role/")].k8s_ns],
+          ["token_policies", p == "auth/kubernetes/role/vault-snapshot" ? "snapshot" : trimprefix(p, "auth/kubernetes/role/")],
+          ["policies", p == "auth/kubernetes/role/vault-snapshot" ? "snapshot" : trimprefix(p, "auth/kubernetes/role/")],
+          ["bound_service_account_names", p == "auth/kubernetes/role/vault-snapshot" ? "vault-snapshot" : local.services[trimprefix(p, "auth/kubernetes/role/")].service_account],
+          ["bound_service_account_namespaces", p == "auth/kubernetes/role/vault-snapshot" ? "vault" : local.services[trimprefix(p, "auth/kubernetes/role/")].k8s_ns],
           ["bound_service_account_namespace_selector", ""],
         ] : can(regex("\\n    ${kv[0]} *= \\[\"${kv[1]}\"\\]\\n", body))])
       ) : length(compact(split("\n", body))) == 1
