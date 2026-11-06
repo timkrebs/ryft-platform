@@ -12,13 +12,22 @@
   border-bottom: var(--hairline) solid var(--separator);
 }
 
+/* The header sticks, so its links are always in view; but they sit inside the root's
+   scroll-padding-top (globals.css, 5rem, there so anchored sections clear the header), and
+   focusing one (keyboard, or the menu's links) made the browser scroll the page up to "reveal"
+   it. The negative margin cancels that padding for the header's own links. */
+.header a {
+  scroll-margin-top: -5rem;
+}
+
 .headerRow {
   display: grid;
   grid-template-columns: auto 1fr auto;
   grid-template-areas: 'home nav cta';
   align-items: center;
   gap: 24px;
-  min-height: 56px;
+  /* The open menu sits right under this (top: 56px + hairline, below). */
+  height: 56px;
 }
 
 .home {
@@ -70,35 +79,28 @@
   padding-block: 8px;
 }
 
-/* The narrow-screen menu: a <details>, so it works without a script. */
-.menu {
+/* The narrow-screen menu: a panel shown while it is the :target (#site-menu), opened and
+   closed by links, so it works without a script (chrome.tsx). It lies over the page under
+   the header; a link in it moves the target, which hides it before the page scrolls there. */
+.menuOpen,
+.menuClose {
   display: none;
   grid-area: cta;
-}
-
-.menu summary {
-  display: inline-flex;
   align-items: center;
   min-height: 44px;
-  cursor: pointer;
-  list-style: none;
+  color: var(--text-primary);
   font-size: var(--web-label);
   letter-spacing: var(--web-tracking-label);
   text-transform: uppercase;
+  text-decoration: none;
 }
 
-.menu summary::-webkit-details-marker {
+.menu {
   display: none;
 }
 
 .menu nav {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 100%;
   padding: 8px var(--screen-padding) 20px;
-  background: var(--background);
-  border-bottom: var(--hairline) solid var(--separator);
 }
 
 .menu ul {
@@ -134,8 +136,30 @@
     display: none;
   }
 
-  .menu {
+  .menuOpen {
+    display: inline-flex;
+  }
+
+  .menu:target {
     display: block;
+    position: fixed;
+    z-index: 10;
+    left: 0;
+    right: 0;
+    /* Right under the sticky header (its row is 56 px, plus the hairline). */
+    top: calc(56px + var(--hairline));
+    max-height: calc(100dvh - 56px - var(--hairline));
+    overflow-y: auto;
+    background: var(--background);
+    border-bottom: var(--hairline) solid var(--separator);
+  }
+
+  .header:has(.menu:target) .menuOpen {
+    display: none;
+  }
+
+  .header:has(.menu:target) .menuClose {
+    display: inline-flex;
   }
 }
 

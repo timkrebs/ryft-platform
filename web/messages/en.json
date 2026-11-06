@@ -19,7 +19,8 @@
     "faq": "FAQ",
     "beta": "Beta",
     "cta": "Join the beta",
-    "menu": "Menu"
+    "menu": "Menu",
+    "close": "Close"
   },
   "footer": {
     "product": "Product",
@@ -98,6 +99,7 @@
       "title": "Four numbers. Each with a formula.",
       "intro": "Every score has published inputs, weights and ranges, and every stored score names the model version that computed it.",
       "sample": "Sample value",
+      "sampleNote": "Values shown: sample data, not a measurement.",
       "more": "How we calculate it",
       "items": {
         "readiness": {

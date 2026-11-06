@@ -42,11 +42,10 @@
 }
 
 .meta span {
-  /* One line each, in the fallback font too: a wrap that undoes itself at the swap is CLS. */
+  /* One line each where there is room (a wrap that undoes itself at the font swap is CLS);
+     below 25rem the items stack and may wrap instead of being cut (WCAG 1.4.10). */
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .meta span:nth-child(2) {
@@ -60,14 +59,18 @@
 .title {
   margin: clamp(48px, 9vw, 120px) 0 clamp(40px, 6vw, 80px);
   text-align: center;
-  font-size: var(--web-display);
+  /* The display size, but never wider than the screen: "ENGINEERED" is about 5.6 em wide in
+     Inter Bold at −0.07 em, so 15vw keeps it inside 100vw minus the side padding down to
+     320 px (WCAG 1.4.10); from about 375 px up the display size is the smaller one. */
+  font-size: clamp(2rem, 15vw, var(--web-display));
   line-height: 0.8;
   letter-spacing: var(--web-tracking-display);
 }
 
 .title span {
   /* One line each, whatever font paints first: the hero's height then never moves when
-     Inter swaps in (the fallback is metric-matched, but not at 144 px with −0.07 em). */
+     Inter swaps in (the fallback is metric-matched, but not at 144 px with −0.07 em). The
+     size above keeps each line inside the screen, so nothing is cut. */
   display: block;
   white-space: nowrap;
 }
@@ -109,9 +112,19 @@
   text-transform: uppercase;
 }
 
-.heroFacts li + li::before {
-  content: '·';
-  margin-right: 24px;
+/* Each fact carries its own marker, so a wrapped line never starts with a separator. */
+.heroFacts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.heroFacts li::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  background: currentColor;
 }
 
 .heroFigure {
@@ -149,6 +162,19 @@
 
   .meta span:nth-child(2) {
     display: none;
+  }
+}
+
+@media (max-width: 25rem) {
+  .meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .meta span,
+  .meta span:last-child {
+    white-space: normal;
+    text-align: left;
   }
 }
 
@@ -346,6 +372,12 @@
   gap: 8px 32px;
   padding: 28px 0;
   border-bottom: var(--hairline) solid var(--separator);
+}
+
+/* The last principle has no rule of its own: the next section's top rule closes the list,
+   instead of two rules a padding apart framing an empty band. */
+.principles li:last-child {
+  border-bottom: 0;
 }
 
 .principleIndex {
@@ -712,6 +744,13 @@
   margin: 0;
   justify-self: center;
   width: min(100%, 280px);
+}
+
+/* On ink, the focus ring is drawn in paper: the global ring is ink (globals.css) and would
+   vanish on the band. Every ink surface with something focusable gets this rule. */
+.download :focus-visible,
+.planPlus :focus-visible {
+  outline-color: var(--on-accent);
 }
 
 /* On ink, the phone's outline is drawn in paper. */

@@ -175,12 +175,12 @@ export function Container({
 }
 
 /**
- * The black ticker band. The text is repeated for the loop; the copies are hidden from
- * assistive technology, and under Reduce Motion the band stands still.
+ * The black ticker band. The text is repeated to fill the band; the copies are hidden from
+ * assistive technology. It moves once, for four seconds, and not at all under Reduce Motion.
  */
 export function Marquee({ text }: { text: string }) {
-  // Four copies: two make up the visible band at any width the design allows, the other two
-  // follow for the seamless −50 % loop. More copies only make the layer the GPU rasterises wider.
+  // Four copies: enough to fill the band at any width the design allows, also after it has
+  // moved by one copy (ui.module.css: one run of four seconds, none under Reduce Motion).
   const copies = 4;
   return (
     <div className={styles.marquee} role="presentation">

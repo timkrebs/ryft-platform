@@ -1,6 +1,7 @@
 // The frame around every page: skip link, the hairline header with its nav and call to
-// action (a <details> menu on narrow screens: no script), the main landmark, the footer with
-// the wordmark set large.
+// action (on narrow screens a menu that opens with a link to #site-menu and shows while it is
+// the :target, so it works without a script and closes itself when a link in it changes the
+// target), the main landmark, the footer with the wordmark set large.
 import type { ReactNode } from 'react';
 import { Logo, Wordmark } from './Brand';
 import { ButtonLink, Container } from './ui';
@@ -45,6 +46,10 @@ function navItems(locale: Locale, path: string) {
   ] as const;
 }
 
+const MENU_ID = 'site-menu';
+/** A fragment that names no element: following it clears :target without scrolling. */
+const MENU_CLOSED = 'menu-closed';
+
 function Header({ locale, path }: Omit<ShellProps, 'children'>) {
   const t = messages(locale);
   const home = localePath(locale, '/');
@@ -69,10 +74,17 @@ function Header({ locale, path }: Omit<ShellProps, 'children'>) {
         <ButtonLink href={localePath(locale, '/beta')} arrow className={styles.cta}>
           {t.nav.cta}
         </ButtonLink>
-        <details className={styles.menu}>
-          <summary>
-            <span>{t.nav.menu}</span>
-          </summary>
+        {/* No script (web D19): the panel is visible while it is the URL's :target. Any link
+            in it moves the target, so following "Pricing" closes it; "Close" points at a
+            fragment no element has, which closes it without scrolling. Not possible without a
+            script: Escape to close, and aria-expanded (so it is not set at all). */}
+        <a href={`#${MENU_ID}`} className={styles.menuOpen} aria-controls={MENU_ID}>
+          {t.nav.menu}
+        </a>
+        <a href={`#${MENU_CLOSED}`} className={styles.menuClose} aria-controls={MENU_ID}>
+          {t.nav.close}
+        </a>
+        <div id={MENU_ID} className={styles.menu}>
           <nav aria-label={t.a11y.mainNav}>
             <ul>
               {items.map(([href, label, current]) => (
@@ -89,7 +101,7 @@ function Header({ locale, path }: Omit<ShellProps, 'children'>) {
               </li>
             </ul>
           </nav>
-        </details>
+        </div>
       </Container>
     </header>
   );

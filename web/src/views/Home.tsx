@@ -44,35 +44,38 @@ export function HomePage({ locale }: { locale: Locale }) {
           title={h.scores.title}
           intro={<p>{h.scores.intro}</p>}
         >
-          <ul className={styles.specs}>
-            {SCORE_IDS.map((id, i) => {
-              const s = h.scores.items[id];
-              return (
-                <li key={id} className={styles.spec}>
-                  <span className={styles.specIndex} aria-hidden="true">
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span className={styles.specIcon} aria-hidden="true">
-                    {id === 'readiness' ? <Mark size={22} /> : <MetricIcon kind={id} />}
-                  </span>
-                  <div className={styles.specText}>
-                    <h3>{s.name}</h3>
-                    <p>{s.measures}</p>
-                  </div>
-                  <p className={styles.specValue}>
-                    <span className="visually-hidden">{h.scores.sample}: </span>
-                    {s.value}
-                    <span className={styles.specRange}> / {s.range}</span>
-                  </p>
-                  <a className={styles.specMore} href={`${link('/science')}#${id}`}>
-                    {h.scores.more}
-                    <span className="visually-hidden">: {s.name}</span>
-                    <span aria-hidden="true"> ↗</span>
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
+          <div>
+            <ul className={styles.specs}>
+              {SCORE_IDS.map((id, i) => {
+                const s = h.scores.items[id];
+                return (
+                  <li key={id} className={styles.spec}>
+                    <span className={styles.specIndex} aria-hidden="true">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span className={styles.specIcon} aria-hidden="true">
+                      {id === 'readiness' ? <Mark size={22} /> : <MetricIcon kind={id} />}
+                    </span>
+                    <div className={styles.specText}>
+                      <h3>{s.name}</h3>
+                      <p>{s.measures}</p>
+                    </div>
+                    <p className={styles.specValue}>
+                      <span className="visually-hidden">{h.scores.sample}: </span>
+                      {s.value}
+                      <span className={styles.specRange}> / {s.range}</span>
+                    </p>
+                    <a className={styles.specMore} href={`${link('/science')}#${id}`}>
+                      {h.scores.more}
+                      <span className="visually-hidden">: {s.name}</span>
+                      <span aria-hidden="true"> ↗</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className={styles.caption}>{h.scores.sampleNote}</p>
+          </div>
           <p className={styles.disclaimer}>
             <Mark size={16} />
             <span>{h.scores.disclaimer}</span>

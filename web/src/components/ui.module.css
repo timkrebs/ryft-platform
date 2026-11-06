@@ -82,6 +82,11 @@
   border-top-color: var(--on-accent);
 }
 
+/* The focus ring in paper on ink (the global ring is ink). */
+.sectionInverse :focus-visible {
+  outline-color: var(--on-accent);
+}
+
 .sectionHeader {
   display: grid;
   gap: 20px;
@@ -208,17 +213,20 @@
   padding-right: 0.8em;
 }
 
+/* Static by default. With motion allowed, the band moves once by one copy and stops, which
+   looks exactly like the static band (the copies are identical): 1 s delay + 4 s, done within
+   five seconds of load, so nothing moves on its own after that and no pause control is needed
+   (WCAG 2.2.2). The delay leaves the first second to layout and the font swap. Pinned by
+   e2e/behaviour.spec.ts. */
 @media (prefers-reduced-motion: no-preference) {
   .marqueeTrack {
-    will-change: transform;
-    /* Starts after the page has settled: the first seconds belong to layout and the font swap. */
-    animation: ticker 40s linear 2s infinite;
+    animation: ticker 4s cubic-bezier(0.3, 0, 0.2, 1) 1s 1 forwards;
   }
 }
 
 @keyframes ticker {
   to {
-    transform: translateX(-50%);
+    transform: translateX(-25%);
   }
 }
 
