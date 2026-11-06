@@ -13,14 +13,15 @@ Done, on top of D18–D20 (English only, light only, Inter):
   is followed, the hero reflows at 320 px, axe judges rendered sections, the OG card
   (`public/og/en.png`) in the new design.
 - Checked locally: typecheck, ESLint, Prettier, brand, `tokens:check` against
-  `ryft-app@design/alpine-light-palette`, Vitest (unit + `tests/output.test.ts` on the export),
+  `ryft-app` at `bb59d47` (#100's head), Vitest (unit + `tests/output.test.ts` on the export),
   `next build`, Playwright against the nginx image (Podman). CI runs Playwright and Lighthouse
   on the PR (`web-e2e`).
 
 Open:
 - Merge order: #142 first, then this PR. Until timkrebs/ryft-app#100 merges, the ci.yml app
-  checkout points at a pinned ref (`design/alpine-light-palette`); after #100 merges, the
-  `ref:` line in ci.yml is removed in a follow-up commit.
+  checkout is pinned to that PR's head commit (`ref: bb59d47abb6dfbf170ef72587107d92b5d93cc17`,
+  not the branch, so deleting the branch breaks nothing); after #100 merges, a follow-up
+  commit removes the `ref:` line and CI reads the app's main.
 - `docs/screenshots/*` still show the old design.
 - Plus price and features are placeholders (TBA, "more depth") until the launch decision.
 - Copy waiting for the owner's decision: the "Works with" row, the pricing lines ("0 €
