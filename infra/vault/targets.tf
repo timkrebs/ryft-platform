@@ -30,7 +30,8 @@ locals {
   k8s_kv_mount = { for name in keys(var.services) : name => "kv-${name}" }
 
   # Names a service may not have on the in-cluster Vault: policies share the root namespace with Vault's own
-  # (default, root) and the bootstrap's (admin, terraform, vault-snapshot), and kv-operator holds the demo password
+  # (default, root), the bootstrap's (admin, terraform) and the snapshot job's (vault-snapshot, PR 4), and
+  # kv-operator holds the demo password
   # (variables.tf validates var.services against this list; the admission chart's vso.reservedServices is the
   # same list).
   reserved_service_names = ["default", "root", "admin", "terraform", "vault-snapshot", "operator"]

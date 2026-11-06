@@ -8,8 +8,10 @@
 # docs/OPERATIONS.md -> Vault -> Bootstrap.
 #
 # Everything: it is the repair path for the OIDC configuration, the audit devices and the policies themselves. Its
-# tokens last 1 hour (8 at most), are created only by the OIDC login of one Google account, and are used for
-# runbooks and to create the 1-hour terraform token.
+# tokens last 1 hour (2 at most), are usable through the port-forward only (127.0.0.1), are created only by the OIDC
+# login of one Google account (bound_subject, checked after every write of the role), and are used for runbooks and
+# to create the 1-hour terraform token (token role terraform). Never attach it, or any policy, to an identity entity
+# or group: the OIDC role is the only way to it, so deleting or rebinding that role revokes it.
 path "*" {
   capabilities = ["create", "read", "update", "patch", "delete", "list", "sudo"]
 }

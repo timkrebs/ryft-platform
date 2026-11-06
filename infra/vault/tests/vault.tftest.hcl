@@ -427,7 +427,7 @@ run "k8s_target_is_off_by_default" {
       length(vault_auth_backend.k8s) + length(vault_kubernetes_auth_backend_config.k8s) + length(vault_mount.k8s_kv) +
       length(vault_policy.k8s_service) + length(vault_kubernetes_auth_backend_role.k8s_service) +
       length(vault_kv_secret_v2.k8s_config) + length(vault_kv_secret_v2.k8s_amqp_user) + length(vault_mount.k8s_operator) +
-      length(vault_kv_secret_v2.k8s_demo) + length(vault_policy.k8s_snapshot) + length(vault_kubernetes_auth_backend_role.k8s_snapshot)
+      length(vault_kv_secret_v2.k8s_demo)
     ) == 0
     error_message = "with write_k8s false (the committed default) nothing is written to the in-cluster Vault"
   }
@@ -513,14 +513,6 @@ run "policies_read_only_their_own_config" {
     condition     = can(regex("path \"kv-rabbitmq/data/amqp-user-\\*\" \\{\\s*capabilities = \\[\"read\"\\]\\s*\\}", vault_policy.k8s_service["rabbitmq"].policy))
     error_message = "the broker reads its users' credentials (the Topology Operator)"
   }
-  assert {
-    condition = (
-      vault_policy.k8s_snapshot[0].name == "vault-snapshot" &&
-      length(regexall("path \"", vault_policy.k8s_snapshot[0].policy)) == 1 &&
-      can(regex("path \"sys/storage/raft/snapshot\" \\{\\s*capabilities = \\[\"read\"\\]\\s*\\}", vault_policy.k8s_snapshot[0].policy))
-    )
-    error_message = "the snapshot job may save a snapshot (read), nothing else: no restore (update), no KV"
-  }
 }
 
 run "roles_trust_one_namespace_and_one_service_account_on_k8s" {
@@ -551,16 +543,6 @@ run "roles_trust_one_namespace_and_one_service_account_on_k8s" {
   assert {
     condition     = tolist(vault_kubernetes_auth_backend_role.k8s_service["monitoring"].bound_service_account_namespaces) == tolist(["monitoring"])
     error_message = "the collector's role is bound to namespace monitoring (no ryft- prefix)"
-  }
-  assert {
-    condition = (
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_names) == tolist(["vault-snapshot"]) &&
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_namespaces) == tolist(["vault"]) &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].audience == "vault" &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_max_ttl == 600 &&
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_policies) == tolist(["vault-snapshot"])
-    )
-    error_message = "the snapshot role trusts vault/vault-snapshot only, for 10 minutes"
   }
 }
 
@@ -813,28 +795,149 @@ run "the_literal_ca_secret_is_retired" {
   expect_failures = [var.vault_ca_bundle_b64]
 }
 
-# The bootstrap's files (docs/OPERATIONS.md -> Vault -> Bootstrap) are written by hand, not by this root, so they
-# are pinned here: the OIDC role puts a pseudonymous id, not an email, into every audit line (D198), and the
-# terraform policy reaches every mount this root creates but none of what it must not own.
-run "bootstrap_files_hold_the_reviewed_shape" {
+# Service names are canonical already: Vault lower-cases and trims policy names on write but matches ACL paths as
+# written, so `Api` would be a different path in bootstrap/terraform.hcl than the policy it writes.
+run "service_names_are_canonical" {
   command = plan
 
+  variables {
+    services = {
+      api = { database = "role", amqp = "client" }
+      Api = { workload_kind = "" }
+    }
+  }
+  expect_failures = [var.services]
+}
+
+# Every resource in k8s.tf goes to the in-cluster Vault, and nothing else does: a dropped `provider = vault.k8s`
+# would write that object (the demo password, a service's KV) into HCP's admin namespace instead.
+run "the_k8s_resources_and_only_they_use_the_k8s_provider" {
+  command = plan
+
+  assert {
+    condition = length(local.k8s_kv_mount) > 0 && alltrue([
+      for b in regexall("(?ms)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\" \\{\\n(.*?)^\\}$", file("k8s.tf")) :
+      startswith(b[0], "vault_") && can(regex("(?m)^  provider += vault\\.k8s$", b[2]))
+    ]) && length(regexall("(?m)^resource ", file("k8s.tf"))) == 9
+    error_message = "every resource block in k8s.tf (9) is a vault_ resource with provider = vault.k8s"
+  }
+  assert {
+    condition = length(local.k8s_kv_mount) > 0 && alltrue([
+      for f in fileset(".", "*.tf") : f == "k8s.tf" || length(regexall("provider\\s*=\\s*vault\\.k8s", file(f))) == 0
+    ])
+    error_message = "no file but k8s.tf points a resource at vault.k8s"
+  }
+}
+
+# No mount or auth backend this root writes on the in-cluster Vault switches audit HMAC off or exposes headers or
+# the mount: the policy terraform refuses these keys on tune, but not inside a mount's creation (its header).
+run "no_k8s_mount_switches_audit_hmac_off" {
+  command = plan
+
+  assert {
+    condition = length(local.k8s_kv_mount) > 0 && length(regexall(
+      "audit_non_hmac|passthrough_request_headers|allowed_response_headers|listing_visibility|(?m)^\\s*tune\\s*\\{",
+      join("\n", [for l in split("\n", file("k8s.tf")) : l if !startswith(trimspace(l), "#")])
+    )) == 0
+    error_message = "k8s.tf sets audit_non_hmac_*, passthrough_request_headers, allowed_response_headers, listing_visibility or a tune block: secret values would reach both audit devices in clear"
+  }
+}
+
+# The bootstrap's files (docs/OPERATIONS.md -> Vault -> Bootstrap) are written into Vault by hand, not by this root,
+# so they are pinned here, as an allowlist: every path the policies name, wherever it stands, with exactly its
+# capabilities and parameter limits (these runs use the default services, the ones the committed render is for).
+run "the_terraform_policy_is_an_exact_allowlist" {
+  command = plan
+
+  assert {
+    condition     = local.bootstrap.terraform_policy == local.bootstrap_terraform_policy_rendered && output.bootstrap_terraform_policy == local.bootstrap.terraform_policy
+    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for the default services (terraform output -raw bootstrap_terraform_policy)"
+  }
+  assert {
+    condition = (
+      length(local.bootstrap_policy_paths.terraform) == length(keys(local.bootstrap_policy_blocks.terraform)) &&
+      length(local.bootstrap_policy_paths.terraform) == length(toset(local.bootstrap_policy_paths.terraform))
+    )
+    error_message = "every `path` in the terraform policy opens its own block at the start of a line, once (no indented or nested path, no duplicate)"
+  }
+  assert {
+    condition = jsonencode({ for p, body in local.bootstrap_policy_blocks.terraform :
+      p => try(regex("^  capabilities = \\[([^\\]]*)\\]\\n", body)[0], "MISSING")
+      }) == jsonencode(merge(
+      {
+        "sys/mounts"                      = "\"read\""
+        "sys/auth"                        = "\"read\""
+        "sys/auth/kubernetes"             = "\"create\", \"read\", \"update\", \"delete\", \"sudo\""
+        "sys/mounts/auth/kubernetes"      = "\"read\""
+        "sys/mounts/auth/kubernetes/tune" = "\"read\", \"update\""
+        "auth/kubernetes/config"          = "\"create\", \"read\", \"update\""
+        "auth/kubernetes/role"            = "\"list\""
+        "sys/policies/acl"                = "\"list\""
+      },
+      merge([for m in concat([for s in keys(var.services) : "kv-${s}"], ["kv-operator"]) : {
+        "sys/mounts/${m}"      = "\"create\", \"read\", \"update\", \"delete\", \"sudo\""
+        "sys/mounts/${m}/tune" = "\"read\", \"update\""
+        "${m}/data/*"          = "\"create\", \"read\", \"update\", \"delete\""
+        "${m}/metadata/*"      = "\"read\", \"delete\", \"list\""
+      }]...),
+      merge([for s in keys(var.services) : {
+        "auth/kubernetes/role/${s}" = "\"create\", \"read\", \"update\", \"delete\""
+        "sys/policies/acl/${s}"     = "\"create\", \"read\", \"update\", \"delete\""
+      }]...)
+    ))
+    error_message = "the terraform policy names exactly the paths it needs, each with exactly its capabilities: one mount, tune, data and metadata path per kv-<svc> and kv-operator, one role and one policy per service, the one auth mount; no glob on a policy, role or mount, nothing else"
+  }
+  assert {
+    condition = alltrue([for p, body in local.bootstrap_policy_blocks.terraform :
+      endswith(p, "/tune") ? (
+        length(compact(split("\n", body))) == 8 && strcontains(body, "\n  denied_parameters = {\n") &&
+        alltrue([for k in ["audit_non_hmac_request_keys", "audit_non_hmac_response_keys", "passthrough_request_headers", "allowed_response_headers", "listing_visibility"] :
+        can(regex("\\n    ${k} *= \\[\\]\\n", body))])
+        ) : p == "sys/auth/kubernetes" ? (
+        length(compact(split("\n", body))) == 5 && can(regex("\\n  allowed_parameters = \\{\\n    type = \\[\"kubernetes\"\\]\\n    \"\\*\" += \\[\\]\\n  \\}\\n", body))
+        ) : p == "auth/kubernetes/config" ? (
+        length(compact(split("\n", body))) == 5 && can(regex("\\n  allowed_parameters = \\{\\n    kubernetes_host = \\[\"https://kubernetes\\.default\\.svc\"\\]\\n    \"\\*\" += \\[\\]\\n  \\}\\n", body))
+        ) : startswith(p, "auth/kubernetes/role/") ? (
+        length(compact(split("\n", body))) == 9 && alltrue([for kv in [
+          ["token_policies", trimprefix(p, "auth/kubernetes/role/")],
+          ["policies", trimprefix(p, "auth/kubernetes/role/")],
+          ["bound_service_account_names", local.services[trimprefix(p, "auth/kubernetes/role/")].service_account],
+          ["bound_service_account_namespaces", local.services[trimprefix(p, "auth/kubernetes/role/")].k8s_ns],
+          ["bound_service_account_namespace_selector", ""],
+        ] : can(regex("\\n    ${kv[0]} *= \\[\"${kv[1]}\"\\]\\n", body))])
+      ) : length(compact(split("\n", body))) == 1
+    ])
+    error_message = "parameter limits: every tune refuses the audit HMAC, header and listing keys; the auth mount stays type kubernetes; its config keeps the in-cluster API server; a role carries only its own policy, namespace and service account; every other path has capabilities and nothing else"
+  }
+}
+
+run "the_admin_policy_and_the_login_hold_the_reviewed_shape" {
+  command = plan
+
+  assert {
+    condition = (
+      local.bootstrap_policy_paths.admin == ["*"] &&
+      local.bootstrap_policy_blocks.admin == { "*" = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n" }
+    )
+    error_message = "admin is one path, \"*\", with every capability (the root token is revoked)"
+  }
   assert {
     condition = alltrue([for r in [local.bootstrap.oidc_role_admin, local.bootstrap.oidc_role_enroll] : (
       r.role_type == "oidc" && r.user_claim == "sub" && r.verbose_oidc_logging == false &&
       r.bound_claims == { hd = "ryftapp.de" } && r.bound_claims_type == "string" && length(r.oidc_scopes) == 0 &&
       tolist(r.allowed_redirect_uris) == tolist(["http://localhost:8250/oidc/callback"]) &&
+      r.max_age == 600 && tolist(r.token_bound_cidrs) == tolist(["127.0.0.1/32"]) && r.token_type == "service" &&
       length(setintersection(keys(r), ["claim_mappings", "groups_claim", "bound_subject", "user_claim_json_pointer", "bound_audiences"])) == 0
     )])
-    error_message = "the OIDC roles: user_claim sub, the Workspace domain bound, no claim mappings or groups, no extra scopes, no verbose logging, the CLI callback only, and the subject not in git (it is passed at the bootstrap)"
+    error_message = "the OIDC roles: user_claim sub, the Workspace domain bound, no claim mappings or groups, no extra scopes, no verbose logging, the CLI callback only, a fresh Google sign-in (max_age 10 min), tokens usable through the port-forward only, and the subject not in git (it is passed at the bootstrap)"
   }
   assert {
     condition = (
       local.bootstrap.oidc_role_admin.token_policies == ["admin"] && local.bootstrap.oidc_role_admin.token_ttl == 3600 &&
-      local.bootstrap.oidc_role_admin.token_max_ttl == 28800 &&
+      local.bootstrap.oidc_role_admin.token_max_ttl == 7200 &&
       local.bootstrap.oidc_role_enroll.token_policies == ["default"] && local.bootstrap.oidc_role_enroll.token_max_ttl == 300
     )
-    error_message = "admin: policy admin, 1 hour (8 at most); enroll: the default policy only, 5 minutes"
+    error_message = "admin: policy admin, 1 hour (2 at most); enroll: the default policy only, 5 minutes"
   }
   assert {
     condition = (
@@ -845,23 +948,12 @@ run "bootstrap_files_hold_the_reviewed_shape" {
   }
   assert {
     condition = (
-      alltrue([for m in concat(values(local.k8s_kv_mount), ["kv-operator"]) : startswith(m, "kv-")]) &&
-      strcontains(local.bootstrap.terraform_policy, "path \"sys/mounts/kv-*\" {") &&
-      strcontains(local.bootstrap.terraform_policy, "path \"sys/auth/kubernetes\" {") &&
-      strcontains(local.bootstrap.terraform_policy, "path \"auth/kubernetes/role/*\" {") &&
-      strcontains(local.bootstrap.terraform_policy, "path \"+/data/*\" {")
+      local.bootstrap.token_role_terraform.allowed_policies == ["terraform"] &&
+      local.bootstrap.token_role_terraform.renewable == false && local.bootstrap.token_role_terraform.orphan == false &&
+      local.bootstrap.token_role_terraform.token_explicit_max_ttl == 3600 &&
+      tolist(local.bootstrap.token_role_terraform.token_bound_cidrs) == tolist(["127.0.0.1/32"]) &&
+      length(setintersection(keys(local.bootstrap.token_role_terraform), ["allowed_policies_glob", "token_period", "token_num_uses", "path_suffix", "allowed_entity_aliases"])) == 0
     )
-    error_message = "the terraform policy covers every mount this root creates on the in-cluster Vault (kv-*), its auth mount and the roles"
-  }
-  assert {
-    condition = (
-      length(regexall(local.bootstrap_terraform_forbidden, local.bootstrap.terraform_policy)) == 0 &&
-      alltrue([for p in ["admin", "terraform", "default"] : strcontains(local.bootstrap.terraform_policy, "path \"sys/policies/acl/${p}\" {\n  capabilities = [\"deny\"]\n}")])
-    )
-    error_message = "the terraform policy grants nothing on audit, seal, Raft, generate-root, rekey, the OIDC login, identities or tokens, and may not write the policies admin, terraform or default"
-  }
-  assert {
-    condition     = strcontains(local.bootstrap.admin_policy, "path \"*\" {")
-    error_message = "admin is the operator's full policy (the root token is revoked)"
+    error_message = "the token role terraform: the policy terraform only, one hour, not renewable, a child of the admin login (not an orphan), through the port-forward only"
   }
 }

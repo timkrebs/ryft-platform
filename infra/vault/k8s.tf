@@ -9,11 +9,14 @@
 #   policy <svc>           read kv-<svc>/data/config, nothing else (the broker also its users' amqp-user-*)
 #   kv-<svc>/ (v2)         the same secrets as HCP's kv/ in admin/ryft/<svc>, from the same locals and random_*
 #   kv-operator/ (v2)      the demo password; no role's policy names it
-#   policy and role vault-snapshot   the snapshot CronJob's identity (used from PR 4 on)
+#
+# No mount or auth backend here sets audit_non_hmac_*, passthrough_request_headers, allowed_response_headers or
+# listing_visibility (tests/vault.tftest.hcl): the first two would put secret values into both audit devices in
+# clear, and the policy terraform cannot refuse them inside a mount's creation (bootstrap/terraform.hcl.tftpl).
 #
 # The bootstrap writes what Terraform must not own (docs/OPERATIONS.md -> Vault -> Bootstrap): the audit devices,
-# the OIDC login, and the policies admin and terraform (bootstrap/*.hcl, reviewed here, written by hand, so this
-# root cannot widen its own token).
+# the OIDC login, the token role terraform and the policies admin and terraform (bootstrap/, reviewed here,
+# written by hand, so this root cannot rewrite its own token's policy).
 
 locals {
   k8s_services = local.write_k8s ? local.services : {}
@@ -124,31 +127,5 @@ resource "vault_kv_secret_v2" "k8s_demo" {
   data_json           = jsonencode({ email = var.demo_email, password = random_password.demo.result })
 }
 
-# The snapshot CronJob's identity (charts/vault-extras, PR 4): it may save a snapshot and nothing else (restore
-# is `update` on the same path, break-glass only, with the admin login).
-resource "vault_policy" "k8s_snapshot" {
-  count    = local.write_k8s ? 1 : 0
-  provider = vault.k8s
-
-  name   = "vault-snapshot"
-  policy = <<-HCL
-    # vault-snapshot: save a Raft snapshot, nothing else.
-    path "sys/storage/raft/snapshot" {
-      capabilities = ["read"]
-    }
-  HCL
-}
-
-resource "vault_kubernetes_auth_backend_role" "k8s_snapshot" {
-  count    = local.write_k8s ? 1 : 0
-  provider = vault.k8s
-
-  backend                          = vault_auth_backend.k8s[0].path
-  role_name                        = "vault-snapshot"
-  bound_service_account_names      = ["vault-snapshot"]
-  bound_service_account_namespaces = ["vault"]
-  audience                         = "vault"
-  token_policies                   = [vault_policy.k8s_snapshot[0].name]
-  token_ttl                        = 600
-  token_max_ttl                    = 600
-}
+# Not here: the snapshot CronJob's policy and role vault-snapshot (PR 4, with the job). The name stays reserved
+# (targets.tf), and PR 4 adds it to bootstrap/terraform.hcl.tftpl if this root is to write it.

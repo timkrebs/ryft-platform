@@ -168,6 +168,12 @@ variable "services" {
     condition     = length([for s in values(var.services) : s if s.database == "owner"]) <= 1 && length([for s in values(var.services) : s if s.amqp == "server"]) <= 1
     error_message = "At most one service may hold the database owner, and at most one may be the RabbitMQ server."
   }
+  # A name is a policy name on the in-cluster Vault, and Vault lower-cases and trims policy names on write while
+  # its ACL matches paths as written (bootstrap/terraform.hcl.tftpl): only names that are already canonical.
+  validation {
+    condition     = alltrue([for name in keys(var.services) : can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", name))])
+    error_message = "A service name must be lower-case letters, digits and inner hyphens (^[a-z0-9]([-a-z0-9]*[a-z0-9])?$): it becomes a Kubernetes namespace, a Vault policy, role and mount name."
+  }
   # On the in-cluster Vault a service's name is its policy, its role and its mount kv-<name> in the root namespace.
   validation {
     condition     = length(setintersection(keys(var.services), local.reserved_service_names)) == 0

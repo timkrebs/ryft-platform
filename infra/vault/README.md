@@ -142,11 +142,13 @@ auth/kubernetes   (Vault reviews tokens as its own SA; no reviewer JWT)
 ├── role api      ◀── SA api in ns ryft-api only, audience vault ──▶ VSO in ryft-api
 │   policy api:   read kv-api/data/config
 ├── role rabbitmq     policy rabbitmq: kv-rabbitmq/data/config, kv-rabbitmq/data/amqp-user-*
-├── …             one role, one policy and one kv-<svc>/ per entry in services
-└── role vault-snapshot  ◀── SA vault-snapshot in ns vault (PR 4's CronJob), policy vault-snapshot
+└── …             one role, one policy and one kv-<svc>/ per entry in services
 kv-<svc>/config   the same values as kv/config in admin/ryft/<svc> (same locals, same random_*)
 kv-operator/demo  the App Review demo password (no workload policy names kv-operator)
 ```
+
+The snapshot job's policy and role `vault-snapshot` come with the job (PR 4); the name is
+reserved already.
 
 | HCP (`admin/ryft/<svc>`) | CE (the Vault in the cluster) |
 | --- | --- |
@@ -158,16 +160,19 @@ kv-operator/demo  the App Review demo password (no workload policy names kv-oper
 | VaultConnection to the HCP address | VaultConnection `https://vault.vault.svc:8200`, `caCertSecretRef: vault-ca`, sync waves |
 
 **The switches** are two locals in `targets.tf`, changed only by a reviewed commit (never
-by a variable, D191):
+by a variable, D191), and **one switch per PR**: never `write_k8s` and `vso_on_k8s` in the
+same one.
 
 - `committed_write_k8s`: when `true`, also write every object above into the Vault in the
   cluster. This needs the bootstrap first (`docs/OPERATIONS.md` → Vault → Bootstrap) and
-  the port-forward on every plan and apply after that. Default `false`: the plan writes
-  nothing there and needs no port-forward (`tests/k8s_offline.tftest.hcl`).
+  the port-forward on every plan and apply after that. Default `false`: the plan makes no
+  request to that Vault and needs no port-forward (`tests/k8s_offline.tftest.hcl`), and
+  plans nothing there (`tests/vault.tftest.hcl`).
 - `committed_vso_on_k8s`: the services whose overlay points at the Vault in the cluster.
   It needs `write_k8s` (a precondition). One namespace per PR.
 
 `test_override_targets` exists for `terraform test` only. A check warns if it is ever set.
+(It cannot fail the plan instead: a configuration cannot tell that `terraform test` runs it.)
 
 Every overlay asks cert-manager for the Secret `vault-ca` (a `Certificate`, ClusterIssuer
 `ryft-vault`, P13), on either target. The literal `vault_ca_bundle_b64` Secret is retired:
@@ -176,21 +181,36 @@ it would fight the Certificate for the same Secret.
 **Prerequisites for `write_k8s`:**
 
 - The Vault add-on applied and bootstrapped (`docs/OPERATIONS.md` → Vault: gates G1–G4
-  first). The bootstrap writes the policies in `bootstrap/` by hand, not Terraform.
+  first). The bootstrap writes the policies and the token role in `bootstrap/` by hand, not
+  Terraform.
 - The CA file: `kubectl --context ryft-prod-euc1 -n vault get secret vault-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > ~/.config/ryft/vault-ca.pem`.
 - A port-forward in a second terminal:
   `kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200`.
-- A 1-hour token of the policy `terraform`, minted from your OIDC login (the runbook):
-  `export TF_VAR_vault_k8s_token=…`. The variable is ephemeral, so it is in neither plan
-  nor state.
+- A token of the token role `terraform` (1 hour, not renewable, usable from `127.0.0.1`
+  only), minted from your OIDC login (the runbook): `export TF_VAR_vault_k8s_token=…`. The
+  variable is ephemeral, so it is in neither plan nor state.
 
-**Shell rules.** Two Vaults, two tokens, one shell:
+**What that token is.** Admin-equivalent for its hour, not a sandbox: it reads every
+credential (the provider reads each secret back), and it rewrites the policy of any service
+this root manages, which a Kubernetes token for that service's account turns into those
+rights. The policy (`bootstrap/terraform.hcl`) takes away the cheap paths around that: exact
+paths only (no `ADMIN`, `Terraform` or `default ` spellings of the protected policies), a
+role carries only its own service's policy, namespace and service account, the auth mount
+stays `kubernetes` and in-cluster, no tune may switch audit HMAC off, and nothing on audit,
+seal, Raft, generate-root, OIDC, identities or tokens. After every apply that wrote it,
+`docs/OPERATIONS.md` → Vault → Terraform through the port-forward has a baseline check.
 
-- `VAULT_TOKEN` is the HCP token, and only the default provider reads it. The provider
-  `vault.k8s` reads only `TF_VAR_vault_k8s_token`.
-- Never export `VAULT_CACERT`, `VAULT_NAMESPACE` or `VAULT_SKIP_VERIFY` while running
-  Terraform. The HCP provider would read them. For the vault CLI against the cluster, pass
-  `-ca-cert=` and `-address=` per command, or set them in a subshell.
+**Shell rules.** Two shells, never mixed (`docs/OPERATIONS.md` → Vault):
+
+- The **Terraform shell**: `VAULT_TOKEN` is the HCP token, and only the default provider
+  reads it. The provider `vault.k8s` takes its token from `TF_VAR_vault_k8s_token`, and its
+  address, CA file and TLS verification from its configuration. It still reads
+  `VAULT_NAMESPACE`, `VAULT_TLS_SERVER_NAME`, `VAULT_CAPATH`, `VAULT_CACERT_BYTES`, the
+  client-certificate variables and `VAULT_MAX_RETRIES` from the environment, and the HCP
+  provider reads `VAULT_CACERT` and the rest: none of them may be exported here. No `TF_LOG`
+  at `DEBUG` or above while the token is set.
+- The **vault shell**: exports `VAULT_ADDR`, `VAULT_CACERT` and `VAULT_TOKEN` for the vault
+  CLI against the cluster. Never run Terraform in it.
 - Unset `TF_VAR_vault_k8s_token` when you are done (`unset TF_VAR_vault_k8s_token`). It
   expires after an hour anyway.
 
@@ -198,12 +218,18 @@ it would fight the Certificate for the same Secret.
 both Vaults in one apply, because both read the same resource. VSO picks it up wherever
 the namespace points.
 
-**`bootstrap/`:** the files the bootstrap writes by hand: `admin.hcl` and `terraform.hcl`
-(policies), and `oidc-config.json`, `oidc-role-admin.json` and `oidc-role-enroll.json`
-(the Google Workspace login). Terraform never writes them. Otherwise its token could widen
-itself or reach the operator's login, and the OIDC client secret would sit in state.
-`bootstrap.tf` reads them, though, so every plan checks them (no catch-all path; no
-audit, seal, Raft, OIDC or token paths; `deny` on the policies admin, terraform and
-default; `user_claim = "sub"` and no claim mappings). `tests/vault.tftest.hcl` pins
-their shape. A change to one is a reviewed commit, and then the same
-`vault policy write` / `vault write` by hand.
+**`bootstrap/`:** the files the bootstrap writes into Vault by hand: `admin.hcl` and
+`terraform.hcl` (policies), `token-role-terraform.json` (the token role), and
+`oidc-config.json`, `oidc-role-admin.json` and `oidc-role-enroll.json` (the Google
+Workspace login). Terraform never writes them: otherwise its token could rewrite its own
+policy or reach the operator's login, and the OIDC client secret would sit in state.
+`terraform.hcl` is generated from `terraform.hcl.tftpl` for the services (exact paths per
+service): after adding a service, `terraform -chdir=infra/vault output -raw
+bootstrap_terraform_policy > infra/vault/bootstrap/terraform.hcl`, commit it, and
+`vault policy write terraform …` by hand (`check.bootstrap_terraform_policy_matches_services`
+warns until the file matches). `bootstrap.tf` reads all of them, and
+`tests/vault.tftest.hcl` holds them to an exact allowlist: every path with its capabilities
+and parameter limits; `user_claim = "sub"`, no claim mappings, a fresh sign-in and
+loopback-bound tokens for the login; the token role's one policy, hour and no renewal. A
+change to one is a reviewed commit, and then the same `vault policy write` / `vault write`
+by hand.

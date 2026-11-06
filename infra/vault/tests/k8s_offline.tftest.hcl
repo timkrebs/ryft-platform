@@ -1,8 +1,10 @@
 # The plan of this root must not need the in-cluster Vault while local.write_k8s is false (targets.tf): no
 # port-forward, no CA file, no TF_VAR_vault_k8s_token (design 2.2 and Appendix B #1). Here the provider vault.k8s
 # is NOT mocked: the real provider runs, configured with an address nothing listens on and a CA file that does not
-# exist. The run passes only if Terraform plans without the provider ever connecting or reading the file. Every
-# other provider is mocked, as in vault.tftest.hcl; the services are a subset, so only their checks apply.
+# exist. The run passes only if the plan makes no request to the in-cluster Vault and needs neither the CA file
+# nor a token. It does not prove that no resource is planned on vault.k8s (a planned create makes no request):
+# tests/vault.tftest.hcl (k8s_target_is_off_by_default) pins that. Every other provider is mocked, as in
+# vault.tftest.hcl; the services are a subset, so the committed policy render (default services) does not match.
 #   terraform init -backend=false && terraform test -filter=tests/k8s_offline.tftest.hcl
 
 variables {
@@ -55,7 +57,8 @@ mock_provider "random" {
 }
 
 run "the_plan_needs_no_port_forward" {
-  command = plan
+  command         = plan
+  expect_failures = [check.bootstrap_terraform_policy_matches_services]
 
   assert {
     condition     = length(vault_auth_backend.k8s) == 0 && length(vault_mount.k8s_kv) == 0 && length(local_file.vso) == 3

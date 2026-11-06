@@ -6,9 +6,11 @@
   "oidc_scopes": [],
   "allowed_redirect_uris": ["http://localhost:8250/oidc/callback"],
   "verbose_oidc_logging": false,
+  "max_age": 600,
   "token_policies": ["admin"],
   "token_no_default_policy": false,
   "token_type": "service",
   "token_ttl": 3600,
-  "token_max_ttl": 28800
+  "token_max_ttl": 7200,
+  "token_bound_cidrs": ["127.0.0.1/32"]
 }
