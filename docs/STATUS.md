@@ -398,7 +398,8 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
 
 **GitGuardian** is not a required check. It flags `--secret <service name>` as a "Generic CLI Secret": four incidents, all false
 positives to mark in the dashboard: three test lines of #152's first commit (`7670547`) and `docs/work/2026-11-05-vault-ce/addendum-1.md`
-line 569 (`vault_diff.sh --secret monitoring`, already on main from #150). No secret is involved.
+line 569 (the call of `vault_diff.sh` with the flag for the synced Secret, followed by the namespace name `monitoring`; already on
+main from #150). No secret is involved.
 
 ## Done
 
