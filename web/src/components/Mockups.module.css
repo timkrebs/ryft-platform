@@ -1,0 +1,298 @@
+/* Mock screens: black on white, type scaled in container units of the phone frame. */
+
+.screen {
+  aspect-ratio: 9 / 17.5;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  min-height: 100%;
+  padding: 5cqw 6cqw 4cqw;
+  color: var(--text-primary);
+  background: var(--background);
+  font-size: 4cqw;
+  line-height: 1.1;
+}
+
+.status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 3.4cqw;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.statusMark {
+  width: 4.5cqw;
+  height: 4.5cqw;
+}
+
+.screenTitle {
+  margin: 7cqw 0 5cqw;
+  font-size: 10cqw;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.06em;
+  text-transform: uppercase;
+}
+
+.screenBody {
+  display: grid;
+  align-content: start;
+  gap: 5cqw;
+}
+
+.tabs {
+  display: flex;
+  justify-content: space-between;
+  gap: 2cqw;
+  margin: 6cqw 0 0;
+  padding: 4cqw 0 0;
+  list-style: none;
+  border-top: var(--hairline) solid var(--separator);
+  font-size: 2.6cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.tabActive {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* Today */
+
+.gaugeWrap {
+  display: grid;
+  place-items: center;
+}
+
+.gaugeWrap > div {
+  max-width: 62cqw;
+}
+
+.week {
+  display: grid;
+  gap: 2cqw;
+}
+
+.weekCaption {
+  margin: 0;
+  font-size: 2.8cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.bars {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.barFill {
+  fill: var(--surface-raised);
+}
+
+.barToday {
+  fill: var(--text-primary);
+}
+
+.barTick {
+  font-size: 2.8px;
+  letter-spacing: 0.3px;
+  fill: var(--text-tertiary);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.stat {
+  display: grid;
+  gap: 1cqw;
+  padding: 3.5cqw 0;
+  border-bottom: var(--hairline) solid var(--separator);
+}
+
+.stat:nth-child(odd) {
+  padding-right: 3cqw;
+  border-right: var(--hairline) solid var(--separator);
+}
+
+.stat:nth-child(even) {
+  padding-left: 3cqw;
+}
+
+.statValue {
+  font-size: 6.5cqw;
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 2.6cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Sleep and Strain */
+
+.big {
+  margin: 0;
+  font-size: 22cqw;
+  font-weight: 700;
+  line-height: 0.85;
+  letter-spacing: -0.07em;
+}
+
+.bigLabel {
+  margin: -2cqw 0 0;
+  font-size: 2.8cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.stageBar {
+  display: block;
+  width: 100%;
+  height: 6cqw;
+  border: var(--hairline) solid var(--separator);
+}
+
+.stage-deep {
+  fill: var(--stage-deep);
+}
+
+.swatch.stage-deep {
+  background: var(--stage-deep);
+}
+
+.stage-light {
+  fill: var(--stage-light);
+}
+
+.swatch.stage-light {
+  background: var(--stage-light);
+}
+
+.stage-rem {
+  fill: var(--stage-rem);
+}
+
+.swatch.stage-rem {
+  background: var(--stage-rem);
+}
+
+.stage-awake {
+  fill: var(--stage-awake);
+}
+
+.swatch.stage-awake {
+  background: var(--stage-awake);
+}
+
+.rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 2.5cqw;
+  padding: 3cqw 0;
+  border-bottom: var(--hairline) solid var(--separator);
+  font-size: 3.2cqw;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.swatch {
+  width: 2.4cqw;
+  height: 2.4cqw;
+  border: var(--hairline) solid var(--separator);
+}
+
+.rowValue {
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.meta {
+  margin: 0;
+  font-size: 2.8cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.zones {
+  display: grid;
+  gap: 2.5cqw;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.zones li {
+  display: grid;
+  grid-template-columns: 14cqw 1fr 8cqw;
+  white-space: nowrap;
+  align-items: center;
+  gap: 2.5cqw;
+  font-size: 2.8cqw;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.zoneTrack {
+  display: block;
+  width: 100%;
+  height: 4.5cqw;
+  border: var(--hairline) solid var(--separator);
+}
+
+.zoneFill {
+  fill: var(--text-primary);
+}
+
+.zoneFill[data-zone='1'] {
+  fill: var(--stage-awake);
+}
+
+.zoneFill[data-zone='2'] {
+  fill: var(--stage-rem);
+}
+
+.zoneFill[data-zone='3'] {
+  fill: var(--stage-light);
+}
+
+.zoneFill[data-zone='4'] {
+  fill: var(--accent-secondary);
+}
+
+.zoneValue {
+  text-align: right;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.session {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 3cqw;
+  border-top: var(--hairline) solid var(--separator);
+  font-size: 3.2cqw;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

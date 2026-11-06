@@ -1,5 +1,6 @@
 /* The admin page (/admin). Phone first: one column, 44 px targets; wider screens get a
-   centred column and a card grid. Every colour, radius, size and duration is a token. */
+   centred column and a card grid. Colours and motion are tokens; type and rhythm follow the
+   monochrome system (`--web-*` in globals.css): hairline boxes, square controls, caps labels. */
 
 .adm-shell {
   max-width: 62rem;
@@ -20,15 +21,17 @@
 }
 
 .adm-brand {
-  font-size: var(--type-wordmark);
-  font-weight: var(--type-wordmark-weight);
-  letter-spacing: var(--tracking-wordmark);
+  font-size: var(--web-h4);
+  font-weight: 700;
+  letter-spacing: -0.04em;
   text-transform: uppercase;
 }
 
 .adm-brand-sub {
+  font-size: var(--web-label);
+  font-weight: 400;
+  letter-spacing: var(--web-tracking-label);
   color: var(--text-secondary);
-  letter-spacing: var(--tracking-label);
 }
 
 .adm-nav {
@@ -44,6 +47,9 @@
   min-height: 44px;
   padding: 0 1rem;
   color: var(--text-secondary);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   text-decoration: none;
   white-space: nowrap;
   border-bottom: 2px solid transparent;
@@ -80,7 +86,7 @@
 }
 
 .adm-h1 {
-  font-size: var(--type-title);
+  font-size: var(--web-h3);
 }
 
 .adm-h1:focus {
@@ -88,8 +94,8 @@
 }
 
 .adm-h2 {
-  font-size: var(--type-headline);
-  font-weight: var(--type-headline-weight);
+  font-size: var(--web-h5);
+  font-weight: 700;
 }
 
 .adm-note,
@@ -123,8 +129,9 @@
 }
 
 .adm-field label {
-  font-size: var(--type-callout);
-  font-weight: var(--type-headline-weight);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
 }
 
 .adm-input {
@@ -133,8 +140,8 @@
   font: inherit;
   color: var(--text-primary);
   background: var(--surface);
-  border: var(--hairline) solid var(--text-tertiary);
-  border-radius: var(--tile-radius);
+  border: var(--hairline) solid var(--text-primary);
+  border-radius: 0;
   width: 100%;
 }
 
@@ -165,9 +172,11 @@
   min-width: 44px;
   padding: 0 1.25rem;
   font: inherit;
-  font-weight: var(--type-headline-weight);
-  border-radius: var(--tile-radius);
-  border: var(--hairline) solid transparent;
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
+  border-radius: 0;
+  border: var(--hairline) solid var(--text-primary);
   cursor: pointer;
 }
 
@@ -182,7 +191,7 @@
 }
 
 .adm-btn-secondary {
-  background: var(--surface-raised);
+  background: var(--background);
   color: var(--text-primary);
 }
 
@@ -231,7 +240,7 @@
 
 .adm-card {
   background: var(--surface);
-  border-radius: var(--card-radius);
+  border: var(--hairline) solid var(--separator);
   padding: var(--card-padding);
   display: flex;
   flex-direction: column;
@@ -247,7 +256,7 @@
 }
 
 .adm-title {
-  font-weight: var(--type-headline-weight);
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 
@@ -277,12 +286,12 @@
 .adm-secret {
   font-size: var(--type-headline);
   background: var(--surface);
-  border-radius: var(--tile-radius);
+  border: var(--hairline) solid var(--separator);
   padding: 0.75rem;
 }
 
 .adm-new {
-  border: 2px solid var(--accent);
+  border: 3px solid var(--accent);
 }
 
 .adm-new:focus,
@@ -295,7 +304,7 @@
   height: 12.5rem;
   background: var(--mist);
   padding: 0.5rem;
-  border-radius: var(--tile-radius);
+  border: var(--hairline) solid var(--separator);
 }
 
 .adm-message {
@@ -331,9 +340,10 @@
 .adm-badge {
   display: inline-block;
   padding: 0.125rem 0.625rem;
-  font-size: var(--type-caption);
-  font-weight: var(--type-label-weight);
-  border-radius: 999px;
+  font-size: var(--web-caption);
+  font-weight: 400;
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   border: var(--hairline) solid currentColor;
   white-space: nowrap;
 }

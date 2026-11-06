@@ -1,100 +1,121 @@
-import { Gauge, MetricIcon, TrendChart } from '@/components/charts';
 import { PageShell } from '@/components/chrome';
+import { MetricIcon } from '@/components/charts';
 import { Mark } from '@/components/Mark';
-import { DeviceFrame, Screenshot } from '@/components/Screenshot';
-import { ButtonLink, Container, Label, SampleNote, Section } from '@/components/ui';
-import { format, intlLocale, localePath, messages, type Locale } from '@/lib/i18n';
+import { SleepScreen, StrainScreen, TodayScreen } from '@/components/Mockups';
+import { ButtonLink, Container, Eyebrow, Marquee, Section } from '@/components/ui';
+import { format, localePath, messages, type Locale } from '@/lib/i18n';
+import { BUILD_YEAR, SUPPORT_EMAIL, TESTFLIGHT_URL } from '@/lib/site';
 import styles from './Home.module.css';
 
-// Sample numbers for the hero, the same ones the app's previews and brand board use.
-const SAMPLE = { readiness: 84, recovery: 0.82, strain: 12.4, week: [71, 76, 68, 79, 74, 81, 84] };
 const SCORE_IDS = ['readiness', 'recovery', 'strain', 'sleep'] as const;
+const SYSTEM_IDS = ['recovery', 'sleep', 'strain'] as const;
 
 export function HomePage({ locale }: { locale: Locale }) {
-  const t = messages(locale).home;
+  const t = messages(locale);
+  const h = t.home;
   const link = (path: string) => localePath(locale, path);
+  const mailto = SUPPORT_EMAIL
+    ? `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(t.beta.inviteSubject)}&body=${encodeURIComponent(t.beta.inviteBody)}`
+    : null;
   return (
     <PageShell locale={locale} path="/">
       <Hero locale={locale} />
+
+      <Marquee text={h.ticker} />
+
       <Container>
-        <Section id="how" label={t.how.label} title={t.how.title} intro={<p>{t.how.intro}</p>}>
-          <ol className={styles.steps}>
-            {t.how.steps.map((step, i) => (
-              <li key={step.title} className={styles.step}>
-                <span className={styles.stepIcon} aria-hidden="true">
-                  <StepGlyph index={i} />
-                </span>
-                <span className={styles.stepNumber} aria-hidden="true">
-                  {String(i + 1).padStart(2, '0')}
-                </span>
-                <h3>{step.title}</h3>
-                <p>{step.body}</p>
-              </li>
-            ))}
-          </ol>
+        <section className={styles.worksWith} aria-labelledby="works-title">
+          <Eyebrow id="works-title" as="h2">
+            {h.worksWith.label}
+          </Eyebrow>
+          {/* A statement of the data source, not a row of names: the watches and rings are
+              where the data comes from, not partners (web D23). */}
+          <p>{h.worksWith.text}</p>
+        </section>
+      </Container>
+
+      <Container>
+        <Section
+          id="scores"
+          number={h.scores.number}
+          label={h.scores.label}
+          title={h.scores.title}
+          intro={<p>{h.scores.intro}</p>}
+        >
+          <div>
+            <ul className={styles.specs}>
+              {SCORE_IDS.map((id, i) => {
+                const s = h.scores.items[id];
+                return (
+                  <li key={id} className={styles.spec}>
+                    <span className={styles.specIndex} aria-hidden="true">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span className={styles.specIcon} aria-hidden="true">
+                      {id === 'readiness' ? <Mark size={22} /> : <MetricIcon kind={id} />}
+                    </span>
+                    <div className={styles.specText}>
+                      <h3>{s.name}</h3>
+                      <p>{s.measures}</p>
+                    </div>
+                    <p className={styles.specValue}>
+                      <span className="visually-hidden">{h.scores.sample}: </span>
+                      {s.value}
+                      <span className={styles.specRange}> / {s.range}</span>
+                    </p>
+                    <a className={styles.specMore} href={`${link('/science')}#${id}`}>
+                      {h.scores.more}
+                      <span className="visually-hidden">: {s.name}</span>
+                      <span aria-hidden="true"> ↗</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className={styles.caption}>{h.scores.sampleNote}</p>
+          </div>
+          <p className={styles.disclaimer}>
+            <Mark size={16} />
+            <span>{h.scores.disclaimer}</span>
+          </p>
         </Section>
 
-        <Section id="scores" label={t.scores.label} title={t.scores.title} intro={<p>{t.scores.intro}</p>}>
-          <div className={styles.scores}>
-            {SCORE_IDS.map((id) => (
-              <ScoreCard key={id} locale={locale} id={id} />
-            ))}
-          </div>
-          <div className={styles.phones}>
-            <figure className={styles.phone}>
-              <DeviceFrame>
-                <Screenshot id="sleep" alt={t.scores.shots.sleep} sizes="(min-width: 48rem) 300px, 45vw" />
-              </DeviceFrame>
-            </figure>
-            <figure className={styles.phone}>
-              <DeviceFrame>
-                <Screenshot id="strain" alt={t.scores.shots.strain} sizes="(min-width: 48rem) 300px, 45vw" />
-              </DeviceFrame>
-            </figure>
-            <p className={styles.disclaimer}>
-              <Mark size={18} />
-              <span>{t.scores.disclaimer}</span>
-            </p>
-          </div>
-        </Section>
-
-        <Section id="features" label={t.features.label} title={t.features.title}>
-          <div className={styles.features}>
-            <article className={styles.feature}>
-              <div className={styles.panel}>
-                <Screenshot
-                  id="train-session"
-                  alt={t.features.train.alt}
-                  sizes="(min-width: 64rem) 340px, (min-width: 40rem) 45vw, 90vw"
-                />
-              </div>
-              <h3>{t.features.train.title}</h3>
-              <p>{t.features.train.body}</p>
-            </article>
-            <article className={styles.feature}>
-              <JournalSample locale={locale} />
-              <h3>{t.features.journal.title}</h3>
-              <p>{t.features.journal.body}</p>
-            </article>
-            <article className={styles.feature}>
-              <div className={styles.panel}>
-                <Screenshot
-                  id="insights-cards"
-                  alt={t.features.insights.alt}
-                  sizes="(min-width: 64rem) 340px, (min-width: 40rem) 45vw, 90vw"
-                />
-              </div>
-              <h3>{t.features.insights.title}</h3>
-              <p>{t.features.insights.body}</p>
-            </article>
+        <Section id="systems" number={h.systems.number} label={h.systems.label} title={h.systems.title}>
+          <div className={styles.systems}>
+            {SYSTEM_IDS.map((id, i) => {
+              const s = h.systems.items[id];
+              return (
+                <article key={id} className={styles.system} aria-labelledby={`system-${id}`}>
+                  <div className={styles.systemText}>
+                    <p className={styles.systemIndex} aria-hidden="true">
+                      {String(i + 1).padStart(2, '0')}
+                    </p>
+                    <Eyebrow>{s.kicker}</Eyebrow>
+                    <h3 id={`system-${id}`}>{s.title}</h3>
+                    <p>{s.body}</p>
+                  </div>
+                  <figure className={styles.systemFigure}>
+                    {id === 'recovery' && <TodayScreen labels={h.mock.today} />}
+                    {id === 'sleep' && <SleepScreen labels={h.mock.sleep} />}
+                    {id === 'strain' && <StrainScreen labels={h.mock.strain} />}
+                    <figcaption className={styles.caption}>{s.figure}</figcaption>
+                  </figure>
+                </article>
+              );
+            })}
           </div>
         </Section>
 
-        <Section id="principles" label={t.principles.label} title={t.principles.title}>
+        <Section
+          id="principles"
+          number={h.principles.number}
+          label={h.principles.label}
+          title={h.principles.title}
+        >
           <ol className={styles.principles}>
-            {t.principles.items.map((p, i) => (
+            {h.principles.items.map((p, i) => (
               <li key={p.title}>
-                <span className={styles.principleNumber} aria-hidden="true">
+                <span className={styles.principleIndex} aria-hidden="true">
                   {String(i + 1).padStart(2, '0')}
                 </span>
                 <h3>{p.title}</h3>
@@ -104,42 +125,106 @@ export function HomePage({ locale }: { locale: Locale }) {
           </ol>
         </Section>
 
-        <Section id="privacy" label={t.privacy.label} title={t.privacy.title}>
-          <ul className={styles.facts}>
-            {t.privacy.items.map((f) => (
+        <Section id="how" number={h.start.number} label={h.start.label} title={h.start.title}>
+          <ol className={styles.steps}>
+            {h.start.steps.map((step, i) => (
+              <li key={step.title}>
+                <span className={styles.stepIndex} aria-hidden="true">
+                  {String(i + 1).padStart(2, '0')}
+                </span>
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+              </li>
+            ))}
+          </ol>
+        </Section>
+      </Container>
+
+      <section className={styles.facts} aria-label={h.facts.label}>
+        <Container>
+          <dl className={styles.factGrid}>
+            {h.facts.items.map(([value, label]) => (
+              <div key={label} className={styles.fact}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </Container>
+      </section>
+
+      <Container>
+        <Section id="privacy" number={h.privacy.number} label={h.privacy.label} title={h.privacy.title}>
+          <ul className={styles.privacy}>
+            {h.privacy.items.map((f) => (
               <li key={f.title}>
                 <h3>{f.title}</h3>
                 <p>{f.body}</p>
               </li>
             ))}
           </ul>
-          <p>
-            <ButtonLink href={link('/privacy')} variant="secondary">
-              {t.privacy.link}
+          <p className={styles.sectionAction}>
+            <ButtonLink href={link('/privacy')} variant="secondary" arrow>
+              {h.privacy.link}
             </ButtonLink>
           </p>
         </Section>
 
-        <Section id="faq" label={t.faq.label} title={t.faq.title}>
+        <Section id="pricing" number={h.pricing.number} label={h.pricing.label} title={h.pricing.title}>
+          <Pricing locale={locale} />
+        </Section>
+
+        <Section id="faq" number={h.faq.number} label={h.faq.label} title={h.faq.title}>
           <div className={styles.faq}>
-            {t.faq.items.map((item) => (
+            {h.faq.items.map((item) => (
               <details key={item.q} className={styles.question}>
                 <summary>
-                  <span>{item.q}</span>
+                  <h3>{item.q}</h3>
+                  <span className={styles.plus} aria-hidden="true" />
                 </summary>
                 <p>{item.a}</p>
               </details>
             ))}
           </div>
         </Section>
-
-        <section className={styles.cta} aria-labelledby="cta-title">
-          <Mark size={40} />
-          <h2 id="cta-title">{t.cta.title}</h2>
-          <p>{t.cta.body}</p>
-          <ButtonLink href={link('/beta')}>{t.cta.button}</ButtonLink>
-        </section>
       </Container>
+
+      <section className={styles.download} aria-labelledby="download-title">
+        <Container className={styles.downloadGrid}>
+          <div className={styles.downloadText}>
+            <Eyebrow tone="inverse">
+              {h.download.number} / {h.download.label}
+            </Eyebrow>
+            <h2 id="download-title">{h.download.title}</h2>
+            <p>{h.download.body}</p>
+            <div className={styles.downloadActions}>
+              {TESTFLIGHT_URL && (
+                <ButtonLink href={TESTFLIGHT_URL} variant="inverse" arrow rel="noopener">
+                  {h.download.testflight}
+                </ButtonLink>
+              )}
+              {mailto && (
+                <ButtonLink href={mailto} variant="inverseOutline" arrow>
+                  {h.download.invite}
+                </ButtonLink>
+              )}
+              <ButtonLink
+                href={link('/beta')}
+                variant={TESTFLIGHT_URL || mailto ? 'inverseOutline' : 'inverse'}
+                arrow
+              >
+                {h.download.how}
+              </ButtonLink>
+            </div>
+          </div>
+          <figure className={styles.downloadFigure}>
+            <SleepScreen labels={h.mock.sleep} />
+            <figcaption className={`${styles.caption} ${styles.captionInverse}`}>
+              {h.download.figure}
+            </figcaption>
+          </figure>
+        </Container>
+      </section>
     </PageShell>
   );
 }
@@ -147,204 +232,71 @@ export function HomePage({ locale }: { locale: Locale }) {
 function Hero({ locale }: { locale: Locale }) {
   const t = messages(locale);
   const h = t.home.hero;
-  const today = t.home.today;
-  const number = new Intl.NumberFormat(intlLocale(locale), { maximumFractionDigits: 1 });
-  const percent = new Intl.NumberFormat(intlLocale(locale), { style: 'percent' });
-  const ticks = today.weekdays.split(',');
   return (
-    <Container className={styles.hero}>
-      <div className={styles.heroText}>
-        <Label tone="accent">{h.eyebrow}</Label>
-        <h1>{h.title}</h1>
-        <p className={styles.lead}>{h.lead}</p>
-        <div className={styles.actions}>
-          <ButtonLink href={localePath(locale, '/beta')}>{h.primary}</ButtonLink>
-          <ButtonLink href="#how" variant="secondary">
-            {h.secondary}
-          </ButtonLink>
-        </div>
-        <ul className={styles.heroFacts}>
-          {h.facts.map((f) => (
-            <li key={f}>{f}</li>
-          ))}
-        </ul>
+    <section className={styles.hero} aria-labelledby="hero-title">
+      <div className={styles.guides} aria-hidden="true">
+        <span />
+        <span />
+        <span />
+        <span />
       </div>
-      <figure className={styles.today}>
-        <DeviceFrame className={styles.todayFrame}>
-          <div className={styles.todayScreen}>
-            <p className={styles.greeting}>{today.greeting}</p>
-            <p className={styles.state}>{today.state}</p>
-            <Gauge value={SAMPLE.readiness} label={today.readiness} />
-            <ul className={styles.tiles}>
-              <li>
-                <span className={styles.tileLabel}>{today.sleep}</span>
-                <span className={styles.tileValue}>{today.sleepValue}</span>
-                <MetricIcon kind="sleep" />
-              </li>
-              <li>
-                <span className={styles.tileLabel}>{today.recovery}</span>
-                <span className={styles.tileValue}>{percent.format(SAMPLE.recovery)}</span>
-                <MetricIcon kind="recovery" />
-              </li>
-              <li>
-                <span className={styles.tileLabel}>{today.strain}</span>
-                <span className={styles.tileValue}>{number.format(SAMPLE.strain)}</span>
-                <MetricIcon kind="strain" />
-              </li>
-            </ul>
-            <div className={styles.trendCard}>
-              <p className={styles.trendHeader}>
-                <span>{today.trendTitle}</span>
-                <span>{today.trendWindow}</span>
-              </p>
-              <TrendChart
-                values={SAMPLE.week}
-                ticks={ticks}
-                label={format(today.chartLabel, {
-                  values: SAMPLE.week.slice(0, -1).join(', '),
-                  today: SAMPLE.week[SAMPLE.week.length - 1],
-                })}
-              />
-            </div>
-          </div>
-        </DeviceFrame>
-        <figcaption>
-          <SampleNote>{today.sample}</SampleNote>
-        </figcaption>
-      </figure>
-    </Container>
-  );
-}
-
-function ScoreCard({ locale, id }: { locale: Locale; id: (typeof SCORE_IDS)[number] }) {
-  const t = messages(locale).home.scores;
-  const s = t.items[id];
-  const weighted = id === 'recovery' || id === 'readiness';
-  const tones = s.bands.length === 4 ? ['ramp1', 'ramp2', 'ramp3', 'ramp4'] : ['good', 'mid', 'low'];
-  return (
-    <article className={styles.score} aria-labelledby={`score-${id}`}>
-      <header className={styles.scoreHeader}>
-        <h3 id={`score-${id}`}>{s.name}</h3>
-        <p className={styles.range}>
-          <span className="visually-hidden">{t.range}: </span>
-          {s.range}
+      <Container className={styles.heroInner}>
+        <p className={styles.meta}>
+          <span>{h.metaLeft}</span>
+          <span>{format(h.metaCenter, { year: BUILD_YEAR })}</span>
+          <span>{h.metaRight}</span>
         </p>
-      </header>
-      <p className={styles.measures}>{s.measures}</p>
-      <div>
-        <Label as="h3" className={styles.scoreLabel}>
-          {t.inputs}
-        </Label>
-        <ul className={styles.inputs}>
-          {s.inputs.map(([name, weight]) => (
-            <li key={name}>
-              <span>{name}</span>
-              <span className={styles.weight}>{weight}</span>
-              {weighted && (
-                <svg viewBox="0 0 100 2" preserveAspectRatio="none" aria-hidden="true" className={styles.bar}>
-                  <rect width="100" height="2" className={styles.barTrack} />
-                  <rect width={Number.parseFloat(weight)} height="2" className={styles.barFill} />
-                </svg>
-              )}
-            </li>
+        <h1 id="hero-title" className={styles.title}>
+          <span>{h.title[0]}</span> <span>{h.title[1]}</span>
+        </h1>
+        <div className={styles.heroGrid}>
+          <div className={styles.heroText}>
+            <p className={styles.lead}>{h.lead}</p>
+            <div className={styles.actions}>
+              <ButtonLink href={localePath(locale, '/beta')} arrow>
+                {h.primary}
+              </ButtonLink>
+              <ButtonLink href="#how" variant="secondary">
+                {h.secondary}
+              </ButtonLink>
+            </div>
+            <ul className={styles.heroFacts}>
+              {h.facts.map((f) => (
+                <li key={f}>{f}</li>
+              ))}
+            </ul>
+          </div>
+          <figure className={styles.heroFigure}>
+            <TodayScreen labels={t.home.mock.today} />
+            <figcaption className={styles.caption}>{h.figure}</figcaption>
+          </figure>
+        </div>
+      </Container>
+    </section>
+  );
+}
+
+/**
+ * One plan: free during the beta, as the terms in force say. No price, no paid tier: later
+ * plans are announced here first (web D23).
+ */
+function Pricing({ locale }: { locale: Locale }) {
+  const p = messages(locale).home.pricing;
+  return (
+    <div className={styles.plans}>
+      <article className={styles.plan} aria-labelledby="plan-free">
+        <h3 id="plan-free">{p.free.name}</h3>
+        <p className={styles.planLead}>{p.free.lead}</p>
+        <ul className={styles.planItems}>
+          {p.free.items.map((i) => (
+            <li key={i}>{i}</li>
           ))}
         </ul>
-        <p className={styles.note}>{s.note}</p>
-      </div>
-      <div>
-        <Label as="h3" className={styles.scoreLabel}>
-          {t.bands}
-        </Label>
-        <dl className={styles.bands}>
-          {s.bands.map(([range, word], i) => (
-            <div key={range} className={styles.band}>
-              <dt>
-                <span className={`${styles.dot} ${styles[`dot-${tones[i]}`]}`} />
-                {range}
-              </dt>
-              <dd>{word}</dd>
-            </div>
-          ))}
-        </dl>
-      </div>
-      <p className={styles.more}>
-        <a href={`${localePath(locale, '/science')}#${id}`}>
-          {t.more}
-          <span className="visually-hidden">: {s.name}</span> →
-        </a>
-      </p>
-    </article>
-  );
-}
-
-function JournalSample({ locale }: { locale: Locale }) {
-  const t = messages(locale);
-  const j = t.home.features.journal;
-  return (
-    <figure className={`${styles.panel} ${styles.journal}`}>
-      <div className={styles.journalCard}>
-        <Label tone="warning">{j.card}</Label>
-        <p className={styles.journalBehavior}>{j.behavior}</p>
-        <p className={styles.journalEffect}>{j.effect}</p>
-        {/* −16 … +4 points across 200 px: zero at 160, the interval −12.1 … −4.6, the mean −8.4. */}
-        <svg viewBox="0 0 200 24" className={styles.interval} aria-hidden="true">
-          <line x1="0" x2="200" y1="12" y2="12" className={styles.intervalAxis} strokeWidth="1" />
-          <line
-            x1="160"
-            x2="160"
-            y1="3"
-            y2="21"
-            className={styles.intervalZero}
-            strokeWidth="1"
-            strokeDasharray="2 2"
-          />
-          <line
-            x1="39"
-            x2="114"
-            y1="12"
-            y2="12"
-            className={styles.intervalRange}
-            strokeWidth="4"
-            strokeLinecap="round"
-          />
-          <circle cx="76" cy="12" r="5" className={styles.intervalPoint} />
-        </svg>
-        <p className={styles.journalMeta}>{j.interval}</p>
-        <p className={styles.journalMeta}>{j.days}</p>
-      </div>
-      <figcaption>
-        <SampleNote>{t.a11y.sampleData}</SampleNote>
-      </figcaption>
-    </figure>
-  );
-}
-
-function StepGlyph({ index }: { index: number }) {
-  if (index === 1) return <Mark size={28} />;
-  if (index === 0) {
-    return (
-      <svg viewBox="0 0 28 28" width="28" height="28" focusable="false">
-        <path
-          d="M2 15h6l2.5-6 4 12 3-9 2 3H26"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 28 28" width="28" height="28" focusable="false">
-      <circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
-      <path
-        d="M14 3a11 11 0 1 1-10.4 7.4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
+        <ButtonLink href={localePath(locale, '/beta')} arrow className={styles.planCta}>
+          {p.free.cta}
+        </ButtonLink>
+      </article>
+      <p className={styles.pricingNote}>{p.note}</p>
+    </div>
   );
 }

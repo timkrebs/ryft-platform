@@ -3,24 +3,31 @@
   outline: none;
 }
 
-/* Header: thin, sticky, the background slightly translucent over content. */
+/* Header: sticky, paper white, one hairline underneath. */
 .header {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: color-mix(in srgb, var(--background) 96%, transparent);
-  backdrop-filter: saturate(140%) blur(12px);
-  -webkit-backdrop-filter: saturate(140%) blur(12px);
+  background: var(--background);
   border-bottom: var(--hairline) solid var(--separator);
+}
+
+/* The header sticks, so its links are always in view; but they sit inside the root's
+   scroll-padding-top (globals.css, 5rem, there so anchored sections clear the header), and
+   focusing one (keyboard, or the menu's links) made the browser scroll the page up to "reveal"
+   it. The negative margin cancels that padding for the header's own links. */
+.header a {
+  scroll-margin-top: -5rem;
 }
 
 .headerRow {
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-areas: 'home nav';
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: 'home nav cta';
   align-items: center;
-  gap: 8px 24px;
-  min-height: 60px;
+  gap: 24px;
+  /* The open menu sits right under this (top: 56px + hairline, below). */
+  height: 56px;
 }
 
 .home {
@@ -28,96 +35,186 @@
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  text-decoration: none;
   color: var(--text-primary);
+  text-decoration: none;
 }
 
 .nav {
   grid-area: nav;
 }
 
-.nav ul {
+.nav ul,
+.menu ul {
   display: flex;
-  justify-content: flex-end;
-  gap: 4px 20px;
+  justify-content: center;
+  gap: 4px 24px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.nav a {
+.nav a,
+.menu a {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--text-secondary);
-  font-size: var(--type-callout);
+  color: var(--text-primary);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   text-decoration: none;
-  transition: color var(--motion-quick) ease-out;
 }
 
 .nav a:hover,
-.nav a[aria-current='page'] {
+.menu a:hover,
+.nav a[aria-current='page'],
+.menu a[aria-current='page'] {
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
+}
+
+.cta {
+  grid-area: cta;
+  min-height: 36px;
+  padding-block: 8px;
+}
+
+/* The narrow-screen menu: a panel shown while it is the :target (#site-menu), opened and
+   closed by links, so it works without a script (chrome.tsx). It lies over the page under
+   the header; a link in it moves the target, which hides it before the page scrolls there. */
+.menuOpen,
+.menuClose {
+  display: none;
+  grid-area: cta;
+  align-items: center;
+  min-height: 44px;
   color: var(--text-primary);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
+  text-decoration: none;
 }
 
-@media (max-width: 40rem) {
-  .headerRow {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'home'
-      'nav';
-    padding-block: 4px;
-    gap: 0 16px;
-  }
-
-  .nav ul {
-    justify-content: flex-start;
-  }
+.menu {
+  display: none;
 }
 
-/* Footer */
-.footer {
-  margin-top: calc(var(--section-spacing) * 2);
+.menu nav {
+  padding: 8px var(--screen-padding) 20px;
+}
+
+.menu ul {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.menu li + li {
   border-top: var(--hairline) solid var(--separator);
-  padding-block: calc(var(--section-spacing) * 2) calc(var(--section-spacing) * 1.5);
-  font-size: var(--type-callout);
-  color: var(--text-secondary);
 }
 
-.footerGrid {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  grid-template-areas:
-    'brand nav'
-    'meta meta';
-  gap: calc(var(--section-spacing) * 1.5) var(--section-spacing);
+.menu a {
+  min-height: 52px;
+  font-size: var(--web-h5);
+  font-weight: 700;
+  letter-spacing: var(--web-tracking-display);
 }
 
-@media (max-width: 48rem) {
-  .footerGrid {
-    grid-template-columns: 1fr;
-    grid-template-areas: 'brand' 'nav' 'meta';
+.menuCta {
+  justify-content: space-between;
+}
+
+@media (max-width: 56rem) {
+  .headerRow {
+    grid-template-columns: auto auto;
+    grid-template-areas: 'home cta';
+    justify-content: space-between;
   }
+
+  .nav,
+  .cta {
+    display: none;
+  }
+
+  .menuOpen {
+    display: inline-flex;
+  }
+
+  .menu:target {
+    display: block;
+    position: fixed;
+    z-index: 10;
+    left: 0;
+    right: 0;
+    /* Right under the sticky header (its row is 56 px, plus the hairline). */
+    top: calc(56px + var(--hairline));
+    max-height: calc(100dvh - 56px - var(--hairline));
+    overflow-y: auto;
+    background: var(--background);
+    border-bottom: var(--hairline) solid var(--separator);
+  }
+
+  .header:has(.menu:target) .menuOpen {
+    display: none;
+  }
+
+  .header:has(.menu:target) .menuClose {
+    display: inline-flex;
+  }
+}
+
+/* Footer: the wordmark large, two link columns, the small print in one row. */
+.footer {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 480px;
+  padding: var(--section-y) 0 32px;
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.footerTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 48px;
+  padding-bottom: 48px;
 }
 
 .footerBrand {
-  grid-area: brand;
   display: grid;
   gap: 16px;
-  align-content: start;
+  margin: 0;
 }
 
-.wellness {
+.footerWordmark {
+  font-size: var(--web-display);
+  font-weight: 700;
+  line-height: 0.8;
+  letter-spacing: var(--web-tracking-display) !important;
+  margin-right: 0 !important;
+}
+
+.footerTagline {
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
+}
+
+.footerColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px;
+}
+
+.footerHeading {
+  margin: 0 0 16px;
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   color: var(--text-secondary);
-}
-
-.footerNav {
-  grid-area: nav;
 }
 
 .footerNav ul {
   display: grid;
-  gap: 2px;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -126,28 +223,34 @@
 .footerNav a {
   display: inline-flex;
   align-items: center;
-  min-height: 36px;
-  color: var(--text-secondary);
+  min-height: 32px;
+  font-size: var(--web-h5);
+  font-weight: 700;
+  letter-spacing: var(--web-tracking-display);
+  text-transform: uppercase;
   text-decoration: none;
 }
 
 .footerNav a:hover,
 .footerNav a[aria-current='page'] {
-  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
 }
 
 .footerMeta {
-  grid-area: meta;
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px 24px;
-  padding-top: var(--section-spacing);
+  gap: 8px 32px;
+  padding-top: 20px;
   border-top: var(--hairline) solid var(--separator);
-  font-size: var(--type-caption);
-  color: var(--text-tertiary);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
-.footerMeta p {
-  margin: 0;
+@media (max-width: 48rem) {
+  .footerTop {
+    grid-template-columns: 1fr;
+  }
 }

@@ -1,7 +1,7 @@
 import { PageShell } from '@/components/chrome';
 import { Mark } from '@/components/Mark';
 import { Prose, mdxComponents } from '@/components/prose';
-import { Container, Label } from '@/components/ui';
+import { Container, Eyebrow, Label } from '@/components/ui';
 import { loadMdx } from '@/lib/content';
 import { format, intlLocale, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
@@ -36,7 +36,7 @@ export async function SciencePage({ locale }: { locale: Locale }) {
     <PageShell locale={locale} path="/science">
       <Container className={styles.layout}>
         <header className={styles.header}>
-          <Label tone="accent">{t.science.label}</Label>
+          <Eyebrow>{t.science.label}</Eyebrow>
           <h1>{data.title}</h1>
           <p className={styles.meta}>
             <Mark size={16} />

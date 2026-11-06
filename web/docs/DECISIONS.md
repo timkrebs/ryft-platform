@@ -350,9 +350,125 @@ Fallback'`** in `globals.css` (Arial-class local fonts with Inter's ascent/desce
 did before) and next/font's fallback off — LCP 1.5–1.65 s on every page, FCP 1.2 s, CLS 0. The LCP
 budget moves from 1.5 s to **1.8 s** for that reason only: first paint is 1.2 s everywhere, the
 performance score is 1.0, and the swap is what the number measures. The hero's two lines and the
-meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift.
+meta line are `white-space: nowrap`, because a wrap that undoes itself at the swap is a layout shift;
+since D22 the statement's size keeps each line inside the screen and the meta line stacks and may
+wrap below 25rem (WCAG 1.4.10 wins over the shift there).
 
 Would change if the restyle wants Medium or SemiBold: then the files are added (the OFL
 allows it) and the weight map in `fonts.ts` grows; or if the app's type scale moves to
 400/700 only, which removes the question. Would also change if a page needs glyphs outside
 the subset (Greek, Cyrillic, CJK): widen the unicode ranges, don't swap back to the full file.
+
+## D21 — The "Alpine" restyle: monochrome, typographic, hairline grid (2026-11-05; builds on D18–D20)
+
+The user's design direction for RYFT (web first, app to follow): a black-on-white,
+typographic landing page after the "Alpine" reference the user named — Inter Bold in caps
+with −0.07 em tracking for every heading, Regular with +0.08 em for labels, 1 px ink rules
+instead of filled cards and shadows, square buttons with the ↗ arrow, numbered sections
+(`02 / SCORES`), and the app shown as monochrome mock screens rather than captures. The
+home page, in order: the hero (meta line, the statement, lead and actions, the Today mock),
+the ticker and "Works with", 02 Scores (the spec grid), 03 Systems (three mocks), 04
+Principles, 05 Start, the facts band, 06 Privacy, 07 Pricing, 08 FAQ, 09 Beta (the ink
+band) and the footer with the wordmark set large. The other pages take the same parts:
+numbered `Section`s, hairline lists, the long texts in `prose.module.css`.
+
+What stays from the app's tokens: every colour (the light palette of ryft-app ADR 0015),
+motion, and the app's own type scale (still generated into `tokens.css`, still used by the
+styleguide and anywhere a value is "the app's"). What the site adds: its own scale and rhythm
+as `--web-*` custom properties in `globals.css` (display 56–144 px, h1 42–56, h2 36–56 for
+indices and prices, h3 26–38, h4 22, h5 16, lead 18, body 15, long-form 17, label 13,
+caption 12; `--section-y` 56–120 px; `--container-max` 1440), because a marketing hero at
+104 px has no counterpart in an iPhone app and inventing app tokens for it would be a lie
+about where the value comes from. Radii are gone (the app's `--card-radius`/`--tile-radius`
+tokens are no longer referenced; the restyled app will set them to 0 and the generator keeps
+emitting them). `--rule-soft` is derived from `--separator` for the hero's guide lines.
+
+Components: `Section` takes a `number` and renders the eyebrow `02 / LABEL`; `Eyebrow`,
+`Marquee` (the black ticker band; one move of four seconds, none under Reduce Motion, D22) and the
+`inverse`/`inverseOutline` button variants are new; `DeviceFrame` is a thick ink outline
+with a small radius; `Mockups.tsx` draws Today, Sleep and Strain in HTML/SVG from sample
+data (no inline styles: the marketing CSP has no `style-src 'unsafe-inline'`, so bars are
+SVG rects). The header's narrow-screen menu is a panel shown while it is the `:target`
+(D22), so the site still ships no script. The hero reads "Engineered for
+peak." (the user's choice); the tagline stays in the footer and the lock-up until the app
+changes it.
+
+Copy: the home page's texts were rewritten in the terser register (`messages/en.json` →
+`home`), facts unchanged; the pricing section first showed Free next to a "RYFT Plus" with the
+price TBA, which D23 replaces with one plan, free during the beta, and no paid tier. The app's real captures remain only
+on the legal pages (`profile-account-light`); the other light captures stay in
+`public/screenshots` until the app's restyle produces new ones.
+
+Would change if the user wants the hero figure to be a real capture again once the app is
+monochrome: `TodayScreen` is one component to swap for `Screenshot`.
+
+## D22 — Review fixes of the restyle: menu, ticker, reflow, focus on ink (2026-11-06; amends D21)
+
+The security and code review of the restyle found five things a static, script-free page has
+to solve with CSS alone; the calls made:
+
+- **Menu.** The `<details>` menu stayed open after an anchor tap and lay over the section it
+  had just scrolled to. It is now a panel shown while it is the URL's `:target`: "Menu" links
+  to `#site-menu`, any link in the panel moves the target (so it closes as the page scrolls),
+  and "Close" links to `#menu-closed`, a fragment no element has, which closes it without
+  scrolling. Costs, accepted because the marketing pages ship no script (D19): Escape does not
+  close it, `aria-expanded` cannot be kept true, so it is not set (the link has
+  `aria-controls`), and each open and close is a history entry (Back reopens it once). The
+  call to action ("Join the beta") is the panel's last item. Header links get a negative
+  `scroll-margin-top` equal to the root's `scroll-padding-top`: without it, focusing a link
+  in the sticky header scrolled the page up by a screen's worth (it did so before this too).
+  `e2e/home.spec.ts` follows a link from the open menu at 390 and 768 px.
+- **Ticker.** An endless loop needs a pause control (WCAG 2.2.2) and a control needs a
+  script. It moves once instead: one copy to the left in four seconds after a one-second
+  delay, then stands still exactly where a static band would look the same; under Reduce
+  Motion it never moves. Pinned in `e2e/home.spec.ts` (one iteration, done within 5 s, no
+  animation under Reduce Motion).
+- **Reflow.** At 320 px the statement was cut and the meta line truncated. The statement's
+  size is `clamp(2rem, 15vw, var(--web-display))` (unchanged from about 375 px up), and the
+  meta line stacks and may wrap below 25rem. The hero facts carry a marker each, so a wrapped
+  line no longer starts with a separator; the last principle drops its own rule.
+- **Focus on ink.** The focus ring is ink; on the download band it vanished. Inside `.download`
+  and `.sectionInverse` it is paper (`--on-accent`; the ink Plus card went with D23); an e2e test tabs to the band
+  and checks the ring's contrast against it.
+- **axe and `content-visibility`.** Sections below the fold are skipped until they come near
+  the viewport, so axe judged colours on unrendered boxes and the full-page captures showed
+  empty frames. `e2e/site.spec.ts` keeps the console (CSP) check on the page as served and runs
+  axe and the capture in a second context that bypasses the CSP only to add one style,
+  `content-visibility: visible`. `font-synthesis: none` is checked there too.
+
+The OG card (`npm run og`) follows the design: ink on paper, the hero's words from
+`messages/en.json`, the committed Inter subsets. A visible "sample data" caption sits under
+the scores grid.
+
+Would change if the site ever ships a script for the menu: then a disclosure button with
+`aria-expanded` and Escape replaces the `:target` panel.
+
+## D23 — The site's copy promises nothing the legal texts don't; legal checklist U1, U6, U7 closed (2026-11-06)
+
+The owner delegated the open copy decisions to the lead on 2026-11-06 ("decide what's best
+for the platform"). The rule: the site makes no commitment that the terms in force
+(2026-10-20: "provided free of charge") or the privacy policy (2026-10-26) do not make, and
+every claim stays true to what the app does today.
+
+- **"Works with" row → a data-source line** ("Reads Apple Health, from Apple Watch, or Garmin
+  and Oura through their apps.", label "Data source"). A row of brand names reads as
+  partnerships; the brand rule allows those names only as data sources, so it says that.
+- **Pricing → one plan, free during the beta.** "0 € forever", "RYFT Plus" (TBA), the founder
+  price and "never behind a paywall" promised a future the terms do not; the section now lists
+  what the app has today and says later plans are announced here first and in the app before
+  they start (the terms announce changes in the app before they apply). The cost answer in
+  the FAQ says the same; nothing claims permanence.
+- **Deletion.** "Deletion is immediate" and "removes everything … at once" said more than
+  privacy 2026-10-26 §6: the database is erased at once, backups follow within 7 days, and a
+  random account identifier is kept. The home page, the FAQ and the support steps now say so.
+  The ported support text (`content/legal/en/support.mdx`, l. 24) still says "removes
+  everything … at once"; it is a legal text, so it changes only with the owner's next legal
+  edit.
+- **Sample values.** The visible "sample data" caption under the scores grid stays (D22).
+- **Legal checklist.** U1, U6 and U7 are answered by the published Impressum, privacy §1 and
+  terms §1 and were closed by the owner on 2026-11-06 (`docs/LEGAL_CHECKLIST.md`); the
+  owner also accepted English-only legal texts (D18). The German privacy and terms URLs in
+  App Store Connect are the owner's to change (they 301 to the English pages meanwhile).
+
+Would change if a paid plan is decided: its price and terms come first in the terms of use
+(a new version, announced in the app), then on this page.

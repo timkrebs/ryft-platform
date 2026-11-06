@@ -1,21 +1,23 @@
 .page {
   display: grid;
   gap: var(--section-spacing);
-  padding-block: calc(var(--section-spacing) * 2) var(--section-spacing);
+  padding-block: 0 var(--section-y);
 }
 
 .draft {
   display: grid;
   gap: 6px;
   padding: 14px 16px;
-  border-radius: var(--tile-radius);
-  border: var(--hairline) solid color-mix(in srgb, var(--warning) 55%, transparent);
-  background: color-mix(in srgb, var(--warning) 12%, var(--background));
-  font-size: var(--type-callout);
+  border: var(--hairline) solid var(--text-primary);
+  border-left-width: 6px;
+  background: var(--background);
+  font-size: var(--web-body);
 }
 
 .draftTitle {
   font-weight: 700;
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   color: var(--text-primary);
 }
 
@@ -25,7 +27,12 @@
 
 .header {
   display: grid;
-  gap: 12px;
+  gap: 20px;
+  padding-top: var(--section-y);
+}
+
+.header h1 {
+  font-size: var(--web-h1);
 }
 
 .meta {
@@ -33,23 +40,16 @@
   flex-wrap: wrap;
   gap: 4px 18px;
   margin: 0;
-  font-size: var(--type-callout);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   color: var(--text-secondary);
-}
-
-.meta a {
-  color: var(--accent);
 }
 
 .archived {
   padding: 10px 14px;
-  border-radius: var(--tile-radius);
-  background: var(--surface);
-  font-size: var(--type-callout);
-}
-
-.archived a {
-  color: var(--accent);
+  border: var(--hairline) solid var(--separator);
+  font-size: var(--web-body);
 }
 
 .extra {
@@ -61,22 +61,21 @@
 }
 
 .extra h2 {
-  font-size: var(--type-title);
+  font-size: var(--web-h3);
 }
 
 .stepsGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 12px;
+  gap: 24px;
 }
 
 .stepBlock {
   display: grid;
   gap: 10px;
   align-content: start;
-  padding: var(--card-padding);
-  border-radius: var(--card-radius);
-  background: var(--surface);
+  padding-top: 16px;
+  border-top: var(--hairline) solid var(--separator);
 }
 
 .stepBlock ol {
@@ -92,12 +91,10 @@
   margin: 0;
   max-width: 34rem;
   overflow: hidden;
-  border-radius: var(--card-radius);
-  box-shadow: 0 0 0 var(--hairline) var(--separator);
+  border: var(--hairline) solid var(--separator);
 }
 
 .meta > span + span::before {
   content: '·';
   margin-right: 18px;
-  color: var(--text-tertiary);
 }

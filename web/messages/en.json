@@ -2,7 +2,7 @@
   "site": {
     "name": "RYFT",
     "tagline": "Your whole health.",
-    "description": "RYFT turns the heart rate, HRV, sleep and workouts your watch or ring writes to Apple Health into daily scores for Readiness, Recovery, Strain and Sleep. Hosted in the EU."
+    "description": "RYFT scores readiness, recovery, strain and sleep from the watch or ring you already wear, with every formula published. Hosted in the EU."
   },
   "a11y": {
     "skip": "Skip to content",
@@ -12,19 +12,26 @@
     "sampleData": "Sample data"
   },
   "nav": {
-    "how": "How it works",
+    "scores": "Scores",
+    "systems": "Systems",
     "science": "Science",
+    "pricing": "Pricing",
+    "faq": "FAQ",
     "beta": "Beta",
-    "menu": "Menu"
+    "cta": "Join the beta",
+    "menu": "Menu",
+    "close": "Close"
   },
   "footer": {
-    "privacy": "Privacy",
-    "terms": "Terms",
-    "support": "Support",
-    "licenses": "Licences",
-    "impressum": "Impressum",
+    "product": "Product",
+    "legal": "Legal",
     "science": "Science",
     "beta": "Beta",
+    "support": "Support",
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "licenses": "Licences",
+    "impressum": "Legal notice",
     "wellness": "Wellness, not medical advice.",
     "copyright": "© {year} RYFT",
     "noTracking": "No cookies, no analytics, nothing loaded from third parties."
@@ -40,154 +47,117 @@
     "support": "Support"
   },
   "home": {
-    "title": "RYFT — Your whole health.",
+    "title": "RYFT — Engineered for peak.",
     "hero": {
-      "eyebrow": "iPhone · Beta on TestFlight",
-      "title": "Your whole health.",
-      "lead": "RYFT turns the heart rate, HRV, sleep and workouts your watch or ring already writes to Apple Health into four daily scores, and shows how each one is calculated.",
+      "metaLeft": "iPhone / Apple Health",
+      "metaCenter": "Beta · TestFlight · {year}",
+      "metaRight": "50°07′ N · Frankfurt",
+      "title": ["Engineered", "for peak."],
+      "lead": "Readiness, recovery, strain and sleep from the watch or ring you already wear. Scored every morning, every formula published.",
       "primary": "Join the beta",
       "secondary": "How it works",
-      "facts": ["Hosted in the EU", "No hardware", "No subscription"]
+      "facts": ["Hosted in the EU", "No hardware", "Free in beta"],
+      "figure": "fig. 01 — Today, sample data"
     },
-    "today": {
-      "greeting": "Good morning,",
-      "state": "Your health is in balance.",
-      "readiness": "Overall readiness",
-      "sleep": "Sleep",
-      "recovery": "Recovery",
-      "strain": "Strain",
-      "sleepValue": "7h 48m",
-      "trendTitle": "Readiness",
-      "trendWindow": "7 d",
-      "chartLabel": "Readiness over the last 7 days, sample data: {values}. Today {today}.",
-      "weekdays": "M,T,W,T,F,S,S",
-      "sample": "Sample data, drawn the way the app's Today screen shows it."
+    "ticker": "Recovery. Sleep. Strain. Readiness.",
+    "worksWith": {
+      "label": "Data source",
+      "text": "Reads Apple Health, from Apple Watch, or Garmin and Oura through their apps."
     },
-    "how": {
-      "label": "How it works",
-      "title": "From your watch to one number",
-      "intro": "RYFT has no hardware of its own. It works with what you already wear.",
-      "steps": [
-        {
-          "title": "Your watch or ring records",
-          "body": "Any watch or ring that writes heart rate and sleep to Apple Health: an Apple Watch, or a Garmin or Oura through their own apps. An iPhone alone counts steps but measures no heart rate."
+    "mock": {
+      "today": {
+        "readiness": "Overall readiness",
+        "recovery": "Recovery",
+        "sleep": "Sleep",
+        "strain": "Strain",
+        "hrv": "HRV"
+      },
+      "sleep": {
+        "asleep": "Asleep",
+        "ofNeed": "of need",
+        "stages": {
+          "deep": "Deep",
+          "light": "Light",
+          "rem": "REM",
+          "awake": "Awake"
         },
-        {
-          "title": "RYFT reads Apple Health",
-          "body": "Only the data types you allow, and only after you consent. The app syncs when you open it and in the background, encrypted, to servers in Frankfurt."
-        },
-        {
-          "title": "Four scores each morning",
-          "body": "Recovery compares last night with your own baseline. Readiness combines it with your sleep into the number at the top of Today."
-        }
-      ]
+        "bedtime": "22:50 → 07:00 · Consistent",
+        "week": "Last 7 nights"
+      },
+      "strain": {
+        "ofMax": "of 21",
+        "band": "Moderate",
+        "zone": "Zone",
+        "session": "Morning run · 46 min",
+        "sessionValue": "9.8",
+        "week": "Last 7 days"
+      }
     },
     "scores": {
-      "label": "The scores",
-      "title": "Four numbers, each with a formula",
+      "number": "02",
+      "label": "Scores",
+      "title": "Four numbers. Each with a formula.",
       "intro": "Every score has published inputs, weights and ranges, and every stored score names the model version that computed it.",
-      "range": "Range",
-      "measures": "What it measures",
-      "inputs": "What goes into it",
-      "bands": "Bands",
+      "sample": "Sample value",
+      "sampleNote": "Values shown: sample data, not a measurement.",
       "more": "How we calculate it",
-      "disclaimer": "RYFT is a wellness app, not a medical device. Its scores are estimates, not a diagnosis. Talk to a doctor about symptoms.",
       "items": {
         "readiness": {
           "name": "Readiness",
-          "range": "1–100",
-          "measures": "How ready you are for today's strain: the number at the top of Today.",
-          "inputs": [
-            ["Recovery", "60 %"],
-            ["Last night's sleep performance", "40 %"]
-          ],
-          "note": "Minus up to 10 points after a hard day on low recovery.",
-          "bands": [
-            ["67–100", "A good day for high strain"],
-            ["34–66", "Keep today's strain moderate"],
-            ["1–33", "Take it easy, protect your sleep"]
-          ]
+          "measures": "How ready you are for today's strain: 60 % recovery, 40 % last night's sleep.",
+          "value": "84",
+          "range": "100"
         },
         "recovery": {
           "name": "Recovery",
-          "range": "1–100",
-          "measures": "How your body handled last night, against your own baseline.",
-          "inputs": [
-            ["Heart rate variability", "45 %"],
-            ["Resting heart rate", "25 %"],
-            ["Sleep performance", "25 %"],
-            ["Respiratory rate", "5 %"]
-          ],
-          "note": "Each one compared with your previous 30 days.",
-          "bands": [
-            ["67–100", "High"],
-            ["34–66", "Moderate"],
-            ["1–33", "Low"]
-          ]
+          "measures": "How your body handled last night, against your own 30-day baseline.",
+          "value": "82",
+          "range": "100"
         },
         "strain": {
           "name": "Strain",
-          "range": "0–21",
-          "measures": "How much load your heart carried today.",
-          "inputs": [
-            ["Heart-rate reserve, minute by minute", "TRIMP"],
-            ["Logged strength sessions", "+ load"]
-          ],
-          "note": "An hour's brisk walk is about 2; a 60-minute run at 75 % of heart-rate reserve about 14.",
-          "bands": [
-            ["0–9.9", "Light"],
-            ["10–13.9", "Moderate"],
-            ["14–17.9", "High"],
-            ["18–21", "All out"]
-          ]
+          "measures": "How much load your heart carried today, minute by minute.",
+          "value": "12.4",
+          "range": "21"
         },
         "sleep": {
           "name": "Sleep",
-          "range": "0–100 %",
-          "measures": "How much of the sleep you needed you got.",
-          "inputs": [
-            ["Time asleep", "actual"],
-            ["Your need: learned base + strain + debt − naps", "need"]
-          ],
-          "note": "Quality adds efficiency and restorative sleep: 60 % performance, 20 % efficiency, 20 % deep and REM.",
-          "bands": [
-            ["80–100", "Good quality"],
-            ["60–79", "Fair"],
-            ["0–59", "Poor"]
-          ]
+          "measures": "How much of the sleep you needed you got, and how good it was.",
+          "value": "94 %",
+          "range": "100 %"
         }
       },
-      "shots": {
-        "sleep": "RYFT's Sleep screen in the app: 7 h 48 min total sleep, a bar of deep, light and REM stages with their minutes, sleep quality 82 percent rated good, bedtime 10:50 PM and wake time 7:00 AM.",
-        "strain": "RYFT's Strain screen in the app: a week of daily strain rings, today's strain of 12.4 out of 21, minutes in five heart-rate zones, and a morning run."
-      }
+      "disclaimer": "RYFT is a wellness app, not a medical device. Its scores are estimates, not a diagnosis. Talk to a doctor about symptoms."
     },
-    "features": {
-      "label": "Beyond the scores",
-      "title": "Train, Journal, Insights",
-      "train": {
-        "title": "Train",
-        "body": "Plans, sessions and sets, with a rest timer, last time's numbers and your personal records. Every logged session adds its muscular load to the day's strain.",
-        "alt": "A strength session in RYFT: a rest timer at 1:35 before the next set, then bench press, 4 sets of 5 at 80 kilograms, two sets done."
-      },
-      "journal": {
-        "title": "Journal",
-        "body": "A short morning sheet about yesterday: alcohol, caffeine, stress, feeling sick. After five days with and five without, RYFT shows how a habit moved your recovery the morning after, with a 90 % interval instead of a guess.",
-        "behavior": "Alcohol",
-        "effect": "Recovery −8.4 points",
-        "interval": "90 % interval: −12.1 to −4.6",
-        "days": "14 days with, 21 without",
-        "card": "Morning after"
-      },
-      "insights": {
-        "title": "Insights",
-        "body": "Plain-language cards when something changes, such as HRV above your baseline or a bedtime drifting later. Trends over 7, 30 and 90 days, always against your own range.",
-        "alt": "RYFT's Insights screen: three cards titled HRV above your baseline, Bedtime drifting later, and Strain outpacing recovery, above the trends."
+    "systems": {
+      "number": "03",
+      "label": "Systems",
+      "title": "Three screens. One morning.",
+      "items": {
+        "recovery": {
+          "kicker": "Today",
+          "title": "Know when to push.",
+          "body": "Readiness at the top, the week beneath it, recovery, sleep, strain and HRV in one glance. The orbit mark becomes the gauge.",
+          "figure": "fig. 03a — Today, sample data"
+        },
+        "sleep": {
+          "kicker": "Sleep",
+          "title": "The sleep you needed. The sleep you got.",
+          "body": "Need is learned from your baseline, strain and debt. Stages, efficiency and restorative sleep make the quality score; bedtime consistency gets its own line.",
+          "figure": "fig. 03b — Sleep, sample data"
+        },
+        "strain": {
+          "kicker": "Strain",
+          "title": "Load, zone by zone.",
+          "body": "Minutes in five heart-rate zones, TRIMP under the hood, and every logged strength session adds its muscular load to the day.",
+          "figure": "fig. 03c — Strain, sample data"
+        }
       }
     },
     "principles": {
+      "number": "04",
       "label": "Principles",
-      "title": "How RYFT is built",
+      "title": "How RYFT is built.",
       "items": [
         {
           "title": "Numbers first, AI last",
@@ -203,7 +173,7 @@
         },
         {
           "title": "Your data is yours",
-          "body": "Export your account, scores, workouts and sessions as JSON, or delete your account in the app, at any time. Deletion is immediate."
+          "body": "Export your account, scores, workouts and sessions as JSON, or delete your account in the app, at any time. Your data is erased from the database at once; backups follow within 7 days."
         },
         {
           "title": "Honest uncertainty",
@@ -211,9 +181,38 @@
         }
       ]
     },
+    "start": {
+      "number": "05",
+      "label": "Start",
+      "title": "Three steps to your first morning.",
+      "steps": [
+        {
+          "title": "Install",
+          "body": "Get TestFlight, open the RYFT link from your invite, create an account and enter your invite code."
+        },
+        {
+          "title": "Allow Apple Health",
+          "body": "Choose the data types RYFT may read and give your consent. Only those, only after you say so."
+        },
+        {
+          "title": "Sleep on it",
+          "body": "Strain shows up during the day. Recovery and Readiness arrive after your first night, calibrating for seven."
+        }
+      ]
+    },
+    "facts": {
+      "label": "Facts",
+      "items": [
+        ["4", "Scores, each with a published formula"],
+        ["30 d", "Baseline window for recovery"],
+        ["7", "Nights of calibration before the first full score"],
+        ["0", "Cookies, trackers or third-party requests on this site"]
+      ]
+    },
     "privacy": {
+      "number": "06",
       "label": "Privacy",
-      "title": "Privacy at a glance",
+      "title": "Your data. Four lines.",
       "items": [
         {
           "title": "Hosted in the EU",
@@ -229,14 +228,33 @@
         },
         {
           "title": "Export and delete",
-          "body": "Profile → Data → Export my data. Profile → Account → Delete account removes everything at once."
+          "body": "Profile → Data → Export my data. Profile → Account → Delete account: your data is erased from the database at once; backups follow within 7 days."
         }
       ],
       "link": "Read the privacy policy"
     },
+    "pricing": {
+      "number": "07",
+      "label": "Pricing",
+      "title": "What the beta costs.",
+      "free": {
+        "name": "Free during the beta",
+        "lead": "Everything in the app today:",
+        "items": [
+          "Readiness, Recovery, Strain and Sleep",
+          "Your full history",
+          "Export as JSON, delete at any time",
+          "Journal and habit effects",
+          "Train: plans, sessions, records"
+        ],
+        "cta": "Join the beta"
+      },
+      "note": "Later plans will be announced here first, and in the app before they start. Until then the terms in force apply: RYFT is provided free of charge."
+    },
     "faq": {
+      "number": "08",
       "label": "FAQ",
-      "title": "Questions",
+      "title": "Questions.",
       "items": [
         {
           "q": "Which devices work?",
@@ -244,7 +262,7 @@
         },
         {
           "q": "Does RYFT cost anything?",
-          "a": "No. RYFT is free during the beta, and there is no subscription."
+          "a": "Not during the beta: the terms in force say RYFT is provided free of charge. If paid options come later, they will be announced on this site and in the app before they start."
         },
         {
           "q": "Where is my data?",
@@ -268,7 +286,7 @@
         },
         {
           "q": "How do I delete my data?",
-          "a": "In the app: Profile → Account → Delete account. It removes everything RYFT stores about you at once. To keep a copy first, use Profile → Data → Export my data."
+          "a": "In the app: Profile → Account → Delete account. Your data is erased from the database at once; backups follow within 7 days. A random account identifier is kept so that the account cannot reappear. To keep a copy first, use Profile → Data → Export my data."
         },
         {
           "q": "What happens if I withdraw my consent?",
@@ -280,10 +298,15 @@
         }
       ]
     },
-    "cta": {
-      "title": "Try RYFT in the beta",
+    "download": {
+      "number": "09",
+      "label": "Beta",
+      "title": "Get the beta.",
       "body": "Free, on TestFlight, with an invite code.",
-      "button": "Join the beta"
+      "testflight": "Open in TestFlight",
+      "invite": "Ask for an invite",
+      "how": "How to join",
+      "figure": "fig. 09 — Sleep, sample data"
     }
   },
   "beta": {
@@ -390,7 +413,7 @@
         "items": [
           "Open RYFT and go to Profile.",
           "Under Account, tap Delete account.",
-          "Confirm. Everything RYFT stores about you is removed at once."
+          "Confirm. Your data is erased from the database at once; backups follow within 7 days."
         ]
       },
       "alt": "The Account card in RYFT's Profile: buttons for Change password, Log out and, in red, Delete account."

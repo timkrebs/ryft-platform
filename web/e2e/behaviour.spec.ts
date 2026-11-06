@@ -8,11 +8,13 @@ test('the site is light only, stores nothing and sets no cookie (web D19)', asyn
   await page.goto('/');
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe('light');
-  const img = page.locator('#scores picture img').first();
-  await img.scrollIntoViewIfNeeded();
-  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.currentSrc)).toContain('-light-');
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
   expect(await context.cookies()).toEqual([]);
+  // The one real capture left on the site (the Account card on /support) is the light one.
+  await page.goto('/support');
+  const img = page.locator('picture img').first();
+  await img.scrollIntoViewIfNeeded();
+  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.currentSrc)).toContain('-light-');
 });
 
 test('the FAQ opens without JavaScript', async ({ browser }) => {

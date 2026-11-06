@@ -19,7 +19,9 @@ here: read from it, never write there.
   generated from `../../app/Ryft` by `npm run tokens` into `src/styles/tokens.{css,json}`.
   The site is light only (D19): `tokens.css` carries the light values, no `[data-theme]`,
   no `prefers-color-scheme`. Never hard-code a colour in CSS or components; CI fails when
-  the tokens drift.
+  the tokens drift. The site's own type scale and rhythm (the monochrome
+  "Alpine" system, D21) are the `--web-*` properties in `src/styles/globals.css`: use those
+  for sizes and spacing, the app's tokens for colours and motion.
 - **Static export only.** `output: 'export'`, no API routes, no proxy/middleware, no server
   runtime, no database. Pages render to HTML at build time; the postbuild removes the
   Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the site's pages

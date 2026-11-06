@@ -1,5 +1,29 @@
-/* Global styles. Every colour, radius, size and duration is a token from tokens.css
-   (generated from the app); this file only decides where they go. */
+/* Global styles. Colours, motion and the app's type scale are tokens from tokens.css
+   (generated from the app); the monochrome system's own scale and rhythm are the `--web-*`
+   properties below (web/docs/DECISIONS.md, the "Alpine" entries). This file only decides
+   where tokens go. */
+
+:root {
+  /* Rhythm */
+  --container-max: 90rem; /* 1440 */
+  --section-y: clamp(56px, 8vw, 120px);
+  --rule-soft: color-mix(in srgb, var(--separator) 14%, transparent);
+
+  /* Type: one family, two weights, two trackings. Display caps run −0.07 em, labels +0.08 em. */
+  --web-display: clamp(3.5rem, 10vw, 9rem); /* 56–144 */
+  --web-h1: clamp(2.625rem, 5vw, 3.5rem); /* 42–56 */
+  --web-h2: clamp(2.25rem, 4vw, 3.5rem); /* 36–56: indices, prices, facts */
+  --web-h3: clamp(1.625rem, 2.6vw, 2.375rem); /* 26–38 */
+  --web-h4: 1.375rem; /* 22 */
+  --web-h5: 1rem; /* 16: card and list titles */
+  --web-lead: 1.125rem; /* 18 */
+  --web-body: 0.9375rem; /* 15 */
+  --web-body-long: 1.0625rem; /* 17: legal and science columns */
+  --web-label: 0.8125rem; /* 13 */
+  --web-caption: 0.75rem; /* 12 */
+  --web-tracking-display: -0.07em;
+  --web-tracking-label: 0.08em;
+}
 
 /* Inter's metric-matched fallback (the overrides next/font computes for Inter against Arial),
    bound to every local font that shares Arial's metrics, so the first paint has Inter's line
@@ -39,8 +63,6 @@ body {
   min-height: 100vh;
   background: var(--background);
   color: var(--text-primary);
-  /* Inter, Regular and Bold (web D20): a weight of 500 or 600 from the tokens resolves to the
-     nearest face (400 or 700); nothing is synthesised. */
   font-family:
     var(--font-inter),
     system-ui,
@@ -48,40 +70,44 @@ body {
     'Segoe UI',
     Roboto,
     sans-serif;
-  font-synthesis: none;
-  font-size: var(--type-body);
-  font-weight: var(--type-body-weight);
-  line-height: 1.55;
+  font-size: var(--web-body);
+  font-weight: 400;
+  line-height: 1.4;
   /* Every number is tabular, like the app's monospaced digits. */
+  font-synthesis: none;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
+/* Headings: Inter Bold, caps, tight. Sizes are set where they are used. */
 h1,
 h2,
 h3,
 h4 {
   margin: 0;
-  font-weight: var(--type-title-weight);
-  line-height: 1.15;
-  letter-spacing: -0.01em;
-  text-wrap: balance;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: var(--web-tracking-display);
+  text-transform: uppercase;
 }
 
 h1 {
-  font-size: clamp(var(--type-number-large), 3.2vw + 1rem, var(--type-display));
-  letter-spacing: -0.02em;
+  font-size: var(--web-h1);
+  line-height: 0.9;
 }
 
 h2 {
-  font-size: clamp(var(--type-title), 1.6vw + 1rem, var(--type-number-large));
+  font-size: var(--web-h3);
 }
 
 h3 {
-  font-size: clamp(var(--type-headline), 0.5vw + 0.95rem, var(--type-metric));
-  font-weight: var(--type-headline-weight);
+  font-size: var(--web-h4);
+}
+
+h4 {
+  font-size: var(--web-h5);
 }
 
 p {
@@ -91,16 +117,11 @@ p {
 
 a {
   color: inherit;
-  text-decoration-color: var(--text-tertiary);
+  text-decoration-color: currentColor;
   text-decoration-thickness: var(--hairline);
   text-underline-offset: 0.2em;
 }
 
-a:hover {
-  text-decoration-color: currentColor;
-}
-
-/* Emphasis in Bold: Inter ships in Regular and Bold here (D20). */
 strong {
   font-weight: 700;
   color: var(--text-primary);
@@ -128,11 +149,10 @@ hr {
   color: var(--on-accent);
 }
 
-/* Focus: Teal, always visible for keyboard users. */
+/* Focus: a 2 px ink ring, always visible for keyboard users. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 4px;
 }
 
 [hidden] {
@@ -157,10 +177,11 @@ hr {
   top: -100px;
   z-index: 100;
   padding: 10px 16px;
-  border-radius: 999px;
   background: var(--accent);
   color: var(--on-accent);
-  font-weight: var(--type-headline-weight);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   text-decoration: none;
 }
 

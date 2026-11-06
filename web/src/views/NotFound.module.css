@@ -1,19 +1,25 @@
 .wrap {
   display: grid;
-  gap: 16px;
-  padding-block: calc(var(--section-spacing) * 3);
+  gap: 20px;
+  padding-block: var(--section-y);
 }
 
 .code {
-  font-size: var(--type-display);
-  font-weight: var(--type-display-weight);
-  line-height: 1;
-  color: var(--text-tertiary);
+  font-size: var(--web-display);
+  font-weight: 700;
+  line-height: 0.8;
+  letter-spacing: var(--web-tracking-display);
+}
+
+.wrap h1 {
+  font-size: var(--web-h1);
 }
 
 .body {
+  max-width: 34rem;
   color: var(--text-secondary);
-  font-size: var(--type-headline);
+  font-size: var(--web-lead);
+  line-height: 1.3;
 }
 
 .actions {

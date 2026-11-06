@@ -1,12 +1,18 @@
 .header {
   display: grid;
-  gap: 18px;
+  gap: 24px;
   max-width: 46rem;
-  padding-block: calc(var(--section-spacing) * 2) calc(var(--section-spacing) * 2.5);
+  padding-block: var(--section-y) var(--section-y);
+}
+
+.header h1 {
+  font-size: var(--web-h1);
 }
 
 .lead {
-  font-size: var(--type-headline);
+  font-size: var(--web-lead);
+  line-height: 1.3;
+  letter-spacing: -0.02em;
   color: var(--text-secondary);
 }
 
@@ -19,39 +25,44 @@
 }
 
 .note {
-  font-size: var(--type-callout);
-  color: var(--text-tertiary);
+  font-size: var(--web-caption);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 .checks {
   display: grid;
-  gap: 12px;
   max-width: 46rem;
   margin: 0;
   padding: 0;
   list-style: none;
+  border-top: var(--hairline) solid var(--separator);
 }
 
 .checks li {
   display: grid;
-  grid-template-columns: 20px 1fr;
-  gap: 12px;
-  font-size: var(--type-headline);
+  grid-template-columns: 24px 1fr;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: var(--hairline) solid var(--separator);
+  font-size: var(--web-lead);
+  line-height: 1.3;
 }
 
 .checks li::before {
   content: '';
   width: 10px;
   height: 10px;
-  margin-top: 0.55em;
-  border-radius: 50%;
-  border: 2px solid var(--accent);
+  margin-top: 0.45em;
+  border: var(--hairline) solid var(--text-primary);
+  background: var(--text-primary);
 }
 
 .steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-  gap: 12px;
+  gap: 32px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -60,28 +71,28 @@
 .steps li {
   display: grid;
   align-content: start;
-  gap: 8px;
-  padding: var(--card-padding);
-  border-radius: var(--card-radius);
-  background: var(--surface);
+  gap: 12px;
+  padding-top: 20px;
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.steps h3 {
+  font-size: var(--web-h4);
 }
 
 .steps p {
-  font-size: var(--type-callout);
   color: var(--text-secondary);
 }
 
 .number {
-  font-size: var(--type-caption);
-  color: var(--accent);
+  font-size: var(--web-h2);
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: var(--web-tracking-display);
 }
 
 .privacy {
   max-width: 46rem;
   margin-top: 8px;
   color: var(--text-secondary);
-}
-
-.privacy a {
-  color: var(--accent);
 }

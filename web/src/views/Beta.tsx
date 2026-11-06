@@ -1,5 +1,5 @@
 import { PageShell } from '@/components/chrome';
-import { ButtonLink, Container, Label, Section, Todo } from '@/components/ui';
+import { ButtonLink, Container, Eyebrow, Section, Todo } from '@/components/ui';
 import { localePath, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
 import { SUPPORT_EMAIL, TESTFLIGHT_URL } from '@/lib/site';
@@ -25,7 +25,7 @@ export function BetaPage({ locale }: { locale: Locale }) {
     <PageShell locale={locale} path="/beta">
       <Container>
         <header className={styles.header}>
-          <Label tone="accent">{t.label}</Label>
+          <Eyebrow>{t.label}</Eyebrow>
           <h1>{t.heading}</h1>
           <p className={styles.lead}>{t.lead}</p>
           <div className={styles.actions}>

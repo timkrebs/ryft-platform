@@ -5,7 +5,7 @@
     'header header'
     'toc article';
   gap: 0 calc(var(--section-spacing) * 2.5);
-  padding-block: calc(var(--section-spacing) * 2) 0;
+  padding-block: var(--section-y) 0;
 }
 
 @media (max-width: 56rem) {
@@ -18,16 +18,22 @@
 .header {
   grid-area: header;
   display: grid;
-  gap: 14px;
+  gap: 20px;
   max-width: 46rem;
-  padding-bottom: calc(var(--section-spacing) * 1.5);
+  padding-bottom: calc(var(--section-spacing) * 2);
+}
+
+.header h1 {
+  font-size: var(--web-h1);
 }
 
 .meta {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--type-callout);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   color: var(--text-secondary);
 }
 
@@ -62,20 +68,22 @@
   gap: 10px;
   min-height: 32px;
   align-items: center;
-  color: var(--text-secondary);
-  font-size: var(--type-callout);
+  color: var(--text-primary);
+  font-size: var(--web-label);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   text-decoration: none;
   counter-increment: toc;
 }
 
 .toc a::before {
   content: counter(toc, decimal-leading-zero);
-  font-size: var(--type-caption);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 .toc a:hover {
-  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
 }
 
 .article {
@@ -93,7 +101,8 @@
   margin-top: calc(var(--section-spacing) * 2);
   padding: 14px 16px;
   border: var(--hairline) solid var(--separator);
-  border-radius: var(--tile-radius);
-  font-size: var(--type-callout);
+  font-size: var(--web-caption);
+  letter-spacing: var(--web-tracking-label);
+  text-transform: uppercase;
   color: var(--text-secondary);
 }

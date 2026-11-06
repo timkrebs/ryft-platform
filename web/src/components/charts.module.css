@@ -2,12 +2,14 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: fit-content;
+  width: 100%;
+  max-width: 220px;
   margin-inline: auto;
+  container-type: inline-size;
 }
 
 .gauge > svg {
-  width: min(220px, 60vw);
+  width: 100%;
   height: auto;
 }
 
@@ -37,27 +39,28 @@
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 6px;
+  gap: 3cqw;
   text-align: center;
 }
 
 .gaugeMark {
+  width: 11cqw;
+  height: 11cqw;
   color: var(--text-secondary);
-  margin-bottom: 2px;
 }
 
 .gaugeValue {
-  font-size: var(--type-display);
-  font-weight: var(--type-display-weight);
-  line-height: 1;
-  letter-spacing: -0.02em;
+  font-size: 26cqw;
+  font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: var(--web-tracking-display);
 }
 
 .gaugeLabel {
-  font-size: var(--type-label);
-  font-weight: var(--type-label-weight);
+  font-size: 4.5cqw;
+  font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  letter-spacing: var(--web-tracking-label);
   color: var(--text-secondary);
 }
 
@@ -99,11 +102,11 @@
 .annotation {
   fill: var(--text-primary);
   font-size: var(--type-caption);
-  font-weight: var(--type-label-weight);
+  font-weight: 700;
 }
 
 .icon-sleep {
-  color: var(--metric-sleep);
+  color: var(--text-primary);
 }
 
 .icon-recovery {
