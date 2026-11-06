@@ -8,6 +8,7 @@ variables {
 mock_provider "aws" {
   mock_data "aws_eks_cluster" {
     defaults = {
+      arn                   = "arn:aws:eks:eu-central-1:123456789012:cluster/ryft-prod-euc1"
       endpoint              = "https://mock.eks.eu-central-1.amazonaws.com"
       certificate_authority = [{ data = "bW9jaw==" }]
       vpc_config            = [{ vpc_id = "vpc-0123456789abcdef0" }]
@@ -52,6 +53,14 @@ mock_provider "aws" {
       arn = "arn:aws:iam::123456789012:policy/mock"
     }
   }
+  # infra/aws's unseal key (PR 1 of the Vault migration), found by its alias.
+  mock_data "aws_kms_alias" {
+    defaults = {
+      arn            = "arn:aws:kms:eu-central-1:123456789012:alias/ryft-prod-euc1-vault-unseal"
+      target_key_id  = "0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+      target_key_arn = "arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+    }
+  }
 }
 
 mock_provider "helm" {}
@@ -73,7 +82,10 @@ run "chart_versions_are_pinned" {
       helm_release.external_dns.version == "1.23.0" &&
       helm_release.vault_secrets_operator.version == "1.6.0" &&
       helm_release.fluent_bit.version == "0.2.0" &&
-      helm_release.argocd.version == "10.10.5"
+      helm_release.argocd.version == "10.10.5" &&
+      helm_release.vault.version == "0.34.1" &&
+      helm_release.vault.repository == "https://helm.releases.hashicorp.com" &&
+      helm_release.vault.chart == "vault"
     )
     error_message = "every chart must be pinned to the reviewed version"
   }
@@ -935,5 +947,457 @@ run "guard_catches_a_terminal_and_a_lax_respectrbac" {
   assert {
     condition     = strcontains(join(" ", output.violations), "exec.enabled is not false") && strcontains(join(" ", output.violations), "respectRBAC is not strict")
     error_message = "a terminal in the UI and a respectRBAC that is not strict must be caught"
+  }
+}
+
+# --- Vault Community Edition (vault.tf, iam.tf, charts/vault-extras; D186-D196) ---
+# The chart itself is mocked: these runs pin the values Helm gets. The render (Services, probes, securityContext
+# as the chart writes them) is checked with helm template of the same values; the pods under Pod Security
+# restricted only in kind.
+
+run "vault_is_the_pinned_community_image_with_three_raft_replicas" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.image.repository == "docker.io/hashicorp/vault" &&
+      yamldecode(helm_release.vault.values[0]).server.image.tag == "2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2"
+    )
+    error_message = "Vault CE 2.2.1, pinned by its multi-arch index digest, from docker.io/hashicorp/vault (the reference admission P2 allows)"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.ha.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).server.ha.replicas == 3 &&
+      yamldecode(helm_release.vault.values[0]).server.ha.raft.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).server.standalone.enabled == false
+    )
+    error_message = "three replicas with integrated storage (Raft), one per node"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).injector.enabled == false && yamldecode(helm_release.vault.values[0]).csi.enabled == false
+    error_message = "no agent injector (no webhook) and no CSI provider (no DaemonSet): VSO syncs the Secrets"
+  }
+  assert {
+    condition     = helm_release.vault.namespace == "vault" && kubernetes_namespace_v1.vault.metadata[0].name == "vault" && helm_release.vault_extras.namespace == "vault"
+    error_message = "Vault and its extras live in namespace vault"
+  }
+}
+
+run "vault_config_has_mlock_off_the_kms_seal_tls_reload_and_metrics" {
+  command = plan
+
+  assert {
+    condition     = strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "disable_mlock = true")
+    error_message = "disable_mlock = true is required with Raft (Vault refuses to start without it) and lets the pod run without IPC_LOCK"
+  }
+  assert {
+    condition = (
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "seal \"awskms\" {") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "region     = \"eu-central-1\"") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "kms_key_id = \"arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b\"") &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "alias/")
+    )
+    error_message = "the awskms seal names the key's ARN from the alias (never the alias itself, which can be re-pointed) and the region (not left to the injected AWS_REGION)"
+  }
+  assert {
+    condition = alltrue([for w in ["access_key", "secret_key", "session_token", "shared_creds", "role_arn", "web_identity_token_file"] :
+    !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, w)])
+    error_message = "no static or IRSA credentials in the seal: Pod Identity only"
+  }
+  assert {
+    condition = (
+      length([for k in keys(yamldecode(helm_release.vault.values[0]).server.extraEnvironmentVars) : k if startswith(k, "AWS_")]) == 0 &&
+      !can(yamldecode(helm_release.vault.values[0]).server.serviceAccount.annotations) &&
+      !can(yamldecode(helm_release.vault.values[0]).server.extraSecretEnvironmentVars) &&
+      !can(yamldecode(helm_release.vault.values[0]).server.extraVolumes)
+    )
+    error_message = "no AWS_* variable, no IRSA annotation on the service account, no secret env, no extra volumes (the draft's kms-creds): anything earlier in the SDK's chain would win over Pod Identity"
+  }
+  assert {
+    condition = (
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "tls_reload_interval = \"5m\"") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "tls_cert_file       = \"/vault/userconfig/vault-tls/tls.crt\"") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "unauthenticated_metrics_access = true") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "service_registration \"kubernetes\" {}") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "prometheus_retention_time = \"2m\"")
+    )
+    error_message = "the listener reloads renewed certificates (5m), serves metrics without a token, and service_registration labels the active pod (vault-active has endpoints only with it)"
+  }
+  assert {
+    condition = (
+      length(regexall("retry_join \\{", yamldecode(helm_release.vault.values[0]).server.ha.raft.config)) == 3 &&
+      alltrue([for i in range(3) : strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "leader_api_addr     = \"https://vault-${i}.vault-internal:8200\"")]) &&
+      length(regexall("leader_ca_cert_file = \"/vault/userconfig/vault-tls/ca.crt\"", yamldecode(helm_release.vault.values[0]).server.ha.raft.config)) == 3 &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "leader_client_")
+    )
+    error_message = "one retry_join per pod, trusting the ryft-vault CA, without the draft's client certificate (the listener requires none)"
+  }
+  assert {
+    condition     = alltrue([for w in ["HOSTNAME", "POD_IP", "HOST_IP", "API_ADDR", "TRANSIT_ADDR", "RAFT_ADDR"] : !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, w)])
+    error_message = "the chart's start script replaces these words everywhere in the config"
+  }
+  # The listener block alone (from `listener "tcp" {` to the first `}` in column 0): the metrics setting is the
+  # listener's, a top-level telemetry block with it would not open the endpoint.
+  assert {
+    condition = (
+      length(regexall("(?s)\\nlistener \"tcp\" \\{\\n.*?\\n\\}\\n", yamldecode(helm_release.vault.values[0]).server.ha.raft.config)) == 1 &&
+      can(regex("(?s)\\n  telemetry \\{\\n    unauthenticated_metrics_access = true\\n  \\}\\n", regex("(?s)\\nlistener \"tcp\" \\{\\n.*?\\n\\}\\n", yamldecode(helm_release.vault.values[0]).server.ha.raft.config))) &&
+      strcontains(regex("(?s)\\nlistener \"tcp\" \\{\\n.*?\\n\\}\\n", yamldecode(helm_release.vault.values[0]).server.ha.raft.config), "tls_key_file        = \"/vault/userconfig/vault-tls/tls.key\"") &&
+      strcontains(regex("(?s)\\nlistener \"tcp\" \\{\\n.*?\\n\\}\\n", yamldecode(helm_release.vault.values[0]).server.ha.raft.config), "tls_min_version     = \"tls12\"") &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "tls_disable")
+    )
+    error_message = "one TLS listener: the vault-tls key and certificate, TLS 1.2 or later, and unauthenticated_metrics_access inside its telemetry block"
+  }
+  assert {
+    condition = (
+      startswith(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "ui            = true\ndisable_mlock = true\ncluster_name  = \"vault-integrated-storage\"\n") &&
+      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "storage \"raft\" {\n  path = \"/vault/data\"\n")
+    )
+    error_message = "the UI on, the cluster name, and Raft on the data volume (/vault/data, the chart's dataStorage mount)"
+  }
+}
+
+run "vault_server_values_are_pinned_field_by_field" {
+  command = plan
+
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).global.enabled == true && yamldecode(helm_release.vault.values[0]).global.tlsDisable == false
+    error_message = "global.tlsDisable false: the chart probes and the in-pod VAULT_ADDR use https"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.ha.apiAddr == "https://$(VAULT_K8S_POD_NAME).vault-internal.vault.svc:8200"
+    error_message = "each pod advertises its name under the headless Service (on the certificate); VAULT_K8S_POD_NAME is defined before VAULT_API_ADDR, HOSTNAME after it (which would not expand)"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.ha.raft.setNodeId == true
+    error_message = "the Raft node ID is the pod name, so remove-peer names a pod"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.serviceAccount.serviceDiscovery.enabled == false
+    error_message = "the chart's discovery Role (every pod in the namespace) is off; vault-extras has one limited to the server pods"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.authDelegator.enabled == true
+    error_message = "Vault reviews VSO's tokens as itself (system:auth-delegator, D187)"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.dataStorage.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).ui.enabled == true
+    )
+    error_message = "a data volume per pod (Raft), and the UI Service"
+  }
+  assert {
+    condition = (
+      one([for v in yamldecode(helm_release.vault.values[0]).server.volumes : v.secret.defaultMode if v.name == "vault-tls"]) == 288 &&
+      yamldecode(helm_release.vault.values[0]).server.extraEnvironmentVars == { VAULT_CACERT = "/vault/userconfig/vault-tls/ca.crt" }
+    )
+    error_message = "the TLS Secret mounted 0440 (group fsGroup), and VAULT_CACERT the only extra variable"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.terminationGracePeriodSeconds == 30
+    error_message = "30 s for the step-down and the Raft leave (the chart's default is 10)"
+  }
+  assert {
+    condition = yamldecode(helm_release.vault.values[0]).server.topologySpreadConstraints == [{
+      maxSkew           = 1
+      minDomains        = 3
+      topologyKey       = "topology.kubernetes.io/zone"
+      whenUnsatisfiable = "DoNotSchedule"
+      labelSelector     = { matchLabels = { "app.kubernetes.io/name" = "vault", "app.kubernetes.io/instance" = "vault", component = "server" } }
+    }]
+    error_message = "one server pod per zone (the EBS volume pins each pod's zone): maxSkew 1, minDomains 3 (with two zones the third pod stays Pending instead of 2+1), DoNotSchedule, the server pods only"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.topologySpreadConstraints[0].minDomains == yamldecode(helm_release.vault.values[0]).server.ha.replicas
+    error_message = "minDomains follows the replicas: every pod needs a zone of its own"
+  }
+}
+
+run "vault_is_reachable_inside_the_cluster_only" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).ui.serviceType == "ClusterIP" &&
+      yamldecode(helm_release.vault.values[0]).server.ingress.enabled == false &&
+      yamldecode(helm_release.vault.values[0]).server.route.enabled == false &&
+      !strcontains(helm_release.vault.values[0], "LoadBalancer") && !strcontains(helm_release.vault.values[0], "NodePort")
+    )
+    error_message = "the UI and the API through the port-forward only: ClusterIP, no Ingress, no LoadBalancer (the draft's public NLB)"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.service.publishNotReadyAddresses == false && yamldecode(helm_release.vault.values[0]).ui.publishNotReadyAddresses == false
+    error_message = "the vault, vault-active, vault-standby and vault-ui Services publish ready pods only (a sealed pod gets no traffic)"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.networkPolicy.enabled == false
+    error_message = "the chart's own policy admits 8200/8201 from every namespace; charts/vault-extras has the default deny"
+  }
+  assert {
+    condition     = output.vault_address_in_cluster == "https://vault.vault.svc:8200" && output.vault_port_forward_command == "kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200"
+    error_message = "the in-cluster address and the port-forward command (with the context spelt out)"
+  }
+}
+
+run "vault_probes_are_lenient_alive_and_strict_ready" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.readinessProbe.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).server.readinessProbe.path == "/v1/sys/health?standbyok=true"
+    )
+    error_message = "ready = initialised, unsealed, active or standby (D196): a sealed or uninitialised pod is not ready"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.livenessProbe.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).server.livenessProbe.path == "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204&haunhealthycode=204&removedcode=204" &&
+      yamldecode(helm_release.vault.values[0]).server.livenessProbe.initialDelaySeconds == 60 &&
+      yamldecode(helm_release.vault.values[0]).server.livenessProbe.periodSeconds == 5 &&
+      yamldecode(helm_release.vault.values[0]).server.livenessProbe.failureThreshold == 6
+    )
+    error_message = "alive = any answer: sealed, uninitialised, a standby on a heartbeat gap (474) and a removed node (530) included; 6 x 5 s of silence before a restart"
+  }
+  assert {
+    condition     = !strcontains(yamldecode(helm_release.vault.values[0]).server.readinessProbe.path, "code=")
+    error_message = "readiness overrides no status code: sealed, uninitialised, 474 and 530 are not ready"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.ha.disruptionBudget.enabled == false
+    error_message = "the chart's PDB is off (it can only say maxUnavailable and keeps the default unhealthy-pod policy); vault-extras has the budget"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).replicas == yamldecode(helm_release.vault.values[0]).server.ha.replicas &&
+      strcontains(file("${path.module}/charts/vault-extras/templates/pdb.yaml"), "  minAvailable: {{ add (div $replicas 2) 1 }}\n") &&
+      strcontains(file("${path.module}/charts/vault-extras/templates/pdb.yaml"), "  unhealthyPodEvictionPolicy: AlwaysAllow\n")
+    )
+    error_message = "vault-extras' PDB keeps the quorum (minAvailable 2 of 3) and lets unready pods go (AlwaysAllow); the render is pinned by scripts/tests/vault_extras_chart_test.sh"
+  }
+}
+
+run "vault_pod_is_pod_security_restricted" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.pod.runAsNonRoot == true &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.pod.runAsUser == 100 &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.pod.runAsGroup == 1000 &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.pod.fsGroup == 1000 &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.pod.seccompProfile.type == "RuntimeDefault"
+    )
+    error_message = "the pod context replaces the chart's entirely: non-root (vault, 100), group 1000, RuntimeDefault seccomp"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.container.allowPrivilegeEscalation == false &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.container.readOnlyRootFilesystem == true &&
+      yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.container.capabilities.drop == ["ALL"] &&
+      !can(yamldecode(helm_release.vault.values[0]).server.statefulSet.securityContext.container.capabilities.add)
+    )
+    error_message = "no privilege escalation, a read-only root filesystem, every capability dropped and none added (no IPC_LOCK)"
+  }
+  assert {
+    condition = (
+      contains([for v in yamldecode(helm_release.vault.values[0]).server.volumes : v.name if try(v.emptyDir.medium, "") == "Memory"], "tmp") &&
+      contains([for m in yamldecode(helm_release.vault.values[0]).server.volumeMounts : m.mountPath if m.name == "tmp"], "/tmp") &&
+      contains([for v in yamldecode(helm_release.vault.values[0]).server.volumes : v.name if try(v.secret.secretName, "") == "vault-tls"], "vault-tls") &&
+      contains([for m in yamldecode(helm_release.vault.values[0]).server.volumeMounts : m.mountPath if m.name == "vault-tls" && try(m.readOnly, false)], "/vault/userconfig/vault-tls")
+    )
+    error_message = "/tmp is an emptyDir (the start script writes the config there) and the TLS Secret is a whole-directory read-only mount (no subPath, so renewals arrive)"
+  }
+  assert {
+    condition = (
+      kubernetes_namespace_v1.vault.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" &&
+      kubernetes_namespace_v1.vault.metadata[0].labels["pod-security.kubernetes.io/warn"] == "restricted" &&
+      kubernetes_namespace_v1.vault.metadata[0].labels["pod-security.kubernetes.io/audit"] == "restricted" &&
+      length([for k, v in kubernetes_namespace_v1.vault.metadata[0].labels : k if endswith(k, "-version")]) == 0
+    )
+    error_message = "namespace vault is Pod Security restricted on enforce, warn and audit (versions absent = latest, as P1 wants)"
+  }
+}
+
+run "vault_resources_and_storage" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.resources.requests.cpu == "100m" &&
+      yamldecode(helm_release.vault.values[0]).server.resources.requests.memory == "256Mi" &&
+      yamldecode(helm_release.vault.values[0]).server.resources.limits.memory == "512Mi" &&
+      !can(yamldecode(helm_release.vault.values[0]).server.resources.limits.cpu) &&
+      !can(yamldecode(helm_release.vault.values[0]).global.resources)
+    )
+    error_message = "100m / 256Mi requested, 512Mi memory limit, no CPU limit; no global.resources (not a chart key)"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault.values[0]).server.dataStorage.storageClass == "gp3-encrypted" &&
+      yamldecode(helm_release.vault.values[0]).server.dataStorage.size == "10Gi" &&
+      yamldecode(helm_release.vault.values[0]).server.auditStorage.enabled == true &&
+      yamldecode(helm_release.vault.values[0]).server.auditStorage.storageClass == "gp3-encrypted" &&
+      yamldecode(helm_release.vault.values[0]).server.auditStorage.size == "5Gi" &&
+      yamldecode(helm_release.vault.values[0]).server.persistentVolumeClaimRetentionPolicy.whenDeleted == "Retain" &&
+      yamldecode(helm_release.vault.values[0]).server.persistentVolumeClaimRetentionPolicy.whenScaled == "Retain"
+    )
+    error_message = "data 10Gi and audit 5Gi on the encrypted class, named explicitly (the field is immutable, D26); PVCs outlive the StatefulSet"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.updateStrategyType == "OnDelete"
+    error_message = "an apply restarts no Vault pod: upgrades are one pod at a time, by hand"
+  }
+}
+
+run "vault_release_does_not_wait_and_starts_after_its_identity" {
+  command = plan
+
+  assert {
+    condition     = helm_release.vault.wait == false
+    error_message = "an uninitialised Vault is not ready by design: waiting would fail every first apply (D188)"
+  }
+  # depends_on and lifecycle are not visible to an assertion: read them from the source, within each resource's own
+  # block, with every comment removed first (a commented-out line must not satisfy them).
+  assert {
+    condition = (
+      length(regexall("(?s)resource \"helm_release\" \"vault\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))) == 1 &&
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*module\\.vault_unseal_pod_identity[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", ""))) &&
+      can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.vault_extras[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
+    )
+    error_message = "helm_release.vault depends on the unseal pod identity association (credentials are injected at pod creation only) and on the extras (the TLS Secret and the default deny before the first pod)"
+  }
+  assert {
+    condition     = can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.cluster_issuers[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault_extras\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
+    error_message = "the extras' Certificates need the ryft-vault ClusterIssuer first"
+  }
+  assert {
+    condition = alltrue([for r in ["kubernetes_namespace_v1\" \"vault", "helm_release\" \"vault_extras", "helm_release\" \"vault"] :
+      can(regex("(?s)lifecycle \\{\\s*prevent_destroy\\s*=\\s*true\\n", replace(regex("(?s)resource \"${r}\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
+    ])
+    error_message = "prevent_destroy on namespace vault and both releases: removing them is a separate, reviewed change"
+  }
+  assert {
+    condition     = length(helm_release.vault.values) == 1 && helm_release.vault.set == null && helm_release.vault.set_sensitive == null
+    error_message = "one values document and no set: what the tests read is what Helm gets"
+  }
+}
+
+run "vault_unseal_role_may_only_use_its_key" {
+  command = plan
+
+  assert {
+    condition = (
+      length(local.vault_unseal_policy_statements) == 1 &&
+      toset(local.vault_unseal_policy_statements[0].actions) == toset(["kms:Encrypt", "kms:Decrypt", "kms:DescribeKey"]) &&
+      length(local.vault_unseal_policy_statements[0].actions) == 3 &&
+      local.vault_unseal_policy_statements[0].resources == ["arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"]
+    )
+    error_message = "the unseal role may Encrypt, Decrypt and DescribeKey on the unseal key's ARN, nothing else"
+  }
+  assert {
+    condition     = data.aws_kms_alias.vault_unseal.name == "alias/ryft-prod-euc1-vault-unseal"
+    error_message = "the key is infra/aws's, found by the alias PR 1 creates (alias/<cluster>-vault-unseal)"
+  }
+  assert {
+    condition = (
+      module.vault_unseal_pod_identity.associations["vault"].namespace == "vault" &&
+      module.vault_unseal_pod_identity.associations["vault"].service_account == "vault" &&
+      module.vault_unseal_pod_identity.associations["vault"].cluster_name == "ryft-prod-euc1" &&
+      length(module.vault_unseal_pod_identity.associations) == 1 &&
+      yamldecode(helm_release.vault.values[0]).server.serviceAccount.name == "vault"
+    )
+    error_message = "one association, to exactly vault/vault: the service account the chart creates for the server"
+  }
+  assert {
+    condition = local.vault_unseal_trust_conditions == [
+      { test = "StringEquals", variable = "aws:RequestTag/kubernetes-namespace", values = ["vault"] },
+      { test = "StringEquals", variable = "aws:RequestTag/kubernetes-service-account", values = ["vault"] },
+      { test = "StringEquals", variable = "aws:RequestTag/eks-cluster-arn", values = ["arn:aws:eks:eu-central-1:123456789012:cluster/ryft-prod-euc1"] },
+    ]
+    error_message = "the trust policy requires Pod Identity's session tags for vault/vault in this cluster, so another association of the role (another service account, another cluster) cannot assume it"
+  }
+  # The module's input is not an output: read it from iam.tf, within the module's own block, comments removed.
+  assert {
+    condition     = can(regex("\\n  trust_policy_conditions\\s*=\\s*local\\.vault_unseal_trust_conditions\\n", replace(regex("(?s)module \"vault_unseal_pod_identity\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/iam.tf"))[0], "/(?m)#.*$/", "")))
+    error_message = "module.vault_unseal_pod_identity gets the trust conditions"
+  }
+}
+
+run "unseal_key_in_another_region_fails_the_plan" {
+  command = plan
+
+  override_data {
+    target = data.aws_kms_alias.vault_unseal
+    values = {
+      target_key_arn = "arn:aws:kms:us-east-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+    }
+  }
+
+  expect_failures = [helm_release.vault]
+}
+
+run "unseal_key_in_another_account_fails_the_plan" {
+  command = plan
+
+  override_data {
+    target = data.aws_kms_alias.vault_unseal
+    values = {
+      target_key_arn = "arn:aws:kms:eu-central-1:210987654321:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+    }
+  }
+
+  expect_failures = [helm_release.vault]
+}
+
+run "vault_extras_peers_are_off_and_the_role_names_the_pods" {
+  command = plan
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false &&
+      yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.vso.enabled == false &&
+      yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.collector.enabled == false
+    )
+    error_message = "no ingress from VSO or the collector until the change that needs it (the chart's default and vault.tf's both say off)"
+  }
+  assert {
+    condition = (
+      strcontains(file("${path.module}/charts/vault-extras/templates/rbac.yaml"), "    verbs: [get, update, patch]\n") &&
+      strcontains(file("${path.module}/charts/vault-extras/templates/rbac.yaml"), "      - vault-{{ $i }}\n")
+    )
+    error_message = "the service-registration Role names the server pods and grants get, update and patch only"
+  }
+}
+
+run "vault_server_certificate_names_every_service_and_pod" {
+  command = plan
+
+  assert {
+    condition = yamldecode(helm_release.vault_extras.values[0]).tls.dnsNames == [
+      "vault", "vault.vault", "vault.vault.svc", "vault.vault.svc.cluster.local",
+      "vault-active", "vault-active.vault.svc", "vault-active.vault.svc.cluster.local",
+      "vault-standby", "vault-standby.vault.svc",
+      "vault-internal", "vault-internal.vault.svc",
+      "vault-0.vault-internal", "vault-1.vault-internal", "vault-2.vault-internal",
+      "vault-0.vault-internal.vault.svc", "vault-1.vault-internal.vault.svc", "vault-2.vault-internal.vault.svc",
+      "localhost",
+    ]
+    error_message = "the server certificate carries the design's DNS name list (section 4)"
+  }
+  assert {
+    condition     = length([for n in yamldecode(helm_release.vault_extras.values[0]).tls.dnsNames : n if can(regex("^vault-[0-9]+\\.vault-internal$", n))]) == yamldecode(helm_release.vault.values[0]).server.ha.replicas
+    error_message = "one vault-N.vault-internal name per replica: retry_join reaches each peer by it"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault_extras.values[0]).tls.ipAddresses == ["127.0.0.1"] && yamldecode(helm_release.vault_extras.values[0]).vpcCIDR == "10.0.0.0/16"
+    error_message = "127.0.0.1 for the port-forward and the in-pod CLI; the VPC range for the API server egress"
+  }
+  assert {
+    condition     = yamldecode(file("${path.module}/charts/cluster-issuers/values.yaml")).vaultCA.enabled == true && strcontains(file("${path.module}/charts/cluster-issuers/templates/vault-ca.yaml"), "name: ryft-vault\n")
+    error_message = "the cluster-issuers chart renders the ClusterIssuer ryft-vault by default"
   }
 }

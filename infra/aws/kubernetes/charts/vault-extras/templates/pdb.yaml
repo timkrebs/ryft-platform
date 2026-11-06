@@ -1,0 +1,25 @@
+{{- /*
+The server's disruption budget (the chart's own is off in vault.tf: it can only say maxUnavailable). minAvailable 2
+of 3 keeps the Raft quorum through any voluntary eviction (a drain, a node rotation).
+
+unhealthyPodEvictionPolicy AlwaysAllow, as on web, api and the import service: a pod that is not Ready may always be
+evicted, so a sealed or uninitialised Vault (every pod before the init; readiness is strict) never blocks a drain
+forever. The trade-off: an unsealed voter that flaps NotReady can be evicted while another pod is already down, and
+the quorum then rests on the third. Before the init no pod is Ready, so the budget allows no healthy eviction and the
+unhealthy ones may all go at once (nothing is stored yet).
+*/}}
+{{- $replicas := int (required "replicas is required" .Values.replicas) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vault-server
+  namespace: {{ .Release.Namespace }}
+spec:
+  # The Raft quorum: 2 of 3.
+  minAvailable: {{ add (div $replicas 2) 1 }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+      app.kubernetes.io/instance: vault
+      component: server

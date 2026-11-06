@@ -103,6 +103,9 @@ jobs:
             manifests:
               - 'deploy/**'
               - 'infra/vault/**'
+              # rendered by scripts/tests/vault_extras_chart_test.sh (the Terraform tests mock Helm)
+              - 'infra/aws/kubernetes/charts/vault-extras/**'
+              - 'infra/aws/kubernetes/charts/cluster-issuers/**'
               - 'scripts/**'
               - 'Makefile'
               - '.github/**'
@@ -368,6 +371,11 @@ jobs:
       # the version and the checksum; `smoke` installs it the same way for the script tests).
       - run: ./scripts/install_yq.sh
       - run: make k8s-validate
+      # The Vault add-on's local charts as Helm renders them (vault-extras' policies, PDB and Role, the ryft-vault
+      # issuer), with yq and kubeconform: what tests/addons.tftest.hcl cannot see behind the mocked Helm provider.
+      # Helm pinned and checked as in `admission`; the script fails here (GITHUB_JOB=manifests) instead of skipping.
+      - run: ./scripts/install_helm.sh
+      - run: bash scripts/tests/vault_extras_chart_test.sh
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the

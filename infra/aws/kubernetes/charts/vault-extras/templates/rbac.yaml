@@ -1,0 +1,37 @@
+{{- /*
+service_registration "kubernetes" (vault.tf): every server labels its own pod (vault-active, vault-sealed,
+vault-initialized, vault-perf-standby, vault-version), which the vault-active and vault-standby Services select on.
+The chart's discovery Role (server.serviceAccount.serviceDiscovery, off in vault.tf) grants get, watch, list, update
+and patch on every pod in the namespace; this one names the server pods and drops watch and list, which the client
+never calls (it reads and patches its own pod by name, VAULT_K8S_POD_NAME). The verbs are the Vault docs' list for
+Kubernetes service registration (get, update, patch).
+*/}}
+{{- $replicas := int (required "replicas is required" .Values.replicas) }}
+{{- if lt $replicas 1 }}{{ fail "replicas must be at least 1" }}{{ end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-service-registration
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames:
+      {{- range $i := until $replicas }}
+      - vault-{{ $i }}
+      {{- end }}
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-service-registration
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vault-service-registration
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: {{ .Release.Namespace }}
