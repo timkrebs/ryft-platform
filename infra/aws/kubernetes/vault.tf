@@ -12,8 +12,9 @@
 # restarts nothing (delete a standby, wait for it to rejoin and unseal, then the next; the active one last).
 #
 # Two releases: helm_release.vault_extras (charts/vault-extras: the server Certificate vault-tls, the inert
-# Certificate vault-ca whose ca.crt the operator's CLI trusts, the NetworkPolicies) first, so the TLS Secret and
-# the default-deny exist before the first pod; then the upstream chart.
+# Certificate vault-ca whose ca.crt the operator's CLI trusts, the NetworkPolicies, the PodDisruptionBudget and the
+# service-registration Role) first, so the TLS Secret and the default-deny exist before the first pod; then the
+# upstream chart.
 
 locals {
   vault_namespace       = "vault"
@@ -59,7 +60,10 @@ locals {
   # (precondition below).
   #  - disable_mlock: required with Raft since 1.20, and the 2.0.2+ image has no IPC_LOCK; Pod Security restricted.
   #  - listener: TLS only; tls_reload_interval (2.2.0+) reloads a renewed certificate; /v1/sys/metrics without a
-  #    token on every node (D194), reachable only from the cluster collector (charts/vault-extras NetworkPolicy).
+  #    token on every node (D194). The NetworkPolicy admits selected peers only (charts/vault-extras), but traffic
+  #    from the node's address (host-network pods such as the privileged alloy-daemonset, the kubelet) is likely
+  #    admitted by the VPC CNI regardless: the metrics are not secret, and nothing else on 8200 is unauthenticated
+  #    once Vault is initialised (design section 6).
   #  - retry_join: one block per pod, trusting the ryft-vault CA; no client certificate (the listener asks none).
   #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set because Pod
   #    Identity injects no AWS_REGION; no credentials of any kind (the SDK's default chain finds Pod Identity's).
@@ -102,8 +106,18 @@ locals {
     }
   HCL
 
+  # /v1/sys/health answers 200 active, 429 standby (200 with standbyok), 501 uninitialised, 503 sealed, 474 a
+  # standby that cannot reach the active node, 530 a node removed from the Raft cluster. Ready: only a serving
+  # node. Alive: any answer at all; restarting a standby on a heartbeat gap (474) or a removed node (530) helps
+  # nothing and costs a rejoin.
   vault_health_ready = "/v1/sys/health?standbyok=true"
-  vault_health_alive = "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+  vault_health_alive = "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204&haunhealthycode=204&removedcode=204"
+
+  vault_server_selector = {
+    "app.kubernetes.io/name"     = "vault"
+    "app.kubernetes.io/instance" = "vault"
+    "component"                  = "server"
+  }
 
   vault_values = {
     global = {
@@ -127,10 +141,11 @@ locals {
         limits   = { memory = "512Mi" }
       }
 
-      # Ready = initialised, unsealed, active or standby; the Service and the PDB count only those (D196). Alive =
+      # Ready = initialised, unsealed, active or standby; the Services and the PDB count only those (D196). Alive =
       # the process answers at all, sealed and uninitialised included, so a pod waiting for its init or for KMS is
-      # not killed. The chart has no startupProbe for the server; the delay covers the start. Liveness allows 30 s
-      # of silence (the chart's 2 x 5 s would kill a leader on a CPU-starved node, and cost an election).
+      # not killed, nor a standby on a heartbeat gap (474) or a removed node (530). The chart has no startupProbe
+      # for the server; the delay covers the start. Liveness allows 6 x 5 s = 30 s of silence (the chart's 2 x 5 s
+      # would kill a leader on a CPU-starved node, and cost an election).
       readinessProbe = {
         enabled = true
         path    = local.vault_health_ready
@@ -139,6 +154,7 @@ locals {
         enabled             = true
         path                = local.vault_health_alive
         initialDelaySeconds = 60
+        periodSeconds       = 5
         failureThreshold    = 6
       }
 
@@ -179,6 +195,19 @@ locals {
 
       updateStrategyType = "OnDelete"
 
+      # Time for a step-down and a clean Raft leave after the preStop's SIGTERM (the chart's 10 s is tight).
+      terminationGracePeriodSeconds = 30
+
+      # One pod per zone as well as per node (the chart's required hostname anti-affinity stays): an EBS volume is
+      # zonal, so a pod's zone is fixed for good by its first PVC, and two pods in one zone would lose the quorum
+      # with that zone. DoNotSchedule: a pod stays Pending rather than share a zone.
+      topologySpreadConstraints = [{
+        maxSkew           = 1
+        topologyKey       = "topology.kubernetes.io/zone"
+        whenUnsatisfiable = "DoNotSchedule"
+        labelSelector     = { matchLabels = local.vault_server_selector }
+      }]
+
       # Pod Security restricted. A map here replaces the chart's default context entirely, so all of it is spelt out.
       statefulSet = {
         securityContext = {
@@ -211,10 +240,12 @@ locals {
 
       # The service account the pod identity association names. No annotations: an eks.amazonaws.com/role-arn
       # would put IRSA ahead of Pod Identity in the SDK's chain.
+      # The chart's discovery Role (get/list/watch/update/patch on every pod in the namespace) is off; vault-extras
+      # has a Role limited to the server pods by name with what service_registration "kubernetes" calls.
       serviceAccount = {
         create           = true
         name             = local.vault_service_account
-        serviceDiscovery = { enabled = true } # the Role service_registration "kubernetes" needs
+        serviceDiscovery = { enabled = false }
       }
       # ClusterRoleBinding vault-server-binding -> system:auth-delegator: Vault reviews the service account tokens
       # VSO logs in with (TokenReview), as itself; no reviewer JWT (D187).
@@ -227,17 +258,16 @@ locals {
         # The address standbys advertise: the pod's name under the headless Service, which the certificate carries
         # (the chart's default is the pod IP, which it does not). VAULT_K8S_POD_NAME, because the chart defines it
         # before VAULT_API_ADDR (HOSTNAME comes after, and $(VAR) expands only earlier variables).
-        apiAddr = "https://$(VAULT_K8S_POD_NAME).vault-internal:8200"
+        apiAddr = "https://$(VAULT_K8S_POD_NAME).vault-internal.vault.svc:8200"
         raft = {
           enabled   = true
           setNodeId = true
           config    = local.vault_config
         }
-        # One pod at a time: 2 of 3 keep the Raft quorum. With strict readiness a sealed pod counts as down, so a
-        # drain cannot take a second node while one is sealed (D196).
+        # Off: the chart's PDB uses the default unhealthy-pod policy, so before the init (every pod unready) it
+        # would block every node drain. charts/vault-extras has the PDB (minAvailable 2, AlwaysAllow, D196).
         disruptionBudget = {
-          enabled        = true
-          maxUnavailable = 1
+          enabled = false
         }
       }
     }
@@ -255,16 +285,34 @@ locals {
   vault_config_placeholders = ["HOSTNAME", "POD_IP", "HOST_IP", "API_ADDR", "TRANSIT_ADDR", "RAFT_ADDR"]
   vault_aws_credential_env  = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]
 
+  # The optional peers stay off until the change that needs them: VSO with the first cutover (until then nothing
+  # but the operator's port-forward needs the API, and before the init PUT /v1/sys/init is unauthenticated), the
+  # collector with the scrape (D194).
   vault_extras_values = {
-    vpcCIDR = var.vpc_cidr
+    vpcCIDR  = var.vpc_cidr
+    replicas = local.vault_replicas
     tls = {
       dnsNames    = local.vault_dns_names
       ipAddresses = ["127.0.0.1"]
     }
+    peers = {
+      vso       = { enabled = false }
+      collector = { enabled = false }
+    }
   }
+
+  # The key the alias resolves to must be a key of this account in this region (a precondition below). Once
+  # infra/aws's key exists its key ID can be pinned here as well, so a re-pointed alias fails the plan instead of
+  # moving the seal.
+  vault_unseal_key_arn_pattern = "^arn:aws[a-z-]*:kms:${var.region}:${local.account_id}:key/[0-9a-f-]+$"
 }
 
-# Pod Security restricted on all three modes (D120's P1 extends to `vault` in the admission chart).
+# prevent_destroy on the namespace and both releases: deleting the namespace deletes the PVCs (the EBS volumes stay,
+# Released), and destroying or replacing the extras removes default-deny and vault-server, which leaves the server
+# pods without any policy, i.e. open both ways. A deliberate removal is two reviewed steps: a PR that deletes the
+# three `prevent_destroy = true` lines (and nothing else), applied; then the PR that removes the resources.
+
+# Pod Security restricted on all three modes (the admission chart's P1 is to extend to `vault`, D195).
 resource "kubernetes_namespace_v1" "vault" {
   metadata {
     name = local.vault_namespace
@@ -273,6 +321,10 @@ resource "kubernetes_namespace_v1" "vault" {
       "pod-security.kubernetes.io/warn"    = "restricted"
       "pod-security.kubernetes.io/audit"   = "restricted"
     }
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
@@ -285,6 +337,10 @@ resource "helm_release" "vault_extras" {
 
   # The ClusterIssuer ryft-vault (charts/cluster-issuers) signs the Certificates.
   depends_on = [helm_release.cluster_issuers]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "helm_release" "vault" {
@@ -305,6 +361,14 @@ resource "helm_release" "vault" {
   depends_on = [module.vault_unseal_pod_identity, helm_release.vault_extras]
 
   lifecycle {
+    prevent_destroy = true
+
+    # The alias must resolve to a key of this account in this region: otherwise the seal stanza would name a key
+    # Vault cannot use and every pod would stay sealed (an error of plan and apply, not a warning).
+    precondition {
+      condition     = can(regex(local.vault_unseal_key_arn_pattern, data.aws_kms_alias.vault_unseal.target_key_arn))
+      error_message = "alias/${var.cluster_name}-vault-unseal does not point at a KMS key of this account in ${var.region}: the seal stanza would name a key Vault cannot use, and every pod would stay sealed."
+    }
     precondition {
       condition     = alltrue([for w in local.vault_config_placeholders : !strcontains(local.vault_config, w)])
       error_message = "The Vault config contains one of ${join(", ", local.vault_config_placeholders)}: the chart's start script replaces those words everywhere in it."
@@ -326,13 +390,5 @@ resource "helm_release" "vault" {
       condition     = local.vault_values.ui.serviceType == "ClusterIP" && !strcontains(jsonencode(local.vault_values), "LoadBalancer") && !strcontains(jsonencode(local.vault_values), "NodePort")
       error_message = "Vault is reached through the port-forward only: no LoadBalancer or NodePort Service."
     }
-  }
-}
-
-# Misconfiguration that would only show once a pod tries to unseal: the key in another region or account.
-check "vault_unseal_key" {
-  assert {
-    condition     = can(regex("^arn:aws[a-z-]*:kms:${var.region}:${local.account_id}:key/", data.aws_kms_alias.vault_unseal.target_key_arn))
-    error_message = "alias/${var.cluster_name}-vault-unseal does not point at a KMS key of this account in ${var.region}: the seal stanza would name a key Vault cannot use, and every pod would stay sealed."
   }
 }

@@ -52,7 +52,10 @@ exclude. The admission policies pin the images and commands of RYFT's pods, so a
 container would be refused, and the services emit their own metrics. The chart excludes
 by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
 every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
-default list). A new `ryft-*` namespace is added there too. Scraping and the Fleet
+default list). A new `ryft-*` namespace is added there too. `vault` and
+`vault-secrets-operator-system` are listed as well (D186): the webhook's configuration is steered
+from Grafana Fleet, and a mutated Vault pod would run foreign code next to the unsealed keyring
+and its Pod Identity token. Scraping and the Fleet
 Management log setting above are unaffected. Apply with `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
 check read-only:
 
@@ -61,7 +64,8 @@ kubectl get mutatingwebhookconfigurations \
   -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'
 ```
 
-The selector of the injector's webhook must list every `ryft-*` namespace under `NotIn`.
+The selector of the injector's webhook must list every `ryft-*` namespace, `vault` and
+`vault-secrets-operator-system` under `NotIn`.
 
 A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CI: install the pinned Helm release, checked against a sha256 kept HERE, and put it first on PATH for
-# the later steps (GITHUB_PATH). Used by the `admission` job and the admission-e2e workflow
-# (scripts/admission_e2e.sh): the chart is rendered and installed with this client, so it does not
+# the later steps (GITHUB_PATH). Used by the `admission` job, the admission-e2e workflow
+# (scripts/admission_e2e.sh) and the `manifests` job (scripts/tests/vault_extras_chart_test.sh): charts are
+# rendered and installed with this client, so it does not
 # move with the runner image. To move it: the new tag and the checksum of the linux-amd64 tarball
 # (https://get.helm.sh/helm-<tag>-linux-amd64.tar.gz.sha256sum; cross-check by hashing the downloaded
 # file). Linux amd64 only (the runners).

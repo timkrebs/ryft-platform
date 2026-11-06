@@ -207,7 +207,10 @@ telemetryServices:
     # namespace name (a NotIn on kubernetes.io/metadata.name), not by prefix, so every
     # ryft-* namespace is listed. A list value replaces the chart's default list, so the
     # defaults are repeated first. A new ryft-* namespace is added here too
-    # (docs/OBSERVABILITY.md -> Grafana Cloud).
+    # (docs/OBSERVABILITY.md -> Grafana Cloud). Vault (D186) and the operator that reads it
+    # are excluded as well: a mutated Vault pod would run an injected container next to the
+    # unsealed keyring and with its Pod Identity token, and this webhook's configuration is
+    # steered from Grafana Fleet. Apply this before infra/aws/kubernetes creates namespace vault.
     webhook:
       excludedNamespaces:
         # chart defaults (4.5.3)
@@ -237,3 +240,6 @@ telemetryServices:
         - ryft-web
         - ryft-rabbitmq
         - ryft-postgres
+        # Vault and the Vault Secrets Operator
+        - vault
+        - vault-secrets-operator-system

@@ -1,23 +1,30 @@
 # Set by infra/aws/kubernetes/vault.tf.
 # The VPC's CIDR: the EKS API server's private ENIs (TokenReview, service registration).
 vpcCIDR: ""
+# server.ha.replicas: the pods vault-0 .. vault-<replicas-1> (the service-registration Role names them).
+replicas: 3
 tls:
   # Every Service and pod name of the server (vault.tf, local.vault_dns_names), and 127.0.0.1 for the port-forward.
   dnsNames: []
   ipAddresses: []
 
-# The peers that may reach Vault's API (8200). The labels are the charts' own pod labels:
-# vault-secrets-operator 1.6.0 (vso.chart.selectorLabels plus control-plane) and k8s-monitoring 4.5.3's
-# alloy-deployment collector (nameOverride = the collector's name). Check against the cluster before the cutover:
+# The clients that may reach Vault's API (8200), each off until the change that needs it: the operator with the
+# first cutover (before that, only the operator's port-forward talks to Vault, and before the init anyone on 8200
+# could call the unauthenticated PUT /v1/sys/init), the collector with the metrics scrape (D194). The labels are the
+# charts' own pod labels: vault-secrets-operator 1.6.0 (vso.chart.selectorLabels plus control-plane) and
+# k8s-monitoring 4.5.3's alloy-deployment collector (nameOverride = the collector's name). Check them against the
+# cluster before switching one on:
 #   kubectl --context ryft-prod-euc1 -n vault-secrets-operator-system get pods --show-labels
 #   kubectl --context ryft-prod-euc1 -n monitoring get pods --show-labels
 peers:
   vso:
+    enabled: false
     namespace: vault-secrets-operator-system
     podLabels:
       app.kubernetes.io/name: vault-secrets-operator
       control-plane: controller-manager
   collector:
+    enabled: false
     namespace: monitoring
     podLabels:
       app.kubernetes.io/name: alloy-deployment

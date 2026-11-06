@@ -1,10 +1,13 @@
 {{- /*
-Namespace vault (design section 6, D194): nothing reaches or leaves a pod unless a policy below allows it (D44: both
-ways), as in every RYFT namespace. Namespaces are selected by kubernetes.io/metadata.name.
+Namespace vault (design section 6, D194): no pod-network peer reaches or leaves a pod unless a policy below allows
+it (D44: both ways), as in every RYFT namespace. Namespaces are selected by kubernetes.io/metadata.name.
 
-Not peers, because they never pass a NetworkPolicy: kubelet probes (from the node; the VPC CNI admits them) and
-`kubectl port-forward` (the stream enters the pod's network namespace through the kubelet). Not opened: 8200 from
-the VPC range, which would admit every pod on the host network (D51's reasoning for 9090).
+What these policies do not govern: `kubectl port-forward` (the stream enters the pod's network namespace through
+the kubelet and arrives on loopback; the operator's bootstrap and Terraform use it, as the broker's UI does in
+OPERATIONS), and traffic from the node's own address, which the EKS VPC CNI admits for the kubelet's probes and very
+likely for any host-network process on that node too (the privileged alloy-daemonset among them). So the peers
+below are the selected pod-network clients, not everything that can reach 8200. No ipBlock rule for the VPC range is
+added on 8200 (D51's reasoning for 9090).
 */}}
 {{- $server := dict "app.kubernetes.io/name" "vault" "component" "server" }}
 {{- $snapshot := dict "app.kubernetes.io/name" "vault-snapshot" }}
@@ -45,21 +48,26 @@ spec:
     matchLabels: {{- toYaml $server | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
-    # The Vault Secrets Operator does every login and read: the only client of the API.
+    {{- if .Values.peers.vso.enabled }}
+    # The Vault Secrets Operator does every login and read: the workloads' only client of the API.
     - from:
-        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.peers.vso.namespace }} } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ required "peers.vso.namespace is required" .Values.peers.vso.namespace }} } }
           podSelector:
-            matchLabels: {{- toYaml .Values.peers.vso.podLabels | nindent 14 }}
+            matchLabels: {{- required "peers.vso.podLabels is required" .Values.peers.vso.podLabels | toYaml | nindent 14 }}
       ports:
         - { protocol: TCP, port: 8200 }
-    # The cluster collector's scrape of /v1/sys/metrics (unauthenticated on the listener, D194). Not the
-    # host-network DaemonSet: its traffic comes from node addresses.
+    {{- end }}
+    {{- if .Values.peers.collector.enabled }}
+    # The alloy-deployment collector's scrape of /v1/sys/metrics (unauthenticated on the listener, D194). This rule
+    # names its pods only; the host-network alloy-daemonset is not a pod-network peer and is not what it admits
+    # (see the header for what the node's address can still reach).
     - from:
-        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.peers.collector.namespace }} } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ required "peers.collector.namespace is required" .Values.peers.collector.namespace }} } }
           podSelector:
-            matchLabels: {{- toYaml .Values.peers.collector.podLabels | nindent 14 }}
+            matchLabels: {{- required "peers.collector.podLabels is required" .Values.peers.collector.podLabels | toYaml | nindent 14 }}
       ports:
         - { protocol: TCP, port: 8200 }
+    {{- end }}
     # The snapshot CronJob (D192): raft snapshot save on the active node.
     - from:
         - podSelector:
@@ -86,7 +94,7 @@ spec:
         - ipBlock: { cidr: {{ $vpc }} }
       ports:
         - { protocol: TCP, port: 443 }
-    # AWS KMS (kms.<region>.amazonaws.com, through the NAT): Decrypt at every start, the auto-unseal. Public
+    # AWS KMS (kms.<region>.amazonaws.com, through the NAT): DescribeKey at every start, Decrypt at the unseal. Public
     # addresses only; NetworkPolicy cannot match host names, so the port is the limit.
     - to:
         - ipBlock:

@@ -3,7 +3,8 @@ Vault's own CA (D190, amends D98): a second root beside ryft-internal, so that t
 Certificates (whose Secrets give each namespace its ca.crt for VSO's VaultConnection) are not leaves of the CA the
 broker trusts for mutual TLS. A self-signed bootstrap issuer signs one ten-year ECDSA root in the cert-manager
 namespace; the CA ClusterIssuer ryft-vault signs from it: vault/vault-tls (the server) and <ns>/vault-ca (inert
-leaves). The admission chart's P13 limits what may name ryft-vault. Nothing outside the cluster trusts it; the
+leaves). Until then any Certificate in any namespace may name ryft-vault: the admission chart's P13 (not yet in
+Deny) will limit what may. Nothing outside the cluster trusts it; the
 operator's CLI gets ca.crt from vault/vault-ca.
 */}}
 {{- if .Values.vaultCA.enabled }}
