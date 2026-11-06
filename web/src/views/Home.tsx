@@ -28,11 +28,9 @@ export function HomePage({ locale }: { locale: Locale }) {
           <Eyebrow id="works-title" as="h2">
             {h.worksWith.label}
           </Eyebrow>
-          <ul>
-            {h.worksWith.items.map((name) => (
-              <li key={name}>{name}</li>
-            ))}
-          </ul>
+          {/* A statement of the data source, not a row of names: the watches and rings are
+              where the data comes from, not partners (web D23). */}
+          <p>{h.worksWith.text}</p>
         </section>
       </Container>
 
@@ -278,44 +276,26 @@ function Hero({ locale }: { locale: Locale }) {
   );
 }
 
-/** Free and Plus. Plus has no price yet: the figure reads TBA until the launch decision. */
+/**
+ * One plan: free during the beta, as the terms in force say. No price, no paid tier: later
+ * plans are announced here first (web D23).
+ */
 function Pricing({ locale }: { locale: Locale }) {
   const p = messages(locale).home.pricing;
   return (
-    <div className={styles.pricing}>
-      <div className={styles.plans}>
-        <article className={styles.plan} aria-labelledby="plan-free">
-          <h3 id="plan-free">{p.free.name}</h3>
-          <p className={styles.price}>
-            {p.free.price}
-            <span className={styles.priceUnit}>{p.free.period}</span>
-          </p>
-          <p className={styles.planLead}>{p.free.lead}</p>
-          <ul className={styles.planItems}>
-            {p.free.items.map((i) => (
-              <li key={i}>{i}</li>
-            ))}
-          </ul>
-          <ButtonLink href={localePath(locale, '/beta')} arrow className={styles.planCta}>
-            {p.free.cta}
-          </ButtonLink>
-        </article>
-        <article className={`${styles.plan} ${styles.planPlus}`} aria-labelledby="plan-plus">
-          <h3 id="plan-plus">{p.plus.name}</h3>
-          <p className={styles.price}>
-            {p.plus.price}
-            <span className={styles.priceUnit}>{p.plus.period}</span>
-          </p>
-          <p className={styles.planLead}>{p.plus.lead}</p>
-          <ul className={styles.planItems}>
-            {p.plus.items.map((i) => (
-              <li key={i}>{i}</li>
-            ))}
-          </ul>
-          <p className={styles.founder}>{p.plus.founder}</p>
-          <p className={`${styles.planCta} ${styles.planSoon}`}>{p.plus.cta}</p>
-        </article>
-      </div>
+    <div className={styles.plans}>
+      <article className={styles.plan} aria-labelledby="plan-free">
+        <h3 id="plan-free">{p.free.name}</h3>
+        <p className={styles.planLead}>{p.free.lead}</p>
+        <ul className={styles.planItems}>
+          {p.free.items.map((i) => (
+            <li key={i}>{i}</li>
+          ))}
+        </ul>
+        <ButtonLink href={localePath(locale, '/beta')} arrow className={styles.planCta}>
+          {p.free.cta}
+        </ButtonLink>
+      </article>
       <p className={styles.pricingNote}>{p.note}</p>
     </div>
   );

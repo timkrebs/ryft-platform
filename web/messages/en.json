@@ -61,8 +61,8 @@
     },
     "ticker": "Recovery. Sleep. Strain. Readiness.",
     "worksWith": {
-      "label": "Works with",
-      "items": ["Apple Watch", "Garmin", "Oura", "Apple Health"]
+      "label": "Data source",
+      "text": "Reads Apple Health, from Apple Watch, or Garmin and Oura through their apps."
     },
     "mock": {
       "today": {
@@ -173,7 +173,7 @@
         },
         {
           "title": "Your data is yours",
-          "body": "Export your account, scores, workouts and sessions as JSON, or delete your account in the app, at any time. Deletion is immediate."
+          "body": "Export your account, scores, workouts and sessions as JSON, or delete your account in the app, at any time. Your data is erased from the database at once; backups follow within 7 days."
         },
         {
           "title": "Honest uncertainty",
@@ -228,7 +228,7 @@
         },
         {
           "title": "Export and delete",
-          "body": "Profile → Data → Export my data. Profile → Account → Delete account removes everything at once."
+          "body": "Profile → Data → Export my data. Profile → Account → Delete account: your data is erased from the database at once; backups follow within 7 days."
         }
       ],
       "link": "Read the privacy policy"
@@ -236,12 +236,10 @@
     "pricing": {
       "number": "07",
       "label": "Pricing",
-      "title": "Free to start. Plus to go deeper.",
+      "title": "What the beta costs.",
       "free": {
-        "name": "Free",
-        "price": "0 €",
-        "period": "forever",
-        "lead": "Everything the beta has today.",
+        "name": "Free during the beta",
+        "lead": "Everything in the app today:",
         "items": [
           "Readiness, Recovery, Strain and Sleep",
           "Your full history",
@@ -251,16 +249,7 @@
         ],
         "cta": "Join the beta"
       },
-      "plus": {
-        "name": "RYFT Plus",
-        "price": "TBA",
-        "period": "pricing announced at launch",
-        "lead": "Arrives with the App Store launch.",
-        "items": ["Everything in Free", "More depth on top of the scores, never the scores themselves"],
-        "founder": "Founder price for beta testers",
-        "cta": "Coming with launch"
-      },
-      "note": "Scores, history and export are never behind a paywall."
+      "note": "Later plans will be announced here first, and in the app before they start. Until then the terms in force apply: RYFT is provided free of charge."
     },
     "faq": {
       "number": "08",
@@ -273,7 +262,7 @@
         },
         {
           "q": "Does RYFT cost anything?",
-          "a": "Not during the beta. At launch the scores, your history and export stay free; RYFT Plus adds depth on top, with pricing announced at launch and a founder price for beta testers."
+          "a": "Not during the beta: the terms in force say RYFT is provided free of charge. If paid options come later, they will be announced on this site and in the app before they start."
         },
         {
           "q": "Where is my data?",
@@ -297,7 +286,7 @@
         },
         {
           "q": "How do I delete my data?",
-          "a": "In the app: Profile → Account → Delete account. It removes everything RYFT stores about you at once. To keep a copy first, use Profile → Data → Export my data."
+          "a": "In the app: Profile → Account → Delete account. Your data is erased from the database at once; backups follow within 7 days. A random account identifier is kept so that the account cannot reappear. To keep a copy first, use Profile → Data → Export my data."
         },
         {
           "q": "What happens if I withdraw my consent?",
@@ -424,7 +413,7 @@
         "items": [
           "Open RYFT and go to Profile.",
           "Under Account, tap Delete account.",
-          "Confirm. Everything RYFT stores about you is removed at once."
+          "Confirm. Your data is erased from the database at once; backups follow within 7 days."
         ]
       },
       "alt": "The Account card in RYFT's Profile: buttons for Change password, Log out and, in red, Delete account."
