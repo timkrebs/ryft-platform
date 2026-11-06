@@ -157,10 +157,11 @@ images:
   # digest: the Vault server (also the snapshot job's init container) and the AWS CLI that
   # uploads the snapshot. Anchored, with @sha256: (the chart refuses anything else: an empty
   # regex would match every image). A Vault upgrade changes this value first, in the same PR
-  # as the release's pin. awsCli stays empty until the snapshot job's PR verifies its version
-  # and digest; until then nothing in vault may run the AWS CLI (fail closed).
+  # as the release's pin. awsCli is the snapshot job's upload image, the same reference as
+  # local.vault_snapshot_aws_cli_image in vault.tf (AWS CLI 2.39.5, the multi-arch index digest;
+  # tests/addons.tftest.hcl compares the two). Empty would admit no AWS CLI (fail closed).
   vault: '^docker[.]io/hashicorp/vault:2[.]2[.]1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2$'
-  awsCli: ""
+  awsCli: '^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]39[.]5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292$'
 
 # NetworkPolicy shapes (P3).
 netpol:

@@ -28,3 +28,23 @@ peers:
     namespace: monitoring
     podLabels:
       app.kubernetes.io/name: alloy-deployment
+
+# The Raft snapshot CronJob (templates/snapshot.yaml, D192; OPERATIONS -> Vault -> Snapshots). Every field is set by
+# vault.tf; the template fails on an empty one rather than render a job that cannot upload.
+snapshot:
+  # Cron, in Etc/UTC. Every 6 hours = RPO 6 h; VaultSnapshotStale pages at 13 h (two missed runs).
+  schedule: ""
+  images:
+    # The server's image (the init container: login, save, inspect) and the AWS CLI (the upload), each
+    # <repository>:<version>@sha256:<digest>. The admission chart's P2 admits exactly these two in vault.
+    vault: ""
+    awsCli: ""
+  # infra/aws's bucket, the account that owns it, the snapshot key's full ARN (not the alias: the bucket policy and
+  # the role compare the header with the ARN) and the region.
+  bucket: ""
+  accountID: ""
+  keyARN: ""
+  region: ""
+  # Vault's Kubernetes auth mount and the role (infra/vault): read on sys/storage/raft/snapshot only, a short token.
+  authMount: kubernetes
+  role: vault-snapshot

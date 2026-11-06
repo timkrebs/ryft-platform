@@ -1,0 +1,156 @@
+{{- /*
+The Raft snapshot (D192; OPERATIONS -> Vault -> Snapshots): every 6 hours one object under snapshots/ in infra/aws's
+bucket. Two upstream images pinned by digest, no image of our own:
+  - init container `snapshot` (the server's image): logs in through Vault's Kubernetes auth (role vault-snapshot,
+    infra/vault: read on sys/storage/raft/snapshot only) with a projected token for audience vault that lives 10
+    minutes, saves the snapshot from the ACTIVE node (vault-active; a save through a standby fails: "incomplete
+    snapshot, unable to read SHA256SUMS.sealed file"), checks it with `snapshot inspect`, and revokes its token on
+    every exit path.
+  - container `upload` (the AWS CLI): one put-object (a single PUT: no multipart, which would need kms:Decrypt),
+    create-only (--if-none-match '*'; the bucket policy denies a put without it), only into the bucket of the expected
+    account (--expected-bucket-owner; the role adds s3:ResourceAccount), encrypted with the snapshot key named by its
+    full ARN (the bucket policy and the role compare the header with it). Credentials from EKS Pod Identity
+    (association vault/vault-snapshot, infra/aws/kubernetes iam.tf); no Kubernetes API token is mounted.
+The snapshot is barrier-encrypted by Vault: it opens only in a Vault that unseals with the same KMS key.
+
+The ServiceAccount is the association's subject and nothing else: no Role binds it, and its token is mounted only as
+the projected vault-audience token. Pod Security restricted; the NetworkPolicy vault-snapshot (networkpolicies.yaml)
+allows Vault's 8200, public 443 (S3 through the NAT) and the Pod Identity agent.
+
+Timing: activeDeadlineSeconds 600 bounds a run (the token's lifetime as well); backoffLimit 2 retries a failed pod
+twice (each retry a fresh snapshot, under a new object name). Forbid: a run never overlaps the previous one.
+startingDeadlineSeconds 3600: a schedule missed by more than an hour (a controller outage) is skipped, not run late
+in a burst. kube_cronjob_status_last_successful_time feeds VaultSnapshotStale (deploy/grafana/alerts).
+*/}}
+{{- $s := .Values.snapshot }}
+{{- $digest := "^[a-z0-9./-]+:[0-9][0-9.]*@sha256:[0-9a-f]{64}$" }}
+{{- range $k := list "vault" "awsCli" }}
+{{- $img := index $s.images $k }}
+{{- if not $img }}{{ fail (printf "snapshot.images.%s is required" $k) }}{{ end }}
+{{- if not (regexMatch $digest $img) }}{{ fail (printf "snapshot.images.%s must be <repository>:<version>@sha256:<64 hex>, not %s" $k $img) }}{{ end }}
+{{- end }}
+{{- $schedule := required "snapshot.schedule is required" $s.schedule }}
+{{- $bucket := required "snapshot.bucket is required" $s.bucket }}
+{{- $account := required "snapshot.accountID is required" $s.accountID | toString }}
+{{- if not (regexMatch "^[0-9]{12}$" $account) }}{{ fail "snapshot.accountID must be a 12-digit AWS account ID" }}{{ end }}
+{{- $region := required "snapshot.region is required" $s.region }}
+{{- $key := required "snapshot.keyARN is required" $s.keyARN }}
+{{- if not (regexMatch (printf "^arn:aws[a-z-]*:kms:%s:%s:key/[0-9a-f-]+$" $region $account) $key) }}{{ fail "snapshot.keyARN must be the full ARN of a KMS key in snapshot.region and snapshot.accountID (no alias)" }}{{ end }}
+{{- $labels := dict "app.kubernetes.io/name" "vault-snapshot" }}
+{{- $restricted := dict "allowPrivilegeEscalation" false "readOnlyRootFilesystem" true "capabilities" (dict "drop" (list "ALL")) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-snapshot
+  namespace: {{ .Release.Namespace }}
+  labels: {{- toYaml $labels | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-snapshot
+  namespace: {{ .Release.Namespace }}
+  labels: {{- toYaml $labels | nindent 4 }}
+spec:
+  schedule: {{ $schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: {{- toYaml $labels | nindent 8 }}
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels: {{- toYaml $labels | nindent 12 }}
+        spec:
+          serviceAccountName: vault-snapshot
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          volumes:
+            - name: work
+              emptyDir: { sizeLimit: 512Mi }
+            - name: vault-ca
+              secret:
+                secretName: vault-ca
+                items: [{ key: ca.crt, path: ca.crt }]
+            - name: vault-token
+              projected:
+                sources:
+                  - serviceAccountToken: { audience: vault, expirationSeconds: 600, path: token }
+          initContainers:
+            - name: snapshot
+              image: {{ $s.images.vault | quote }}
+              imagePullPolicy: IfNotPresent
+              env:
+                - { name: VAULT_ADDR, value: "https://vault-active.{{ .Release.Namespace }}.svc:8200" }
+                - { name: VAULT_CACERT, value: /ca/ca.crt }
+                - { name: HOME, value: /work }
+                - { name: VAULT_AUTH_MOUNT, value: {{ required "snapshot.authMount is required" $s.authMount | quote }} }
+                - { name: VAULT_ROLE, value: {{ required "snapshot.role is required" $s.role | quote }} }
+              command: [/bin/sh, -eu, -c]
+              args:
+                - |
+                  umask 077
+                  # Assigned first, then exported: `export X="$(...)"` would hide a failed login from -e.
+                  token=$(vault write -field=token "auth/$VAULT_AUTH_MOUNT/login" role="$VAULT_ROLE" jwt=@/var/run/secrets/vault/token)
+                  export VAULT_TOKEN="$token"
+                  trap 'vault token revoke -self >/dev/null 2>&1 || echo "{\"@level\":\"warn\",\"@message\":\"snapshot token not revoked (expires with its TTL)\"}"' EXIT
+                  vault operator raft snapshot save /work/vault.snap
+                  vault operator raft snapshot inspect /work/vault.snap >/dev/null
+                  echo "{\"@level\":\"info\",\"@message\":\"snapshot saved and inspected\",\"bytes\":$(wc -c </work/vault.snap)}"
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: vault-ca, mountPath: /ca, readOnly: true }
+                - { name: vault-token, mountPath: /var/run/secrets/vault, readOnly: true }
+              securityContext: {{- toYaml $restricted | nindent 16 }}
+          containers:
+            - name: upload
+              image: {{ $s.images.awsCli | quote }}
+              imagePullPolicy: IfNotPresent
+              env:
+                - { name: AWS_REGION, value: {{ $region | quote }} }
+                - { name: AWS_PAGER, value: "" }
+                - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
+                - { name: HOME, value: /work }
+                - { name: BUCKET, value: {{ $bucket | quote }} }
+                - { name: BUCKET_OWNER, value: {{ $account | quote }} }
+                - { name: SNAPSHOT_KEY_ARN, value: {{ $key | quote }} }
+              command: [/bin/sh, -eu, -c]
+              args:
+                - |
+                  f=/work/vault.snap
+                  [ -s "$f" ] || { echo '{"level":"error","msg":"no snapshot to upload"}' >&2; exit 1; }
+                  key="snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap"
+                  bytes=$(wc -c <"$f")
+                  sum=$(sha256sum "$f" | cut -d' ' -f1)
+                  aws s3api put-object \
+                    --region "$AWS_REGION" \
+                    --bucket "$BUCKET" --expected-bucket-owner "$BUCKET_OWNER" \
+                    --key "$key" --body "$f" \
+                    --if-none-match '*' \
+                    --server-side-encryption aws:kms --ssekms-key-id "$SNAPSHOT_KEY_ARN" --bucket-key-enabled \
+                    --metadata "sha256=$sum" \
+                    --output json >/dev/null
+                  echo "{\"level\":\"info\",\"msg\":\"snapshot uploaded\",\"bucket\":\"$BUCKET\",\"key\":\"$key\",\"bytes\":$bytes,\"sha256\":\"$sum\"}"
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+              securityContext: {{- toYaml $restricted | nindent 16 }}

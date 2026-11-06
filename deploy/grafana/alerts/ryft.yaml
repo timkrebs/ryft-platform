@@ -23,8 +23,9 @@ groups:
         labels: { severity: critical }
         annotations: { summary: "{{ $labels.namespace }}: more than 2 % of requests answer 5xx" }
       - alert: PodRestarting
-        # A RYFT pod restarted more than three times in 30 minutes (crash loop, OOM).
-        expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-.*"}[30m])) > 3
+        # A RYFT or Vault pod restarted more than three times in 30 minutes (crash loop, OOM;
+        # for vault: OPERATIONS.md → Vault alerts).
+        expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-.*|vault"}[30m])) > 3
         labels: { severity: critical }
         annotations: { summary: "{{ $labels.pod }} restarted more than 3 times in 30 minutes" }
       - alert: ServiceExited
@@ -575,3 +576,151 @@ groups:
         annotations:
           summary: "The admission scrape {{ $labels.job }} of {{ $labels.instance }} has been down for 15 minutes"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
+
+  # The in-cluster Vault (namespace vault; D192, D194; OBSERVABILITY.md → Vault). Two scrapes of
+  # the alloy-deployment collector (deploy/monitoring/k8s-monitoring.yaml): job ryft/vault is each
+  # server's /v1/sys/metrics (Vault's `cluster` label renamed vault_cluster), job ryft/vault-state
+  # is kube-state-metrics for namespace vault. Vault's gauges expire 2 minutes after their last
+  # update (prometheus_retention_time) and a sealed node reports no vault_core_active, so being
+  # sealed is read from the pods' readiness (strict: only an unsealed active or standby node is
+  # ready), not from vault_core_unsealed. Before the first init no pod is ever ready (D196): the
+  # rules that would fire on that are gated on "a Vault pod was ready in the last 7 days".
+  # Restarts are PodRestarting's (group ryft), certificates CertificateExpiring's.
+  - name: ryft-vault
+    rules:
+      - alert: VaultSealed
+        # A server pod runs but is not ready for 5 minutes: sealed (KMS unreachable or the role
+        # gone), or a standby that cannot reach the active node (474). Auto-unseal takes seconds.
+        expr: |
+          (
+            max by (pod) (kube_pod_container_status_running{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
+              unless on (pod)
+            max by (pod) (kube_pod_container_status_ready{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
+          )
+            and on ()
+          (max(max_over_time(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}[7d])) > 0)
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.pod }} runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
+      - alert: VaultNoActiveNode
+        # The scrape works and no node reports itself active: no leader, so no login or read
+        # succeeds (VSO keeps the Secrets it has).
+        expr: |
+          ((sum(vault_core_active{job="ryft/vault"}) or vector(0)) < 1)
+            and on ()
+          (max(up{job="ryft/vault"}) == 1)
+            and on ()
+          (max(max_over_time(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}[7d])) > 0)
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "No Vault node has been active for 2 minutes: logins and reads fail"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
+      - alert: VaultRaftPeersBelow3
+        # Autopilot on the active node counts fewer than 3 healthy voters for 10 minutes: one more
+        # loss ends the quorum. vault_raft_peers is not used (it expires and lags).
+        expr: |
+          ((count(max by (node_id) (vault_autopilot_node_healthy{job="ryft/vault"}) == 1) or vector(0)) < 3)
+            and on ()
+          (sum(vault_core_active{job="ryft/vault"}) >= 1)
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Only {{ $value }} of 3 Raft peers are healthy: one more loss ends the quorum"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultRaftPeersBelow3)"
+      - alert: VaultSnapshotStale
+        # Pages (D192): no successful snapshot for 13 hours (two missed 6-hourly runs), or none in
+        # 13 hours of a Vault that was ready all along (ready 13 hours ago and never at 0 since,
+        # so a fresh init has 13 hours for its first snapshot). Lifecycle expiry deletes snapshots after 30 days (and the
+        # versions 7 days later), so a job broken for 37 days leaves no snapshot at all. Not
+        # before the first init (no ready pod). last_over_time bridges a scrape gap of up to 6 h.
+        expr: |
+          (
+              (time() - max(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))) > 13 * 3600
+            or on ()
+              (
+                max(absent_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[13h]))
+                  and on ()
+                (min_over_time(max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"})[13h:5m]) > 0)
+                  and on ()
+                (max(last_over_time(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}[1h] offset 13h)) > 0)
+              )
+          )
+            and on ()
+          (max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0)
+        labels: { severity: critical }
+        annotations:
+          summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
+          runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+      - alert: VaultSnapshotFailing
+        # The latest scheduled run started more than 30 minutes ago and has not succeeded (a run
+        # takes at most 10 minutes, retries included). Warns on the first failed run; the
+        # page is VaultSnapshotStale's.
+        expr: |
+          (
+            max(last_over_time(kube_cronjob_status_last_schedule_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
+              >
+            max(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
+          )
+            and on ()
+          ((time() - max(last_over_time(kube_cronjob_status_last_schedule_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))) > 1800)
+        labels: { severity: warning }
+        annotations:
+          summary: "The latest Vault snapshot run did not succeed"
+          runbook: "docs/OPERATIONS.md → Vault → Snapshots"
+      - alert: VaultAuditFailing
+        # A node could not write an audit entry in the last 10 minutes. With every audit device
+        # failing, Vault refuses the request: the audit volume is full, or a device broke.
+        # The counters exist only while they move (2 minutes' retention), so their presence above
+        # 0 is the signal, not increase().
+        expr: |
+          max by (pod) (max_over_time(vault_audit_log_request_failure{job="ryft/vault"}[10m])) > 0
+            or
+          max by (pod) (max_over_time(vault_audit_log_response_failure{job="ryft/vault"}[10m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.pod }} failed to write audit entries in the last 10 minutes"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
+      - alert: VaultVolumeFilling
+        # A data or audit volume of a server is over 80 % full for 15 minutes. The audit file only
+        # grows (Vault reopens it on SIGHUP alone); a full one makes Vault refuse requests.
+        expr: |
+          max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace="vault"})
+            / max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="vault"}) > 0.8
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultVolumeFilling)"
+      - alert: VaultUpdatePending
+        # updateStrategy OnDelete (D204): an applied change to the pod template (a Vault upgrade, a
+        # new setting) waits for the operator's pod-by-pod restart, and the next node drain would
+        # roll it unplanned. Existing pods minus updated ones (currentRevision does not advance
+        # reliably under OnDelete). Information after a day.
+        expr: |
+          max(kube_statefulset_status_replicas{job="ryft/vault-state", namespace="vault", statefulset="vault"})
+            - max(kube_statefulset_status_replicas_updated{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0
+        for: 24h
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $value }} Vault pod(s) still run the previous template: restart them one by one"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultUpdatePending)"
+      - alert: VaultScrapeDown
+        # The alerts above are blind: kube-state-metrics for vault is not scraped, or a Vault server
+        # is not (TLS: the collector's vault-ca Secret; the NetworkPolicy peer). The server scrape
+        # counts only while the StatefulSet exists.
+        expr: |
+          (max by (job) (up{job="ryft/vault-state"}) == 0 or absent(up{job="ryft/vault-state"}))
+            or
+          (
+            (max by (job, pod) (up{job="ryft/vault"}) == 0 or absent(up{job="ryft/vault"}))
+              and on ()
+            (max(kube_statefulset_replicas{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0)
+          )
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "The Vault scrape {{ $labels.job }}{{ with $labels.pod }} of {{ . }}{{ end }} has failed for 15 minutes; the Vault alerts are blind"
+          runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"

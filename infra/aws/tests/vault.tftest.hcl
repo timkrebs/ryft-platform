@@ -248,12 +248,12 @@ run "the_bucket_policy_denies_plain_http_and_puts_without_the_snapshot_key" {
 
   assert {
     condition = (
-      length(data.aws_iam_policy_document.vault_snapshots_bucket.statement) == 2 &&
+      length(data.aws_iam_policy_document.vault_snapshots_bucket.statement) == 3 &&
       alltrue([for s in data.aws_iam_policy_document.vault_snapshots_bucket.statement :
         s.effect == "Deny" && length(s.principals) == 1 && one(s.principals).type == "*" && toset(one(s.principals).identifiers) == toset(["*"]) && length(s.condition) == 1
       ])
     )
-    error_message = "the bucket policy holds exactly two statements, both a Deny for every principal with one condition: it grants nothing"
+    error_message = "the bucket policy holds exactly three statements, each a Deny for every principal with one condition: it grants nothing"
   }
 
   assert {
@@ -281,6 +281,20 @@ run "the_bucket_policy_denies_plain_http_and_puts_without_the_snapshot_key" {
       tolist(one(data.aws_iam_policy_document.vault_snapshots_bucket.statement[1].condition).values) == tolist([aws_kms_key.vault_snapshots.arn])
     )
     error_message = "a PutObject that does not name the snapshot key's ARN is denied"
+  }
+
+  # Create-only writes (PR #146's review, PR 4): without If-None-Match a put is denied, so an
+  # existing snapshot cannot be overwritten, not by the job's identity either.
+  assert {
+    condition = (
+      data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].sid == "DenyPutWithoutIfNoneMatch" &&
+      toset(data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].actions) == toset(["s3:PutObject"]) &&
+      toset(data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].resources) == toset(["arn:aws:s3:::ryft-prod-euc1-vault-snapshots-123456789012/*"]) &&
+      one(data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].condition).test == "Null" &&
+      one(data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].condition).variable == "s3:if-none-match" &&
+      tolist(one(data.aws_iam_policy_document.vault_snapshots_bucket.statement[2].condition).values) == tolist(["true"])
+    )
+    error_message = "a PutObject without If-None-Match is denied (create-only: nothing overwrites a snapshot)"
   }
 }
 

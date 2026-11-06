@@ -222,8 +222,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "vault_snapshots" {
   depends_on = [aws_s3_bucket_versioning.vault_snapshots]
 }
 
-# Two denies for everyone, the account included: no request without TLS, and no object
-# that is not encrypted with the snapshot key. The second also refuses a PUT without the
+# Three denies for everyone, the account included: no request without TLS, no object
+# that is not encrypted with the snapshot key, and no put that could overwrite one (the
+# third, below). The second also refuses a PUT without the
 # key header (the bucket default would encrypt it, but the deny makes the key part of
 # every request rather than only of today's default) and, very likely, multipart part
 # uploads (UploadPart sends no key header), so the job uploads with one put-object.
@@ -261,6 +262,32 @@ data "aws_iam_policy_document" "vault_snapshots_bucket" {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
       values   = [aws_kms_key.vault_snapshots.arn]
+    }
+  }
+
+  # Create-only (PR #146's review): a PutObject without `If-None-Match: *` is denied, so no
+  # identity, the snapshot job's stolen one included, can overwrite an existing snapshot; a
+  # put to a key that exists answers 412. (Versioning would keep the old object for 7 days
+  # anyway; this keeps the current one.) The job uploads with
+  # `aws s3api put-object --if-none-match '*'`. S3's condition key for conditional writes
+  # (s3:if-none-match, absent when the header is): an If-Match overwrite is denied as well,
+  # and so are CopyObject and multipart part uploads (authorized as s3:PutObject, without
+  # the header). Nothing here writes to the bucket otherwise; restores only read.
+  statement {
+    sid       = "DenyPutWithoutIfNoneMatch"
+    effect    = "Deny"
+    actions   = ["s3:PutObject"]
+    resources = ["${local.vault_snapshots_bucket_arn}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
     }
   }
 }

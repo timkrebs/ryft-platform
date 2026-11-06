@@ -46,7 +46,7 @@ infra/aws/
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
 | Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
-| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS and any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`) |
+| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
@@ -226,8 +226,9 @@ Chart values worth knowing (`charts/admission-policy/values.yaml`):
 - `netpol.brokerEgressPublic`: `true` while `ryft-rabbitmq` still has its 443 egress rule
   open to `0.0.0.0/0`; the PR that narrows it (T12-k) sets it to `false`.
 - `images.vault`, `images.awsCli`: the anchored, digest-pinned image patterns P2 admits in
-  `vault`. `awsCli` is empty until the snapshot CronJob's image is pinned, so that CronJob is
-  refused until then.
+  `vault`. `awsCli` is the snapshot CronJob's upload image (AWS CLI 2.39.5 by index digest), the
+  same reference as `vault_snapshot_aws_cli_image` in `kubernetes/vault.tf`; change both together
+  (`tests/addons.tftest.hcl` and `scripts/tests/vault_extras_chart_test.sh` compare them).
 - `vault.*`: what P13 lets the `ryft-vault` issuer sign (the server Certificate `vault-tls`
   with its DNS names, IPs and usages; the per-namespace CA Certificate `vault-ca` with the
   common name `vso.<namespace>` and no SAN), the one user that may create a CertificateRequest

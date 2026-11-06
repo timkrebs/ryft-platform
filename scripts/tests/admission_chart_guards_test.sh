@@ -45,7 +45,11 @@ refused "$cli" --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]0[.]
 renders --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$"
 grep -qF "c.image.matches(\"^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$\")" <(render --set "images.awsCli=^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]31[.]0@sha256:$d64\$") ||
   fail "a pinned awsCli must appear in P2's vault branch"
-if render | grep -q 'aws-cli'; then fail "an empty awsCli must not appear in P2 (it would match every image)"; fi
+if render --set images.awsCli= | grep -q 'aws-cli'; then fail "an empty awsCli must not appear in P2 (it would match every image)"; fi
+# The default is the snapshot job's pin (vault.tf vault_snapshot_aws_cli_image), and only it.
+grep -qF 'c.image.matches("^public[.]ecr[.]aws/aws-cli/aws-cli:2[.]39[.]5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292$")' <(render) ||
+  fail "the default awsCli must be the snapshot job's pinned AWS CLI"
+[ "$(render | grep -o 'aws-cli/aws-cli:[^@]*@sha256:[0-9a-f]*' | sort -u | wc -l | tr -d ' ')" = 1 ] || fail "the default render must admit exactly one AWS CLI reference"
 
 # The other guards of the vault values.
 refused 'vaultAddress is now vaultAddresses' --set vaultAddress=https://x

@@ -802,11 +802,23 @@ vault: P2 a pod update that swaps the image
     ryft-workloads-pods-vault: P2: a container image is not the one this namespace may run.
 vault: P2 a sidecar with another image
     ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 a snapshot pod whose upload image is not the pin
+    ryft-workloads-pods-vault: P2: a container image is not the one this namespace may run.
 vault: P2 an image volume
     ryft-workloads-templates-vault: P2: image volumes are not allowed.
 vault: P2 an init container with another image
     ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 another AWS CLI version with the pinned digest
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
 vault: P2 another Vault version with the same digest
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the AWS CLI by tag only
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the AWS CLI from Docker Hub
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the AWS CLI in a RYFT namespace
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+vault: P2 the AWS CLI's tag with another digest
     ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
 vault: P2 the Enterprise image
     ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
@@ -819,8 +831,6 @@ vault: P2 the server image by tag only
 vault: P2 the server image in a RYFT namespace
     ryft-workloads-templates: P2: a container image is not the one this namespace may run.
 vault: P2 the server image without docker.io/ (the chart's default repository)
-    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
-vault: P2 the snapshot CronJob before the AWS CLI is pinned (images.awsCli empty: fail closed)
     ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
 vault: P3 8200 from every namespace
     ryft-netpol-vault: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.

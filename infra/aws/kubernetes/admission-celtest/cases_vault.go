@@ -93,11 +93,30 @@ func runVault(c *chart) {
 	sub("P2 a debug container in a server pod", admin, "ephemeralcontainers", ec, pod(), "P2: a container image")
 	ec2 := set(pod(), "spec/ephemeralContainers", jv(fmt.Sprintf(`[{"name":"dbg","image":%q}]`, vaultImg)))
 	sub("P2 an ephemeral container with the server image", admin, "ephemeralcontainers", ec2, pod())
+	// The fixture is charts/vault-extras' render (templates/snapshot.yaml) with the images vault.tf pins.
 	cj := func() map[string]any { return fx("vault-cronjob-snapshot") }
-	add("P2 the snapshot CronJob before the AWS CLI is pinned (images.awsCli empty: fail closed)", admin, "CREATE", cj(), "P2: a container image")
-	add("P2 the snapshot CronJob with the server image only", admin, "CREATE", set(cj(), "spec/jobTemplate/spec/template/spec/containers/0/image", vaultImg))
-	snapPod := podOf(set(cj(), "spec/jobTemplate/spec/template/spec/containers/0/image", vaultImg), nil)
-	add("P2 a snapshot pod with its projected vault token", jobUser, "CREATE", snapPod)
+	upload := func(img string) map[string]any {
+		return set(cj(), "spec/jobTemplate/spec/template/spec/containers/0/image", img)
+	}
+	add("P2 the snapshot CronJob as vault-extras renders it (the pinned AWS CLI)", admin, "CREATE", cj())
+	add("P2 the snapshot CronJob updated", admin, "UPDATE", cj())
+	add("P2 the snapshot CronJob with the server image only", admin, "CREATE", upload(vaultImg))
+	add("P2 the AWS CLI by tag only", admin, "CREATE", upload("public.ecr.aws/aws-cli/aws-cli:2.39.5"), "P2: a container image")
+	add("P2 the AWS CLI's tag with another digest", admin, "CREATE", upload("public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:c6a538a5b1f1c0e5b9f4cbf0b6d1a5e9a0f7d2e3c4b5a6978877665544332211"), "P2: a container image")
+	add("P2 another AWS CLI version with the pinned digest", admin, "CREATE", upload("public.ecr.aws/aws-cli/aws-cli:2.39.4@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
+	add("P2 the AWS CLI from Docker Hub", admin, "CREATE", upload("docker.io/amazon/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
+	add("P2 the AWS CLI in the server StatefulSet (admitted: P2 judges the namespace's two images, not which container runs which)", admin, "CREATE", image("public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"))
+	snapPod := func() map[string]any {
+		p := podOf(cj(), nil)
+		// What the EKS Pod Identity webhook adds for the association vault/vault-snapshot.
+		vols := p["spec"].(map[string]any)["volumes"].([]any)
+		p["spec"].(map[string]any)["volumes"] = append(vols,
+			jv(`{"name":"eks-pod-identity-token","projected":{"sources":[{"serviceAccountToken":{"audience":"pods.eks.amazonaws.com","expirationSeconds":86400,"path":"eks-pod-identity-token"}}]}}`))
+		return p
+	}
+	add("P2 a snapshot pod with its projected vault token and the pod identity token", jobUser, "CREATE", snapPod())
+	add("P2 a snapshot pod whose upload image is not the pin", jobUser, "CREATE", set(snapPod(), "spec/containers/0/image", "public.ecr.aws/aws-cli/aws-cli:latest"), "P2: a container image")
+	add("P2 the AWS CLI in a RYFT namespace", argoCtl, "CREATE", set(find("Deployment", "ryft-notify", "notify"), "spec/template/spec/containers/0/image", "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"), "P2: a container image")
 	add("P2 the server image in a RYFT namespace", argoCtl, "CREATE", set(find("Deployment", "ryft-notify", "notify"), "spec/template/spec/containers/0/image", vaultImg), "P2: a container image")
 
 	fmt.Println("== namespace vault: P3 (default-deny, the server's and the job's flows)")
