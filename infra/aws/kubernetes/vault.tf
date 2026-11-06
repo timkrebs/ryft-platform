@@ -196,14 +196,20 @@ locals {
 
       updateStrategyType = "OnDelete"
 
-      # Time for a step-down and a clean Raft leave after the preStop's SIGTERM (the chart's 10 s is tight).
+      # Time for the chart's preStop (sleep 5, then SIGTERM) and Vault's shutdown: an active node gives up
+      # leadership and stops, a standby just stops. Neither leaves the Raft configuration (it stays a voter until
+      # `vault operator raft remove-peer`). The chart's 10 s leaves little after the preStop's 5 s.
       terminationGracePeriodSeconds = 30
 
       # One pod per zone as well as per node (the chart's required hostname anti-affinity stays): an EBS volume is
       # zonal, so a pod's zone is fixed for good by its first PVC, and two pods in one zone would lose the quorum
-      # with that zone. DoNotSchedule: a pod stays Pending rather than share a zone.
+      # with that zone. maxSkew 1 alone allows 2+1 when nodes exist in only two zones; minDomains = replicas
+      # counts the missing zones as empty (skew 2), so the third pod stays Pending until a node in a third zone
+      # exists. DoNotSchedule: Pending rather than a shared zone (minDomains requires it). The chart passes the
+      # list through unchanged (toYaml).
       topologySpreadConstraints = [{
         maxSkew           = 1
+        minDomains        = local.vault_replicas
         topologyKey       = "topology.kubernetes.io/zone"
         whenUnsatisfiable = "DoNotSchedule"
         labelSelector     = { matchLabels = local.vault_server_selector }

@@ -46,9 +46,10 @@ module "external_dns_pod_identity" {
 # Who gets the role: the association binds it to vault/vault (the chart's server service account; no
 # eks.amazonaws.com/role-arn annotation on it, IRSA would come first in the SDK's chain), and the trust policy
 # additionally requires the session tags EKS Pod Identity sets for that namespace and service account
-# (aws:RequestTag/kubernetes-namespace and -service-account, the AWS docs' example, pod-id-role.html), so a second
-# association of this role to another service account cannot assume it. Not conditioned yet (to verify for Pod
-# Identity first): aws:SourceAccount, aws:SourceArn and the eks-cluster-arn tag.
+# (aws:RequestTag/kubernetes-namespace and -service-account, the AWS docs' example, pod-id-role.html) and the
+# eks-cluster-arn tag of this cluster (pod-id-abac.html), so a second association of this role to another service
+# account, or from another cluster of the account, cannot assume it. Not conditioned yet (to verify for Pod
+# Identity first): aws:SourceAccount and aws:SourceArn.
 data "aws_kms_alias" "vault_unseal" {
   name = "alias/${var.cluster_name}-vault-unseal"
 }
@@ -63,6 +64,7 @@ locals {
   vault_unseal_trust_conditions = [
     { test = "StringEquals", variable = "aws:RequestTag/kubernetes-namespace", values = [local.vault_namespace] },
     { test = "StringEquals", variable = "aws:RequestTag/kubernetes-service-account", values = [local.vault_service_account] },
+    { test = "StringEquals", variable = "aws:RequestTag/eks-cluster-arn", values = [data.aws_eks_cluster.this.arn] },
   ]
 }
 

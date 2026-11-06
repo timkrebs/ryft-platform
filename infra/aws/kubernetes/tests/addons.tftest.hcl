@@ -8,6 +8,7 @@ variables {
 mock_provider "aws" {
   mock_data "aws_eks_cluster" {
     defaults = {
+      arn                   = "arn:aws:eks:eu-central-1:123456789012:cluster/ryft-prod-euc1"
       endpoint              = "https://mock.eks.eu-central-1.amazonaws.com"
       certificate_authority = [{ data = "bW9jaw==" }]
       vpc_config            = [{ vpc_id = "vpc-0123456789abcdef0" }]
@@ -1101,11 +1102,16 @@ run "vault_server_values_are_pinned_field_by_field" {
   assert {
     condition = yamldecode(helm_release.vault.values[0]).server.topologySpreadConstraints == [{
       maxSkew           = 1
+      minDomains        = 3
       topologyKey       = "topology.kubernetes.io/zone"
       whenUnsatisfiable = "DoNotSchedule"
       labelSelector     = { matchLabels = { "app.kubernetes.io/name" = "vault", "app.kubernetes.io/instance" = "vault", component = "server" } }
     }]
-    error_message = "one server pod per zone (the EBS volume pins each pod's zone): maxSkew 1, DoNotSchedule, the server pods only"
+    error_message = "one server pod per zone (the EBS volume pins each pod's zone): maxSkew 1, minDomains 3 (with two zones the third pod stays Pending instead of 2+1), DoNotSchedule, the server pods only"
+  }
+  assert {
+    condition     = yamldecode(helm_release.vault.values[0]).server.topologySpreadConstraints[0].minDomains == yamldecode(helm_release.vault.values[0]).server.ha.replicas
+    error_message = "minDomains follows the replicas: every pod needs a zone of its own"
   }
 }
 
@@ -1309,8 +1315,9 @@ run "vault_unseal_role_may_only_use_its_key" {
     condition = local.vault_unseal_trust_conditions == [
       { test = "StringEquals", variable = "aws:RequestTag/kubernetes-namespace", values = ["vault"] },
       { test = "StringEquals", variable = "aws:RequestTag/kubernetes-service-account", values = ["vault"] },
+      { test = "StringEquals", variable = "aws:RequestTag/eks-cluster-arn", values = ["arn:aws:eks:eu-central-1:123456789012:cluster/ryft-prod-euc1"] },
     ]
-    error_message = "the trust policy requires Pod Identity's session tags for vault/vault, so another association of the role cannot assume it"
+    error_message = "the trust policy requires Pod Identity's session tags for vault/vault in this cluster, so another association of the role (another service account, another cluster) cannot assume it"
   }
   # The module's input is not an output: read it from iam.tf, within the module's own block, comments removed.
   assert {
