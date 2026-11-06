@@ -991,6 +991,83 @@ run "argo_scope_never_covers_every_addon_namespace" {
   }
 }
 
+# The scope judgement itself (modules/argo-scope-check), with scopes the committed file does not have.
+run "argo_scope_check_clean" {
+  command = plan
+  module {
+    source = "./modules/argo-scope-check"
+  }
+  variables {
+    namespaces          = ["ryft-api", "rabbitmq-system"]
+    namespace_objects   = ["rabbitmq-system"]
+    never               = ["vault", "kube-system"]
+    addon_namespaces    = ["kube-system"]
+    never_chart         = ["kube-system"]
+    operators_namespace = "rabbitmq-system"
+  }
+  assert {
+    condition     = length(output.never_listed) == 0 && length(output.off_shape) == 0 && length(output.never_uncovered) == 0
+    error_message = "a ryft-* and the operators' namespace, nothing on the never-list, every add-on covered: clean"
+  }
+}
+
+run "argo_scope_check_refuses_a_namespace_outside_ryft" {
+  command = plan
+  module {
+    source = "./modules/argo-scope-check"
+  }
+  variables {
+    namespaces          = ["ryft-api", "rabbitmq-system", "monitoring", "default"]
+    namespace_objects   = ["rabbitmq-system"]
+    never               = ["vault"]
+    addon_namespaces    = []
+    never_chart         = []
+    operators_namespace = "rabbitmq-system"
+  }
+  assert {
+    condition     = join(",", output.off_shape) == "default,monitoring"
+    error_message = "monitoring and default are neither ryft-* nor the operators' namespace: ${join(",", output.off_shape)}"
+  }
+}
+
+run "argo_scope_check_refuses_a_never_namespace" {
+  command = plan
+  module {
+    source = "./modules/argo-scope-check"
+  }
+  variables {
+    namespaces          = ["ryft-api", "vault-secrets-operator-system"]
+    namespace_objects   = ["kube-system"]
+    never               = ["vault-secrets-operator-system", "kube-system"]
+    addon_namespaces    = []
+    never_chart         = []
+    operators_namespace = "rabbitmq-system"
+  }
+  assert {
+    condition     = join(",", output.never_listed) == "kube-system,vault-secrets-operator-system"
+    error_message = "a namespace on the never-list in namespaces or namespaceObjects is listed: ${join(",", output.never_listed)}"
+  }
+}
+
+run "argo_scope_check_refuses_an_uncovered_addon" {
+  command = plan
+  module {
+    source = "./modules/argo-scope-check"
+  }
+  variables {
+    namespaces          = ["ryft-api"]
+    namespace_objects   = []
+    never               = []
+    addon_namespaces    = ["external-dns", "kube-system"]
+    never_chart         = ["kube-system"]
+    operators_namespace = "rabbitmq-system"
+  }
+  assert {
+    condition     = join(",", output.never_uncovered) == "external-dns"
+    error_message = "an add-on namespace the chart's never-list misses is listed: ${join(",", output.never_uncovered)}"
+  }
+}
+
 # The RBAC gate on the tree as it is: #47 (T12-f) is merged, so argocd.tf renders a narrowed controller role
 # and argo-scope: deny with P6, P1 and P2 in deny is planned WITHOUT the stand-in variable.
 run "argo_scope_deny_reads_the_narrowed_role_of_argocd_tf" {

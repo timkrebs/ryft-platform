@@ -1498,8 +1498,8 @@ applying a targeted break-glass or restore, and do not leave an Argo CD chart bu
 rollback: `admission.tf` indexes `local.admission_effective["argo-scope"]` in two preconditions (keyed from the
 chart's `values.yaml` actions), so dropping only the `argo-scope` key fails the plan. A hand removal must take, in one
 PR: the template and the `argo-scope` action keys (chart and `admission-values.yaml`); the P12 preconditions, `check
-"admission_argo_scope"`, `check "admission_argo_scope_never"`, the `admission_argo_*` locals and the `depends_on` of
-`admission.tf`; the P12 runs of `tests/admission.tftest.hcl`; the generated recording rules and the counts. `argoScope`
+"admission_argo_scope"`, `check "admission_argo_scope_never"`, the `admission_argo_*` locals, the module `admission_argo_scope_check`
+(`modules/argo-scope-check`) and the `depends_on` of `admission.tf`; the P12 runs of `tests/admission.tftest.hcl`; the generated recording rules and the counts. `argoScope`
 in the chart's values **stays**: P1 and `_helpers.tpl` read it. There is no data and no down-migration.
 
 **What P12 does not cover** (accepted, design "What P12 does not cover"): reads (both Argo CD Roles read Secrets in

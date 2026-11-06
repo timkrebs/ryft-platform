@@ -73,18 +73,13 @@ locals {
     kubernetes_namespace_v1.vault.metadata[0].name,
     kubernetes_namespace_v1.argocd.metadata[0].name,
   ], local.admission_addon_namespaces, local.admission_argo_never_chart))
-  admission_argo_never_listed = sort(distinct([
-    for n in concat(local.admission_argo_scope.namespaces, local.admission_argo_scope.namespaceObjects) : n
-    if contains(local.admission_argo_never, n)
-  ]))
-  # An add-on namespace the chart's never-list misses: the plan refuses it (check below), so that the chart's
-  # render guard is never weaker than this plan.
-  admission_argo_never_uncovered = sort([for n in local.admission_addon_namespaces : n if !contains(local.admission_argo_never_chart, n)])
-  # argoScope.namespaces holds ryft-* or the operators' namespace only (the explicit list stays).
-  admission_argo_scope_off_shape = sort([
-    for n in local.admission_argo_scope.namespaces : n
-    if !(startswith(n, "ryft-") || n == local.admission_operators_namespace)
-  ])
+  # The judgement is modules/argo-scope-check (pure, so tests run it with other scopes): the scope's entries on
+  # the never-list; an add-on namespace the chart's never-list misses (the plan refuses it, so that the chart's
+  # render guard is never weaker than this plan); entries of argoScope.namespaces that are neither ryft-* nor
+  # the operators' namespace (the explicit list stays).
+  admission_argo_never_listed    = module.admission_argo_scope_check.never_listed
+  admission_argo_never_uncovered = module.admission_argo_scope_check.never_uncovered
+  admission_argo_scope_off_shape = module.admission_argo_scope_check.off_shape
 
   # P12 in deny is only worth something when Argo CD's own RBAC cannot undo it: with the chart's
   # wildcard ClusterRole the controller can patch or delete the ryft-argo-scope binding (bindings are
@@ -185,6 +180,16 @@ locals {
   # What the cluster holds (null objects when the list returned nothing, or under a mock).
   admission_live_policies = { for o in flatten([for t in data.kubernetes_resources.admission_policies : t.objects[*]]) : o.metadata.name => o }
   admission_live_bindings = { for o in flatten([for t in data.kubernetes_resources.admission_bindings : t.objects[*]]) : o.metadata.name => o }
+}
+
+module "admission_argo_scope_check" {
+  source              = "./modules/argo-scope-check"
+  namespaces          = local.admission_argo_scope.namespaces
+  namespace_objects   = local.admission_argo_scope.namespaceObjects
+  never               = local.admission_argo_never
+  addon_namespaces    = local.admission_addon_namespaces
+  never_chart         = local.admission_argo_never_chart
+  operators_namespace = local.admission_operators_namespace
 }
 
 data "helm_template" "admission" {

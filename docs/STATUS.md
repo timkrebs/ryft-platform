@@ -313,7 +313,8 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    3. ~~A fresh full-mode `admission-e2e` kind run on a tree that contains #47.~~ **Done:** run 42253117997, 94 pass, 0 fail,
       0 skipped (`argo-rbac` and `claim-i` ran).
    4. Mark #121 ready, review, merge (in review now).
-   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`). The plan must show only
+   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`). Run
+      `terraform -chdir=infra/aws/kubernetes init` first: #121 adds the local module `modules/argo-scope-check`. The plan must show only
       `helm_release.admission_policy` being created; if `helm_release.argocd` is in it (the release's `depends_on` pulls it
       in when it has pending changes), stop.
    6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can

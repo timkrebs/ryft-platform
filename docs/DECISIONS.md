@@ -4285,7 +4285,9 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   namespace (`argoScope.neverNamespaces`: VSO's, ExternalDNS's, Fluent Bit's, `monitoring`, `default`, `kube-public`,
   `kube-node-lease`; a Deployment Argo CD wrote in VSO's namespace could run as VSO's service account, which writes
   Secrets cluster-wide and reaches `vault` without P12 matching). `admission.tf` builds its own list from the Helm
-  releases of its root and fails the check while one of them is missing from the chart's list. **And**
+  releases of its root and fails the check while one of them is missing from the chart's list (the judgement is
+  the pure local module `modules/argo-scope-check`, no provider and no resource, so tests run it with scopes the
+  committed file does not have; a plan after the merge needs `terraform init` once). **And**
   `argoScope.namespaces` holds `ryft-*` or the operators' namespace only (the explicit list stays). Not done: a
   check that the list is a subset of the Argo CD destinations and the namespaces the apps render into (the
   rendered namespaces are known to the kind run's dry-run, not to Terraform). Every list the chart splices into
