@@ -10,7 +10,8 @@
 #
 # RYFT_VAULT=ce reads the in-cluster Vault instead (Community Edition, no namespaces) through your
 # own port-forward (VAULT_ADDR=https://127.0.0.1:8200, VAULT_CACERT, a token): kv-operator/demo,
-# with VAULT_NAMESPACE removed for that call. The default (hcp) reads operator/demo in
+# with VAULT_NAMESPACE removed for that call; refused unless VAULT_ADDR is unset or https loopback
+# and VAULT_SKIP_VERIFY is unset. The default (hcp) reads operator/demo in
 # DEMO_VAULT_NAMESPACE (admin/ryft), as before.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +23,13 @@ if [ -z "${DEMO_PASSWORD:-}" ]; then
       DEMO_PASSWORD=$(VAULT_NAMESPACE=${DEMO_VAULT_NAMESPACE:-admin/ryft} vault kv get -mount=operator -field=password demo) \
         || { echo "✗ seed_demo: no DEMO_PASSWORD and Vault did not give it (vault login, VAULT_ADDR; infra/vault applied?)" >&2; exit 1; } ;;
     ce)
+      # Only your port-forward, verified (as lib/admin.sh's ryft_ce_vault_ok): VAULT_ADDR unset (the
+      # CLI's default is https://127.0.0.1:8200) or https loopback, and no VAULT_SKIP_VERIFY.
+      loopback='^https://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?/?$'
+      if [ -n "${VAULT_ADDR:-}" ] && ! [[ $VAULT_ADDR =~ $loopback ]]; then
+        echo "✗ seed_demo: RYFT_VAULT=ce: VAULT_ADDR must be your port-forward (https://127.0.0.1:8200), not $VAULT_ADDR" >&2; exit 1
+      fi
+      [ -z "${VAULT_SKIP_VERIFY:-}" ] || { echo "✗ seed_demo: RYFT_VAULT=ce: unset VAULT_SKIP_VERIFY (set VAULT_CACERT instead)" >&2; exit 1; }
       DEMO_PASSWORD=$(unset VAULT_NAMESPACE; vault kv get -mount=kv-operator -field=password demo) \
         || { echo "✗ seed_demo: no DEMO_PASSWORD and the in-cluster Vault did not give it (the port-forward, VAULT_ADDR, VAULT_CACERT, VAULT_TOKEN)" >&2; exit 1; } ;;
     *) echo "✗ seed_demo: RYFT_VAULT is hcp (default) or ce, not \"$RYFT_VAULT\"" >&2; exit 1 ;;

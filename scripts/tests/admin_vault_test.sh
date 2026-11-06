@@ -74,6 +74,22 @@ admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce || fail "CE wit
 ! admin FAKE_VAULT_VALUE=x RYFT_VAULT=enterprise || fail "an unknown RYFT_VAULT was accepted"
 grep -Fq 'RYFT_VAULT is hcp (default) or ce' "$t/err" && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] || fail "an unknown RYFT_VAULT: $(cat "$t/err") $(vault_calls)"
 
+# CE goes only to your port-forward, verified: VAULT_ADDR unset or https loopback, no VAULT_SKIP_VERIFY.
+# The default (HCP) does not look at either.
+for addr in https://127.0.0.1:8200 https://localhost:8200 'https://[::1]:8200' https://127.0.0.1:8200/; do
+  admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_ADDR="$addr" || fail "CE with VAULT_ADDR=$addr: $(cat "$t/err")"
+done
+for addr in https://vault.example.com:8200 http://127.0.0.1:8200 https://127.0.0.1:8200@evil.example https://127.0.0.1.evil.example:8200 \
+  https://10.0.0.1:8200; do
+  ! admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_ADDR="$addr" || fail "CE took VAULT_ADDR=$addr"
+  grep -Fq 'VAULT_ADDR must be your port-forward' "$t/err" && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] \
+    || fail "CE, VAULT_ADDR=$addr: $(cat "$t/err") $(vault_calls)"
+done
+! admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_SKIP_VERIFY=true || fail "CE took VAULT_SKIP_VERIFY"
+grep -Fq 'unset VAULT_SKIP_VERIFY' "$t/err" && [ -z "$(vault_calls)" ] || fail "CE, VAULT_SKIP_VERIFY: $(cat "$t/err")"
+admin FAKE_VAULT_VALUE=from-hcp VAULT_ADDR=https://vault.example.com:8200 VAULT_SKIP_VERIFY=true || fail "HCP looked at VAULT_ADDR: $(cat "$t/err")"
+[ "$(vault_calls)" = "kv get -mount=kv -field=ADMIN_API_KEY config | VAULT_NAMESPACE=admin/ryft/api" ] || fail "HCP with VAULT_ADDR: $(vault_calls)"
+
 # seed_demo.sh, from a copy whose seed_demo.py only records whether it got the password.
 cp "$ROOT/scripts/seed_demo.sh" "$t/s/seed_demo.sh"
 cat > "$t/s/seed_demo.py" <<'P'
@@ -103,4 +119,10 @@ seed DEMO_PASSWORD=given RYFT_VAULT=ce || fail "seed, DEMO_PASSWORD: $(cat "$t/e
 { [ ! -e "$t/seeded" ] && grep -Fq 'the in-cluster Vault did not give it' "$t/err"; } || fail "seed, CE failure: $(cat "$t/err")"
 ! seed FAKE_VAULT_VALUE=x RYFT_VAULT=Ce || fail "seed: an unknown RYFT_VAULT was accepted"
 [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] || fail "seed: an unknown RYFT_VAULT still read Vault"
+seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_ADDR=https://127.0.0.1:8200 || fail "seed, CE loopback: $(cat "$t/err")"
+! seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_ADDR=https://127.0.0.1:8200@evil.example || fail "seed: CE took a foreign VAULT_ADDR"
+{ [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] && grep -Fq 'VAULT_ADDR must be your port-forward' "$t/err"; } || fail "seed, foreign VAULT_ADDR: $(cat "$t/err")"
+! seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_SKIP_VERIFY=1 || fail "seed: CE took VAULT_SKIP_VERIFY"
+{ [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ]; } || fail "seed, VAULT_SKIP_VERIFY: $(cat "$t/err")"
+seed FAKE_VAULT_VALUE=pw-hcp VAULT_ADDR=https://vault.example.com:8200 VAULT_SKIP_VERIFY=1 || fail "seed, HCP looked at VAULT_ADDR: $(cat "$t/err")"
 echo "✓ admin_vault_test"

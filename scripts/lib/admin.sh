@@ -9,9 +9,25 @@
 #   RYFT_VAULT    which Vault that last step reads: hcp (the default, as above) or ce, the in-cluster
 #                 Vault (Community Edition: no namespaces) through your own port-forward
 #                 (VAULT_ADDR=https://127.0.0.1:8200, VAULT_CACERT, a token): vault kv get -mount=kv-api
-#                 -field=ADMIN_API_KEY config, with VAULT_NAMESPACE removed for that call only
+#                 -field=ADMIN_API_KEY config, with VAULT_NAMESPACE removed for that call only;
+#                 refused unless VAULT_ADDR is unset or https loopback and VAULT_SKIP_VERIFY is unset
 API_URL=${API_URL:-https://api.ryftapp.de}
 RYFT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+
+# ryft_ce_vault_ok: with RYFT_VAULT=ce the vault CLI talks to your port-forward, verified: VAULT_ADDR
+# unset (the CLI's default is https://127.0.0.1:8200) or https on 127.0.0.1, localhost or [::1], and
+# no VAULT_SKIP_VERIFY. Anything else would hand the token to another host or an unverified one.
+ryft_ce_vault_ok() {
+  local loopback='^https://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?/?$'
+  if [ -n "${VAULT_ADDR:-}" ] && ! [[ $VAULT_ADDR =~ $loopback ]]; then
+    echo "✗ RYFT_VAULT=ce: VAULT_ADDR must be your port-forward (https://127.0.0.1:8200), not $VAULT_ADDR" >&2
+    return 1
+  fi
+  if [ -n "${VAULT_SKIP_VERIFY:-}" ]; then
+    echo "✗ RYFT_VAULT=ce: unset VAULT_SKIP_VERIFY (set VAULT_CACERT to the in-cluster Vault's CA instead)" >&2
+    return 1
+  fi
+}
 
 # ryft_admin_key exports ADMIN_API_KEY and says on stderr where it came from.
 ryft_admin_key() {
@@ -21,7 +37,8 @@ ryft_admin_key() {
   fi
   local key=""
   case ${RYFT_VAULT:-hcp} in
-    hcp|ce) ;;
+    hcp) ;;
+    ce) ryft_ce_vault_ok || return 1 ;;
     *) echo "✗ RYFT_VAULT is hcp (default) or ce, not \"$RYFT_VAULT\"" >&2; return 1 ;;
   esac
   if command -v terraform >/dev/null 2>&1; then
