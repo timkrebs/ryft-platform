@@ -1,0 +1,13 @@
+# fixture: vault: P13 Argo CD writes a CA Issuer
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-vault-trust
+# message: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: api-ca
+  namespace: ryft-api
+spec:
+  ca:
+    secretName: amqp-client

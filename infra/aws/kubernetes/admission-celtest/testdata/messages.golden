@@ -1,13 +1,13 @@
 P1 argo creates another namespace
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 P1 argocd namespace privileged
-    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 P1 enforce baseline
-    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 P1 generateName ryft- without labels
-    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 P1 label missing
-    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 P1 version label pinned
     ryft-namespaces: P1: Pod Security version labels must be absent or latest.
 P10 admin sync manifests
@@ -136,32 +136,32 @@ P3 default-deny with a rule
 P3 default-deny with only Ingress
     ryft-netpol: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
 P3 egress world on 22
-    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
 P3 egress world with 4 excepts
-    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
 P3 egress world without except
-    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
 P3 empty namespaceSelector
     ryft-netpol: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
 P3 endPort in an ingress rule with an ipBlock peer
-    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
     ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
 P3 endPort next to a namespaceSelector peer
     ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
 P3 endPort next to an ipBlock peer (broker, vpc cidr)
-    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
     ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
 P3 endPort next to the public-egress ipBlock
-    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule.
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
     ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
 P3 endPort outside the broker
     ryft-netpol: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
 P3 ingress ipBlock vpc other port
-    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
 P3 ingress ipBlock world
-    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
 P3 named port ok
-    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692.
+    ryft-netpol: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
 P3 namespaceSelector expressions
     ryft-netpol: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
 P3 port entry without port
@@ -171,9 +171,9 @@ P3 rule without ports
 P4 allowedNamespaces
     ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
 P4 caCertPath
-    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
 P4 cross-namespace vaultAuthRef
-    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys.
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 P4 destination to another secret
     ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
 P4 excludeRaw false
@@ -187,15 +187,15 @@ P4 other connection
 P4 other kind
     ryft-vso: P4: only VaultConnection, VaultAuth and VaultStaticSecret are allowed.
 P4 other vault address
-    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
 P4 skipTLSVerify
-    ryft-vso: P4: a VaultConnection must carry the RYFT Vault address, verify TLS, and set no CA, header or timeout.
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
 P4 transformation templates
     ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
 P4 vault namespace outside admin/ryft/
     ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
 P4 vault namespace override
-    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth and the kv-v2 mount, and set only the allowed keys.
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 P5 binaryData API_KEY
     ryft-auth-env: P5: a ConfigMap or Secret must not carry API_KEY, ALLOW_INSECURE_APIKEY_AUTH or USER_ID.
 P5 binaryData AUTH_MODE
@@ -569,7 +569,7 @@ broker statefulset by someone else (commands, token)
     ryft-workloads-templates: P2: a RYFT workload must not project a service account token.
     ryft-workloads-templates: P2: a RYFT workload must set automountServiceAccountToken: false.
 carve-out: P1 PSA label lowered on a deleting Namespace
-    ryft-namespaces: P1: a RYFT, rabbitmq-system or argocd Namespace must carry Pod Security enforce, warn and audit set to restricted.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 carve-out: P6 aggregate label added to a deleting ClusterRole
     ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
 carve-out: P7 secret-type label added to a deleting Secret
@@ -593,6 +593,20 @@ cluster operator writes a secret in kube-system
     ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
 cluster operator writes a secret in ryft-api
     ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+decom: an HCP Vault namespace
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace, and no allowedNamespaces.
+decom: an empty Vault namespace
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace, and no allowedNamespaces.
+decom: an empty mount
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys.
+decom: another service's mount
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys.
+decom: the HCP VaultConnection as generated today
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+decom: the HCP address
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+decom: the mount kv
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys.
 restartedAt plus a command by an admin
     ryft-workloads-templates: P2: a RYFT container must not set a command, an exec probe or an exec lifecycle hook.
     ryft-workloads-templates: P2: a RYFT container must not set args (only the smoke hook's [smoke]).
@@ -614,3 +628,288 @@ topology operator writes a secret in ryft-api
     ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
 topology operator writes a service
     ryft-operator-reach: P8: this operator may not write this resource.
+vault: P1 Argo CD creates the namespace
+    ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+vault: P1 Argo CD deletes the namespace
+    ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+vault: P1 argocd-server updates the namespace
+    ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+vault: P1 the namespace at baseline
+    ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+vault: P1 the namespace with a pinned version
+    ryft-namespaces-vault: P1: Pod Security version labels must be absent or latest.
+vault: P1 the namespace with privileged audit
+    ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+vault: P1 the namespace without enforce
+    ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+vault: P13 Argo CD writes ClusterIssuer ryft-vault as rendered
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes a CA Issuer
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes a CertificateRequest's status
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 Argo CD writes a Vault Issuer that sends ryft-secrets to another server
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes a selfSigned ClusterIssuer
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes a selfSigned Issuer with CRL points
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes an ACME Issuer
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 Argo CD writes an Issuer with an empty spec (has() guard)
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+vault: P13 ClusterIssuer ryft-vault as selfSigned
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+vault: P13 ClusterIssuer ryft-vault with OCSP servers
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+vault: P13 ClusterIssuer ryft-vault with an empty ca (has() guard)
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+vault: P13 ClusterIssuer ryft-vault with another Secret
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+vault: P13 ClusterIssuer ryft-vault with ca and acme
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault must be exactly ca.secretName ryft-vault-ca.
+vault: P13 ClusterIssuer ryft-vault-bootstrap as a CA issuer
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault-bootstrap must be exactly selfSigned: {}.
+vault: P13 ClusterIssuer ryft-vault-bootstrap with CRL points
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault-bootstrap must be exactly selfSigned: {}.
+vault: P13 ClusterIssuer ryft-vault-bootstrap with an empty spec (has() guard)
+    ryft-vault-trust: P13: the ClusterIssuer ryft-vault-bootstrap must be exactly selfSigned: {}.
+vault: P13 a Certificate with a generated name
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 a CertificateRequest by the admin
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 a CertificateRequest from Argo CD
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 a CertificateRequest from cert-manager's cainjector
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 a CertificateRequest updated by the admin
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 a Kubernetes CSR for ryft-vault by cert-manager
+    ryft-vault-trust: P13: a Kubernetes CertificateSigningRequest for the signer clusterissuers.cert-manager.io/ryft-vault is refused (cert-manager signs only its own CertificateRequests).
+vault: P13 a Kubernetes CSR for ryft-vault by the admin
+    ryft-vault-trust: P13: a Kubernetes CertificateSigningRequest for the signer clusterissuers.cert-manager.io/ryft-vault is refused (cert-manager signs only its own CertificateRequests).
+vault: P13 a Kubernetes CSR for ryft-vault-bootstrap
+    ryft-vault-trust: P13: a Kubernetes CertificateSigningRequest for the signer clusterissuers.cert-manager.io/ryft-vault is refused (cert-manager signs only its own CertificateRequests).
+vault: P13 a namespaced Issuer named ryft-vault signing with ryft-vault-ca
+    ryft-vault-trust: P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca.
+vault: P13 a vault-ca-shaped Certificate under another name
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 an Issuer in cert-manager signing with ryft-vault-ca
+    ryft-vault-trust: P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca.
+vault: P13 an update that adds the server's name to vault-ca
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 an update that moves vault-ca to ryft-vault from another issuer
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 another Certificate in vault
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 another Certificate writing the Secret vault-ca
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 another ClusterIssuer signing with ryft-vault-ca
+    ryft-vault-trust: P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca.
+vault: P13 ingress-shim's Certificate for an Ingress annotated with ryft-vault
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 the Secret vault-tls from letsencrypt in vault, another Certificate
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 the admin approves a CertificateRequest (status)
+    ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+vault: P13 the root CA Secret in another namespace
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+vault: P13 the root CA Secret written by another Certificate
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+vault: P13 the root CA from a namespaced Issuer of the bootstrap's name
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+vault: P13 the root CA from another bootstrap issuer
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+vault: P13 the root CA signed by ryft-vault itself
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 the root CA without an issuerRef name (has() guard)
+    ryft-vault-trust: P13: the Secret ryft-vault-ca may be written only by the Certificate cert-manager/ryft-vault-ca of the ClusterIssuer ryft-vault-bootstrap.
+vault: P13 vault-ca as a CA
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca from a selfSigned Issuer of its namespace
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 vault-ca from ryft-internal
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 vault-ca into ryft-secrets
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca naming a namespaced Issuer of that name
+    ryft-vault-trust: P13: a Certificate for ryft-vault must name the ClusterIssuer ryft-vault of cert-manager.io.
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 vault-ca naming an external issuer group
+    ryft-vault-trust: P13: a Certificate for ryft-vault must name the ClusterIssuer ryft-vault of cert-manager.io.
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 vault-ca naming the issuer without a kind (an Issuer)
+    ryft-vault-trust: P13: a Certificate for ryft-vault must name the ClusterIssuer ryft-vault of cert-manager.io.
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P13 vault-ca with a literalSubject
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with a subject
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with an IP address
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with an e-mail address
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with another namespace's commonName
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with client auth
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with keystores
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with server auth
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with the server's commonName
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with the server's name
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca with uris
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-ca without a commonName
+    ryft-vault-trust: P13: a vault-ca Certificate must be commonName vso.<namespace> in its own Secret vault-ca, with no SAN, no server auth, no CA, subject or other field.
+vault: P13 vault-tls as a CA
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls in ryft-api
+    ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
+vault: P13 vault-tls into another Secret
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with a commonName
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with a pod IP
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with a secretTemplate
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with a wildcard
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with another name
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with cert sign
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with client auth
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with isCA false (not in the shape)
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls with uris
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault-tls without a secretName
+    ryft-vault-trust: P13: vault/vault-tls may carry only the Vault server's names and addresses, the usages server auth and digital signature, and its own Secret; no CA, subject or other field.
+vault: P13 vault/vault-tls from ryft-internal
+    ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
+vault: P2 a RYFT image in vault
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 a debug container in a server pod
+    ryft-workloads-pods-vault: P2: a container image is not the one this namespace may run.
+vault: P2 a pod update that swaps the image
+    ryft-workloads-pods-vault: P2: a container image is not the one this namespace may run.
+vault: P2 a sidecar with another image
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 an image volume
+    ryft-workloads-templates-vault: P2: image volumes are not allowed.
+vault: P2 an init container with another image
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 another Vault version with the same digest
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the Enterprise image
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the pin with a suffix
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the right tag with another digest
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the server image by tag only
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the server image in a RYFT namespace
+    ryft-workloads-templates: P2: a container image is not the one this namespace may run.
+vault: P2 the server image without docker.io/ (the chart's default repository)
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P2 the snapshot CronJob before the AWS CLI is pinned (images.awsCli empty: fail closed)
+    ryft-workloads-templates-vault: P2: a container image is not the one this namespace may run.
+vault: P3 8200 from every namespace
+    ryft-netpol-vault: P3: a namespaceSelector must be matchLabels with the one key kubernetes.io/metadata.name.
+vault: P3 8200 from the VPC range
+    ryft-netpol-vault: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
+vault: P3 a rule without ports
+    ryft-netpol-vault: P3: every NetworkPolicy rule needs ports (each with a port) and a peer.
+vault: P3 an endPort in vault
+    ryft-netpol-vault: P3: endPort is allowed only for the broker's node-to-node range 35672-35682, on a rule whose peers are podSelectors.
+vault: P3 another private range on 443
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 default-deny deleted in a live namespace
+    ryft-netpol-vault: P3: default-deny can be deleted only together with its namespace.
+vault: P3 default-deny narrowed
+    ryft-netpol-vault: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+vault: P3 default-deny with a rule
+    ryft-netpol-vault: P3: default-deny must select every pod, list Ingress and Egress and hold no rules.
+vault: P3 node metrics 9090 from the VPC (a ryft-* shape, not in vault)
+    ryft-netpol-vault: P3: an ingress ipBlock may only be the VPC CIDR on ports 9090 and 15692, and none in vault.
+vault: P3 public egress on 5432 (a ryft-* shape, not in vault)
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 public egress on 80
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 public egress without the private ranges excepted
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the Pod Identity agent in a RYFT namespace (vault's shape only)
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the Pod Identity agent on 443
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the VPC on 443 in a RYFT namespace (vault's shape only)
+    ryft-netpol: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the VPC on 443 with an except
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the VPC on 8200 (egress)
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the agent and the VPC in one rule on 80 and 443
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the instance metadata service on 80
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P3 the link-local range on 80
+    ryft-netpol-vault: P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80.
+vault: P4 a VaultConnection with a timeout
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 a VaultConnection with headers
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 a VaultConnection with skipTLSVerify
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 an in-cluster VaultAuth with another mount
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+vault: P4 an in-cluster VaultAuth with the namespace root
+    ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, a Vault namespace under admin/ryft/, and no allowedNamespaces.
+vault: P4 another service's mount (kv-notify in ryft-api)
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 caCertSecretRef to another Secret
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 kv-api read from ryft-notify
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the active pod's address
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 the bare prefix (kv-)
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the in-cluster address over http
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 the in-cluster address spelt with cluster.local
+    ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
+vault: P4 the mount spelt with the namespace (kv-ryft-api)
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the operator's mount (kv-operator)
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-admin read from ryft-admin
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-default read from default
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-operator read from ryft-operator
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-root read from ryft-root
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-terraform read from ryft-terraform
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-vault-snapshot read from ryft-vault-snapshot
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the reserved mount kv-vault-snapshot read from vault-snapshot
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P4 the service's mount with a path in it
+    ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
+vault: P6 Argo CD writes the auth-delegator ClusterRoleBinding
+    ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+vault: P6 Argo CD writes the discovery Role
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role must be named rabbitmq-cluster-* or messaging-topology-*.
+vault: P6 Argo CD writes the discovery RoleBinding
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.

@@ -34,7 +34,7 @@ line() {
 CTRL=system:serviceaccount:argocd:argocd-application-controller
 P6_WILD="P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics."
 P6_RO="P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates."
-P3="P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432, or the broker's 443 rule."
+P3="P3: an egress ipBlock must be 0.0.0.0/0 with the private ranges excepted on 443/5432 (443 in vault), the broker's 443 rule, or in vault the VPC CIDR on 443 or the Pod Identity agent on 80."
 NEW=2026-10-26T12:00:01.000000Z OLD=2026-10-26T11:00:00.000000Z SINCE=2026-10-26T12:00:00.000000Z
 
 # run <stage> <held> -> the result of the findings check in $RES (PASS|FAIL|SKIP)

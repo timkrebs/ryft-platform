@@ -484,6 +484,69 @@ flowchart LR
 - **Shovel, Federation and SchemaReplication are refused cluster-wide** (recommended), from every writer:
   they move messages off the cluster.
 
+**The namespace `vault` (Vault CE, chart 0.5.0)**
+- **Bindings of its own:** P1, P2 (templates and pods) and P3 each have a second binding,
+  `<name>-vault`, with `namespaceSelector` In `[vault]`; the general bindings carry NotIn `[vault]`.
+  One policy, two stagings: the vault bindings sit in step A and go to deny before the Vault
+  bootstrap (the plan's gate: P12, P13 and the vault branches of P1–P3 in Deny), independently of
+  the `ryft-*` steps B and C and of P3's broker guard. P4 and P13 need no split: P4 has nothing in
+  `vault`, P13 has a binding of its own and judges cluster-scoped kinds (ClusterIssuers, CSRs), which
+  a namespaceSelector never excludes.
+- **P1:** `vault` is in scope like `rabbitmq-system` and `argocd`: the PSA labels stay `restricted`.
+- **P2:** in `vault` only `images.vault` (the release's exact digest) and `images.awsCli` (the
+  snapshot CronJob, empty until that image is pinned, so the CronJob is refused until then). The
+  chart guard holds both to one literal reference with a full digest (`^`, `[.]` for a dot,
+  `@sha256:<64 hex>$`; no alternation, group, repetition or escape). **P2 judges images only in
+  `vault`:** the ryft-* command, args and token rules do not apply, so the Vault image running
+  `/bin/sh` under any service account is admitted. That boundary is RBAC (only Terraform writes
+  in `vault`) and P12 (Argo CD writes nothing there). The Vault image is refused in ryft-*.
+- **P3:** no ingress ipBlock in `vault`. Egress ipBlocks: the public shape on 443 only (no 5432), the
+  VPC CIDR on 443 (the API server, for the token review) and the Pod Identity agent
+  `169.254.170.23/32` on 80.
+- **P4, during the cutover:** P4 admits the union of the two shapes infra/vault generates, field by
+  field: an address from `vaultAddresses`, `caCertSecretRef` absent or `vault-ca`, a Vault namespace
+  absent or under `admin/ryft/`, the mount `kv` or `kv-<service>` (the namespace without `ryft-`).
+  **The pairing is not enforced:** HCP's address with `vault-ca`, the in-cluster address without a
+  CA, or a mix of shapes in one namespace pass admission and fail closed later (TLS or login). The
+  reserved names (`operator`, `root`, `admin`, `terraform`, `default`, `vault-snapshot`, as infra/vault
+  refuses them as services) are never a service: `ryft-operator` may not read `kv-operator` (the demo
+  password). The decommission empties `vso.kvMount` and `vso.vaultNamespacePrefix` and leaves one
+  address; then only the in-cluster fields pass (the harness judges that render too).
+
+**P13 `ryft-vault-trust`** (step A; C, U on cert-manager `certificates`, `certificaterequests`,
+`certificaterequests/status`, `issuers`, `clusterissuers`, and C on `certificatesigningrequests`)
+- **Matched:** a Certificate or CertificateRequest naming `ryft-vault` (whatever kind or group), a
+  Certificate whose `secretName` is `vault-ca`, `vault-tls` or `ryft-vault-ca` (whatever issuer),
+  every Issuer and ClusterIssuer, and a Kubernetes CSR whose `signerName` starts with
+  `clusterissuers.cert-manager.io/ryft-vault`.
+- **What the issuer signs:** `issuerRef` is the ClusterIssuer of `cert-manager.io`, and only two
+  Certificates: `vault/vault-tls` (keys allowlisted, `secretName` its name, DNS names, IPs and usages
+  a subset of the committed lists, never `isCA`) and `<namespace>/vault-ca` (keys allowlisted,
+  `secretName` its name, `commonName: vso.<namespace>`, **no SAN-bearing key**: no `dnsNames`,
+  `ipAddresses`, `uris` or `emailAddresses`). The invariant that keeps a `vault-ca` leaf from serving
+  as Vault is "no SAN" (Go never matches a host name against the commonName), not its usages: usages
+  without `server auth` mean no EKU at all, which Go accepts for any purpose. The `caUsages` guard is
+  defence in depth. An Ingress annotated with `ryft-vault` is refused by these rules (ingress-shim's
+  Certificate has another name), not by the CertificateRequest rule.
+- **The reverse:** the Secret `vault-ca` (any namespace) and `vault/vault-tls` only from a Certificate
+  of `ryft-vault`; the root Secret `ryft-vault-ca` only from the Certificate
+  `cert-manager/ryft-vault-ca` of the ClusterIssuer `ryft-vault-bootstrap`.
+- **Issuers:** only the ClusterIssuer `ryft-vault` signs with `ca.secretName: ryft-vault-ca`, and it is
+  exactly that (`spec` holds `ca`, `ca` holds `secretName`); `ryft-vault-bootstrap` is exactly
+  `selfSigned: {}`. **Argo CD's identities write only Issuers that are exactly `selfSigned: {}`** (the
+  operators' webhook issuers in `rabbitmq-system`) and no ClusterIssuer: an Issuer of type `vault`,
+  `venafi` or `acme` names a server and a Secret of its namespace (`auth.tokenSecretRef: ryft-secrets`),
+  and cert-manager sends that Secret's value to the server. This is P13's until P12 (#121) narrows
+  Argo CD further.
+- **Requests:** a CertificateRequest for `ryft-vault`, and a write of its status (approval, the
+  signed certificate), only as `system:serviceaccount:cert-manager:cert-manager`. That rule is exactly
+  as strong as "nothing else runs as that service account" (its token, an exec into the controller).
+  A Kubernetes CSR for a `ryft-vault*` signer is refused from everyone (cert-manager's CSR
+  controllers are off; turned on, they would bypass the CertificateRequest rule).
+- **Not held by P13:** a Secret `ryft-vault-ca`, `vault-ca` or `vault-tls` written directly (RBAC:
+  only Terraform and cert-manager write Secrets there), and Argo CD writing a well-shaped Certificate
+  in `vault` (P12).
+
 **Where each item lands:**
 
 | Item | Held by |
@@ -550,7 +613,7 @@ T12-k (the broker's egress) lands before Step B.
 
 | Step | Policies | Why here |
 | --- | --- | --- |
-| A | P4, P6, P11 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`) |
+| A | P4, P6, P11, P13, and the vault bindings of P1, P2 and P3 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`); P13 and the vault bindings only the Vault add-on (Terraform) and the issuers |
 | B | P1, P2 `templates`, P3, P5, P9 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods |
 | C | P2 `pods`, P8 | runtime: Pods for rollouts, scale-ups and drains, and the broker's reconcile; critical alert |
 | D | P7, P10 | Argo CD's own objects, last |
@@ -689,6 +752,7 @@ Step 0 and on every operator, argo-cd chart or EKS minor upgrade:
 | --- | --- | --- | --- |
 | P4 refuses | one `vault-<svc>` app and that namespace's Secret refresh; the root's later waves when it syncs | `ArgoAppOutOfSync`, VaultStaticSecret Degraded, `AdmissionPolicyDenied` | fix git, Vault or the chart |
 | P6 / P11 refuse | `rabbitmq-operators` / `broker-rabbitmq` (topology changes wait) | `ArgoAppOutOfSync` | chart first for upgrades |
+| P13 refuses | a `vault-tls` or `vault-ca` issue or renewal (the old certificate stays valid until it expires), an Issuer Argo CD syncs, a ClusterIssuer Terraform applies | the Certificate not Ready, a Terraform error, `AdmissionPolicyDenied` | fix the Certificate or the chart's `vault.*` values |
 | P1, P2 `templates`, P3, P5, P9 refuse | all of `ryft-platform` (every service and web deploy) or the broker app; P1 also an `infra/vault` apply | `ArgoAppOutOfSync`, a Terraform error | fix git or the chart; break-glass if a fix must ship |
 | P2 `pods` / P8 refuse | new Pods: rollouts, HPA scale-ups, drains, the broker's reconcile. Capacity can drop | `AdmissionPodDenied` (critical), `FailedCreate`, `ReconcileSuccess=False` | break-glass at once, then fix |
 | P7 refuses | Argo spec writes: root sync, UI edits. Status and auto-sync go on (carve-out) | the root's sync fails | break-glass, fix the chart |

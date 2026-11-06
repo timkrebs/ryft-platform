@@ -1,0 +1,20 @@
+# fixture: vault: P13 a CertificateRequest by the admin
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
+apiVersion: cert-manager.io/v1
+kind: CertificateRequest
+metadata:
+  name: vault-tls-1
+  namespace: vault
+spec:
+  duration: 8760h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: ryft-vault
+  request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQkFUQ0JxUUlCQURBYU1SZ3dGZ1lEVlFRRERBOTJZWFZzZEM1MllYVnNkQzV6ZG1Nd1dUQVRCZ2NxaGtqTwpQUUlCQmdncWhrak9QUU1CQndOQ0FBVFdPM3RTb200V0o1UGI4VjhVSHdFakEzK3pIdHFnd1kxeTQvclJTcDhCCkFnOFJVckx5WTRHQm0wOThKUzRnRmNtT1g5OXRwcld4NWlTWFBTejkzQVBYb0Mwd0t3WUpLb1pJaHZjTkFRa08KTVI0d0hEQWFCZ05WSFJFRUV6QVJnZzkyWVhWc2RDNTJZWFZzZEM1emRtTXdDZ1lJS29aSXpqMEVBd0lEUndBdwpSQUlnYWR6enIvdzlVUmpCMVkvS3VuNUZIZFh6OHl3SXFyQVJVaVU5cFFxSU1Da0NJRlJkQkdjdEd0c3pacmp2CnI0V1lZRXdCblZuSmYxY1JYdHZyazdqbXR3c0MKLS0tLS1FTkQgQ0VSVElGSUNBVEUgUkVRVUVTVC0tLS0tCg==
+  usages:
+  - server auth
+  - digital signature

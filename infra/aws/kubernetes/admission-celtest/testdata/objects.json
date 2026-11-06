@@ -1058,5 +1058,1047 @@
         "namespace": "ryft-rabbitmq"
       }
     ]
+  },
+  "vault-namespace": {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+      "name": "vault",
+      "labels": {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted"
+      }
+    }
+  },
+  "vault-statefulset": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "vault",
+      "namespace": "vault",
+      "labels": {
+        "app.kubernetes.io/name": "vault",
+        "app.kubernetes.io/instance": "vault"
+      }
+    },
+    "spec": {
+      "serviceName": "vault-internal",
+      "podManagementPolicy": "Parallel",
+      "replicas": 3,
+      "updateStrategy": {
+        "type": "OnDelete"
+      },
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "vault",
+          "app.kubernetes.io/instance": "vault",
+          "component": "server"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "vault",
+            "app.kubernetes.io/instance": "vault",
+            "component": "server"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "vault",
+          "terminationGracePeriodSeconds": 10,
+          "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": 100,
+            "runAsGroup": 1000,
+            "fsGroup": 1000,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "volumes": [
+            {
+              "name": "config",
+              "configMap": {
+                "name": "vault-config"
+              }
+            },
+            {
+              "name": "vault-tls",
+              "secret": {
+                "secretName": "vault-tls",
+                "defaultMode": 288
+              }
+            },
+            {
+              "name": "tmp",
+              "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "16Mi"
+              }
+            },
+            {
+              "name": "home",
+              "emptyDir": {}
+            }
+          ],
+          "containers": [
+            {
+              "name": "vault",
+              "image": "docker.io/hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2",
+              "imagePullPolicy": "IfNotPresent",
+              "command": [
+                "/bin/sh",
+                "-ec"
+              ],
+              "args": [
+                "cp /vault/config/extraconfig-from-values.hcl /tmp/storageconfig.hcl;\n/usr/local/bin/docker-entrypoint.sh vault server -config=/tmp/storageconfig.hcl\n"
+              ],
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": true,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              },
+              "env": [
+                {
+                  "name": "VAULT_ADDR",
+                  "value": "https://127.0.0.1:8200"
+                },
+                {
+                  "name": "VAULT_CACERT",
+                  "value": "/vault/userconfig/vault-tls/ca.crt"
+                },
+                {
+                  "name": "VAULT_K8S_POD_NAME",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.name"
+                    }
+                  }
+                },
+                {
+                  "name": "VAULT_K8S_NAMESPACE",
+                  "valueFrom": {
+                    "fieldRef": {
+                      "fieldPath": "metadata.namespace"
+                    }
+                  }
+                },
+                {
+                  "name": "AWS_REGION",
+                  "value": "eu-central-1"
+                },
+                {
+                  "name": "HOME",
+                  "value": "/home/vault"
+                }
+              ],
+              "ports": [
+                {
+                  "containerPort": 8200,
+                  "name": "https"
+                },
+                {
+                  "containerPort": 8201,
+                  "name": "https-internal"
+                },
+                {
+                  "containerPort": 8202,
+                  "name": "https-rep"
+                }
+              ],
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/v1/sys/health?standbyok=true",
+                  "port": 8200,
+                  "scheme": "HTTPS"
+                },
+                "failureThreshold": 2,
+                "initialDelaySeconds": 5,
+                "periodSeconds": 5,
+                "timeoutSeconds": 3
+              },
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204",
+                  "port": 8200,
+                  "scheme": "HTTPS"
+                },
+                "initialDelaySeconds": 60,
+                "periodSeconds": 5,
+                "timeoutSeconds": 3
+              },
+              "lifecycle": {
+                "preStop": {
+                  "exec": {
+                    "command": [
+                      "/bin/sh",
+                      "-c",
+                      "sleep 5 && kill -SIGTERM $(pidof vault)"
+                    ]
+                  }
+                }
+              },
+              "resources": {
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "256Mi"
+                },
+                "limits": {
+                  "memory": "256Mi"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/vault/data"
+                },
+                {
+                  "name": "audit",
+                  "mountPath": "/vault/audit"
+                },
+                {
+                  "name": "config",
+                  "mountPath": "/vault/config"
+                },
+                {
+                  "name": "vault-tls",
+                  "mountPath": "/vault/userconfig/vault-tls",
+                  "readOnly": true
+                },
+                {
+                  "name": "tmp",
+                  "mountPath": "/tmp"
+                },
+                {
+                  "name": "home",
+                  "mountPath": "/home/vault"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "volumeClaimTemplates": [
+        {
+          "metadata": {
+            "name": "data"
+          },
+          "spec": {
+            "accessModes": [
+              "ReadWriteOnce"
+            ],
+            "storageClassName": "gp3-encrypted",
+            "resources": {
+              "requests": {
+                "storage": "10Gi"
+              }
+            }
+          }
+        },
+        {
+          "metadata": {
+            "name": "audit"
+          },
+          "spec": {
+            "accessModes": [
+              "ReadWriteOnce"
+            ],
+            "storageClassName": "gp3-encrypted",
+            "resources": {
+              "requests": {
+                "storage": "5Gi"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "vault-cronjob-snapshot": {
+    "apiVersion": "batch/v1",
+    "kind": "CronJob",
+    "metadata": {
+      "name": "vault-snapshot",
+      "namespace": "vault"
+    },
+    "spec": {
+      "schedule": "17 */6 * * *",
+      "timeZone": "Etc/UTC",
+      "concurrencyPolicy": "Forbid",
+      "successfulJobsHistoryLimit": 3,
+      "failedJobsHistoryLimit": 3,
+      "jobTemplate": {
+        "spec": {
+          "backoffLimit": 2,
+          "activeDeadlineSeconds": 600,
+          "template": {
+            "metadata": {
+              "labels": {
+                "app.kubernetes.io/name": "vault-snapshot"
+              }
+            },
+            "spec": {
+              "serviceAccountName": "vault-snapshot",
+              "automountServiceAccountToken": false,
+              "restartPolicy": "Never",
+              "securityContext": {
+                "runAsNonRoot": true,
+                "runAsUser": 100,
+                "runAsGroup": 1000,
+                "fsGroup": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "volumes": [
+                {
+                  "name": "work",
+                  "emptyDir": {
+                    "sizeLimit": "512Mi"
+                  }
+                },
+                {
+                  "name": "vault-ca",
+                  "secret": {
+                    "secretName": "vault-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "vault-token",
+                  "projected": {
+                    "sources": [
+                      {
+                        "serviceAccountToken": {
+                          "audience": "vault",
+                          "expirationSeconds": 600,
+                          "path": "token"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "initContainers": [
+                {
+                  "name": "snapshot",
+                  "image": "docker.io/hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2",
+                  "env": [
+                    {
+                      "name": "VAULT_ADDR",
+                      "value": "https://vault-active.vault.svc:8200"
+                    },
+                    {
+                      "name": "VAULT_CACERT",
+                      "value": "/ca/ca.crt"
+                    },
+                    {
+                      "name": "HOME",
+                      "value": "/work"
+                    }
+                  ],
+                  "command": [
+                    "/bin/sh",
+                    "-ec"
+                  ],
+                  "args": [
+                    "export VAULT_TOKEN=\"$(vault write -field=token auth/kubernetes/login role=vault-snapshot jwt=@/var/run/secrets/vault/token)\"\nvault operator raft snapshot save /work/snap\nvault token revoke -self\n"
+                  ],
+                  "volumeMounts": [
+                    {
+                      "name": "work",
+                      "mountPath": "/work"
+                    },
+                    {
+                      "name": "vault-ca",
+                      "mountPath": "/ca",
+                      "readOnly": true
+                    },
+                    {
+                      "name": "vault-token",
+                      "mountPath": "/var/run/secrets/vault",
+                      "readOnly": true
+                    }
+                  ],
+                  "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "readOnlyRootFilesystem": true,
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    }
+                  }
+                }
+              ],
+              "containers": [
+                {
+                  "name": "upload",
+                  "image": "public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                  "env": [
+                    {
+                      "name": "AWS_REGION",
+                      "value": "eu-central-1"
+                    },
+                    {
+                      "name": "HOME",
+                      "value": "/work"
+                    }
+                  ],
+                  "command": [
+                    "/bin/sh",
+                    "-ec"
+                  ],
+                  "args": [
+                    "key=\"snapshots/vault-$(date -u +%Y%m%dT%H%M%SZ).snap\"\naws s3api put-object --bucket \"$BUCKET\" --key \"$key\" --body /work/snap >/dev/null\n"
+                  ],
+                  "volumeMounts": [
+                    {
+                      "name": "work",
+                      "mountPath": "/work"
+                    }
+                  ],
+                  "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "readOnlyRootFilesystem": true,
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "vault-netpol-default-deny": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "default-deny",
+      "namespace": "vault"
+    },
+    "spec": {
+      "podSelector": {},
+      "policyTypes": [
+        "Ingress",
+        "Egress"
+      ]
+    }
+  },
+  "vault-netpol-allow-dns": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "allow-dns",
+      "namespace": "vault"
+    },
+    "spec": {
+      "podSelector": {},
+      "policyTypes": [
+        "Egress"
+      ],
+      "egress": [
+        {
+          "to": [
+            {
+              "namespaceSelector": {
+                "matchLabels": {
+                  "kubernetes.io/metadata.name": "kube-system"
+                }
+              },
+              "podSelector": {
+                "matchLabels": {
+                  "k8s-app": "kube-dns"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "UDP",
+              "port": 53
+            },
+            {
+              "protocol": "TCP",
+              "port": 53
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "vault-netpol-server": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "vault-server",
+      "namespace": "vault"
+    },
+    "spec": {
+      "podSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "vault",
+          "component": "server"
+        }
+      },
+      "policyTypes": [
+        "Ingress",
+        "Egress"
+      ],
+      "ingress": [
+        {
+          "from": [
+            {
+              "namespaceSelector": {
+                "matchLabels": {
+                  "kubernetes.io/metadata.name": "vault-secrets-operator-system"
+                }
+              },
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "vault-secrets-operator"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            }
+          ]
+        },
+        {
+          "from": [
+            {
+              "namespaceSelector": {
+                "matchLabels": {
+                  "kubernetes.io/metadata.name": "monitoring"
+                }
+              },
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "alloy-deployment"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            }
+          ]
+        },
+        {
+          "from": [
+            {
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "vault-snapshot"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            }
+          ]
+        },
+        {
+          "from": [
+            {
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "vault",
+                  "component": "server"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            },
+            {
+              "protocol": "TCP",
+              "port": 8201
+            }
+          ]
+        }
+      ],
+      "egress": [
+        {
+          "to": [
+            {
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "vault",
+                  "component": "server"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            },
+            {
+              "protocol": "TCP",
+              "port": 8201
+            }
+          ]
+        },
+        {
+          "to": [
+            {
+              "ipBlock": {
+                "cidr": "10.0.0.0/16"
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 443
+            }
+          ]
+        },
+        {
+          "to": [
+            {
+              "ipBlock": {
+                "cidr": "0.0.0.0/0",
+                "except": [
+                  "10.0.0.0/8",
+                  "172.16.0.0/12",
+                  "192.168.0.0/16",
+                  "100.64.0.0/10",
+                  "169.254.0.0/16"
+                ]
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 443
+            }
+          ]
+        },
+        {
+          "to": [
+            {
+              "ipBlock": {
+                "cidr": "169.254.170.23/32"
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 80
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "vault-netpol-snapshot": {
+    "apiVersion": "networking.k8s.io/v1",
+    "kind": "NetworkPolicy",
+    "metadata": {
+      "name": "vault-snapshot",
+      "namespace": "vault"
+    },
+    "spec": {
+      "podSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "vault-snapshot"
+        }
+      },
+      "policyTypes": [
+        "Ingress",
+        "Egress"
+      ],
+      "egress": [
+        {
+          "to": [
+            {
+              "podSelector": {
+                "matchLabels": {
+                  "app.kubernetes.io/name": "vault",
+                  "component": "server"
+                }
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8200
+            }
+          ]
+        },
+        {
+          "to": [
+            {
+              "ipBlock": {
+                "cidr": "0.0.0.0/0",
+                "except": [
+                  "10.0.0.0/8",
+                  "172.16.0.0/12",
+                  "192.168.0.0/16",
+                  "100.64.0.0/10",
+                  "169.254.0.0/16"
+                ]
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 443
+            }
+          ]
+        },
+        {
+          "to": [
+            {
+              "ipBlock": {
+                "cidr": "169.254.170.23/32"
+              }
+            }
+          ],
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 80
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "vault-certificate-tls": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "Certificate",
+    "metadata": {
+      "name": "vault-tls",
+      "namespace": "vault"
+    },
+    "spec": {
+      "secretName": "vault-tls",
+      "duration": "8760h",
+      "renewBefore": "720h",
+      "privateKey": {
+        "algorithm": "ECDSA",
+        "size": 256,
+        "rotationPolicy": "Always"
+      },
+      "usages": [
+        "server auth",
+        "digital signature"
+      ],
+      "dnsNames": [
+        "vault",
+        "vault.vault",
+        "vault.vault.svc",
+        "vault.vault.svc.cluster.local",
+        "vault-active",
+        "vault-active.vault.svc",
+        "vault-active.vault.svc.cluster.local",
+        "vault-standby",
+        "vault-standby.vault.svc",
+        "vault-internal",
+        "vault-internal.vault.svc",
+        "vault-0.vault-internal",
+        "vault-1.vault-internal",
+        "vault-2.vault-internal",
+        "vault-0.vault-internal.vault.svc",
+        "vault-1.vault-internal.vault.svc",
+        "vault-2.vault-internal.vault.svc",
+        "localhost"
+      ],
+      "ipAddresses": [
+        "127.0.0.1"
+      ],
+      "issuerRef": {
+        "name": "ryft-vault",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io"
+      }
+    }
+  },
+  "vault-certificate-ca": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "Certificate",
+    "metadata": {
+      "name": "vault-ca",
+      "namespace": "ryft-api"
+    },
+    "spec": {
+      "secretName": "vault-ca",
+      "commonName": "vso.ryft-api",
+      "duration": "8760h",
+      "privateKey": {
+        "algorithm": "ECDSA",
+        "size": 256,
+        "rotationPolicy": "Always"
+      },
+      "usages": [
+        "digital signature"
+      ],
+      "issuerRef": {
+        "name": "ryft-vault",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io"
+      }
+    }
+  },
+  "vault-certificaterequest": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "CertificateRequest",
+    "metadata": {
+      "name": "vault-tls-1",
+      "namespace": "vault"
+    },
+    "spec": {
+      "request": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQkFUQ0JxUUlCQURBYU1SZ3dGZ1lEVlFRRERBOTJZWFZzZEM1MllYVnNkQzV6ZG1Nd1dUQVRCZ2NxaGtqTwpQUUlCQmdncWhrak9QUU1CQndOQ0FBVFdPM3RTb200V0o1UGI4VjhVSHdFakEzK3pIdHFnd1kxeTQvclJTcDhCCkFnOFJVckx5WTRHQm0wOThKUzRnRmNtT1g5OXRwcld4NWlTWFBTejkzQVBYb0Mwd0t3WUpLb1pJaHZjTkFRa08KTVI0d0hEQWFCZ05WSFJFRUV6QVJnZzkyWVhWc2RDNTJZWFZzZEM1emRtTXdDZ1lJS29aSXpqMEVBd0lEUndBdwpSQUlnYWR6enIvdzlVUmpCMVkvS3VuNUZIZFh6OHl3SXFyQVJVaVU5cFFxSU1Da0NJRlJkQkdjdEd0c3pacmp2CnI0V1lZRXdCblZuSmYxY1JYdHZyazdqbXR3c0MKLS0tLS1FTkQgQ0VSVElGSUNBVEUgUkVRVUVTVC0tLS0tCg==",
+      "duration": "8760h",
+      "usages": [
+        "server auth",
+        "digital signature"
+      ],
+      "issuerRef": {
+        "name": "ryft-vault",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io"
+      }
+    }
+  },
+  "vault-vso-connection-api": {
+    "apiVersion": "secrets.hashicorp.com/v1beta1",
+    "kind": "VaultConnection",
+    "metadata": {
+      "name": "vault",
+      "namespace": "ryft-api",
+      "annotations": {
+        "argocd.argoproj.io/sync-wave": "0"
+      }
+    },
+    "spec": {
+      "address": "https://vault.vault.svc:8200",
+      "skipTLSVerify": false,
+      "caCertSecretRef": "vault-ca"
+    }
+  },
+  "vault-vso-auth-api": {
+    "apiVersion": "secrets.hashicorp.com/v1beta1",
+    "kind": "VaultAuth",
+    "metadata": {
+      "name": "api",
+      "namespace": "ryft-api",
+      "annotations": {
+        "argocd.argoproj.io/sync-wave": "0"
+      }
+    },
+    "spec": {
+      "vaultConnectionRef": "vault",
+      "method": "kubernetes",
+      "mount": "kubernetes",
+      "kubernetes": {
+        "role": "api",
+        "serviceAccount": "api",
+        "audiences": [
+          "vault"
+        ]
+      }
+    }
+  },
+  "vault-vso-static-api": {
+    "apiVersion": "secrets.hashicorp.com/v1beta1",
+    "kind": "VaultStaticSecret",
+    "metadata": {
+      "name": "ryft-secrets",
+      "namespace": "ryft-api",
+      "annotations": {
+        "argocd.argoproj.io/sync-wave": "1"
+      }
+    },
+    "spec": {
+      "vaultAuthRef": "api",
+      "mount": "kv-api",
+      "type": "kv-v2",
+      "path": "config",
+      "refreshAfter": "1h",
+      "destination": {
+        "name": "ryft-secrets",
+        "create": true,
+        "overwrite": true,
+        "transformation": {
+          "excludeRaw": true
+        }
+      },
+      "rolloutRestartTargets": [
+        {
+          "kind": "Deployment",
+          "name": "api"
+        }
+      ]
+    }
+  },
+  "vault-serviceaccount": {
+    "apiVersion": "v1",
+    "kind": "ServiceAccount",
+    "metadata": {
+      "name": "vault",
+      "namespace": "vault"
+    }
+  },
+  "vault-role-discovery": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "Role",
+    "metadata": {
+      "name": "vault-discovery-role",
+      "namespace": "vault"
+    },
+    "rules": [
+      {
+        "apiGroups": [
+          ""
+        ],
+        "resources": [
+          "pods"
+        ],
+        "verbs": [
+          "get",
+          "watch",
+          "list",
+          "update",
+          "patch"
+        ]
+      }
+    ]
+  },
+  "vault-rolebinding-discovery": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "vault-discovery-rolebinding",
+      "namespace": "vault"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "vault-discovery-role"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "vault",
+        "namespace": "vault"
+      }
+    ]
+  },
+  "vault-clusterrolebinding-server": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRoleBinding",
+    "metadata": {
+      "name": "vault-server-binding"
+    },
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "ClusterRole",
+      "name": "system:auth-delegator"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "vault",
+        "namespace": "vault"
+      }
+    ]
+  },
+  "vault-certificate-root": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "Certificate",
+    "metadata": {
+      "name": "ryft-vault-ca",
+      "namespace": "cert-manager"
+    },
+    "spec": {
+      "isCA": true,
+      "commonName": "RYFT Vault CA",
+      "secretName": "ryft-vault-ca",
+      "duration": "87600h",
+      "privateKey": {
+        "algorithm": "ECDSA",
+        "size": 256,
+        "rotationPolicy": "Never"
+      },
+      "issuerRef": {
+        "name": "ryft-vault-bootstrap",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io"
+      }
+    }
+  },
+  "vault-clusterissuer": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "ClusterIssuer",
+    "metadata": {
+      "name": "ryft-vault"
+    },
+    "spec": {
+      "ca": {
+        "secretName": "ryft-vault-ca"
+      }
+    }
+  },
+  "vault-clusterissuer-bootstrap": {
+    "apiVersion": "cert-manager.io/v1",
+    "kind": "ClusterIssuer",
+    "metadata": {
+      "name": "ryft-vault-bootstrap"
+    },
+    "spec": {
+      "selfSigned": {}
+    }
+  },
+  "vault-csr-k8s": {
+    "apiVersion": "certificates.k8s.io/v1",
+    "kind": "CertificateSigningRequest",
+    "metadata": {
+      "name": "vault-tls-by-hand"
+    },
+    "spec": {
+      "request": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQkFUQ0JxUUlCQURBYU1SZ3dGZ1lEVlFRRERBOTJZWFZzZEM1MllYVnNkQzV6ZG1Nd1dUQVRCZ2NxaGtqTwpQUUlCQmdncWhrak9QUU1CQndOQ0FBVFdPM3RTb200V0o1UGI4VjhVSHdFakEzK3pIdHFnd1kxeTQvclJTcDhCCkFnOFJVckx5WTRHQm0wOThKUzRnRmNtT1g5OXRwcld4NWlTWFBTejkzQVBYb0Mwd0t3WUpLb1pJaHZjTkFRa08KTVI0d0hEQWFCZ05WSFJFRUV6QVJnZzkyWVhWc2RDNTJZWFZzZEM1emRtTXdDZ1lJS29aSXpqMEVBd0lEUndBdwpSQUlnYWR6enIvdzlVUmpCMVkvS3VuNUZIZFh6OHl3SXFyQVJVaVU5cFFxSU1Da0NJRlJkQkdjdEd0c3pacmp2CnI0V1lZRXdCblZuSmYxY1JYdHZyazdqbXR3c0MKLS0tLS1FTkQgQ0VSVElGSUNBVEUgUkVRVUVTVC0tLS0tCg==",
+      "signerName": "clusterissuers.cert-manager.io/ryft-vault",
+      "usages": [
+        "digital signature",
+        "server auth"
+      ],
+      "expirationSeconds": 86400
+    }
   }
 }

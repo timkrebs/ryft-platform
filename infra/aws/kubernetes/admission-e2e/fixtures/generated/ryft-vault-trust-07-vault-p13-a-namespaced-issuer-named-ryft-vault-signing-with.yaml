@@ -1,0 +1,13 @@
+# fixture: vault: P13 a namespaced Issuer named ryft-vault signing with ryft-vault-ca
+# op: create
+# as: kubernetes-admin
+# refused-by: ryft-vault-trust
+# message: P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ryft-vault
+  namespace: vault
+spec:
+  ca:
+    secretName: ryft-vault-ca
