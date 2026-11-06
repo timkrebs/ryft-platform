@@ -276,6 +276,130 @@ off at 06:53:06 UTC to stage the rollout, and sat open; promote closed it as "Su
 merged itself. To stage a backend change, hold the group (`./scripts/hold.sh add services "<reason>"`) before the merge that
 builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backend change".
 
+## Vault CE migration (2026-11)
+
+Moving every credential from HCP Vault Dedicated to Vault Community Edition 2.2.1 in namespace `vault` (plan, design and
+addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D203-D204 are cited by the code; D199-D202
+and D205 are decided and not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
+**nothing reads the in-cluster Vault, and it does not exist in the cluster yet.** Every cluster command below names
+`--context ryft-prod-euc1` (the current context is production; D150).
+
+**Merged (2026-11-06)**
+
+| PR | What | State |
+| --- | --- | --- |
+| #146 | `infra/aws`: the unseal key, a separate snapshot key and the snapshot bucket (D189), `NoDeletionOrDisable`, the Spot `check` (D204) | **Applied by the owner on 2026-11-06: 11 added.** The same run applied **unplanned drift of the node group and the cluster add-ons**; the cluster stayed healthy and `make smoke-prod` was green. The drift's details are the owner's, not recorded here |
+| #145 | `infra/aws/kubernetes`: Vault as a Terraform add-on (`vault.tf`, `iam.tf`, `charts/vault-extras`, `charts/cluster-issuers` 0.3.0, the injector exclusion) (D188, D190, D194, D196) | Merged, **not applied**. Expected plan: 7 to add, 1 to change, 0 to destroy |
+| #147 | Admission for `vault`: P1-P4 extended, P13 new, chart 0.5.0 (D195) | Merged, **disabled** (`enabled: false`); nothing live |
+| #148 | Test only: the `trainImport` characterisation no longer depends on today's date (it failed in every PR's `test` job from 2026-11-06) | Merged. Unrelated to Vault. The promote PR that follows rolls the five services as one image group with unchanged behaviour (not verified here) |
+| #152 | `scripts/vault_diff.sh` (compares the two Vaults and a synced Secret; no value is ever printed; no `--save`; HCP's address pinned), `RYFT_VAULT=ce` in `lib/admin.sh` and `seed_demo.sh` | Merged; scripts on the operator's machine, nothing to apply |
+| #151 | `infra/vault`: the Kubernetes target beside HCP, the bootstrap files, the generated `vault-ca` Certificates, OPERATIONS → Vault (D187, D191, D193, D198, D203) | Merged, **not applied**. Both switches off. Expected plan: 9 to add, 9 to destroy (the generated files only) |
+| #153 | Snapshots (CronJob, role, bucket deny), metrics, 11 alerts in `ryft-vault`, switched-off log pipeline, admission chart 0.5.1 (D192, D194, D197) | Merged, **not applied**. Expected plans: `infra/aws` 0 to add, 1 to change; `infra/aws/kubernetes` 4 to add, 1 to change |
+
+A follow-up PR from branch `ops/vault-followups` (OPERATIONS, OBSERVABILITY, alerts) was in preparation by another agent
+when this was written: **no PR and no remote branch existed yet**, so it is not recorded here.
+
+**Your steps, in order** (nothing below has been run; each plan must match the number named, anything else is a stop)
+
+The order follows the lead's: gates first, then the add-on. Strictly, #145's and #153's bodies require the Fleet, Beyla
+and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
+
+1. **Two decisions that are yours** (no D-entry records them): G2, whether the monitoring stack inside Vault's trust boundary
+   is accepted ("Vault is as safe as the monitoring stack and VSO", D194) or reduced first; and the Google account of the Vault
+   login, a dedicated Workspace user (recommended, OPERATIONS → Vault → The operator's Google account) or the existing one
+   hardened.
+2. **G1, the admission layer.** #47's Step 0 applied (STATUS → Production hardening → deploy commands). #121 (P12; open,
+   draft) finished and merged; whichever of #121 and #147 merged second bumps the chart above the other's version and sets
+   18 bindings and 13 policies (`admission_intended.sh --check` fails if missed). The admission chart enabled and applied, then
+   P12, P13 and the `vault` bindings of P1, P2 and P3 moved to **Deny** in reviewed PRs (the `vault` bindings can go first and
+   alone). Verify with the G1 command in OPERATIONS → Vault → Hard gates. Enabling the chart changes the plan of step 6: read it.
+3. **Fleet Management and Beyla** (D197): the pod-log exclusion `ryft-.*` → `ryft-.*|vault` and Beyla's exclusion of `vault`
+   (OPERATIONS → Before the Vault add-on is applied).
+4. **The injector exclusion** (#145): `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
+   `kubectl --context ryft-prod-euc1 get mutatingwebhookconfigurations -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'`:
+   the injector's `NotIn` list carries every `ryft-*` namespace, `vault` and `vault-secrets-operator-system`.
+5. **Read-only checks:** `kubectl --context ryft-prod-euc1 get nodes -L topology.kubernetes.io/zone,eks.amazonaws.com/capacityType`
+   (three zones, `ON_DEMAND`); `aws kms describe-key --key-id alias/ryft-prod-euc1-vault-unseal --region eu-central-1 --query 'KeyMetadata.[Arn,KeyState]' --output text`
+   (the ARN and `Enabled`).
+6. **Apply #145** from `main`: `terraform -chdir=infra/aws/kubernetes plan -out=vault-addon.tfplan` (7 / 1 / 0), `apply`, then
+   `rm infra/aws/kubernetes/vault-addon.tfplan`. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
+   ready, in three nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1`, exactly five `AWS_*` variables
+   in the pod, no `unable to set initial state`. Then the Explore check: `{namespace="vault"}` (Loki), Beyla series and Tempo
+   return nothing, **before bootstrap step 3**. If `vault status` already shows `Initialized true` before your own init
+   (G3): stop, treat it as a compromise, wipe the PVCs and EBS volumes.
+7. **Apply #151's plan:** `terraform -chdir=infra/vault plan -out=tfplan` (9 to add, 9 to destroy; no port-forward, no CA file,
+   no `TF_VAR_vault_k8s_token`; HCP token only), `apply`; commit the nine regenerated overlays in a PR of their own
+   (`vault: the vault-ca Certificates`); then `kubectl --context ryft-prod-euc1 apply -k deploy/k8s/overlays/vault-namespaces/monitoring`
+   and the same for the import service's key (both are outside Argo CD). Verify: `kubectl --context ryft-prod-euc1 get certificate -A --field-selector metadata.name=vault-ca`
+   shows 10 rows READY True; `kubectl --context ryft-prod-euc1 -n monitoring get secret vault-ca` exists. Optional:
+   `kubectl --context ryft-prod-euc1 apply -f deploy/argocd/project.yaml`. Precondition: `kubectl --context ryft-prod-euc1 get clusterissuer ryft-vault` READY True.
+8. **The bootstrap** (OPERATIONS → Vault → Bootstrap, ten steps) in a **standalone terminal**, never an agent's shell or the
+   VS Code terminal: init (recovery keys 2-2-1, paper first), audit devices, policies and the token role, OIDC, the subject
+   check, the Terraform token, **root revoked**, the share drill.
+9. **PR 3b** (`committed_write_k8s = true` alone, one switch per PR): plan and apply through the port-forward with the
+   ephemeral token; `scripts/vault_diff.sh --context ryft-prod-euc1 --all --k8s-cacert ...` all equal; the baseline lists
+   `vault-snapshot` with `[snapshot]` and `token_max_ttl` 600.
+10. **Apply #153:** `terraform -chdir=infra/aws plan` (1 to change: the bucket policy), apply; `terraform -chdir=infra/aws/kubernetes plan`
+    (4 to add, 1 to change), apply; only if `vault status` showed `Initialized true` from your own init, the root token is
+    revoked and G1-G4 hold, put `vault_collector_peer = true` into `infra/aws/kubernetes/terraform.tfvars` (a file entry, not
+    `-var`), plan (1 to change), apply; `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1` and the Explore checks of OPERATIONS
+    → Vault metrics (`up{job="ryft/vault"}`, `up{job="ryft/vault-state"}`, `kube_pod_labels{namespace="vault",label_vault_initialized="true"}`
+    three series, `vault_core_active`, six `kubelet_volume_stats_*` series each; if those are absent drop `VaultVolumeFilling`
+    and the kubelet branch of `VaultScrapeDown`); `make alerts-apply`; the first snapshot by hand (`kubectl --context ryft-prod-euc1 -n vault create job --from=cronjob/vault-snapshot vault-snapshot-first`,
+    wait, logs of `upload`, `.status.lastSuccessfulTime`, delete the Job) and the create-only checks (a put without
+    `If-None-Match` is denied; the second put with `--if-none-match '*'` answers 412).
+11. **Cutovers 5a-5i**, one PR per group, each with `vault_diff.sh --kv` and `--secret ... --vault hcp` equal before the switch and
+    `--secret` equal after; before 5a flip `peers.vso.enabled` (it is off); then 14 days of soak, a fresh `vault_diff.sh` with zero
+    differences, a restore drill, and **your explicit go** for PR 6 and 6b (decommission HCP and drop its provider); PR 6c then
+    narrows the EKS endpoint (D205).
+12. **Logs, when you want them** (D197): accept Grafana's DPA, add the record-of-processing entry naming the transfer mechanisms,
+    put `LOKI_USERNAME` into `infra/vault`, then a PR with the Loki URL and `podLogsViaLoki.enabled: true`.
+
+**Open**
+
+- **Tickets not built:** V7a (the import service's operator objects as an Argo CD app, D200), V7b (monitoring's, project
+  `ryft-monitoring`, D201), V7c (the collector as a Terraform `helm_release`, namespace handover, `make monitoring-apply`
+  removed, D202); cutovers 5a-5i; PR 6, 6b (decommission), 6c (EKS endpoint, D205). V7a and V7b come before 5i and 5h, V7c is
+  recommended before the collector changes.
+- **Tickets for test-engineer:** the kind rehearsal of #145 in full mode (render under admission, real pods under
+  `enforce=restricted` against a transit-sealed dev Vault, init and 3 voters, a deleted pod coming back, the service-registration
+  labels with the narrowed Role, `cmctl renew` within 6 minutes without a restart, NetworkPolicy enforcement, disruption in
+  three zones); the kind restore drill in CI (three Raft pods, MinIO, the 412 on a second put, `restore -force`); the fake
+  `ryft-vault-logs` lines for D199.
+- **The Loki rules** (`ryft-vault-logs`, D199) need `lokitool`; until they exist nothing watches `sys/audit*`.
+- **Decisions for the owner:** G2 and the Workspace user (steps 1); whether the PDB stays `minAvailable: 2` with `AlwaysAllow`
+  (shipped) or moves to `IfHealthyBudget` (D204); whether a later PR flips `vault_collector_peer` to `true` by default.
+- **Privacy:** Grafana Labs' DPA, the record of processing with the transfer mechanisms (UK adequacy, US entities; to verify), and
+  the Art. 32 wording that must not claim Vault is isolated from the monitoring vendor.
+- **Smaller follow-ups from the reviews:** pin the unseal key ID in the precondition; `aws:SourceIp` or a KMS VPC endpoint for
+  the unseal calls; vendor the chart tarball; a wider values precondition; `aws:SourceAccount`/`aws:SourceArn` trust conditions
+  once verified; a test tying `images.vault` to the release's pin; the `ryft_admin` bearer token in curl's argv (before cutover
+  5e); the CEL harness's decommission fixture needs a literal HCP address when the api moves (5a); the stale comment on
+  `reserved_service_names` in `infra/vault/targets.tf`; #121's follow-ups (flip three P12 cases, a guard that `vault` and
+  `cert-manager` are never in `argoScope.namespaces`, a kind fixture of Argo writing in `vault`); `addendum-1.md` §3 still names
+  the recovery-key places.
+- The EKS public endpoint stays `0.0.0.0/0` until PR 6c.
+
+**Not verified** (each is marked "to verify" where the runbook uses it)
+
+- Pod Identity credentials reaching the `awskms` seal at runtime on 2.2.1, and that EKS sets the three session tags the trust
+  policy requires; Pod Identity in a CronJob pod.
+- Chart 0.34.1 with Vault 2.2.1 (the chart is tested up to 2.0.4); Pod Security `restricted` admitting the pods; `$(VAULT_K8S_POD_NAME)`
+  expanding; `tls_reload_interval` picking up a renewal; the service-registration Role at runtime; the PDB and zone spread under
+  a real drain; the VPC CNI and egress to `169.254.170.23`; the plans against the real providers (mocks only).
+- That 2.2.1 enables audit devices over the API with these options; Google's `iss`, `hd` and `auth_time`; the Admin console user ID
+  equal to the OIDC `sub`; the loopback binding of the three bound files; generate-root under auto-unseal and the `peers.json`
+  recovery.
+- S3 conditional writes and the SHA-256 checksum against the bucket policy; `kms:Decrypt` for a cached bucket key; `create job
+  --from=cronjob` setting `lastSuccessfulTime`; auto-unseal after `restore -force` (the kind drill).
+- In the cluster: the scrape, the `alloy-deployment` and VSO pod labels, KSM's endpoint labels, `kube_pod_labels` with Vault's
+  labels, `kubelet_volume_stats_*`, `vault_token_count*`; the Fleet UI paths and Beyla's exclusion syntax; the log pipeline end to end.
+- #146's applied state beyond the owner's report (11 added, smoke green): the drift applied in the same run is not described.
+
+**GitGuardian** is not a required check. It flags `--secret <service name>` as a "Generic CLI Secret": four incidents, all false
+positives to mark in the dashboard: three test lines of #152's first commit (`7670547`) and `docs/work/2026-11-05-vault-ce/addendum-1.md`
+line 569 (`vault_diff.sh --secret monitoring`, already on main from #150). No secret is involved.
+
 ## Done
 
 | Item | What | Where |

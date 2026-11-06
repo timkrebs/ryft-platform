@@ -557,6 +557,10 @@ Following `CLAUDE_FOLLOWUP_EKS_GOLIVE.md` step 2b, every workload has its own na
 
 ## D45 — infra/vault: corrected paths, generated credentials, one more namespace
 
+- **Amended by D186, D187:** on the CE side the per-namespace HCP layout is replaced by one `auth/kubernetes` mount and a
+  mount, policy and role per service; the long-lived `vault-auth` reviewer tokens go at the decommission (#145-#153, not
+  applied).
+
 The user's design stays: Kubernetes auth with a TokenReview reviewer per namespace,
 the Vault Secrets Operator per namespace, and Terraform owning the namespaces and
 service accounts. The user chose this over JWT auth against the EKS OIDC issuer, which
@@ -588,6 +592,9 @@ changes:
 - **Defaults:** `eks_cluster_name` now defaults to `ryft-prod-euc1`, the applied name.
 
 ## D46 — The Vault Secrets Operator is a Terraform add-on
+
+- **Amended by D186:** VSO's connection target changes per namespace to the in-cluster Vault, one cutover PR at a time
+  (D191); the add-on itself stays.
 
 The go-live spec had it as a manual `helm install`. Like the other add-ons (D25) it is
 now a pinned `helm_release` in `infra/aws/kubernetes` (chart 1.6.0, CRDs still
@@ -1542,6 +1549,7 @@ sent, and whether a second account shares its phone.
 
 ## D94 — Argo CD: a Terraform add-on that deploys the workloads, private, non-HA
 
+- **Amended by D188:** the Vault server is a Terraform add-on too, not an Argo CD application (#145). **Amended by D202:** the Grafana Cloud collector becomes a Terraform add-on (decided, not built).
 - **Why:** deploys were a human pinning `newTag` and running `make k8s-apply-eks`; two
   incidents in two days came from that path (a mistyped SHA, repeated applies during the
   database outage). With Argo CD, git is the only way to `ryft-prod-euc1`, a merged pin
@@ -1701,6 +1709,7 @@ sent, and whether a second account shares its phone.
 
 ## D98 — TLS inside the cluster from an internal CA in cert-manager
 
+- **Amended by D190:** Vault has a CA of its own, `ryft-vault`, beside `ryft-internal` (#145, #151).
 - **The CA:** ClusterIssuer `ryft-internal` in `infra/aws/kubernetes`'s `cluster-issuers`
   chart (cert-manager is Terraform's): a self-signed bootstrap issuer signs one ten-year
   ECDSA root in the `cert-manager` namespace; the CA issuer signs from it. Nothing
@@ -2315,6 +2324,8 @@ sent, and whether a second account shares its phone.
 
 - **Amended by D180:** Argo CD's ClusterRoles are an allowlist and the values that decide what Argo CD may do are guarded
   (merged in #47, not yet applied). **Amended by D182:** how the operators are namespace-scoped (T12-g, #51).
+  **Amended by D195:** the layer covers namespace `vault` and the chain of the `ryft-vault` issuer (P13); 12 policies, 17 bindings
+  (#147, #153, not enabled).
 - **Why (2026-10-23):** D115's CI checks hold a small set of render invariants. Pod security, images
   per namespace, commands, NetworkPolicy and Traefik shapes, the VSO objects, the operators' cluster
   power and the Argo CD objects are not checked, and whatever is written in the cluster (Argo CD's
@@ -3813,3 +3824,377 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
 - **Verification after the sync** (#140's body, the owner's read-only checks: `grep -c ingress-nginx` on the three
   namespaces' NetworkPolicies `0`, `argocd app get ryft-platform` Synced and Healthy, `GET /v1/me` `401` and `/` `200`
   through Traefik, `make smoke-prod`): given to the owner; the result is **not verified**.
+
+## D186 — Vault Community Edition in the cluster replaces HCP Vault Dedicated (amends D45, D46; #145, #146, #147, #151, #152, #153; the owner, 2026-11-05/06)
+
+- **Decision:** RYFT's secrets move from HCP Vault Dedicated (Enterprise namespaces `admin/ryft/<svc>`, public endpoint) to
+  Vault Community Edition **2.2.1** in namespace `vault` on ryft-prod-euc1: three replicas with integrated storage (Raft),
+  auto-unseal by AWS KMS (D189), Raft snapshots to S3 (D192). Reasons: the HCP cost line goes, the public Vault endpoint and
+  HCP's TokenReview calls into the EKS API go, and the whole secret path lives in git and Terraform. Workloads keep reading
+  the Kubernetes Secrets that VSO syncs, so Vault is not on the request path: an outage stops syncs and rotations, not
+  running pods. HCP Terraform stays the state store (D56) and is the second copy of every value.
+- **The owner decided (plan.md, 2026-11-05/06):** the server is a Terraform add-on, not an Argo CD app (D188); **dual-write**
+  to both Vaults until decommission (D191), not a freeze of HCP; **BUSL-1.1 accepted** (internal use) and CE's "latest minor
+  only" support, so a minor upgrade is planned every few months; **Vault 2.2.1** by digest with chart 0.34.1, which is
+  tested up to Vault 2.0.4 and so runs outside the chart's matrix; the operator logs in with **OIDC and Google Workspace**,
+  not the design's userpass with TOTP (D193); recovery keys **2-2-1** over three places (D203); Vault's logs go to Grafana
+  Cloud (D197); the import service's and monitoring's operator objects move to automatic apply (D200-D202); the EKS public
+  endpoint is narrowed after HCP is gone (D205).
+- **Order and gates.** `infra/aws` keys and bucket (#146) before the add-on (#145); then the bootstrap, then `write_k8s`
+  (PR 3b), then one cutover PR per group (`vso_on_k8s`, one name per PR), a 14-day soak, then the decommission of HCP (PR 6, 6b),
+  **only on the owner's explicit go**, after a fresh `vault_diff.sh` with zero differences and a restore drill. Before the
+  bootstrap and before PR 3b four gates must hold (OPERATIONS → Vault → Hard gates):
+  - **G1** D180 Step 0 (#47) applied, and P12 (#121), P13 and the `vault` branches of P1, P2 and P3 in **Deny**. Merged
+    means disabled, then Audit; neither stops an Argo CD controller token from running a pod in `vault` as the service
+    account `vault`.
+  - **G2** the monitoring stack sits inside Vault's trust boundary (D194). Accept that or reduce it: the owner's call, **no
+    decision is recorded here**.
+  - **G3** never `vault login` through `kubectl exec`; `Initialized true` before the owner's own init means stop and wipe.
+  - **G4** `prevent_destroy` on the namespace and both Helm releases (done in #145).
+- **Amends D45** (one Vault namespace, one `auth/kubernetes` mount and one long-lived `vault-auth` reviewer token per
+  service: replaced by D187 on the CE side; the nine tokens and their cluster role bindings go at the decommission) **and
+  D46** (VSO's connection target changes per namespace; the add-on itself stays).
+- **State (2026-11-06):** #146 applied by the owner; #145, #151, #153 merged, **not applied**; nothing reads the in-cluster
+  Vault. STATUS → Vault CE migration (2026-11) has the ordered steps.
+
+## D187 — Isolation by mount, role and policy instead of namespaces (#151; reserved names #147, #153)
+
+- **Decision:** CE has no namespaces. Each service gets a KV v2 mount `kv-<svc>`, a policy `<svc>` that reads only
+  `kv-<svc>/data/config` (rabbitmq also `kv-rabbitmq/data/amqp-user-*`; no `metadata`), and a role `<svc>` in the **one**
+  `auth/kubernetes` mount, bound to exactly its namespace and service account with audience `vault` and today's TTLs (3600 s,
+  maximum four times that). One auth mount, because per-service mounts would share the same reviewer and cluster and add no
+  isolation. The demo password moves to `kv-operator`, which no role's policy names.
+- **Kubernetes auth is in-cluster:** `kubernetes_host = https://kubernetes.default.svc`, Vault reviews tokens as its own
+  service account (`system:auth-delegator`), no reviewer JWT, no CA. The same `random_*` values feed both Vaults (D191).
+- **The snapshot job's identity** (differs from the design, which named the policy `vault-snapshot`): role `vault-snapshot`,
+  bound to `vault/vault-snapshot`, audience `vault`, revocable **service** tokens of 10 minutes (TTL and maximum 600), policy
+  **`snapshot`** only and **no default policy**: `read` on `sys/storage/raft/snapshot` and nothing else (restore stays
+  break-glass). Created in `infra/vault` (`k8s.tf`, written from PR 3b on), not by the snapshot PR. Such a token cannot revoke
+  itself, so the job does not try (D192).
+- **Names:** service names must be canonical (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`) and `default`, `root`, `admin`, `terraform`,
+  `vault-snapshot`, `snapshot` and `operator` are refused (a validation; `vso.reservedServices` of the admission chart refuses
+  the matching `kv-` mounts in the namespace that would map to them: #147, and `snapshot` in #153). The mount formula maps
+  `ryft-monitoring` and `monitoring` to the same `kv-monitoring`; admitted, because the role binds the namespace.
+- **State:** merged, nothing written: `committed_write_k8s = false`.
+
+## D188 — The Vault server is a Terraform add-on, not an Argo CD application (amends D94's list of add-ons; #145)
+
+- **Decision:** `helm_release.vault` (`hashicorp/vault` 0.34.1, tarball sha256 pinned in the tests, image
+  `docker.io/hashicorp/vault:2.2.1@sha256:962a…`) and `helm_release.vault_extras` (the local chart `charts/vault-extras`: the
+  Certificates, NetworkPolicies, PDB, service-registration Role and, from #153, the snapshot CronJob) in
+  `infra/aws/kubernetes/vault.tf`, beside VSO and cert-manager. Argo CD would have needed write on StatefulSets and CronJobs,
+  a binding to `system:auth-delegator`, a project for a namespace that is not `ryft-*` and an image outside renderpolicy:
+  each widens what a stolen controller token can do, and the server holding every credential is the worst place to widen it.
+- **How it is held:** 3 replicas, `updateStrategy: OnDelete`, `wait = false` (an uninitialised Vault is not ready by design,
+  D196, and waiting would fail every first apply), `prevent_destroy` on the namespace and both releases (removal is two
+  reviewed steps), Pod Security `restricted`. Five **preconditions** (plan and apply fail): the alias resolves to a key of this
+  account and region; none of the words the chart's start script `sed`-replaces is in the config; a tripwire against AWS
+  credential paths in the values (a tripwire, not a proof); one certificate name per replica; no LoadBalancer or NodePort.
+- **Before the apply (#145, #153):** the SDK injector webhook's `excludedNamespaces` gain `vault` and
+  `vault-secrets-operator-system` (`deploy/monitoring/k8s-monitoring.yaml`, rolled out by the monitoring apply), and the
+  Fleet Management pod-log pipeline and Beyla must exclude `vault` (D197); Beyla's probes read process memory.
+- **Consequences:** a chart or image change needs the owner's apply, and OnDelete updates are manual anyway (D204). The
+  association, namespace, extras and chart order themselves in one apply. Disaster-recovery order: Argo CD's wave 0 waits for
+  VSO. Chart 0.34.1 with Vault 2.2.1 is **not verified at runtime**.
+- **State:** merged, **not applied**. Plan expectation: 7 to add, 1 to change (`cluster_issuers` 0.2.0 → 0.3.0), 0 to destroy.
+
+## D189 — KMS auto-unseal through EKS Pod Identity; the keys and the bucket outlive the cluster (#146, #145, #153)
+
+- **Decision:** the seal is `awskms` with the key **ARN** (from the alias, never the alias; a precondition requires this
+  account and region) and the region in the stanza. SDK v2's default chain finds the Pod Identity credentials: no static keys,
+  no IRSA annotation. Role `<cluster>-vault-unseal` may `kms:Encrypt`, `kms:Decrypt`, `kms:DescribeKey` on that key only,
+  through the association `vault/vault`; its trust policy also requires the session tags `kubernetes-namespace=vault`,
+  `kubernetes-service-account=vault` and `eks-cluster-arn` = this cluster.
+- **In `infra/aws` with `prevent_destroy` (#146):** the unseal key, a **separate snapshot key** (so the snapshot job never holds
+  the key that unwraps Vault's root key) and the bucket `ryft-prod-euc1-vault-snapshots-<account>`: private, versioned,
+  SSE-KMS with the bucket key, `BucketOwnerEnforced`, current objects kept 30 days and old versions 7 more. The bucket denies
+  non-TLS requests and any put that does not name the snapshot key's ARN; #153 adds a third deny, `DenyPutWithoutIfNoneMatch`
+  (a put without `If-None-Match` is refused: create-only).
+- **Key policy:** the account administers (IAM decides who uses a key, so roles can be rebuilt without touching the keys), and
+  `NoDeletionOrDisable` denies `kms:ScheduleKeyDeletion` and `kms:DisableKey` to every principal, root included, because
+  `prevent_destroy` disappears with its block. An **optional** allowlist (`vault_unseal_allowed_principal_arns`, default
+  empty) limits the unseal key's cryptographic use to named principals, with a `check` that warns when Vault's role is
+  missing; it stays off until Vault has unsealed with its role, because a wrong list keeps Vault sealed.
+- **Consequences:** losing the unseal key makes Vault's data and snapshots unreadable; recovery is a fresh Vault plus
+  `infra/vault` from state (hours, no credential lost). A teardown of `infra/aws` targets the cluster and the network and
+  leaves the keys and the bucket. Rolling back #146 after the apply is wrong: deleting the blocks destroys the aliases and the
+  bucket settings (infra/aws README → Destroying). Cost about +$2 a month. A `check` warns on a non-`ON_DEMAND` node group (D204).
+- **State:** **applied by the owner on 2026-11-06: 11 added**, in a run that also applied unplanned drift of the node group and
+  the cluster add-ons; the cluster stayed healthy and `make smoke-prod` was green. The pod-identity role and the association
+  come with #145 (not applied). **Not verified:** the credentials reaching the seal at runtime; that EKS sets the three
+  request tags for this association; `UploadPart` is probably denied by the key-header rule (the job uses one `put-object`).
+
+## D190 — Vault's TLS comes from a CA of its own; every namespace requests its own `vault-ca` (amends D98; #145, #151, #147)
+
+- **Decision:** a second cert-manager CA, `ryft-vault` (a self-signed bootstrap issuer, the root `ryft-vault-ca` in
+  `cert-manager`, ECDSA P-256, ten years; `charts/cluster-issuers` 0.3.0, `ryft-internal` untouched), signs
+  `vault/vault-tls` (the 18 service and pod names plus `127.0.0.1`; one year, renewed 30 days before) and one `vault-ca`
+  Certificate per RYFT namespace. That Secret's `ca.crt` is the VaultConnection's `caCertSecretRef`; Argo CD cannot write
+  Secrets, and a literal CA in git would need it. The leaf is inert (`commonName: vso.<ns>`, no SAN, and `ryft-vault` is no
+  CA the broker trusts). A separate CA, because leaves of `ryft-internal` are a TLS factor at the broker (D98).
+- **Amended in #151:** the generator writes the `vault-ca` Certificate into every overlay on **both** targets, before any
+  namespace moves, and the literal CA Secret (`vault_ca_bundle_b64`) is retired at once (a validation refuses it: it would
+  fight cert-manager). The Argo CD project `ryft` ignores the Secret `vault-ca` as an orphan, which also hides a hand-made one.
+- **Reload:** the Secret is mounted as a directory and `tls_reload_interval = "5m"` (new in 2.2.0) picks up renewals, no
+  sidecar. **Not verified:** that renewal is picked up. P13 (D195) limits what `ryft-vault` may issue; **until P13 is in Deny
+  any namespace can issue from it.**
+- **Amends D98:** its internal CA is no longer the only one; the broker's rule is unchanged.
+- **State:** the Certificates exist after #145 is applied and the overlays are applied and committed (STATUS).
+
+## D191 — One `infra/vault` root writes both Vaults during the migration; git says which namespace reads which (#151)
+
+- **Decision:** a second configuration of the `vault` provider (alias `k8s`) reaches the in-cluster Vault only through the
+  owner's `kubectl port-forward`: a loopback address (validated), a CA file of its own, `skip_tls_verify = false`, and an
+  **ephemeral** 1-hour token in `TF_VAR_vault_k8s_token` (in neither plan nor state). Every CE object is a new address that
+  reads the same locals and `random_*`, so the values reach both Vaults and the migration is a copy, not a rotation. Every
+  apply writes both Vaults until the decommission, so a rollback never hands out a stale credential.
+- **Two committed locals** switch the CE writes on (`committed_write_k8s`) and move namespaces (`committed_vso_on_k8s`, a list
+  of service names). **One switch per PR.** Preconditions: a name must be a service and needs `write_k8s`; `write_k8s` needs
+  the token. `test_override_targets` exists for `terraform test` only and warns if set.
+- **While `write_k8s` is false the plan makes no request to the CE Vault**, pinned by a test with the real provider against a
+  closed port. The two shells (vault and Terraform) are never mixed.
+- **Rejected:** a second root, which needs either a cross-state move of the secret values (D56's failure) or a second state
+  holding every credential.
+- **State:** merged; both switches off. Expected plan with the committed defaults: 9 to add, 9 to destroy, all generated files.
+
+## D192 — Raft snapshots every 6 hours to S3 by two pinned upstream images; the upload is create-only (#153, #146, #151)
+
+- **Decision:** a CronJob `vault/vault-snapshot` in `vault-extras` (`17 */6 * * *`, `concurrencyPolicy: Forbid`, Job deadline
+  600 s, Pod Security `restricted`). RPO is 6 hours. An init container (the server's own image) logs in with Kubernetes auth as
+  role `vault-snapshot` (D187), saves from `vault-active` (a save through a standby fails), runs `raft snapshot inspect`, and
+  **does not revoke** its token (no default policy; it expires in 10 minutes). The snapshot lives in a memory-backed
+  `emptyDir` and is removed on every exit, SIGTERM included. An upload container (AWS CLI 2.39.5, multi-arch index digest) does
+  one `aws s3api put-object` with `--if-none-match '*'`, `--expected-bucket-owner`, `--server-side-encryption aws:kms
+  --ssekms-key-id <full ARN>`, `--bucket-key-enabled` and `--checksum-algorithm SHA256`. Not a custom image or Go code.
+- **The job's AWS role** (`vault_snapshot_pod_identity`, `infra/aws/kubernetes`): `s3:PutObject` on `<bucket>/snapshots/*`
+  (with `s3:ResourceAccount` and the key-ID condition) and `kms:GenerateDataKey` on the snapshot key (`kms:ViaService` = S3,
+  encryption context = the bucket). No get, list, delete or decrypt. The Pod Identity token is mounted in **both**
+  containers, so the init container could use the role too; the role can put snapshots and nothing else.
+- **Guards:** P2 admits the AWS CLI image **only in a pod whose service account is `vault-snapshot`** (D195); the bucket
+  refuses a put without `If-None-Match` (D189), so a stolen job identity cannot overwrite a snapshot; the template refuses to
+  render without digests, with an alias, or with a key of another account or region.
+- **Alerts:** `VaultSnapshotStale` (critical, 13 h) and `VaultSnapshotFailing` (D194). The lifecycle deletes the last good
+  snapshot after 37 days without a new one, so this alert is the only thing between a broken job and an empty bucket.
+- **Restore** needs the same KMS key. A restore drill in kind is a ticket, not built.
+- **State:** merged, **not applied**. **Not verified:** S3 conditional writes and the SHA-256 checksum against this bucket
+  policy; whether S3 asks for `kms:Decrypt` when it reuses a cached bucket key; Pod Identity credentials in a CronJob pod;
+  that `kubectl create job --from=cronjob` sets `lastSuccessfulTime`.
+
+## D193 — Vault administration: port-forward, OIDC with Google Workspace, no root token, an hour-long Terraform token that is admin-equivalent (#151; amended by D197, D203)
+
+- **Decision:** no Ingress and no LoadBalancer; the API is reachable only by `kubectl port-forward`, from a standalone terminal,
+  never an agent's shell. Init gives 5 recovery keys with threshold 3 (D203). The **root token is revoked** after the bootstrap.
+- **Departure from the design (userpass with TOTP) by the owner's decision:** OIDC against Google Workspace, an internal OAuth
+  client with the CLI's loopback redirect only. The role `admin` binds `hd = ryftapp.de`, the operator's numeric `sub`
+  (`bound_subject`, checked **fail-closed** after every write), and `max_age` 10 minutes. Tokens last 1 hour (2 at most) and are
+  bound to `127.0.0.1`. The second factor is 2-Step Verification with security keys. An `enroll` role (5-minute tokens, deleted
+  after use) reads the `sub`. No policy is attached to identity entities or groups. A login must not depend on Google alone
+  during an incident, so **break-glass is `vault operator generate-root`** with the recovery keys; every use pages, and a
+  foreign attempt in progress is cancelled and treated as an incident.
+- **Which Google account** (a dedicated Workspace user such as `vault-admin@ryftapp.de`, recommended, or the existing account
+  hardened) is **an open question to the owner**, not decided.
+- **The bootstrap files** (OIDC config, policies `admin` and `terraform`, the token role `terraform`) are committed in
+  `infra/vault/bootstrap/`, held to an exact allowlist by tests, and written into Vault by hand.
+- **The Terraform token** comes from the token role: policy `terraform` only, 1 hour, **not renewable**, `token_bound_cidrs
+  127.0.0.1/32`. The policy is generated and uses **exact paths only**, because Vault canonicalises policy names on write but
+  matches ACL paths as written, so the design's globs were bypassable (`ADMIN`, `Terraform`, `admin%20`). It may write only
+  the services' policies and `snapshot`, and only the services' roles and `vault-snapshot`, each role with its own policy,
+  namespace and service account only; the auth mount stays `kubernetes` and in-cluster; no tune may switch audit HMAC off
+  (`audit_non_hmac_*`, `passthrough_request_headers`, `allowed_response_headers`, `listing_visibility`, and `token_type` on the
+  auth mount). It has nothing on audit, seal, Raft, generate-root, OIDC, identities or tokens.
+- **The token is still admin-equivalent for its hour:** it reads every credential, and a rewritten policy plus that role's
+  Kubernetes token is any right. Residual: `vault secrets enable -audit-non-hmac-request-keys=…` succeeds under the token,
+  because the keys travel inside `config` at creation. Covered by a `k8s.tf` test, the post-apply baseline and (not built) the
+  Loki rules of D199.
+- **State:** the files are merged; the bootstrap is **not run**. **Not verified:** that 2.2.1 still enables audit devices over
+  the API with these options; Google's `iss`, `hd` without the `email` scope and `auth_time` for `max_age`; that the Admin
+  console user ID equals the OIDC `sub`; the loopback binding (the connection's peer as `127.0.0.1` through containerd's
+  port-forward: if it is `::1`, all three bound files fail at the first login, which does not lock the bootstrap out);
+  generate-root under auto-unseal.
+
+## D194 — Vault metrics without a token, admitted by NetworkPolicy to named peers; the alerts are gated on "initialised" (#145, #153)
+
+- **Decision:** `unauthenticated_metrics_access` on the listener lets every node answer `/v1/sys/metrics` (standbys would
+  redirect, and a scrape token would live where Fleet's remote config can read it, D51). The `alloy-deployment` collector
+  scrapes it over TLS with `vault-ca` from `monitoring`, behind a keep list (`ryft/vault`), and a second scrape of
+  kube-state-metrics for namespace `vault` (`ryft/vault-state`) adds `kube_pod_labels` with the pod labels `vault-initialized`,
+  `vault-sealed`, `vault-active`. Sealed is read from readiness (a sealed pod exports nothing).
+- **The NetworkPolicy names pod-network peers:** the snapshot job's pods and the Raft peers (8200/8201); VSO and the collector
+  each behind a value, **off by default**. The collector peer is the Terraform variable `vault_collector_peer` (default
+  `false`), set to `true` only after the owner's own init, the root token revoked and G1-G4 holding, and false again before a
+  restore into a fresh cluster. `peers.vso` stays off until the first cutover. No ipBlock ingress.
+- **Correction to the design:** the policy governs pod-network peers only, not `kubectl port-forward` or traffic from a node's
+  own address (kubelet, very likely host-network pods). And even initialised, port 8200 answers more than the metrics without
+  a token: `sys/health`, `sys/seal-status`, `sys/leader`, starting or cancelling a generate-root or rekey attempt (completing
+  one needs recovery shares) and the login endpoints. Before the init the collector peer would reach the unauthenticated
+  `PUT /v1/sys/init`, hence the variable.
+- **Trust boundary (G2, D186):** alloy-daemonset is privileged with hostPID and can read the memory of every pod; alloy-operator
+  and VSO read Secrets cluster-wide. Vault is therefore as safe as the monitoring stack and VSO. The Art. 32 description must
+  not say Vault is isolated from the monitoring vendor. Accepting or reducing this is the owner's decision (open).
+- **Alerts:** group `ryft-vault`, 11 rules (D179's limit is 20), each with a firing and a quiet promtool test: `VaultSealed`
+  (warning), `VaultSealedQuorum`, `VaultUnavailable`, `VaultNoActiveNode` (critical), `VaultRaftPeersBelow3`,
+  `VaultSnapshotStale` (critical), `VaultSnapshotFailing`, `VaultAuditFailing` (**critical**), `VaultVolumeFilling`,
+  `VaultUpdatePending` (info, D204) and `VaultScrapeDown`. The 7-day readiness gate is replaced by "this Vault has been
+  initialised" (a pod labelled `vault-initialized=true` in the last hour, or a CronJob success, which outlasts an outage of
+  every pod), so an uninitialised Vault (D196) pages nothing. `PodRestarting` covers `ryft-.*|vault`; `CertificateExpiring`
+  covers `vault/vault-tls`. Series budget under 65.
+- **State:** merged (#145, #153), **not applied**. **Not verified in the cluster:** the scrape, the `alloy-deployment` and
+  VSO pod labels, KSM's endpoint labels, `kube_pod_labels` with Vault's labels, `kubelet_volume_stats_*` from Fleet (if absent,
+  drop `VaultVolumeFilling` and the kubelet branch of `VaultScrapeDown`), `vault_token_count*`.
+
+## D195 — The admission layer covers namespace `vault` and the chain of the `ryft-vault` issuer (amends D120; #147, #153)
+
+- **Decision:** the chart `admission-policy` goes 0.2.3 → 0.5.0 (#147) → 0.5.1 (#153): **12 policies, 17 bindings**. P1 holds
+  `vault` to Pod Security `restricted`. P1, P2 and P3 get **bindings of their own for `vault`** (`<name>-vault`; the general
+  ones are `NotIn [vault]`), in step A on `audit`, so that the `vault` bindings can go to Deny independently of the `ryft-*`
+  rollout and gate G1 can be met on its own. `AdmissionPodDenied` covers `ryft-workloads-pods-vault`; `admission_intended.sh
+  --check` now fails when `AdmissionBindingMissing`'s threshold differs from the binding count.
+- **P2 in `vault` judges images only:** every container, init, ephemeral container and image volume must match `images.vault`
+  (2.2.1 by exact digest) or `images.awsCli`, each one literal reference with a full digest (no alternation, group or
+  repetition in the chart guard). #153 pins `images.awsCli` and admits it **only in a pod whose `serviceAccountName` is
+  `vault.snapshotServiceAccount`** (`vault-snapshot`). Commands and service accounts in `vault` are bounded by RBAC (only
+  Terraform writes there) and P12; the Vault image is refused in `ryft-*`.
+- **P3 in `vault`:** no ingress ipBlock; egress ipBlocks only the public shape on 443 (no 5432), the VPC CIDR on 443 (API
+  server) and the Pod Identity agent `169.254.170.23/32` on 80: tightenings of the design text.
+- **P4** admits the union of the HCP and CE fields during the cutover, judged field by field (address list, `caCertSecretRef`
+  absent or `vault-ca`, Vault namespace absent or under `admin/ryft/`, mount `kv` or `kv-<service>`); **the pairing is not
+  enforced** (a mix fails closed at TLS or login). It refuses the reserved mounts (D187). The decommission empties
+  `vso.kvMount` and `vso.vaultNamespacePrefix`, and then only the CE fields pass.
+- **P13 `ryft-vault-trust`** (step A, `audit`) guards the chain: Certificates with `secretName` `vault-ca`, `vault-tls` or
+  `ryft-vault-ca`, every Issuer and ClusterIssuer, and Kubernetes CSRs for a `ryft-vault*` signer. Only `vault/vault-tls` and
+  `<ns>/vault-ca` (no SAN-bearing key) may be issued from the issuer; the chain's Secrets may be written only by those
+  Certificates; the ClusterIssuers `ryft-vault` and `ryft-vault-bootstrap` are pinned; **Argo CD's identities may write only
+  Issuers that are exactly `selfSigned: {}`** (an Issuer of type `vault` or `acme` would make cert-manager send a Secret's
+  value to a server); CertificateRequests for the issuer and their status only as the cert-manager service account. **Not held
+  by P13:** a Secret written directly (RBAC), and Argo CD writing a well-shaped Certificate in `vault` (P12).
+- **Amends D120:** its eleven policies become twelve; `vault` and the `ryft-vault` chain are inside the layer.
+- **State:** merged with `enabled: false` in `admission-values.yaml`: **nothing is live**, and the first apply of the chart
+  starts all 17 bindings on `audit`. `make admission-celtest`: 960 cases, 0 failures. **Merge order with #121 (P12, chart
+  0.3.0, open):** whichever merges second bumps the chart above the other's version and sets the binding count to 18 and the
+  policy count to 13 (`--check` fails if missed). The VSO and alloy pod labels in the NetworkPolicy fixtures are placeholders.
+
+## D196 — Vault's probes, budget and placement: alive when sealed, ready only when serving (#145)
+
+- **Decision:** liveness is `/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204&haunhealthycode=204&removedcode=204`
+  after 60 s, 6 × 5 s (so a sealed or uninitialised pod, a standby that cannot reach the leader (474) and a removed node (530)
+  are alive, not killed); readiness is `/v1/sys/health?standbyok=true` (initialised, unsealed, active or standby). The
+  user's draft had the two paths the other way round. The Services publish ready pods only; `vault-internal` publishes all.
+  Standbys advertise `https://<pod>.vault-internal.vault.svc:8200` (`$(VAULT_K8S_POD_NAME)`, not `$(HOSTNAME)`, which the
+  chart defines after `VAULT_API_ADDR`).
+- **Own PDB** in `vault-extras` (the chart's PDB is off): `minAvailable` 2 (quorum) with `unhealthyPodEvictionPolicy:
+  AlwaysAllow`. The trade-off: a pod that is not Ready can always be evicted, which keeps an uninitialised or sealed Vault
+  from blocking every drain, but an unsealed voter that flaps NotReady can be evicted while another pod is down. See D204.
+- **Placement:** one pod per node (the chart's anti-affinity) and per zone (`topologySpreadConstraints`, `minDomains` = the
+  replicas, `DoNotSchedule`: with nodes in fewer zones than pods a pod stays Pending). `terminationGracePeriodSeconds: 30`.
+  The service-registration Role is `get, update, patch` on `vault-0..2` only (the chart's had every pod in the namespace).
+- **Consequences:** an uninitialised Vault is three pods Running and `0/1` ready, by design, and nothing alerts (D194).
+  **Not verified:** the PDB and zone spread under a real drain; service registration at runtime (a failure is silent: only
+  the pod labels and `auth can-i` show it).
+
+## D197 — Vault's logs go to Grafana Cloud through the collector's own pipeline, shipped off until the DPA is accepted (amends D193; D52 and D51 unchanged for `ryft-*`; #153, #145)
+
+- **Decision (the owner accepted the recommendation):** Vault's server log (JSON, `info`) and its `stdout` audit device are
+  shipped by `alloy-daemonset` from the node's container log files to the stack's hosted Logs (14 days). The pipeline
+  (`podLogsViaLoki`) is in the collector's values in git, limited to namespace `vault`, with the labels `cluster`,
+  `namespace`, `pod`, `container`, `job="ryft/vault"` and `stream`, no structured metadata. **No CloudWatch sink.** The PVC
+  audit file stays the complete local record. The audit log holds no app user's data; the operator is a pseudonymous OIDC
+  `sub` (D198).
+- **Shipped OFF.** It is switched on by a later PR (the Loki URL, `podLogsViaLoki.enabled: true`, the key `LOKI_USERNAME` in
+  `infra/vault`) only after the owner has accepted Grafana Labs' DPA and added the **record of processing** entry. The record
+  must name the transfer mechanisms: the UK is a third country with an adequacy decision and the DPA lists US entities and
+  sub-processors (**to verify**). Vault also holds the smoke user's and the App Review demo account's e-mail addresses as KV
+  values (HMAC'd in the audit log).
+- **Mandatory before the add-on is applied (D188):** Fleet Management's pod-log exclusion `ryft-.*` → `ryft-.*|vault` and a
+  Beyla exclusion of `vault` (OPERATIONS → Before the Vault add-on is applied), then an Explore check that `{namespace="vault"}`,
+  Beyla series and Tempo return nothing.
+- **Limits:** the Loki copy is not tamper-proof (anyone with `logs:write` can push `stream="audit"` lines); operator sessions
+  show `127.0.0.1`. **Not verified:** the Fleet UI paths and Beyla's exclusion syntax, the pipeline end to end.
+- **State:** merged (#153), switched off.
+
+## D198 — Vault's audit: two file devices, raw logging off, no request headers, nothing over the network (#151, #153)
+
+- **Decision:** the bootstrap enables `file` at `/vault/audit/audit.log` and `file` with `file_path=stdout`, both with
+  `log_raw=false hmac_accessor=true format=json` set explicitly; Vault serves while one device records. No `socket` or `syslog`
+  device and no sidecar (an undrained socket stalls Vault). The three request headers a fresh Vault audits (`correlation-id`,
+  `x-correlation-id`, `user-agent`) are deleted, so no request header is audited. No mount sets `audit_non_hmac_*` (D193).
+- **The operator's identity:** the OIDC roles use `user_claim = "sub"` and `bound_subject`, map no email, name or groups, request
+  no extra scopes and set `verbose_oidc_logging = false`, so every audit line names the operator by a pseudonymous number.
+  `log_raw` on would hand every credential to a third party; `vault audit list -detailed` is the check.
+- **State:** the options are written by the bootstrap, **not run**. `VaultAuditFailing` is critical (D194).
+
+## D199 — Log-based Vault alerts in a Loki rule group of their own (#153; **decided, not built**)
+
+- **Decision:** the log rules that metrics cannot give (a sealed pod exports nothing, a hung audit device counts no failure)
+  are a group `ryft-vault-logs` in the stack's Loki ruler, counted by `check_rule_groups.sh` (D179). Proposed content, not
+  final: `VaultAuditConfigChanged` and `VaultUnsealFailing` (critical); `VaultRootTokenUsed`, `VaultPermissionDeniedBurst`,
+  `VaultRaftTrouble` and `VaultAuditLogsMissing` (warning); from #151: any write naming `audit_non_hmac` (critical), and writes
+  to `sys/policies/acl/*`, `auth/kubernetes/(role|config)`, `sys/auth/*`, `sys/mounts/*` outside an apply window or by a token
+  other than display name `token-terraform` (warning).
+- **Not built:** mimirtool cannot check Loki rules; the follow-up needs `lokitool` and a test over lines captured in the kind
+  run. Until it exists and the logs are switched on (D197), nothing watches `sys/audit*`, and the recovery-key drill (D203)
+  proves the page only through the metric alerts.
+
+## D200 — The import service's operator objects are an Argo CD application (amends D95's waves; the owner; **decided, not built**)
+
+- **Decision:** `deploy/argocd/apps/vault-<key>.yaml`, project `ryft`, wave 4 (ticket V7a). Nothing waits on it. P7's `vault-<x>`
+  pattern, the project's `ryft-*` destinations, the controller's ClusterRole and P12 already admit it, so it gains no power.
+  The owner's `kubectl apply -k` for it ends; its workload is not in git yet.
+- **State:** not built. Acceptance: the app Synced and Healthy with no diff at adoption, before cutover 5i.
+
+## D201 — monitoring's operator objects are an Argo CD application in a project of their own (amends D51, D95; the owner; **decided, not built**)
+
+- **Decision:** `vault-monitoring`, wave 4, project `ryft-monitoring`: destination `monitoring`, and only VaultConnection,
+  VaultAuth, VaultStaticSecret and Certificate; no cluster-scoped kind. P7 gets a fixed entry, P12 a carve-out for those four
+  kinds in `monitoring`, and renderpolicy binds the project to that path (ticket V7b). The monitoring cutover is then a merge,
+  like every other group. **Rejected:** deploying the collector chart on merge through Argo CD or a CI identity.
+- **State:** not built; the project is applied by hand (D95), and the admission values change with an apply of
+  `infra/aws/kubernetes`.
+
+## D202 — The Grafana Cloud collector is a Terraform add-on in `infra/aws/kubernetes`, which also owns namespace `monitoring` (amends D51, D94's add-on list; the owner; **decided, not built**)
+
+- **Decision:** `helm_release.grafana-cloud` (k8s-monitoring, pinned; values in `infra/aws/kubernetes/values/`), adopted by an
+  `import` block, `wait = false`. The namespace (Pod Security `privileged`) moves from `infra/vault` (the owner's `state rm`)
+  to `infra/aws/kubernetes` (`import`). The monitoring apply target is removed (ticket V7c). Chart and values changes take the
+  owner's apply, like every add-on. DR order: namespace and chart, then `infra/vault`, then Argo CD.
+- **Why not Argo CD:** the chart needs privileged host DaemonSets, cluster roles that list Secrets and a mutating webhook; a
+  stolen controller token would be node root. A CI deploy identity was rejected: cluster admin, reachable from a public
+  repository, and it would keep the API endpoint open to GitHub's address ranges.
+- **State:** not built. Until it is, the monitoring apply target stays the way the collector, the injector exclusion (D188) and
+  the Vault scrape (D194) reach the cluster.
+
+## D203 — Vault's recovery keys: one custodian, three places, no place holds a threshold (amends D193; #151, the owner)
+
+- **Decision:** five shares, threshold 3, in three places: one password-manager vault and two on paper, one of them off site. The
+  split is **2-2-1**; no place holds more than two, so losing any one place leaves three and stealing any one yields at most
+  two (with all five in one password manager the threshold protects only against a corrupted item). **The map of which share is
+  where is in the password manager, not in the repository.** Paper shares are written from the screen, never through the
+  clipboard. PGP-encrypted shares only with two hardware keys.
+- **Break-glass** is `vault operator generate-root` through a port-forward (D193). A yearly drill with two sets of three shares
+  covering all five proves every share and the alert. A lost or exposed place means a rekey the same day.
+- **Note:** `docs/work/2026-11-05-vault-ce/addendum-1.md` §3 still names the places; the public docs are generic.
+
+## D204 — Vault runs on on-demand nodes; node maintenance only with a rolled StatefulSet (amends D196; #146, #145, #153, the owner)
+
+- **Decision:** the node group stays `ON_DEMAND` (checked with `kubectl get nodes -L eks.amazonaws.com/capacityType`); a `check`
+  in `infra/aws` (`stateful_quorum_needs_on_demand`, #146) warns on Spot, because two interruptions at once lose the Raft
+  (and RabbitMQ quorum-queue) quorum. Updates are `OnDelete`, so a drain recreates a pod from the current template: every chart
+  or image change is rolled by hand (standbys first, step-down, the old active last) **before** node maintenance, and
+  `VaultUpdatePending` (info) fires after 24 h (#153). Managed node group updates are never forced. The soak drill replaces a
+  standby's node, then the leader's, then runs one node group version update.
+- **Open, not decided:** the design proposed a PDB of `maxUnavailable: 1` with the default eviction policy. What shipped in
+  #145 (D196) is `minAvailable` 2 with `AlwaysAllow`, and #151 asks whether to keep it or move to `IfHealthyBudget`.
+  This entry records the shipped one.
+- **Consequences:** a manual drain leaves a Vault pod Pending when no other node is in its zone (the zonal volume pins it); a
+  NotReady node keeps its pod Terminating (force-delete only once the node is confirmed down); a lost PVC needs `raft
+  remove-peer` first.
+
+## D205 — After HCP, the EKS public endpoint admits the operator's addresses only (the owner; **decided, not built**; ticket PR 6c)
+
+- **Decision:** once HCP's TokenReview calls are gone (PR 6), the only outside clients are the operator's tools and local
+  Terraform runs. `endpoint_public_access_cidrs` becomes the operator's IPv4 `/32`s plus the NAT gateway addresses, and a
+  `check` warns while `0.0.0.0/0` is listed. The precondition is private endpoint access, without which the nodes lose the API.
+  `infra/aws` uses only the AWS provider, so a wrong list is fixed from anywhere with AWS credentials (Terraform or `aws eks
+  update-cluster-config`). **Rejected:** a fully private endpoint (VPN, bastion) as new moving parts; CI gets no cluster
+  credentials.
+- **State:** after the decommission (PR 6), as PR 6c, in one reviewed tfvars edit, a plan with one in-place update, the
+  owner's apply and a 24-hour watch. Not started.
