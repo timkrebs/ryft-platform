@@ -997,7 +997,7 @@ run "vault_config_has_mlock_off_the_kms_seal_tls_reload_and_metrics" {
       strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "kms_key_id = \"arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b\"") &&
       !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "alias/")
     )
-    error_message = "the awskms seal names the key's ARN from the alias (never the alias itself, which can be re-pointed) and the region (Pod Identity injects none)"
+    error_message = "the awskms seal names the key's ARN from the alias (never the alias itself, which can be re-pointed) and the region (not left to the injected AWS_REGION)"
   }
   assert {
     condition = alltrue([for w in ["access_key", "secret_key", "session_token", "shared_creds", "role_arn", "web_identity_token_file"] :

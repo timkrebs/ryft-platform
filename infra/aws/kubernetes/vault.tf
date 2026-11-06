@@ -65,8 +65,9 @@ locals {
   #    admitted by the VPC CNI regardless: the metrics are not secret, and nothing else on 8200 is unauthenticated
   #    once Vault is initialised (design section 6).
   #  - retry_join: one block per pod, trusting the ryft-vault CA; no client certificate (the listener asks none).
-  #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set because Pod
-  #    Identity injects no AWS_REGION; no credentials of any kind (the SDK's default chain finds Pod Identity's).
+  #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set here, so the seal
+  #    does not depend on the AWS_REGION the EKS webhook injects; no credentials of any kind (the SDK's default
+  #    chain finds Pod Identity's).
   #  - service_registration: labels the pods vault-active=true|false, which the vault-active and vault-standby
   #    Services select on; without it they have no endpoints.
   vault_config = <<-HCL
