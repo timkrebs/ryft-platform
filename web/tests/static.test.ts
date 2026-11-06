@@ -39,4 +39,11 @@ describe('source', () => {
       .map(([f, n]) => `${f}:${n}`);
     expect(offenders).toEqual([]);
   });
+
+  it("gives the web manifest the light page's colours (web D19; scripts/icons.mjs writes it)", () => {
+    const tokens = JSON.parse(readFileSync('src/styles/tokens.json', 'utf8'));
+    const manifest = JSON.parse(readFileSync('public/site.webmanifest', 'utf8'));
+    expect(manifest.background_color).toBe(tokens.colors.background.light);
+    expect(manifest.theme_color).toBe(tokens.colors.background.light);
+  });
 });

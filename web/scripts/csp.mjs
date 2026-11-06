@@ -18,12 +18,18 @@ const bodiesOf = (list) => list.flatMap((f) => inlineScripts(readFileSync(f, 'ut
 // Marketing: every page but the admin page, so its hash never enters that policy.
 const pages = files.filter((f) => relative(OUT, f) !== ADMIN_PAGE);
 const hashes = hashesOf(bodiesOf(pages));
+// The marketing pages ship no script (web D19; script-src 'none'): one that appears would widen
+// the policy, so the build fails (before nginx/csp.conf is written) instead of hashing it in.
+if (hashes.length > 0) {
+  console.error(
+    `csp: the marketing pages carry ${hashes.length} inline script(s); they ship none (web D19). Check the postbuild.`,
+  );
+  process.exit(1);
+}
 writeFileSync(join(ROOT, 'nginx/csp.conf'), nginxSnippet(hashes, pages.length));
 console.log(
   `csp: ${hashes.length} script hash(es) from ${bodiesOf(pages).length} inline scripts on ${pages.length} pages → nginx/csp.conf.`,
 );
-if (hashes.length > 0)
-  console.warn('csp: the marketing pages carry an inline script; check the postbuild (web D19).');
 
 // Admin: the one page, exactly one script.
 const adminFiles = files.filter((f) => relative(OUT, f) === ADMIN_PAGE);

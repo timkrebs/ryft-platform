@@ -82,9 +82,15 @@ describe.skipIf(!built)('built site', () => {
   it("pins the marketing CSP: script-src 'none'", () => {
     // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
     // (or the admin bundle leaking into this policy) would widen it; this fails instead.
-    const csp = readFileSync('nginx/csp.conf', 'utf8');
-    expect(csp).toContain("script-src 'none'");
-    expect(csp).toContain("connect-src 'none'");
+    const conf = readFileSync('nginx/csp.conf', 'utf8');
+    const csp = conf.match(/add_header Content-Security-Policy "([^"]*)" always;/)?.[1] ?? '';
+    const directive = (name: string) =>
+      csp
+        .split('; ')
+        .filter((d) => d === name || d.startsWith(`${name} `))
+        .map((d) => d.slice(name.length).trim());
+    expect(directive('script-src')).toEqual(["'none'"]);
+    expect(directive('connect-src')).toEqual(["'none'"]);
   });
 
   it('is light only: one theme-color, no theme attribute, no dark screenshot (web D19)', () => {
