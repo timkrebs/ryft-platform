@@ -501,6 +501,13 @@ P6 binding to another subject
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
 P6 binding to cluster-admin
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 claim h: the controller binds itself to it in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 claim h: the operator's role name in kube-system with secrets and pods/exec
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole admission
     ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.

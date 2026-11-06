@@ -1135,7 +1135,8 @@ EOF
 #      in kube-system with Secrets and pods/exec, and bind itself to it. Without the policies both
 #      succeed and the controller can read Secrets in kube-system; with P6 in Deny both are refused (the
 #      Role is outside rabbitmq-system and the broker's namespace; the binding names a subject that is no
-#      operator service account).
+#      operator service account). P12 refuses both as well (kube-system is outside argoScope), and the API
+#      server names only one of two refusals, so either name passes; the harness pins both (D206).
 # With the chart-default (wildcard) role of a tree without T12-f vector 1 succeeds trivially, and the
 # check says so.
 adm_claim_h() {
@@ -1218,10 +1219,16 @@ EOF
       rec "claim-h-open" FAIL "unexpected: Role rc=$rc2, RoleBinding rc=$rc3, can-i get secrets -n kube-system=$can2: $(printf '%s %s' "$n2" "$n3" | cut -c1-300) (either escalate/bind by resourceNames on roles does not do what #47 assumes, or the hole is closed already)"
     fi
   else
-    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
-      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
+    # P6 and P12 (kube-system is outside argoScope) both refuse these; the API server names one of them,
+    # in no fixed order (D206). The CEL harness pins both refusals ("P6 claim h: ...").
+    local by='ValidatingAdmissionPolicy .(ryft-operators-cluster|ryft-argo-scope).'
+    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qE "$by" \
+      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qE "$by" \
       && [ "$can2" != yes ]; then
-      rec "claim-h-guarded" PASS "with P6 in Deny the Role in kube-system and the self-binding are both refused (ryft-operators-cluster); the controller cannot read Secrets in kube-system (can-i: $can2)"
+      local w2 w3
+      w2=$(printf '%s' "$n2" | grep -oE "$by" | head -1 | cut -d"'" -f2)
+      w3=$(printf '%s' "$n3" | grep -oE "$by" | head -1 | cut -d"'" -f2)
+      rec "claim-h-guarded" PASS "with P6 (and P12) in Deny the Role in kube-system and the self-binding are both refused (the API server named $w2 and $w3; the harness pins both P6 and P12 for each); the controller cannot read Secrets in kube-system (can-i: $can2)"
     else
       rec "claim-h-guarded" FAIL "with P6 in Deny: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
     fi
