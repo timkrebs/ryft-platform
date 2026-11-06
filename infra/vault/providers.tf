@@ -8,6 +8,26 @@ provider "vault" {
   namespace = var.vault_parent_namespace_root != "" ? var.vault_parent_namespace_root : null
 }
 
+# Vault Community Edition in the cluster (k8s.tf, D191), through `kubectl port-forward` on the operator's machine
+# (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). Every argument is explicit, so nothing of
+# the HCP shell can reach it: the token from TF_VAR_vault_k8s_token only (ephemeral: in neither plan nor state),
+# the CA from a file of its own, the address the loopback end of the port-forward. Never export VAULT_CACERT or
+# VAULT_NAMESPACE while running Terraform (the README): the HCP provider would read them.
+#
+# While write_k8s is false (targets.tf) no resource instance uses this provider, and the plan must not need the
+# port-forward, the CA file or the token: the provider builds its client only on the first request, the token is
+# a placeholder (never the HCP token from VAULT_TOKEN, which an empty token would fall back to), the CA file is
+# not read, and the version lookup is skipped. tests/k8s_offline.tftest.hcl plans with the real provider against a
+# closed port to hold that.
+provider "vault" {
+  alias                  = "k8s"
+  address                = var.vault_k8s_address
+  ca_cert_file           = local.write_k8s ? pathexpand(var.vault_k8s_ca_cert_file) : null
+  token                  = local.write_k8s ? var.vault_k8s_token : "write-k8s-is-off"
+  skip_child_token       = true # the token is already a bounded 1-hour child of the operator's login
+  skip_get_vault_version = !local.write_k8s
+}
+
 provider "aws" {
   region = var.region
 }

@@ -1,0 +1,6 @@
+{
+  "oidc_discovery_url": "https://accounts.google.com",
+  "bound_issuer": "https://accounts.google.com",
+  "default_role": "admin",
+  "jwt_supported_algs": ["RS256"]
+}

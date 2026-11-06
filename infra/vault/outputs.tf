@@ -37,6 +37,14 @@ output "vso_manifests" {
   value       = { for k, f in local_file.vso : k => dirname(f.filename) }
 }
 
+output "vso_targets" {
+  description = "Which Vault each namespace's operator objects read (hcp or k8s, targets.tf) and whether this root writes the in-cluster Vault"
+  value = {
+    write_k8s = local.write_k8s
+    services  = local.vso_target
+  }
+}
+
 output "login_check" {
   description = "Manual check: log in as a service with a token the operator would use"
   value = {
