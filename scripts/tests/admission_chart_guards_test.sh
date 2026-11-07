@@ -73,13 +73,60 @@ refused 'actions.vault-trust must be audit or deny' --set actions.vault-trust=bl
 refused 'actions.netpol-vault must be audit or deny' --set actions.netpol-vault=block
 refused 'actions.netpol is deny while netpol.brokerEgressPublic is true' --set actions.netpol=deny
 
+# P12 (D206): vault, cert-manager (and vault.clusterResourceNamespace), argocd and kube-system are never in
+# argoScope.namespaces or namespaceObjects; every Namespace object is P1's (ryft-* or rabbitmq-system) and
+# one P12 lets the controller write in.
+scope='ryft-api,ryft-ingest,ryft-migrate,ryft-notify,ryft-rabbitmq,ryft-scoring,ryft-smoke,ryft-web,rabbitmq-system'
+for ns in vault cert-manager argocd kube-system; do
+  refused "argoScope.namespaces must not hold $ns" --set "argoScope.namespaces={$scope,$ns}"
+  refused "argoScope.namespaceObjects must not hold $ns" --set "argoScope.namespaceObjects={ryft-web,rabbitmq-system,$ns}"
+done
+refused "argoScope.namespaces must not hold vault-ns" --set vault.namespace=vault-ns --set "argoScope.namespaces={$scope,vault-ns}"
+refused "argoScope.namespaces must not hold cm-resources" --set vault.clusterResourceNamespace=cm-resources --set "argoScope.namespaces={$scope,cm-resources}"
+refused 'argoScope.namespaceObjects must hold ryft-* or rabbitmq-system Namespaces only' --set 'argoScope.namespaceObjects={ryft-web,team-x}'
+# S3 (security review): argoScope.namespaces has the same shape as namespaceObjects (ryft-* or the operators'
+# namespace), and the add-on namespaces are on the never-list too (vault-secrets-operator-system: a
+# Deployment as the VSO service account would write Secrets cluster-wide and reach vault unmatched).
+for ns in vault-secrets-operator-system monitoring amazon-cloudwatch external-dns default kube-public kube-node-lease; do
+  refused "argoScope.namespaces must not hold $ns" --set "argoScope.namespaces={$scope,$ns}"
+done
+refused 'argoScope.namespaces must hold ryft-* or rabbitmq-system namespaces only' --set "argoScope.namespaces={$scope,team-x}"
+refused 'argoScope.namespaces must hold ryft-* or rabbitmq-system namespaces only' --set 'argoScope.neverNamespaces={unused}' --set "argoScope.namespaces={$scope,monitoring}"
+refused 'argoScope.neverNamespaces must be a non-empty list of strings' --set argoScope.neverNamespaces=null
+refused 'argoScope.neverNamespaces must be a non-empty list of strings' --set 'argoScope.neverNamespaces={}'
+# S2 (security review): every list spliced into P12's CEL (and P1's) is a non-empty list of strings. A map
+# renders `in {map}`, which CEL answers on its keys (so {vault: x, kube-system: x} would admit writes there),
+# and null renders `in null`, a runtime error that refuses every Argo CD write (failurePolicy Fail).
+printf 'argoScope:\n  namespaces:\n    vault: x\n    kube-system: x\n' > "$tmp/map-ns.yaml"
+refused 'argoScope.namespaces must be a non-empty list of strings' -f "$tmp/map-ns.yaml"
+printf 'argoScope:\n  namespaces:\n    - ryft-api\n    - [kube-system]\n' > "$tmp/nested-ns.yaml"
+refused 'argoScope.namespaces must be a non-empty list of strings' -f "$tmp/nested-ns.yaml"
+for key in argoScope.namespaces argoScope.namespaceObjects argoScope.crdGroups operators.clusterRoleNamePrefixes operators.webhookConfigurations; do
+  refused "$key must be a non-empty list of strings" --set "$key=null"
+  printf '%s:\n  %s:\n    a: x\n' "${key%%.*}" "${key#*.}" > "$tmp/map.yaml"
+  refused "$key must be a non-empty list of strings" -f "$tmp/map.yaml"
+done
+refused 'argoScope.namespaces must be a non-empty list of strings' --set 'argoScope.namespaces={}'
+refused 'argoScope.namespaceObjects holds ryft-extra, which argoScope.namespaces does not' --set 'argoScope.namespaceObjects={ryft-web,rabbitmq-system,ryft-extra}'
+refused 'argoScope.namespaces must hold namespace names only' --set "argoScope.namespaces={$scope,ryft-*}"
+renders --set "argoScope.namespaces={$scope,ryft-extra}" --set 'argoScope.namespaceObjects={ryft-web,rabbitmq-system,ryft-extra}'
+grep -qF 'P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.' <(render) ||
+  fail "P1's Argo CD message must name argoScope.namespaceObjects"
+grep -qF "in [\"ryft-web\",\"rabbitmq-system\"]" <(yq 'select(.metadata.name == "ryft-namespaces" and .kind == "ValidatingAdmissionPolicy") | .spec.validations[2].expression' <(render)) ||
+  fail "P1's Argo CD rule must read argoScope.namespaceObjects"
+# The Deny gate: argo-scope deny needs the general P6, P1 and P2 bindings in deny (not their vault twins).
+refused 'actions.argo-scope is deny while actions.operators-cluster is not' --set actions.argo-scope=deny
+refused 'actions.argo-scope is deny while actions.workloads-templates is not' --set actions.argo-scope=deny --set actions.operators-cluster=deny --set actions.namespaces=deny --set actions.workloads-templates-vault=deny --set actions.namespaces-vault=deny
+renders --set actions.argo-scope=deny --set actions.operators-cluster=deny --set actions.namespaces=deny --set actions.workloads-templates=deny
+renders --set actions.argo-scope=deny --set breakGlass=true
+
 # The vault bindings: four of them, In [vault]; the general ones of the same policies NotIn [vault];
 # each goes to deny alone, also while netpol's guard holds the general P3 binding on audit.
 render > "$tmp/r.yaml" || fail "the committed values must render"
 n=$(yq 'select(.kind == "ValidatingAdmissionPolicyBinding") | .metadata.name' "$tmp/r.yaml" | grep -vc '^---$')
-[ "$n" = 17 ] || fail "the chart renders $n bindings, want 17"
+[ "$n" = 18 ] || fail "the chart renders $n bindings, want 18"
 n=$(yq 'select(.kind == "ValidatingAdmissionPolicy") | .metadata.name' "$tmp/r.yaml" | grep -vc '^---$')
-[ "$n" = 12 ] || fail "the chart renders $n policies, want 12"
+[ "$n" = 13 ] || fail "the chart renders $n policies, want 13"
 for b in ryft-namespaces-vault ryft-workloads-templates-vault ryft-workloads-pods-vault ryft-netpol-vault; do
   got=$(yq "select(.metadata.name == \"$b\" and .kind == \"ValidatingAdmissionPolicyBinding\") | .spec.matchResources.namespaceSelector.matchExpressions | tojson(0)" "$tmp/r.yaml")
   [ "$got" = '[{"key":"kubernetes.io/metadata.name","operator":"In","values":["vault"]}]' ] || fail "$b selects $got"
@@ -87,7 +134,7 @@ for b in ryft-namespaces-vault ryft-workloads-templates-vault ryft-workloads-pod
   got=$(yq "select(.metadata.name == \"$general\" and .kind == \"ValidatingAdmissionPolicyBinding\") | .spec.matchResources.namespaceSelector.matchExpressions | tojson(0)" "$tmp/r.yaml")
   [ "$got" = '[{"key":"kubernetes.io/metadata.name","operator":"NotIn","values":["vault"]}]' ] || fail "$general selects $got"
 done
-for b in ryft-vso ryft-vault-trust ryft-operators-cluster; do
+for b in ryft-vso ryft-vault-trust ryft-operators-cluster ryft-argo-scope; do
   got=$(yq "select(.metadata.name == \"$b\" and .kind == \"ValidatingAdmissionPolicyBinding\") | .spec.matchResources.namespaceSelector" "$tmp/r.yaml")
   [ "$got" = null ] || fail "$b must not select namespaces (it judges cluster-scoped objects or every namespace)"
 done

@@ -31,7 +31,7 @@ netpol:
 # combined with Warn. Phase 1 is all audit; Phase 2 changes one step per reviewed PR:
 #   A: vso, operators-cluster, broker, vault-trust, and the vault bindings (namespaces-vault,
 #   workloads-templates-vault, workloads-pods-vault, netpol-vault)
-#   B: namespaces, workloads-templates, netpol, auth-env, traefik
+#   B: namespaces, workloads-templates, netpol, auth-env, traefik, argo-scope (after P6, P1, P2)
 #   C: workloads-pods, operator-reach   D: argocd, argocd-operation
 actions:
   vso: audit
@@ -51,6 +51,12 @@ actions:
   operator-reach: audit
   argocd: audit
   argocd-operation: audit
+  # P12 (ryft-argo-scope): where Argo CD's service accounts may write. Step B: it blocks only
+  # Argo writes (deploys, never running Pods), but its failure reaches every app, so it goes to
+  # deny only after Phase 1 showed no `ryft-argo-scope` finding (docs/OPERATIONS.md -> P12). The
+  # release depends on helm_release.argocd (admission.tf) so that on a fresh cluster Argo CD has
+  # written its first server.secretkey before any policy exists.
+  argo-scope: audit
   # P13: what the in-cluster Vault's CA (ClusterIssuer ryft-vault) may issue. Nothing names
   # that issuer before the Vault add-on PR, so Audit flags nothing until then.
   vault-trust: audit

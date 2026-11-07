@@ -1,4 +1,5 @@
 P1 argo creates another namespace
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 P1 argocd namespace privileged
     ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
@@ -60,6 +61,276 @@ P11 service LoadBalancer
     ryft-broker: P11: the broker's Service must stay ClusterIP.
 P11 shovel
     ryft-broker: P11: Shovels, Federations and SchemaReplications are not allowed.
+P12 a lookalike of the controller creates an Application
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 an unknown argocd service account creates an Application
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 controller adds the first server.secretkey
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller attaches to a Pod in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller creates a CRD named like the group
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a CRD of another group
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a ClusterIssuer
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
+P12 controller creates a ClusterRole without any metadata
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a ClusterRoleBinding without the prefix
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a Deployment in cert-manager
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a Deployment in kube-system as a controller-manager SA
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a Job in cert-manager
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a Lease in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a Namespace with a generateName
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller creates a Namespace without any metadata
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a PersistentVolume
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a PriorityClass
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a Secret in argocd
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a Service in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a ServiceAccount in default
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a StorageClass
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates a generateName ConfigMap in cert-manager
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates a webhook configuration of another name
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
+P12 controller creates an APIService
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller creates an Application outside argocd
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates an ApplicationSet
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+    ryft-argocd: P7: ApplicationSets are not allowed.
+P12 controller creates an Event in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates another Namespace
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller creates another Namespace (no namespace in the request)
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller creates kube-system/aws-auth
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller creates the Namespace ryft-api (in namespaces, not in namespaceObjects)
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller deletes a Lease in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes a PersistentVolume
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller deletes a collection of ClusterRoles
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller deletes a collection of ConfigMaps in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes a collection of Namespaces
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller deletes a collection of Secrets in argocd
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes a rabbitmq.com CRD
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller deletes an APIService
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller deletes an Event in argocd
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes an events.k8s.io Event in argocd
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes cluster-admin
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller deletes kube-system/aws-auth
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller deletes the Namespace rabbitmq-system
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller deletes the Namespace ryft-web
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller evicts a Pod in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller execs into a Pod in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller execs into a Pod with its options as the object
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller patches argocd-cm
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller patches argocd-rbac-cm
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller patches kube-system/aws-auth
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller patches the argocd-server Deployment
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller port-forwards a Pod in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller proxies to a Node (nodes/proxy, CONNECT)
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller proxies to a Pod in ryft-api (pods/proxy, CONNECT)
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller requests a ServiceAccount token in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller scales a Deployment in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller updates a Lease in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller updates a PersistentVolume
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller updates a StorageClass
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller updates an APIService
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+P12 controller updates argocd
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+    ryft-namespaces: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+P12 controller updates kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller updates the Namespace ryft-api (in namespaces, not in namespaceObjects)
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+    ryft-namespaces: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+P12 controller writes a ConfigMap in a future ryft-infra namespace
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes a ConfigMap in ryft-import
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes a Secret in ryft-import
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes deployments/status in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+P12 controller writes in argocd-x
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes in rabbitmq-system-x
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes in ryft-api-x
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes in ryftx
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 controller writes in xryft-api
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+P12 redis-secret-init creates a ConfigMap named argocd-redis
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 redis-secret-init creates an Application
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 redis-secret-init creates another Secret
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 redis-secret-init creates argocd-redis in ryft-api
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 redis-secret-init deletes Secret argocd-redis
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 redis-secret-init updates Secret argocd-redis
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 server adds the first server.secretkey to a Secret elsewhere
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the first server.secretkey to another Secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and a dangling ownerReference
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and a finalizer
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and a label
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and an annotation
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and another key
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and changes admin.password
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and changes the type
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and drops a finalizer
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and drops admin.passwordMtime
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and drops an ownerReference
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and drops the labels
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and makes the Secret immutable
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and renames a label key
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key and sets deletionTimestamp
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server adds the key to a Secret without data
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server changes admin.password
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server changes the existing server.secretkey
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates a CRD
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates a ConfigMap in ryft-api
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates a Lease in kube-system
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates a PersistentVolume
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates an APIService
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates an AppProject
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates an Application outside argocd
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates an Event in kube-system
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates an object without metadata.name
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates argocd-secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server creates the Namespace ryft-web
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server deletes a collection of Applications in argocd
+    ryft-argocd: P7: argocd-server must not delete Applications.
+P12 server deletes a collection of ConfigMaps in argocd
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server deletes an Event in argocd
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server deletes argocd-secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server evicts a Pod in ryft-api
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server execs into a Pod
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server patches argocd-cm
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server patches argocd-rbac-cm
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server patches the argocd-server Deployment
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server proxies to a Node (nodes/proxy, CONNECT)
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server removes server.secretkey
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server rewrites argocd-secret with the key present and nothing changed
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server updates an AppProject
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 server updates an Event in argocd
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+P12 the applicationset-controller creates an Application
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 the repo-server creates a ConfigMap in ryft-api
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+P12 the repo-server creates an Event in argocd
+    ryft-argo-scope: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
 P2 a pod update that swaps the image
     ryft-workloads-pods: P2: a container image is not the one this namespace may run.
 P2 args
@@ -233,6 +504,13 @@ P6 binding to another subject
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
 P6 binding to cluster-admin
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
+P6 claim h: the controller binds itself to it in kube-system
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+P6 claim h: the operator's role name in kube-system with secrets and pods/exec
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+    ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
+    ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole admission
     ryft-operators-cluster: P6: a ClusterRole of the operators is read-only (get, list, watch) except for rabbitmq.com, events and the tokenreview and subjectaccessreview creates: a cluster-wide write of ConfigMaps, Services, ServiceAccounts, Endpoints or EndpointSlices is a takeover.
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
@@ -284,6 +562,7 @@ P6 clusterrole deletes tokenreviews (not a create)
 P6 clusterrole escalate
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
 P6 clusterrole misnamed
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
 P6 clusterrole nodes
     ryft-operators-cluster: P6: a Role or ClusterRole of the operators must not hold a wildcard verb, escalate, bind, impersonate, a resource outside the operators' allowlist, or a non-resource URL but /metrics.
@@ -428,6 +707,7 @@ P6 the scoped role with escalate
 P6 webhook on pods
     ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
 P6 webhook other name
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
 P6 webhook service elsewhere
     ryft-operators-cluster: P6: a webhook configuration must be one of the operators', served from rabbitmq-system, on rabbitmq.com only.
@@ -466,11 +746,14 @@ P7 app targetRevision
 P7 app unknown name
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
 P7 appset
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: ApplicationSets are not allowed.
 P7 argocd-server unchanged bad spec is judged
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
 P7 controller spec change is judged
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
+P7 controller writes a labelled secret
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 P7 default project loosened
     ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
 P7 delete an application (argocd-server)
@@ -478,12 +761,16 @@ P7 delete an application (argocd-server)
 P7 delete default (admin)
     ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
 P7 delete ryft by argocd-server
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
 P7 delete ryft by the controller
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-argocd: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
 P7 project unknown
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
 P7 project widened
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: an AppProject must equal its entry in deploy/argocd/project.yaml.
 P7 root app moved
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
@@ -492,13 +779,17 @@ P7 server adds status.sync
 P7 server creates an Application with a status.sync
     ryft-argocd: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
 P7 server deletes a cluster secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
 P7 server deletes an Application
     ryft-argocd: P7: argocd-server must not delete Applications.
 P7 server rewrites status.sync.revision
     ryft-argocd: P7: argocd-server must not write status.sync of an Application (an Application has no status subresource; P10 trusts the synced revision).
 P7 server writes a repository secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+P7 server writes an unlabelled secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 P7 vault-.. invalid
     ryft-argocd: P7: an Application must keep its project, path and destination namespace (a vault-<x> app: vault-namespaces/<x> into ryft-<x>).
 P7 vault-x wrong namespace
@@ -573,7 +864,10 @@ carve-out: P1 PSA label lowered on a deleting Namespace
 carve-out: P6 aggregate label added to a deleting ClusterRole
     ryft-operators-cluster: P6: a ClusterRole must be named rabbitmq-cluster-* or messaging-topology-* and must not aggregate.
 carve-out: P7 secret-type label added to a deleting Secret
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-argocd: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+carve-out: a deleting Secret loses only its finalizer
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 carve-out: a label change on a deleting object is judged
     ryft-vso: P4: a VaultStaticSecret must write ryft-secrets or amqp-user-<name>, with excludeRaw true and no templates or transformation references.
 carve-out: a live object with the same bad spec is judged
@@ -593,6 +887,8 @@ cluster operator writes a secret in kube-system
     ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
 cluster operator writes a secret in ryft-api
     ryft-operator-reach: P8: the operators write only in ryft-rabbitmq.
+cost: P12 server changes one of 1,000 keys with the key present
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 decom: an HCP Vault namespace
     ryft-vso: P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace, and no allowedNamespaces.
 decom: an empty Vault namespace
@@ -629,10 +925,13 @@ topology operator writes a secret in ryft-api
 topology operator writes a service
     ryft-operator-reach: P8: this operator may not write this resource.
 vault: P1 Argo CD creates the namespace
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 vault: P1 Argo CD deletes the namespace
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 vault: P1 argocd-server updates the namespace
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-namespaces-vault: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
 vault: P1 the namespace at baseline
     ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
@@ -642,17 +941,28 @@ vault: P1 the namespace with privileged audit
     ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
 vault: P1 the namespace without enforce
     ryft-namespaces-vault: P1: a RYFT, rabbitmq-system, argocd or vault Namespace must carry Pod Security enforce, warn and audit set to restricted.
+vault: P12 Argo CD writes a NetworkPolicy in vault
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+vault: P12 Argo CD writes the server StatefulSet
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+vault: P12 Argo CD writes vault/vault-tls
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 vault: P13 Argo CD writes ClusterIssuer ryft-vault as rendered
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
 vault: P13 Argo CD writes a CA Issuer
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
 vault: P13 Argo CD writes a CertificateRequest's status
+    ryft-argo-scope: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
 vault: P13 Argo CD writes a Vault Issuer that sends ryft-secrets to another server
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
 vault: P13 Argo CD writes a selfSigned ClusterIssuer
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
 vault: P13 Argo CD writes a selfSigned Issuer with CRL points
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
 vault: P13 Argo CD writes an ACME Issuer
     ryft-vault-trust: P13: Argo CD may write only Issuers that are exactly selfSigned: {}, and no ClusterIssuer (another type sends a Secret of its namespace to the server it names).
@@ -679,6 +989,7 @@ vault: P13 a Certificate with a generated name
 vault: P13 a CertificateRequest by the admin
     ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
 vault: P13 a CertificateRequest from Argo CD
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
 vault: P13 a CertificateRequest from cert-manager's cainjector
     ryft-vault-trust: P13: only cert-manager's controller may create a CertificateRequest for the issuer ryft-vault or write its status (CEL cannot read the names in a CSR).
@@ -706,6 +1017,8 @@ vault: P13 another Certificate writing the Secret vault-ca
     ryft-vault-trust: P13: the Secrets vault-ca and vault/vault-tls may be written only by a Certificate of the ClusterIssuer ryft-vault.
 vault: P13 another ClusterIssuer signing with ryft-vault-ca
     ryft-vault-trust: P13: only the ClusterIssuer ryft-vault may sign with the Secret ryft-vault-ca.
+vault: P13 argocd-server updates the operators' selfSigned Issuer
+    ryft-argo-scope: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 vault: P13 ingress-shim's Certificate for an Ingress annotated with ryft-vault
     ryft-vault-trust: P13: the issuer ryft-vault issues only the Certificates vault/vault-tls and <namespace>/vault-ca.
 vault: P13 the Secret vault-tls from letsencrypt in vault, another Certificate
@@ -909,27 +1222,38 @@ vault: P4 the mount spelt with the namespace (kv-ryft-api)
 vault: P4 the operator's mount (kv-operator)
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-admin read from ryft-admin
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-default read from default
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-operator read from ryft-operator
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-root read from ryft-root
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-snapshot read from ryft-snapshot
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-terraform read from ryft-terraform
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-vault-snapshot read from ryft-vault-snapshot
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the reserved mount kv-vault-snapshot read from vault-snapshot
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P4 the service's mount with a path in it
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv or kv-<its service> (never a reserved one), and set only the allowed keys.
 vault: P6 Argo CD writes the auth-delegator ClusterRoleBinding
+    ryft-argo-scope: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
     ryft-operators-cluster: P6: a ClusterRoleBinding must bind the operators' ClusterRoles to the two operator service accounts.
 vault: P6 Argo CD writes the discovery Role
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.
     ryft-operators-cluster: P6: a Role must be named rabbitmq-cluster-* or messaging-topology-*.
 vault: P6 Argo CD writes the discovery RoleBinding
+    ryft-argo-scope: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
     ryft-operators-cluster: P6: Roles and RoleBindings are allowed in rabbitmq-system, and in the broker's namespace only the four named in the chart (T12-g), bound to the two operator service accounts.

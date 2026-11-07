@@ -182,6 +182,17 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/audit: restricted
 EOF
+  # cert-manager: P12's canary (a Deployment there, created as Argo CD's controller, is refused; as
+  # the admin it is admitted) needs the namespace, or the API server answers NotFound before
+  # admission. Terraform's helm_release creates it (create_namespace); in the full mode the chart's
+  # --create-namespace finds it there.
+  cat >> "$out" <<EOF
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+EOF
   { echo ---; cat "$REPO/deploy/k8s/services/web/namespace.yaml"; } >> "$out"
   { echo ---; kubectl kustomize "$REPO/deploy/rabbitmq/operators" | yq 'select(.kind == "Namespace")'; } >> "$out"
   # The service accounts infra/vault creates (a VaultAuth names each): the API server refuses a Pod
@@ -444,6 +455,15 @@ adm_deny_values() {
     done
     echo "netpol:"
     echo "  brokerEgressPublic: false"
+    # The chart refuses P12 in deny while P6, P1 or P2 is not (the RBAC route). The kind run holds P6 in
+    # audit until the tree has T12-g and must still try P12 in deny (claims n, o, p), so it lifts that guard
+    # here, in this run's values only; the route is not what these claims are about. Production's gate is
+    # admission.tf's precondition, which has no such switch.
+    case " $held " in
+      *" operators-cluster "*|*" namespaces "*|*" workloads-templates "*)
+        echo "argoScope:"
+        echo "  requireClosedRoutes: false" ;;
+    esac
   } > "$f"
 }
 
@@ -478,7 +498,9 @@ adm_chart_install() {
     return 1
   fi
   if ! hc upgrade --install admission-policy "$CHART_DIR" --namespace kube-system "${ARGS[@]}" ${CHART_EXTRA_ARGS[@]+"${CHART_EXTRA_ARGS[@]}"} >"$WORK/log/chart-$variant.out" 2>&1; then
-    rec "chart-install-$variant" FAIL "helm: $(tail -5 "$WORK/log/chart-$variant.out")"
+    # (P12 matches every resource with resources ["*/*"], scope "*"; the harness cannot show that the
+    # API server's validation takes it, this install is where it is shown)
+    rec "chart-install-$variant" FAIL "helm: $(tail -5 "$WORK/log/chart-$variant.out")$(grep -q 'ryft-argo-scope' "$WORK/log/chart-$variant.out" && echo ' (ryft-argo-scope: the API server may not take resources ["*/*"] with scope "*"; docs/work/2026-10-23-admission/p12-argo-scope.md)')"
     return 1
   fi
   adm_wait_policies "$variant"
@@ -493,7 +515,7 @@ adm_cluster_names() {
 }
 
 # adm_wait_policies <variant>: (1) the API server holds exactly the chart's policies and bindings (the
-# names of `helm template` with the same values: 11 and 12 today), asked again while kubectl fails or
+# names of `helm template` with the same values: 13 and 18 today, chart 0.6.0), asked again while kubectl fails or
 # the sets differ; (2) every policy has been looked at by the type checker (status.observedGeneration
 # == generation and status.typeChecking present) and carries no warnings; (3) the policies are enforced:
 # one known fixture is refused (deny) or warned about (audit), polled for 30 s at most.
@@ -525,7 +547,28 @@ adm_wait_policies() {
   else
     rec "typechecking" FAIL "$bad"
   fi
+  adm_check_argo_scope_policy "$variant" "$json"
   adm_wait_enforced "$variant"
+}
+
+# adm_check_argo_scope_policy <variant> <the policies as JSON>: P12 (ryft-argo-scope) matches every resource
+# with resources ["*/*"] and scope "*" (the chart deviates from the design's sketch ["*", "*/*"], which the
+# API server's validation refuses: "*/*" may not stand next to other entries). The CEL harness cannot show
+# that the API server takes it, nor what its type checker says about a policy that matches no single
+# schema; this reads both back: the policy is stored as rendered, observed, and status.typeChecking is
+# present and empty (no expression warnings).
+adm_check_argo_scope_policy() {
+  local variant=$1 json=$2 p
+  p=$(printf '%s' "$json" | jq -c '.items[] | select(.metadata.name == "ryft-argo-scope") | {resources: .spec.matchConstraints.resourceRules[0].resources, scope: .spec.matchConstraints.resourceRules[0].scope, observed: ((.status.observedGeneration // 0) == .metadata.generation), typeChecking: .status.typeChecking}' 2>/dev/null)
+  if [ -z "$p" ]; then
+    rec "argo-scope-policy-$variant" SKIP "the chart renders no ryft-argo-scope (a chart older than 0.6.0)"
+    return 0
+  fi
+  if printf '%s' "$p" | jq -e '.resources == ["*/*"] and .scope == "*" and .observed and .typeChecking != null and ((.typeChecking.expressionWarnings // []) | length == 0)' >/dev/null 2>&1; then
+    rec "argo-scope-policy-$variant" PASS "the API server holds ryft-argo-scope with resources [\"*/*\"] and scope \"*\", has observed it, and status.typeChecking is empty: $(printf '%s' "$p" | jq -c '.typeChecking')"
+  else
+    rec "argo-scope-policy-$variant" FAIL "ryft-argo-scope as the API server holds it (resources, scope, observed, typeChecking): $(printf '%s' "$p" | cut -c1-300)"
+  fi
 }
 
 # The fixture that proves the bindings are live: a VaultDynamicSecret, which P4 refuses whoever asks (a
@@ -626,6 +669,25 @@ adm_dryrun_render() {
   done
 }
 
+# adm_dryrun_p12 <variant>: P12 (ryft-argo-scope) judges what Argo CD's controller writes, so every object of
+# every render, dry-run as the controller, passes it in Audit and in Deny. The projects and the root are the
+# admin's (Terraform's; the label argocd-hand in dry-all-<variant>.tsv), P12 does not match them. What the
+# tree has not fixed yet is P3's and P6's, never P12's: any line of P12 here is a refusal or a warning for
+# something an app renders, i.e. the chart's allowlist is too narrow. Counts at this commit: 218 objects,
+# 213 as the controller (203 rendered by the 10 apps' paths, 10 Applications) and 5 as the admin.
+adm_dryrun_p12() {
+  local variant=$1 file total admins p12
+  file="$WORK/dry-all-$variant.tsv"
+  total=$(wc -l < "$file" | tr -d ' ')
+  admins=$(awk -F'\t' '$1 == "argocd-hand"' "$file" | wc -l | tr -d ' ')
+  p12=$(awk -F'\t' '($2 == "refused" || $2 == "warned") && $4 == "ryft-argo-scope"' "$file" | wc -l | tr -d ' ')
+  if [ "$p12" = 0 ] && [ "$((total - admins))" -ge 1 ]; then
+    rec "dryrun-$variant-argo-scope" PASS "ryft-argo-scope: 0 of the $((total - admins)) objects dry-run as Argo CD's controller (the renders of $(adm_apps | wc -l | tr -d ' ') apps and their Applications) and 0 of the $admins as the admin (projects, root) were refused or warned about ($total objects in all)"
+  else
+    rec "dryrun-$variant-argo-scope" FAIL "ryft-argo-scope flagged $p12 of $((total - admins)) objects as the controller ($total in all, $admins as the admin): $(awk -F'\t' '($2 == "refused" || $2 == "warned") && $4 == "ryft-argo-scope" { printf "%s %s (%s); ", $1, $3, substr($5, 1, 90) }' "$file" | cut -c1-700)"
+  fi
+}
+
 # adm_dryrun_apps <variant>: every Application's render as Argo CD's controller (RBAC included), and
 # the project, the root and the applications themselves as the cluster admin (they are applied by
 # hand or by Terraform, T12-b). Audit: nothing refused, nothing warned beyond the known flags. Deny:
@@ -691,6 +753,11 @@ EOF
   else
     rec "dryrun-$variant" PASS "$total objects of $(adm_apps | wc -l | tr -d ' ') apps, the root and the projects: $refused refused, $warned warned, all explained ($(tree_has_scoped_operators && echo 'T12-g present' || echo 'T12-g absent: P6 flags the vendored operator roles'); $(tree_broker_egress_public && echo 'T12-k absent: the broker egress is open' || echo 'T12-k present'))"
   fi
+  # P12 (ryft-argo-scope) judges what Argo CD's controller writes: every object of every render, as the
+  # controller, passes it in Audit and in Deny. The project and the root are the admin's (Terraform's), P12
+  # does not match them. Whatever the tree has not fixed yet is P3's and P6's, never P12's: any line of
+  # P12 here is a refusal of something an app renders, i.e. the chart's allowlist is too narrow.
+  adm_dryrun_p12 "$variant"
   if [ "$variant" = deny ]; then
     if ! tree_has_scoped_operators; then
       if awk -F'\t' '$1 == "rabbitmq-operators" && $2 == "refused" && $4 == "ryft-operators-cluster"' "$WORK/dry-all-deny.tsv" | grep -q .; then
@@ -707,6 +774,38 @@ EOF
 
 # adm_fixture_header <file> <key>: the first "# key: value" line.
 adm_fixture_header() { sed -n "s/^# $2: //p" "$1" | head -1; }
+
+# adm_fixture_pairs <file>: "binding<TAB>message" for every "# refused-by:" line and the "# message:" line
+# after it, in file order. A request that several bindings refuse (P12 overlaps P1, P6 and P7 by design)
+# lists one pair per binding: in Deny the API server reports ONE of them (it names the first denial, and
+# the order of the policies is not fixed), in Audit every one warns.
+adm_fixture_pairs() {
+  awk '/^# refused-by: / { b = substr($0, 15); next } /^# message: / && b != "" { printf "%s\t%s\n", b, substr($0, 12); b = "" }' "$1"
+}
+
+# adm_pairs_in_deny <pairs> <normalised output>: succeeds when the output names one of the pairs as the
+# denial. adm_pairs_in_audit: when it holds the warning of every pair. The output is whitespace-squeezed
+# (tr -s ' \n\t') by the caller, the messages are matched as fixed strings.
+adm_pairs_in_deny() {
+  local b m
+  while IFS="$(printf '\t')" read -r b m; do
+    [ -n "$b" ] || continue
+    printf '%s' "$2" | grep -qF "with binding '$b' denied request: $m" && return 0
+  done <<EOF
+$1
+EOF
+  return 1
+}
+adm_pairs_in_audit() {
+  local b m
+  while IFS="$(printf '\t')" read -r b m; do
+    [ -n "$b" ] || continue
+    printf '%s' "$2" | grep -qF "with binding '$b': $m" || return 1
+  done <<EOF
+$1
+EOF
+  return 0
+}
 
 # adm_run_fixture <file> <variant> -> sets FX_OUT, FX_RC. op: create (default), patch, delete, exec.
 adm_run_fixture() {
@@ -737,7 +836,7 @@ adm_run_fixture() {
 # be refused by its policy with its message, an admitted one must pass; audit: nothing is refused, and
 # a fixture that deny refuses warns with the same message.
 adm_fixtures() {
-  local variant=$1 label=$2 dir=$3 f n=0 pass=0 failed=0 refused_by msg expect norm name detail failures=
+  local variant=$1 label=$2 dir=$3 f n=0 pass=0 failed=0 pairs refused_by expect norm name detail failures=
   [ -d "$dir" ] || { rec "fixtures-$label-$variant" FAIL "no fixture directory $dir"; return; }
   group "fixtures $label ($variant)"
   # A file may hold several fixtures, separated by a line "# ----"; a chunk without "# fixture:" is a preamble.
@@ -752,20 +851,22 @@ adm_fixtures() {
     grep -q '^# fixture: ' "$f" || continue
     n=$((n + 1))
     name=$(adm_fixture_header "$f" fixture)
-    refused_by=$(adm_fixture_header "$f" refused-by)
-    msg=$(adm_fixture_header "$f" message)
+    pairs=$(adm_fixture_pairs "$f")
+    refused_by=$(printf '%s\n' "$pairs" | cut -f1 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
     expect=$(adm_fixture_header "$f" expect)
     adm_run_fixture "$f" "$variant"
     norm=$(tr -s ' \n\t' '   ' < "$FX_OUT")
     detail=
-    if [ "$variant" = deny ] && [ -n "$refused_by" ]; then
-      if [ "$FX_RC" != 0 ] && printf '%s' "$norm" | grep -qF "with binding '$refused_by' denied request: $msg"; then :; else
-        detail="expected a refusal by $refused_by ($msg), got rc=$FX_RC: $(printf '%s' "$norm" | cut -c1-300)"
+    if [ "$variant" = deny ] && [ -n "$pairs" ]; then
+      # one pair: that binding refuses it; several: the API server names one of them
+      if [ "$FX_RC" != 0 ] && adm_pairs_in_deny "$pairs" "$norm"; then :; else
+        detail="expected a refusal by $refused_by (one of them; $(printf '%s' "$pairs" | tr '\t\n' ': ' | cut -c1-240)), got rc=$FX_RC: $(printf '%s' "$norm" | cut -c1-300)"
       fi
-    elif [ "$variant" = audit ] && [ -n "$refused_by" ]; then
+    elif [ "$variant" = audit ] && [ -n "$pairs" ]; then
       # (a create of an object that exists answers AlreadyExists after admission: the warning is there)
-      if { [ "$FX_RC" = 0 ] || printf '%s' "$norm" | grep -qF "AlreadyExists"; } && printf '%s' "$norm" | grep -qF "with binding '$refused_by': $msg"; then :; else
-        detail="in Audit the request must pass with a warning from $refused_by ($msg), got rc=$FX_RC: $(printf '%s' "$norm" | cut -c1-300)"
+      # Every binding that refuses it in Deny warns in Audit, each with its message.
+      if { [ "$FX_RC" = 0 ] || printf '%s' "$norm" | grep -qF "AlreadyExists"; } && adm_pairs_in_audit "$pairs" "$norm"; then :; else
+        detail="in Audit the request must pass with a warning from every one of $refused_by, got rc=$FX_RC: $(printf '%s' "$norm" | cut -c1-300)"
       fi
     else
       # expect: admitted
@@ -780,6 +881,51 @@ adm_fixtures() {
     rec "fixtures-$label-$variant" PASS "$pass/$n fixtures behave as written"
   else
     rec "fixtures-$label-$variant" FAIL "$failed of $n fixtures differ:$failures"
+  fi
+}
+
+# P12's one exemption needs a state change to be shown (the fixtures are dry-runs): argocd-server may add
+# server.secretkey to argocd-secret once, while the Secret holds none, and never change or remove it. On the
+# stand-in of the baseline (argocd-secret without the key), as the server (the fixture group makes RBAC pass:
+# the admission decision is what is tested):
+#   1. the first key, for real: admitted, in Audit and in Deny, with no word of ryft-argo-scope;
+#   2. a change of it, dry-run: refused by ryft-argo-scope (deny) / warned about (audit);
+#   3. its removal, dry-run: the same;
+#   4. the admin removes the key again (the next variant starts from the baseline), and it is gone.
+# adm_argo_scope_secretkey <audit|deny>
+adm_argo_scope_secretkey() {
+  local variant=$1 KCA_GROUP=$FIXTURE_GROUP out norm rc detail="" step id
+  id="argo-scope-secretkey-$variant"
+  local msg="P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret)."
+  local pair
+  pair=$(printf 'ryft-argo-scope\t%s' "$msg")
+  out=$(kca "$ARGO_SRV" -n argocd patch secret argocd-secret --type merge -p '{"data":{"server.secretkey":"Yw=="}}' 2>&1); rc=$?
+  norm=$(printf '%s' "$out" | tr -s ' \n\t' '   ')
+  if [ "$rc" != 0 ] || printf '%s' "$norm" | grep -qF "ryft-argo-scope"; then
+    detail="$detail [the first key was not admitted cleanly (rc=$rc): $(printf '%s' "$norm" | cut -c1-240)]"
+  fi
+  for step in change remove; do
+    if [ "$step" = change ]; then
+      out=$(kca "$ARGO_SRV" -n argocd patch secret argocd-secret --type merge -p '{"data":{"server.secretkey":"ZA=="}}' --dry-run=server 2>&1); rc=$?
+    else
+      out=$(kca "$ARGO_SRV" -n argocd patch secret argocd-secret --type merge -p '{"data":{"server.secretkey":null}}' --dry-run=server 2>&1); rc=$?
+    fi
+    norm=$(printf '%s' "$out" | tr -s ' \n\t' '   ')
+    if [ "$variant" = deny ]; then
+      { [ "$rc" != 0 ] && adm_pairs_in_deny "$pair" "$norm"; } || detail="$detail [a $step of the existing key was not refused by ryft-argo-scope (rc=$rc): $(printf '%s' "$norm" | cut -c1-240)]"
+    else
+      { [ "$rc" = 0 ] && adm_pairs_in_audit "$pair" "$norm"; } || detail="$detail [a $step of the existing key did not pass with ryft-argo-scope's warning (rc=$rc): $(printf '%s' "$norm" | cut -c1-240)]"
+    fi
+  done
+  # (the admin: P12 does not match it)
+  out=$(kc -n argocd patch secret argocd-secret --type merge -p '{"data":{"server.secretkey":null}}' 2>&1) || detail="$detail [the admin could not remove the key again: $(printf '%s' "$out" | tr -s ' \n\t' '   ' | cut -c1-200)]"
+  if kc -n argocd get secret argocd-secret -o json 2>/dev/null | jq -e '.data | has("server.secretkey")' >/dev/null 2>&1; then
+    detail="$detail [server.secretkey is still in the stand-in: the next run starts from a changed baseline]"
+  fi
+  if [ -z "$detail" ]; then
+    rec "$id" PASS "argocd-server added server.secretkey to argocd-secret for real ($variant: admitted, no P12 line), and a change of the key and its removal were $([ "$variant" = deny ] && echo refused || echo 'admitted with the warning') by ryft-argo-scope; the admin removed the key again"
+  else
+    rec "$id" FAIL "$detail"
   fi
 }
 
@@ -896,7 +1042,8 @@ EOF
 }
 
 # Claim b: webhook configurations are not exempt, so P6 sees them. In Deny the controller creating a
-# webhook configuration that is none of the operators' is refused by P6 (and the carve-out names are not).
+# webhook configuration of an operator's name (cluster-operator-validating-webhook-configuration, which P12
+# admits) with content that is not the operator's is refused by P6, and P6 alone answers.
 adm_claim_b() {
   local f="$FIXTURE_DIR/claims/claim-b-webhook.yaml" norm
   adm_run_fixture "$f" deny
@@ -930,6 +1077,15 @@ EOF
     rec "claim-c" PASS "pods/exec by the Cluster Operator's service account in a namespace other than ryft-rabbitmq was refused by P8 on CONNECT"
   else
     rec "claim-c" FAIL "P8 did not refuse the exec (rc=$FX_RC): $(printf '%s' "$norm" | cut -c1-300)"
+  fi
+  # The same Pod, exec'd as Argo CD's controller: P12's rule 1 (no CONNECT, no subresource).
+  f="$FIXTURE_DIR/claims/argo-scope-exec.yaml"
+  adm_run_fixture "$f" deny
+  norm=$(tr -s ' \n\t' '   ' < "$FX_OUT")
+  if [ "$FX_RC" != 0 ] && adm_pairs_in_deny "$(adm_fixture_pairs "$f")" "$norm"; then
+    rec "argo-scope-exec" PASS "pods/exec by Argo CD's application controller (CONNECT, RBAC passed through the fixture group) was refused by ryft-argo-scope: P12 sees CONNECT"
+  else
+    rec "argo-scope-exec" FAIL "P12 did not refuse the exec (rc=$FX_RC): $(printf '%s' "$norm" | cut -c1-300)"
   fi
   kc delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
 }
@@ -980,7 +1136,8 @@ EOF
 #      in kube-system with Secrets and pods/exec, and bind itself to it. Without the policies both
 #      succeed and the controller can read Secrets in kube-system; with P6 in Deny both are refused (the
 #      Role is outside rabbitmq-system and the broker's namespace; the binding names a subject that is no
-#      operator service account).
+#      operator service account). P12 refuses both as well (kube-system is outside argoScope), and the API
+#      server names only one of two refusals, so either name passes; the harness pins both (D206).
 # With the chart-default (wildcard) role of a tree without T12-f vector 1 succeeds trivially, and the
 # check says so.
 adm_claim_h() {
@@ -1062,13 +1219,61 @@ EOF
     else
       rec "claim-h-open" FAIL "unexpected: Role rc=$rc2, RoleBinding rc=$rc3, can-i get secrets -n kube-system=$can2: $(printf '%s %s' "$n2" "$n3" | cut -c1-300) (either escalate/bind by resourceNames on roles does not do what #47 assumes, or the hole is closed already)"
     fi
-  else
-    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
-      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qF "ValidatingAdmissionPolicy 'ryft-operators-cluster'" \
+  elif [ "$phase" = p6only ]; then
+    # P6 in Deny, P12 in Warn+Audit (the state between the two Step B PRs): P6 alone must refuse both, by
+    # name, so a P6 regression is not masked by P12 (security review S4).
+    local p6="ValidatingAdmissionPolicy 'ryft-operators-cluster'"
+    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qF "$p6" \
+      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qF "$p6" \
       && [ "$can2" != yes ]; then
-      rec "claim-h-guarded" PASS "with P6 in Deny the Role in kube-system and the self-binding are both refused (ryft-operators-cluster); the controller cannot read Secrets in kube-system (can-i: $can2)"
+      rec "claim-h-p6-only" PASS "with P6 in Deny and P12 in Warn+Audit the Role in kube-system and the self-binding are both refused by ryft-operators-cluster; the controller cannot read Secrets in kube-system (can-i: $can2)"
+    else
+      rec "claim-h-p6-only" FAIL "with P6 in Deny and P12 in Warn+Audit: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
+    fi
+  else
+    # P6 and P12 (kube-system is outside argoScope) both refuse these; the API server names one of them,
+    # in no fixed order (D206). The CEL harness pins both refusals ("P6 claim h: ..."), and claim-h-p6-only
+    # proves P6 alone, by name, with P12 in Warn+Audit.
+    local by='ValidatingAdmissionPolicy .(ryft-operators-cluster|ryft-argo-scope).'
+    if [ "$rc2" != 0 ] && printf '%s' "$n2" | grep -qE "$by" \
+      && [ "$rc3" != 0 ] && printf '%s' "$n3" | grep -qE "$by" \
+      && [ "$can2" != yes ]; then
+      local w2 w3
+      w2=$(printf '%s' "$n2" | grep -oE "$by" | head -1 | cut -d"'" -f2)
+      w3=$(printf '%s' "$n3" | grep -oE "$by" | head -1 | cut -d"'" -f2)
+      rec "claim-h-guarded" PASS "with P6 (and P12) in Deny the Role in kube-system and the self-binding are both refused (the API server named $w2 and $w3; the harness pins both P6 and P12 for each); the controller cannot read Secrets in kube-system (can-i: $can2)"
     else
       rec "claim-h-guarded" FAIL "with P6 in Deny: Role rc=$rc2 ($(printf '%s' "$n2" | cut -c1-200)), RoleBinding rc=$rc3 ($(printf '%s' "$n3" | cut -c1-200)), can-i get secrets -n kube-system=$can2"
     fi
   fi
+}
+
+# adm_argo_scope_actions <actions json>: patch the ryft-argo-scope binding (the admin, on the kind cluster)
+# and wait until the API server answers with it: a dry-run ConfigMap in kube-system as the controller is
+# refused by P12 under Deny and admitted (with a warning) under Warn+Audit.
+adm_argo_scope_actions() {
+  local actions=$1 i out want
+  kc patch validatingadmissionpolicybinding ryft-argo-scope --type=merge -p "{\"spec\":{\"validationActions\":$actions}}" >/dev/null 2>&1 || return 1
+  case "$actions" in *Deny*) want=refused ;; *) want=admitted ;; esac
+  for i in $(seq 1 30); do
+    if out=$(kca "$ARGO_CTRL" -n kube-system create configmap zz-claim-h-canary --dry-run=server 2>&1); then
+      [ "$want" = admitted ] && return 0
+    elif printf '%s' "$out" | grep -qF "ValidatingAdmissionPolicy 'ryft-argo-scope'"; then
+      [ "$want" = refused ] && return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Claim h with P12 in Warn+Audit and P6 in Deny (S4): P6 alone, by name. The binding goes back to Deny+Audit.
+adm_claim_h_p6_only() {
+  if ! adm_argo_scope_actions '["Warn","Audit"]'; then
+    rec "claim-h-p6-only" FAIL "the ryft-argo-scope binding could not be set to Warn+Audit, or the API server did not answer with it within 30 s"
+    adm_argo_scope_actions '["Deny","Audit"]' || true
+    return 0
+  fi
+  adm_claim_h p6only
+  adm_argo_scope_actions '["Deny","Audit"]' ||
+    rec "claim-h-p6-restore" FAIL "the ryft-argo-scope binding is not back in Deny+Audit within 30 s"
 }

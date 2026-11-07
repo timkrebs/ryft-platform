@@ -13,6 +13,10 @@
 #                warn in Audit; without it:
 #   expect       admitted
 #   message      the refusal, as in testdata/messages.golden
+#                A request that several bindings refuse (P12 overlaps P1, P6 and P7 by design) lists a
+#                refused-by/message pair per binding, in the order of the file: in Deny the API server
+#                names ONE of them (the first it evaluates; the order is not fixed), in Audit every one warns.
+#   subresource  patch only: --subresource; patch-type: merge (default) | json
 # ----
 # fixture: P7 the default AppProject deleted (by anyone)
 # op: delete
@@ -26,6 +30,8 @@
 # target: appproject ryft -n argocd
 # refused-by: ryft-argocd
 # message: P7: the default AppProject is never deleted, and no Argo CD service account deletes an AppProject.
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
 # ----
 # fixture: P7 an AppProject widened to everything (by anyone)
 # op: patch
@@ -55,6 +61,8 @@
 # target: secret repo-fixture -n argocd
 # refused-by: ryft-argocd
 # message: P7: argocd-server must not write Secrets labelled argocd.argoproj.io/secret-type.
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 # ----
 # fixture: P7 carve-out: the controller's status write with an unchanged spec passes
 # op: patch

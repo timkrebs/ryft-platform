@@ -7,6 +7,8 @@
 # as: system:serviceaccount:argocd:argocd-server
 # refused-by: ryft-argocd
 # message: P7: ApplicationSets are not allowed.
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata: { name: x, namespace: argocd }
@@ -155,6 +157,8 @@ spec:
 # as: system:serviceaccount:argocd:argocd-application-controller
 # refused-by: ryft-operators-cluster
 # message: P6: a CustomResourceDefinition must be of rabbitmq.com and must not use a conversion webhook.
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata: { name: foos.example.com }

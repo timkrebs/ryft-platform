@@ -31,7 +31,8 @@ Ticket T12. Author: platform-architect. Status: **decided 2026-10-23** (the user
    every `ryft-*` namespace, `rabbitmq-system` and `argocd`. What's missing is protection of those
    labels.
 2. **Built-in ValidatingAdmissionPolicy (VAP) covers everything PSA can't express.** VAP rules are CEL
-   expressions. VAP is GA since 1.30, and EKS runs 1.36. The design has eleven policies, P1–P11.
+   expressions. VAP is GA since 1.30, and EKS runs 1.36. The design has thirteen policies, P1–P13 (P12, `ryft-argo-scope`, was added on
+   2026-11-04: see `p12-argo-scope.md`; P13, `ryft-vault-trust`, with the namespace `vault`, D195).
    - No Kyverno or Gatekeeper.
    - No pods to run, and no webhook that can be down.
 3. **Terraform owns the policies, and the AppProjects if you agree.** Both come from
@@ -132,7 +133,10 @@ commands, NetworkPolicies, VSO or Argo objects.
 | j | helm provider `~> 3.3` offers `take_ownership` | plausible. Fallback: metadata labels (§5). Not tried (D151) | `terraform validate` |
 | k | what `argocd-server` writes as `operation.sync.revision` for a plain sync (`""`, `main` or the SHA) | **answered** (kind, argo-cd chart 10.10.5): the full commit SHA of the revision the Application was compared with, which is `status.sync.revision`; P10's third alternative admits it, and `--revision <another sha>` is refused (D151) | kind |
 | l | the broker's 443 egress only reaches the API server inside the VPC | plausible. Not tried (D151) | production: T12-k's canary |
-| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | **false** (T12-e review): custom-resource-state resolves kinds from CRDs only and skips built-in ones. Instead kube-state-metrics' native collector `validatingadmissionpolicybindings` (v2.20+, the chart adds the RBAC): `kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,policy_name}` and `_validation_action{validatingadmissionpolicybinding,action}` (1 per live action). It exports no labels, so the committed action is a recording rule generated from `admission-values.yaml` | kind: the metrics exist with these names (T12-d's kind run confirmed the custom-resource-state result, D151) |
+| m | KSM custom-resource-state can export `ValidatingAdmissionPolicyBinding` (name, `validationActions`, labels), given `rbac.extraRules` for list/watch on `admissionregistration.k8s.io` `validatingadmissionpolicybindings` | **false** (T12-e review): custom-resource-state resolves kinds from CRDs only and skips built-in ones. Instead kube-state-metrics' native collector `validatingadmissionpolicybindings` (v2.20+, the chart adds the RBAC): `kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,policy_name}` and `_validation_action{validatingadmissionpolicybinding,action}` (1 per live action). It exports no labels, so the committed action is a recording rule generated from `admission-values.yaml` Kind run 41988993599 (P12 branch): `claim-m` still DISPROVED with kube-state-metrics 8.6.0 (v2.20.0, "no matching CRD found for configured GVK"), and `claim-m-native` **PASS**: the native collector exports 13 `kube_validatingadmissionpolicybinding_info` series for the 13 `ryft-*` bindings and each one's live action, which is what `AdmissionBindingMissing` (< 13) and the other binding alerts read. No other source (manifest tail, exporter of its own) is needed; they remain the fallback if the collector ever goes | kind: the metrics exist with these names (T12-d's kind run confirmed the custom-resource-state result, D151) |
+| n | Argo CD's controller and server write only the allowlist of P12: sync, hooks, terminate-op, manual sync, a restart of the components and a chart upgrade show no P12 finding | **PASS** (kind full, run 41988993599: no `ryft-argo-scope` line through the first sync in Audit, and none through the syncs, hooks, terminate-op, the restart and the chart upgrade in Deny) | kind full (Audit, then Deny), then Phase 1's 7 days in production |
+| o | `selfsubjectaccessreviews` reach validating admission (P12 would refuse them if it saw them: rule 5 had an entry, now removed) | **DISPROVED** (kind runs 41982428417 and 41988993599): neither the controller's nor argocd-server's review was refused by P12: kube-apiserver exempts the six review kinds from policies and webhooks (exclusion list, since 1.30; upstream source). P12's rule 5 has no entry for them (the entry and its 4 harness cases were dead code and are removed); the full mode keeps `claim-o-canary`, which fails if P12 ever refuses a review | the `kubectl auth can-i` answers of the full mode (the canary), not the audit log |
+| p | argocd-server writes `argocd-secret` only when `server.secretkey` is absent; a restart with the key present writes nothing | **PASS** (kind full, run 41988993599: restart under Deny, `argocd-secret`'s resourceVersion unchanged, no finding) | kind full: restart under Deny, `argocd-secret`'s resourceVersion unchanged, no finding; manual fixture |
 
 ### Ownership
 
@@ -282,7 +286,7 @@ commands, NetworkPolicies, VSO or Argo objects.
 
 ```mermaid
 flowchart LR
-  TF["terraform apply (user)<br/>infra/aws/kubernetes"] -->|admission-policy| POL["VAP + bindings P1–P11"]
+  TF["terraform apply (user)<br/>infra/aws/kubernetes"] -->|admission-policy| POL["VAP + bindings P1–P13"]
   TF -->|argocd-projects| PRJ["AppProjects (+ root.yaml)"]
   PF["deploy/argocd/project.yaml"] -->|file + yamldecode| TF
   GIT["git main: deploy/**"] --> ARGO["Argo CD controller / UI"]
@@ -536,8 +540,9 @@ flowchart LR
   `selfSigned: {}`. **Argo CD's identities write only Issuers that are exactly `selfSigned: {}`** (the
   operators' webhook issuers in `rabbitmq-system`) and no ClusterIssuer: an Issuer of type `vault`,
   `venafi` or `acme` names a server and a Secret of its namespace (`auth.tokenSecretRef: ryft-secrets`),
-  and cert-manager sends that Secret's value to the server. This is P13's until P12 (#121) narrows
-  Argo CD further.
+  and cert-manager sends that Secret's value to the server. This stays P13's with P12 (D206): P12
+  judges where, not what, and admits an Issuer in the namespaces of `argoScope.namespaces`; for a
+  ClusterIssuer and in `vault` both refuse (harmless: two messages for one write).
 - **Requests:** a CertificateRequest for `ryft-vault`, and a write of its status (approval, the
   signed certificate), only as `system:serviceaccount:cert-manager:cert-manager`. That rule is exactly
   as strong as "nothing else runs as that service account" (its token, an exec into the controller).
@@ -546,6 +551,43 @@ flowchart LR
 - **Not held by P13:** a Secret `ryft-vault-ca`, `vault-ca` or `vault-tls` written directly (RBAC:
   only Terraform and cert-manager write Secrets there), and Argo CD writing a well-shaped Certificate
   in `vault` (P12).
+
+**P12 `ryft-argo-scope`** (C, U, D, CONNECT; every service account of `argocd`; full design in
+`p12-argo-scope.md`)
+- **Matched by the username prefix** `system:serviceaccount:argocd:`, on every resource and subresource
+  in every namespace. No groups, no `userInfo.extra`, no field manager.
+- **Where the writers may write** (content stays P1–P11's and P13's):
+  - the controller: any resource in the explicit namespace list `argoScope.namespaces` (the apps'
+    namespaces, no `ryft-` prefix); in `argocd` only Applications and events (events: create and update,
+    never delete); cluster-scoped only the Namespaces `ryft-web` and `rabbitmq-system` (no delete), CRDs
+    `*.rabbitmq.com` (no delete), the operators' prefixed ClusterRoles and bindings, their four webhook
+    configurations (access reviews are exempt from policies and webhooks by kube-apiserver's exclusion list since 1.30, claim o);
+  - argocd-server: in `argocd` only Applications and events (events: create only), plus the first
+    `server.secretkey` of `argocd-secret` (an UPDATE that adds that key and changes nothing else but
+    resourceVersion, managedFields and generation);
+  - the chart's `argocd-redis-secret-init`: CREATE of Secret `argocd-redis`;
+  - any other `argocd` service account: nothing. No subresource and no CONNECT, whoever the account.
+- **No AppProject write** from any Argo CD identity (B2: Terraform's). No finalizer carve-out.
+- **Never `vault` or `cert-manager`** (nor `argocd` beyond Applications and events, nor `kube-system`) in
+  `argoScope.namespaces` or `namespaceObjects`: the chart fails the render and `admission.tf` the plan
+  (D206). P12 has one binding for every namespace (no `-vault` twin); in `vault` it refuses every Argo CD write.
+- Step B, Warn+Audit in Phase 1 with the others. `admission_policy` depends on the argocd release.
+- **Deny gate (chart `fail` and `admission.tf` preconditions):** `argo-scope: deny` needs `operators-cluster`,
+  `namespaces` and `workloads-templates` in deny (P12 judges names, not what a ClusterRole or binding grants;
+  the RBAC route is closed when P6 and P12 are both in Deny), and a narrowed controller ClusterRole rendered
+  by `argocd.tf` (#47 merged and applied; with the chart's wildcard role the controller can patch the
+  binding and impersonate). The full kind mode must pass on a tree containing #47, `argo-rbac` and `claim-i`
+  not skipped, and `kubectl auth can-i patch|delete validatingadmissionpolicybindings` and `impersonate users`
+  as the controller must answer no (OPERATIONS → P12).
+- **Sync impersonation** (`application.sync.impersonation.enabled: true`) would make Argo CD apply as the
+  AppProjects' service accounts and P12 would match nothing. It stays off; turning it on is a new decision.
+- **Not covered, named plainly:** in-scope writes with cluster-wide effect, which all 18 bindings admit:
+  an Ingress for `api.ryftapp.de` with a Traefik `router.priority` annotation in `ryft-smoke`, a Middleware with a `redirectRegex` on `api.ryftapp.de`, or a Service with `externalIPs` in `ryft-web` (CVE-2020-8554). Follow-up T12-l6 (not built): P9 pins Ingress hosts per namespace, refuses Traefik router
+  annotations except `router.middlewares`, pins a `redirectRegex` replacement to the service's own hosts;
+  a new Service rule (ClusterIP only, no `externalIPs`, no `ExternalName`) for Argo-written Services.
+  Also: P7 and P10 are in Deny only at Step D, so between Step B and Step D a stolen server token (a minted
+  UI session) can still write Application content (repo, destination, revision); P12 only confines it to
+  Applications and events in `argocd`.
 
 **Where each item lands:**
 
@@ -600,7 +642,14 @@ flowchart LR
   7. an Argo CD pause, resume and manual sync;
   8. an `argocd app terminate-op` on a small app's manual sync;
   9. a project change (the B2 adoption counts; `ryft-root` has no SSD);
-  10. a k8s-monitoring upgrade.
+  10. a k8s-monitoring upgrade;
+  11. a restart of `argocd-server` and the application controller
+      (`kubectl -n argocd rollout restart deployment/argocd-server statefulset/argocd-application-controller`):
+      no `ryft-argo-scope` finding (P12, claims n and p);
+  12. an apply of `helm_release.argocd` (any planned change of its values or chart version): no
+      `ryft-argo-scope` finding (the `argocd-redis-secret-init` pre-upgrade hook).
+
+  The daily query of §5, filtered on `ryft-argo-scope`: zero lines is P12's exit condition.
 - **Where findings show up:**
   - the API server audit log in CloudWatch (`/aws/eks/ryft-prod-euc1/cluster`): the annotations
     `validation.policy.admission.k8s.io/validation_failure` and
@@ -614,7 +663,7 @@ T12-k (the broker's egress) lands before Step B.
 | Step | Policies | Why here |
 | --- | --- | --- |
 | A | P4, P6, P11, P13, and the vault bindings of P1, P2 and P3 | each blocks one small app (`vault-<svc>`, `rabbitmq-operators`, `broker-rabbitmq`); P13 and the vault bindings only the Vault add-on (Terraform) and the issuers |
-| B | P1, P2 `templates`, P3, P5, P9 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods |
+| B | P1, P2 `templates`, P3, P5, P9, P12 | what Argo applies: a denial blocks `ryft-platform` deploys, not running pods. P12's failure reaches every app, but its Audit signal is the clearest of all (any line is a finding); it goes to deny only after the general P6, P1 and P2 bindings |
 | C | P2 `pods`, P8 | runtime: Pods for rollouts, scale-ups and drains, and the broker's reconcile; critical alert |
 | D | P7, P10 | Argo CD's own objects, last |
 
@@ -638,7 +687,7 @@ T12-k (the broker's egress) lands before Step B.
   `scripts/admission_intended.sh` generates from `admission-values.yaml`; `make alerts-check`
   fails when the two differ.
 - Alerts:
-  - `AdmissionBindingMissing` (critical, fewer than 12 `ryft-*` bindings);
+  - `AdmissionBindingMissing` (critical, fewer than 18 `ryft-*` bindings with P12, chart 0.6.0; 17 before it);
   - `AdmissionBindingNotDenying` (warning, 10 min: a deny binding without `Deny` while others deny);
   - `AdmissionBindingDrift` (warning, 2 h: the other mismatches);
   - `AdmissionBreakGlass` (warning, 4 h: no binding has `Deny` although some are committed as deny).

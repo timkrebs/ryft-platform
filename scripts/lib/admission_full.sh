@@ -4,7 +4,8 @@
 # cert-manager and the internal CA, Argo CD from argocd.tf's values (T12-f's RBAC when the tree has
 # it), the tree served to Argo CD from inside the cluster, the RabbitMQ operators and the broker synced
 # by Argo CD, the policies first in Audit and then in Deny, with a manual sync of every app, the hooks,
-# terminate-op, the broker restart of D98, the operators' reach, claims i, k and m.
+# terminate-op, the broker restart of D98, the operators' reach, a restart and a chart upgrade of Argo CD
+# and an access review under P12 in Deny, claims i, k, m, n, o and p.
 #
 # What is stubbed (and nothing else):
 #   - Vault and the Vault Secrets Operator: the VSO CRDs are there, a loop in this script marks every
@@ -52,7 +53,13 @@ adm_full_reset() {
   hc uninstall admission-policy --namespace kube-system >/dev/null 2>&1
   adm_unbaseline
   kc delete -f "$WORK/argo-identities.yaml" --ignore-not-found >/dev/null 2>&1
-  rec "full-reset" INFO "the CI part's policies, baseline and stand-in Argo CD identities removed"
+  # P12's stand-ins in argocd (argocd-cm, argocd-rbac-cm, argocd-secret, Deployment argocd-server) would
+  # collide with the real chart's objects: they must be gone before Argo CD is installed.
+  if kc -n argocd get configmap argocd-cm >/dev/null 2>&1 || kc -n argocd get secret argocd-secret >/dev/null 2>&1 || kc -n argocd get deployment argocd-server >/dev/null 2>&1; then
+    rec "full-reset" FAIL "a stand-in of the baseline (argocd-cm, argocd-secret or Deployment argocd-server) is still in the argocd namespace: the real Argo CD cannot be installed over it"
+    return 1
+  fi
+  rec "full-reset" INFO "the CI part's policies, baseline (P12's stand-ins in argocd included) and stand-in Argo CD identities removed"
 }
 
 adm_full_certmanager() {
@@ -239,9 +246,19 @@ EOF
 # ---------------------------------------------------------------------------------------------
 # Argo CD
 
+# adm_full_argocd [label [force]]: the Helm release of Argo CD with argocd.tf's values (install or upgrade).
+# "force" adds --force-conflicts. The stand-in admin password (adm_full_argocd_login) is written with
+# kubectl, so the field manager kubectl-patch owns .data.admin.password and .data.admin.passwordMtime
+# of argocd-secret, which argocd.tf's values (argocdServerAdminPassword) also set, and Helm 4's
+# server-side apply refuses a second run over them. In production Helm owns those fields and nothing
+# patches them, so the conflict is the harness's own: the upgrade takes the fields back and the login
+# patches them again afterwards. (Production installs Argo CD with the Terraform helm provider ~> 3.3,
+# which uses Helm v3 libraries and no server-side apply, so this conflict cannot occur there.)
+# The stage tests that P12 does not refuse the upgrade, not Helm's field ownership.
 adm_full_argocd() {
-  local repo ver
-  if [ -z "${ARGO_VALUES:-}" ]; then rec "full-argocd" FAIL "no values of argocd.tf (terraform is needed in the full mode)"; return 1; fi
+  local repo ver label=${1:-full-argocd} force=${2:-} flags=()
+  [ "$force" = force ] && flags+=(--force-conflicts)
+  if [ -z "${ARGO_VALUES:-}" ]; then rec "$label" FAIL "no values of argocd.tf (terraform is needed in the full mode)"; return 1; fi
   repo=$(chart_repo argocd); ver=$(chart_version argocd)
   cat > "$WORK/argocd-e2e-values.yaml" <<EOF
 crds:
@@ -250,10 +267,10 @@ server:
   ingress:
     enabled: false
 EOF
-  if hc upgrade --install argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -f "$WORK/argocd-e2e-values.yaml" --wait --timeout 10m >"$WORK/log/argocd.out" 2>&1; then
-    rec "full-argocd" PASS "argo-cd $ver installed with argocd.tf's values$([ "${NARROWED_RBAC:-0}" = 1 ] && echo " (T12-f's narrowed ClusterRoles, respectRBAC strict, ApplicationSet at 0)" || echo " (this tree: the chart's default ClusterRoles)"); stand-ins: no Ingress, the admin password"
+  if hc upgrade --install argocd argo-cd --repo "$repo" --version "$ver" --namespace argocd -f "$ARGO_VALUES" -f "$WORK/argocd-e2e-values.yaml" ${flags[@]+"${flags[@]}"} --wait --timeout 10m >"$WORK/log/argocd.out" 2>&1; then
+    rec "$label" PASS "argo-cd $ver installed with argocd.tf's values$([ "${NARROWED_RBAC:-0}" = 1 ] && echo " (T12-f's narrowed ClusterRoles, respectRBAC strict, ApplicationSet at 0)" || echo " (this tree: the chart's default ClusterRoles)"); stand-ins: no Ingress, the admin password"
   else
-    rec "full-argocd" FAIL "helm: $(tail -6 "$WORK/log/argocd.out" | cut -c1-300)"
+    rec "$label" FAIL "helm: $(tail -6 "$WORK/log/argocd.out" | cut -c1-300)"
     return 1
   fi
 }
@@ -586,8 +603,62 @@ adm_full_claim_i() {
   fi
 }
 
+# adm_full_ksm_compare <metrics-file> <bindings-json-file>: the native collector's series of the ryft-*
+# bindings against what the cluster holds. One kube_validatingadmissionpolicybinding_info series per
+# binding, and kube_validatingadmissionpolicybinding_validation_action: exactly one series, value 1, for
+# each of the binding's spec.validationActions and none else (a binding held in Warn+Audit has no Deny
+# series; a series for an action it does not have, with another value, or with an empty action, is a
+# difference). Sets ADM_KSM_DETAIL (the differences, or a summary) and returns 1 on any difference or when
+# the cluster has no ryft-* binding.
+adm_full_ksm_compare() {
+  local want_b want_a have_b have_a
+  want_b=$(jq -r '.items[].metadata.name | select(startswith("ryft-"))' "$2" | sort -u)
+  want_a=$(jq -r '.items[] | select(.metadata.name | startswith("ryft-")) | .metadata.name as $n | (.spec.validationActions // [])[] | "\($n) \(.) 1"' "$2" | sort -u)
+  # label values are read by name, whatever the order of the labels
+  have_b=$(awk '
+    function g(l) { if (match($0, l "=\"[^\"]*\"")) return substr($0, RSTART + length(l) + 2, RLENGTH - length(l) - 3); return "" }
+    /^kube_validatingadmissionpolicybinding_info\{/ { b = g("validatingadmissionpolicybinding"); if (b ~ /^ryft-/) print b }' "$1" | sort -u)
+  have_a=$(awk '
+    function g(l) { if (match($0, l "=\"[^\"]*\"")) return substr($0, RSTART + length(l) + 2, RLENGTH - length(l) - 3); return "" }
+    /^kube_validatingadmissionpolicybinding_validation_action\{/ { b = g("validatingadmissionpolicybinding"); if (b ~ /^ryft-/) print b " " g("action") " " $NF }' "$1" | sort)
+  ADM_KSM_DETAIL=""
+  if [ -z "$want_b" ]; then ADM_KSM_DETAIL="the cluster has no ryft-* binding"; return 1; fi
+  if [ "$have_b" != "$want_b" ]; then
+    ADM_KSM_DETAIL="info series differ from the bindings of the cluster: only in the cluster: $(comm -23 <(printf '%s\n' "$want_b") <(printf '%s\n' "$have_b") | tr '\n' ' '), only in the series: $(comm -13 <(printf '%s\n' "$want_b") <(printf '%s\n' "$have_b") | tr '\n' ' ')"
+    return 1
+  fi
+  if [ "$have_a" != "$want_a" ]; then
+    ADM_KSM_DETAIL="action series differ from spec.validationActions: missing: $(comm -23 <(printf '%s\n' "$want_a") <(printf '%s\n' "$have_a") | tr '\n' ';'), unexpected: $(comm -13 <(printf '%s\n' "$want_a") <(printf '%s\n' "$have_a") | tr '\n' ';')"
+    return 1
+  fi
+  ADM_KSM_DETAIL="$(printf '%s\n' "$want_b" | wc -l | tr -d ' ') bindings, $(printf '%s\n' "$want_a" | wc -l | tr -d ' ') action series, $(jq -r '[.items[] | select(.metadata.name | startswith("ryft-")) | select((.spec.validationActions // []) | index("Deny") | not)] | length' "$2") of the bindings without Deny (and no Deny series for them)"
+}
+
+# claim-m-native: the source AdmissionBindingMissing / NotDenying / Drift read in this tree
+# (deploy/grafana/alerts), kube-state-metrics' own collector for the bindings (v2.20+), asked of the cluster
+# the run is on, binding by binding (adm_full_ksm_compare). It needs the pod of the KSM release of
+# adm_full_claim_m. What this run does NOT show: that the chart adds the RBAC itself, because that release
+# is given rbac.extraRules for list/watch (claim m's probe). That holds by the chart's source for
+# kube-state-metrics 8.6.0: helm template with collectors={validatingadmissionpolicybindings} renders the
+# ClusterRole rule for them and --resources=validatingadmissionpolicybindings.
+adm_full_ksm_native() {
+  local i bj="$WORK/ksm-bindings.json" mf="$WORK/ksm-metrics.txt"
+  for i in 1 2 3 4 5 6; do   # the collector lists the bindings a moment after the pod is ready
+    kc get validatingadmissionpolicybindings -o json > "$bj" 2>/dev/null
+    kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" > "$mf" 2>&1
+    adm_full_ksm_compare "$mf" "$bj" && break
+    sleep 5
+  done
+  if adm_full_ksm_compare "$mf" "$bj"; then
+    rec "claim-m-native" PASS "kube-state-metrics' native collector matches the cluster binding by binding: $ADM_KSM_DETAIL (the alert AdmissionBindingMissing counts the info series against 18). This release is given rbac.extraRules, so the run does not show that the chart adds the RBAC; that holds by the chart's source for 8.6.0 (the ClusterRole rule and --resources=validatingadmissionpolicybindings are rendered)"
+  else
+    rec "claim-m-native" FAIL "the native collector differs from the cluster: $ADM_KSM_DETAIL"
+  fi
+}
+
 # Claim m: kube-state-metrics custom-resource-state can export ValidatingAdmissionPolicyBinding (name,
 # policy, the intended action label, validationActions), given rbac.extraRules for list/watch.
+# DISPROVED (INFO below); adm_full_ksm_native checks the collector the tree uses instead.
 adm_full_claim_m() {
   local out
   cat > "$WORK/ksm-values.yaml" <<'EOF'
@@ -620,19 +691,136 @@ selfMonitor: { enabled: false }
 resources: { requests: { cpu: 10m, memory: 32Mi } }
 EOF
   kc create namespace ksm >/dev/null 2>&1
-  if ! hc upgrade --install ksm kube-state-metrics --repo https://prometheus-community.github.io/helm-charts --version 8.6.0 --namespace ksm -f "$WORK/ksm-values.yaml" --set 'collectors={namespaces}' --wait --timeout 5m >"$WORK/log/ksm.out" 2>&1; then
+  if ! hc upgrade --install ksm kube-state-metrics --repo https://prometheus-community.github.io/helm-charts --version 8.6.0 --namespace ksm -f "$WORK/ksm-values.yaml" --set 'collectors={validatingadmissionpolicybindings}' --wait --timeout 5m >"$WORK/log/ksm.out" 2>&1; then
     rec "claim-m" FAIL "helm install of kube-state-metrics: $(tail -3 "$WORK/log/ksm.out" | cut -c1-300)"
     return
   fi
+  adm_full_ksm_native
   out=$(kc get --raw "/api/v1/namespaces/ksm/services/ksm-kube-state-metrics:8080/proxy/metrics" 2>&1 | grep '^ryft_admission_binding_action' )
   if printf '%s' "$out" | grep -q 'action="Deny"' && printf '%s' "$out" | grep -q 'policy="ryft-vso"'; then
     rec "claim-m" PASS "kube-state-metrics custom-resource-state exports the bindings ($(printf '%s\n' "$out" | grep -c 'binding=')  series, e.g. $(printf '%s\n' "$out" | grep 'binding="ryft-vso"' | tr '\n' ' ' | cut -c1-260))"
   elif kc -n ksm logs deploy/ksm-kube-state-metrics 2>&1 | grep -q "no matching CRD found for configured GVK"; then
     # Not a failure of this run: the claim of the design is wrong. Recorded as INFO so the run stays usable
     # as a gate; it turns into a PASS the day kube-state-metrics can export built-in kinds.
-    rec "claim-m" INFO "DISPROVED with kube-state-metrics 8.6.0 (v2.20.0): custom-resource-state only exports CustomResourceDefinitions (\"no matching CRD found for configured GVK admissionregistration.k8s.io/v1 ValidatingAdmissionPolicyBinding\"), so rbac.extraRules cannot make it export the bindings. T12-e needs another source (k8s-manifest-tail with the bindings in its object list and a log alert, or an exporter of its own)"
+    rec "claim-m" INFO "DISPROVED with kube-state-metrics 8.6.0 (v2.20.0): custom-resource-state only exports CustomResourceDefinitions (\"no matching CRD found for configured GVK admissionregistration.k8s.io/v1 ValidatingAdmissionPolicyBinding\"), so rbac.extraRules cannot make it export the bindings. The source in this tree is KSM's native collector (claim-m-native)"
   else
     rec "claim-m" FAIL "no ryft_admission_binding_action series for the bindings: $(printf '%s' "$out" | head -3 | cut -c1-300) $(kc -n ksm logs deploy/ksm-kube-state-metrics 2>&1 | tail -3 | cut -c1-300)"
+  fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# P12 (ryft-argo-scope): claims n, o and p of docs/work/2026-10-23-admission/p12-argo-scope.md
+
+# adm_full_p12_findings <label> <since-timestamp>: the audit log's lines of ryft-argo-scope since then: a
+# validation_failure annotation of the policy (Audit and Warn actions) or a 403 whose message names it
+# (Deny: the request was refused). Claim n: Argo CD's controller and server write only the allowlist, so a
+# sync, the hooks, a restart or a chart upgrade leave no line. The grep on the node looks for the policy's
+# name; jq keeps what is a finding (the policy's own bindings, written by Helm, hold the name too).
+adm_full_p12_findings() {
+  local label=$1 since=$2 log hits n rc=0
+  log=$(adm_audit_grep ryft-argo-scope) || rc=$?
+  if [ "$rc" != 0 ]; then adm_audit_unreadable "$label" "no log on the node of ${KIND_CLUSTER}"; return; fi
+  hits=$(printf '%s\n' "$log" | jq -r --arg since "$since" '
+    select(.requestReceivedTimestamp >= $since) |
+    (((.annotations // {})["validation.policy.admission.k8s.io/validation_failure"] // "[]") | fromjson | map(select(.policy == "ryft-argo-scope"))) as $f |
+    select(($f | length) > 0 or (.responseStatus.code == 403 and ((.responseStatus.message // "") | contains("ryft-argo-scope")))) |
+    [(.user.username // "-"), .verb, (.objectRef.resource // "-"), (.objectRef.subresource // ""), (.objectRef.namespace // "-"), (.objectRef.name // "-"), (($f[0].validationActions // []) | join("+")), ((.responseStatus.code // 0) | tostring)] | @tsv' 2>/dev/null | sort | uniq -c | sort -rn | head -6)
+  if [ -z "$hits" ]; then
+    rec "$label" PASS "no line of ryft-argo-scope in the audit log since the stage began: no warning, no refusal of an Argo CD identity"
+  else
+    n=$(printf '%s\n' "$hits" | awk '{ s += $1 } END { print s + 0 }')
+    rec "$label" FAIL "$n audit lines of ryft-argo-scope since the stage began (count, user, verb, resource, subresource, namespace, name, actions, code): $(printf '%s' "$hits" | tr '\n\t' '; ' | tr -s ' ' | cut -c1-700)"
+  fi
+}
+
+# adm_full_p12_stage <label> <since> <held>: after a step the apps must be Synced and Healthy again, and
+# the audit log must show no finding: the generic ones (adm_full_findings: what the tree has not fixed yet
+# is explained, the rest is a failure) and P12's own.
+adm_full_p12_stage() {
+  local label=$1 since=$2 held=$3
+  adm_full_wait_apps "$label-apps" 600
+  adm_full_findings "$label-findings" "$since" "$(adm_full_explained deny "$held")"
+  adm_full_p12_findings "$label-p12" "$since"
+}
+
+# A restart of the components, as the admin (kubectl -n argocd rollout restart): their startup is where a
+# write the allowlist forgot would show. Claim p: argocd-server writes argocd-secret only when
+# server.secretkey is absent, so a restart with the key present writes nothing: the Secret's resourceVersion
+# is the same afterwards (a write by the server would have been refused, rule 3, and shown as a finding).
+adm_full_argo_restart() {
+  local label=$1 held=$2 since rv0 rv1 out
+  since=$(adm_now)
+  rv0=$(kc -n argocd get secret argocd-secret -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)
+  if ! out=$(kc -n argocd rollout restart deployment/argocd-server statefulset/argocd-application-controller 2>&1); then
+    rec "$label" FAIL "rollout restart: $(printf '%s' "$out" | cut -c1-300)"
+    return 1
+  fi
+  if kc -n argocd rollout status deployment/argocd-server --timeout=300s >"$WORK/log/$label.out" 2>&1 \
+    && kc -n argocd rollout status statefulset/argocd-application-controller --timeout=300s >>"$WORK/log/$label.out" 2>&1; then
+    rv1=$(kc -n argocd get secret argocd-secret -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)
+    if [ -n "$rv0" ] && [ "$rv0" = "$rv1" ]; then
+      rec "claim-p" PASS "kubectl -n argocd rollout restart of argocd-server and the application controller, with P12 in Deny: both rolled out, and argocd-secret's resourceVersion is $rv0 before and after (the server wrote nothing with server.secretkey present)"
+    else
+      rec "claim-p" FAIL "argocd-secret changed during the restart (resourceVersion '${rv0:-?}' -> '${rv1:-?}'): something wrote to it, whereas argocd-server writes it only to add a missing server.secretkey"
+    fi
+    rec "$label" PASS "argocd-server and the application controller restarted (kubectl rollout restart, as the admin) and rolled out in Deny"
+  else
+    rec "$label" FAIL "rollout status: $(tail -3 "$WORK/log/$label.out" | cut -c1-300)"
+    return 1
+  fi
+  # a new server Pod has no login (the CLI's config is in the Pod's /tmp)
+  adm_full_argocd_login || rec "$label-login" FAIL "argocd login (inside the argocd-server pod) failed after the restart"
+  adm_full_p12_stage "$label" "$since" "$held"
+}
+
+# helm upgrade of argocd with the same values, as the admin's Helm: the pre-upgrade hook Job
+# argocd-redis-secret-init runs as its service account (it only reads: Secret argocd-redis exists), and
+# every Deployment and the StatefulSet roll if the chart renders a new checksum.
+adm_full_argo_upgrade() {
+  local label=$1 held=$2 since uid0 uid1 ok
+  since=$(adm_now)
+  # (the hook's delete policy is before-hook-creation: a Job of this upgrade is a new object, another UID)
+  uid0=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.metadata.uid}' 2>/dev/null)
+  adm_full_argocd "$label-helm" force || return 1
+  uid1=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.metadata.uid}' 2>/dev/null)
+  ok=$(kc -n argocd get job argocd-redis-secret-init -o jsonpath='{.status.succeeded}' 2>/dev/null)
+  if [ -n "$uid1" ] && [ "$uid1" != "$uid0" ] && [ "$ok" = 1 ]; then
+    rec "$label-hook" PASS "the pre-upgrade hook Job argocd-redis-secret-init ran in this upgrade (a new Job, UID $uid1) and succeeded, as its service account, with P12 in Deny"
+  else
+    rec "$label-hook" INFO "no pre-upgrade hook Job argocd-redis-secret-init of this upgrade (UID before '${uid0:-none}', after '${uid1:-none}', succeeded '${ok:-?}'): the chart's redisSecretInit hook is off in these values, or Helm did not run it"
+  fi
+  adm_full_argocd_login || rec "$label-login" FAIL "argocd login (inside the argocd-server pod) failed after the upgrade"
+  adm_full_p12_stage "$label" "$since" "$held"
+}
+
+# Claim o was DISPROVED by the first kind run: access reviews (SelfSubjectAccessReview and kin) are not
+# judged by P12 (kube-apiserver's exclusion list exempts the review kinds from policies and webhooks since
+# Kubernetes 1.30), so P12 has no entry for them. What stays is a canary: the request the controller asks
+# per resource type under resource.respectRBAC: strict, and the same one as argocd-server, with P12 in Deny.
+# It is worth something only if
+#   - P12 is in Deny at that moment: a positive control, a dry-run create of a ConfigMap in argocd as
+#     argocd-server (its chart Role allows it, so RBAC does not answer first; rule 3 refuses it), and
+#   - both identities got a real answer (yes or no), not an error that would hide a refusal.
+# Neither review may then be refused by ryft-argo-scope. If one is, the exclusion is gone on this Kubernetes
+# version and the controller would be refused its own reviews: rule 5 needs an authorization.k8s.io entry
+# (create of the access reviews) again. (The control's refusal is asked after the stage's findings check.)
+adm_full_claim_o() {
+  local held=$1 since ctl srv ctrl
+  since=$(adm_now)
+  ctl=$(kca "$ARGO_CTRL" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
+  adm_full_p12_stage "full-ssar" "$since" "$held"
+  srv=$(kca "$ARGO_SRV" auth can-i list secrets -n ryft-api 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
+  ctrl=$(kca "$ARGO_SRV" create configmap zz-claim-o-control -n argocd --dry-run=server 2>&1 | tr -s ' \n\t' '   ' | sed 's/ *$//')
+  if ! printf '%s' "$ctrl" | grep -qF "with binding 'ryft-argo-scope' denied request: P12: argocd-server writes only"; then
+    rec "claim-o-canary" FAIL "no positive control: argocd-server's dry-run create of a ConfigMap in argocd was not refused by ryft-argo-scope (rule 3), so P12 is not in Deny now and the canary would prove nothing: $(printf '%s' "$ctrl" | cut -c1-300)"
+  elif printf '%s%s' "$ctl" "$srv" | grep -qF "with binding 'ryft-argo-scope' denied request"; then
+    rec "claim-o-canary" FAIL "access reviews are now judged by P12 and refused (controller: $(printf '%s' "$ctl" | cut -c1-200); server: $(printf '%s' "$srv" | cut -c1-200)): rule 5 needs an entry for the access reviews again"
+  elif ! [[ $ctl =~ ^(yes|no)($|\ ) ]]; then
+    rec "claim-o-canary" FAIL "a SelfSubjectAccessReview as the application controller did not answer yes or no: $(printf '%s' "$ctl" | cut -c1-300)"
+  elif ! [[ $srv =~ ^(yes|no)($|\ ) ]]; then
+    rec "claim-o-canary" FAIL "a SelfSubjectAccessReview as argocd-server did not answer yes or no: $(printf '%s' "$srv" | cut -c1-300)"
+  else
+    rec "claim-o-canary" PASS "claim o stays DISPROVED: with P12 shown in Deny (argocd-server's ConfigMap dry-run refused by rule 3), neither the controller's (${ctl%% *}) nor argocd-server's (${srv%% *}) SelfSubjectAccessReview was refused by ryft-argo-scope: access reviews are exempt from policies (kube-apiserver's exclusion list), so P12 has no entry for them"
   fi
 }
 
@@ -670,6 +858,9 @@ adm_full() {
   adm_full_check_topology "full-topology-audit"
   adm_full_check_operator_logs "full-operator-logs-audit" "$start"
   adm_full_findings "full-findings-audit" "$start" "$(adm_full_explained audit "$held")"
+  # claim n, the empirical half: the first sync of every app (hooks, the CRDs, the namespaces, the
+  # operators) in Audit leaves no line of P12
+  adm_full_p12_findings "claim-n-audit" "$start"
   endgroup
 
   group "full: Deny${held:+ (held in Audit until the tree has T12-g / T12-k: $held)}"
@@ -679,6 +870,7 @@ adm_full() {
   adm_full_wait_apps "full-apps-deny" 900
   adm_full_check_hooks "full-hooks-deny"
   adm_full_findings "full-findings-deny" "$start" "$(adm_full_explained deny "$held")"
+  adm_full_p12_findings "claim-n-deny" "$start"
   adm_full_broker_restart "full-broker-restart"
   adm_full_check_broker "full-broker-deny"
   adm_full_terminate_op "full-terminate-op"
@@ -686,6 +878,11 @@ adm_full() {
   adm_full_check_operator_logs "full-operator-logs-deny" "$start"
   adm_full_check_can_i "full-operators-can-i"
   adm_full_check_operator_exec "full-operator-exec"
+  # P12 under Deny (claims n, o, p): the components restart, Helm upgrades Argo CD (its hook Job), and
+  # the controller asks one access review. Each is followed by the apps and the findings.
+  adm_full_argo_restart "full-argo-restart" "$held"
+  adm_full_argo_upgrade "full-argo-upgrade" "$held"
+  adm_full_claim_o "$held"
   adm_full_claim_i "$run_start"
   adm_full_claim_m
   endgroup

@@ -529,6 +529,7 @@ tests:
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operator-reach",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd-operation",intended_action="deny"}', values: '1x300' }
+      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argo-scope",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vault-trust",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces-vault",intended_action="deny"}', values: '1x300' }
       - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-templates-vault",intended_action="deny"}', values: '1x300' }
@@ -700,7 +701,7 @@ tests:
               summary: "Admission policy ryft-traefik (ryft-traefik) fails to evaluate (invalid_error); requests are admitted"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
       - { eval_time: 50m, alertname: AdmissionPolicyError, exp_alerts: [] }
-  - name: admission bindings, sixteen of seventeen
+  - name: admission bindings, seventeen of eighteen (ryft-argocd-operation missing)
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -714,6 +715,7 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argo-scope",policy_name="ryft-argo-scope"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
@@ -726,9 +728,38 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "16 of 17 admission policy bindings exist"
+              summary: "17 of 18 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, sixteen of ryft and one that is not ours
+  - name: admission bindings, seventeen of ryft and one that is not ours
+    interval: 1m
+    input_series:
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argo-scope",policy_name="ryft-argo-scope"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="other-binding",policy_name="ryft-other-binding"}', values: '1x120' }
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AdmissionBindingMissing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "17 of 18 admission policy bindings exist"
+              runbook: "docs/OPERATIONS.md → Admission policy signals"
+  - name: admission bindings, seventeen of eighteen (ryft-argo-scope missing, the chart before P12)
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -747,16 +778,17 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="other-binding",policy_name="ryft-other-binding"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x120' }
     alert_rule_test:
+      - { eval_time: 5m, alertname: AdmissionBindingMissing, exp_alerts: [] }
       - eval_time: 15m
         alertname: AdmissionBindingMissing
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "16 of 17 admission policy bindings exist"
+              summary: "17 of 18 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, all seventeen
+  - name: admission bindings, all eighteen
     interval: 1m
     input_series:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
@@ -770,6 +802,7 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argo-scope",policy_name="ryft-argo-scope"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
@@ -798,6 +831,7 @@ tests:
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x60' }
+      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argo-scope",policy_name="ryft-argo-scope"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x60' }
       - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x60' }
@@ -811,7 +845,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "0 of 17 admission policy bindings exist"
+              summary: "0 of 18 admission policy bindings exist"
               runbook: "docs/OPERATIONS.md → Admission policy signals"
   - name: admission binding committed as deny that does not deny, while others do
     interval: 5m

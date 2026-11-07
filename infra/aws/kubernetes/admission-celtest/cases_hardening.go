@@ -235,7 +235,8 @@ func runHardening(c *chart) {
 	}
 	upd("carve-out: P7 secret-type label added to a deleting Secret", argoSrv,
 		sec(`{"argocd.argoproj.io/secret-type":"repository"}`), sec(""), "P7: argocd-server must not write Secrets")
-	upd("carve-out: a deleting Secret loses only its finalizer", argoSrv, set(sec(""), "metadata/finalizers", jv(`[]`)), sec(""))
+	// P7 does not judge it (the carve-out); P12 has no carve-out and refuses the server a Secret in argocd.
+	upd("carve-out: a deleting Secret loses only its finalizer", argoSrv, set(sec(""), "metadata/finalizers", jv(`[]`)), sec(""), "P12: argocd-server writes only")
 	k = cr()
 	oldK := deleting(deepCopy(k))
 	newK := deepCopy(oldK)
@@ -354,6 +355,12 @@ func runHardening(c *chart) {
 	set(x, "metadata/name", "rabbitmq-cluster-operator-role")
 	set(x, "rules/2", jv(`{"apiGroups":[""],"resources":["pods/exec"],"verbs":["create"]}`))
 	add("P6 the operator's role name in rabbitmq-system with pods/exec", argoCtl, "CREATE", x, "P6: a Role")
+	// claim h's Role route (scripts/lib/admission_lib.sh adm_claim_h): P6 and P12 both refuse it, and the
+	// API server names only one of them, in no fixed order (D206). The harness pins both.
+	hRole := jv(`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":{"name":"rabbitmq-cluster-operator-role","namespace":"kube-system"},"rules":[{"apiGroups":[""],"resources":["secrets"],"verbs":["get","list"]},{"apiGroups":[""],"resources":["pods/exec"],"verbs":["create"]}]}`).(map[string]any)
+	add("P6 claim h: the operator's role name in kube-system with secrets and pods/exec", argoCtl, "CREATE", hRole, "P6: Roles and RoleBindings are allowed in rabbitmq-system", r4)
+	hBinding := jv(`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":{"name":"rabbitmq-cluster-operator-rolebinding","namespace":"kube-system"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"rabbitmq-cluster-operator-role"},"subjects":[{"kind":"ServiceAccount","name":"argocd-application-controller","namespace":"argocd"}]}`).(map[string]any)
+	add("P6 claim h: the controller binds itself to it in kube-system", argoCtl, "CREATE", hBinding, "P6: Roles and RoleBindings are allowed in rabbitmq-system", r4)
 
 	fmt.Println("== P11: erlangInetConfig, secretBackend")
 	x = rcl()

@@ -34,6 +34,7 @@ actions:
   operator-reach: audit       # P8  step C
   argocd: audit               # P7  step D
   argocd-operation: audit     # P10 step D
+  argo-scope: audit           # P12 step B (decision 2 of the P12 design)
   vault-trust: audit          # P13 step A
   # Namespace vault has bindings of its own for the policies with a vault branch (the general
   # bindings above exclude it), so they go to deny before the Vault bootstrap, independently of
@@ -43,7 +44,7 @@ actions:
   workloads-pods-vault: audit       # P2 step A, vault only
   netpol-vault: audit               # P3 step A, vault only
 
-# Argo CD: the identities P1, P6, P7 and P10 judge and the shapes P7 holds Applications to.
+# Argo CD: the identities P1, P6, P7, P10 and P12 judge and the shapes P7 holds Applications to.
 argocd:
   namespace: argocd
   controllerServiceAccount: argocd-application-controller
@@ -64,6 +65,49 @@ argocd:
     project: ryft
     pathPrefix: deploy/k8s/overlays/vault-namespaces
     namespacePrefix: ryft-
+
+# P12 (ryft-argo-scope): WHERE the service accounts of the argocd namespace may write. Every one
+# of them is matched by the username prefix system:serviceaccount:<argocd.namespace>:, but only the
+# application controller and the server may write at all (argocd.controllerServiceAccount and
+# serverServiceAccount above); production overrides nothing here. A new Argo-made namespace, a
+# new cluster-scoped kind or name, or an Argo CD version that writes something new is a change
+# HERE first (a reviewed PR and the user's apply), then the manifests: until then P12 refuses the
+# sync (Deny) or flags it (Audit). A new service inside a listed namespace needs nothing; a new
+# namespace needs the list first.
+argoScope:
+  # The controller writes any namespaced object in these namespaces and no other: an explicit list, not
+  # a "ryft-" prefix, which would also cover the import service's namespace (its own Vault credentials,
+  # no Argo CD app) and every future infra namespace. They are the destinations of deploy/argocd/apps and the namespaces the
+  # apps render into (ryft-web, ryft-smoke, ...); rabbitmq-system is operators.namespace, kept literal, a
+  # different fact. admission.tf's check "admission_argo_scope" compares this list with the destinations
+  # of deploy/argocd/apps, and the kind run dry-runs every rendered object as the controller.
+  # Never vault, cert-manager (and vault.clusterResourceNamespace), argocd.namespace, kube-system or one of
+  # neverNamespaces below: the chart refuses a render that lists one here or in namespaceObjects (D206), and
+  # so does admission.tf. Every entry is ryft-* or operators.namespace (the chart refuses anything else).
+  namespaces: [ryft-api, ryft-ingest, ryft-migrate, ryft-notify, ryft-rabbitmq, ryft-scoring, ryft-smoke, ryft-web, rabbitmq-system]
+  # The add-ons' namespaces and the cluster's own, never in Argo CD's scope (S3, D206): a Deployment Argo CD
+  # writes in vault-secrets-operator-system could run as VSO's service account (Secrets write cluster-wide).
+  # admission.tf requires every add-on namespace of infra/aws/kubernetes (addons.tf, logs.tf) to be here or
+  # in the fixed list above. Required and non-empty.
+  neverNamespaces: [vault-secrets-operator-system, external-dns, amazon-cloudwatch, monitoring, default, kube-public, kube-node-lease]
+  # Refuse a render of this chart that puts ryft-argo-scope in deny while the policies that close the
+  # RBAC route (operators-cluster = P6, namespaces = P1, workloads-templates = P2) are not: P12 judges
+  # names, not what a ClusterRole or a binding grants, so alone it leaves the route open. true everywhere
+  # except the kind run, which holds P6 in audit until the tree has T12-g and must still try P12 in deny.
+  # admission.tf refuses the same combination before the plan whatever this says.
+  requireClosedRoutes: true
+  # The Namespace objects the controller may create and update (never delete). P1 reads this list too.
+  namespaceObjects: [ryft-web, rabbitmq-system]
+  # CustomResourceDefinitions the controller may create and update: the name ends with ".<group>".
+  # The ClusterRoles, ClusterRoleBindings and webhook configurations come from `operators` below.
+  crdGroups: [rabbitmq.com]
+  # The only write argocd-server may make to a Secret: add `serverInitKey` to `serverSecret` once, on
+  # its first start, while the Secret holds no such key (never a change of one).
+  serverSecret: argocd-secret
+  serverInitKey: server.secretkey
+  # The argo-cd chart's pre-install,pre-upgrade hook creates this Secret (the only write of its
+  # service account, in the argocd namespace, and only a CREATE).
+  redisSecretInit: { serviceAccount: argocd-redis-secret-init, secret: argocd-redis }
 
 # P7's constant for AppProjects: the decoded documents of deploy/argocd/project.yaml
 # (T12-b passes them: a list of full AppProject objects). The placeholder is empty, so

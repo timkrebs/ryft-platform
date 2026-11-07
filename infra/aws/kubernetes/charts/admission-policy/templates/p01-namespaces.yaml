@@ -2,8 +2,10 @@
 P1 ryft-namespaces (C, U; D for Argo CD). Namespaces ryft-*, rabbitmq-system, argocd and
 vault (the in-cluster Vault, vault.namespace) keep the Pod Security labels (enforce, warn,
 audit = restricted, versions only "latest"), whoever writes them (infra/vault and
-infra/aws/kubernetes included). Argo CD may write only ryft-web and rabbitmq-system (so never
-vault) and deletes no Namespace. monitoring is outside by name (D51).
+infra/aws/kubernetes included). Argo CD may write only the Namespaces of
+argoScope.namespaceObjects (ryft-web and rabbitmq-system; the chart refuses vault, cert-manager,
+argocd and kube-system there, D206) and deletes none; P12 reads the same list. monitoring is
+outside by name (D51).
 */ -}}
 {{- /* name: the Namespace's name; request.name is empty for generateName and request fields are omitted when empty, so the object is read. */ -}}
 {{- $name := "(request.operation == 'DELETE' ? oldObject.metadata.name : (has(object.metadata.name) ? object.metadata.name : ''))" -}}
@@ -47,8 +49,8 @@ spec:
       message: "P1: Pod Security version labels must be absent or latest."
       reason: Forbidden
     - expression: |-
-        !variables.isArgo || (request.operation != 'DELETE' && {{ $name }} in ['ryft-web', 'rabbitmq-system'])
-      message: "P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none."
+        !variables.isArgo || (request.operation != 'DELETE' && {{ $name }} in {{ .Values.argoScope.namespaceObjects | toJson }})
+      message: "P1: Argo CD may write only the Namespaces {{ join " and " .Values.argoScope.namespaceObjects }}, and deletes none."
       reason: Forbidden
 ---
 {{ include "admission.binding" (dict "root" . "key" "namespaces" "policy" "ryft-namespaces" "id" "P1" "step" "B" "excludeNamespaces" (list .Values.vault.namespace)) }}

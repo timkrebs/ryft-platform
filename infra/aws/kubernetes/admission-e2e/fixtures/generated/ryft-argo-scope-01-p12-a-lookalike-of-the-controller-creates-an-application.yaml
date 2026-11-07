@@ -1,0 +1,36 @@
+# fixture: P12 a lookalike of the controller creates an Application
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller-x
+# refused-by: ryft-argo-scope
+# message: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "0"
+  name: vault-api
+  namespace: argocd
+spec:
+  destination:
+    namespace: ryft-api
+    server: https://kubernetes.default.svc
+  project: ryft
+  source:
+    path: deploy/k8s/overlays/vault-namespaces/api
+    repoURL: https://github.com/timkrebs/ryft-platform.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 1m
+        factor: 2
+        maxDuration: 5m
+      limit: 2
+    syncOptions:
+    - ServerSideApply=true
+    - PruneLast=true
+    - CreateNamespace=false

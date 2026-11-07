@@ -5,7 +5,7 @@ spliced in with toJson, which gives CEL string, list and map literals.
 
 {{- /* Fails the render on a value the chart cannot honour. */ -}}
 {{- define "admission.validate" -}}
-{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" "vault-trust" "namespaces-vault" "workloads-templates-vault" "workloads-pods-vault" "netpol-vault" -}}
+{{- $known := list "vso" "operators-cluster" "broker" "namespaces" "workloads-templates" "netpol" "auth-env" "traefik" "workloads-pods" "operator-reach" "argocd" "argocd-operation" "argo-scope" "vault-trust" "namespaces-vault" "workloads-templates-vault" "workloads-pods-vault" "netpol-vault" -}}
 {{- if hasKey .Values "vaultAddress" -}}{{- fail "vaultAddress is now vaultAddresses, a list (admission-values.yaml)" -}}{{- end -}}
 {{- if not .Values.vaultAddresses -}}{{- fail "vaultAddresses is required (admission-values.yaml)" -}}{{- end -}}
 {{- if not (kindIs "slice" .Values.vaultAddresses) -}}{{- fail "vaultAddresses must be a list" -}}{{- end -}}
@@ -41,12 +41,59 @@ never matches a host name against the commonName). */ -}}
 {{- range $known -}}
 {{- if not (hasKey $.Values.actions .) -}}{{- fail (printf "actions.%s is missing" .) -}}{{- end -}}
 {{- end -}}
+{{- /* P12: the controller's namespaces are an explicit list (an empty name or a wildcard would put every namespace in scope); the secret and key names are what the init exemption compares. */ -}}
+{{- /* S2 (D206): every list spliced into P12's CEL (and P1's) by toJson is a non-empty list of non-empty
+strings. A map would render `x in {map}`, which CEL answers on the map's keys (so {vault: x} would admit
+vault), and null renders `x in null`, a runtime error that refuses every Argo CD write under Fail. */ -}}
+{{- $lists := list (list "argoScope.namespaces" .Values.argoScope.namespaces) (list "argoScope.namespaceObjects" .Values.argoScope.namespaceObjects) (list "argoScope.crdGroups" .Values.argoScope.crdGroups) (list "argoScope.neverNamespaces" .Values.argoScope.neverNamespaces) (list "operators.clusterRoleNamePrefixes" .Values.operators.clusterRoleNamePrefixes) (list "operators.webhookConfigurations" .Values.operators.webhookConfigurations) -}}
+{{- range $p := $lists -}}
+{{- $v := index $p 1 -}}
+{{- if or (not (kindIs "slice" $v)) (eq (len $v) 0) -}}{{- fail (printf "%s must be a non-empty list of strings (a map or null splices into CEL as something else: `in` on a map tests its keys; D206)" (index $p 0)) -}}{{- end -}}
+{{- range $v -}}{{- if or (not (kindIs "string" .)) (not .) -}}{{- fail (printf "%s must be a non-empty list of strings, each a non-empty string (D206)" (index $p 0)) -}}{{- end -}}{{- end -}}
+{{- end -}}
+{{- range .Values.argoScope.namespaces -}}
+{{- if or (not .) (contains "*" .) -}}{{- fail "argoScope.namespaces must hold namespace names only (an empty name or a wildcard would put every namespace in Argo CD's scope)" -}}{{- end -}}
+{{- end -}}
+{{- /* P12 and the namespaces Argo CD never writes in (D206): vault (Terraform's add-on; P2 and P3 there
+judge images and peers, not who writes), cert-manager and its cluster resource namespace (the
+ryft-vault root CA, P13), Argo CD's own namespace (rule 4 keeps it to Applications and events) and
+kube-system (aws-auth). None may be in argoScope.namespaces or argoScope.namespaceObjects. Every
+Namespace object Argo CD may create is one P1 holds to Pod Security restricted (ryft-* or
+rabbitmq-system) and one it may then write in (argoScope.namespaces). S3: the add-on namespaces
+(argoScope.neverNamespaces: VSO's, ExternalDNS's, Fluent Bit's, monitoring, default, kube-public,
+kube-node-lease) are never in scope either, and argoScope.namespaces itself holds ryft-* or the operators'
+namespace only (the explicit list stays; admission.tf compares it with the add-ons of its root). */ -}}
+{{- $argoNever := concat (list .Values.vault.namespace "cert-manager" .Values.vault.clusterResourceNamespace .Values.argocd.namespace "kube-system") .Values.argoScope.neverNamespaces -}}
+{{- range $k := list "namespaces" "namespaceObjects" -}}
+{{- range (index $.Values.argoScope $k) -}}
+{{- if has . $argoNever -}}{{- fail (printf "argoScope.%s must not hold %s: Argo CD never writes in vault, cert-manager, %s, kube-system or an add-on's namespace (argoScope.neverNamespaces; D206)" $k . $.Values.argocd.namespace) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.argoScope.namespaces -}}
+{{- if not (or (hasPrefix "ryft-" .) (eq . $.Values.operators.namespace)) -}}{{- fail (printf "argoScope.namespaces must hold ryft-* or %s namespaces only (an explicit list of them; D206), not %s" $.Values.operators.namespace .) -}}{{- end -}}
+{{- end -}}
+{{- range .Values.argoScope.namespaceObjects -}}
+{{- if not (or (hasPrefix "ryft-" .) (eq . "rabbitmq-system")) -}}{{- fail (printf "argoScope.namespaceObjects must hold ryft-* or rabbitmq-system Namespaces only (P1 holds those to Pod Security restricted), not %s" .) -}}{{- end -}}
+{{- if not (has . $.Values.argoScope.namespaces) -}}{{- fail (printf "argoScope.namespaceObjects holds %s, which argoScope.namespaces does not (Argo CD could create the Namespace and write nothing in it)" .) -}}{{- end -}}
+{{- end -}}
+{{- range list "serverSecret" "serverInitKey" -}}
+{{- if not (index $.Values.argoScope .) -}}{{- fail (printf "argoScope.%s is required" .) -}}{{- end -}}
+{{- end -}}
+{{- range list "serviceAccount" "secret" -}}
+{{- if not (index $.Values.argoScope.redisSecretInit .) -}}{{- fail (printf "argoScope.redisSecretInit.%s is required" .) -}}{{- end -}}
+{{- end -}}
 {{- range .Values.projects -}}
 {{- if not (and .metadata .metadata.name .spec) -}}{{- fail "projects must be AppProject documents with metadata.name and spec" -}}{{- end -}}
 {{- end -}}
 {{- /* Hard guards: a deny that would refuse every request of its kind, or an object the cluster has today. */ -}}
 {{- if and (eq (include "admission.mode" (dict "root" . "key" "argocd")) "deny") (not .Values.projects) -}}
 {{- fail "actions.argocd is deny but projects is empty: P7 would refuse every AppProject write (T12-b wires projects)" -}}
+{{- end -}}
+{{- /* P12 judges names, not what a ClusterRole or a binding grants: on its own in deny it leaves the RBAC route open (the controller may still rewrite an operators' ClusterRole or bind one), which P6 (operators-cluster), P1 (namespaces) and P2 (workloads-templates) close. The mode is the effective one, so break-glass (audit everywhere) passes. */ -}}
+{{- if and .Values.argoScope.requireClosedRoutes (eq (include "admission.mode" (dict "root" . "key" "argo-scope")) "deny") -}}
+{{- range list "operators-cluster" "namespaces" "workloads-templates" -}}
+{{- if ne (include "admission.mode" (dict "root" $ "key" .)) "deny" -}}{{- fail (printf "actions.argo-scope is deny while actions.%s is not: P12 alone leaves the RBAC route (a ClusterRole rewrite, a binding to system:authenticated) open. Put operators-cluster, namespaces and workloads-templates in deny first (docs/work/2026-10-23-admission/p12-argo-scope.md)" .) -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if and (eq (include "admission.mode" (dict "root" . "key" "netpol")) "deny") .Values.netpol.brokerEgressPublic -}}
 {{- fail "actions.netpol is deny while netpol.brokerEgressPublic is true: ryft-rabbitmq's open 443 egress rule would be refused (T12-k narrows it first)" -}}

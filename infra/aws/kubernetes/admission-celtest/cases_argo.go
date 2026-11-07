@@ -74,8 +74,10 @@ func runArgo(c *chart) {
 		return map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": md, "data": map[string]any{"url": "eA=="}}
 	}
 	crt("P7 server writes a repository secret", argoSrv, sec(map[string]any{"argocd.argoproj.io/secret-type": "repository"}), "P7")
-	crt("P7 controller writes a labelled secret", argoCtl, sec(map[string]any{"argocd.argoproj.io/secret-type": "repository"}))
-	crt("P7 server writes an unlabelled secret", argoSrv, sec(nil))
+	// Admitted by P7 (only argocd-server's labelled Secrets are its business); P12 now refuses both
+	// requesters a Secret in argocd (the golden file shows P12 alone).
+	crt("P7 controller writes a labelled secret", argoCtl, sec(map[string]any{"argocd.argoproj.io/secret-type": "repository"}), "P12: Argo CD's controller writes namespaced")
+	crt("P7 server writes an unlabelled secret", argoSrv, sec(nil), "P12: argocd-server writes only")
 	del7("P7 server deletes a cluster secret", argoSrv, sec(map[string]any{"argocd.argoproj.io/secret-type": "cluster"}), "P7")
 	// P10
 	synced := func() map[string]any {

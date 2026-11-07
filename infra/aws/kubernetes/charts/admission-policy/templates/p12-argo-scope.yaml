@@ -1,0 +1,185 @@
+{{- /*
+P12 ryft-argo-scope (C, U, D, CONNECT; every service account of the argocd namespace). WHERE
+Argo CD's identities may write, whatever the object holds (the content stays P1-P11's and P13's). Design:
+docs/work/2026-10-23-admission/p12-argo-scope.md; D206.
+ - Match: every resource and subresource (the resource rule star-slash-star), every operation, in every namespace. The
+   one matchCondition is the requester: the username starts with system:serviceaccount:<argocd
+   namespace>:. The username comes from authentication (a bound token, or impersonation, which
+   only the cluster admin may use), so the kind fixtures test the real thing. Groups, userInfo.extra
+   and the server-side-apply field manager are not used: impersonation replaces the first, a stolen
+   token carries the second, and the client chooses the third.
+ - No finalizerRemoval carve-out (unlike every other policy): P12 judges WHERE the requester
+   writes, not what, so a finalizer removal outside the scope is an out-of-scope write.
+ - Rules, in this order (the API server reports the first that fails):
+     1 no CONNECT and no subresource.
+     2 only the controller and the server write; the one exception is the chart's
+       redis-secret-init, which creates Secret argocd-redis.
+     3 the server: in argocd only, Applications, events (create only), plus the FIRST
+       server.secretkey of argocd-secret (an UPDATE that adds that key and changes nothing else
+       but resourceVersion, managedFields and generation).
+     4 the controller, namespaced: any resource in a namespace of argoScope.namespaces (an
+       explicit list, no prefix); in argocd only Applications and events (events: create and
+       update, never delete).
+     5 the controller, cluster-scoped: Namespaces argoScope.namespaceObjects (no DELETE), CRDs of
+       argoScope.crdGroups (no DELETE), ClusterRoles and ClusterRoleBindings with an operators
+       prefix, and the operators' webhook configurations. (No entry for access reviews:
+       kube-apiserver's exclusion list exempts them from policies and webhooks, since 1.30;
+       claim o of the kind run.)
+ - Every optional request field is read through has() (the API server omits empty fields:
+   namespace of a cluster-scoped object, name of a generateName create, subResource, userInfo
+   of an anonymous request), and object / oldObject are touched only where the operation has
+   them (null on DELETE / CONNECT, and oldObject on CREATE). A CEL error is the main risk of
+   this policy: failurePolicy Fail makes it refuse every Argo CD write under Deny.
+ - failurePolicy Fail like P1-P11. The bindings are exempt from admission and the break-glass
+   is a kubectl patch, so a stuck policy never locks anybody out; Ignore would turn an evaluation
+   error into a silent hole under Deny. Under Warn+Audit an error is only a warning and an
+   AdmissionPolicyError.
+ - Type checking: with every resource matched there is no single schema to check against, so status.typeChecking
+   stays empty. That proves nothing about the expressions; the CEL harness (admission-celtest)
+   evaluates them.
+ - Cost: every list is a literal of a few items; the only walk is over the keys of
+   argocd-secret, for the server and that one name.
+*/ -}}
+{{- $argoNs := .Values.argocd.namespace -}}
+{{- $s := .Values.argoScope -}}
+{{ include "admission.policyHead" (dict "root" . "name" "ryft-argo-scope" "id" "P12" "summary" "where Argo CD's service accounts may write (ryft-*, rabbitmq-system, Applications in argocd, the rendered cluster-scoped names)") }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE", "CONNECT"]
+        # "*/*" is every resource and every subresource (the matcher takes a "*" subresource as any,
+        # none included), so a second entry ("*") would only be redundant; and the API server's
+        # validation does not accept "*/*" next to other entries.
+        resources: ["*/*"]
+        scope: "*"
+  matchConditions:
+    - name: requester-is-an-argocd-service-account
+      expression: |-
+        has(request.userInfo.username) && request.userInfo.username.startsWith({{ printf "system:serviceaccount:%s:" $argoNs | toJson }})
+  variables:
+    # ---- the request, every optional field guarded ----
+    - name: ns
+      expression: |-
+        has(request.namespace) ? request.namespace : ''
+    - name: sub
+      expression: |-
+        has(request.subResource) ? request.subResource : ''
+    - name: grp
+      expression: |-
+        has(request.resource.group) ? request.resource.group : ''
+    - name: res
+      expression: |-
+        request.resource.resource
+    # request.name is set for UPDATE and DELETE and for CREATE: the API server generates the name of a
+    # generateName create before admission and sends it in request.name and in the object. The object is
+    # the fallback of a create; if neither carried a name, '' is in no allowlist (fail-safe either way).
+    # A DELETECOLLECTION reaches admission as a DELETE with an empty name: cluster-scoped is refused (rule 5),
+    # namespaced in scope is admitted, and no field is read that the request lacks.
+    - name: name
+      expression: |-
+        has(request.name) && request.name != '' ? request.name :
+        (request.operation == 'CREATE' && has(object.metadata) && has(object.metadata.name) ? object.metadata.name : '')
+    # A Namespace is cluster-scoped, but for UPDATE and DELETE the API server fills request.namespace
+    # with its name. So scope is not read from request.namespace alone.
+    - name: clusterScoped
+      expression: |-
+        variables.ns == '' || (variables.grp == '' && variables.res == 'namespaces')
+    # ---- who ----
+    - name: user
+      expression: |-
+        has(request.userInfo.username) ? request.userInfo.username : ''
+    - name: isCtl
+      expression: |-
+        variables.user == {{ include "admission.user.argoController" . | toJson }}
+    - name: isSrv
+      expression: |-
+        variables.user == {{ include "admission.user.argoServer" . | toJson }}
+    # the argo-cd chart's pre-install,pre-upgrade hook: CREATE of Secret argocd-redis, once
+    - name: isRedisInit
+      expression: |-
+        variables.user == {{ include "admission.sa" (list $argoNs $s.redisSecretInit.serviceAccount) | toJson }} &&
+        request.operation == 'CREATE' && variables.ns == {{ $argoNs | toJson }} &&
+        variables.grp == '' && variables.res == 'secrets' && variables.name == {{ $s.redisSecretInit.secret | toJson }}
+    # ---- what ----
+    - name: isApp
+      expression: |-
+        variables.grp == 'argoproj.io' && variables.res == 'applications'
+    - name: isEvent
+      expression: |-
+        variables.res == 'events' && variables.grp in ['', 'events.k8s.io']
+    # Events are written, never removed: the server only creates them, the controller creates and updates
+    # (a patch is an UPDATE to admission). A DELETE of an Event, by either, is out of scope.
+    - name: serverEvent
+      expression: |-
+        variables.isEvent && request.operation == 'CREATE'
+    - name: controllerEvent
+      expression: |-
+        variables.isEvent && request.operation in ['CREATE', 'UPDATE']
+    # a namespaced object in the scope of the controller (rule 4)
+    - name: inScope
+      expression: |-
+        variables.ns in {{ $s.namespaces | toJson }}
+    # a cluster-scoped object the apps render (rule 5); the content is P1's and P6's
+    - name: clusterOK
+      expression: |-
+        (variables.grp == '' && variables.res == 'namespaces' && request.operation != 'DELETE' &&
+         variables.name in {{ $s.namespaceObjects | toJson }}) ||
+        (variables.grp == 'apiextensions.k8s.io' && variables.res == 'customresourcedefinitions' &&
+         request.operation != 'DELETE' &&
+         {{ $s.crdGroups | toJson }}.exists(g, variables.name.endsWith('.' + g))) ||
+        (variables.grp == 'rbac.authorization.k8s.io' && variables.res in ['clusterroles', 'clusterrolebindings'] &&
+         {{ .Values.operators.clusterRoleNamePrefixes | toJson }}.exists(p, variables.name.startsWith(p))) ||
+        (variables.grp == 'admissionregistration.k8s.io' &&
+         variables.res in ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations'] &&
+         variables.name in {{ .Values.operators.webhookConfigurations | toJson }})
+    # the server's FIRST server.secretkey (rule 3): an UPDATE of the Secret whose old object has data
+    # without the key, whose new object adds the key and changes nothing else: no value, no other
+    # top-level field (type, immutable, ...), and every metadata field equal (labels, annotations,
+    # ownerReferences, finalizers, ...) but resourceVersion, managedFields and generation, which the
+    # API server and the field manager move on any write. It cannot be used while a key exists, i.e.
+    # in steady state.
+    - name: serverKeyInit
+      expression: |-
+        variables.isSrv && request.operation == 'UPDATE' && variables.ns == {{ $argoNs | toJson }} &&
+        variables.grp == '' && variables.res == 'secrets' && variables.name == {{ $s.serverSecret | toJson }} &&
+        has(oldObject.data) && !({{ $s.serverInitKey | toJson }} in oldObject.data) &&
+        has(object.data) && {{ $s.serverInitKey | toJson }} in object.data &&
+        oldObject.data.all(k, k in object.data && object.data[k] == oldObject.data[k]) &&
+        object.data.all(k, k in oldObject.data || k == {{ $s.serverInitKey | toJson }}) &&
+        object.all(k, k in ['data', 'metadata'] || (k in oldObject && object[k] == oldObject[k])) &&
+        oldObject.all(k, k in ['data', 'metadata'] || k in object) &&
+        object.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || (k in oldObject.metadata && object.metadata[k] == oldObject.metadata[k])) &&
+        oldObject.metadata.all(k, k in ['resourceVersion', 'managedFields', 'generation'] || k in object.metadata)
+  validations:
+    # rule 1
+    - expression: |-
+        request.operation != 'CONNECT' && variables.sub == ''
+      message: "P12: Argo CD writes no subresource and opens no connection to a pod, service or node."
+      reason: Forbidden
+    # rule 2
+    - expression: |-
+        variables.isCtl || variables.isSrv || variables.isRedisInit
+      message: "P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret {{ $s.redisSecretInit.secret }})."
+      reason: Forbidden
+    # rule 3
+    - expression: |-
+        !variables.isSrv ||
+        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.serverEvent || variables.serverKeyInit))
+      message: "P12: argocd-server writes only Applications and events in {{ $argoNs }} (and once the first {{ $s.serverInitKey }} of {{ $s.serverSecret }})."
+      reason: Forbidden
+    # rule 4
+    - expression: |-
+        !variables.isCtl || variables.clusterScoped || variables.inScope ||
+        (variables.ns == {{ $argoNs | toJson }} && (variables.isApp || variables.controllerEvent))
+      message: "P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in {{ $argoNs }} only Applications and events (never a delete of an event)."
+      reason: Forbidden
+    # rule 5
+    - expression: |-
+        !variables.isCtl || !variables.clusterScoped || variables.clusterOK
+      message: "P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD."
+      reason: Forbidden
+---
+{{ include "admission.binding" (dict "root" . "key" "argo-scope" "policy" "ryft-argo-scope" "id" "P12" "step" "B") }}

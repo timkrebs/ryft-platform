@@ -71,6 +71,12 @@ variable "admission_scoped_rbac_file" {
   default     = null
 }
 
+variable "admission_argo_rbac_narrowed" {
+  description = "Stands in for the check that argocd.tf renders a narrowed controller ClusterRole (T12-f), which lets argo-scope go to deny. null reads argocd.tf; a test sets it. Never for an apply (check admission_gate_override)."
+  type        = bool
+  default     = null
+}
+
 variable "admission_vault_namespaces_dir" {
   description = "The directory of the generated */vault.yaml whose VaultConnection addresses check.admission_vault_address compares with vaultAddresses: deploy/k8s/overlays/vault-namespaces. null uses that path; a test points it elsewhere."
   type        = string

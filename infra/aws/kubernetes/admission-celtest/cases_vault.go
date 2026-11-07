@@ -189,8 +189,10 @@ func runVault(c *chart) {
 	add("P4 kv-notify read from ryft-notify", argoCtl, "CREATE", set(deepCopy(moved), "spec/mount", "kv-notify"))
 	mon := set(set(set(vs(), "metadata/namespace", "monitoring"), "spec/vaultAuthRef", "monitoring"), "spec/mount", "kv-monitoring")
 	del(mon, "spec/rolloutRestartTargets")
-	add("P4 kv-monitoring read from monitoring (no ryft- prefix)", argoCtl, "CREATE", mon)
-	add("P4 kv-monitoring read from ryft-monitoring passes P4 (both map to monitoring; the Vault role binds the namespace)", argoCtl, "CREATE", set(deepCopy(mon), "metadata/namespace", "ryft-monitoring"))
+	// monitoring's objects are the user's (make monitoring-apply), and ryft-monitoring, ryft-operators and
+	// ryft-operator are no Argo CD destination (P12 would refuse Argo CD there): written as the admin.
+	add("P4 kv-monitoring read from monitoring (no ryft- prefix)", admin, "CREATE", mon)
+	add("P4 kv-monitoring read from ryft-monitoring passes P4 (both map to monitoring; the Vault role binds the namespace)", admin, "CREATE", set(deepCopy(mon), "metadata/namespace", "ryft-monitoring"))
 	amqp := set(set(set(set(vs(), "metadata/namespace", "ryft-rabbitmq"), "metadata/name", "amqp-user-api"), "spec/vaultAuthRef", "rabbitmq"), "spec/mount", "kv-rabbitmq")
 	set(amqp, "spec/destination/name", "amqp-user-api")
 	del(amqp, "spec/rolloutRestartTargets")
@@ -209,8 +211,8 @@ func runVault(c *chart) {
 	} {
 		add(fmt.Sprintf("P4 the reserved mount %s read from %s", r.mount, r.ns), argoCtl, "CREATE", in(r.ns, r.mount), "P4: a VaultStaticSecret")
 	}
-	add("P4 kv-operators read from ryft-operators (not a reserved name)", argoCtl, "CREATE", in("ryft-operators", "kv-operators"))
-	add("P4 the mount kv still admitted in ryft-operator (HCP's, until the decommission)", argoCtl, "CREATE", in("ryft-operator", "kv"))
+	add("P4 kv-operators read from ryft-operators (not a reserved name)", admin, "CREATE", in("ryft-operators", "kv-operators"))
+	add("P4 the mount kv still admitted in ryft-operator (HCP's, until the decommission)", admin, "CREATE", in("ryft-operator", "kv"))
 
 	fmt.Println("== P13: what ryft-vault may issue")
 	tls := func() map[string]any { return fx("vault-certificate-tls") }
@@ -226,7 +228,7 @@ func runVault(c *chart) {
 	add("P13 ryft-api/vault-ca as designed", argoCtl, "CREATE", ca())
 	add("P13 ryft-api/vault-ca updated", argoCtl, "UPDATE", ca())
 	add("P13 vault/vault-ca for the operator's CLI", admin, "CREATE", set(set(ca(), "metadata/namespace", "vault"), "spec/commonName", "vso.vault"))
-	add("P13 monitoring/vault-ca", argoCtl, "CREATE", set(set(ca(), "metadata/namespace", "monitoring"), "spec/commonName", "vso.monitoring"))
+	add("P13 monitoring/vault-ca", admin, "CREATE", set(set(ca(), "metadata/namespace", "monitoring"), "spec/commonName", "vso.monitoring"))
 	add("P13 vault-ca without usages (cert-manager's default)", argoCtl, "CREATE", del(ca(), "spec/usages"))
 	add("P13 a CertificateRequest by cert-manager", cmUser, "CREATE", cr())
 	add("P13 a CertificateRequest updated by cert-manager", cmUser, "UPDATE", cr())
@@ -336,7 +338,9 @@ func runVault(c *chart) {
 	add("P13 ClusterIssuer ryft-vault-bootstrap with an empty spec (has() guard)", admin, "CREATE", set(boot(), "spec", jv(`{}`)), bootMsg)
 	opIssuer := func() map[string]any { return issuer("rabbitmq-system", "selfsigned-issuer", `{"selfSigned":{}}`) }
 	add("P13 Argo CD writes the operators' selfSigned Issuer", argoCtl, "CREATE", opIssuer())
-	add("P13 argocd-server updates the operators' selfSigned Issuer", argoSrv, "UPDATE", opIssuer())
+	// P13 admits a selfSigned Issuer from either Argo CD identity; P12 lets argocd-server write only
+	// Applications and events, so the server's write is refused there (the rule stays P13's, D206).
+	add("P13 argocd-server updates the operators' selfSigned Issuer", argoSrv, "UPDATE", opIssuer(), r3)
 	add("P13 Argo CD writes a CA Issuer", argoCtl, "CREATE", issuer("ryft-api", "api-ca", `{"ca":{"secretName":"amqp-client"}}`), argoMsg)
 	add("P13 Argo CD writes a Vault Issuer that sends ryft-secrets to another server", argoCtl, "CREATE",
 		issuer("rabbitmq-system", "selfsigned-issuer", `{"vault":{"server":"https://vault.example.com","path":"pki/sign/x","auth":{"tokenSecretRef":{"name":"ryft-secrets","key":"token"}}}}`), argoMsg)
@@ -360,7 +364,7 @@ func runVault(c *chart) {
 	add("P13 a Kubernetes CSR for ryft-internal is not P13's", admin, "CREATE", set(csr(), "spec/signerName", "clusterissuers.cert-manager.io/ryft-internal"))
 	add("P13 a Kubernetes CSR without a signerName is not judged (has() guard)", admin, "CREATE", del(csr(), "spec/signerName"))
 
-	fmt.Println("== the chart's RBAC and Argo CD in vault (P6 today; P12, #121, for the rest)")
+	fmt.Println("== the chart's RBAC and Argo CD in vault (P6, and P12 for every Argo CD write there)")
 	add("P6 Terraform writes the discovery Role", admin, "CREATE", fx("vault-role-discovery"))
 	add("P6 Terraform writes the discovery RoleBinding", admin, "CREATE", fx("vault-rolebinding-discovery"))
 	add("P6 Terraform writes the auth-delegator ClusterRoleBinding", admin, "CREATE", fx("vault-clusterrolebinding-server"))
@@ -368,11 +372,11 @@ func runVault(c *chart) {
 	add("P6 Argo CD writes the discovery Role", argoCtl, "CREATE", fx("vault-role-discovery"), "P6")
 	add("P6 Argo CD writes the discovery RoleBinding", argoCtl, "CREATE", fx("vault-rolebinding-discovery"), "P6")
 	add("P6 Argo CD writes the auth-delegator ClusterRoleBinding", argoCtl, "CREATE", fx("vault-clusterrolebinding-server"), "P6")
-	// Admitted here: the writer is not judged by P1-P11 or P13 for these kinds. P12 (#121) refuses
-	// every Argo CD write in vault (its namespace list does not hold vault); these cases then expect P12.
-	add("P12's: Argo CD writes the server StatefulSet (admitted until #121)", argoCtl, "CREATE", sts())
-	add("P12's: Argo CD writes vault/vault-tls (admitted until #121)", argoCtl, "CREATE", tls())
-	add("P12's: Argo CD writes a NetworkPolicy in vault (admitted until #121)", argoCtl, "CREATE", np("server"))
+	// P1-P11 and P13 do not judge the writer of these kinds; P12 refuses every Argo CD write in vault
+	// (argoScope.namespaces never holds vault, D206; the chart and admission.tf refuse a list that does).
+	add("P12 Argo CD writes the server StatefulSet", argoCtl, "CREATE", sts(), r4)
+	add("P12 Argo CD writes vault/vault-tls", argoCtl, "CREATE", tls(), r4)
+	add("P12 Argo CD writes a NetworkPolicy in vault", argoCtl, "CREATE", np("server"), r4)
 
 	for _, t := range ts {
 		report(c, t.name, t.req, t.want)

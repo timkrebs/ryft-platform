@@ -17,7 +17,7 @@ values=${ADMISSION_VALUES:-$root/infra/aws/kubernetes/admission-values.yaml}
 out=${ADMISSION_INTENDED_OUT:-$root/deploy/grafana/alerts/admission-intended.yaml}
 chart_values=${ADMISSION_CHART_VALUES:-$root/infra/aws/kubernetes/charts/admission-policy/values.yaml}
 alerts=${ADMISSION_ALERTS:-$root/deploy/grafana/alerts/ryft.yaml}
-want_bindings=17  # the 17 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml); check_alert holds the two together
+want_bindings=18  # the 18 in AdmissionBindingMissing (deploy/grafana/alerts/ryft.yaml); check_alert holds the two together
 
 # AdmissionBindingMissing counts the ryft-* bindings against a constant (`< N` and "of N" in its
 # summary). Both must equal want_bindings, so a PR that adds a binding cannot merge with a stale

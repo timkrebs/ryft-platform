@@ -1,0 +1,188 @@
+# P12 ryft-argo-scope (docs/work/2026-10-23-admission/p12-argo-scope.md): where Argo CD's service
+# accounts may write. Writes that are no CREATE, and the requests that must pass. The CREATE
+# negatives of P12 are generated (generated/ryft-argo-scope-*: a Deployment in cert-manager as the
+# controller, a lookalike of the controller, the server creating a CRD, the controller creating a
+# ClusterIssuer). Format: see argo-cd.yaml; the objects are the stand-ins of ../baseline/objects.yaml
+# (argocd-cm, argocd-rbac-cm, argocd-secret without server.secretkey, Deployment argocd-server in argocd,
+# Deployment argo-scope-scale-target in ryft-api, Job argo-scope-hook in ryft-migrate); kube-system/coredns is the
+# kind cluster's own. The requests that need a real change of state (the first server.secretkey, then a
+# change of it) are not here: scripts/lib/admission_lib.sh, adm_argo_scope_secretkey. exec as the
+# controller is in adm_claim_c (it needs a running Pod).
+#
+# The five messages, in the order the API server reports them (the first rule that fails):
+#   r1 P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+#   r2 P12: of Argo CD's service accounts only the application controller and the server write ...
+#   r3 P12: argocd-server writes only Applications and events in argocd ...
+#   r4 P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps ...
+#   r5 P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render ...
+# ----
+# fixture: P12 the controller patches argocd-cm
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: configmap argocd-cm -n argocd
+# patch: {"data":{"admin.enabled":"true"}}
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+# ----
+# fixture: P12 the controller patches argocd-rbac-cm
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: configmap argocd-rbac-cm -n argocd
+# patch: {"data":{"policy.default":"role:admin"}}
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+# ----
+# fixture: P12 the server patches argocd-rbac-cm
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: configmap argocd-rbac-cm -n argocd
+# patch: {"data":{"policy.default":"role:admin"}}
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+# ----
+# fixture: P12 the server patches argocd-secret (admin.password)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: secret argocd-secret -n argocd
+# patch: {"data":{"admin.password":"ZQ=="}}
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+# ----
+# fixture: P12 the server adds the first server.secretkey and changes admin.password in the same write
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: secret argocd-secret -n argocd
+# patch: {"data":{"server.secretkey":"Yw==","admin.password":"ZQ=="}}
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+# ----
+# fixture: P12 the server adds the first server.secretkey (dry-run: the stand-in has none)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: secret argocd-secret -n argocd
+# patch: {"data":{"server.secretkey":"Yw=="}}
+# expect: admitted
+# ----
+# fixture: P12 the controller adds the first server.secretkey
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: secret argocd-secret -n argocd
+# patch: {"data":{"server.secretkey":"Yw=="}}
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+# ----
+# fixture: P12 the controller patches the image of the argocd-server Deployment
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: deployment argocd-server -n argocd
+# patch-type: json
+# patch: [{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"registry.k8s.io/pause:3.9"}]
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+# ----
+# fixture: P12 the server patches the image of the argocd-server Deployment
+# op: patch
+# as: system:serviceaccount:argocd:argocd-server
+# target: deployment argocd-server -n argocd
+# patch-type: json
+# patch: [{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"registry.k8s.io/pause:3.9"}]
+# refused-by: ryft-argo-scope
+# message: P12: argocd-server writes only Applications and events in argocd (and once the first server.secretkey of argocd-secret).
+# ----
+# fixture: P12 the controller deletes kube-system/coredns
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: deployment coredns -n kube-system
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+# ----
+# fixture: P12 the controller deletes the Namespace rabbitmq-system (P1 refuses it too)
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: namespace rabbitmq-system
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes cluster-scoped objects only of the kinds and names its apps render, and deletes no Namespace and no CRD.
+# refused-by: ryft-namespaces
+# message: P1: Argo CD may write only the Namespaces ryft-web and rabbitmq-system, and deletes none.
+# ----
+# fixture: P12 the controller deletes a hook Job in ryft-migrate (BeforeHookCreation)
+# op: delete
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: job argo-scope-hook -n ryft-migrate
+# expect: admitted
+# ----
+# fixture: P12 the controller scales a Deployment in ryft-api (deployments/scale)
+# op: patch
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: deployment argo-scope-scale-target -n ryft-api
+# subresource: scale
+# patch: {"spec":{"replicas":1}}
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
+# ----
+# fixture: P12 the controller creates kube-system/aws-auth (the review's cluster-admin path)
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: aws-auth, namespace: kube-system }
+data: { mapRoles: "[]" }
+# ----
+# fixture: P12 the controller creates a ConfigMap in vault (never in argoScope.namespaces, D206)
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: argo-scope-vault, namespace: vault }
+data: { config.hcl: "ui = true" }
+# ----
+# fixture: P12 the controller creates the ryft-vault root CA Secret in cert-manager (never in argoScope.namespaces, D206)
+# op: create
+# as: system:serviceaccount:argocd:argocd-application-controller
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD's controller writes namespaced objects only in the namespaces of its apps (argoScope.namespaces), and in argocd only Applications and events (never a delete of an event).
+apiVersion: v1
+kind: Secret
+metadata: { name: ryft-vault-ca, namespace: cert-manager }
+type: kubernetes.io/tls
+stringData: { tls.crt: stand-in, tls.key: stand-in }
+# ----
+# fixture: P12 the chart's redis-secret-init creates Secret argocd-redis
+# op: create
+# as: system:serviceaccount:argocd:argocd-redis-secret-init
+# expect: admitted
+apiVersion: v1
+kind: Secret
+metadata: { name: argocd-redis, namespace: argocd }
+stringData: { auth: stand-in }
+# ----
+# fixture: P12 the chart's redis-secret-init creates another Secret
+# op: create
+# as: system:serviceaccount:argocd:argocd-redis-secret-init
+# refused-by: ryft-argo-scope
+# message: P12: of Argo CD's service accounts only the application controller and the server write (the chart's redis-secret-init creates Secret argocd-redis).
+apiVersion: v1
+kind: Secret
+metadata: { name: argocd-notifications-secret, namespace: argocd }
+stringData: { token: stand-in }
+# ----
+# fixture: P12 the canary's twin: the admin creates the Deployment in cert-manager (P12 does not match the admin)
+# op: create
+# expect: admitted
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: argo-scope-canary, namespace: cert-manager }
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: argo-scope-canary } }
+  template:
+    metadata: { labels: { app: argo-scope-canary } }
+    spec:
+      serviceAccountName: cert-manager
+      containers:
+        - name: canary
+          image: registry.k8s.io/pause:3.10

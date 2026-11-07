@@ -161,20 +161,13 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
 - **Alert rules in Grafana Cloud:** #131's body (10:47 UTC) says `make alerts-apply` had been refused by the 20-rule limit
   and `ServiceExited` and the extended `Panics` were not live. Whether the user has re-run it since is **not verified**.
 
+- **#47** (Argo CD's ClusterRoles narrowed, admission Step 0; D180, D206), merged 2026-11-05 10:12 UTC, **applied by the
+  owner on 2026-11-06** (OPERATIONS → "Applying the narrowing (Step 0)"). The owner's checks: the controller's ClusterRole
+  holds no `*`, the 11 Applications are Synced, and the controller cannot patch or delete
+  `validatingadmissionpolicybindings` and cannot impersonate, but can list Applications. The narrowed ClusterRoles are the live
+  ones; the chart's `*` roles are gone.
+
 **Merged but NOT applied**
-
-- **#47** (Argo CD's ClusterRoles narrowed, admission Step 0; D180), merged 2026-11-05 10:12 UTC: nothing reaches the
-  cluster until the user plans and applies `infra/aws/kubernetes`. The commands and the checks that come first are in
-  OPERATIONS → "Applying the narrowing (Step 0)"; in short, from a clean `main` (the stop rules are in that text):
-
-  ```bash
-  terraform -chdir=infra/aws/kubernetes init                           # the values guard is a new local module
-  terraform -chdir=infra/aws/kubernetes plan -out=argocd-rbac.tfplan   # only helm_release.argocd may change
-  terraform -chdir=infra/aws/kubernetes apply argocd-rbac.tfplan       # then delete argocd-rbac.tfplan: it holds a password hash
-  ```
-
-  **P12 (#121) must not go to Deny before this is applied** and the three `kubectl auth can-i` answers in that text are no.
-  Until it is applied the chart's `*` ClusterRoles are the live ones.
 
 - **#55** (admission signals, T12-e; D183), merged 2026-11-04: the scrape and the kube-state-metrics collector are in
   `deploy/monitoring/k8s-monitoring.yaml`, which reaches the cluster only through the owner's monitoring apply, and the
@@ -200,11 +193,15 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
 **Open**
 
 - **#118** (draft): EKS authentication mode `API`, inert until the user sets it in `terraform.tfvars`; one-way.
-- **#121** (draft): admission policy P12 `ryft-argo-scope`, chart 0.3.0, ships disabled (`admission-values.yaml` still says
-  `enabled: false`). Its Deny gate needs P6, P1 and P2 in Deny (`operators-cluster`, `namespaces`, `workloads-templates`)
-  and a narrowed controller role rendered by `argocd.tf` (#47 applied); the chart fails the render and `admission.tf` the
-  plan otherwise. Kind run 42004326289 on its head: 83 pass, 0 fail, 2 skipped (`argo-rbac`, `claim-i`: that tree has no
-  #47). Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
+- **#121** (draft, D206): admission policy P12 `ryft-argo-scope`, merged up to date with `main` (no force-push), chart 0.6.0,
+  13 policies and 18 bindings, ships disabled (`admission-values.yaml` still says `enabled: false`). Its Deny gate needs P6,
+  P1 and P2 in Deny (`operators-cluster`, `namespaces`, `workloads-templates`) and a narrowed controller role rendered by
+  `argocd.tf` (#47, applied 2026-11-06); the chart fails the render and `admission.tf` the plan otherwise. `vault`,
+  `cert-manager`, `argocd`, `kube-system` and the add-on namespaces are never in its scope (chart guard, `admission.tf`
+  check, tests); the RBAC gate is an allowlist (security review S1-S6 done in the PR). Kind run (full mode) 42346082081
+  on `ecf3326`: 95 pass, 0 fail, 0 skipped (`argo-rbac`, `claim-i` and `claim-h-p6-only` ran); the commit after it
+  changes this text and OPERATIONS' run id only.
+  Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
 - **V-MFA-1 result: not recorded.** The owner did the operator setup; please record the probe's status and `error_code`, the
   factor limit it ran under and the date here (OPERATIONS → Beta → Admin sign-in, step 3: with *Maximum enrolled factors* 1
   the pass is `422 too_many_enrolled_mfa_factors`, with 2 or more `403 insufficient_aal`; `200` means stop). The Supabase
@@ -217,7 +214,7 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
 - **Proposed, not decided** (drafts; no D-entry until they merge): #118 proposes to switch to authentication mode `API`
   after read-only checks, a recovery identity outside Identity Center and a plan that shows one in-place update of
   `aws_eks_cluster.this[0]`, with admins pinned in `admin_principal_arns`; its text calls it irreversible and says a missing
-  node access entry is an immediate user-facing outage. #121 proposes a twelfth policy that lets Argo CD's service accounts
+  node access entry is an immediate user-facing outage. #121 proposes a thirteenth policy (P12; P13 `ryft-vault-trust` is already on `main`) that lets Argo CD's service accounts
   write only where its apps render (the controller in an explicit namespace list, `argocd-server` Applications and events
   plus the first `server.secretkey`), failurePolicy Fail, and states that access reviews are exempt from policies since
   Kubernetes 1.30 (read from the kube-apiserver sources; its kind run saw P12 refuse neither review, D183).
@@ -258,7 +255,7 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
 **Deploy commands for what is open** (the user's; every cluster command names its cluster, D150):
 
 ```bash
-# #47 Step 0: above (terraform init, plan -out, apply of that file).
+# #47 Step 0: applied by the owner on 2026-11-06 (nothing left to run).
 # #55, only if not yet run: the monitoring apply, then the alert rules (the GRAFANA_* variables of OPERATIONS → Monitoring set)
 make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 git pull --ff-only && make alerts-apply
@@ -310,14 +307,17 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    hardened.
 2. **G1, the admission layer.** P12 cannot go to Deny alone: #121's chart render and its `admission.tf` precondition refuse
    `argo-scope` in Deny unless P6 (`operators-cluster`), P1 (`namespaces`) and P2 (`workloads-templates`) are in Deny too, and those
-   are the **general** `ryft-*` bindings, not the `vault` ones. #121 is a stale draft (head `4b9f739`; a trial merge with `main`
-   conflicts in 19 files). In order:
-   1. Apply #47's Step 0 (STATUS → Production hardening → deploy commands).
-   2. Rebase #121. It merges second: it bumps the chart above 0.5.1 (#147's and #153's), sets 18 bindings and 13 policies
-      (`admission_intended.sh --check` fails if missed) and reconciles P1's in-scope list with `argoScope.namespaceObjects`.
-   3. A fresh full-mode `admission-e2e` kind run on a tree that contains #47.
-   4. Mark #121 ready, review, merge, and give its decision a D-number (D206 is next).
-   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`).
+   are the **general** `ryft-*` bindings, not the `vault` ones. In order:
+   1. ~~Apply #47's Step 0.~~ **Done by the owner on 2026-11-06** (the controller's ClusterRole has no `*`, 11 apps Synced).
+   2. ~~Rebase #121.~~ **Done:** merged up to date with `main` after #147 and #153; chart 0.6.0, 18 bindings and 13 policies,
+      P1's in-scope list is `argoScope.namespaceObjects`; its decision is D206.
+   3. ~~A fresh full-mode `admission-e2e` kind run on a tree that contains #47.~~ **Done:** run 42346082081, 95 pass, 0 fail,
+      0 skipped (`argo-rbac` and `claim-i` ran).
+   4. Mark #121 ready, review, merge (in review now).
+   5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`). Run
+      `terraform -chdir=infra/aws/kubernetes init` first: #121 adds the local module `modules/argo-scope-check`. The plan must show only
+      `helm_release.admission_policy` being created; if `helm_release.argocd` is in it (the release's `depends_on` pulls it
+      in when it has pending changes), stop.
    6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can
       go to Deny at any time, and alone.
    Verify with the G1 command in OPERATIONS → Vault → Hard gates. **If step 6's plan shows `helm_release.admission_policy`, this
@@ -392,8 +392,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
   the unseal calls; vendor the chart tarball; a wider values precondition; `aws:SourceAccount`/`aws:SourceArn` trust conditions
   once verified; a test tying `images.vault` to the release's pin; the `ryft_admin` bearer token in curl's argv (before cutover
   5e); the CEL harness's decommission fixture needs a literal HCP address when the api moves (5a); the stale comment on
-  `reserved_service_names` in `infra/vault/targets.tf`; #121's follow-ups (flip three P12 cases, a guard that `vault` and
-  `cert-manager` are never in `argoScope.namespaces`, a kind fixture of Argo writing in `vault`); `addendum-1.md` §3 still names
+  `reserved_service_names` in `infra/vault/targets.tf`; `addendum-1.md` §3 still names
   the recovery-key places; #151's open question 4 (the public-443 egress also carries Google's OIDC discovery and JWKS; the
   comment names only KMS); the `terraform` policy's paths left unaudited until the kind rehearsal (`sys/mounts` read, `sys/auth`
   read, `auth/kubernetes/role` list, `sys/policies/acl` list, the tune `update` paths, and the probably-unneeded `sudo` on
@@ -837,8 +836,8 @@ Technical:
   (`scripts/admission_e2e.sh --mode ci`, ~5 min; skipped for promote PRs and their merge) and the
   repeatable full run (`make admission-e2e REPO=<git checkout>`, ~25 min, or the manual workflow
   `admission-e2e`). It found and fixed P10 (Argo CD's own auto-sync carries a copy of the source) and P11
-  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **#47 is merged,
-  not applied (D180; Step 0 is yours):** it had lacked `{ apiGroups = ["argoproj.io"], resources =
+  (the Cluster Operator's defaulted `secretBackend.externalSecret.name: ""`), chart 0.2.3. **#47 is merged and
+  was applied by the owner on 2026-11-06 (D180, D206):** it had lacked `{ apiGroups = ["argoproj.io"], resources =
   ["applications"], verbs = ["get", "list", "watch"] }` in `argocd_controller_rules`; the rule is in it (claim
   i did not wait for ever: under `respectRBAC: strict` the kind is dropped from the cache silently, so the
   root lagged by minutes and a deleted child would not be pruned; D151 amended). #47 also dropped

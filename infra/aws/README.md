@@ -27,7 +27,7 @@ infra/aws/
 ├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
-    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11, P13 + bindings (D120)
+    ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P13 + bindings (D120)
     ├── admission.tf admission-values.yaml   the release (off), its committed values, the checks
     └── tests/addons.tftest.hcl tests/admission.tftest.hcl
 ```
@@ -153,20 +153,22 @@ the name at the NLB within a minute or two.
 
 ## Admission policies (D120)
 
-`infra/aws/kubernetes/admission.tf` installs twelve built-in ValidatingAdmissionPolicies
-(P1–P11, P13) and seventeen bindings (P2 has one for templates and one for Pods; P1, P2 and P3
+`infra/aws/kubernetes/admission.tf` installs thirteen built-in ValidatingAdmissionPolicies
+(P1–P13) and eighteen bindings (P2 has one for templates and one for Pods; P1, P2 and P3
 have a second set for namespace `vault` alone) from the local
 chart `charts/admission-policy`, as the release `admission-policy` in `kube-system`. They
 judge what PSA cannot: images per namespace, commands and service account tokens, the
 auth-mode keys, NetworkPolicy and Traefik shapes, the Vault Secrets Operator objects, the
-RabbitMQ operators' cluster power and reach, the broker, Argo CD's own objects, and the chain
+RabbitMQ operators' cluster power and reach, the broker, Argo CD's own objects, (P12) where
+Argo CD's service accounts may write at all (never in `vault` or `cert-manager`, D206), and the chain
 of the `ryft-vault` issuer (P13: what it signs, which issuer may write the CA's Secrets, and
 that Argo CD writes only selfSigned Issuers). The namespace `vault` is in scope for P1–P3 (PSA
 restricted labels, the pinned images only: P2 judges images there, not commands, and egress to
 the VPC CIDR on 443 and the Pod Identity agent on 80) through the bindings
 `ryft-namespaces-vault`, `ryft-workloads-templates-vault`, `ryft-workloads-pods-vault` and
 `ryft-netpol-vault` (`namespaceSelector` In `[vault]`; the general ones carry NotIn), so
-those go to deny before the Vault bootstrap, whatever step the `ryft-*` rollout is at. No pods
+those go to deny before the Vault bootstrap, whatever step the `ryft-*` rollout is at. P12 has one
+binding for every namespace. The release depends on `helm_release.argocd`. No pods
 run for them and no webhook can be down; the cost is nil (API server CPU only).
 
 **It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.

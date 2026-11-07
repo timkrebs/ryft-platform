@@ -53,7 +53,31 @@ var kinds = map[string]kindInfo{
 	"ApplicationSet":  {"argoproj.io", "v1alpha1", "applicationsets"},
 	"RabbitmqCluster": {"rabbitmq.com", "v1beta1", "rabbitmqclusters"}, "Shovel": {"rabbitmq.com", "v1beta1", "shovels"},
 	"Federation": {"rabbitmq.com", "v1beta1", "federations"}, "Queue": {"rabbitmq.com", "v1beta1", "queues"},
-	"Certificate": {"cert-manager.io", "v1", "certificates"}, "CertificateRequest": {"cert-manager.io", "v1", "certificaterequests"},
+	// P12 matches every kind, so the cases that pin its refusals need kinds outside the renders.
+	"Event":                   {"", "v1", "events"},
+	"SelfSubjectAccessReview": {"authorization.k8s.io", "v1", "selfsubjectaccessreviews"},
+	"SelfSubjectRulesReview":  {"authorization.k8s.io", "v1", "selfsubjectrulesreviews"},
+	"PriorityClass":           {"scheduling.k8s.io", "v1", "priorityclasses"},
+	"SubjectAccessReview":     {"authorization.k8s.io", "v1", "subjectaccessreviews"},
+	"EventsK8s":               {"events.k8s.io", "v1", "events"}, // the Event of events.k8s.io; used as ResKind
+	// The rest of what the renders hold (Certificate and Issuer are P13's, below). Only P12 matches
+	// them (it matches every kind), so they were skipped as "unmodelled" until P12 made them matter.
+	"HorizontalPodAutoscaler": {"autoscaling", "v2", "horizontalpodautoscalers"},
+	"PodDisruptionBudget":     {"policy", "v1", "poddisruptionbudgets"},
+	"Binding":                 {"rabbitmq.com", "v1beta1", "bindings"},
+	"Exchange":                {"rabbitmq.com", "v1beta1", "exchanges"},
+	"Permission":              {"rabbitmq.com", "v1beta1", "permissions"},
+	"Policy":                  {"rabbitmq.com", "v1beta1", "policies"},
+	"TopicPermission":         {"rabbitmq.com", "v1beta1", "topicpermissions"},
+	"User":                    {"rabbitmq.com", "v1beta1", "users"},
+	"Vhost":                   {"rabbitmq.com", "v1beta1", "vhosts"},
+	// Negatives only (no render holds them): kinds Argo CD must not reach.
+	"Lease":            {"coordination.k8s.io", "v1", "leases"},
+	"PersistentVolume": {"", "v1", "persistentvolumes"},
+	"StorageClass":     {"storage.k8s.io", "v1", "storageclasses"},
+	"APIService":       {"apiregistration.k8s.io", "v1", "apiservices"},
+	"Node":             {"", "v1", "nodes"},
+	"Certificate":      {"cert-manager.io", "v1", "certificates"}, "CertificateRequest": {"cert-manager.io", "v1", "certificaterequests"},
 	"Issuer": {"cert-manager.io", "v1", "issuers"}, "ClusterIssuer": {"cert-manager.io", "v1", "clusterissuers"},
 	"CertificateSigningRequest": {"certificates.k8s.io", "v1", "certificatesigningrequests"},
 }
@@ -64,6 +88,9 @@ var clusterScoped = map[string]bool{
 	"Namespace": true, "CustomResourceDefinition": true, "ClusterRole": true, "ClusterRoleBinding": true,
 	"MutatingWebhookConfiguration": true, "ValidatingWebhookConfiguration": true,
 	"ClusterIssuer": true, "CertificateSigningRequest": true,
+	// P12's cases
+	"PriorityClass": true, "SelfSubjectAccessReview": true, "SelfSubjectRulesReview": true, "SubjectAccessReview": true,
+	"PersistentVolume": true, "StorageClass": true, "APIService": true, "Node": true,
 }
 
 // nsSelected follows the API server's namespaceSelector of a binding (the webhook matcher it
@@ -200,15 +227,15 @@ func ruleMatches(rules []v1.NamedRuleWithOperations, info kindInfo, sub string, 
 		}
 		return false
 	}
+	// The API server's own rule (webhook/predicates/rules.Matcher.resource): the entry is split at
+	// the first "/", the resource part matches itself or "*", the subresource part matches itself
+	// or "*" ("" for an entry without one). So "*" is every resource but no subresource, "pods/*"
+	// every subresource of pods (the main resource is not one), and "*/*" everything, main
+	// resources included (P12 relies on that).
 	resOK := func(list []string) bool {
 		for _, x := range list {
-			if sub == "" {
-				if x == info.resource || x == "*" {
-					return true
-				}
-				continue
-			}
-			if x == info.resource+"/"+sub || x == info.resource+"/*" || x == "*/"+sub || x == "*/*" {
+			res, subx, _ := strings.Cut(x, "/")
+			if (res == "*" || res == info.resource) && (subx == "*" || subx == sub) {
 				return true
 			}
 		}
@@ -233,6 +260,22 @@ type Req struct {
 	Obj   map[string]any
 	Old   map[string]any
 	NsObj map[string]any // namespace object (labels, deletionTimestamp)
+	// For a request without an object (a CONNECT, whose object is the options): the kind of
+	// `kinds` the request is about, and the namespace and name from the request path.
+	ResKind string
+	Ns      string
+	Name    string
+	// A Namespace create: the request path has no namespace, so the API server may send none. The
+	// harness otherwise gives a Namespace its own name, as the apiserver does for UPDATE and DELETE.
+	NoNs bool
+	// Collection: a DELETECOLLECTION. The API server's validating admission judges it once per item, as
+	// a DELETE whose oldObject is the item and whose name is the collection request's (empty); the
+	// namespace is the request path's (none for a cluster-scoped kind). A Namespace item is still
+	// selected on its own labels, as the namespace matcher reads the object.
+	Collection bool
+	// Only: judge the verdict of this binding alone (a request the harness models loosely enough that
+	// another policy errors on it, which no real API server sends).
+	Only string
 }
 
 type Result struct {
@@ -247,15 +290,34 @@ func (c *chart) eval(r Req) []Result {
 		src = r.Old
 	}
 	kind, _ := src["kind"].(string)
+	if r.ResKind != "" {
+		kind = r.ResKind
+	}
 	info, ok := kinds[kind]
 	if !ok {
 		panic("unknown kind " + kind)
 	}
-	md := src["metadata"].(map[string]any)
+	md, _ := src["metadata"].(map[string]any)
 	name, _ := md["name"].(string)
 	ns, _ := md["namespace"].(string)
 	if kind == "Namespace" {
 		ns = name
+	}
+	if r.Name != "" {
+		name = r.Name
+	}
+	if r.Ns != "" {
+		ns = r.Ns
+	}
+	if r.NoNs {
+		ns = ""
+	}
+	itemName := name
+	if r.Collection {
+		name = ""
+		if kind == "Namespace" {
+			ns = ""
+		}
 	}
 	var out []Result
 	for _, b := range c.bindings {
@@ -267,7 +329,13 @@ func (c *chart) eval(r Req) []Result {
 			!ruleMatches(b.Spec.MatchResources.ResourceRules, info, r.Sub, r.Op) {
 			continue
 		}
-		if !nsSelected(b, kind, ns, r) {
+		// A Namespace is selected on its own name label, whatever request.namespace holds (NoNs: a
+		// create may carry none).
+		selNs := ns
+		if kind == "Namespace" {
+			selNs = itemName
+		}
+		if !nsSelected(b, kind, selNs, r) {
 			continue
 		}
 		var obj, old *unstructured.Unstructured
@@ -277,7 +345,11 @@ func (c *chart) eval(r Req) []Result {
 		if r.Old != nil {
 			old = &unstructured.Unstructured{Object: deepCopy(r.Old)}
 		}
-		gvk := schema.GroupVersionKind{Group: info.group, Version: info.version, Kind: kind}
+		gvkKind := kind
+		if k, _ := src["kind"].(string); k != "" {
+			gvkKind = k // a subresource's object (a Scale, a TokenRequest) has its own kind
+		}
+		gvk := schema.GroupVersionKind{Group: info.group, Version: info.version, Kind: gvkKind}
 		gvr := schema.GroupVersionResource{Group: info.group, Version: info.version, Resource: info.resource}
 		var attrs admission.Attributes
 		ui := &user.DefaultInfo{Name: r.User}
@@ -286,8 +358,10 @@ func (c *chart) eval(r Req) []Result {
 			attrs = admission.NewAttributesRecord(obj, old, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
 		case obj != nil:
 			attrs = admission.NewAttributesRecord(obj, nil, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
-		default:
+		case old != nil:
 			attrs = admission.NewAttributesRecord(nil, old, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
+		default: // a CONNECT: no object at all (a typed nil would not be a nil interface)
+			attrs = admission.NewAttributesRecord(nil, nil, gvk, ns, name, gvr, r.Sub, admission.Operation(r.Op), nil, false, ui)
 		}
 		va := &admission.VersionedAttributes{Attributes: attrs, VersionedKind: gvk}
 		if obj != nil {
@@ -451,6 +525,15 @@ func report(c *chart, name string, r Req, want []string) {
 		panic("duplicate case name: " + name)
 	}
 	res := c.eval(r)
+	if r.Only != "" {
+		var kept []Result
+		for _, x := range res {
+			if x.Binding == r.Only {
+				kept = append(kept, x)
+			}
+		}
+		res = kept
+	}
 	maybeEmit(name, r, res)
 	var msgs, plain []string
 	errored := false
@@ -595,6 +678,7 @@ func main() {
 	runNegative(c)
 	runArgo(c)
 	runHardening(c)
+	runArgoScope(c)
 	runVault(c)
 	// The decommission's render (run.sh writes it): P4 with only the in-cluster shape.
 	decom := os.Getenv("CELTEST_DECOM_CHART")
@@ -618,11 +702,31 @@ func printUnmodelled() {
 		ks = append(ks, fmt.Sprintf("%s(%d)", k, n))
 	}
 	sort.Strings(ks)
-	fmt.Println("== kinds of the renders that no policy can match, not evaluated:", strings.Join(ks, " "))
+	// P12 matches every kind, so a kind of the renders that `kinds` does not model is a render that
+	// no policy was evaluated against: a new kind in a render needs a line in `kinds`.
+	if len(ks) > 0 {
+		fmt.Println("FAIL kinds of the renders that `kinds` does not model, so P12 never saw them:", strings.Join(ks, " "))
+		failures++
+	}
 }
 
 func runPositive(c *chart) {
 	fmt.Println("== every render of the repository passes (create and update, as Argo CD's controller)")
+	// The namespaces an Argo CD Application targets (deploy/argocd/apps). The generated Vault objects of a
+	// namespace no Application syncs (vault-namespaces/<svc> without an app vault-<svc>) are applied by the
+	// user, like the monitoring namespace: they are not Argo CD's writes.
+	appNs := map[string]bool{}
+	for _, d := range docs {
+		if d["kind"] == "Application" {
+			if sp, ok := d["spec"].(map[string]any); ok {
+				if dst, ok := sp["destination"].(map[string]any); ok {
+					if n, ok := dst["namespace"].(string); ok {
+						appNs[n] = true
+					}
+				}
+			}
+		}
+	}
 	for _, d := range docs {
 		d = defaults(deepCopy(d))
 		kind := d["kind"].(string)
@@ -632,6 +736,15 @@ func runPositive(c *chart) {
 		}
 		md := d["metadata"].(map[string]any)
 		user := argoCtl
+		// Not Argo CD's writes (P12 judges Argo CD's identities): the AppProjects are Terraform's
+		// (B2, deploy/argocd/project.yaml), and the generated objects of the monitoring namespace
+		// have no Argo app: the user applies them (make monitoring-apply).
+		if kind == "AppProject" || md["namespace"] == "monitoring" {
+			user = admin
+		}
+		if av, _ := d["apiVersion"].(string); strings.HasPrefix(av, "secrets.hashicorp.com/") && !appNs[fmt.Sprint(md["namespace"])] {
+			user = admin
+		}
 		label := fmt.Sprintf("%s %v/%v", kind, md["namespace"], md["name"])
 		var want []string
 		if kind == "ClusterRole" && grantsWhatT12gRemoved(d) {

@@ -1,7 +1,7 @@
-# Admission policies for ryft-prod-euc1 (D120): twelve ValidatingAdmissionPolicies (P1-P11 and
-# P13, the in-cluster Vault's CA) and their seventeen bindings (P1, P2 twice and P3 once more for
-# namespace vault alone, so those go to deny on their own), from the local chart
-# charts/admission-policy, in kube-system. The
+# Admission policies for ryft-prod-euc1 (D120): thirteen ValidatingAdmissionPolicies (P1-P13: P12
+# is where Argo CD's identities may write, D206; P13 the in-cluster Vault's CA) and their eighteen
+# bindings (P1, P2 twice and P3 once more for namespace vault alone, so those go to deny on their
+# own), from the local chart charts/admission-policy, in kube-system. The
 # production values are committed in admission-values.yaml (a reviewed PR, then your apply);
 # `enabled: false` there creates nothing. Bindings are exempt from admission, so RBAC guards
 # them (T12-f) and the break-glass is yours alone: kubectl patch or delete a binding, then
@@ -39,6 +39,68 @@ locals {
   # The decoded deploy/argocd/project.yaml documents P7 compares AppProjects with. T12-b
   # (Terraform-owned AppProjects) wires them; until then P7 has no constant.
   admission_projects = []
+
+  # What the chart ends up with for the pieces P12 (argoScope) and the Argo CD identities share: the
+  # chart's defaults, then the committed file (production overrides none of them today).
+  admission_argocd_namespace    = try(local.admission_file.argocd.namespace, local.admission_defaults.argocd.namespace)
+  admission_operators_namespace = try(local.admission_file.operators.namespace, local.admission_defaults.operators.namespace)
+  admission_argo_scope          = merge(local.admission_defaults.argoScope, try(local.admission_file.argoScope, {}))
+
+  # Namespaces Argo CD never writes in (D206): the in-cluster Vault's (this root's add-on), cert-manager's
+  # (the release in addons.tf, and the cluster resource namespace that holds the ryft-vault root CA),
+  # Argo CD's own (rule 4 keeps it to Applications and events) and kube-system (aws-auth). P12's
+  # namespace list and its Namespace objects hold none of them; the chart refuses the same render.
+  # S3 (D206): and every namespace an add-on of this root installs into (addons.tf, logs.tf), with the chart's
+  # argoScope.neverNamespaces (the add-ons and the cluster's own: monitoring, default, kube-public, ...).
+  admission_addon_namespaces = distinct([
+    helm_release.aws_load_balancer_controller.namespace,
+    helm_release.traefik.namespace,
+    helm_release.cert_manager.namespace,
+    helm_release.cluster_issuers.namespace,
+    helm_release.external_dns.namespace,
+    helm_release.vault_secrets_operator.namespace,
+    helm_release.fluent_bit.namespace,
+  ])
+  # The chart's own never-list (what a render outside Terraform refuses too): its fixed part and neverNamespaces.
+  admission_argo_never_chart = distinct(concat([
+    try(local.admission_file.vault.namespace, local.admission_defaults.vault.namespace),
+    "cert-manager",
+    try(local.admission_file.vault.clusterResourceNamespace, local.admission_defaults.vault.clusterResourceNamespace),
+    local.admission_argocd_namespace,
+    "kube-system",
+  ], try(local.admission_argo_scope.neverNamespaces, [])))
+  admission_argo_never = distinct(concat([
+    kubernetes_namespace_v1.vault.metadata[0].name,
+    kubernetes_namespace_v1.argocd.metadata[0].name,
+  ], local.admission_addon_namespaces, local.admission_argo_never_chart))
+  # The judgement is modules/argo-scope-check (pure, so tests run it with other scopes): the scope's entries on
+  # the never-list; an add-on namespace the chart's never-list misses (the plan refuses it, so that the chart's
+  # render guard is never weaker than this plan); entries of argoScope.namespaces that are neither ryft-* nor
+  # the operators' namespace (the explicit list stays).
+  admission_argo_never_listed    = module.admission_argo_scope_check.never_listed
+  admission_argo_never_uncovered = module.admission_argo_scope_check.never_uncovered
+  admission_argo_scope_off_shape = module.admission_argo_scope_check.off_shape
+
+  # P12 in deny is only worth something when Argo CD's own RBAC cannot undo it: with the chart's
+  # wildcard ClusterRole the controller can patch or delete the ryft-argo-scope binding (bindings are
+  # exempt from admission) and impersonate. So argocd.tf must render a narrowed controller role
+  # (T12-f, #47) that is the guard module's allowlist (D206, review S1: allowlisted verbs only, escalate
+  # and bind only by name on the operators' four Roles and bind on one ClusterRole, nothing on the
+  # admission policy kinds, no subresource, no Secrets, /metrics the only URL, no "*" in any string) and
+  # must not turn on sync impersonation (application.sync.impersonation.enabled: Argo CD would then
+  # write as other service accounts and P12 would match nothing). The variable is for tests only and
+  # forbidden against production; a check flags it. The expression is the guard module's output (it
+  # judges the values helm_release.argocd takes), so tests/admission.tftest.hcl runs it with each case.
+  admission_argo_rbac_narrowed_rendered = module.argocd_values_guard.controller_rbac_narrowed
+  admission_argo_rbac_narrowed          = coalesce(var.admission_argo_rbac_narrowed, local.admission_argo_rbac_narrowed_rendered)
+
+  # The destination namespaces of the Applications Argo CD syncs (deploy/argocd/apps): the check
+  # "admission_argo_scope" holds P12's namespace list against them.
+  argocd_apps_dir = "${path.module}/../../../deploy/argocd/apps"
+  admission_app_destinations = distinct(flatten([
+    for f in fileset(local.argocd_apps_dir, "*.yaml") :
+    [for m in regexall("(?m)^    namespace:\\s*(\\S+)\\s*$", file("${local.argocd_apps_dir}/${f}")) : m[0]]
+  ]))
 
   # T12-g's file; operators-cluster on deny is refused without it (P6 refuses the release's
   # cluster-wide roles). The variable lets a test point elsewhere.
@@ -120,6 +182,16 @@ locals {
   admission_live_bindings = { for o in flatten([for t in data.kubernetes_resources.admission_bindings : t.objects[*]]) : o.metadata.name => o }
 }
 
+module "admission_argo_scope_check" {
+  source              = "./modules/argo-scope-check"
+  namespaces          = local.admission_argo_scope.namespaces
+  namespace_objects   = local.admission_argo_scope.namespaceObjects
+  never               = local.admission_argo_never
+  addon_namespaces    = local.admission_addon_namespaces
+  never_chart         = local.admission_argo_never_chart
+  operators_namespace = local.admission_operators_namespace
+}
+
 data "helm_template" "admission" {
   count = local.admission_enabled ? 1 : 0
 
@@ -155,6 +227,13 @@ resource "helm_release" "admission_policy" {
 
   values = [yamlencode(local.admission_values)]
 
+  # P12 (ryft-argo-scope) matches every write of Argo CD's service accounts, and argocd-server writes
+  # the first server.secretkey of argocd-secret on its first start. On a fresh cluster (a rebuild)
+  # Argo CD must therefore be installed and started before any policy exists; the exemption in P12
+  # covers a later recreate of the Secret, not an install under Deny. No data flows between the two
+  # releases, so this is an ordering only (it also orders their destroy: the policies go first).
+  depends_on = [helm_release.argocd]
+
   lifecycle {
     # A deny that would refuse every request of its kind. The chart refuses to render these
     # too; here the plan stops before Helm runs.
@@ -165,6 +244,29 @@ resource "helm_release" "admission_policy" {
     precondition {
       condition     = !(contains(local.admission_effective["operators-cluster"], "Deny") && !fileexists(local.admission_scoped_rbac_file))
       error_message = "The operators-cluster binding (P6) is set to deny, but deploy/rabbitmq/operators/cluster-operator/scoped-rbac.yaml (T12-g) is not in the tree: P6 refuses the vendored cluster-wide ClusterRoles, so rabbitmq-operators would stop syncing. Merge T12-g first."
+    }
+    # P12 judges names, not what a ClusterRole or a binding grants. On its own in deny it leaves the RBAC
+    # route open (UPDATE of an operators' ClusterRole to */*/*, a ClusterRoleBinding to
+    # system:authenticated: both pass P12's names); P6, P1 and P2 close it. The chart refuses the same.
+    precondition {
+      condition = !contains(local.admission_effective["argo-scope"], "Deny") || (
+        contains(local.admission_effective["operators-cluster"], "Deny") &&
+        contains(local.admission_effective["namespaces"], "Deny") &&
+        contains(local.admission_effective["workloads-templates"], "Deny")
+      )
+      error_message = "The argo-scope binding (P12) is set to deny, but operators-cluster (P6), namespaces (P1) or workloads-templates (P2) is not: P12 alone leaves the RBAC route open (a ClusterRole rewrite, a binding to system:authenticated). Put those three in deny first."
+    }
+    # The namespaces Argo CD never writes in: an error of the plan whatever the action (the chart's render
+    # fails on it too; the check below says the same while the release is disabled).
+    precondition {
+      condition     = length(local.admission_argo_never_listed) == 0 && length(local.admission_argo_scope_off_shape) == 0
+      error_message = "argoScope.namespaces or argoScope.namespaceObjects (admission-values.yaml or the chart's values) holds ${join(", ", concat(local.admission_argo_never_listed, local.admission_argo_scope_off_shape))}: Argo CD never writes in vault, cert-manager, argocd, kube-system or an add-on's namespace, and its namespaces are ryft-* or the operators' (D206)."
+    }
+    # And P12 is worthless against a controller that can patch its binding: #47 (T12-f) must be merged and
+    # applied, i.e. argocd.tf renders a narrowed controller role, before P12 goes to deny.
+    precondition {
+      condition     = !contains(local.admission_effective["argo-scope"], "Deny") || local.admission_argo_rbac_narrowed
+      error_message = "The argo-scope binding (P12) is set to deny, but argocd.tf does not render a narrowed controller ClusterRole (controller.clusterRoleRules.enabled and every rule inside the allowlist of the argocd values guard's controller_rbac_narrowed: T12-f, #47, D206; its output controller_rbac_faults names the rule) or turns on application.sync.impersonation.enabled: with the chart's wildcard role the controller can patch or delete the ryft-argo-scope binding and impersonate, so deny protects nothing. Merge and apply T12-f first."
     }
     precondition {
       condition     = !(contains(local.admission_effective["netpol"], "Deny") && local.admission_broker_egress_public)
@@ -193,6 +295,45 @@ check "admission_vault_address" {
   }
 }
 
+# P12 (ryft-argo-scope) matches Argo CD's service accounts by the username prefix of their namespace,
+# and a policy that matches nothing refuses nothing, silently. The prefix follows the namespace of
+# the argocd release; the namespace list must hold the destination of every Application in
+# deploy/argocd/apps (the namespaces the apps render into are dry-run by the kind job).
+check "admission_argo_scope" {
+  assert {
+    condition = (
+      local.admission_argocd_namespace == kubernetes_namespace_v1.argocd.metadata[0].name &&
+      contains(local.admission_argo_scope.namespaces, local.admission_operators_namespace) &&
+      contains(local.admission_argo_scope.namespaceObjects, local.admission_operators_namespace) &&
+      alltrue([for n in local.admission_argo_scope.namespaceObjects : contains(local.admission_argo_scope.namespaces, n)]) &&
+      length(local.admission_app_destinations) > 0 &&
+      alltrue([for n in local.admission_app_destinations : contains(local.admission_argo_scope.namespaces, n)])
+    )
+    error_message = "argocd.namespace in admission-values.yaml differs from the namespace of the argocd release (P12 would match no Argo CD request), or argoScope.namespaces does not cover the operators' namespace or the destination of an Application in deploy/argocd/apps (P12 would refuse its sync), or lists a Namespace object outside its own scope (Argo CD could create the Namespace and nothing in it)."
+  }
+}
+
+# The same as the release's precondition, evaluated also while the release is disabled (count 0).
+check "admission_argo_scope_never" {
+  assert {
+    condition     = length(local.admission_argo_never_listed) == 0 && length(local.admission_argo_scope_off_shape) == 0
+    error_message = "argoScope.namespaces or argoScope.namespaceObjects holds ${join(", ", concat(local.admission_argo_never_listed, local.admission_argo_scope_off_shape))}: Argo CD never writes in vault, cert-manager, argocd, kube-system or an add-on's namespace, and its namespaces are ryft-* or the operators' (D206)."
+  }
+  assert {
+    condition     = length(local.admission_argo_never_uncovered) == 0
+    error_message = "The add-on namespace(s) ${join(", ", local.admission_argo_never_uncovered)} of infra/aws/kubernetes are not in the chart's argoScope.neverNamespaces: add them there (D206), so that the chart's render refuses them too."
+  }
+}
+
+# The gates of a deny are not variables: a plan that stands in for the reviewed file or the rendered
+# Argo CD RBAC is a rehearsal, never an apply.
+check "admission_gate_override" {
+  assert {
+    condition     = var.admission_argo_rbac_narrowed == null
+    error_message = "admission_argo_rbac_narrowed is set by variable. The gate reads the RBAC argocd.tf renders; do not run an apply with this variable."
+  }
+}
+
 check "admission_enabled_override" {
   assert {
     condition     = var.admission_enabled == null
@@ -206,7 +347,9 @@ check "admission_enabled_override" {
 # resource rules of each binding; match constraints, conditions, variables and validations of
 # each policy. Restore with
 #   terraform apply -target=helm_release.admission_policy -replace='helm_release.admission_policy[0]'
-# (quoted: zsh globs the brackets; a replace uninstalls every policy for a moment). It also
+# (quoted: zsh globs the brackets; a replace uninstalls every policy for a moment). The plan must show
+# only helm_release.admission_policy: if helm_release.argocd is in it (depends_on pulls it in when it has
+# pending changes), stop and do not apply (OPERATIONS -> Restore). It also
 # warns once, before the first apply after `enabled: true`, that nothing is there yet.
 check "admission_binding_drift" {
   assert {
@@ -229,7 +372,7 @@ check "admission_binding_drift" {
 check "admission_policy_drift" {
   assert {
     condition = !local.admission_enabled ? true : (
-      length(local.admission_rendered_policies) == 12 &&
+      length(local.admission_rendered_policies) == 13 &&
       length(local.admission_live_policies) == length(local.admission_rendered_policies) &&
       alltrue([
         for name, want in local.admission_rendered_policies : (

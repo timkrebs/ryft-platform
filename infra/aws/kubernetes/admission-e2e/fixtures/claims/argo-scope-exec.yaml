@@ -1,0 +1,9 @@
+# P12 and CONNECT (scripts/lib/admission_lib.sh runs it from adm_claim_c, in Deny only: an exec that
+# passed would run in the Pod). Same header format as ../manual/argo-cd.yaml. The Pod is claim c's,
+# outside ryft-*: P12's first rule (no subresource, no CONNECT) answers before the namespace rule.
+# fixture: P12 pods/exec (CONNECT) by Argo CD's application controller
+# op: exec
+# as: system:serviceaccount:argocd:argocd-application-controller
+# target: -n claim-c pod/probe
+# refused-by: ryft-argo-scope
+# message: P12: Argo CD writes no subresource and opens no connection to a pod, service or node.
