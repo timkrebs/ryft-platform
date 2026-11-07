@@ -197,9 +197,10 @@ on `origin/main`; that Argo CD has the cluster Synced and Healthy on them is **n
   13 policies and 18 bindings, ships disabled (`admission-values.yaml` still says `enabled: false`). Its Deny gate needs P6,
   P1 and P2 in Deny (`operators-cluster`, `namespaces`, `workloads-templates`) and a narrowed controller role rendered by
   `argocd.tf` (#47, applied 2026-11-06); the chart fails the render and `admission.tf` the plan otherwise. `vault`,
-  `cert-manager`, `argocd` and `kube-system` are never in its scope (chart guard, `admission.tf` check, tests). Kind run
-  (full mode) 42253117997 on `235c5d1`: 94 pass, 0 fail, 0 skipped (`argo-rbac` and `claim-i` ran); the later commits of
-  the PR change no chart, template or policy CEL.
+  `cert-manager`, `argocd`, `kube-system` and the add-on namespaces are never in its scope (chart guard, `admission.tf`
+  check, tests); the RBAC gate is an allowlist (security review S1-S6 done in the PR). Kind run (full mode) 42346082081
+  on `ecf3326`: 95 pass, 0 fail, 0 skipped (`argo-rbac`, `claim-i` and `claim-h-p6-only` ran); the commit after it
+  changes this text and OPERATIONS' run id only.
   Follow-up T12-l6 (Ingress hosts and Traefik router annotations, `externalIPs`) is not built.
 - **V-MFA-1 result: not recorded.** The owner did the operator setup; please record the probe's status and `error_code`, the
   factor limit it ran under and the date here (OPERATIONS → Beta → Admin sign-in, step 3: with *Maximum enrolled factors* 1
@@ -310,7 +311,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    1. ~~Apply #47's Step 0.~~ **Done by the owner on 2026-11-06** (the controller's ClusterRole has no `*`, 11 apps Synced).
    2. ~~Rebase #121.~~ **Done:** merged up to date with `main` after #147 and #153; chart 0.6.0, 18 bindings and 13 policies,
       P1's in-scope list is `argoScope.namespaceObjects`; its decision is D206.
-   3. ~~A fresh full-mode `admission-e2e` kind run on a tree that contains #47.~~ **Done:** run 42253117997, 94 pass, 0 fail,
+   3. ~~A fresh full-mode `admission-e2e` kind run on a tree that contains #47.~~ **Done:** run 42346082081, 95 pass, 0 fail,
       0 skipped (`argo-rbac` and `claim-i` ran).
    4. Mark #121 ready, review, merge (in review now).
    5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`). Run

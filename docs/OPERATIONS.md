@@ -1371,7 +1371,7 @@ again each time; the table is in the design too):
 
 | Claim | Result |
 | --- | --- |
-| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 13 policies and 18 bindings (chart 0.6.0, run 42253117997) |
+| a: nothing guards policy and binding objects | holds: a Deny policy matching both kinds (proven live by refusing a canary ConfigMap) fired for neither a further policy and binding nor their deletion; the API server admits the chart's 13 policies and 18 bindings (chart 0.6.0, run 42346082081) |
 | b: P6 sees webhook configurations | holds |
 | c: P8 matches CONNECT on `pods/exec` | holds (refused outside `ryft-rabbitmq`, admitted for the Cluster Operator inside it) |
 | d: dry runs carry `validation_failure` | holds (audit level Metadata; `requestURI` has `dryRun=All`) |
