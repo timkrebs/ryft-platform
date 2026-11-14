@@ -95,7 +95,7 @@ back to `[]` and apply.
 
 ## Usage
 
-Requires Terraform 1.16.6, `terraform login` to HCP Terraform (organization
+Requires Terraform 1.16.7, `terraform login` to HCP Terraform (organization
 `tim-krebs-org`), AWS credentials for the target account, `aws` CLI, `kubectl` and `dig`.
 Each root keeps its state in its own HCP Terraform workspace (`ryft-prod-euc1-platform`,
 `-dns`, `-kubernetes`), with execution mode Local. Plans and applies run here, and HCP

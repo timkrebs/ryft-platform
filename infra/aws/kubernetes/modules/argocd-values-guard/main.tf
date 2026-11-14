@@ -24,7 +24,7 @@
 # only: no resource, no provider.
 
 terraform {
-  required_version = "1.16.6"
+  required_version = "1.16.7"
 }
 
 variable "values" {
