@@ -3297,16 +3297,29 @@ vault write auth/token/roles/admin     @infra/vault/bootstrap/token-role-admin.j
 vault write auth/token/roles/terraform @infra/vault/bootstrap/token-role-terraform.json
 vault read auth/token/roles/admin               # allowed_policies [admin], orphan true, renewable false, explicit max 1h, bound cidrs [127.0.0.1/32]
 ```
-Never attach a policy to an entity or a group (`identity/*`): `admin` comes from the token
-role `admin` only, and every admin token is minted by a root token of a generate-root
-session (**Login**), so revoking that token is the whole revocation. The admin policy is
-everything except what would outlive the session: it denies `auth/token/create`,
-`auth/token/create-orphan`, every `auth/token/create/<role>` but `terraform`, the token roles
-(`auth/token/roles/*`, reading and listing them too) and `sys/auth/*`, and it may only read
-and list policies (a policy write would let it lift those denies for itself). So an admin
-token mints the terraform token (a child that dies with it) and nothing else, and every
-policy, token role or auth method change is a root token's, in a generate-root session
-(before it mints the admin token).
+Never attach a policy to an entity or a group (`identity/*`), not even with a root token:
+`admin` comes from the token role `admin` only, and every admin token is minted by a root
+token of a generate-root session (**Login**), so revoking that token is the whole revocation.
+The admin policy is everything except what would outlive the session or open another way in:
+- **denied:** `auth/token/create`, `auth/token/create-orphan`, every
+  `auth/token/create/<role>` but `terraform`, the token roles (`auth/token/roles/*`, reading
+  and listing them too), `sys/auth/*`, `sys/remount` (an auth mount moved to a nested path
+  would slip past the `+` blocks below) and `sys/storage/raft/snapshot-force` (it loads any
+  Vault's snapshot, also one whose shares someone else holds);
+- **read and list only:** the policies (a policy write would let it lift all of this for
+  itself), every auth method's roles (`auth/+/role/*`: a role with the policy `admin`, bound
+  to a service account, is a login after the session) and identity (`identity/*`: an entity
+  or a group with policies is one too);
+- **read only:** every auth method's config (`auth/+/config`: another `kubernetes_host` lets
+  another cluster's tokens log in) and `sys/storage/raft/snapshot` (a save; a restore brings
+  back what was revoked since, and **Disaster recovery** restores with a root token).
+
+So an admin token mints the terraform token (a child that dies with it) and no other token,
+and leaves no login behind. It may still tune an auth mount (`sys/mounts/auth/kubernetes/tune`:
+TTLs and token type of a login that exists, capped by each role's `token_max_ttl`). infra/vault
+writes the auth mount, its config and the roles with the terraform token. Every other policy,
+token role, auth method, auth role or config, identity or restore is a root token's, in a
+generate-root session (before it mints the admin token).
 
 **7. The first admin token** (D209), from the initial root token. An orphan: revoking the
 root token in step 9 leaves it.
@@ -3370,12 +3383,21 @@ for a in $(vault list -format=json auth/token/accessors | jq -r '.[]'); do
 done                                            # prints nothing: no root token left
 vault auth list                                 # token/ only (kubernetes/ comes with infra/vault's first apply)
 for p in auth/token/create auth/token/create-orphan auth/token/create/admin auth/token/create/ADMIN auth/token/roles/admin sys/auth/userpass \
-         sys/policies/acl/admin sys/policies/acl/Admin auth/token/create/terraform; do
-  printf '%-30s %s\n' "$p" "$(vault token capabilities "$p")"
-done                                            # deny for the first six, list, read for the two policies, create, update for the last
+         sys/remount sys/storage/raft/snapshot-force \
+         sys/policies/acl/admin sys/policies/acl/Admin auth/kubernetes/role/x identity/group \
+         auth/kubernetes/config sys/storage/raft/snapshot auth/token/create/terraform; do
+  printf '%-32s %s\n' "$p" "$(vault token capabilities "$p")"
+done
+# deny for the first eight; list, read for the next four (two policies, an auth role, identity);
+# read for the two after them (an auth config, a snapshot save); create, update for the last
 vault token revoke -self; unset VAULT_TOKEN ADMIN
 for p in 8200 8201 8202; do vault_unforward "$p"; done   # the remaining port-forwards
 ```
+`vault token capabilities` prints the policy's answer for a path, so the kubernetes paths
+answer before the mount exists. A read-only path prints `list, read` or `read`, never
+`deny`: what it lacks is `create` and `update`. Any other output: stop, the policy in Vault
+is not `admin.hcl`.
+
 Delete the 1Password item with the initial root token (it is revoked), unless you chose to
 keep a root token (**Login**, alternative 1: then do not revoke it in this step).
 
@@ -3418,7 +3440,7 @@ vault operator generate-root -init -otp="$OTP"  # prints the Nonce
 vault operator generate-root -nonce=<nonce>     # three times: one share per prompt, hidden; the third prints the Encoded Token
 read -rs ENC                                    # paste the Encoded Token: not echoed (useless without the OTP, but kept off the screen)
 export VAULT_TOKEN="$(printf %s "$ENC" | vault operator generate-root -decode=- -otp="$OTP")"; unset ENC OTP
-# a reviewed policy or token role write (the admin token may do neither) goes here, with the root token
+# a reviewed write of a policy, token role, auth role or config, or identity (the admin token may do none) goes here, with the root token
 ADMIN="$(vault token create -role=admin -display-name=admin -field=token)"
 vault token revoke -self                        # the root token, now
 export VAULT_TOKEN="$ADMIN"; unset ADMIN; pbcopy </dev/null
@@ -4120,7 +4142,7 @@ next (the Terraform runs are yours):
    vault operator init -key-shares=1 -key-threshold=1     # a throwaway unseal key and root token; "already initialized": stop (G3)
    vault operator unseal                                   # once: the throwaway key
    read -rs VAULT_TOKEN && export VAULT_TOKEN              # the throwaway root token, not echoed
-   vault operator raft snapshot restore -force vault.snap
+   vault operator raft snapshot restore -force vault.snap  # a root token's: the admin policy denies a restore
    unset VAULT_TOKEN
    vault status                                            # Sealed true: the restored keyring wants the OLD shares
    vault operator unseal                                   # three times: three of the old cluster's shares

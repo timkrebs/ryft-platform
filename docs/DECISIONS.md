@@ -4297,10 +4297,15 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **The admin token cannot outlive its session** (`bootstrap/admin.hcl`, pinned by an exact-allowlist test): it denies
   `auth/token/create`, `auth/token/create-orphan` and `auth/token/create/*` except `auth/token/create/terraform` (a
   deny of the glob, because ACL paths match case-sensitively and a deny of `create/admin` would let `create/ADMIN`
-  through), every `auth/token/roles/*` and `sys/auth/*`, and it may only read and list policies (with `path "*"` a
-  policy write would let it lift its own denies). Writing a policy, a token role or an auth method is therefore a root
-  token's, in a generate-root session before it mints the admin token: the bootstrap, adding a service (the policy
-  `terraform`) and the 403 repair say so.
+  through), every `auth/token/roles/*`, `sys/auth/*` and `sys/remount` (a moved auth mount would escape the blocks
+  below), and it may only read and list policies (with `path "*"` a policy write would let it lift its own denies),
+  every auth method's roles and config (`auth/+/role/*`, `auth/+/config`: a Kubernetes role with `token_policies =
+  ["admin"]`, or a re-pointed `kubernetes_host`, is a login that outlives the session), and `identity/*` (an entity or
+  group with policies). It saves a snapshot but restores none (`snapshot-force` denied, the plain restore read-only:
+  either brings back or hands over who logs in). A tune of an auth mount stays: it changes the lifetime of a login that
+  exists, capped by each role's `token_max_ttl`, and adds none. Writing any of the others is a root token's, in a
+  generate-root session before it mints the admin token: the bootstrap, adding a service (the policy `terraform`), the
+  403 repair and the disaster recovery (its throwaway root token) say so. Found by the security re-review of the PR.
 - **Trade-off:** about two minutes of ceremony per session, and no credential at rest besides the shares. It needs a
   port-forward, so cluster access as well.
 - **Alternatives, each a reviewed change before use:** (1) the initial root token kept in 1Password: simpler, but a

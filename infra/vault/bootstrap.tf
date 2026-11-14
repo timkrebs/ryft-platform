@@ -5,11 +5,12 @@
 #
 # The operator's login is a generate-root session (D209): three unseal key shares, a root token that creates one
 # token of the token role admin and is revoked at once. The admin token mints the terraform token (a child) and no
-# other token, and writes no token role, auth method or policy (bootstrap/admin.hcl): nothing it makes outlives the
-# session, and every new way in is a root token's. The OIDC files (oidc-*.json) are the documented later
-# option, written nowhere in the rebuild: they are the Google Workspace version (D193, bound to hd = ryftapp.de,
-# and Google Workspace is gone), so a personal Google account needs a reviewed change of them first
-# (infra/vault/README.md -> bootstrap/). They stay pinned so that change is a deliberate one.
+# other token, and writes no token role, auth method, auth role or config, identity or policy, and restores no
+# snapshot (bootstrap/admin.hcl): nothing it makes outlives the session, and every new way in is a root token's.
+# The OIDC files (oidc-*.json) are the documented later option, written nowhere in the rebuild: they are the Google
+# Workspace version (D193, bound to hd = ryftapp.de, and Google Workspace is gone), so a personal Google account
+# needs a reviewed change of them first (infra/vault/README.md -> bootstrap/). They stay pinned so that change is a
+# deliberate one.
 locals {
   bootstrap = {
     oidc_config          = jsondecode(file("${path.module}/bootstrap/oidc-config.json"))
@@ -76,19 +77,22 @@ check "bootstrap_terraform_policy_matches_services" {
 }
 
 # The admin token ends with its session (D209): deny on every token creation but the terraform role's (a child, so
-# it dies with the admin token), on the token roles and on sys/auth/*, and every policy read-only (a policy write
-# would lift those denies). The test pins the whole file; this warns at every plan if bootstrap/admin.hcl lost one.
+# it dies with the admin token), on the token roles, on sys/auth/*, on moving a mount and on a snapshot restore;
+# every policy, every auth method's roles and config, and identity read-only (a write there is a login that outlives
+# the session, or lifts these denies). The test pins the whole file; this warns at every plan if admin.hcl lost one.
 check "bootstrap_admin_policy_ends_with_its_session" {
   assert {
     condition = (
-      alltrue([for p in ["auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/roles/*", "sys/auth/*"] :
+      alltrue([for p in ["auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/roles/*", "sys/auth/*", "sys/remount", "sys/storage/raft/snapshot-force"] :
       try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"deny\"]\n"]) &&
-      alltrue([for p in ["sys/policies/acl/*", "sys/policy/*"] :
+      alltrue([for p in ["sys/policies/acl/*", "sys/policy/*", "auth/+/role/*", "identity/*"] :
       try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\", \"list\"]\n"]) &&
+      alltrue([for p in ["auth/+/config", "sys/storage/raft/snapshot"] :
+      try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\"]\n"]) &&
       try(local.bootstrap_policy_blocks.admin["auth/token/create/terraform"], "") == "  capabilities = [\"create\", \"update\"]\n" &&
       local.bootstrap.token_role_terraform.orphan == false
     )
-    error_message = "bootstrap/admin.hcl must deny auth/token/create, auth/token/create-orphan, auth/token/create/*, auth/token/roles/* and sys/auth/*, allow only read and list on sys/policies/acl/* and sys/policy/*, and allow create and update on auth/token/create/terraform (token role terraform, orphan false): otherwise the admin token can mint a token or a login that outlives its session, or rewrite its own policy."
+    error_message = "bootstrap/admin.hcl must deny auth/token/create, auth/token/create-orphan, auth/token/create/*, auth/token/roles/*, sys/auth/*, sys/remount and sys/storage/raft/snapshot-force, allow only read and list on sys/policies/acl/*, sys/policy/*, auth/+/role/* and identity/*, only read on auth/+/config and sys/storage/raft/snapshot, and create and update on auth/token/create/terraform (token role terraform, orphan false): otherwise the admin token can mint a token or plant a login (a role, an auth config, an identity with policies, a restored snapshot) that outlives its session, or rewrite its own policy."
   }
 }
 

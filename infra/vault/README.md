@@ -17,7 +17,7 @@ auth/kubernetes   (Vault reviews tokens as its own SA; no reviewer JWT, no CA, n
 ├── role rabbitmq     policy rabbitmq: kv-rabbitmq/data/config, kv-rabbitmq/data/amqp-user-*
 ├── …             one role, one policy and one kv-<svc>/ per entry in services
 └── role vault-snapshot ◀── SA vault-snapshot in ns vault only, audience vault, 10-minute service tokens, no default policy
-    policy snapshot: read sys/storage/raft/snapshot, nothing else (restore is break-glass, admin)
+    policy snapshot: read sys/storage/raft/snapshot, nothing else (restore is break-glass, a root token)
 kv-<svc>/config   only the keys that service uses (below)
 kv-rabbitmq/amqp-user-<client>  {username, password} per RabbitMQ client, for the Topology Operator
 kv-operator/demo  the App Review demo password (no role's policy names kv-operator)
@@ -195,8 +195,15 @@ rewrite its own policy or mint an admin token):
 - `admin.hcl`, `terraform.hcl`: the policies `admin` and `terraform`. `admin` is everything
   except what would outlive its session: it denies `auth/token/create`,
   `auth/token/create-orphan`, every `auth/token/create/<role>` but `terraform`, the token
-  roles and `sys/auth/*`, so an admin token mints the terraform token (its child) and no other
-  token, role or auth method.
+  roles, `sys/auth/*`, `sys/remount` and the snapshot restore (`sys/storage/raft/snapshot-force`;
+  `sys/storage/raft/snapshot` is read only: a save); it may only read and list the
+  policies, every auth method's roles (`auth/+/role/*`) and identity (`identity/*`), and
+  only read every auth method's config (`auth/+/config`). So an admin token mints the
+  terraform token (its child) and no other token, and leaves no login behind: no token role,
+  auth method, auth role, auth config, identity entity or group with policies, and no
+  restored snapshot. It may still tune an auth mount (`sys/mounts/auth/<m>/tune`: lifetimes
+  and token type of a login that exists, each role's `token_max_ttl` still caps it). Each of
+  the others is a root token's, in a generate-root session.
 - `token-role-admin.json`: the token role `admin` (policy `admin`, never `root`; an orphan, so
   revoking the root token leaves it; 1 hour, not renewable, `127.0.0.1` only). The session's
   root token, from `vault operator generate-root`, creates one such token and is revoked

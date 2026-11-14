@@ -969,24 +969,49 @@ run "the_admin_policy_and_the_token_roles_hold_the_reviewed_shape" {
 
   # admin is everything but what outlives the session or opens another way in: no orphan, no token of a role but
   # terraform (in any spelling: the glob, which the exact terraform path overrides), no token role write, no auth
-  # method, and no policy write (otherwise it rewrites admin, terraform or default and lifts the denies). Paths in
-  # file order, each block's whole body.
+  # method enabled, disabled or moved, no write of an auth method's roles or config or of identity (a standing login:
+  # a role or an identity with policy admin, a config that trusts another cluster), no policy write (otherwise it
+  # rewrites admin, terraform or default and lifts the denies), and no snapshot restore. Paths in file order, each
+  # block's whole body.
   assert {
     condition = (
-      local.bootstrap_policy_paths.admin == ["*", "auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/create/terraform", "auth/token/roles/*", "sys/auth/*", "sys/policies/acl/*", "sys/policy/*"] &&
+      local.bootstrap_policy_paths.admin == [
+        "*", "auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/create/terraform", "auth/token/roles/*",
+        "sys/auth/*", "sys/remount", "auth/+/role/*", "auth/+/config", "identity/*", "sys/policies/acl/*", "sys/policy/*",
+        "sys/storage/raft/snapshot", "sys/storage/raft/snapshot-force",
+      ] &&
       jsonencode(local.bootstrap_policy_blocks.admin) == jsonencode({
-        "*"                           = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n"
-        "auth/token/create"           = "  capabilities = [\"deny\"]\n"
-        "auth/token/create-orphan"    = "  capabilities = [\"deny\"]\n"
-        "auth/token/create/*"         = "  capabilities = [\"deny\"]\n"
-        "auth/token/create/terraform" = "  capabilities = [\"create\", \"update\"]\n"
-        "auth/token/roles/*"          = "  capabilities = [\"deny\"]\n"
-        "sys/auth/*"                  = "  capabilities = [\"deny\"]\n"
-        "sys/policies/acl/*"          = "  capabilities = [\"read\", \"list\"]\n"
-        "sys/policy/*"                = "  capabilities = [\"read\", \"list\"]\n"
+        "*"                               = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n"
+        "auth/token/create"               = "  capabilities = [\"deny\"]\n"
+        "auth/token/create-orphan"        = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/*"             = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/terraform"     = "  capabilities = [\"create\", \"update\"]\n"
+        "auth/token/roles/*"              = "  capabilities = [\"deny\"]\n"
+        "sys/auth/*"                      = "  capabilities = [\"deny\"]\n"
+        "sys/remount"                     = "  capabilities = [\"deny\"]\n"
+        "auth/+/role/*"                   = "  capabilities = [\"read\", \"list\"]\n"
+        "auth/+/config"                   = "  capabilities = [\"read\"]\n"
+        "identity/*"                      = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/policies/acl/*"              = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/policy/*"                    = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/storage/raft/snapshot"       = "  capabilities = [\"read\"]\n"
+        "sys/storage/raft/snapshot-force" = "  capabilities = [\"deny\"]\n"
       })
     )
-    error_message = "admin is \"*\" with every capability, deny on auth/token/create, auth/token/create-orphan, auth/token/create/* (every token role), auth/token/roles/* and sys/auth/*, read and list only on sys/policies/acl/* and sys/policy/*, and create and update on auth/token/create/terraform (the terraform token, a child of the session's token); no other path, no other line"
+    error_message = "admin is \"*\" with every capability, deny on auth/token/create, auth/token/create-orphan, auth/token/create/* (every token role), auth/token/roles/*, sys/auth/*, sys/remount and sys/storage/raft/snapshot-force, read and list only on sys/policies/acl/*, sys/policy/*, auth/+/role/* and identity/*, read only on auth/+/config and sys/storage/raft/snapshot (a save, no restore), and create and update on auth/token/create/terraform (the terraform token, a child of the session's token); no other path, no other line"
+  }
+  # No standing login (D209, the security re-review of the rebuild): with "*" alone, each of these would let the
+  # admin token leave a login behind that mints admin (or any policy) after the session, with the token role admin
+  # deleted: a kubernetes role bound to a service account, an identity group or entity with policies, an auth config
+  # that trusts another cluster, an auth mount moved below a nested path (where the `+` blocks miss it) and back, a
+  # restored snapshot. Named one by one so that a removal fails with this message.
+  assert {
+    condition = (
+      alltrue([for p in ["auth/+/role/*", "identity/*"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\", \"list\"]\n"]) &&
+      alltrue([for p in ["auth/+/config", "sys/storage/raft/snapshot"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\"]\n"]) &&
+      alltrue([for p in ["sys/remount", "sys/storage/raft/snapshot-force"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"deny\"]\n"])
+    )
+    error_message = "the admin token plants no standing login: auth/+/role/* and identity/* read and list only, auth/+/config and sys/storage/raft/snapshot read only, sys/remount and sys/storage/raft/snapshot-force denied"
   }
   # The terraform token comes from the admin token, so its role must stay a non-orphan child (dies with the
   # session), and the admin role an orphan that only a root token mints (the glob above refuses it to admin).

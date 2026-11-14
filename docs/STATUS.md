@@ -86,8 +86,8 @@ the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2
 - `infra/aws/kubernetes`: `vault_seal` with `shamir` as the default and `awskms` built (D208); `vault_vso_peer` beside
   `vault_collector_peer`, both closed until the operator's init is done and root revoked (D207, Bootstrap step 11); the
   server pods' egress to AWS only under `awskms` (vault-extras 0.3.0).
-- `infra/vault`: the admin policy creates no token but the terraform token and writes no policy, token role or auth
-  method (D209); `prevent_destroy` on the data key (D211).
+- `infra/vault`: the admin policy creates no token but the terraform token, writes no policy, token role, auth method,
+  auth role or config, or identity object, and restores no snapshot (D209); `prevent_destroy` on the data key (D211).
 - OPERATIONS → Vault: shares and tokens go only to a verified pod (`vault_forward`: the StatefulSet's by uid, the
   pinned digest, `vault-active` for a login), G1's gap until it is in Deny (D210); the clipboard and the init-window
   rules.

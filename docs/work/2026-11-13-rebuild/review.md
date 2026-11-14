@@ -25,6 +25,12 @@ push. What was found, and what became of it.
 | D208 wording on Shamir's protection | Fixed: any path to 8200; Shamir does not protect a running Vault from node root or hostPID |
 | The privacy text names `support@ryftapp.de` while no mail works | Flagged to the owner (D212, STATUS); no web change in this PR |
 
+## Security re-review of afc26df
+| Finding | Outcome |
+| --- | --- |
+| **Blocker:** `admin.hcl` allows everything and denies a list that misses `auth/+/role/*`, `auth/+/config` and `identity/*`, so an admin token could plant a Kubernetes role or an identity group with `admin` that outlives the session | Fixed: those paths read-only, `sys/remount` denied (a moved mount escapes the `+` blocks), snapshot restore denied (`snapshot-force`) or read-only; pinned by the allowlist test and `bootstrap.tf`'s check (D209). Auth-mount tunes stay allowed (lifetimes only) |
+| The verified pod, the peers, the recover script, `prevent_destroy` | Hold (no finding) |
+
 ## Code review (should-fix)
 | Finding | Outcome |
 | --- | --- |
