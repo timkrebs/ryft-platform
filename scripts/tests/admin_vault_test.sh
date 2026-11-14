@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Where scripts/lib/admin.sh (the admin key) and scripts/seed_demo.sh (the demo password) read Vault
-# (make test-scripts): by default exactly as before (HCP, a namespace per service), and with RYFT_VAULT=ce
-# the in-cluster Vault (kv-api/config, kv-operator/demo, no VAULT_NAMESPACE). A fake `vault` and a fake
-# `terraform` are first on PATH; nothing here reaches a Vault, a cluster or Supabase.
+# (make test-scripts): the in-cluster Vault is the only one (D207): kv-api/config and kv-operator/demo,
+# without VAULT_NAMESPACE, only through a verified port-forward; RYFT_VAULT=hcp (or anything but ce) is
+# refused before anything is asked. A fake `vault` and a fake `terraform` are first on PATH; nothing here
+# reaches a Vault, a cluster or Supabase.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 t=$(mktemp -d)
@@ -10,7 +11,7 @@ trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/bin" "$t/s/lib"
 fail() { echo "✗ admin_vault_test: $*" >&2; exit 1; }
 export FAKE_DIR=$t
-unset ADMIN_API_KEY DEMO_PASSWORD RYFT_VAULT ADMIN_VAULT_NAMESPACE DEMO_VAULT_NAMESPACE VAULT_NAMESPACE
+unset ADMIN_API_KEY DEMO_PASSWORD RYFT_VAULT ADMIN_VAULT_NAMESPACE DEMO_VAULT_NAMESPACE VAULT_NAMESPACE VAULT_ADDR VAULT_SKIP_VERIFY
 
 # vault: records its argv and VAULT_NAMESPACE (or <unset>); prints FAKE_VAULT_VALUE, or fails without it.
 cat > "$t/bin/vault" <<'V'
@@ -41,54 +42,57 @@ admin() {
   return "$rc"
 }
 vault_calls() { cat "$t/vault.calls"; }
+CE_CALL="kv get -mount=kv-api -field=ADMIN_API_KEY config | VAULT_NAMESPACE=<unset>"
 
-# admin.sh, the default: the environment, then terraform, then HCP with admin/ryft/api, kv/config.
+# admin.sh: the environment, then terraform, then the in-cluster Vault (kv-api/config, no namespace).
 admin ADMIN_API_KEY=from-env || fail "ADMIN_API_KEY: $(cat "$t/err")"
 [ "$(cat "$t/key")" = from-env ] && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] || fail "ADMIN_API_KEY was not taken as is"
+admin ADMIN_API_KEY=from-env RYFT_VAULT=hcp VAULT_ADDR=https://vault.example.com:8200 || fail "ADMIN_API_KEY with a stale shell: $(cat "$t/err")"
+[ "$(cat "$t/key")" = from-env ] || fail "ADMIN_API_KEY from the environment needs no Vault"
 admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-vault || fail "terraform: $(cat "$t/err")"
 [ "$(cat "$t/key")" = from-tf ] && [ -z "$(vault_calls)" ] || fail "terraform's output was not first: $(vault_calls)"
 [ "$(cat "$t/err")" = "admin key: terraform output of infra/vault" ] || fail "terraform: $(cat "$t/err")"
-admin FAKE_VAULT_VALUE=from-hcp || fail "HCP: $(cat "$t/err")"
-[ "$(cat "$t/key")" = from-hcp ] || fail "HCP: the key"
-[ "$(vault_calls)" = "kv get -mount=kv -field=ADMIN_API_KEY config | VAULT_NAMESPACE=admin/ryft/api" ] || fail "HCP call: $(vault_calls)"
-[ "$(tail -n 1 "$t/err")" = "admin key: Vault (admin/ryft/api, kv/config)" ] || fail "HCP: $(cat "$t/err")"
-admin FAKE_VAULT_VALUE=from-hcp RYFT_VAULT=hcp || fail "RYFT_VAULT=hcp: $(cat "$t/err")"
-[ "$(vault_calls)" = "kv get -mount=kv -field=ADMIN_API_KEY config | VAULT_NAMESPACE=admin/ryft/api" ] || fail "RYFT_VAULT=hcp is not the default: $(vault_calls)"
-admin FAKE_VAULT_VALUE=from-hcp ADMIN_VAULT_NAMESPACE=admin/other/api || fail "ADMIN_VAULT_NAMESPACE: $(cat "$t/err")"
-[ "$(vault_calls)" = "kv get -mount=kv -field=ADMIN_API_KEY config | VAULT_NAMESPACE=admin/other/api" ] || fail "ADMIN_VAULT_NAMESPACE: $(vault_calls)"
+# The default: the in-cluster Vault, even when the caller has a VAULT_NAMESPACE set (and that
+# variable is left as it was for the caller).
+admin FAKE_VAULT_VALUE=from-ce || fail "the default: $(cat "$t/err")"
+[ "$(cat "$t/key")" = from-ce ] || fail "the default: the key"
+[ "$(vault_calls)" = "$CE_CALL" ] || fail "the default call: $(vault_calls)"
+[ "$(tail -n 1 "$t/err")" = "admin key: the in-cluster Vault (kv-api/config)" ] || fail "the default: $(cat "$t/err")"
+admin FAKE_VAULT_VALUE=from-ce VAULT_NAMESPACE=admin/ryft || fail "a stale VAULT_NAMESPACE: $(cat "$t/err")"
+[ "$(vault_calls)" = "$CE_CALL" ] || fail "a stale VAULT_NAMESPACE reached the call: $(vault_calls)"
+[ "$(cat "$t/key.ns")" = admin/ryft ] || fail "the caller's VAULT_NAMESPACE changed: $(cat "$t/key.ns")"
+admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce || fail "RYFT_VAULT=ce (the old name): $(cat "$t/err")"
+[ "$(vault_calls)" = "$CE_CALL" ] || fail "RYFT_VAULT=ce: $(vault_calls)"
+# No namespace-per-service read is left (HCP's kv/config in admin/ryft/api).
+! grep -Fq -e '-mount=kv ' -e 'admin/ryft' "$t/vault.calls" || fail "an HCP-shaped read: $(vault_calls)"
+# Nothing anywhere: fails, and the hint names the in-cluster Vault only.
 ! admin || fail "no key anywhere still succeeded"
-grep -Fq 'VAULT_NAMESPACE=admin/ryft/api vault kv get -mount=kv -field=ADMIN_API_KEY config' "$t/err" || fail "the HCP hint: $(cat "$t/err")"
-grep -Fq 'RYFT_VAULT=ce: vault kv get -mount=kv-api -field=ADMIN_API_KEY config' "$t/err" || fail "the CE hint: $(cat "$t/err")"
+[ "$(vault_calls)" = "$CE_CALL" ] || fail "nothing: $(vault_calls)"
+grep -Fq 'vault kv get -mount=kv-api -field=ADMIN_API_KEY config' "$t/err" || fail "the hint: $(cat "$t/err")"
+grep -Fq 'vault_forward "$(vault_active)" 8200 active' "$t/err" || fail "the hint has no verified port-forward: $(cat "$t/err")"
+! grep -Fq 'svc/vault-active' "$t/err" || fail "the hint sends a token through svc/vault-active: $(cat "$t/err")"
+! grep -Fq -e 'VAULT_NAMESPACE=admin' -e 'RYFT_VAULT' "$t/err" || fail "the hint still names HCP: $(cat "$t/err")"
 
-# admin.sh, RYFT_VAULT=ce: kv-api/config without a namespace, even when the caller has one set (and
-# the caller's own VAULT_NAMESPACE is left as it was). terraform's output still comes first.
-admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_NAMESPACE=admin/ryft || fail "CE: $(cat "$t/err")"
-[ "$(cat "$t/key")" = from-ce ] || fail "CE: the key"
-[ "$(vault_calls)" = "kv get -mount=kv-api -field=ADMIN_API_KEY config | VAULT_NAMESPACE=<unset>" ] || fail "CE call: $(vault_calls)"
-[ "$(cat "$t/key.ns")" = admin/ryft ] || fail "CE: the caller's VAULT_NAMESPACE changed: $(cat "$t/key.ns")"
-[ "$(tail -n 1 "$t/err")" = "admin key: the in-cluster Vault (kv-api/config)" ] || fail "CE: $(cat "$t/err")"
-admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce || fail "CE with terraform: $(cat "$t/err")"
-[ "$(cat "$t/key")" = from-tf ] && [ -z "$(vault_calls)" ] || fail "CE: terraform's output was not first"
-! admin RYFT_VAULT=ce || fail "CE without a key still succeeded"
-[ "$(vault_calls)" = "kv get -mount=kv-api -field=ADMIN_API_KEY config | VAULT_NAMESPACE=<unset>" ] || fail "CE, nothing: $(vault_calls)"
-! admin FAKE_VAULT_VALUE=x RYFT_VAULT=enterprise || fail "an unknown RYFT_VAULT was accepted"
-grep -Fq 'RYFT_VAULT is hcp (default) or ce' "$t/err" && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] || fail "an unknown RYFT_VAULT: $(cat "$t/err") $(vault_calls)"
+# RYFT_VAULT=hcp (a shell from before the rebuild) and any other value: refused before terraform or Vault.
+for v in hcp HCP enterprise Ce; do
+  ! admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=x RYFT_VAULT="$v" || fail "RYFT_VAULT=$v was accepted"
+  grep -Fq 'HCP Vault is gone (D207)' "$t/err" && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] \
+    || fail "RYFT_VAULT=$v: $(cat "$t/err") $(vault_calls)"
+done
 
-# CE goes only to your port-forward, verified: VAULT_ADDR unset or https loopback, no VAULT_SKIP_VERIFY.
-# The default (HCP) does not look at either.
+# Only your port-forward, verified: VAULT_ADDR unset or https loopback, no VAULT_SKIP_VERIFY; anything
+# else (an old HCP address left in the shell) is refused before terraform or Vault is asked.
 for addr in https://127.0.0.1:8200 https://localhost:8200 'https://[::1]:8200' https://127.0.0.1:8200/; do
-  admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_ADDR="$addr" || fail "CE with VAULT_ADDR=$addr: $(cat "$t/err")"
+  admin FAKE_VAULT_VALUE=from-ce VAULT_ADDR="$addr" || fail "VAULT_ADDR=$addr: $(cat "$t/err")"
 done
-for addr in https://vault.example.com:8200 http://127.0.0.1:8200 https://127.0.0.1:8200@evil.example https://127.0.0.1.evil.example:8200 \
-  https://10.0.0.1:8200; do
-  ! admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_ADDR="$addr" || fail "CE took VAULT_ADDR=$addr"
+for addr in https://vault.example.com:8200 https://ryft-vault-public-vault-0000.z1.hashicorp.cloud:8200 http://127.0.0.1:8200 \
+  https://127.0.0.1:8200@evil.example https://127.0.0.1.evil.example:8200 https://10.0.0.1:8200 https://vault.vault.svc:8200; do
+  ! admin FAKE_TF_KEY=from-tf FAKE_VAULT_VALUE=from-ce VAULT_ADDR="$addr" || fail "took VAULT_ADDR=$addr"
   grep -Fq 'VAULT_ADDR must be your port-forward' "$t/err" && [ -z "$(vault_calls)" ] && [ ! -s "$t/terraform.calls" ] \
-    || fail "CE, VAULT_ADDR=$addr: $(cat "$t/err") $(vault_calls)"
+    || fail "VAULT_ADDR=$addr: $(cat "$t/err") $(vault_calls)"
 done
-! admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce VAULT_SKIP_VERIFY=true || fail "CE took VAULT_SKIP_VERIFY"
-grep -Fq 'unset VAULT_SKIP_VERIFY' "$t/err" && [ -z "$(vault_calls)" ] || fail "CE, VAULT_SKIP_VERIFY: $(cat "$t/err")"
-admin FAKE_VAULT_VALUE=from-hcp VAULT_ADDR=https://vault.example.com:8200 VAULT_SKIP_VERIFY=true || fail "HCP looked at VAULT_ADDR: $(cat "$t/err")"
-[ "$(vault_calls)" = "kv get -mount=kv -field=ADMIN_API_KEY config | VAULT_NAMESPACE=admin/ryft/api" ] || fail "HCP with VAULT_ADDR: $(vault_calls)"
+! admin FAKE_VAULT_VALUE=from-ce VAULT_SKIP_VERIFY=true || fail "took VAULT_SKIP_VERIFY"
+grep -Fq 'unset VAULT_SKIP_VERIFY' "$t/err" && [ -z "$(vault_calls)" ] || fail "VAULT_SKIP_VERIFY: $(cat "$t/err")"
 
 # seed_demo.sh, from a copy whose seed_demo.py only records whether it got the password.
 cp "$ROOT/scripts/seed_demo.sh" "$t/s/seed_demo.sh"
@@ -103,26 +107,27 @@ seed() { # <env...>
     bash "$t/s/seed_demo.sh" > /dev/null 2> "$t/err" || rc=$?
   return "$rc"
 }
-seed FAKE_VAULT_VALUE=pw-hcp || fail "seed, HCP: $(cat "$t/err")"
-[ "$(cat "$t/seeded")" = pw-hcp ] || fail "seed, HCP: the password"
-[ "$(vault_calls)" = "kv get -mount=operator -field=password demo | VAULT_NAMESPACE=admin/ryft" ] || fail "seed, HCP call: $(vault_calls)"
-seed FAKE_VAULT_VALUE=pw-hcp RYFT_VAULT=hcp DEMO_VAULT_NAMESPACE=admin/x || fail "seed, DEMO_VAULT_NAMESPACE: $(cat "$t/err")"
-[ "$(vault_calls)" = "kv get -mount=operator -field=password demo | VAULT_NAMESPACE=admin/x" ] || fail "seed, DEMO_VAULT_NAMESPACE: $(vault_calls)"
-seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_NAMESPACE=admin/ryft || fail "seed, CE: $(cat "$t/err")"
-[ "$(cat "$t/seeded")" = pw-ce ] || fail "seed, CE: the password"
-[ "$(vault_calls)" = "kv get -mount=kv-operator -field=password demo | VAULT_NAMESPACE=<unset>" ] || fail "seed, CE call: $(vault_calls)"
-seed DEMO_PASSWORD=given RYFT_VAULT=ce || fail "seed, DEMO_PASSWORD: $(cat "$t/err")"
+SEED_CALL="kv get -mount=kv-operator -field=password demo | VAULT_NAMESPACE=<unset>"
+seed FAKE_VAULT_VALUE=pw-ce || fail "seed, the default: $(cat "$t/err")"
+[ "$(cat "$t/seeded")" = pw-ce ] || fail "seed: the password"
+[ "$(vault_calls)" = "$SEED_CALL" ] || fail "seed call: $(vault_calls)"
+seed FAKE_VAULT_VALUE=pw-ce VAULT_NAMESPACE=admin/ryft RYFT_VAULT=ce || fail "seed, a stale VAULT_NAMESPACE: $(cat "$t/err")"
+[ "$(vault_calls)" = "$SEED_CALL" ] || fail "seed, a stale VAULT_NAMESPACE reached the call: $(vault_calls)"
+seed DEMO_PASSWORD=given || fail "seed, DEMO_PASSWORD: $(cat "$t/err")"
 [ "$(cat "$t/seeded")" = given ] && [ -z "$(vault_calls)" ] || fail "seed: DEMO_PASSWORD still asked Vault"
-! seed || fail "seed: HCP without a password still seeded"
-{ [ ! -e "$t/seeded" ] && grep -Fq 'Vault did not give it (vault login' "$t/err"; } || fail "seed, HCP failure: $(cat "$t/err")"
-! seed RYFT_VAULT=ce || fail "seed: CE without a password still seeded"
-{ [ ! -e "$t/seeded" ] && grep -Fq 'the in-cluster Vault did not give it' "$t/err"; } || fail "seed, CE failure: $(cat "$t/err")"
-! seed FAKE_VAULT_VALUE=x RYFT_VAULT=Ce || fail "seed: an unknown RYFT_VAULT was accepted"
-[ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] || fail "seed: an unknown RYFT_VAULT still read Vault"
-seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_ADDR=https://127.0.0.1:8200 || fail "seed, CE loopback: $(cat "$t/err")"
-! seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_ADDR=https://127.0.0.1:8200@evil.example || fail "seed: CE took a foreign VAULT_ADDR"
-{ [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] && grep -Fq 'VAULT_ADDR must be your port-forward' "$t/err"; } || fail "seed, foreign VAULT_ADDR: $(cat "$t/err")"
-! seed FAKE_VAULT_VALUE=pw-ce RYFT_VAULT=ce VAULT_SKIP_VERIFY=1 || fail "seed: CE took VAULT_SKIP_VERIFY"
-{ [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ]; } || fail "seed, VAULT_SKIP_VERIFY: $(cat "$t/err")"
-seed FAKE_VAULT_VALUE=pw-hcp VAULT_ADDR=https://vault.example.com:8200 VAULT_SKIP_VERIFY=1 || fail "seed, HCP looked at VAULT_ADDR: $(cat "$t/err")"
+seed DEMO_PASSWORD=given RYFT_VAULT=hcp VAULT_ADDR=https://vault.example.com:8200 || fail "seed, DEMO_PASSWORD with a stale shell: $(cat "$t/err")"
+[ "$(cat "$t/seeded")" = given ] || fail "seed: DEMO_PASSWORD needs no Vault"
+! seed || fail "seed: no password still seeded"
+{ [ ! -e "$t/seeded" ] && grep -Fq 'the in-cluster Vault did not give it' "$t/err"; } || fail "seed, failure: $(cat "$t/err")"
+for v in hcp enterprise Ce; do
+  ! seed FAKE_VAULT_VALUE=x RYFT_VAULT="$v" || fail "seed: RYFT_VAULT=$v was accepted"
+  { [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] && grep -Fq 'HCP Vault is gone (D207)' "$t/err"; } || fail "seed, RYFT_VAULT=$v: $(cat "$t/err")"
+done
+seed FAKE_VAULT_VALUE=pw-ce VAULT_ADDR=https://127.0.0.1:8200 || fail "seed, loopback: $(cat "$t/err")"
+for addr in https://127.0.0.1:8200@evil.example https://ryft-vault-public-vault-0000.z1.hashicorp.cloud:8200 https://vault.vault.svc:8200; do
+  ! seed FAKE_VAULT_VALUE=pw-ce VAULT_ADDR="$addr" || fail "seed: took VAULT_ADDR=$addr"
+  { [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] && grep -Fq 'VAULT_ADDR must be your port-forward' "$t/err"; } || fail "seed, VAULT_ADDR=$addr: $(cat "$t/err")"
+done
+! seed FAKE_VAULT_VALUE=pw-ce VAULT_SKIP_VERIFY=1 || fail "seed: took VAULT_SKIP_VERIFY"
+{ [ ! -e "$t/seeded" ] && [ -z "$(vault_calls)" ] && grep -Fq 'unset VAULT_SKIP_VERIFY' "$t/err"; } || fail "seed, VAULT_SKIP_VERIFY: $(cat "$t/err")"
 echo "✓ admin_vault_test"

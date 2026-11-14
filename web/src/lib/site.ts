@@ -1,7 +1,7 @@
 // Site-wide constants. Values from the environment are read at build time and baked
 // into the static HTML (docs/README → "Build-time settings").
 
-export const SITE_URL = 'https://ryftapp.de';
+export const SITE_URL = 'https://ryftlab.de';
 export const SITE_NAME = 'RYFT';
 
 /** The public TestFlight link. While unset, every "Open in TestFlight" button is hidden. */
@@ -21,7 +21,7 @@ function clean(value: string | undefined): string | null {
   return v ? v : null;
 }
 
-/** `https://ryftapp.de/…` for a site path; the home page keeps its slash. */
+/** `https://ryftlab.de/…` for a site path; the home page keeps its slash. */
 export function absoluteUrl(path: string): string {
   return path === '/' ? `${SITE_URL}/` : `${SITE_URL}${path}`;
 }

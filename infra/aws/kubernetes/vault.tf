@@ -1,11 +1,14 @@
-# Vault Community Edition in the cluster (D186, D188): three Raft replicas in namespace `vault`, auto-unseal by
-# AWS KMS through EKS Pod Identity (iam.tf, D189), TLS from the dedicated cert-manager CA ryft-vault (D190). A
-# Terraform add-on like VSO and cert-manager, not an Argo CD application: Argo CD would need statefulsets write,
-# a binding to system:auth-delegator and an image outside its allowlist, on the server that holds every credential.
+# Vault Community Edition in the cluster (D186, D188): three Raft replicas in namespace `vault`, TLS from the
+# dedicated cert-manager CA ryft-vault (D190). The seal is var.vault_seal (D208): Shamir by default (no seal stanza:
+# every pod that starts is unsealed by hand with the operator's key shares), or auto-unseal by AWS KMS through EKS Pod
+# Identity (iam.tf, D189) with "awskms". A Terraform add-on like VSO and cert-manager, not an Argo CD application:
+# Argo CD would need statefulsets write, a binding to system:auth-delegator and an image outside its allowlist, on
+# the server that holds every credential.
 #
 # What this creates is an uninitialised Vault: three pods Running and 0/1 ready, by design (D196). The init, the
-# audit devices and the admin identity are the operator's bootstrap (docs/OPERATIONS.md -> Vault). Nothing reads it
-# until a cutover PR points a namespace at it (infra/vault, vso_on_k8s).
+# audit devices and the admin identity are the operator's bootstrap (docs/OPERATIONS.md -> Vault). It is the only
+# Vault (D207), and every VaultConnection infra/vault generates names it; VSO reaches it once var.vault_vso_peer is
+# set after the operator's own init (below).
 #
 # Admin access is `kubectl port-forward` only (output vault_port_forward_command): no Ingress, no LoadBalancer.
 # Upgrades are by hand, one pod at a time: updateStrategy OnDelete, so an apply that changes the pod template
@@ -20,6 +23,9 @@ locals {
   vault_namespace       = "vault"
   vault_service_account = "vault"
   vault_replicas        = 3
+
+  # D208: the KMS seal, its key lookup, its Pod Identity role and the server's AWS egress only with "awskms".
+  vault_seal_awskms = var.vault_seal == "awskms"
 
   # docker.io/hashicorp/vault is Community Edition (Enterprise is hashicorp/vault-enterprise). Pinned by the
   # multi-arch index digest (versions.md section 1). The chart writes repository:tag, so the digest rides in the
@@ -67,9 +73,13 @@ locals {
   #    own init), and after it sys/health, sys/seal-status, sys/leader, starting or cancelling a generate-root or
   #    rekey attempt (completing one needs recovery shares) and the login endpoints (design section 6, G2).
   #  - retry_join: one block per pod, trusting the ryft-vault CA; no client certificate (the listener asks none).
-  #  - seal: the key's ARN, not the alias (an alias can be re-pointed silently); the region set here, so the seal
+  #  - seal: only with var.vault_seal = "awskms"; Shamir (the default) is Vault's seal when the config has none.
+  #    The key's ARN, not the alias (an alias can be re-pointed silently); the region set here, so the seal
   #    does not depend on the AWS_REGION the EKS webhook injects; no credentials of any kind (the SDK's default
-  #    chain finds Pod Identity's).
+  #    chain finds Pod Identity's). The directives open and close mid-line and carry no strip marker (~): in an
+  #    indented heredoc a ~} eats the line's newline token, and the line after it would keep its indentation.
+  #    So awskms renders exactly the stanza and blank lines of before, and shamir one blank line between the
+  #    storage block and service_registration (tests/addons.tftest.hcl pins both).
   #  - service_registration: labels the pods vault-active=true|false, which the vault-active and vault-standby
   #    Services select on; without it they have no endpoints.
   vault_config = <<-HCL
@@ -96,12 +106,12 @@ locals {
       ${indent(2, local.vault_retry_join)}
     }
 
-    seal "awskms" {
+    %{if local.vault_seal_awskms}seal "awskms" {
       region     = "${var.region}"
-      kms_key_id = "${data.aws_kms_alias.vault_unseal.target_key_arn}"
+      kms_key_id = "${local.vault_unseal_key_arn}"
     }
 
-    service_registration "kubernetes" {}
+    %{endif}service_registration "kubernetes" {}
 
     telemetry {
       prometheus_retention_time = "2m"
@@ -300,20 +310,25 @@ locals {
   # two change together (tests/addons.tftest.hcl compares them).
   vault_snapshot_aws_cli_image = "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
 
-  # VSO stays off until the first cutover (step 5a; until then nothing but the operator's port-forward needs the
-  # API). The collector (alloy-deployment, job ryft/vault in deploy/monitoring/k8s-monitoring.yaml, D194) is off
-  # until var.vault_collector_peer: the NetworkPolicy admits a peer to all of 8200, and before the init PUT
-  # /v1/sys/init is unauthenticated, so the peer opens only after the operator's own init (OPERATIONS -> Vault
-  # metrics (once)) and closes again for a restore into a fresh cluster (-> Vault -> Disaster recovery).
+  # Both peers are closed until the operator's own init: the NetworkPolicy admits a peer to all of 8200, and before
+  # the init PUT /v1/sys/init is unauthenticated, so a peer could initialise Vault and hold its shares (G3). VSO
+  # (var.vault_vso_peer: this is the only Vault, D207, and every VaultConnection infra/vault generates names it) and
+  # the collector (var.vault_collector_peer: alloy-deployment, job ryft/vault in deploy/monitoring/k8s-monitoring.yaml,
+  # D194) open together, in one apply after the bootstrap (root revoked) and before infra/vault's first apply, and
+  # close together before a restore into a fresh cluster or a lost-volume rebuild (OPERATIONS -> Vault -> Bootstrap,
+  # Disaster recovery, A lost volume). Nothing needs VSO earlier: no VaultConnection exists before that apply.
+  # kmsSeal: the server pods' egress to public 443 (KMS, through the NAT) and to the Pod Identity agent, only for
+  # the awskms seal (D208); under Shamir they reach the peers, the API server in the VPC and DNS only.
   vault_extras_values = {
     vpcCIDR  = var.vpc_cidr
     replicas = local.vault_replicas
+    kmsSeal  = local.vault_seal_awskms
     tls = {
       dnsNames    = local.vault_dns_names
       ipAddresses = ["127.0.0.1"]
     }
     peers = {
-      vso       = { enabled = false }
+      vso       = { enabled = var.vault_vso_peer }
       collector = { enabled = var.vault_collector_peer }
     }
     # Every 6 hours at minute 17 (RPO 6 h; OPERATIONS -> Vault -> Snapshots). The bucket and key are infra/aws's
@@ -331,9 +346,9 @@ locals {
     }
   }
 
-  # The key the alias resolves to must be a key of this account in this region (a precondition below). Once
-  # infra/aws's key exists its key ID can be pinned here as well, so a re-pointed alias fails the plan instead of
-  # moving the seal.
+  # With awskms, the key the alias resolves to must be a key of this account in this region (a precondition below).
+  # Once infra/aws's key exists its key ID can be pinned here as well, so a re-pointed alias fails the plan instead
+  # of moving the seal.
   vault_unseal_key_arn_pattern = "^arn:aws[a-z-]*:kms:${var.region}:${local.account_id}:key/[0-9a-f-]+$"
 }
 
@@ -395,19 +410,27 @@ resource "helm_release" "vault" {
   # An uninitialised Vault is not ready by design, so waiting would time out every first apply (D188).
   wait = false
 
-  # The association before the first pod: the Pod Identity webhook injects credentials at pod creation only, and a
-  # pod without them cannot unseal (delete it once the association exists). The extras before the first pod: the
-  # TLS Secret it mounts and the default-deny.
+  # With awskms, the association before the first pod: the Pod Identity webhook injects credentials at pod creation
+  # only, and a pod without them cannot unseal (delete it once the association exists). Under Shamir the module has
+  # no instance and the edge is empty. The extras before the first pod: the TLS Secret it mounts and the
+  # default-deny.
   depends_on = [module.vault_unseal_pod_identity, helm_release.vault_extras]
 
   lifecycle {
     prevent_destroy = true
 
-    # The alias must resolve to a key of this account in this region: otherwise the seal stanza would name a key
-    # Vault cannot use and every pod would stay sealed (an error of plan and apply, not a warning).
+    # awskms: the alias must resolve to a key of this account in this region, otherwise the seal stanza would name
+    # a key Vault cannot use and every pod would stay sealed (an error of plan and apply, not a warning). Shamir
+    # reads no alias.
     precondition {
-      condition     = can(regex(local.vault_unseal_key_arn_pattern, data.aws_kms_alias.vault_unseal.target_key_arn))
+      condition     = !local.vault_seal_awskms || can(regex(local.vault_unseal_key_arn_pattern, local.vault_unseal_key_arn))
       error_message = "alias/${var.cluster_name}-vault-unseal does not point at a KMS key of this account in ${var.region}: the seal stanza would name a key Vault cannot use, and every pod would stay sealed."
+    }
+    # The seal stanza and the server's AWS egress follow var.vault_seal together (D208): one awskms stanza and the
+    # KMS egress, or neither (Shamir: no seal stanza, so Vault's own).
+    precondition {
+      condition     = length(regexall("(?m)^seal ", local.vault_config)) == (local.vault_seal_awskms ? 1 : 0) && local.vault_extras_values.kmsSeal == local.vault_seal_awskms
+      error_message = "The Vault config's seal stanza or vault-extras' kmsSeal does not follow vault_seal = \"${var.vault_seal}\": awskms has exactly one seal \"awskms\" stanza and the KMS egress, shamir neither."
     }
     precondition {
       condition     = alltrue([for w in local.vault_config_placeholders : !strcontains(local.vault_config, w)])
@@ -420,7 +443,7 @@ resource "helm_release" "vault" {
         !strcontains(local.vault_config, "role_arn") && !strcontains(local.vault_config, "shared_creds") &&
         !can(local.vault_values.server.serviceAccount.annotations) && !can(local.vault_values.server.extraSecretEnvironmentVars)
       )
-      error_message = "Vault takes its AWS identity from Pod Identity only: no AWS_* variable (${join(", ", local.vault_aws_credential_env)}), no credentials in the seal stanza, no service account annotation (IRSA) and no secret environment variables."
+      error_message = "Vault has no AWS identity under Shamir and Pod Identity's only under awskms: no AWS_* variable (${join(", ", local.vault_aws_credential_env)}), no credentials in the config, no service account annotation (IRSA) and no secret environment variables."
     }
     precondition {
       condition     = length([for n in local.vault_dns_names : n if can(regex("^vault-[0-9]+\\.vault-internal$", n))]) == local.vault_values.server.ha.replicas

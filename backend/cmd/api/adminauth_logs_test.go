@@ -58,7 +58,7 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(log)
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	d := newAdminDBLog(t, log, "https://ryftapp.de")
+	d := newAdminDBLog(t, log, "https://ryftlab.de")
 
 	const ip, mail = "203.0.113.77", "anna.private@example.test"
 	tokOp := d.token(d.op, nil)
@@ -74,7 +74,7 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	})
 	send := func(method, path, bearer, body string, want int) {
 		t.Helper()
-		if a := do(d.srv, method, path, bearer, body, "X-Forwarded-For", "198.51.100.1, "+ip, "Origin", "https://ryftapp.de"); a.status != want {
+		if a := do(d.srv, method, path, bearer, body, "X-Forwarded-For", "198.51.100.1, "+ip, "Origin", "https://ryftlab.de"); a.status != want {
 			t.Fatalf("%s %s: %d %s, want %d", method, path, a.status, a.body, want)
 		}
 	}

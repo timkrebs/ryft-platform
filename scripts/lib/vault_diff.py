@@ -8,10 +8,8 @@ control characters), so a key cannot move the cursor or fake a line.
 
   vault_diff.py services <overlays>       the services with generated VSO objects, one per line
   vault_diff.py objects <overlays> <svc>  "<namespace>\\t<vault path>\\t<Secret name>" per VaultStaticSecret
-  vault_diff.py hcp-address <overlays>    the HCP address of the generated VaultConnections (none when
-                                          all are in-cluster; exit 3 when they name more than one)
-  vault_diff.py vault <side>              stdin: salt, a Vault kv-v2 answer, "\\n<HTTP status>" (curl -w);
-                                          stdout: "<key>\\t<hash>" lines, or "#absent" (404, deleted)
+  vault_diff.py vault                     stdin: salt, the in-cluster Vault's kv-v2 answer, "\\n<HTTP status>"
+                                          (curl -w); stdout: "<key>\\t<hash>" lines, or "#absent" (404, deleted)
   vault_diff.py secret                    stdin: salt, `kubectl get secret -o json` (empty: absent)
   vault_diff.py compare <svc> <obj> <A> <B>  stdin: A's lines, "#--", B's lines; prints one line per
                                           key; exit 1 when anything is not equal
@@ -67,19 +65,19 @@ def emit(salt, pairs):
         sys.stdout.write("%s\t%s\n" % (show(key), fingerprint(salt, key, value)))
 
 
-def mode_vault(side):
+def mode_vault():
     salt = read_salt(sys.stdin)
     raw = sys.stdin.read()
     body, _, code = raw.rpartition("\n")
     code = code.strip()
-    where = {"hcp": "HCP Vault", "k8s": "the in-cluster Vault"}.get(side, side)
+    where = "the in-cluster Vault"
     if code == "404":
         print("#absent")
         return
     if code == "000" or not code:
         die("%s gave no answer (address, CA, the port-forward?)" % where)
     if code in ("401", "403"):
-        die("%s refused the read (HTTP %s: the token, or its namespace)" % (where, code))
+        die("%s refused the read (HTTP %s: the token, or its policy)" % (where, code))
     if code != "200":
         die("%s answered HTTP %s" % (where, code))
     try:
@@ -202,43 +200,12 @@ def mode_services(overlays):
             print(name)
 
 
-IN_CLUSTER = "https://vault.vault.svc:8200"
-
-
-def mode_hcp_address(overlays):
-    # The one address every generated VaultConnection that is not the in-cluster one points at.
-    found = set()
-    try:
-        names = sorted(os.listdir(overlays))
-    except OSError:
-        die("no directory %s" % overlays)
-    for name in names:
-        path = os.path.join(overlays, name, "vault.yaml")
-        if not (NAME.match(name) and os.path.isfile(path)):
-            continue
-        text = open(path, encoding="utf-8").read()
-        for doc in re.split(r"(?m)^---\s*$", text):
-            if not re.search(r"(?m)^kind: VaultConnection\s*$", doc):
-                continue
-            m = re.search(r"(?m)^spec:\n(?:  .*\n)*?  address: (\S+)\s*$", doc)
-            if not m:
-                die("%s: a VaultConnection without an address" % path)
-            if m.group(1) != IN_CLUSTER:
-                found.add(m.group(1))
-    if len(found) > 1:
-        die("the generated VaultConnections name %d HCP addresses" % len(found))
-    for a in found:
-        if not re.match(r"^https://[a-z0-9.-]+(:[0-9]{1,5})?$", a):
-            die("the generated HCP address is not a plain https address")
-        print(a)
-
-
 def main(argv):
     if not argv:
         die("no mode")
     mode, args = argv[0], argv[1:]
-    if mode == "vault" and len(args) == 1:
-        mode_vault(args[0])
+    if mode == "vault" and not args:
+        mode_vault()
     elif mode == "secret" and not args:
         mode_secret()
     elif mode == "compare" and len(args) == 4:
@@ -247,10 +214,8 @@ def main(argv):
         mode_objects(*args)
     elif mode == "services" and len(args) == 1:
         mode_services(args[0])
-    elif mode == "hcp-address" and len(args) == 1:
-        mode_hcp_address(args[0])
     else:
-        die("usage: vault_diff.py services|objects|hcp-address|vault|secret|compare …")
+        die("usage: vault_diff.py services|objects|vault|secret|compare …")
 
 
 main(sys.argv[1:])

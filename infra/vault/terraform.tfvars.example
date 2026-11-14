@@ -1,22 +1,21 @@
-region                      = "eu-central-1"
-eks_cluster_name            = "ryft-prod-euc1"
-project                     = "ryft"
-vault_parent_namespace_root = "admin" # "admin" on HCP Vault Dedicated; "" on self-managed Enterprise
-vault_address_for_cluster   = "https://<cluster>.hashicorp.cloud:8200" # Terraform uses it too
-# vault_address             = "https://…"         # only if Terraform reaches Vault at another address
-# vault_ca_bundle_b64 is retired (must stay unset): every VaultConnection reads the CA from the
-# cert-manager Secret vault-ca, which the generated overlays request (D190).
+region           = "eu-central-1"
+eks_cluster_name = "ryft-prod-euc1"
+project          = "ryft"
 
-# The Vault in the cluster (Community Edition), written beside HCP once targets.tf says so
-# (local.write_k8s, a reviewed commit, D191). Terraform reaches it only through
-# `kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200`
-# (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). While write_k8s is false
-# neither value is read and no port-forward is needed.
+# Retired with HCP Vault (D207); a line that sets one of these fails the plan and names itself:
+# vault_parent_namespace_root, vault_address, vault_address_for_cluster, vault_ca_bundle_b64.
+# Every generated VaultConnection names https://vault.vault.svc:8200 and trusts the cert-manager
+# Secret vault-ca (D190).
+
+# The in-cluster Vault (Community Edition), the only Vault this root writes. Terraform reaches it
+# only through `kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200`
+# (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward); every plan and apply needs
+# the port-forward, the CA file and the token. The defaults are the runbook's:
 # vault_k8s_address      = "https://127.0.0.1:8200"        # loopback only (validated)
-# vault_k8s_ca_cert_file = "~/.config/ryft/vault-ca.pem"   # the vault-ca CA, written by the runbook
+# vault_k8s_ca_cert_file = "~/.config/ryft/vault-ca.pem"   # ca.crt of the Secret vault/vault-ca
 # The token is never in this file: export TF_VAR_vault_k8s_token (an ephemeral variable, never in
-# state or plan), a token of the token role terraform (1 hour, not renewable) from the OIDC login.
-# test_override_targets is for terraform test only; never set it here (a check warns).
+# state or plan), a token of the token role terraform (1 hour, not renewable) created with the
+# admin token of a generate-root session (docs/OPERATIONS.md -> Vault -> Login, D209).
 
 # Supabase (docs/SUPABASE.md). The database and RabbitMQ passwords of the services are
 # generated here; you only provide the owner password, which only the migrate
@@ -25,7 +24,7 @@ supabase_project_ref    = "<ref>"
 database                = { host = "aws-<n>-eu-central-1.pooler.supabase.com" } # Connect → Session pooler
 database_owner_password = "<database password>"
 
-# Per-service credentials. Keys land only in that service's kv/config.
+# Per-service credentials. Keys land only in that service's kv-<service>/config.
 # Shared settings, each delivered only to the services that list it in secret_keys.
 # BETA_GATE (api, ingest; default off) and CONSENT_ENFORCE (api, ingest, scoring;
 # default on) are off|warn|on: warn serves the request and flags it in X-RYFT-Gate
@@ -51,7 +50,7 @@ service_secrets = {
   # the same three values make smoke-prod takes. Without them every sync fails its smoke.
   smoke = {
     SUPABASE_ANON_KEY = "sb_publishable_…" # Project Settings → API Keys (the publishable/anon key)
-    SMOKE_EMAIL       = "smoke@ryftapp.de"
+    SMOKE_EMAIL       = "smoke@ryftlab.de"
     SMOKE_PASSWORD    = "…"
   }
   # Grafana Cloud → Kubernetes Monitoring → the collector's access policy token (glc_…),
@@ -71,9 +70,12 @@ service_secrets = {
   # }
 }
 
-# Add a service: one line here creates its Vault namespace, Kubernetes namespace,
-# auth mount, KV, policy and VSO manifests (a database = "role" also needs a
-# migration creating ryft_<name> and an entry in backend/internal/db.ServiceRoles).
+# Add a service: one line here creates its Kubernetes namespace and service account, and on
+# the in-cluster Vault its mount kv-<name>, policy and role, plus the VSO manifests (a
+# database = "role" also needs a migration creating ryft_<name> and an entry in
+# backend/internal/db.ServiceRoles). The policy terraform must name it first: render
+# bootstrap/terraform.hcl, write it with a generate-root session's root token, then apply
+# (infra/vault/README.md).
 # services = {
 #   ingest   = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", amqp = "client" }
 #   scoring  = { database = "role", amqp = "client" }

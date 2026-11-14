@@ -95,6 +95,9 @@ spec:
         - ipBlock: { cidr: {{ $vpc }} }
       ports:
         - { protocol: TCP, port: 443 }
+    {{- if .Values.kmsSeal }}
+    # Only for the awskms seal (kmsSeal; vault.tf sets it from var.vault_seal, D208). Under Shamir the server has no
+    # AWS identity and reaches nothing outside the VPC.
     # AWS KMS (kms.<region>.amazonaws.com, through the NAT): DescribeKey at every start, Decrypt at the unseal. Public
     # addresses only; NetworkPolicy cannot match host names, so the port is the limit.
     - to:
@@ -108,6 +111,7 @@ spec:
         - ipBlock: { cidr: 169.254.170.23/32 }
       ports:
         - { protocol: TCP, port: 80 }
+    {{- end }}
 ---
 # The snapshot CronJob's pods (D192, snapshot.yaml). Vault's API (vault-active), S3 (no gateway endpoint in the VPC;
 # through the NAT), the Pod Identity agent. Nothing reaches them.

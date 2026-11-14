@@ -35,7 +35,7 @@ spec:
           envFrom:
             - configMapRef: { name: ryft-config }
             # Only this service's credentials: on EKS synced by the Vault Secrets
-            # Operator from Vault namespace ryft/scoring (infra/vault).
+            # Operator from kv-scoring/config on the in-cluster Vault (infra/vault).
             - secretRef: { name: ryft-secrets }
           volumeMounts:
             - { name: amqp-client, mountPath: /etc/ryft/amqp, readOnly: true }

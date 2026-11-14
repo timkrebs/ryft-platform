@@ -7,11 +7,13 @@
 # Flipping it back to false destroys the release (and with it every policy).
 enabled: false
 
-# The Vault addresses P4 admits on a VaultConnection: HCP Vault's and the in-cluster Vault's,
-# while the namespaces move one cutover PR at a time (this list must be applied before the
-# first one); the decommission leaves the second. A check and a terraform test hold every
-# VaultConnection infra/vault generates (deploy/k8s/overlays/vault-namespaces/*/vault.yaml)
-# to this list.
+# The Vault addresses P4 admits on a VaultConnection. The in-cluster Vault is the only Vault
+# since the rebuild (D207; HCP Vault is deleted). HCP's entry stays first, as before, only
+# while the committed deploy/k8s/overlays/vault-namespaces/*/vault.yaml are still its render:
+# it goes in the follow-up PR, together with the overlays the user's infra/vault apply
+# regenerates (docs/work/2026-11-13-rebuild/followup-overlays.md). The admission chart is
+# disabled (enabled: false above, D210), so the dead entry admits nothing live. A check and a
+# terraform test hold every VaultConnection infra/vault generates to this list.
 vaultAddresses:
   - https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200
   - https://vault.vault.svc:8200

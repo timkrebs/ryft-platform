@@ -72,6 +72,73 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Rebuild (2026-11-13)
+
+RYFT was shut down on 2026-11-10 (D206): every AWS resource is gone, the Terraform states of `infra/aws`,
+`infra/aws/kubernetes` and `infra/vault` are empty, and HCP Vault and Google Workspace are deleted. The owner brings
+production back **as it was** (same hostnames, same images, the testers' data in Supabase), now with Vault CE in the
+cluster as the only Vault. The rebuild PR (`infra: rebuild with Vault CE in the cluster`, branch `infra/rebuild`) holds
+the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2026-11-13-rebuild/`. Decisions:
+**D207-D215**.
+
+**The domain `ryftlab.de` (2026-11-14, same PR, before any apply; D213-D215).** A hard cut: `api.`, `argocd.` and
+`rabbitmq.ryftlab.de`, `support@ryftlab.de`; no alias, redirect or AASA on the old domain, which keeps GoDaddy's
+nameservers and leaves Terraform (its zone is destroyed by the DNS plan). `infra/aws/dns` is a new zone with the
+Microsoft 365 records as code (D214, plan 13/0/7; CAA is one apex set with `issue` and `issuewild`, no `*.` set).
+`web` is out of `overlays/eks` (D215), its manifests and code kept on the new domain; three checks read its pin instead
+of the render. Legal texts: only the domain and the contact. Security review of the domain diff:
+`docs/work/2026-11-13-rebuild/review-domain.md`.
+**Open, the owner's legal call (D214):** the privacy policy in force still says Google Workspace receives and stores
+support mail; it is Microsoft through GoDaddy now, and correcting it is a new version. **Not reachable until a host is
+chosen (D215):** `https://ryftlab.de/privacy` and the Impressum, which the app links to; REBUILD step 12 lets nobody
+but you sign in until they load.
+
+**Done in the PR (merged = nothing happens; no Argo CD exists)**
+- `infra/vault`: the in-cluster Vault only, from an empty state; the HCP side and its variables are retired (D207).
+- `infra/aws/kubernetes`: `vault_seal` with `shamir` as the default and `awskms` built (D208); `vault_vso_peer` beside
+  `vault_collector_peer`, both closed until the operator's init is done and root revoked (D207, Bootstrap step 11); the
+  server pods' egress to AWS only under `awskms` (vault-extras 0.3.0).
+- `infra/vault`: the admin policy creates no token but the terraform token, writes no policy, token role, auth method,
+  auth role or config, or identity object, and restores no snapshot (D209); `prevent_destroy` on the data key (D211).
+- OPERATIONS → Vault: shares and tokens go only to a verified pod (`vault_forward`: the StatefulSet's by uid, the
+  pinned digest, `vault-active` for a login), G1's gap until it is in Deny (D210); the clipboard and the init-window
+  rules.
+- `infra/aws/dns`: the zone `ryftlab.de` with the Microsoft 365 records as code (D213, D214; replaced D212's no-mail
+  default).
+- `scripts/recover_data_key.sh` (D211); the scripts read the in-cluster Vault by default; `vault_diff.sh` has no HCP mode.
+- The alerts, OBSERVABILITY and OPERATIONS are written for one Vault, Shamir and the generate-root session (D209).
+- `docs/REBUILD.md`: the owner's fourteen steps, each with a plan count, a "worked when" and a stop rule.
+
+**Verified only by CI, not here:** no `terraform fmt`/`validate`/`test`, `make test-scripts`, `make alerts-check`,
+gofmt or the admission harness ran in the session (the permission system refused them). The plan counts in REBUILD.md
+are counted from the code, not planned: `infra/aws` about 80 and `infra/aws/kubernetes` about 37 are estimates;
+`infra/vault` 90 and DNS 13/0/7 (D214) are exact counts of the resources. The domain change: the Go tests of the touched
+packages ran here; Terraform, the script tests, the CEL harness, the renders and the web checks only in CI.
+
+**Needs you, in order:** confirm or change D208 (seal), D209 (login), D210's G2, D211 (recover the key); set the
+repository variable `SUPPORT_EMAIL` to `support@ryftlab.de` before the merge; merge the PR; then `docs/REBUILD.md`
+steps 1-14 (step 1 is the new DNS order and starts with the old domain's delegation check and its no-mail records at
+GoDaddy). Step 7 ends with a follow-up PR that only you can produce: the regenerated
+overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), merged before step 8. The app: a build for
+`https://api.ryftlab.de` (head-architect, `../app`).
+
+**Open after the rebuild**
+- The privacy policy's email paragraph (Google Workspace → Microsoft through GoDaddy) and a host for the legal pages
+  (D214, D215): the owner's call.
+- `selector1._domainkey` once it resolves at GoDaddy: one line in `infra/aws/dns/mail.tf` (D214).
+- Supabase Auth SMTP as `@ryftlab.de` (not built).
+- G1: the admission chart on in Audit, then the `vault` bindings and P13 in Deny, then #121 (D210). Soon after the
+  testers are back, and before any switch to `awskms`. Until then the verified-pod rule is what stands in for it.
+- To verify in kind (OPERATIONS → Vault): how a 2.2.1 follower takes the shares around its `retry_join`, the init and
+  join log lines, `generate-root -decode=-`, the loopback binding through a port-forward, and the audit options.
+- The import service's namespace is missing from the injector's exclusion list in `deploy/monitoring/k8s-monitoring.yaml`,
+  and its keys from `infra/vault/terraform.tfvars.example`: the brand hook stops agents from writing the name, so the
+  owner adds both.
+- D205 (the EKS endpoint narrowed to the operator's addresses) no longer waits for HCP: it can follow at any time.
+- Still not built: D199 (log-based Vault alerts), D200-D202 (Argo CD apps for monitoring's and the import service's
+  operator objects; the collector as a Terraform add-on). The "not verified" list of the Vault CE section below still
+  applies, except for the KMS items under Shamir.
+
 ## Production hardening (2026-11)
 
 Run of 2026-11-04 and 2026-11-05: Phase 0 (safety net), Phase 1 (docs in code) and part of Phase 2 (structure) of
@@ -278,6 +345,10 @@ builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backe
 
 ## Vault CE migration (2026-11)
 
+**Superseded by the rebuild (D207, section above).** HCP Vault is deleted, so nothing below is to be run any more: no
+dual-write, no cutovers, no decommission PRs. The section stays as the record of what #145-#155 built. Headings it names
+in OPERATIONS may have moved (Vault → Login, Unseal keys).
+
 Moving every credential from HCP Vault Dedicated to Vault Community Edition 2.2.1 in namespace `vault` (plan, design and
 addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D204 are cited by the code; D203 is a procedure;
 D199-D202 and D205 are decided, not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
@@ -316,14 +387,15 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    2. Rebase #121. It merges second: it bumps the chart above 0.5.1 (#147's and #153's), sets 18 bindings and 13 policies
       (`admission_intended.sh --check` fails if missed) and reconciles P1's in-scope list with `argoScope.namespaceObjects`.
    3. A fresh full-mode `admission-e2e` kind run on a tree that contains #47.
-   4. Mark #121 ready, review, merge, and give its decision a D-number (D206 is next).
+   4. Mark #121 ready, review, merge, and give its decision a D-number (the next free one; D212 is the last as of the
+      rebuild PR).
    5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`).
    6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can
       go to Deny at any time, and alone.
    Verify with the G1 command in OPERATIONS → Vault → Hard gates. **If step 6's plan shows `helm_release.admission_policy`, this
    step's apply is not done: stop.**
 3. **Fleet Management and Beyla** (D197): the pod-log exclusion `ryft-.*` → `ryft-.*|vault` and Beyla's exclusion of `vault`
-   (OPERATIONS → Before the Vault add-on is applied).
+   (OPERATIONS → Fleet exclusions of vault).
 4. **The injector exclusion** (#145): `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
    `kubectl --context ryft-prod-euc1 get mutatingwebhookconfigurations -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'`:
    the injector's `NotIn` list carries every `ryft-*` namespace, `vault` and `vault-secrets-operator-system`.
@@ -335,7 +407,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    `rm infra/aws/kubernetes/vault-addon.tfplan`. The CronJob fails until step 9 writes the role `vault-snapshot`: expected. Keep
    steps 8-10 in one sitting, or do not load the `ryft-vault` alert group before step 10. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
    ready, in three nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1`, exactly five `AWS_*` variables
-   in the pod, no `unable to set initial state`. Then the Explore check (OPERATIONS → Before the Vault add-on is applied,
+   in the pod, no `unable to set initial state`. Then the Explore check (OPERATIONS → Fleet exclusions of vault,
    step 3), **before bootstrap step 3**: Loki `{namespace="vault", container=~".+"}` returns nothing and every stream of the
    wider `{namespace="vault"}` is k8s-manifest-tail's or an event stream; Beyla series and Tempo return nothing. If `vault status` already shows `Initialized true` before your own init
    (G3): stop, treat it as a compromise, wipe the PVCs and EBS volumes.
@@ -1290,12 +1362,14 @@ make push REGISTRY=ghcr.io/timkrebs/ryft            # ingest, scoring, api, migr
 ```
 
 EKS, in order (each Terraform root applied by you from your machine; state in HCP
-Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
+Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftlabde); the rebuild of 2026-11 follows
+[`REBUILD.md`](REBUILD.md)):
 
 ```bash
 # State: HCP Terraform workspaces (execution Local), after `terraform login` and, once, `make tf-migrate-hcp`
 (cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
-# GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
+# Every record against the new nameservers (OPERATIONS → Mail for ryftlab.de), then GoDaddy: the four printed;
+# check: dig +norecurse NS ryftlab.de @a.nic.de
 (cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)
 aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1
 (cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email

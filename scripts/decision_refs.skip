@@ -27,4 +27,4 @@ D202 the Grafana Cloud collector as a Terraform helm_release (ticket V7c); not b
 D205 the EKS endpoint narrowed after HCP is gone (ticket PR 6c); not built
 
 # A procedure of the owner's, with no code that follows from it.
-D203 the recovery-key custody: a human procedure (OPERATIONS -> Vault -> Recovery keys), no code follows from it
+D203 the key-share custody (amended by D208): a human procedure (OPERATIONS -> Vault -> Unseal keys), no code follows from it

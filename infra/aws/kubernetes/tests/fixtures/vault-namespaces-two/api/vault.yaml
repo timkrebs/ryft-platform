@@ -10,7 +10,7 @@ spec:
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultConnection
 metadata:
-  name: vault-hcp
+  name: vault-second
   namespace: ryft-api
 spec:
-  address: "https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200"
+  address: "https://vault.vault.svc:8200"

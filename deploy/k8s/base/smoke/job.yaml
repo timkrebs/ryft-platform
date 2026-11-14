@@ -42,8 +42,8 @@ spec:
                 http://api.ryft-api.svc.cluster.local/readyz,http://ingest.ryft-ingest.svc.cluster.local/readyz,http://scoring.ryft-scoring.svc.cluster.local/readyz,http://notify.ryft-notify.svc.cluster.local/readyz
             - { name: SMOKE_WAIT, value: "90s" }
             - { name: LOG_LEVEL, value: info }
-          # SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD (Vault
-          # admin/ryft/smoke, service_secrets.smoke in infra/vault).
+          # SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD (kv-smoke/config
+          # on the in-cluster Vault, service_secrets.smoke in infra/vault).
           envFrom:
             - secretRef: { name: ryft-secrets }
           securityContext:

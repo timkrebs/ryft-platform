@@ -56,8 +56,20 @@ render "${good[@]:0:5}" "docker.io/evil/web:$first"; chk
 render "${good[@]:0:5}" "ghcr.io/timkrebs/ryft/web:1234567"; chk
 [ "$rc" = 1 ] && grep -q 'pin lines do not say' "$tmp/out" || fail "a tag other than the pin: $(cat "$tmp/out")"
 # A pinned image the render does not contain; an empty render.
+render "${good[@]:0:4}" "${good[5]}"; chk
+[ "$rc" = 1 ] && grep -q 'migrate is pinned' "$tmp/out" || fail "a missing image: $(cat "$tmp/out")"
+# web pinned but not deployed (D215): no web image in the render passes, and its pin is still asked of the registry.
 render "${good[@]:0:5}"; chk
-[ "$rc" = 1 ] && grep -q 'web is pinned' "$tmp/out" || fail "a missing image: $(cat "$tmp/out")"
+[ "$rc" = 0 ] || fail "web pinned but not rendered must pass: $(cat "$tmp/out")"
+grep -q "ryft/web/manifests/$first" "$FAKE_CURL_LOG" || fail "the web pin is asked of the registry although web is not rendered: $(cat "$FAKE_CURL_LOG")"
+[ "$(grep -c manifests "$FAKE_CURL_LOG")" = 6 ] || fail "six manifests are asked with web not rendered: $(cat "$FAKE_CURL_LOG")"
+render "${good[@]:0:5}"; FAKE_CODE=404 chk
+[ "$rc" = 1 ] && grep -q "web:$first: 404" "$tmp/out" || fail "a web pin the registry does not know fails although web is not rendered: rc=$rc $(cat "$tmp/out")"
+# A web pin that is not a tag: the render's shape rule never sees it (web is not rendered), so the pin gets the same rule.
+hand_pin web "x/y"; render "${good[@]:0:5}"; chk
+[ "$rc" = 1 ] && grep -q "web is pinned to 'x/y', which is not a tag" "$tmp/out" || fail "a web pin that is not a tag must fail although web is not rendered: rc=$rc $(cat "$tmp/out")"
+grep -q manifests "$FAKE_CURL_LOG" && fail "nothing is asked of the registry for a pin that is not a tag: $(cat "$FAKE_CURL_LOG")"
+hand_pin web "$first"
 render; chk
 [ "$rc" = 1 ] || fail "an empty render must fail: $(cat "$tmp/out")"
 

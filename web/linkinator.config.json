@@ -6,6 +6,6 @@
   "retryErrors": true,
   "retryErrorsCount": 3,
   "retryErrorsJitter": 2000,
-  "skip": ["^mailto:", "^https://ryftapp\\.de/"],
+  "skip": ["^mailto:", "^https://ryftlab\\.de/"],
   "verbosity": "error"
 }

@@ -152,7 +152,7 @@ fresh; sed 's/^    environment: deploy$/    environment: ${{ vars.E }}/' "$d/ci.
 [ "$rc" = 1 ] || fail "promote in an environment named by an expression must fail"
 fresh; grep -v '^    environment: deploy$' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
 [ "$rc" = 1 ] && grep -q "does not run in" "$tmp/err" || fail "promote without its environment must fail"
-fresh; sed 's/^    environment: deploy$/    environment: { name: deploy, url: "https:\/\/ryftapp.de" }/' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
+fresh; sed 's/^    environment: deploy$/    environment: { name: deploy, url: "https:\/\/ryftlab.de" }/' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
 [ "$rc" = 0 ] || fail "promote with an environment mapping and a url is still fine: $(cat "$tmp/err")"
 fresh; cp "$d/ci.yml" "$d/ci2.yml"; run
 [ "$rc" = 1 ] || fail "the environment in another file named like ci must fail"

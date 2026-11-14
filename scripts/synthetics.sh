@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Synthetic Monitoring checks as code (deploy/grafana/synthetics/ryftapp.json; D109: applied by hand, not Terraform).
+# Synthetic Monitoring checks as code (deploy/grafana/synthetics/ryftlab.json; D109: applied by hand, not Terraform).
 #   scripts/synthetics.sh check     validate the file offline (no credentials, no network): structure,
 #                                   RE2 regexps, the body markers against the site's own sources,
 #                                   the free-tier execution budget
@@ -25,7 +25,7 @@ set -euo pipefail
 orig=$PWD
 cd "$(dirname "$0")/.."
 
-file=deploy/grafana/synthetics/ryftapp.json
+file=deploy/grafana/synthetics/ryftlab.json
 if [ -n "${SYNTHETICS_FILE:-}" ]; then
   case $SYNTHETICS_FILE in /*) file=$SYNTHETICS_FILE ;; *) file=$orig/$SYNTHETICS_FILE ;; esac
 fi
@@ -53,7 +53,7 @@ validate_structure() {
         ( . as $c | (((http // {}) | keys) - ["method","ipVersion","noFollowRedirects","failIfNotSSL","validStatusCodes","failIfBodyNotMatchesRegexp","failIfHeaderNotMatchesRegexp"])[]
           | . as $k | $c | err("unknown http setting " + $k) ),
         ( if ((.job // "") | test("^ryft-site-[a-z0-9-]+$") | not) then err("job must match ^ryft-site-[a-z0-9-]+$ (the alert rules select job=~\"ryft-site-.*\")") else empty end ),
-        ( if ((.target // "") | test("^https://(www\\.)?ryftapp\\.de/[A-Za-z0-9._~/-]*$") | not) then err("target must be https://ryftapp.de/... or https://www.ryftapp.de/...") else empty end ),
+        ( if ((.target // "") | test("^https://(www\\.)?ryftlab\\.de/[A-Za-z0-9._~/-]*$") | not) then err("target must be https://ryftlab.de/... or https://www.ryftlab.de/...") else empty end ),
         ( if ((.frequency | type) != "number" or .frequency < 60000 or .frequency > 3600000)
             then err("frequency in milliseconds, 60000 to 3600000 (below a minute breaks the execution budget)") else empty end ),
         ( if ((.timeout | type) != "number" or .timeout < 1000 or .timeout > 60000 or ((.frequency | type) == "number" and .timeout > .frequency))

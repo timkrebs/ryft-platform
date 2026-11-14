@@ -74,7 +74,7 @@ describe('the two policies', () => {
     expect(directive(marketing, 'img-src')).toBe("'self'");
     expect(marketing).not.toContain(cspHash(ADMIN_JS));
     expect(marketing).not.toContain('supabase');
-    expect(marketing).not.toContain('api.ryftapp.de');
+    expect(marketing).not.toContain('api.ryftlab.de');
     expect(marketing).not.toContain('data:');
     expect(directive(marketing, 'trusted-types')).toBeUndefined();
   });
@@ -119,12 +119,12 @@ describe('the two policies', () => {
     expect(httpsOrigin(config.apiUrl, 'api')).toBe(config.apiUrl);
     expect(httpsOrigin(config.supabaseUrl, 'supabase')).toBe(config.supabaseUrl);
     for (const bad of [
-      'http://api.ryftapp.de',
-      'https://api.ryftapp.de/',
-      'https://api.ryftapp.de/v1',
-      'https://user@api.ryftapp.de',
+      'http://api.ryftlab.de',
+      'https://api.ryftlab.de/',
+      'https://api.ryftlab.de/v1',
+      'https://user@api.ryftlab.de',
       'https://*.supabase.co',
-      'api.ryftapp.de',
+      'api.ryftlab.de',
       '',
     ]) {
       expect(() => httpsOrigin(bad, 'x'), bad).toThrow();

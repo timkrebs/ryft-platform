@@ -4,7 +4,7 @@ import { clearOnLeave, isSamePage, type NavigateEventLike, type WindowLike } fro
 
 // sessionStorage is readable by every page of the origin in this tab (and a duplicated tab),
 // so the session is cleared when the tab leaves /admin.
-function fake(current = 'https://ryftapp.de/admin', withNavigation = true) {
+function fake(current = 'https://ryftlab.de/admin', withNavigation = true) {
   let onNavigate: ((e: NavigateEventLike) => void) | undefined;
   let onPageHide: (() => void) | undefined;
   const win: WindowLike = {
@@ -32,7 +32,7 @@ function fake(current = 'https://ryftapp.de/admin', withNavigation = true) {
 describe('clearOnLeave', () => {
   it('clears when the next document is another page of the origin', () => {
     const w = fake();
-    w.navigate('https://ryftapp.de/privacy');
+    w.navigate('https://ryftlab.de/privacy');
     w.pagehide();
     expect(w.clear).toHaveBeenCalledOnce();
   });
@@ -52,24 +52,24 @@ describe('clearOnLeave', () => {
 
   it('keeps the session for a reload of /admin (same page, with or without a fragment)', () => {
     const w = fake();
-    w.navigate('https://ryftapp.de/admin');
+    w.navigate('https://ryftlab.de/admin');
     w.pagehide();
     expect(w.clear).not.toHaveBeenCalled();
     const v = fake();
-    v.navigate('https://ryftapp.de/admin#users');
+    v.navigate('https://ryftlab.de/admin#users');
     v.pagehide();
     expect(v.clear).not.toHaveBeenCalled();
   });
 
   it('ignores a same-document navigation (a #view change): it never unloads the page', () => {
     const w = fake();
-    w.navigate('https://ryftapp.de/privacy', true);
+    w.navigate('https://ryftlab.de/privacy', true);
     w.pagehide();
     expect(w.clear).toHaveBeenCalledOnce();
   });
 
   it('without the Navigation API every pagehide clears (a reload signs in again: the safe direction)', () => {
-    const w = fake('https://ryftapp.de/admin', false);
+    const w = fake('https://ryftlab.de/admin', false);
     w.pagehide();
     expect(w.clear).toHaveBeenCalledOnce();
   });
@@ -77,11 +77,11 @@ describe('clearOnLeave', () => {
 
 describe('isSamePage', () => {
   it('compares origin and path, not the fragment or query', () => {
-    expect(isSamePage('https://ryftapp.de/admin#invites', 'https://ryftapp.de/admin')).toBe(true);
-    expect(isSamePage('https://ryftapp.de/admin/', 'https://ryftapp.de/admin')).toBe(false);
-    expect(isSamePage('http://ryftapp.de/admin', 'https://ryftapp.de/admin')).toBe(false);
-    expect(isSamePage('https://ryftapp.de/admin', null)).toBe(false);
-    expect(isSamePage('not a url', 'https://ryftapp.de/admin')).toBe(false);
+    expect(isSamePage('https://ryftlab.de/admin#invites', 'https://ryftlab.de/admin')).toBe(true);
+    expect(isSamePage('https://ryftlab.de/admin/', 'https://ryftlab.de/admin')).toBe(false);
+    expect(isSamePage('http://ryftlab.de/admin', 'https://ryftlab.de/admin')).toBe(false);
+    expect(isSamePage('https://ryftlab.de/admin', null)).toBe(false);
+    expect(isSamePage('not a url', 'https://ryftlab.de/admin')).toBe(false);
   });
 });
 

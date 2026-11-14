@@ -5,4 +5,4 @@ apiVersion: v2
 name: vault-extras
 description: The server certificate, the CA bundle, the NetworkPolicies, the disruption budget, the service-registration Role and the snapshot CronJob of Vault in namespace vault, for RYFT
 type: application
-version: 0.2.1  # bump on every template change, or the Helm provider does not upgrade it
+version: 0.3.0  # bump on every template change, or the Helm provider does not upgrade it

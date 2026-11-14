@@ -106,7 +106,7 @@ describe.skipIf(!built)('built site', () => {
 
     it('names its connections in the footer', () => {
       expect(page()).toContain(
-        'Signs in with Supabase Auth; talks to api.ryftapp.de. Nothing else is loaded.',
+        'Signs in with Supabase Auth; talks to api.ryftlab.de. Nothing else is loaded.',
       );
     });
 
@@ -118,7 +118,7 @@ describe.skipIf(!built)('built site', () => {
       expect(adminCsp).toContain(`script-src ${hash};`);
       expect(csp).not.toContain(hash);
       expect(adminCsp).toMatch(
-        /connect-src https:\/\/[a-z0-9]+\.supabase\.co\/auth\/v1\/ https:\/\/api\.ryftapp\.de\/v1\/admin\/;/,
+        /connect-src https:\/\/[a-z0-9]+\.supabase\.co\/auth\/v1\/ https:\/\/api\.ryftlab\.de\/v1\/admin\/;/,
       );
       expect(csp).toContain("connect-src 'none'");
     });
@@ -134,8 +134,8 @@ describe.skipIf(!built)('built site', () => {
         expect(noindex(f), f).toBe(true);
     }
     const sitemap = readFileSync(join(OUT, 'sitemap.xml'), 'utf8');
-    for (const p of ['/styleguide', '/open', '/404']) expect(sitemap).not.toContain(`ryftapp.de${p}<`);
-    expect(sitemap).toContain('<loc>https://ryftapp.de/de/science</loc>');
+    for (const p of ['/styleguide', '/open', '/404']) expect(sitemap).not.toContain(`ryftlab.de${p}<`);
+    expect(sitemap).toContain('<loc>https://ryftlab.de/de/science</loc>');
   });
 
   it('links every translated page to its other language', () => {

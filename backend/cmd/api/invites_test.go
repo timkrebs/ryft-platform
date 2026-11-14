@@ -534,7 +534,7 @@ func TestAdminCreateInvite(t *testing.T) {
 	inv := decodeInvite(t, a)
 	if inv.Email == nil || *inv.Email != "anna@example.com" || inv.MaxUses != 1 || inv.Uses != 0 || inv.Status != model.InviteOpen ||
 		inv.RevokedAt != nil || inv.Note != "Anna" || inv.ExpiresAt == nil || !inv.ExpiresAt.Equal(exp) ||
-		inv.Link != "https://ryftapp.de/invite/"+inv.Code || !strings.HasPrefix(inv.Code, "RYFT-") ||
+		inv.Link != "https://ryftlab.de/invite/"+inv.Code || !strings.HasPrefix(inv.Code, "RYFT-") ||
 		inv.CreatedBy.Kind != model.ActorUser || inv.CreatedBy.ID == nil || *inv.CreatedBy.ID != d.op.String() {
 		t.Fatalf("created by an operator's token: %+v", inv)
 	}
@@ -663,7 +663,7 @@ func TestAdminListInvites(t *testing.T) {
 			t.Errorf("expired: %+v", e)
 		}
 		for _, i := range list {
-			if i.Link != "https://ryftapp.de/invite/"+i.Code {
+			if i.Link != "https://ryftlab.de/invite/"+i.Code {
 				t.Errorf("link: %s", i.Link)
 			}
 			if i.UsesBy == nil {

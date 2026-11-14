@@ -1,4 +1,4 @@
-// The api at api.ryftapp.de/v1/admin/*, called with the operator's access token.
+// The api at api.ryftlab.de/v1/admin/*, called with the operator's access token.
 //   401  → refresh the session once and send again; a second 401 ends the session (and revokes
 //          its refresh token, best effort).
 //   403 mfa_required → ApiError with that code (the caller shows the TOTP challenge).
@@ -44,7 +44,7 @@ export interface ApiDeps {
   revoke?: (accessToken: string) => Promise<void>;
 }
 
-const NO_ANSWER = 'No answer from api.ryftapp.de (network or edge limit). Try again.';
+const NO_ANSWER = 'No answer from api.ryftlab.de (network or edge limit). Try again.';
 
 /** The sign-in service did not decide about the refresh token: the session is kept, try again. */
 function authUndecided(e: AuthError): ApiError {

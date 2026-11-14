@@ -278,7 +278,7 @@ alerts-apply: alerts-check
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
 	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
 
-# External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
+# External checks of ryftlab.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
 # through the SM API (SM_API_URL, SM_ACCESS_TOKEN; docs/OPERATIONS.md -> Monitoring).
 synthetics-check:
@@ -291,12 +291,12 @@ k8s-validate:
 	@set -e; export GIT_ALLOW_PROTOCOL=file; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
 	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
-	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
+	for o in $(addprefix services/,$(NAMESPACES)) services/web overlays/eks overlays/local-postgres; do \
 	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
 	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml deploy/k8s/overlays/eks/web.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh
@@ -366,7 +366,7 @@ k8s-check-images:
 	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
 
-# --- web/ (ryftapp.de, D107): one place for the site's checks; `make hooks` once per clone ---
+# --- web/ (ryftlab.de, D107): one place for the site's checks; `make hooks` once per clone ---
 # The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it: absolute,
 # or relative to web/).
 

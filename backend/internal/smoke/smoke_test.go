@@ -110,7 +110,7 @@ func run(t *testing.T, f *fake, mod func(*Config)) (Result, error) {
 	srv := httptest.NewServer(f.handler(t, now))
 	t.Cleanup(srv.Close)
 	c := Config{APIURL: srv.URL, IngestURL: srv.URL, Health: []string{srv.URL + "/readyz/api", srv.URL + "/readyz/scoring"},
-		SupabaseURL: srv.URL, AnonKey: "anon", Email: "smoke@ryftapp.de", Password: "pw",
+		SupabaseURL: srv.URL, AnonKey: "anon", Email: "smoke@ryftlab.de", Password: "pw",
 		Wait: 300 * time.Millisecond, Poll: 10 * time.Millisecond, ReadyWait: 100 * time.Millisecond, Now: func() time.Time { return now }}
 	if mod != nil {
 		mod(&c)

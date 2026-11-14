@@ -18,7 +18,7 @@ mock_provider "aws" {
     defaults = {
       zone_id = "Z0123456789ABCDEFGHIJ"
       arn     = "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
-      name    = "ryftapp.de"
+      name    = "ryftlab.de"
     }
   }
   mock_data "aws_partition" {
@@ -785,15 +785,37 @@ run "vault_address_matches_the_generated_vault_yaml" {
     error_message = "every address is an https URL without a trailing slash, as infra/vault writes it, and none is listed twice"
   }
 
+  # Until the follow-up PR (docs/work/2026-11-13-rebuild/followup-overlays.md): the committed overlays are still
+  # HCP's render, so HCP's address stays listed, first as before, next to the in-cluster Vault's. The follow-up
+  # commits the regenerated overlays, drops HCP's entry and pins both lists to the in-cluster address alone.
   assert {
-    condition     = contains(local.admission_file.vaultAddresses, "https://vault.vault.svc:8200") && length(local.admission_file.vaultAddresses) <= 2
-    error_message = "during the cutover vaultAddresses holds HCP's address and the in-cluster Vault's (https://vault.vault.svc:8200, design section 5), nothing else; P4 must admit the in-cluster shape before the first cutover PR"
+    condition = jsonencode(local.admission_file.vaultAddresses) == jsonencode([
+      "https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200",
+      "https://vault.vault.svc:8200",
+    ])
+    error_message = "until the follow-up PR vaultAddresses holds HCP's address (the committed overlays are still its render) and then the in-cluster Vault's (https://vault.vault.svc:8200, D207), nothing else"
   }
 }
 
-# The cutover: a tree where one namespace names the in-cluster Vault and another still HCP's passes
+# A tree where every namespace names the in-cluster Vault (what the user's infra/vault apply writes) passes
 # the check; an address in no list, or a file with two addresses, fails it.
-run "vault_address_check_admits_both_targets_during_the_cutover" {
+run "vault_address_check_admits_the_in_cluster_vault" {
+  command = plan
+
+  variables {
+    admission_vault_namespaces_dir = "tests/fixtures/vault-namespaces-in-cluster"
+  }
+
+  assert {
+    condition     = local.admission_vault_address_ok && length(local.vault_address_by_file) == 2 && jsonencode(local.vault_addresses) == jsonencode(["https://vault.vault.svc:8200"])
+    error_message = "a tree on the in-cluster Vault only, quoted or not, must pass check.admission_vault_address"
+  }
+}
+
+# Until the follow-up PR, HCP's address is still listed: a tree with one namespace on it and one on the
+# in-cluster Vault passes. The follow-up replaces this run with vault_address_check_refuses_a_namespace_left_on_hcp
+# (docs/work/2026-11-13-rebuild/followup-overlays.md).
+run "vault_address_check_admits_hcp_until_the_follow_up" {
   command = plan
 
   variables {
@@ -802,7 +824,7 @@ run "vault_address_check_admits_both_targets_during_the_cutover" {
 
   assert {
     condition     = local.admission_vault_address_ok && length(local.vault_addresses) == 2
-    error_message = "a tree half moved to the in-cluster Vault must pass check.admission_vault_address"
+    error_message = "while vaultAddresses lists HCP's address, a tree with one namespace on it and one on the in-cluster Vault must pass check.admission_vault_address"
   }
 }
 

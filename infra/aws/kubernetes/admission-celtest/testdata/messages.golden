@@ -601,7 +601,7 @@ decom: an empty mount
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys.
 decom: another service's mount
     ryft-vso: P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one), and set only the allowed keys.
-decom: the HCP VaultConnection as generated today
+decom: the HCP VaultConnection as infra/vault generated it
     ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.
 decom: the HCP address
     ryft-vso: P4: a VaultConnection must carry a RYFT Vault address, verify TLS, take a CA only from the Secret vault-ca, and set no header or timeout.

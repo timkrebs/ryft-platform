@@ -70,6 +70,9 @@ spec:
         - configMapRef:
             name: ${5:-ryft-config-bbbbbbbbbb}
         name: ingest
+EOF
+  # An empty web tag: no web Deployment in the render (web not deployed, D215).
+  [ -z "$3" ] || cat >> "$tmp/rendered.yaml" <<EOF
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -104,6 +107,16 @@ render '"2026-10-20"' '"2026-10-20"' "\"$second\""; bad "a newer page is served 
 render '"2026-10-20"' '"2026-10-20"' "\"$both\"";   bad "a newer page in en and de than the one in force" "serves 2026-12-01\|serves 2026-11-31"
 render '"2026-10-20"' '"2026-10-20"' '"f437747"';   ok "a pin outside this history with the first version"
 render '"2026-11-02"' '"2026-11-02"' '"f437747"';   bad "a pin outside this history with a newer version" "not a commit of this history"
+# web not deployed (D215): no web Deployment renders, so the overlay's pin is the image that is checked
+pin_only() { mkdir -p "$(dirname "$OV")"; printf 'images:\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$1" > "$OV"; }
+pin_only "$second"; render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendered: the pinned commit serves the version"
+grep -q 'pinned, not deployed' "$tmp/out" || fail "web not rendered: the summary says the pin was read: $(cat "$tmp/out")"
+pin_only "$first";  render '"2026-11-02"' '"2026-11-02"' ''; bad "web not rendered: the pinned commit lacks the page" "no en page"
+pin_only "$second"; render '"2026-10-20"' '"2026-10-20"' ''; bad "web not rendered: the pin serves a newer page" "serves 2026-11-02"
+# Only the newTag right after web's "- name:" line counts (deploy_targets.sh's rule), not a comment that names web.
+printf 'images:\n  # ghcr.io/timkrebs/ryft/web\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "%s"\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$first" "$second" > "$OV"
+render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendered: web's own pin is read, not the newTag after a comment"
+rm -f "$OV"; render '"2026-11-02"' '"2026-11-02"' ''; bad "web neither rendered nor pinned" "neither renders nor pins"
 # the stand-ins the check must not be fooled by
 render '"2026-11-02"' '"2026-11-02"' "\"$second\"" '        env:
         - name: PRIVACY_POLICY_VERSION
@@ -214,4 +227,4 @@ render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "the published text is unch
 page en 2026-10-20 draft
 bad "a published page set back to a draft in place" "cannot go back to a draft"
 git checkout -q -f main
-echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page), no environment hook, the checked ConfigMap is the one read, drafts only unchanged"
+echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page; the overlay's pin when web is not rendered), no environment hook, the checked ConfigMap is the one read, drafts only unchanged"

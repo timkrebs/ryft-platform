@@ -11,10 +11,10 @@ resource "random_password" "db" {
   special = false # alphanumeric: safe in a URL and for SCRAM without SASLprep
 }
 
-# RabbitMQ (D97): a password per client. The client's own namespace gets it in
-# kv/config (AMQP_PASSWORD); the broker's namespace gets {username, password} at
-# kv/amqp-user-<client>, which the Topology Operator's User object imports (the broker
-# holds plaintext here: its namespace already holds the operator's administrator, so a
+# RabbitMQ (D97): a password per client. The client's own mount gets it in
+# kv-<client>/config (AMQP_PASSWORD); the broker's mount gets {username, password} at
+# kv-rabbitmq/amqp-user-<client> (k8s.tf), which the Topology Operator's User object imports (the
+# broker holds plaintext here: its namespace already holds the operator's administrator, so a
 # hash would protect nothing more). Rotate one with
 #   terraform apply -replace='random_password.amqp["api"]'
 # the operator updates the user, and the Vault Secrets Operator restarts the client.
@@ -25,23 +25,26 @@ resource "random_password" "amqp" {
   special = false
 }
 
-resource "vault_kv_secret_v2" "amqp_user" {
-  for_each = local.amqp_server == null ? toset([]) : toset(local.amqp_clients)
-
-  namespace           = vault_namespace.service[local.amqp_server].path_fq
-  mount               = vault_mount.kv[local.amqp_server].path
-  name                = "amqp-user-${each.key}"
-  delete_all_versions = true
-  data_json           = jsonencode({ username = each.key, password = random_password.amqp[each.key].result })
-}
-
 # Encryption key for data a service stores encrypted (the api's Apple refresh
 # tokens). Never replace it: what was sealed with the old key no longer opens
-# (ciphertexts carry a version byte for a future, deliberate rotation).
+# (ciphertexts carry a version byte for a future, deliberate rotation). The rebuild
+# imports the old value into random_bytes.data_key["api"] before the first apply (D211,
+# docs/OPERATIONS.md -> Vault -> The first apply), so this address must not change; the
+# import sets length from the value (32 bytes), which equals the configuration.
+#
+# prevent_destroy: after the import this state is the key's only copy (D211). A plan that
+# would destroy or replace it (a -replace, a changed length, the api's data_key flag
+# dropped, a destroy) fails instead. A deliberate rotation is a reviewed PR that removes
+# this line first. random_password.demo has no such guard: its rotation is a -replace
+# (README -> The App Review demo password).
 resource "random_bytes" "data_key" {
   for_each = { for name, s in local.services : name => s if s.data_key }
 
   length = 32
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Bearer of the api's /v1/admin routes (feature flags). Rotate it with
@@ -54,47 +57,10 @@ resource "random_password" "admin_key" {
   special = false
 }
 
-# KV v2 per service namespace at kv/, one secret `config` holding exactly the keys that
-# service is entitled to. The generated VaultStaticSecret turns it into the Kubernetes
-# Secret `ryft-secrets` the workload reads with envFrom.
-resource "vault_mount" "kv" {
-  for_each = local.services
-
-  namespace   = vault_namespace.service[each.key].path_fq
-  path        = "kv"
-  type        = "kv"
-  options     = { version = "2" }
-  description = "Application secrets for ${each.key}"
-}
-
-resource "vault_kv_secret_v2" "config" {
-  for_each = local.services_with_secrets
-
-  namespace           = vault_namespace.service[each.key].path_fq
-  mount               = vault_mount.kv[each.key].path
-  name                = "config"
-  delete_all_versions = true
-  data_json           = jsonencode(local.service_kv[each.key])
-}
-
-resource "vault_policy" "service" {
-  for_each = local.services
-
-  namespace = vault_namespace.service[each.key].path_fq
-  name      = each.key
-  policy    = <<-HCL
-    # ${each.key}: read its own config, nothing else in this namespace.
-    path "kv/data/config" {
-      capabilities = ["read"]
-    }
-    %{~if each.value.amqp == "server"}
-    # The RabbitMQ users' credentials, for the Topology Operator.
-    path "kv/data/amqp-user-*" {
-      capabilities = ["read"]
-    }
-    %{~endif}
-  HCL
-}
+# Each service's KV v2 mount kv-<svc> holds one secret `config` with exactly the keys that
+# service is entitled to (k8s.tf, vault_kv_secret_v2.k8s_config). The generated
+# VaultStaticSecret turns it into the Kubernetes Secret `ryft-secrets` the workload reads
+# with envFrom.
 
 check "whoop_import_has_its_keys" {
   assert {

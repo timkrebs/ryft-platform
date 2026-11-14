@@ -136,7 +136,7 @@ export class Stub {
       created_by: { kind: 'key', id: null },
       revoked_at: null,
       status: 'used',
-      link: 'https://ryftapp.de/invite/RYFT-H2NP-4WCX',
+      link: 'https://ryftlab.de/invite/RYFT-H2NP-4WCX',
       uses_by: [
         {
           user_id: '9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a',
@@ -359,7 +359,7 @@ export class Stub {
     return fail(404, 'not_found', `no stub for ${s.method} ${s.path}`);
   }
 
-  // ---- api.ryftapp.de --------------------------------------------------------------------
+  // ---- api.ryftlab.de --------------------------------------------------------------------
   private async api(route: Route) {
     if (route.request().method() === 'OPTIONS') return this.preflight(route);
     if (this.apiDown) return route.abort('failed');
@@ -431,7 +431,7 @@ export class Stub {
         created_by: { kind: 'user', id: '1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081' },
         revoked_at: null,
         status: 'open',
-        link: `https://ryftapp.de/invite/${code}`,
+        link: `https://ryftlab.de/invite/${code}`,
         uses_by: [],
       };
       this.invites.unshift(inv);
