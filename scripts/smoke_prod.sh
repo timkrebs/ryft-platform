@@ -16,7 +16,7 @@
 # external invite: docs/OPERATIONS.md → Beta).
 set -euo pipefail
 API=${API_URL:-https://api.ryftlab.de}
-INGEST=${INGEST_URL:-$API}
+INGEST=${INGEST_URL:-https://ingest.ryftlab.de}   # its own host on Cloud Run (design §3: HTTP/2 end to end for 32 MiB syncs)
 if [ -z "${SMOKE_TOKEN:-}" ]; then   # SMOKE_TOKEN: a bearer instead of the sign-in (the local stack's API key)
   : "${SUPABASE_URL:?set SUPABASE_URL}" "${SUPABASE_ANON_KEY:?set SUPABASE_ANON_KEY}"
   : "${SMOKE_EMAIL:?set SMOKE_EMAIL (the dedicated smoke user)}" "${SMOKE_PASSWORD:?set SMOKE_PASSWORD}"

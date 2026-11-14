@@ -93,6 +93,8 @@ jobs:
             smoke:
               - 'backend/**'
               - 'scripts/**'
+              # the Cloud Run script tests copy the templates (check_cloudrun, cloudrun_render, rotate_db_password)
+              - 'deploy/run/**'
               - 'docker-compose.yml'
               - 'Makefile'
               - 'deploy/rabbitmq/dev/**'
@@ -380,17 +382,27 @@ jobs:
       # The workflows themselves (.github/actionlint.yaml holds the known gaps).
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
-      # script fails without it): no pull_request_target/workflow_run, only `promote` names the
-      # environment `deploy` and reads the deploy App's key, no external reusable workflow, no
+      # script fails without it): no pull_request_target/workflow_run, only `promote` and deploy.yml's
+      # `deploy` name the environment `deploy`, only promote reads the deploy App's key, deploy.yml is
+      # gated by GCP_DEPLOY, never cancelled, has no status function or continue-on-error, scans before
+      # it signs in and changes Cloud Run only from main's tip, only this file defines ci-ok (deploy.yml
+      # reads that job of this workflow's own run), no external reusable workflow, no
       # `secrets: inherit`, no test hooks of the scripts.
       - run: ./scripts/check_workflows.sh
-      # The privacy policy version that api and ingest name in config.env has its page in
-      # English and German on the site, and the site has no page the platform does not
-      # name (D107): consent is recorded against that version.
+      # deploy/run (Cloud Run, what deploy.yml applies): config.env lints, every template renders with
+      # fake values, and the rendered YAML has design §3's limits, the ingress, account, h2c port and
+      # probes per service, the env of ticket-b.md, secrets pinned by number (migrate's equal to the
+      # services'), only the accessors' secrets, and none of P5's names (scripts/check_cloudrun.py).
+      - run: make cloudrun-check
+      # The privacy policy version in deploy/run/config.env (its home on Cloud Run) has its page in
+      # English and German on the site, the k8s copies equal it, and the site has no page the
+      # platform does not name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
-      # The version in force on EKS (the overlay's pin, moved by promote with the web pin):
-      # api and ingest agree and the pinned web commit serves it at /privacy (newest page, English and German).
-      # On a pull request it also refuses to put a draft text into force (an unchanged one stays).
+      # deploy/run/config.env's version is a published text (English and German, in the list), the
+      # k8s copies (deploy/k8s/base/{api,ingest}/config.env) equal it, and on a pull request a draft
+      # text is not put into force there. While EKS runs, also its version in force (the overlay's
+      # pin, moved by promote with the web pin): api and ingest agree and the pinned web commit serves
+      # it at /privacy (newest page, English and German).
       - name: The privacy policy in force has its page
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -455,7 +467,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        root: [infra/aws, infra/aws/dns, infra/aws/kubernetes, infra/vault]
+        root: [infra/aws, infra/aws/dns, infra/aws/kubernetes, infra/vault, infra/gcp]
     defaults:
       run:
         working-directory: ${{ matrix.root }}

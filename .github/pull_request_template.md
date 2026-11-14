@@ -10,5 +10,5 @@
 ### If `web/` changed
 - [ ] Copy in English **and** German (`web/messages/`, `web/content/`), German in du-form
 - [ ] Colours only from `tokens.css`; no new client JavaScript (D2)
-- [ ] Legal text changed? Only the user publishes it; `portedFrom` removed if edited. A new privacy version goes with `PRIVACY_POLICY_VERSION` in `deploy/k8s/base/{api,ingest}/config.env` in the same PR (the strict check in `manifests`); it goes into force on EKS with the web deploy (promote moves the pin)
+- [ ] Legal text changed? Only the user publishes it; `portedFrom` removed if edited. A new privacy version goes with `PRIVACY_POLICY_VERSION` in `deploy/run/config.env` (Cloud Run, where deploy.yml ships it with the merge) and its copies in `deploy/k8s/base/{api,ingest}/config.env` (equal to it) in the same PR (the strict check and `check_policy_in_force.sh` in `manifests`); on EKS it goes into force with the web deploy (promote moves the pin)
 - [ ] Screenshots of changed pages, dark and light (the CI Playwright report has all of them)

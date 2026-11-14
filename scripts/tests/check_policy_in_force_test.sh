@@ -15,6 +15,10 @@ page() { # <lang> <version> [status]
 overlay() { mkdir -p "$(dirname "$OV")"; printf 'configMapGenerator:\n  - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=%s] }\n' "$1" > "$OV"; }
 mkdir -p $L; echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31"]' > $L/privacy-versions.json
 page en 2026-10-20 draft; page de 2026-10-20 draft
+# Cloud Run's home of the version (checked after the EKS part); its own cases are at the end.
+RC=deploy/run/config.env
+run_cfg() { mkdir -p deploy/run; printf '# fixture\nLOG_LEVEL=info\nPRIVACY_POLICY_VERSION=%s\n' "$1" > $RC; }
+run_cfg 2026-10-20
 git add -A; git commit -qm "first"; first=$(git rev-parse HEAD | cut -c1-7)
 page en 2026-11-02; page de 2026-11-02
 git add -A; git commit -qm "new text"; second=$(git rev-parse HEAD | cut -c1-7)
@@ -187,6 +191,7 @@ render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "forward again to a draft" "
 # the person's policy PR: the base version in config.env changes to a page that is not published
 BC=deploy/k8s/base
 mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
+run_cfg 2027-01-01  # the k8s copies equal deploy/run/config.env
 git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "config.env unchanged"
 for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-02-01\n' > $BC/$s/config.env; done
@@ -227,4 +232,40 @@ render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "the published text is unch
 page en 2026-10-20 draft
 bad "a published page set back to a draft in place" "cannot go back to a draft"
 git checkout -q -f main
-echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page; the overlay's pin when web is not rendered), no environment hook, the checked ConfigMap is the one read, drafts only unchanged"
+
+# ---- Cloud Run: deploy/run/config.env (ticket B2) -----------------------------------------------
+# main has the variants of 2028-01 (2028-01-01 published, 2028-01-04's German page a draft), 2027-01-01
+# and 2027-02-01 published, 2026-10-20 a draft. The EKS part passes throughout (an unchanged overlay).
+copies() { mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$1" > $BC/$s/config.env; done; }
+overlay 2026-10-20; run_cfg 2027-01-01; copies 2027-01-01; git add -A; git commit -qm "the Cloud Run base"; git branch -q -f base HEAD
+BASE=
+render '"2026-10-20"' '"2026-10-20"' "\"$first\""
+ok "deploy/run/config.env at a listed version with both pages, the k8s copies equal it"
+grep -q "Cloud Run: deploy/run/config.env 2027-01-01" "$tmp/out" || fail "the summary names Cloud Run's version: $(cat "$tmp/out")"
+printf 'PRIVACY_POLICY_VERSION="2027-01-01"\n' > $RC; bad "a quoted value" "deploy/run/config.env: PRIVACY_POLICY_VERSION '\"2027-01-01\"' is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2027-01-01 # x\n' > $RC; bad "an inline comment" "is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2027-01-01\r\n' > $RC; bad "a CRLF line" "is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2027-01-01\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $RC; bad "the key twice" "exactly once"
+printf 'LOG_LEVEL=info\n' > $RC; bad "no key" "exactly once"
+rm -f $RC; bad "no deploy/run/config.env" "deploy/run/config.env is missing"
+run_cfg 2026-11-31; copies 2026-11-31; bad "a date that does not exist" "real calendar date"
+run_cfg 2029-01-01; copies 2029-01-01; bad "an unlisted version" "2029-01-01 is not in"
+cp $L/privacy-versions.json "$tmp/list.bak"; jq '. + ["2029-01-01"]' "$tmp/list.bak" > $L/privacy-versions.json
+bad "a listed version without its pages" "has no en page"
+cp "$tmp/list.bak" $L/privacy-versions.json
+run_cfg 2027-01-01; copies 2027-02-01; bad "a k8s copy that differs" "the k8s copy must equal"
+copies 2027-01-01; ok "the copies equal it again"
+# the draft guard on a pull request, without the k8s copies (after D3) so that only Cloud Run's part speaks
+rm -rf $BC; git add -A; git commit -qm "no k8s copies"; git branch -q -f base HEAD; BASE=base
+ok "Cloud Run alone"
+run_cfg 2028-01-04; bad "a change to a version whose German page is a draft" "deploy/run/config.env changes PRIVACY_POLICY_VERSION from 2027-01-01"
+run_cfg 2028-01-01; ok "a change to a published version"
+run_cfg 2026-10-20; ok "back to a version listed before the current one (a draft)"
+run_cfg 2027-01-01; page de 2027-01-01 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
+page de 2027-01-01; ok "published again"
+# the PR that introduces deploy/run/config.env: base has none, its api copy is what was published
+rm -f $RC; copies 2027-01-01; git add -A; git commit -qm "before Cloud Run"; git branch -q -f base HEAD
+run_cfg 2028-01-04; bad "introduced at a draft version" "from 2027-01-01 (base's deploy/k8s/base/api/config.env) to 2028-01-04"
+run_cfg 2027-01-01; ok "introduced at the published version"
+BASE=
+echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page; the overlay's pin when web is not rendered), no environment hook, the checked ConfigMap is the one read, drafts only unchanged; deploy/run/config.env: shape, calendar, listed, pages, the k8s copies equal it, its draft and in-place guards"

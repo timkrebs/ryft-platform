@@ -45,7 +45,1193 @@ the policy are the isolation. `monitoring` and the import service have theirs th
 On EKS `infra/vault` creates the namespaces (Pod Security `restricted`), the service
 accounts, the Vault side and the operator manifests; the overlay only deploys workloads.
 
+## GCP
+
+RYFT runs on GCP serverless in the project `ryftlab-prod`, region `europe-west1`, with no
+organisation (D216–D227; the design is `docs/work/2026-11-14-gcp/design.md`). `infra/gcp`
+owns the platform. Its README lists what it owns and what it doesn't. Its state and runs live in
+HCP Terraform: org `ryft-lab`, workspace `ryft-gcp`, CLI-driven, remote execution. CI's
+`deploy.yml` owns the revisions (`deploy/run`). You apply Terraform. Nothing else does.
+
+**The shell.** Every step runs in a shell where `TF_TOKEN_app_terraform_io` is unset, so
+Terraform and the API calls use your `ryft-lab` login (`terraform login`). Steps marked
+**old org** run against `tim-krebs-org`. Only that one command gets
+`TF_TOKEN_app_terraform_io='<old token>'` in front of it, with a leading space so it stays out
+of the history. In zsh, once per shell (or in `~/.zshrc`):
+
+```zsh
+setopt HIST_IGNORE_SPACE INTERACTIVE_COMMENTS
+```
+
+In bash: `HISTCONTROL=ignorespace`. `INTERACTIVE_COMMENTS` matters for pasting. Without it,
+zsh treats a pasted `X=1   # note` as the command `#` with `X` in its environment, and `X` is
+never set.
+
+**When each step can run.** B is `infra, deploy: GCP and the deploy workflow`. A is the backend
+on Pub/Sub and Cloud Run.
+
+| # | Step | Can run |
+| --- | --- | --- |
+| 0 | Old org: the data key into 1Password | now |
+| 1–6 | The project, bootstrap, budget rule, apply 1, secret values, the DNS move | B merged |
+| 7 | Supabase | B merged. `make smoke-supabase` on 6543 waits for A |
+| 7a | The config PR | B merged |
+| 8 | First deploy | waits for A |
+| 9 | Apply 2: invokers and mappings | waits for A |
+| 10 | The site and the app | waits for A and C1 |
+| 11 | Observability | B merged for a–e. f (the OTLP half) waits for A and step 9. g–j (synthetics, the app rules, the EKS groups, the routing proof) wait for step 10 (C1) as well |
+| 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
+| 15 | Testers | step 10 done, C2 in force |
+
+Each step ends with its stop rule. A stop means: do nothing further, find the cause, then start
+that step again.
+
+### 0. Old org: the data key into 1Password
+
+Design §5.3 steps 1–2. It can run today, before anything else.
+
+```bash
+ TF_TOKEN_app_terraform_io='<old token>' scripts/recover_data_key.sh
+```
+
+It prints the state version, a fingerprint and the decoded length, never the value. Note the
+fingerprint for step 5. The value is in `~/.config/ryft/data-key-api` (0600, its folder out of
+Time Machine). Put it into 1Password as the item "RYFT data key" without printing it:
+
+```bash
+pbcopy < ~/.config/ryft/data-key-api     # paste it into the 1Password item, then
+pbcopy < /dev/null                       # clear the clipboard
+```
+
+Keep the file for step 5.
+
+**Stop if** no state version is found, or the length isn't 32.
+
+### 1. The project, as it is
+
+```bash
+gcloud projects describe ryftlab-prod --format='value(projectNumber,parent.id)'   # a number, no parent
+gcloud billing projects describe ryftlab-prod --format='value(billingEnabled)'     # True
+gcloud projects get-iam-policy ryftlab-prod --format='table(bindings.role,bindings.members)'   # only you
+```
+
+2-step verification is on for your Google account. In Search Console, add the domain property
+`ryftlab.de` and copy its TXT value (`google-site-verification=…`, not secret) for step 2e.
+Don't verify yet. The record answers only after step 6.
+
+**Stop if** a parent (an organisation) appears, or another principal.
+
+### 2. Bootstrap
+
+Run this as the project owner, in bash or zsh, from the repository root on main. Leave
+`TF_TOKEN_app_terraform_io` unset. You need to be logged in to `ryft-lab` (`terraform login`
+once; `tfc_auth` reads that token) and to GitHub (`gh auth status`).
+
+```bash
+P=ryftlab-prod
+PN=$(gcloud projects describe "$P" --format='value(projectNumber)')
+TFC_ORG_ID=org-aus6gvWumndxZixQ                     # ryft-lab
+POOL=hcp-terraform; PROVIDER=app-terraform-io
+PLAN_SA=hcp-terraform-plan@$P.iam.gserviceaccount.com
+APPLY_SA=hcp-terraform-apply@$P.iam.gserviceaccount.com
+
+# 2a. APIs: the keep list on, everything else off.
+KEEP=(artifactregistry.googleapis.com billingbudgets.googleapis.com cloudbilling.googleapis.com
+  cloudresourcemanager.googleapis.com cloudscheduler.googleapis.com cloudtrace.googleapis.com dns.googleapis.com
+  iam.googleapis.com iamcredentials.googleapis.com logging.googleapis.com monitoring.googleapis.com
+  pubsub.googleapis.com run.googleapis.com secretmanager.googleapis.com serviceusage.googleapis.com sts.googleapis.com)
+gcloud services enable "${KEEP[@]}" --project="$P"
+for s in $(gcloud services list --enabled --project="$P" --format='value(config.name)'); do
+  case " ${KEEP[*]} " in *" $s "*) continue ;; esac
+  gcloud services disable "$s" --project="$P" || echo "still on: $s"
+done
+gcloud services list --enabled --project="$P" --format='value(config.name)'
+
+# 2b. The workspace in ryft-lab (CLI-driven, remote execution, the root's Terraform version).
+#     The token goes through stdin, never argv.
+tfc_auth() { jq -r '"Authorization: Bearer " + .credentials["app.terraform.io"].token' ~/.terraform.d/credentials.tfrc.json; }
+API=https://app.terraform.io/api/v2; CT='Content-Type: application/vnd.api+json'
+tfc_auth | curl -sS -H @- -H "$CT" -X POST "$API/organizations/ryft-lab/workspaces" \
+  --data '{"data":{"type":"workspaces","attributes":{"name":"ryft-gcp","execution-mode":"remote","auto-apply":false,"terraform-version":"1.16.6"}}}' \
+  | jq -r '.data.id // .errors'
+WS_ID=$(tfc_auth | curl -sS -H @- "$API/organizations/ryft-lab/workspaces/ryft-gcp" | jq -r .data.id)
+echo "$WS_ID"                                       # ws-…
+
+# 2c. The pool for app.terraform.io, pinned to the org and workspace IDs.
+gcloud iam workload-identity-pools create "$POOL" --project="$P" --location=global \
+  --display-name="HCP Terraform ryft-lab"
+gcloud iam workload-identity-pools providers create-oidc "$PROVIDER" --project="$P" --location=global \
+  --workload-identity-pool="$POOL" --issuer-uri=https://app.terraform.io \
+  --attribute-mapping='google.subject=assertion.sub,attribute.terraform_organization_id=assertion.terraform_organization_id,attribute.terraform_workspace_id=assertion.terraform_workspace_id,attribute.terraform_run_phase=assertion.terraform_run_phase' \
+  --attribute-condition="assertion.terraform_organization_id == '$TFC_ORG_ID' && assertion.terraform_workspace_id == '$WS_ID'"
+gcloud iam workload-identity-pools providers describe "$PROVIDER" --project="$P" --location=global \
+  --workload-identity-pool="$POOL" --format='value(attributeCondition)'   # both IDs, no name
+
+# 2d. Two SAs: plan reads, apply writes. Each is usable only by its run phase.
+gcloud iam service-accounts create hcp-terraform-plan --project="$P" --display-name="HCP Terraform plan (ryft-gcp)"
+gcloud iam service-accounts create hcp-terraform-apply --project="$P" --display-name="HCP Terraform apply (ryft-gcp)"
+for r in roles/viewer roles/iam.securityReviewer; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$PLAN_SA" --role="$r" --condition=None
+done
+for r in roles/run.admin roles/pubsub.admin roles/cloudscheduler.admin roles/secretmanager.admin \
+         roles/artifactregistry.admin roles/dns.admin roles/logging.configWriter roles/iam.serviceAccountAdmin \
+         roles/iam.serviceAccountUser roles/iam.workloadIdentityPoolAdmin roles/resourcemanager.projectIamAdmin \
+         roles/serviceusage.serviceUsageAdmin; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
+PS=principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL
+gcloud iam service-accounts add-iam-policy-binding "$PLAN_SA" --project="$P" \
+  --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/plan"
+gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" --project="$P" \
+  --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/apply"
+gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
+  --format='value(bindings.role)'                   # the twelve roles above, never roles/owner
+
+# 2e. The workspace's variables (none sensitive; each prints 201, a 422 means the key exists: change it in the UI).
+tfc_var() {  # tfc_var KEY VALUE [env|terraform]
+  tfc_auth | curl -sS -o /dev/null -w "%{http_code} $1\n" -H @- -H "$CT" -X POST "$API/workspaces/$WS_ID/vars" \
+    --data "$(jq -nc --arg k "$1" --arg v "$2" --arg c "${3:-env}" \
+      '{data:{type:"vars",attributes:{key:$k,value:$v,category:$c,sensitive:false}}}')"
+}
+tfc_var TFC_GCP_PROVIDER_AUTH true
+tfc_var TFC_GCP_WORKLOAD_PROVIDER_NAME "projects/$PN/locations/global/workloadIdentityPools/$POOL/providers/$PROVIDER"
+tfc_var TFC_GCP_PLAN_SERVICE_ACCOUNT_EMAIL "$PLAN_SA"
+tfc_var TFC_GCP_APPLY_SERVICE_ACCOUNT_EMAIL "$APPLY_SA"
+tfc_var google_site_verification 'google-site-verification=<value from step 1>' terraform
+# The GitHub WIF condition matches the repository and its owner by ID, not by name.
+read -r REPO_ID OWNER_ID < <(gh api repos/timkrebs/ryft-platform --jq '"\(.id) \(.owner.id)"')
+echo "$REPO_ID $OWNER_ID"                           # two numbers
+tfc_var github_repository_id "$REPO_ID" terraform
+tfc_var github_repository_owner_id "$OWNER_ID" terraform
+# From step 11, not now (the data source must exist first):
+#   tfc_var grafana_url https://<stack>.grafana.net terraform
+#   tfc_var grafana_datasource_uid '<the data source UID>' terraform
+# grafana_auth, the Grafana token, is sensitive: the workspace UI only (step 11c), never here, never on argv.
+
+# 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
+terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
+terraform -chdir=infra/gcp plan                     # 116 to add (step 4)
+```
+
+- **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
+  the last 30 days, was enabled in the last 3 days, or that an enabled service depends on.
+  `--force` would disable the dependants as well, so it is never used here. The project is new,
+  so most defaults will be "still on" at first. Run 2a's loop again from day 4. What stays on
+  after that is a dependency or in use. Terraform owns the same keep list
+  (`google_project_service`, `disable_on_destroy = false`).
+- **Audience.** The provider has no `--allowed-audiences`. That gives GCP's default audience,
+  the provider's full name. HCP Terraform sends it when only `TFC_GCP_WORKLOAD_PROVIDER_NAME`
+  is set.
+- **The condition** checks both IDs, not names. Workspace names can change. Module test runs
+  carry no workspace claims, so they can't match.
+- **The apply SA is owner-equivalent in effect**, because `projectIamAdmin` can grant any role.
+  That comes with Terraform owning IAM. The boundary is the condition (one org, one workspace,
+  apply phase only) plus `auto-apply` off. The stop rule still refuses `roles/owner` itself.
+- **The Terraform version.** 2b pins the workspace to 1.16.6, the root's `required_version`.
+  A remote run on another version fails at `init`.
+- **Never** set `serve` or `public_invokers` as workspace variables. They live in
+  `infra/gcp/gates.auto.tfvars`, so each flip is a reviewed PR.
+
+**Stop if** a plan fails authentication; `attributeCondition` lacks either ID; or the apply SA
+would need `roles/owner`.
+
+### 3. The budget's 10 % rule
+
+The budget "RYFT 50 EUR" exists (made by hand, design §7). Add the early warning at €5:
+
+```bash
+BILLING_ACCOUNT=$(gcloud billing projects describe ryftlab-prod --format='value(billingAccountName)')
+BILLING_ACCOUNT=${BILLING_ACCOUNT#billingAccounts/}
+BUDGET=$(gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" \
+  --filter='displayName="RYFT 50 EUR"' --format='value(name)')
+echo "$BUDGET"   # one line: billingAccounts/<id>/budgets/<budget-id>
+gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.10
+gcloud billing budgets describe "$BUDGET" --format='yaml(amount,thresholdRules,budgetFilter)'
+```
+
+`describe` must show `0.1, 0.5, 0.9, 1.0`. If `budgetFilter` names no project, the budget counts
+the whole billing account. That is fine while `ryftlab-prod` is its only project with a bill.
+
+**Stop if** `describe` doesn't list `0.1`.
+
+### 4. `infra/gcp` apply 1
+
+`gates.auto.tfvars` on main says `serve = false`. Apply 1 creates everything except the
+services' invoker bindings, the deployer's bindings on the services and the job, and the domain
+mappings. The deployer's `run.developer` is project-wide until apply 2, because CI creates the
+services at step 8.
+
+```bash
+terraform -chdir=infra/gcp plan -out=apply-1.tfplan
+terraform -chdir=infra/gcp apply apply-1.tfplan
+rm infra/gcp/apply-1.tfplan
+```
+
+```text
+# Apply 1: 116 to add, 0 to change, 0 to destroy.
+#   16 APIs + 3 audit configs (Secret Manager, STS, IAM credentials) + 2 service agents      = 21
+#    8 accounts + 1 token creator + 1 run.developer + 5 actAs + 1 monitoring.viewer          = 16  (37)
+#    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (40)
+#   11 secrets + 11 accessor bindings                                                        = 22  (62)
+#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36  (98)
+#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (101)
+#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (114)
+#    1 log bucket + 1 sink                                                                   =  2 (116)
+```
+
+Every line is a `+`. Expect one warning: the check `default_log_sink_disabled`, because the
+`_Default` sink is still on. No change to the bootstrap: the pool `hcp-terraform`, the two
+`hcp-terraform-*` SAs and their roles, your owner binding, the budget. Terraform adds IAM
+members and audit configs per service, and never writes the project's whole policy, so none
+of them appears. In the plan, check three things by eye:
+- the provider `github-actions`' `attribute_condition` ends with
+  `assertion.runner_environment == 'github-hosted'`;
+- every topic's `message_storage_policy` names `europe-west1` only;
+- the registry `ryft` has three `cleanup_policies`: `keep-5-most-recent`,
+  `delete-untagged-after-30-days` and `delete-any-after-30-days`.
+
+Then, once:
+
+```bash
+gcloud logging sinks update _Default --disabled --project=ryftlab-prod
+gcloud logging sinks describe _Default --project=ryftlab-prod --format='value(disabled)'   # True
+terraform -chdir=infra/gcp plan                     # No changes, and no warning
+terraform -chdir=infra/gcp output name_servers      # the four ns-cloud-* servers (step 6)
+```
+
+Pub/Sub's service agent can take a minute to exist. If the apply fails on
+`service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
+new plan holds only what is left.
+
+**Stop if** the plan has any change or destroy, or the add count isn't 116.
+
+### 5. Secret values
+
+The 11 containers exist since step 4. Each value goes in through stdin or a file, never on argv
+and never on screen. Each `add` prints `Created version [N] of the secret [<id>]`. Every `N` must
+be `1`, because `deploy/run` pins version 1. If one isn't, a PR moves that secret's pin in
+`deploy/run` before step 8. For a `db-password-*` secret, that means `migrate.yaml` and the
+service's YAML in one commit.
+
+```bash
+# The four role passwords: random, nobody needs to know them (step 8's migrate sets them in Postgres).
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-api --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-ingest --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-scoring --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-notify --project=ryftlab-prod --data-file=-
+# The owner: Supabase's database password from 1Password, copied there:
+pbpaste | gcloud secrets versions add db-password-owner --project=ryftlab-prod --data-file=-
+# Supabase -> Project Settings -> API Keys -> the secret key, copied:
+pbpaste | gcloud secrets versions add supabase-secret-key --project=ryftlab-prod --data-file=-
+# ADMIN_API_KEY: a new value from 1Password's generator (item "RYFT ADMIN_API_KEY"), copied:
+pbpaste | gcloud secrets versions add admin-api-key --project=ryftlab-prod --data-file=-
+# The two .p8 keys, saved from 1Password (their names carry the key IDs that step 7a needs):
+gcloud secrets versions add apple-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8"
+gcloud secrets versions add apns-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
+rm "$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8" "$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
+# The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token, copied:
+pbpaste | gcloud secrets versions add otlp-token --project=ryftlab-prod --data-file=-
+pbcopy < /dev/null
+```
+
+- `db-password-owner`: if 1Password lacks the value, reset it in Supabase → Database →
+  Settings. Nothing else uses it while EKS is down.
+- `otlp-token` must hold a value now, even though step 11 turns the push on. Every service pins
+  version 1, and a revision whose secret version is missing doesn't start.
+
+The data key, design §5.3 steps 3–5. Use the version `add` prints. If it isn't `1`, the pin
+in `deploy/run/api.yaml` moves too.
+
+```bash
+gcloud secrets versions add data-key --project=ryftlab-prod --data-file="$HOME/.config/ryft/data-key-api"
+gcloud secrets versions access 1 --secret=data-key --project=ryftlab-prod | shasum -a 256 | cut -c1-16   # step 0's fingerprint
+gcloud secrets versions access 1 --secret=data-key --project=ryftlab-prod | base64 -d | wc -c             # 32
+rm "$HOME/.config/ryft/data-key-api"
+```
+
+If step 0's file is gone, pipe the 1Password item through `pbpaste … --data-file=-`
+instead, then clear the clipboard. The two checks stay the same. `rm` overwrites nothing on
+APFS: FileVault protects the freed blocks (D211).
+
+```bash
+for s in $(gcloud secrets list --project=ryftlab-prod --format='value(name.basename())'); do
+  echo "$s $(gcloud secrets versions list "$s" --project=ryftlab-prod --format='value(name.basename(),state)' | tr '\n' ' ')"
+done                                                # 11 lines, each one version: 1 ENABLED
+```
+
+**Stop if** the data key's fingerprint differs or its length isn't 32. Then use D211's fallback:
+a new key, with the one-off statement before the api starts.
+
+### 6. The DNS move
+
+```bash
+dig +short NS ryftlab.de @1.1.1.1 | tee ~/ryft-route53-ns.txt     # Route 53's four: keep the file for a rollback
+scripts/dns_compare.sh "$(head -n1 ~/ryft-route53-ns.txt)"          # must end with "every record matches"
+dig +norecurse DS ryftlab.de @a.nic.de                               # no DS record (the script checks it too)
+terraform -chdir=infra/gcp output -raw godaddy_instructions
+```
+
+`scripts/dns_compare.sh` asks one Route 53 server and one Cloud DNS server (the first of
+`name_servers`) for each of the 12 record sets of `infra/aws/dns`: MX, the apex TXT, DMARC, the
+DKIM and other mail CNAMEs, both SRVs, CAA. It does this without recursion. It checks the two
+intended differences exactly: CAA's added `0 issue "pki.goog"`, and one added
+`google-site-verification=` string. Exit 1 means a difference or a DS. Exit 2 means a server
+didn't answer or isn't authoritative.
+
+Then switch: GoDaddy → My Products → ryftlab.de → DNS → Nameservers → Change → "I'll use my own
+nameservers". Enter the four `ns-cloud-*` from the output, without the trailing dot.
+
+```bash
+dig +norecurse NS ryftlab.de @a.nic.de     # again until the authority section lists the four ns-cloud-* servers
+dig +short MX ryftlab.de @1.1.1.1          # the Microsoft 365 MX, unchanged
+```
+
+Send a mail from an outside address to your `ryftlab.de` address, and reply to it. **Route 53
+stays for 48 h.** Resolvers that cached its NS records still ask it. Note the switch time:
+step 12 comes no earlier than 48 hours after it.
+
+Then verify the domain: `dig +short TXT ryftlab.de @1.1.1.1` must show the
+`google-site-verification=` string, then Search Console → ryftlab.de → Verify. Then make
+`hcp-terraform-apply@ryftlab-prod.iam.gserviceaccount.com` a **verified owner**: Search Console →
+Settings → Users and permissions → Manage property owners → Add an owner. Verification belongs
+to the user who did it. The apply SA creates the domain mappings in step 9, and it can't as a
+plain user.
+
+**Stop if** a record differs, except the two intended ones (the script checks them exactly); or
+a DS exists. If mail fails after the switch, set the old name servers back at GoDaddy at once
+(`~/ryft-route53-ns.txt`; Route 53 is still live).
+
+### 7. Supabase
+
+In the dashboard:
+- Connect → Transaction pooler: the host (`aws-<n>-eu-central-1.pooler.supabase.com`) and port
+  6543 for the services. Session pooler: 5432 for migrate. The host and the project ref go into
+  step 7a.
+- Database → Settings → Connection pooling: the pool size. The default 15 is enough for at most
+  26 clients (design §4).
+- Project Settings → Data API: still off.
+- Authentication → URL Configuration: the Site URL `https://ryftlab.de`, and redirect URLs only
+  on `ryftlab.de`.
+- Database → Settings → SSL Configuration → Download certificate: `prod-ca-2021.crt` (public).
+
+One `verify-full` login as the owner on each port. It proves the CA and the host name on both
+ports, and step 5's owner value:
+
+```bash
+read -r REF; read -r POOLER                         # the project ref and the pooler host (not secret)
+PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-owner --project=ryftlab-prod) && export PGPASSWORD
+for port in 5432 6543; do
+  psql "host=$POOLER port=$port dbname=postgres user=postgres.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+    -tAc 'select current_user' || break               # postgres, twice; after a failure, no second try
+done
+unset PGPASSWORD
+```
+
+The design's login as `ryft_api.<ref>` on 6543 moves to the start of step 9. Postgres learns
+that role's password from step 8's migrate. A failed login trips Supavisor's breaker for the
+whole role (`SUPABASE.md`).
+
+*Waits for A:* `make smoke-supabase` against port 6543, as PR A documents it (design §4: pgx's
+unnamed statements through Supavisor). If it signs in as a service role, it also comes after
+step 8's migrate.
+
+**Stop if** a login fails or `ECIRCUITBREAKER` appears. Stop and wait it out. Don't retry in a
+loop.
+
+### 7a. The config PR (before step 8)
+
+Some values are known only after apply 1 and step 7. They replace the `FILL_ME_IN`
+placeholders in `deploy/run/config.env`. None of them is secret.
+
+```bash
+terraform -chdir=infra/gcp output -raw project_number; echo      # GCP_PROJECT_NUMBER
+terraform -chdir=infra/gcp output -raw push_sa_unique_id; echo   # PUSH_SA_ID
+```
+
+- `SUPABASE_PROJECT_REF` and `SUPABASE_POOLER_HOST` come from step 7.
+- `APPLE_KEY_ID` and `APNS_KEY_ID` come from Apple Developer → Keys: the 10 characters in
+  `AuthKey_<id>.p8`.
+
+Run `make cloudrun-check`, then open the PR. Merge it before step 8: `deploy.yml` refuses to
+run while a placeholder is left.
+
+**Stop if** `make cloudrun-check` fails.
+
+### 8. First deploy *(waits for A)*
+
+Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `smoke` input off. The commands are
+in **Deploy, roll back, rotate** below. **Stop if** `migrate`'s log lacks a `migration applied`
+line for each new file, or doesn't end with `schema current`; or a revision isn't ready. This run
+proves the revisions start. It doesn't prove they reach the database (the startup probe is
+`/health/live`): step 9's role login and smoke do.
+
+### 9. Apply 2: invokers and mappings *(waits for A)*
+
+First, the role login moved here from step 7. Do it once. Step 8's migrate set the password.
+
+```bash
+read -r REF; read -r POOLER                         # as in step 7 (a new shell lacks them)
+PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-api --project=ryftlab-prod) && export PGPASSWORD
+psql "host=$POOLER port=6543 dbname=postgres user=ryft_api.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+  -tAc 'select current_user'                        # ryft_api
+unset PGPASSWORD
+```
+
+Then the hold, before the `serve = true` PR is merged. That merge is a push to main, so it starts
+`deploy.yml`, and its smoke would fail while nothing is public:
+
+```bash
+R=timkrebs/ryft-platform
+gh variable set DEPLOY_HOLD_SERVICES --body '#<issue>' -R "$R"   # the reason: an issue number (The hold, below)
+gh variable list -R "$R"                                          # DEPLOY_HOLD_SERVICES #<issue>
+```
+
+Then open a PR that sets `serve = true` in `infra/gcp/gates.auto.tfvars`. It is one line, and
+CI's `terraform` job must be green. Merge it: its `deploy.yml` run ends green as held, with
+nothing built or deployed. Then:
+
+```bash
+git pull
+terraform -chdir=infra/gcp plan -out=apply-2.tfplan
+terraform -chdir=infra/gcp apply apply-2.tfplan
+rm infra/gcp/apply-2.tfplan
+```
+
+```text
+# Apply 2: 13 to add, 1 to change, 1 to destroy.
+#   4 run.invoker bindings, one per service (api, ingest, scoring, notify)                   =  4
+#   + 4 run.developer for ryft-deployer on the services + 1 on the job migrate               =  5  (9)
+#   + 2 domain mappings (api., ingest.ryftlab.de) + 2 CNAME record sets (from the mappings)  =  4 (13)  to add
+#   ryft-tick: paused true -> false                                                          =  1       to change
+#   ryft-deployer's project-wide run.developer (google_project_iam_member...[0])             =  1       to destroy
+```
+
+The bindings' `members`: `allUsers` and `ryft-push` on api and ingest, `ryft-push` alone on
+scoring and notify. They are authoritative, so an invoker added by hand is gone after any later
+apply. The destroy is the deployer's project-wide role: from now on it holds `run.developer` on
+the four services and the job only, and can update them but create nothing (`infra/gcp/README.md`
+→ The deployer). No change to the zone's other records, the secrets, the topics and
+subscriptions, the accounts, the audit configs or the WIF pool. After the apply, the check
+`domain_mappings_ready` warns until the certificates are issued (15 minutes to 24 hours). If a
+CNAME fails its precondition because the mapping has no record yet, plan and apply again after a
+minute.
+
+```bash
+for h in api ingest; do
+  gcloud beta run domain-mappings describe --domain="$h.ryftlab.de" --region=europe-west1 \
+    --project=ryftlab-prod --format='value(status.conditions)'   # Ready True once the certificate is issued
+  dig +short CNAME "$h.ryftlab.de" @1.1.1.1                       # ghs.googlehosted.com.
+done
+```
+
+Once both mappings are Ready, release the hold and deploy main with the smoke. This run also
+proves the deployer's narrowed rights: `jobs replace` and `execute` on `migrate` and `services
+replace` on the four, each through its binding on the resource.
+
+```bash
+gh variable delete DEPLOY_HOLD_SERVICES -R "$R"
+gh workflow run deploy.yml --ref main -f smoke=true -R "$R"
+gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
+gh run watch <run id> -R "$R" --exit-status
+gh run view <run id> -R "$R" --log-failed                        # only after a red run
+```
+
+It worked when the run is green, `make smoke-prod` passed in it, and step 8's services loop shows
+the revisions its summary lists.
+
+A permission error on `run.*` in that run (`PERMISSION_DENIED` naming a `run.jobs.…`,
+`run.executions.…`, `run.services.…` or `run.operations.…` permission) is a stop. The fallback
+is this, and nothing else:
+1. Set the hold again (as above).
+2. A PR that restores the deployer's project-wide binding unconditionally: in
+   `infra/gcp/iam.tf`, `count = 1` for `google_project_iam_member.deployer_run_developer`; in
+   `infra/gcp/tests/gates.tftest.hcl`, its pin in `apply_2_serve_true_public_true` to `== 1`.
+   Merge it once CI is green.
+3. Its apply: exactly 1 to add (`google_project_iam_member.deployer_run_developer[0]`), 0 to
+   change, 0 to destroy.
+4. Delete the hold and dispatch `deploy.yml` with the smoke again, as above. Never a re-run of
+   the red run. Write the missing permission into the hold's issue: narrowing the deployer again
+   is a later PR.
+
+Then the two tests (design §3, §5.1):
+
+```bash
+# 1. 33 MiB through ingest.ryftlab.de must get OUR JSON 413, which proves HTTP/2 end to end.
+#    Google's front end would answer an HTML 413. The smoke user's token never reaches argv.
+read -r SMOKE_EMAIL; read -rs SMOKE_PASSWORD        # the smoke user (1Password); the password not echoed
+SUPABASE_URL=https://$REF.supabase.co; SUPABASE_ANON_KEY='<the publishable key>'
+TOKEN=$(jq -nc --arg e "$SMOKE_EMAIL" --arg p "$SMOKE_PASSWORD" '{email: $e, password: $p}' \
+  | curl -fsS -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_ANON_KEY" \
+      -H 'Content-Type: application/json' --data @- | jq -r .access_token)
+unset SMOKE_PASSWORD
+f=$(mktemp); { printf '{"pad":"'; head -c $((33 << 20)) /dev/zero | tr '\0' a; printf '"}'; } > "$f"
+printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' \
+  --data-binary @"$f" -w '\n%{http_code} %{content_type}\n' https://ingest.ryftlab.de/v1/sync
+rm -f "$f"; unset TOKEN                             # "request body over 33554432 bytes", then 413 application/json
+
+# 2. A forged X-Forwarded-For, from a known address.
+dig +short myip.opendns.com @resolver1.opendns.com  # your address
+for h in api ingest; do
+  curl -sS -o /dev/null -w "%{http_code} $h\n" -H 'X-Forwarded-For: 203.0.113.7' "https://$h.ryftlab.de/health/ready"
+done
+```
+
+*Waits for A:* test 2 needs a log line that shows the address `httpx.ClientIP` picked for that
+request, or another test that shows it (design §5.1). The address must be yours, not
+`203.0.113.7` and not a Google one.
+
+Undo apply 2 with a PR that sets `serve = false`, the hold set before its merge (as above). Its
+apply: 1 to add (the deployer's project-wide `run.developer` again), 1 to change (the tick
+paused), 13 to destroy (step 9's 13), nothing stateful.
+
+**Stop if** the plan isn't exactly the 13 adds, the tick and the one destroy above; a
+certificate is still pending after 24 hours (then design §1's fallback, which you decide); the
+dispatched run fails (a permission error on `run.*`: the fallback above, nothing else; any other
+failure: **A normal deploy** below); or the 413 isn't ours (then a contract change, a 31 MiB cap:
+design §3, api-contract-owner).
+
+### 10. The site and the app *(waits for C1)*
+
+The site project first. This half can run any time. Run it as you, logged in to gcloud and
+`firebase login`, with no billing account anywhere:
+
+```bash
+S=ryftlab-site                                       # if the ID is taken, pick another and use it in C1's config
+gcloud projects create "$S" --name="RYFT site"       # no --organization; never link a billing account
+gcloud billing projects describe "$S" --format='value(billingEnabled)'   # False
+gcloud services enable firebase.googleapis.com firebasehosting.googleapis.com iam.googleapis.com \
+  iamcredentials.googleapis.com --project="$S"
+npx --yes firebase-tools@<C1's pin> projects:addfirebase "$S"       # Spark, because there is no billing account
+npx --yes firebase-tools@<C1's pin> hosting:sites:list --project "$S"   # the default site, ryftlab-site
+
+# The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
+gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
+SITE_SA=site-deployer@$S.iam.gserviceaccount.com
+gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
+  --role=roles/firebasehosting.admin --condition=None
+gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
+  --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
+```
+
+The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
+this binding needs only the repository. If the first deploy names a missing permission, add
+only that one (for example `roles/serviceusage.serviceUsageConsumer` on `ryftlab-site`).
+
+Then, with C1 merged:
+1. Firebase console → Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with
+   "redirect to `ryftlab.de`".
+2. Put the A and TXT values the wizard shows into `infra/gcp`'s site variables (C1 names them).
+   Then **apply 3**:
+   `terraform -chdir=infra/gcp plan -out=apply-3.tfplan`, then `apply apply-3.tfplan`. It adds
+   only the site's record sets.
+3. Run `deploy.yml` by hand once (the `site` job).
+4. Check:
+
+   ```bash
+   for p in /privacy /de/privacy /impressum /terms /support; do
+     curl -s -o /dev/null -w "%{http_code} $p\n" "https://ryftlab.de$p"            # 200 each
+   done
+   curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # content-type: application/json, no redirect
+   curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
+   curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
+   ```
+
+5. The app build uses `https://api.ryftlab.de` and `https://ingest.ryftlab.de`. App Store
+   Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step
+   12). Check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until
+   here, only you sign in.
+
+**Stop if** the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, you
+decide); apply 3 touches anything but the site's record sets; a certificate is still pending
+after 24 hours; or any check above fails.
+
+### 11. Observability
+
+The parts run in this order, each once what it waits for is done:
+- **a–e need only B merged.** The reader key, the data source, the Grafana variables, the
+  Grafana-managed rules (quiet until the services serve: no data counts as OK) and the key list.
+- **f waits for A and step 9.** The OTLP half: the services push their metrics at each tick.
+- **g–j wait for step 10 (C1) as well.** g, the synthetics: the four site checks in
+  `deploy/grafana/synthetics/ryftlab.json` are enabled, and fail until the site serves. h, the app
+  rules: loaded any earlier, TickMissing would page until f's ticks arrive, and SyntheticsMissing
+  until g's checks report. i, the EKS groups: once nothing serves from EKS. j, the routing proof,
+  needs both kinds of rule loaded.
+
+**a. The reader key** *(B)*, the one JSON key RYFT has (design §5.2). It is made by hand, never
+in Terraform:
+
+```bash
+d=$(mktemp -d)                                      # 0700
+gcloud iam service-accounts keys create "$d/grafana-reader.json" \
+  --iam-account=grafana-reader@ryftlab-prod.iam.gserviceaccount.com
+```
+
+**b. The data source** *(B)*. Grafana Cloud → Connections → Add new connection → Google Cloud
+Monitoring → Add new data source. Set Authentication to Google JWT File, upload
+`$d/grafana-reader.json`, and set Default project to `ryftlab-prod`. Save & test. Then:
+
+```bash
+rm -r "$d"
+```
+
+Its UID is the last part of the data source page's URL (`…/connections/datasources/edit/<uid>`).
+
+**c. The Grafana variables** *(B)*. Paste step 2's `API=…` line, `tfc_auth`, the `WS_ID=…` line and
+`tfc_var` again first:
+
+```bash
+tfc_var grafana_url https://<stack>.grafana.net terraform
+tfc_var grafana_datasource_uid '<uid>' terraform
+```
+
+Then the token. Grafana → Administration → Users and access → Service accounts → Add service
+account `terraform-ryft-gcp` with the role Editor → Add service account token. Then HCP
+Terraform → ryft-lab → ryft-gcp → Variables → Add variable → Terraform variable: key
+`grafana_auth`, the token as its value, **Sensitive** on. Never set it in a script or on argv.
+
+**d. The Grafana-managed rules' apply** *(B)*:
+
+```bash
+terraform -chdir=infra/gcp plan -out=grafana.tfplan
+terraform -chdir=infra/gcp apply grafana.tfplan
+rm infra/gcp/grafana.tfplan
+```
+
+```text
+# Step 11's apply: 2 to add, 0 to change, 0 to destroy.
+#   1 folder (grafana_folder.gcp[0], "RYFT GCP (infra/gcp)")
+#   + 1 rule group (grafana_rule_group.gcp[0], ryft-gcp: the five rules)                    = 2 to add
+```
+
+There is no change to anything in GCP. Grafana → Alerting → Alert rules → folder "RYFT GCP
+(infra/gcp)" then holds HTTP5xxRatio, SyncSlow, DeadLetters, PushBacklog and Saturated.
+
+**e. The key list** *(B)*:
+
+```bash
+for sa in $(gcloud iam service-accounts list --project=ryftlab-prod --format='value(email)'); do
+  echo "$sa $(gcloud iam service-accounts keys list --iam-account="$sa" --managed-by=user --format='value(name)' | wc -l)"
+done                                                 # grafana-reader 1, every other account 0
+```
+
+**f. The OTLP half** *(waits for A and step 9)*. Open a config PR that sets `OTLP_ENDPOINT` and
+`OTLP_USER` in `deploy/run/config.env`, both at once (Grafana Cloud → the stack → OpenTelemetry:
+the endpoint and the instance ID). The token is step 5's `otlp-token`. The merge deploys. Within
+30 minutes, Explore (the Prometheus data source) shows `count by (job) (ryft_db_up)` and
+`count by (job) (ryft_ticks_total)` with the same four series each: `ryft/api`, `ryft/ingest`,
+`ryft/scoring`, `ryft/notify`.
+
+**g. Synthetics** *(waits for step 10, C1)*. Run `make synthetics-apply` as in **Synthetic
+Monitoring, once**. It upserts all six checks of `ryftlab.json`: the four site checks and
+`api.` and `ingest.ryftlab.de/health/ready`. Within 10 minutes each is green in Synthetics →
+Checks, and `count(probe_success{job=~"ryft-.*"})` in Explore is 12 (six jobs, two probes).
+
+**h. The app rules** *(waits for f and g)*: `make alerts-apply` (OBSERVABILITY → Alerts). First
+check both queries of f (four jobs each) and g's 12. Without them TickMissing (critical) and
+SyntheticsMissing page as soon as the rules load.
+
+```bash
+export GRAFANA_PROM_URL=https://prometheus-prod-<NN>-<region>.grafana.net GRAFANA_PROM_USER=<instance id>
+( read -rs GRAFANA_RULES_TOKEN; export GRAFANA_RULES_TOKEN; make alerts-apply )
+```
+
+The load replaces the groups `ryft`, `ryft-pipeline` and `ryft-ops` (namespace `ryft`) whole.
+
+**i. The EKS groups** *(after step 10: nothing serves from EKS)*. A load never deletes a group,
+so three groups that no file loads any more stay live as last loaded from EKS days:
+`ryft-admission` and `ryft-vault` (namespace `ryft`, once in `ryft.yaml`), and
+`ryft-admission-intended` (namespace `ryft-admission`, from `admission-intended.yaml`, which the
+old `alerts-apply` loaded too). Delete each one that is listed:
+
+```bash
+IMG=$(sed -n 's/^MIMIRTOOL_IMAGE := //p' Makefile); C=$(command -v docker || command -v podman)
+( read -rs MIMIR_API_KEY; export MIMIR_API_KEY       # the rules token: not echoed, not on argv
+  mt() { "$C" run --rm -e MIMIR_ADDRESS="$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$GRAFANA_PROM_USER" -e MIMIR_API_KEY "$IMG" "$@"; }
+  mt rules list                                      # what is live
+  mt rules delete ryft ryft-admission                # only if listed
+  mt rules delete ryft ryft-vault                    # only if listed
+  mt rules delete ryft-admission ryft-admission-intended   # only if listed
+  mt rules list )                                    # namespace ryft: ryft, ryft-pipeline, ryft-ops; no ryft-admission namespace
+```
+
+`make alerts-retire-eks` deletes the same three. It tries every one, reports a group that is already
+gone, and then exits 1, so a second run is red by design.
+
+**j. The routing proof and one test alert** *(after h)*. A Grafana-managed rule and a ruler rule
+can reach different Alertmanagers, so prove both paths. Grafana → Alerting → Alert rules:
+1. Folder "RYFT GCP (infra/gcp)" → HTTP5xxRatio → Edit → Configure notifications → **Preview
+   routing**. It must end at your contact point.
+2. Namespace `ryft`, group `ryft` → TickMissing → **Preview routing** the same way. It must end at
+   the same contact point. Where the rule's page offers no preview: Alerting → Notification
+   policies, choose the Alertmanager the ruler sends to at the top, then Search by matchers
+   `severity=critical`. The matching policy must name your contact point.
+3. Close both without saving. Then Alerting → Contact points → yours → Test. It must reach your
+   phone.
+
+**Stop if** there is no `ryft_db_up` or `ryft_ticks_total` from any service after 30 minutes (f):
+the ticks aren't arriving. Check
+`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod --format='value(state,lastAttemptTime,status)'`
+and the `tick-*` subscriptions. Also stop if the key list shows any key besides grafana-reader's
+one; h's queries don't show four jobs and 12 series (don't load the rules); `mt rules list` still
+shows any of the three groups; or either preview ends anywhere but your contact point.
+
+### 12. E, old org: Route 53
+
+At least 48 h after step 6's switch, with D1 merged (not built yet: it drops `prevent_destroy`
+from the zone in `infra/aws/dns`). `infra/aws/dns` runs locally (execution mode Local), with the
+AWS credentials it always used.
+
+```bash
+dig +norecurse NS ryftlab.de @a.nic.de                # still the four ns-cloud-* servers
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns init
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns apply -destroy
+```
+
+Read every line before `yes`.
+
+**Stop if** mail failed during the 48 h, or the plan lists anything but the zone and its
+records.
+
+### 13. D, old org: the Vault keys, the bucket, the AWS budget
+
+The README's two-PR route (`infra/aws/README.md`). D1 and D2 aren't built yet. With D1 merged:
+
+```bash
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws init
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws apply
+```
+
+Only the two key policies and the bucket's `force_destroy` change. With D2 merged, run the same
+`apply` again. It holds destroys only: the keys (scheduled, 30 days), the aliases, the bucket,
+the AWS budget.
+
+**Stop if** the first plan shows anything but those three changes; or the second shows a `+` or
+`~`, or a resource that isn't RYFT's (a shared account: check by IDs, never by tag).
+
+### 14. Old org: the old workspaces
+
+Do this only after step 5's data-key check (design §5.3 step 4) has passed, and E and D are
+applied. `ryft-prod-euc1-vault` holds the old data key's state, its only other copy. Safe delete
+refuses a workspace that still manages resources.
+
+```bash
+read -rs OLD_TOKEN                                   # the tim-krebs-org token: not echoed
+for w in ryft-prod-euc1-dns ryft-prod-euc1-platform ryft-prod-euc1-kubernetes ryft-prod-euc1-vault; do
+  printf 'Authorization: Bearer %s\n' "$OLD_TOKEN" | curl -q -sS -o /dev/null -w "%{http_code} $w\n" -H @- -X POST \
+    "https://app.terraform.io/api/v2/organizations/tim-krebs-org/workspaces/$w/actions/safe-delete"
+done                                                 # 2xx each; a 409 is a refusal
+unset OLD_TOKEN
+```
+
+Then merge D3 (not built yet), and delete the AWS and GHCR secrets in GitHub:
+
+```bash
+gh secret list; gh secret list --env deploy
+gh secret delete <name>                              # each AWS and GHCR one; add --env deploy for the environment's
+```
+
+**Stop if** a safe delete is refused. Resources are still in that state: find out why first.
+
+### 15. Testers
+
+Testers come after step 10's pages load and C2 is in force. C2 is a draft today, and its consent
+round runs first. `/privacy` must show C2's version: `scripts/check_policy_in_force.sh` (C1)
+reads the live page.
+
+**Stop if** `/privacy` doesn't show C2's version.
+
+### Deploy, roll back, rotate
+
+`deploy.yml` owns the revisions. It runs on every push to main and by hand (`workflow_dispatch`,
+main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run, in order:
+
+1. `wait for ci-ok` waits for `ci.yml`'s own run on main for this commit and its `ci-ok`. A
+   check of that name from any other workflow doesn't count. It polls every 30 s, for up to 95
+   minutes. Red, or still missing then: the run fails and nothing is deployed. Once it is green,
+   the run checks that its commit is still main's head. If it isn't, the run ends green as
+   "superseded", and the newer run deploys.
+2. `config.env` lints and every template renders. A `FILL_ME_IN` left stops the run here.
+3. The five images, each one `linux/amd64` manifest (no provenance, no SBOM), built with the
+   runner's own Docker and scanned by Trivy from a tarball (critical, with a fix; no `docker.sock`).
+   Nothing has signed in yet.
+4. Only when all five pass: the sign-in as `ryft-deployer` (WIF admits only this workflow, on main,
+   in the environment `deploy`, on a GitHub-hosted runner), then the push of the same five images,
+   tagged with the short SHA.
+5. `deploy/run` rendered with their digests.
+6. Main's head again, just before `migrate`: a commit overtaken during the build ends green as
+   "superseded" here, its images pushed and nothing rolled. Then `migrate`: `gcloud run jobs
+   replace`, then `execute --wait`. If it fails, the run stops and no service rolls.
+7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
+   its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
+   synthetics' target), so ready means the process serves, not that it reaches the database.
+8. `make smoke-prod`. It is what catches a revision with a broken database config. Only a manual
+   run with `smoke` off skips it.
+
+Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
+when no file is new). The run summary lists the tag, the digests and each service's new revision.
+One deploy job runs at a time, and a newer run never cancels it. GitHub keeps one run waiting, the
+newest. A run in between shows as cancelled. Nobody re-runs an old deploy run: a manual
+`gh workflow run deploy.yml --ref main` deploys main's head, and that is the retry everywhere
+below.
+
+Every command here is yours. Values go through stdin, never argv.
+
+**The first deploy (step 8).** First the four prerequisites:
+
+```bash
+R=timkrebs/ryft-platform
+git fetch origin
+# 1. The config PR (step 7a) is merged: no placeholder on main.
+git show origin/main:deploy/run/config.env | grep -c FILL_ME_IN          # 0
+# 2. Every version deploy/run pins exists and is enabled (step 5's 1, or a pin a PR moved).
+git grep -ho 'name: [a-z0-9-]*, key: "[0-9]*"' origin/main -- deploy/run/ | tr -d ',"' | sort -u |
+  while read -r k s k v; do
+    echo "$s $v $(gcloud secrets versions describe "$v" --secret="$s" --project=ryftlab-prod --format='value(state)')"
+  done                                                                    # 11 lines, each ENABLED
+# 3. The environment deploy admits main only.
+gh api "repos/$R/environments/deploy" --jq '.deployment_branch_policy'   # protected_branches false, custom_branch_policies true
+gh api "repos/$R/environments/deploy/deployment-branch-policies" --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
+# 4. The smoke user's three secrets in that environment. Copy each value, then run its line:
+pbpaste | gh secret set SUPABASE_ANON_KEY --env deploy -R "$R"   # Supabase -> Project Settings -> API Keys -> the publishable key
+pbpaste | gh secret set SMOKE_EMAIL --env deploy -R "$R"         # the smoke user's address (1Password)
+pbpaste | gh secret set SMOKE_PASSWORD --env deploy -R "$R"      # its password (1Password)
+pbcopy < /dev/null
+gh secret list --env deploy -R "$R"                              # the three names
+```
+
+"Allow administrators to bypass" stays unchecked (Settings → Environments → `deploy`). If the
+environment is missing, create it as in **The `deploy` environment and the App key**, step 3.
+
+Then switch the workflow on and run it by hand, without the smoke. Nothing is public before step 9.
+
+```bash
+gh variable set GCP_DEPLOY --body on -R "$R"
+gh variable list -R "$R"                                         # GCP_DEPLOY on, no DEPLOY_HOLD_SERVICES
+gh workflow run deploy.yml --ref main -f smoke=false -R "$R"
+gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
+gh run watch <run id> -R "$R" --exit-status
+```
+
+It worked when the run is green, with `make smoke-prod` skipped, and `migrate` and the four
+services look like this:
+
+```bash
+EXEC=$(gcloud run jobs executions list --job=migrate --region=europe-west1 --project=ryftlab-prod \
+  --sort-by=~metadata.creationTimestamp --limit=1 --format='value(metadata.name)')
+gcloud run jobs executions describe "$EXEC" --region=europe-west1 --project=ryftlab-prod \
+  --format='yaml(status.succeededCount,status.failedCount,status.completionTime)'   # succeededCount: 1, no failedCount
+gcloud logging read "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"migrate\" AND labels.\"run.googleapis.com/execution_name\"=\"$EXEC\"" \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --order=asc --limit=200 \
+  --format='value(timestamp,severity,jsonPayload.message,jsonPayload.file,jsonPayload.role,jsonPayload.err)'
+for s in scoring notify ingest api; do
+  gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod \
+    --format='value(metadata.name,status.latestCreatedRevisionName,status.latestReadyRevisionName)'
+done                                         # each line: the same revision twice, the one the run summary lists
+```
+
+`migrate`'s log, in order (`jsonPayload.message` is the message field of A's logger, design §6;
+the strings are `backend/cmd/migrate` and `internal/db`'s):
+- `migration applied` with its `file`, once per migration Supabase hasn't seen yet (A's among them).
+- `built-ins seeded`, with the counts, on every run.
+- `role password set` for `ryft_api`, `ryft_ingest`, `ryft_notify` and `ryft_scoring`, in that
+  order: step 5's values. A later deploy logs `role password unchanged` for each role whose pin
+  didn't move. A warning `no password given; role left unchanged` means a `DB_PASSWORD_<SVC>` is
+  missing: stop.
+- `schema current`, last: `migrate` is done. With no new file there is no `migration applied`
+  line, so `schema current` is the only schema line ("nothing to do").
+
+A revision that isn't ready says why here:
+
+```bash
+REV=<latestCreatedRevisionName from above>
+gcloud run revisions describe "$REV" --region=europe-west1 --project=ryftlab-prod --format='yaml(status.conditions)'
+gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.revision_name=\"$REV\" AND severity>=WARNING" \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --order=asc --limit=50 \
+  --format='value(timestamp,severity,jsonPayload.message,jsonPayload.err,textPayload)'
+```
+
+**Stop if** the run fails before the push (a placeholder or a wrong shape: a config PR; the
+sign-in after the scan: the WIF condition's IDs, the ref or the environment); Trivy finds a critical (nothing was
+pushed: fix forward, never skip the scan); `migrate`'s execution failed or its log lacks `schema
+current`; or a revision isn't ready. A failed `migrate` rolled nothing, and Cloud Run didn't
+retry it (`maxRetries: 0`: a retry is a second failed owner login, which feeds Supavisor's circuit
+breaker). Read its log and fix the cause. Then run
+`gh workflow run deploy.yml --ref main -f smoke=false -R "$R"`, once (never a re-run of the red
+run). If `ECIRCUITBREAKER` appears anywhere, wait it out (rotation step 4 below).
+
+Until step 9's apply and certificates are done, a push to main deploys and then fails at the
+smoke. Step 9's `serve = true` merge is such a push. Set the hold (below) before you merge it.
+Delete the hold once apply 2's mappings are Ready, then run `deploy.yml` by hand with the smoke on
+(step 9 has the commands). Merge nothing else in between.
+
+**A normal deploy** (from step 9 on). A merge to main is the deploy, in the order above. Watch it:
+
+```bash
+R=timkrebs/ryft-platform
+gh run list --workflow=deploy.yml -R "$R" --limit=5
+gh run watch <run id> -R "$R" --exit-status
+gh run view <run id> -R "$R" --log-failed                # after a red run: the failed step
+git fetch origin && git rev-parse --short=7 origin/main  # the newest deploying run's "Images (<tag>)"
+```
+
+Then run step 8's services loop (four ready revisions, the summary's), and watch HTTP5xxRatio,
+ApiDown and PushBacklog for 30 minutes. What each outcome leaves:
+- Green as "superseded": nothing rolled (its images may be pushed). No failure: the newer run,
+  for main's head, deploys.
+- `ci-ok` red or late: nothing deployed. Red is fixed by a new commit, which deploys itself.
+  Late: once ci is green on main's head, `gh workflow run deploy.yml --ref main -R "$R"`.
+- `migrate` failed: nothing rolled. Read its log as in step 8.
+- A revision isn't ready: Cloud Run keeps routing that service to its last ready revision
+  (`latestRevision` means the latest *ready* one). The services before it run the new code, the
+  ones after it the old. Fix forward or revert.
+- The smoke is red: all four rolled, and every new revision was ready. With the startup probe on
+  `/health/live`, a revision whose database config is broken is ready and serving: the smoke is
+  what catches it. Run `make smoke-prod` once yourself (step 9's environment). Red again: roll
+  back.
+
+Merges close together are safe. A run deploys only while its commit is main's head (checked
+when `ci-ok` is found and again before `migrate`), so an older commit never deploys over a newer
+one. The runs in between end green as superseded, and the newest ships every merge at once.
+
+**Stop if** the smoke fails twice (roll back); once every run has ended, the newest deploying
+run's tag isn't main's tip (then `gh workflow run deploy.yml --ref main -R "$R"`); or a run failed
+and you don't know why. Don't re-run to find out.
+
+**A rollback.** There are two ways. Moving traffic takes seconds and builds nothing. A revert
+ships the old code through a normal deploy. Migrations are additive and stay either way: the older
+code runs on the newer schema (**Lockouts and rolling back across releases**, no down-migrations).
+
+By traffic:
+1. Set the hold first (below), and let a running deploy end. Every `deploy/run/<svc>.yaml` sends
+   all traffic to the latest revision, so without the hold the next push to main (any merge) or
+   run by hand deploys and undoes the rollback.
+2. Find the previous ready revision. The summary of the run that deployed before the bad one
+   names it. Or:
+
+   ```bash
+   S=api                                                 # the service to roll back
+   gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod \
+     --format='value(status.latestReadyRevisionName)'    # the bad one
+   gcloud run revisions list --service="$S" --region=europe-west1 --project=ryftlab-prod \
+     --sort-by=~metadata.creationTimestamp --limit=5     # newest first; a check mark is ready, ACTIVE yes has traffic
+   REV=<the ready revision before the bad one>
+   gcloud run revisions describe "$REV" --region=europe-west1 --project=ryftlab-prod \
+     --format='yaml(status.conditions,spec.containers[0].env)'   # Ready True; the secret versions it reads
+   ```
+
+3. Move the traffic, and check it:
+
+   ```bash
+   gcloud run services update-traffic "$S" --to-revisions="$REV=100" --region=europe-west1 --project=ryftlab-prod
+   gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod --format='yaml(status.traffic)'   # percent: 100 on $REV
+   ```
+
+   For more than one service, go api, ingest, notify, scoring: the deploy's order reversed.
+4. Run `make smoke-prod` from your shell (step 9's environment).
+5. Merge the fix or the revert. With the hold set, nothing deploys. Delete the hold and run
+   `deploy.yml` by hand. That deploy ends the traffic pin.
+
+By revert:
+
+```bash
+git fetch origin && git switch -c fix/revert-<sha> origin/main
+git revert --no-edit <sha>                               # main's commits are squash merges: one parent
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Its merge deploys the old code to all four services and ends any traffic pin. With a hold set,
+delete it, then run `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`. A reverted
+migration stays applied (`schema_migrations` keeps its number). Re-land it unchanged, or fix it in
+a new migration.
+
+**Stop if** `$REV` isn't Ready; a version it pins is disabled (enable it, or revert instead);
+`$REV`'s `PGPASSWORD` version differs from the latest revision's (a rotation lies between: revert
+instead, because the role has the new password, `$REV` logs in with the old one, and the breaker
+trips for the whole role); or the smoke still fails on `$REV` (the cause isn't the code: the
+database, Supabase, Pub/Sub).
+
+**The hold.** It replaces D175's `hold.sh`:
+
+```bash
+gh variable set DEPLOY_HOLD_SERVICES --body '#<issue>' -R timkrebs/ryft-platform   # the reason: an issue number, nothing else
+gh variable list -R timkrebs/ryft-platform                                         # DEPLOY_HOLD_SERVICES #<issue>
+```
+
+While it is set, no run builds or deploys anything, by push or by hand. A held run shows three
+jobs. `wait for ci-ok` runs as always, and a red `ci-ok` still fails the run. `held` is green, with
+the notice "DEPLOY_HOLD_SERVICES is set (#<issue>): nothing was built or deployed" and "Deploy
+held" in the summary. `deploy` is skipped. The reason shows in every run, so keep it to the issue
+number. Merges pile up on main. Nothing tracks the hold's age (the old deploy watch doesn't read
+this variable), so write the release into the issue. To release it:
+
+```bash
+gh variable delete DEPLOY_HOLD_SERVICES -R timkrebs/ryft-platform
+gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform     # smoke on: main's tip, every held merge at once
+```
+
+Deleting the variable deploys nothing by itself.
+
+**Stop if** `gh variable list` doesn't show the variable as you set it. A misspelt or empty one
+holds nothing.
+
+**A database password rotation** (design §4). `migrate` sets every role's password from its
+`DB_PASSWORD_<SVC>` on every run, so both pins move in one commit.
+
+1. Add version N+1. Nothing reads it yet.
+
+   ```bash
+   S=api                                                 # api, ingest, scoring or notify
+   gcloud secrets versions list "db-password-$S" --project=ryftlab-prod --format='value(name.basename(),state)'   # N ENABLED on top
+   openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add "db-password-$S" --project=ryftlab-prod --data-file=-
+   #                                                       Created version [N+1] of the secret [db-password-<svc>].
+   ```
+
+2. One PR moves both pins:
+
+   ```bash
+   git fetch origin && git switch -c "chore/rotate-db-password-$S" origin/main   # not deploy/...: EKS's promote closes those until D3
+   scripts/rotate_db_password.sh "$S" <N+1>
+   gcloud secrets versions describe <N+1> --secret="db-password-$S" --project=ryftlab-prod --format='value(state)'   # ENABLED
+   make cloudrun-check
+   git diff --stat                                       # deploy/run/$S.yaml and deploy/run/migrate.yaml, one line each
+   git commit -am "deploy: db-password-$S at version <N+1>"
+   git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+   ```
+
+   CI's `manifests` job runs `make cloudrun-check`, which fails when the two pins differ.
+3. Merge outside the testers' hours. The deploy's `migrate` sets `ryft_<svc>` to N+1, then the
+   service rolls onto it. In between, its old instances keep their open connections but can't open
+   new ones. scoring rolls first and api last, so api's gap spans three rollouts. Check:
+
+   ```bash
+   gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="migrate" AND jsonPayload.message:"role password"' \
+     --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h \
+     --format='value(timestamp,jsonPayload.message,jsonPayload.role)'   # set for ryft_<svc>, unchanged for the other three
+   gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod --format=json \
+     | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "PGPASSWORD") | .valueFrom.secretKeyRef.key'   # N+1
+   ```
+
+4. If `ECIRCUITBREAKER` appears, wait at least two minutes. Supavisor's breaker trips for the
+   whole role. Never re-run the deploy, `migrate` or a login in a loop.
+
+   ```bash
+   gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$S\" AND \"ECIRCUITBREAKER\"" \
+     --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=30m --limit=5 \
+     --format='value(timestamp,resource.labels.revision_name)'
+   ```
+
+   Then find the login that fails (a revision still pinned at N gets traffic: `yaml(status.traffic)`),
+   and check Supabase → Database → Settings → Network Bans.
+5. After a day, with all traffic on the latest revision, disable N:
+
+   ```bash
+   gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod --format='yaml(status.traffic)'   # latestRevision: true, percent: 100
+   gcloud secrets versions disable <N> --secret="db-password-$S" --project=ryftlab-prod
+   gcloud secrets versions list "db-password-$S" --project=ryftlab-prod --format='value(name.basename(),state)'   # N+1 ENABLED, N DISABLED
+   ```
+
+To undo a rotation, run `gcloud secrets versions enable <N> --secret="db-password-$S"
+--project=ryftlab-prod`, then `scripts/rotate_db_password.sh "$S" <N>`, and open the same kind of
+PR. Never move traffic back across a rotation.
+
+**Stop if** `make cloudrun-check` fails; the diff holds more than the two lines; `migrate` doesn't
+log `role password set` for `ryft_<svc>`; or `ECIRCUITBREAKER` appears (step 4).
+
+**Another secret's pin.** The same move, without `migrate`. For example, `admin-api-key`:
+
+```bash
+# A new value from 1Password's generator (item "RYFT ADMIN_API_KEY"), copied:
+pbpaste | gcloud secrets versions add admin-api-key --project=ryftlab-prod --data-file=-   # Created version [N+1]
+pbcopy < /dev/null
+git fetch origin && git switch -c chore/rotate-admin-api-key origin/main
+git grep -n 'name: admin-api-key,' -- deploy/run/        # every pin: api.yaml only; set its key "N" to "N+1" by hand
+make cloudrun-check
+git commit -am "deploy: admin-api-key at version <N+1>"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+The merge's deploy rolls api onto N+1. `migrate` doesn't read it. The old key works until api's
+new revision serves. After a day, disable N as in step 5.
+- `supabase-secret-key` moves the same way (api only). `otlp-token` is pinned in all four
+  services: move the four lines in one commit.
+- A new `.p8` comes with a new key ID. Change `APPLE_KEY_ID` or `APNS_KEY_ID` in `config.env` in
+  the same commit.
+- `db-password-owner` is `migrate`'s own login, pinned by hand in `migrate.yaml`. Set the hold,
+  reset the password in Supabase (Database → Settings), add the version, merge the pin, then delete
+  the hold and run `deploy.yml` by hand. After a day, disable the old version as in step 5.
+- Never rotate `data-key`. A new value leaves every sealed Apple token undecryptable (D211).
+
+**Stop if** `git grep` shows a pin you didn't move, or `make cloudrun-check` fails.
+
+**Deploys off.**
+
+```bash
+gh variable set GCP_DEPLOY --body off -R timkrebs/ryft-platform    # anything but on
+gh variable list -R timkrebs/ryft-platform
+```
+
+Every job's `if` is then false. A push run shows its jobs skipped and builds nothing. Cloud Run
+keeps serving the last revisions: this is no stop (for that, see **The €20 stop line**). A run that
+had already started may still deploy. Cancel it only while it is in `wait for ci-ok`
+(`gh run cancel <run id> -R timkrebs/ryft-platform`). Once its `deploy` job runs, let it end:
+`migrate` and the rollouts go on in Cloud Run either way. Switched back `on`, nothing deploys until
+a merge or a run by hand. For a pause, use the hold instead: its runs say why.
+
+**Stop if** a push run after the switch has a `deploy` job that ran.
+
+### The €20 stop line
+
+The budget "RYFT 50 EUR" emails, but it caps nothing (design §7). Max-instances is the hard cap.
+At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`):
+
+```bash
+for svc in api ingest; do
+  gcloud run services remove-iam-policy-binding "$svc" --region=europe-west1 --project=ryftlab-prod \
+    --member=allUsers --role=roles/run.invoker
+done
+gcloud scheduler jobs pause ryft-tick --location=europe-west1 --project=ryftlab-prod
+```
+
+api and ingest then answer 403 to everyone: the app fails, and ApiDown fires. scoring and notify
+still drain what Pub/Sub holds. The tick stops.
+
+Then open a PR that sets `public_invokers = false` in `infra/gcp/gates.auto.tfvars`. Otherwise
+the next apply would add `allUsers` back: the invoker bindings are authoritative. Set the hold
+first (**Deploy, roll back, rotate** → The hold): the merge is a push to main, and while api and
+ingest refuse everyone, every deploy's smoke fails. Once it is merged:
+
+```bash
+terraform -chdir=infra/gcp plan -out=stop.tfplan
+terraform -chdir=infra/gcp apply stop.tfplan
+rm infra/gcp/stop.tfplan
+```
+
+Expected: no changes. Terraform reports api's and ingest's invoker bindings (without `allUsers`)
+and the tick's pause as changes outside Terraform. If the gcloud commands haven't taken effect:
+
+```text
+# The stop line: 0 to add, 3 to change, 0 to destroy.
+#   2 run.invoker bindings (api, ingest): members lose allUsers, keep ryft-push               =  2
+#   + ryft-tick: paused false -> true                                                         =  1 (3) to change
+```
+
+Anything else, a destroy above all: stop. scoring's and notify's bindings, the mappings and the
+deployer's bindings don't change.
+
+Find the cause in the billing report (Billing → Reports, group by SKU) before undoing either.
+The undo is a PR with `public_invokers = true`. Its apply puts `allUsers` back into api's and
+ingest's bindings and resumes the tick: 0 to add, 3 to change (2 bindings + the tick), 0 to
+destroy. Then delete the hold and run `deploy.yml` by hand with the smoke on (step 9's
+commands).
+
+An email of its own at €20 is optional. It is one more rule on the same budget:
+`gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.40` (step 3's `$BUDGET`).
+
 ## EKS (api.ryftlab.de)
+
+**Retired.** Production moves to GCP (**GCP** above), and D3 removes this section.
 
 The AWS side is Terraform in three roots, then Vault in a fourth, each applied by hand
 in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/README.md) and
