@@ -4369,3 +4369,67 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Consequence:** the Impressum (§5 DDG) and the privacy policy name `support@ryftapp.de`, so mail must work again
   before, or soon after, the testers are back. Supabase Auth SMTP, the budget alerts and `acme_email` need an address
   that receives mail. A new provider is one tfvars block and an apply, with DMARC starting at `p=none` and a real `rua`.
+- **Update 2026-11-14 (D213, D214): the mail decision is made.** `support@ryftlab.de` runs on Microsoft 365 through
+  GoDaddy, live since 2026-11-14, on the new domain. Its records are code in `infra/aws/dns/mail.tf`; the no-mail
+  default and its variables are gone, and so is the old zone.
+
+## D213 — The domain is `ryftlab.de`, a hard cut (**the user's decision**, 2026-11-14)
+
+- **Decision:** `ryftlab.de` replaces `ryftapp.de` everywhere, before any apply of the rebuild (PR #161): the hosts
+  `api.ryftlab.de`, `argocd.ryftlab.de` and `rabbitmq.ryftlab.de`; the contact `support@ryftlab.de`;
+  `PRIVACY_POLICY_URL` `https://ryftlab.de/privacy` (base `config.env` and the code default); the push payloads' links,
+  the invite link base and the operator page's origin (`ADMIN_WEB_ORIGINS`, CORS). **A hard cut:** no alias, no
+  redirect, no AASA on the old domain. Both domains stay registered at GoDaddy. `ryftlab.de` is delegated to a new
+  Route 53 zone. `ryftapp.de` keeps GoDaddy's nameservers and leaves Terraform: the old zone `Z08455293REDHBC9QW5MZ` and
+  its six records are destroyed by the next DNS plan (the block `aws_route53_zone.this` is removed, and
+  `prevent_destroy` guards only a configured block). The new zone is `aws_route53_zone.ryftlab_de`, again with
+  `prevent_destroy`. ExternalDNS's and cert-manager's IAM stays scoped to one zone, the one `var.domain` names in
+  `infra/aws/kubernetes` (now `ryftlab.de`, looked up by name).
+- **Legal texts:** only the domain and the contact change, in the text in force (2026-10-26), the Impressum and the
+  support pages. No new `PRIVACY_POLICY_VERSION`; `status` and `effective` stay. The archived 2026-10-20 text keeps its
+  words, as the record of what was consented to. D214 names what this leaves wrong.
+- **Kept on purpose:** the scoring golden generator's UUID namespace seed (`golden_gen_test.go`) is a constant string,
+  not a host; changing it would move every golden ID. Dated history (this file, changelogs, `docs/work/`, `web/docs/`)
+  keeps the old name.
+- **Consequences, outside this repository:** the app needs a build whose base URL is `https://api.ryftlab.de`, that
+  accepts only `ryftlab.de` hosts in links and names `ryftlab.de` in its associated domains; the TestFlight build from
+  before does not reach the rebuilt production. The demo account is `review@ryftlab.de` (`seed_demo.sh` creates it;
+  App Store Connect's review login changes). `SMOKE_EMAIL` may stay as it is (a Supabase sign-in needs no mailbox).
+  Supabase's Site URL, the repository variable `SUPPORT_EMAIL` and App Store Connect's URLs move to the new domain.
+- **Order** (REBUILD step 1): the DNS apply, every record dug against the new nameservers, the nameservers set at
+  GoDaddy, `dig NS ryftlab.de @a.nic.de` shows Route 53, then the rest of the runbook.
+
+## D214 — Mail on Microsoft 365 through GoDaddy, its records as code (amends D212; **the user's decision**, 2026-11-14)
+
+- **Decision:** `support@ryftlab.de` runs on Microsoft 365, bought through GoDaddy, and is live. `infra/aws/dns/mail.tf`
+  publishes its records exactly as GoDaddy's DNS shows them: MX `0 ryftlab-de.mail.protection.outlook.com.`, one apex
+  TXT set (`NETORGFT21311797.onmicrosoft.com` and `v=spf1 include:secureserver.net -all`), DMARC `p=quarantine` with
+  relaxed alignment and reports to `dmarc_rua@onsecureserver.net` (GoDaddy), the DKIM CNAME `selector2._domainkey`,
+  `autodiscover`, `email`, `lyncdiscover`, `sip`, `msoid` and the SRVs `_sip._tls` and `_sipfederationtls._tcp`. They are
+  public, so they are code, not tfvars; the domain is a local too. CAA stays Let's Encrypt only.
+- **Left out:** GoDaddy's parking A records on the apex, `www` (no web, D215), and `selector1._domainkey`, which did not
+  resolve on 2026-11-14. The user checks it at GoDaddy; adding it is one commented line in `mail.tf`. Until then a day on
+  which Microsoft signs with selector1 fails DKIM (DMARC can still pass on SPF's alignment).
+- **Plan:** `infra/aws/dns` 14 to add (the zone, two CAA, MX, apex TXT, DMARC, six CNAMEs, two SRVs), 0 to change, 7 to
+  destroy (the old zone and its six records). Counted from the code and the old state, not planned.
+- **Open, the owner's legal call:** the privacy policy in force (2026-10-26, §5 "Email") says that what is sent to the
+  support address is received and stored by Google Workspace. Since this decision it is Microsoft (through GoDaddy),
+  and GoDaddy receives the DMARC reports. Correcting that is a change of the text's meaning, so a new version and
+  everyone's consent again (`web/CLAUDE.md`); this change does not make it ("only the domain and the contact").
+
+## D215 — No web frontend in the rebuild, only the services (**the user's decision**, 2026-11-14)
+
+- **Decision:** `deploy/k8s/overlays/eks` no longer lists `../../services/web` and `web.yaml`. Not deployed: the
+  namespace `ryft-web`, the site's pods, the apex and `www` Ingress, their certificate, ExternalDNS's records for them
+  and the AASA. The manifests and `web/` stay, on `ryftlab.de`; the image is still built and promoted, and its pin stays
+  in the overlay. Adding the two lines back deploys the site (REBUILD → **Optional: the web pod for the legal pages**).
+  The user has not chosen a host for the legal pages.
+- **Checks kept with the smallest changes:** `check_policy_in_force.sh` reads the overlay's web pin when no web
+  Deployment renders and still requires that commit to serve the version in force; `check_registry.sh` allows web to be
+  pinned without being rendered and still asks the registry for the pin; the CEL harness appends the `ryft-web`
+  Namespace file for P1's cases (as the kind harness already did); `make k8s-validate` validates `services/web` and
+  `web.yaml` on their own. P1 still lets Argo CD write the `ryft-web` Namespace.
+- **Consequences:** `https://ryftlab.de` has no address. `privacy_policy_url` and the Impressum do not load until a
+  host serves them, so the app's links to them fail; no universal links and no password AutoFill association (no AASA);
+  the invite links do not open the app. The site's Synthetic Monitoring checks stay unapplied, and the `ryft-site`
+  rules (with `SyntheticsMissing`) are silenced until the site is back (REBUILD step 10).

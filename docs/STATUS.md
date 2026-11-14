@@ -79,7 +79,16 @@ RYFT was shut down on 2026-11-10 (D206): every AWS resource is gone, the Terrafo
 production back **as it was** (same hostnames, same images, the testers' data in Supabase), now with Vault CE in the
 cluster as the only Vault. The rebuild PR (`infra: rebuild with Vault CE in the cluster`, branch `infra/rebuild`) holds
 the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2026-11-13-rebuild/`. Decisions:
-**D207-D212**.
+**D207-D215**.
+
+**The domain `ryftlab.de` (2026-11-14, same PR, before any apply; D213-D215).** A hard cut: `api.`, `argocd.` and
+`rabbitmq.ryftlab.de`, `support@ryftlab.de`; no alias, redirect or AASA on the old domain, which keeps GoDaddy's
+nameservers and leaves Terraform (its zone is destroyed by the DNS plan). `infra/aws/dns` is a new zone with the
+Microsoft 365 records as code (D214, plan 14/0/7). `web` is out of `overlays/eks` (D215), its manifests and code kept on
+the new domain; three checks read its pin instead of the render. Legal texts: only the domain and the contact.
+**Open, the owner's legal call (D214):** the privacy policy in force still says Google Workspace receives and stores
+support mail; it is Microsoft through GoDaddy now, and correcting it is a new version. **Not reachable until a host is
+chosen (D215):** `https://ryftlab.de/privacy` and the Impressum, which the app links to.
 
 **Done in the PR (merged = nothing happens; no Argo CD exists)**
 - `infra/vault`: the in-cluster Vault only, from an empty state; the HCP side and its variables are retired (D207).
@@ -91,7 +100,8 @@ the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2
 - OPERATIONS → Vault: shares and tokens go only to a verified pod (`vault_forward`: the StatefulSet's by uid, the
   pinned digest, `vault-active` for a login), G1's gap until it is in Deny (D210); the clipboard and the init-window
   rules.
-- `infra/aws/dns`: no-mail records by default (D212); the Google set is the example.
+- `infra/aws/dns`: the zone `ryftlab.de` with the Microsoft 365 records as code (D213, D214; replaced D212's no-mail
+  default).
 - `scripts/recover_data_key.sh` (D211); the scripts read the in-cluster Vault by default; `vault_diff.sh` has no HCP mode.
 - The alerts, OBSERVABILITY and OPERATIONS are written for one Vault, Shamir and the generate-root session (D209).
 - `docs/REBUILD.md`: the owner's fourteen steps, each with a plan count, a "worked when" and a stop rule.
@@ -99,15 +109,20 @@ the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2
 **Verified only by CI, not here:** no `terraform fmt`/`validate`/`test`, `make test-scripts`, `make alerts-check`,
 gofmt or the admission harness ran in the session (the permission system refused them). The plan counts in REBUILD.md
 are counted from the code, not planned: `infra/aws` about 80 and `infra/aws/kubernetes` about 37 are estimates;
-`infra/vault` 90 and DNS 0/3/1 are exact counts of the resources.
+`infra/vault` 90 and DNS 14/0/7 (D214) are exact counts of the resources. The domain change: the Go tests of the touched
+packages ran here; Terraform, the script tests, the CEL harness, the renders and the web checks only in CI.
 
-**Needs you, in order:** confirm or change D208 (seal), D209 (login), D210's G2, D211 (recover the key), D212 (mail
-provider); merge the PR; then `docs/REBUILD.md` steps 1-14. Step 7 ends with a follow-up PR that only you can produce:
-the regenerated overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), merged before step 8.
+**Needs you, in order:** confirm or change D208 (seal), D209 (login), D210's G2, D211 (recover the key); set the
+repository variable `SUPPORT_EMAIL` to `support@ryftlab.de` before the merge; merge the PR; then `docs/REBUILD.md`
+steps 1-14 (step 1 is the new DNS order). Step 7 ends with a follow-up PR that only you can produce: the regenerated
+overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), merged before step 8. The app: a build for
+`https://api.ryftlab.de` (head-architect, `../app`).
 
 **Open after the rebuild**
-- Mail for `support@ryftapp.de` (Impressum, privacy policy, Supabase Auth SMTP): before, or soon after, the testers
-  return (D212).
+- The privacy policy's email paragraph (Google Workspace → Microsoft through GoDaddy) and a host for the legal pages
+  (D214, D215): the owner's call.
+- `selector1._domainkey` once it resolves at GoDaddy: one line in `infra/aws/dns/mail.tf` (D214).
+- Supabase Auth SMTP as `@ryftlab.de` (not built).
 - G1: the admission chart on in Audit, then the `vault` bindings and P13 in Deny, then #121 (D210). Soon after the
   testers are back, and before any switch to `awskms`. Until then the verified-pod rule is what stands in for it.
 - To verify in kind (OPERATIONS → Vault): how a 2.2.1 follower takes the shares around its `retry_join`, the init and
@@ -1343,12 +1358,14 @@ make push REGISTRY=ghcr.io/timkrebs/ryft            # ingest, scoring, api, migr
 ```
 
 EKS, in order (each Terraform root applied by you from your machine; state in HCP
-Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftappde)):
+Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftlabde); the rebuild of 2026-11 follows
+[`REBUILD.md`](REBUILD.md)):
 
 ```bash
 # State: HCP Terraform workspaces (execution Local), after `terraform login` and, once, `make tf-migrate-hcp`
 (cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
-# GoDaddy: switch the nameservers to the four printed; check: dig NS ryftapp.de @a.nic.de +short
+# Every record against the new nameservers (OPERATIONS → Mail for ryftlab.de), then GoDaddy: the four printed;
+# check: dig +norecurse NS ryftlab.de @a.nic.de
 (cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)
 aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1
 (cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email

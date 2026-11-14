@@ -1,9 +1,12 @@
 # Rebuilding production (2026-11)
 
 On 2026-11-10 RYFT was shut down (D206) and every RYFT AWS resource was destroyed. This is the way back to
-production **as it was**: the same hostnames (the TestFlight build needs no change), the same images, the testers'
-data in Supabase. One thing is different: Vault runs in the cluster and is the only Vault (D207). HCP Vault and Google
-Workspace are gone.
+production **as it was**: the same images, the testers' data in Supabase. Three things are different:
+- Vault runs in the cluster and is the only Vault (D207). HCP Vault and Google Workspace are gone.
+- **The domain is `ryftlab.de`** (D213, a hard cut): `api.`, `argocd.` and `rabbitmq.ryftlab.de`, mail at
+  `support@ryftlab.de` on Microsoft 365 (D214). The app needs a build for the new host; the TestFlight build from
+  before does not reach this production.
+- **No web frontend** (D215): only the services. The site can come back with one optional step at the end.
 
 Every step is yours. Nothing here is run by an agent. Each step has the commands, the plan it must show, a
 **worked when** and a **stop** rule. A plan that differs from the count named is a stop: find out why before you
@@ -11,12 +14,15 @@ apply (the #146 apply of 2026-11-06 went wrong exactly that way). Every cluster 
 `--context ryft-prod-euc1`. Commands that touch secrets run in a standalone terminal with history off (OPERATIONS →
 Vault → "Where these commands run"), never in an agent's shell or the VS Code terminal.
 
-The decisions this order rests on, and what is yours to confirm, are D207-D212 (`docs/DECISIONS.md`).
+The decisions this order rests on, and what is yours to confirm, are D207-D215 (`docs/DECISIONS.md`).
 
 ## Before you start
 
-- **Your decisions** (D208-D212): the seal (Shamir, built by default), the login (a generate-root session, built), G2,
-  the mail provider (none until you pick one). The defaults let you go ahead; change one before the step that uses it.
+- **Your decisions** (D208-D211): the seal (Shamir, built by default), the login (a generate-root session, built), G2.
+  The defaults let you go ahead; change one before the step that uses it. Mail (D214), the domain (D213) and no web
+  (D215) are decided.
+- **Before the merge:** the repository variable the site's build bakes in moves to the new address, so the image the
+  merge builds carries it: `gh variable set SUPPORT_EMAIL -R timkrebs/ryft-platform --body support@ryftlab.de`.
 - **This PR is merged** and you work from a clean `main` (`git status` empty, `git pull --ff-only`). The repository is
   not archived: `gh repo view timkrebs/ryft-platform --json isArchived` says `false` (CI and the promote PRs need it).
 - **Tools:** Terraform exactly 1.16.6 (`terraform version`), `terraform login` done, `kubectl`, `helm`, the `vault` CLI
@@ -26,39 +32,57 @@ The decisions this order rests on, and what is yours to confirm, are D207-D212 (
 - **The HCP Terraform workspaces** (step 14): check them now, before step 3.
 - **Supabase** (step 7's checklist) can be read now; its network restriction waits for the NAT addresses of step 3.
 
-## 1. DNS: the zone's records, then the delegation back to Route 53
+## 1. DNS: the zone `ryftlab.de`, every record checked, then the delegation
 
-The zone `Z08455293REDHBC9QW5MZ` still exists with Google Workspace's mail records, and the domain points at
-GoDaddy's nameservers. First the records (D212: no mail until you choose a provider), then the delegation.
+**The old domain** (D213): `ryftapp.de` stays registered at GoDaddy with GoDaddy's nameservers. It does not go back to
+Route 53, and nothing serves it. Its old zone `Z08455293REDHBC9QW5MZ` is destroyed by this step's plan.
 
+**1a. Before the plan**, the old zone must hold only what Terraform knows (a leftover record makes the zone's destroy
+fail with `HostedZoneNotEmpty`, after its own records are already gone):
+```bash
+aws route53 list-resource-record-sets --hosted-zone-id Z08455293REDHBC9QW5MZ --query 'ResourceRecordSets[].[Type,Name]' --output text
+```
+Expected: `NS` and `SOA`, two `CAA` (the apex and `\052.`, the wildcard), `MX`, two `TXT` (the apex and `_dmarc.`) and
+the `TXT` at `google._domainkey.`. Anything else (ExternalDNS's records from before the shutdown, an `_acme-challenge`
+TXT): delete it in the Route 53 console first.
+
+**1b. The DNS apply** (yours):
 ```bash
 terraform -chdir=infra/aws/dns init
 terraform -chdir=infra/aws/dns plan -out=dns.tfplan
 ```
-**Plan: 0 to add, 3 to change, 1 to destroy:** `mx` (`0 .`), `apex_txt` (`v=spf1 -all`), `dmarc` (`p=reject`) in
-place, and `dkim[0]` destroyed (the `moved` block maps today's `dkim` to it). **Stop** if the zone or the CAA records
-change, or if `dkim[0]` is not destroyed (a `dkim_record` is still set somewhere).
+**Plan: 14 to add, 0 to change, 7 to destroy** (counted from the code and the old state, D214): destroyed
+`aws_route53_zone.this` and its six records (`caa`, `caa_wildcard`, `mx`, `apex_txt`, `dmarc` replaced, because their
+zone changes, and `dkim[0]` or `dkim`); created `aws_route53_zone.ryftlab_de`, the five replacements in it, six
+`mail_cname` and two `mail_srv`. **Stop** if the plan names a zone other than `ryftlab.de`, changes anything in place,
+or misses the destroy of `aws_route53_zone.this` (then the state is not the one this count assumes).
 ```bash
 terraform -chdir=infra/aws/dns apply dns.tfplan
 rm infra/aws/dns/dns.tfplan
-dig DS ryftapp.de @a.nic.de +short          # must print nothing (no DNSSEC at the registry)
-terraform -chdir=infra/aws/dns output name_servers
+terraform -chdir=infra/aws/dns output name_servers      # four awsdns servers
+dig DS ryftlab.de @a.nic.de +short                       # must print nothing (no DNSSEC at the registry)
 ```
-**Stop** if `dig DS` prints a record: DNSSEC was switched on at GoDaddy. Turn it off there, wait out the DS record's
-TTL, and check again. Otherwise every resolver that validates fails the domain once Route 53 answers.
+**Stop** if `dig DS` prints a record: DNSSEC is on at GoDaddy. Turn it off there, wait out the DS record's TTL, and check
+again; otherwise every validating resolver fails the domain once Route 53 answers. If the apply stops at the old zone with
+`HostedZoneNotEmpty`, delete what 1a lists beyond the expected records and apply again.
 
-Then at GoDaddy (My Products → ryftapp.de → DNS → Nameservers → Change → "I'll use my own nameservers"), enter the four
-nameservers of the output, as they are, without the trailing dot.
+**1c. Every record against the new nameservers** (read-only DNS; head-architect runs it, or you): the block in
+OPERATIONS → **Mail for ryftlab.de** → "Check every record", with `ns` set to the first of the four. **Worked when:**
+every line prints the value of the table there, and both CAA lines name `letsencrypt.org`. **Stop** on any difference:
+fix `mail.tf`, plan, apply, check again. The delegation waits for this.
 
-**Worked when:** `dig +norecurse NS ryftapp.de @a.nic.de` lists the four `awsdns` servers, and `dig MX ryftapp.de
-@1.1.1.1 +short` prints `0 .`. DENIC publishes the change within minutes. Resolvers keep GoDaddy's answer for up to
-the `.de` delegation TTL of **86400 s**, so allow 24 hours (48 for stragglers). Steps 2-7 don't need the delegation, so
-do them meanwhile. Step 4's certificates and step 8's hostnames need it.
+**1d. The nameservers at GoDaddy** (yours): My Products → `ryftlab.de` → DNS → Nameservers → Change → "I'll use my own
+nameservers": the four of the output, as they are, without the trailing dot. GoDaddy's own DNS records for the domain
+(including its mail records) stop answering then; Route 53's copies take over.
 
-**Mail:** from now on no `@ryftapp.de` address receives mail. The Impressum and the privacy policy name
-`support@ryftapp.de`, so a provider must work again **before, or soon after, the testers are back**. OPERATIONS → "Mail
-for ryftapp.de" says how. Until then, give the budget alerts (step 2) and `acme_email` (step 4) an address outside the
-domain.
+**1e. Worked when:** `dig +norecurse NS ryftlab.de @a.nic.de` lists the four `awsdns` servers (DENIC publishes within
+minutes). Resolvers keep GoDaddy's answer for up to the `.de` delegation TTL of **86400 s**, so allow 24 hours (48 for
+stragglers); since GoDaddy served the same mail records, mail keeps working through the switch. Then the public check
+of OPERATIONS → Mail (`ns=1.1.1.1`) and a test mail both ways. Steps 2-7 don't need the delegation, so do them
+meanwhile. Step 4's certificates and step 8's hostnames need it.
+
+**Mail:** `support@ryftlab.de` works (Microsoft 365, D214), so the budget alerts (step 2) and `acme_email` (step 4) may
+use it.
 
 ## 2. `deletion_protection = true`
 
@@ -204,8 +228,10 @@ OPERATIONS → Vault → **The first apply** has every command. In short:
    - **Network Restrictions** admit the new NAT addresses from step 3, and the two released ones are gone. The Network
      Bans list is empty;
    - Enforce SSL is fine with `sslmode=require`, and the session pooler's host and port are unchanged;
-   - **SMTP:** if it pointed at Google Workspace, Supabase Auth mails (confirmations, resets) fail now. With D212's
-     `-all`/`p=reject`, no `@ryftapp.de` sender is delivered until a provider is set up;
+   - **SMTP:** if it pointed at Google Workspace, Supabase Auth mails (confirmations, resets) fail now. Sending as
+     `@ryftlab.de` needs its own setup at Microsoft (D214, not built);
+   - **URL Configuration** (Authentication): *Site URL* `https://ryftlab.de`; *Redirect URLs* keep `ryft://auth/callback`
+     and lose any entry on the old domain (D213);
    - the JWT signing key (`kid`) and the Apple provider (`dev.timkrebs.ryft`) are unchanged;
    - the database password is the one in `database_owner_password` (never reset it in the dashboard: the migrate Job's
      retries would trip the pooler's ban). Test it with `psql` through the pooler, which prompts for it;
@@ -219,7 +245,7 @@ OPERATIONS → Vault → **The first apply** has every command. In short:
      (SELECT count(*) FROM daily_scores) AS scores,
      (SELECT count(*) FROM apple_tokens) AS apple_tokens,
      (SELECT count(*) FROM deleted_users WHERE apple_token_enc IS NOT NULL AND apple_revoked_at IS NULL) AS revocations_pending,
-     (SELECT count(*) FROM auth.users WHERE email = 'review@ryftapp.de') AS demo,
+     (SELECT count(*) FROM auth.users WHERE email LIKE 'review@%') AS demo,
      (SELECT count(*) FROM pg_roles WHERE rolname LIKE 'ryft\_%' AND rolcanlogin AND NOT rolbypassrls) AS roles_ok;
    ```
    Also check that the smoke user exists: `SELECT count(*) FROM auth.users WHERE email = '<SMOKE_EMAIL>';` prints `1`.
@@ -317,6 +343,9 @@ make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 
 The rules from before the shutdown are still loaded and have probably been firing since 2026-11-10 (NoSync,
 ArgoMetricsMissing, AdmissionSignalsMissing, SiteDown, VaultScrapeDown). Look at the silences and contact points first.
+**No site (D215):** in Synthetic Monitoring, delete the four `ryft-site-*` checks (they probe the old domain; do not run
+`make synthetics-apply`), and add a silence with the matcher `alertname=~"Site.*|SyntheticsMissing"` until the optional
+web step: with no checks, `SyntheticsMissing` fires.
 The first Vault snapshot is taken by hand **before** the `ryft-vault` group (D194), as in OPERATIONS → Vault →
 **Snapshots** → "The first snapshot":
 ```bash
@@ -338,7 +367,11 @@ nothing in `ryft-vault` fires after 15 minutes. **Stop** on a group-limit error 
 
 ## 12. A tester's check
 
-On your own phone with the TestFlight build: sign in, sync, and today's score appears. Meanwhile watch
+On your own phone with an app build for `https://api.ryftlab.de` (D213; the TestFlight build from before calls the old
+host): sign in, sync, and today's score appears. Then the demo account: `scripts/seed_demo.sh` (OPERATIONS → App
+Review demo account) creates `review@ryftlab.de`; App Store Connect's App Review Information gets the new email, and the
+privacy policy, support and marketing URLs there move to `ryftlab.de` (they load once the legal pages have a host). The
+old demo account stays until you delete it. Meanwhile watch
 `scripts/beta_report.sh`, `scripts/user.sh <id>`, `KUBE_CONTEXT=ryft-prod-euc1 scripts/trace.sh <request-id>` and
 `KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list` (empty). In Grafana Explore, `ryft_outbox_pending` is 0 and the
 sync-to-score p95 is under 120 s. **Worked when:** the score shows within two minutes. **Stop** if a sync gets a 403, or
@@ -367,6 +400,41 @@ that all four exist and that the three emptied ones hold no resources (`terrafor
 then the data key's old versions stay in the old `-vault` workspace (step 7 reads them from there). Afterwards: the
 `-vault` workspace's earlier versions hold the old (now rotated) credentials and the data key. Restrict team access to
 it as before (OPERATIONS → Terraform state).
+
+## Optional: the web pod for the legal pages at `ryftlab.de`
+
+Only if you want the privacy policy, the Impressum and the AASA served at `https://ryftlab.de` from the cluster (D215;
+no host for the legal pages is chosen yet). The pod serves the whole static site of `web/` (landing, science, beta, the
+legal pages, `/admin`); serving only the legal paths would be a change in `web/` that is not built. Any time after
+step 8, as one PR from `main`:
+
+1. In `deploy/k8s/overlays/eks/kustomization.yaml`, add the two resource lines back (and drop the header's "NOT
+   deployed" sentence):
+   ```diff
+      - ../../services/notify
+   +  - ../../services/web
+      - ../../services/smoke
+      - ratelimit.yaml
+      - metrics-from-nodes.yaml
+   +  - web.yaml
+   ```
+2. Check that the web pin in the same file is an image with the new domain (the merge of #161 changed `web/`, so its
+   promote PR pinned a new one): `git show "$(sed -n '/ryft\/web$/{n;s/.*"\(.*\)".*/\1/p;}' deploy/k8s/overlays/eks/kustomization.yaml):web/src/lib/site.ts" | grep -c 'https://ryftlab.de'`
+   prints `1` or more.
+3. CI green (the policy-in-force and registry checks now read the rendered web Deployment again), merge. Argo CD
+   creates `ryft-web`, the pods and the Ingress; cert-manager issues `ryftlab-de-tls` (DNS-01); ExternalDNS writes the
+   apex and `www` alias records next to the mail records (an A alias at the apex coexists with MX and TXT).
+
+**Worked when** (allow a few minutes for the certificate):
+```bash
+curl -sI https://ryftlab.de/privacy | grep -iE "^HTTP|content-type"                                   # 200, text/html
+curl -sI https://ryftlab.de/impressum | grep -iE "^HTTP|content-type"                                 # 200, text/html
+curl -sI https://ryftlab.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
+curl -s -o /dev/null -D - https://www.ryftlab.de/ | grep -i location                                  # https://ryftlab.de/
+```
+Then `make synthetics-apply` (OPERATIONS → Monitoring) and lift step 10's silence. **Stop** if the certificate stays
+`READY False` for 15 minutes (`kubectl --context ryft-prod-euc1 -n ryft-web describe certificate ryftlab-de-tls`).
+**Rollback:** the two lines out again, in a PR.
 
 ## If a step fails
 
