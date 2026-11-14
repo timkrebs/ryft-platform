@@ -34,3 +34,22 @@ B2, S3, S5, S6, S7, S8 and the notes are closed. Still open, now fixed:
 The reviewer confirmed the replay statement: notify reads the score from the database, so an injected event can't
 put its own numbers into a push. Its verdict was "not ready until S4 is in", and S4 is now in. These last fixes
 weren't re-reviewed a second time.
+
+## The user's answers (2026-11-14): no new review
+
+The brief asked for a new review only if a decision changes the security picture. None widens it:
+- **No site** removes Firebase Hosting: one processor, its egress (S8's Hosting half is moot) and the
+  `hosting:disable` step are gone. The privacy consequence is stated, not reviewed away: REBUILD step 12 still
+  holds, so only the user signs in until ticket F (§8). C2 stays a draft and goes into force with F.
+- **Ingress internal** on scoring and notify (found while checking B0) narrows their exposure further. The in-app
+  OIDC check (S7) stays.
+- **The Grafana key** (accepted), **`min-instances 0`** and **§5.2's gaps** were already in the reviewed design.
+- **HCP Terraform in `ryft-lab`:** §11 step 2 now writes out S3's reviewed fix as commands: the condition on the
+  org and workspace IDs, a plan SA and an apply SA, each bound to its run phase. Stated in the text: the apply SA is
+  owner-equivalent in effect through `projectIamAdmin`, which is inherent in Terraform owning IAM; the boundary is the
+  condition plus `auto-apply` off. The HCP token goes through stdin, never argv; the old org's token only as a
+  one-command prefix, kept out of shell history.
+- **The budget** by hand with a 10 % rule, and the stop line without Hosting, change no exposure.
+
+These edits weren't reviewed by a second agent. If PR B's implementation changes the bootstrap's roles or the
+condition, its security-privacy review covers them there.
