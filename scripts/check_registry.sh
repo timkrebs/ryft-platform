@@ -57,6 +57,9 @@ EOT
     # web may be pinned without being deployed (D215): with no web image in the render at all, its pin
     # is still asked of the registry below (promote moves it, and adding web back deploys it).
     if [ "${line%%=*}" = web ] && ! printf '%s\n' "$refs" | grep -q "^${ours}web:"; then
+      # The same shape rule as every rendered reference above.
+      printf '%s\n' "${line#*=}" | grep -qE '^[A-Za-z0-9_][A-Za-z0-9_.-]*$' \
+        || { echo "✗ web is pinned to '${line#*=}', which is not a tag"; exit 1; }
       refs=$(printf '%s\n%s\n' "$refs" "${ours}web:${line#*=}"); continue
     fi
     printf '%s\n' "$refs" | grep -qx "${ours}${line%%=*}:${line#*=}" || { echo "✗ ${line%%=*} is pinned to ${line#*=} but the overlay renders another image"; exit 1; }

@@ -110,7 +110,13 @@ tag=$(printf '%s\n' "$found" | sed -n 's/^web //p' | head -1)
 # image a re-added web would run, so the version in force and the page that image serves stay in step.
 web_note=
 if [ -z "$tag" ] && [ -f "$overlay" ]; then
-  tag=$(awk '/ghcr.io\/timkrebs\/ryft\/web[ \t]*$/ { h = 1; next } h && /newTag:/ { gsub(/[" ]|newTag:/, ""); print; exit }' "$overlay")
+  # The rule of deploy_targets.sh's tag_of (promote's and the registry check's reading): the newTag
+  # line right after "- name: ghcr.io/timkrebs/ryft/web"; a comment or any other line does not count.
+  tag=$(awk -v want=ghcr.io/timkrebs/ryft/web '
+    found { if (match($0, /newTag:[ \t]*/)) { t = substr($0, RSTART + RLENGTH); gsub(/["\047 \t\r]/, "", t); print t; exit } found = 0; next }
+    { l = $0; sub(/^[ \t]*-[ \t]*name:[ \t]*/, "", l); sub(/[ \t\r]+$/, "", l) }
+    $0 ~ /^[ \t]*-[ \t]*name:/ && l == want { found = 1 }
+  ' "$overlay")
   web_note=" (pinned, not deployed)"
 fi
 [ -n "$tag" ] || err "the EKS overlay neither renders nor pins a ghcr.io/timkrebs/ryft/web image"

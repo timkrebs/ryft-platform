@@ -4406,16 +4406,26 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   TXT set (`NETORGFT21311797.onmicrosoft.com` and `v=spf1 include:secureserver.net -all`), DMARC `p=quarantine` with
   relaxed alignment and reports to `dmarc_rua@onsecureserver.net` (GoDaddy), the DKIM CNAME `selector2._domainkey`,
   `autodiscover`, `email`, `lyncdiscover`, `sip`, `msoid` and the SRVs `_sip._tls` and `_sipfederationtls._tcp`. They are
-  public, so they are code, not tfvars; the domain is a local too. CAA stays Let's Encrypt only.
+  public, so they are code, not tfvars; the domain is a local too. CAA stays Let's Encrypt only, now as one set at the
+  apex with `issue` and `issuewild` (security review of the domain diff). The old zone's `*.` CAA set is not carried
+  over: under RFC 8659 it answered for every name that does not exist, and since it held only `issuewild`, which a CA
+  ignores for a normal certificate, those names were unrestricted.
 - **Left out:** GoDaddy's parking A records on the apex, `www` (no web, D215), and `selector1._domainkey`, which did not
   resolve on 2026-11-14. The user checks it at GoDaddy; adding it is one commented line in `mail.tf`. Until then a day on
   which Microsoft signs with selector1 fails DKIM (DMARC can still pass on SPF's alignment).
-- **Plan:** `infra/aws/dns` 14 to add (the zone, two CAA, MX, apex TXT, DMARC, six CNAMEs, two SRVs), 0 to change, 7 to
+- **Plan:** `infra/aws/dns` 13 to add (the zone, CAA, MX, apex TXT, DMARC, six CNAMEs, two SRVs), 0 to change, 7 to
   destroy (the old zone and its six records). Counted from the code and the old state, not planned.
 - **Open, the owner's legal call:** the privacy policy in force (2026-10-26, §5 "Email") says that what is sent to the
   support address is received and stored by Google Workspace. Since this decision it is Microsoft (through GoDaddy),
   and GoDaddy receives the DMARC reports. Correcting that is a change of the text's meaning, so a new version and
-  everyone's consent again (`web/CLAUDE.md`); this change does not make it ("only the domain and the contact").
+  everyone's consent again (`web/CLAUDE.md`); this change does not make it ("only the domain and the contact"). For
+  that text the review names what to settle first: GoDaddy is the contracting processor (its DPA, with Microsoft as
+  sub-processor); where the tenant stores mail, and on what transfer basis, is unverified, and support mail can carry
+  health data (Art. 9). Mail sent to the old support address is no longer received; deletion and export in the app
+  still cover Art. 17 and 20.
+- **The old domain** (security review): it leaves Terraform, so its safety rests on GoDaddy. Before the destroy, its
+  delegation must be GoDaddy's, not the old zone's awsdns servers, or the delegation dangles and can be claimed.
+  No-mail records and the transfer lock at GoDaddy are the user's (REBUILD step 1).
 
 ## D215 — No web frontend in the rebuild, only the services (**the user's decision**, 2026-11-14)
 
@@ -4432,4 +4442,6 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Consequences:** `https://ryftlab.de` has no address. `privacy_policy_url` and the Impressum do not load until a
   host serves them, so the app's links to them fail; no universal links and no password AutoFill association (no AASA);
   the invite links do not open the app. The site's Synthetic Monitoring checks stay unapplied, and the `ryft-site`
-  rules (with `SyntheticsMissing`) are silenced until the site is back (REBUILD step 10).
+  rules (with `SyntheticsMissing`) are silenced until the site is back (REBUILD step 10). Consent to a text nobody can
+  open, and an Impressum that is not available (§5 DDG), are not acceptable for anyone but the owner, so REBUILD step 12
+  stops before any tester or App Review signs in until `/privacy`, `/de/privacy` and `/impressum` load somewhere.

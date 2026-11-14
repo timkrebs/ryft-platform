@@ -4425,11 +4425,13 @@ then once more against a public resolver after it:
 ```bash
 ns=$(terraform -chdir=infra/aws/dns output -json name_servers | jq -r '.[0]')
 d() { printf '%-5s %-38s ' "$1" "$2"; dig +short +norecurse "$1" "$2" @"$ns" | tr '\n' ' '; echo; }
-d MX ryftlab.de; d TXT ryftlab.de; d TXT _dmarc.ryftlab.de; d CAA ryftlab.de; d CAA '*.ryftlab.de'
+d MX ryftlab.de; d TXT ryftlab.de; d TXT _dmarc.ryftlab.de; d CAA ryftlab.de; d CAA nothing-here.ryftlab.de
 for n in selector2._domainkey autodiscover email lyncdiscover sip msoid; do d CNAME "$n.ryftlab.de"; done
 d SRV _sip._tls.ryftlab.de; d SRV _sipfederationtls._tcp.ryftlab.de
 ```
-Every line prints the table's value (CAA: `0 issue "letsencrypt.org"` and `0 issuewild "letsencrypt.org"`).
+Every line prints the table's value (CAA at the apex: `0 issue "letsencrypt.org"` and
+`0 issuewild "letsencrypt.org"`; `nothing-here.ryftlab.de` prints nothing, so a CA climbs to the apex's set.
+There is no `*.` CAA set on purpose: it would answer for every name that does not exist, RFC 8659).
 For the public check, set `ns=1.1.1.1` and drop `+norecurse`. Then send a mail from an outside account to
 `support@ryftlab.de` and one back, and check "Show original" for `SPF: PASS`, `DKIM: PASS`,
 `DMARC: PASS`; a DKIM failure that names `selector1` means the line above is due.

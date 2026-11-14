@@ -11,13 +11,15 @@ run "zone_and_caa_for_the_domain" {
   }
 
   assert {
-    condition     = aws_route53_record.caa.name == "ryftlab.de" && aws_route53_record.caa.records == toset(["0 issue \"letsencrypt.org\""])
-    error_message = "only Let's Encrypt may issue for the apex"
+    condition     = aws_route53_record.caa.name == "ryftlab.de" && aws_route53_record.caa.records == toset(["0 issue \"letsencrypt.org\"", "0 issuewild \"letsencrypt.org\""])
+    error_message = "only Let's Encrypt may issue, wildcards included, in one set at the apex"
   }
 
+  # RFC 8659: a `*.` CAA set answers for every name that does not exist; with only issuewild in it,
+  # those names would be unrestricted for normal certificates.
   assert {
-    condition     = aws_route53_record.caa_wildcard.name == "*.ryftlab.de" && aws_route53_record.caa_wildcard.records == toset(["0 issuewild \"letsencrypt.org\""])
-    error_message = "wildcard issuance must be limited to Let's Encrypt"
+    condition     = length(regexall("name\\s*=\\s*\"\\*\\.", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    error_message = "no wildcard CAA set: the apex set holds issue and issuewild"
   }
 }
 
@@ -43,7 +45,7 @@ run "the_old_zone_is_gone" {
   assert {
     condition = alltrue([
       for n in concat(
-        [aws_route53_record.caa.name, aws_route53_record.caa_wildcard.name, aws_route53_record.mx.name, aws_route53_record.apex_txt.name, aws_route53_record.dmarc.name],
+        [aws_route53_record.caa.name, aws_route53_record.mx.name, aws_route53_record.apex_txt.name, aws_route53_record.dmarc.name],
         [for r in aws_route53_record.mail_cname : r.name],
         [for r in aws_route53_record.mail_srv : r.name],
       ) : n == "ryftlab.de" || endswith(n, ".ryftlab.de")

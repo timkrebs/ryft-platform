@@ -84,11 +84,14 @@ the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2
 **The domain `ryftlab.de` (2026-11-14, same PR, before any apply; D213-D215).** A hard cut: `api.`, `argocd.` and
 `rabbitmq.ryftlab.de`, `support@ryftlab.de`; no alias, redirect or AASA on the old domain, which keeps GoDaddy's
 nameservers and leaves Terraform (its zone is destroyed by the DNS plan). `infra/aws/dns` is a new zone with the
-Microsoft 365 records as code (D214, plan 14/0/7). `web` is out of `overlays/eks` (D215), its manifests and code kept on
-the new domain; three checks read its pin instead of the render. Legal texts: only the domain and the contact.
+Microsoft 365 records as code (D214, plan 13/0/7; CAA is one apex set with `issue` and `issuewild`, no `*.` set).
+`web` is out of `overlays/eks` (D215), its manifests and code kept on the new domain; three checks read its pin instead
+of the render. Legal texts: only the domain and the contact. Security review of the domain diff:
+`docs/work/2026-11-13-rebuild/review-domain.md`.
 **Open, the owner's legal call (D214):** the privacy policy in force still says Google Workspace receives and stores
 support mail; it is Microsoft through GoDaddy now, and correcting it is a new version. **Not reachable until a host is
-chosen (D215):** `https://ryftlab.de/privacy` and the Impressum, which the app links to.
+chosen (D215):** `https://ryftlab.de/privacy` and the Impressum, which the app links to; REBUILD step 12 lets nobody
+but you sign in until they load.
 
 **Done in the PR (merged = nothing happens; no Argo CD exists)**
 - `infra/vault`: the in-cluster Vault only, from an empty state; the HCP side and its variables are retired (D207).
@@ -109,12 +112,13 @@ chosen (D215):** `https://ryftlab.de/privacy` and the Impressum, which the app l
 **Verified only by CI, not here:** no `terraform fmt`/`validate`/`test`, `make test-scripts`, `make alerts-check`,
 gofmt or the admission harness ran in the session (the permission system refused them). The plan counts in REBUILD.md
 are counted from the code, not planned: `infra/aws` about 80 and `infra/aws/kubernetes` about 37 are estimates;
-`infra/vault` 90 and DNS 14/0/7 (D214) are exact counts of the resources. The domain change: the Go tests of the touched
+`infra/vault` 90 and DNS 13/0/7 (D214) are exact counts of the resources. The domain change: the Go tests of the touched
 packages ran here; Terraform, the script tests, the CEL harness, the renders and the web checks only in CI.
 
 **Needs you, in order:** confirm or change D208 (seal), D209 (login), D210's G2, D211 (recover the key); set the
 repository variable `SUPPORT_EMAIL` to `support@ryftlab.de` before the merge; merge the PR; then `docs/REBUILD.md`
-steps 1-14 (step 1 is the new DNS order). Step 7 ends with a follow-up PR that only you can produce: the regenerated
+steps 1-14 (step 1 is the new DNS order and starts with the old domain's delegation check and its no-mail records at
+GoDaddy). Step 7 ends with a follow-up PR that only you can produce: the regenerated
 overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), merged before step 8. The app: a build for
 `https://api.ryftlab.de` (head-architect, `../app`).
 

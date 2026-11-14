@@ -113,6 +113,9 @@ pin_only "$second"; render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendere
 grep -q 'pinned, not deployed' "$tmp/out" || fail "web not rendered: the summary says the pin was read: $(cat "$tmp/out")"
 pin_only "$first";  render '"2026-11-02"' '"2026-11-02"' ''; bad "web not rendered: the pinned commit lacks the page" "no en page"
 pin_only "$second"; render '"2026-10-20"' '"2026-10-20"' ''; bad "web not rendered: the pin serves a newer page" "serves 2026-11-02"
+# Only the newTag right after web's "- name:" line counts (deploy_targets.sh's rule), not a comment that names web.
+printf 'images:\n  # ghcr.io/timkrebs/ryft/web\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "%s"\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$first" "$second" > "$OV"
+render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendered: web's own pin is read, not the newTag after a comment"
 rm -f "$OV"; render '"2026-11-02"' '"2026-11-02"' ''; bad "web neither rendered nor pinned" "neither renders nor pins"
 # the stand-ins the check must not be fooled by
 render '"2026-11-02"' '"2026-11-02"' "\"$second\"" '        env:

@@ -28,19 +28,17 @@ resource "aws_route53_zone" "ryftlab_de" {
 }
 
 # Only Let's Encrypt (cert-manager in the cluster) may issue certificates for the domain and its
-# subdomains.
+# subdomains, wildcards included. One set at the apex, no `*.` CAA set (RFC 8659): a CA climbs from
+# a name to the apex, and checks a wildcard certificate at its base name, i.e. here. A `*.` set
+# would answer for every name that does not exist and, holding only issuewild (which a CA ignores
+# for a normal certificate), would leave those names unrestricted.
 resource "aws_route53_record" "caa" {
   zone_id = aws_route53_zone.ryftlab_de.zone_id
   name    = local.domain
   type    = "CAA"
   ttl     = 3600
-  records = [for ca in var.caa_issuers : "0 issue \"${ca}\""]
-}
-
-resource "aws_route53_record" "caa_wildcard" {
-  zone_id = aws_route53_zone.ryftlab_de.zone_id
-  name    = "*.${local.domain}"
-  type    = "CAA"
-  ttl     = 3600
-  records = [for ca in var.caa_issuers : "0 issuewild \"${ca}\""]
+  records = concat(
+    [for ca in var.caa_issuers : "0 issue \"${ca}\""],
+    [for ca in var.caa_issuers : "0 issuewild \"${ca}\""],
+  )
 }

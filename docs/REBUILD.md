@@ -35,7 +35,12 @@ The decisions this order rests on, and what is yours to confirm, are D207-D215 (
 ## 1. DNS: the zone `ryftlab.de`, every record checked, then the delegation
 
 **The old domain** (D213): `ryftapp.de` stays registered at GoDaddy with GoDaddy's nameservers. It does not go back to
-Route 53, and nothing serves it. Its old zone `Z08455293REDHBC9QW5MZ` is destroyed by this step's plan.
+Route 53, and nothing serves it. Its old zone `Z08455293REDHBC9QW5MZ` is destroyed by this step's plan. **Before 1b:**
+`dig +norecurse NS ryftapp.de @a.nic.de` must list GoDaddy's `domaincontrol.com` servers. **Stop** if it lists `awsdns`
+servers: the destroy would leave a dangling delegation that anyone can claim with their own Route 53 zone (and a
+certificate for the old API host, which old builds still call); set GoDaddy's nameservers first and wait for that dig.
+At GoDaddy, keep auto-renew and the transfer lock on, and give the domain no-mail records (MX `0 .`, TXT
+`v=spf1 -all`, `_dmarc` TXT `v=DMARC1; p=reject;`), so nobody can send as its old support address.
 
 **1a. Before the plan**, the old zone must hold only what Terraform knows (a leftover record makes the zone's destroy
 fail with `HostedZoneNotEmpty`, after its own records are already gone):
@@ -51,10 +56,10 @@ TXT): delete it in the Route 53 console first.
 terraform -chdir=infra/aws/dns init
 terraform -chdir=infra/aws/dns plan -out=dns.tfplan
 ```
-**Plan: 14 to add, 0 to change, 7 to destroy** (counted from the code and the old state, D214): destroyed
-`aws_route53_zone.this` and its six records (`caa`, `caa_wildcard`, `mx`, `apex_txt`, `dmarc` replaced, because their
-zone changes, and `dkim[0]` or `dkim`); created `aws_route53_zone.ryftlab_de`, the five replacements in it, six
-`mail_cname` and two `mail_srv`. **Stop** if the plan names a zone other than `ryftlab.de`, changes anything in place,
+**Plan: 13 to add, 0 to change, 7 to destroy** (counted from the code and the old state, D214): destroyed
+`aws_route53_zone.this` and its six records (`caa`, `mx`, `apex_txt`, `dmarc` replaced, because their zone changes;
+`caa_wildcard` and `dkim[0]` or `dkim` gone); created `aws_route53_zone.ryftlab_de`, the four replacements in it (the
+apex `caa` now holds `issue` and `issuewild`), six `mail_cname` and two `mail_srv`. **Stop** if the plan names a zone other than `ryftlab.de`, changes anything in place,
 or misses the destroy of `aws_route53_zone.this` (then the state is not the one this count assumes).
 ```bash
 terraform -chdir=infra/aws/dns apply dns.tfplan
@@ -68,7 +73,8 @@ again; otherwise every validating resolver fails the domain once Route 53 answer
 
 **1c. Every record against the new nameservers** (read-only DNS; head-architect runs it, or you): the block in
 OPERATIONS → **Mail for ryftlab.de** → "Check every record", with `ns` set to the first of the four. **Worked when:**
-every line prints the value of the table there, and both CAA lines name `letsencrypt.org`. **Stop** on any difference:
+every line prints the value of the table there: the apex CAA line `issue` and `issuewild` `letsencrypt.org`, the
+CAA line for `nothing-here.ryftlab.de` nothing. **Stop** on any difference:
 fix `mail.tf`, plan, apply, check again. The delegation waits for this.
 
 **1d. The nameservers at GoDaddy** (yours): My Products → `ryftlab.de` → DNS → Nameservers → Change → "I'll use my own
@@ -376,6 +382,11 @@ old demo account stays until you delete it. Meanwhile watch
 `KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list` (empty). In Grafana Explore, `ryft_outbox_pending` is 0 and the
 sync-to-score p95 is under 120 s. **Worked when:** the score shows within two minutes. **Stop** if a sync gets a 403, or
 days stay pending for more than two minutes.
+
+**Before anyone but you signs in** (testers back, an App Review submission): `https://ryftlab.de/privacy`,
+`/de/privacy` and `/impressum` must load (each `curl -s -o /dev/null -w '%{http_code}\n'` prints `200`). Until a host
+serves them (D215; the optional step below is one way), the app asks for consent to a text nobody can open, and the
+Impressum (§5 DDG) is not available, so open no gate and invite nobody.
 
 ## 13. The rescore, if needed
 
