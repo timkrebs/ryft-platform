@@ -7,7 +7,8 @@ the last number on main.
 **Why.** Since 2026-11-14 an SCP of the HashiCorp org (`p-emcptm8t`) denies `eks:CreateCluster` in account
 173003892479. EKS cost about $400–450 a month, and that cost caused the shutdown on 11-10 (D206). The user decided on
 2026-11-14 to move to GCP serverless: "für eine pre-alpha absolut ausreichend". The target is a few euros a month for
-about ten testers once the legal pages have a host (ticket F); until then only the user signs in (§8).
+about ten testers. The site is back in the pre-alpha (the user's follow-up 2): the legal pages load before any tester
+signs in (§8).
 
 **Unchanged:** Supabase (Postgres and Auth, Frankfurt), Grafana Cloud, the Apple keys, the domain `ryftlab.de`
 (D213, D214), the contract's shapes (`docs/API.md`), the outbox (D101) and idempotent handlers (D100).
@@ -42,7 +43,7 @@ about ten testers once the legal pages have a host (ticket F); until then only t
 | GHCR | Artifact Registry `europe-west1-docker.pkg.dev/<project>/ryft` | §9 |
 | cert-manager, ExternalDNS, admission, NetworkPolicies, Alloy | gone. Google-managed certificates on the domain mappings; Terraform owns DNS | §5, §6 |
 | Route 53 zone `ryftlab.de` (M365 records) | Cloud DNS zone, the same records | §11 |
-| `web` nginx pod (not deployed, D215) | **nothing in the pre-alpha** (the user's decision). The legal pages come back with deferred ticket F | §8 |
+| `web` nginx pod (not deployed, D215) | the whole static export on **Firebase Hosting** in a separate project **without billing** (`ryftlab-site`, Spark), on `https://ryftlab.de`, `www` redirecting | §8 |
 
 ---
 
@@ -89,6 +90,8 @@ writes it in PR A. The app needs a new build for D213 anyway.
 - Secrets use user-managed replication in europe-west1.
 - Artifact Registry, Scheduler and the Cloud Run jobs are in europe-west1.
 - Logs go to a regional bucket (§6).
+- The exception is the site: Firebase Hosting serves the static pages from a global CDN. The pages hold no personal
+  data, and visitors' IPs pass through Google's edge (§8).
 
 ---
 
@@ -419,9 +422,10 @@ stays as it is.
 gone.
 
 **Synthetics.** Grafana Synthetic Monitoring stays as code (#20), on the new hosts only: `https://api.ryftlab.de/health/ready`
-and `https://ingest.ryftlab.de/health/ready` (§3). The site checks are dropped, because there is no site (§8); they
-come back with ticket F. That's 2 checks every 10 min from 2 probes: about 17k executions a month. The free tier has
-100k API test executions a month.
+and `https://ingest.ryftlab.de/health/ready` (§3), plus two site checks: `https://ryftlab.de/privacy` and
+`/.well-known/apple-app-site-association` (status 200 and `application/json`). That's 4 checks every 10 min from 2
+probes: about 35k executions a month. The free tier has 100k API test executions a month. The site checks fetch
+~17k pages a month, roughly 0.5 GB of Spark's transfer quota (§8).
 
 **Alerts.** The rules stay code. App metrics stay Prometheus-format rules in `deploy/grafana/alerts` (mimir ruler, the
 same tooling). Cloud Monitoring signals become Grafana-managed rules provisioned by Terraform. The group limit (≤ 18)
@@ -429,7 +433,7 @@ still applies.
 
 | Kept (source) | Rewritten on a new source | New | Gone |
 |---|---|---|---|
-| Panics, TextRefusedByDatabase, AuthUnavailable, RateLimited, SyncToScoreSlow, DeadLetterPublishFailing, PublishFailing, OutboxBacklog, OutboxStuck, ScoringErrors, NoSync, APNsFailing, PushFailing, APNsRejectsOurKey, AccountDeletionIncomplete, NewFeedback, AdminUnauthorized, AdminWebUsed, InviteEmailPurgeFailing (app OTLP) | HTTP5xxRatio and SyncSlow (Cloud Run metrics); DatabaseDown (the tick's `ryft_db_up`); DeadLetters (`dlq-*-hold` undelivered > 0, replacing RabbitMQDeadLetters too); **ApiDown** (the two synthetics fail from every probe for 10 min; it reuses SiteDown's shape) and SyntheticsMissing (for the two checks) | **TickMissing** (no tick handled by a service for 45 min); **PushBacklog** (oldest unacked > 15 min on a scoring or notify subscription, replacing RabbitMQBacklog); **Saturated** (Cloud Run 429s); the **budget** alerts come by email from Billing, not Grafana | PodRestarting, ServiceExited, DatabaseFlapping, CertificateExpiring, RabbitMQAlarm, RabbitMQNodeDown, AMQPDisconnected, EventsUnroutable (a publish to a missing topic fails → PublishFailing), all Argo\*, all Admission\*, all Vault\*; the Site\* alerts until ticket F |
+| Panics, TextRefusedByDatabase, AuthUnavailable, RateLimited, SyncToScoreSlow, DeadLetterPublishFailing, PublishFailing, OutboxBacklog, OutboxStuck, ScoringErrors, NoSync, APNsFailing, PushFailing, APNsRejectsOurKey, AccountDeletionIncomplete, NewFeedback, AdminUnauthorized, AdminWebUsed, InviteEmailPurgeFailing (app OTLP) | HTTP5xxRatio and SyncSlow (Cloud Run metrics); DatabaseDown (the tick's `ryft_db_up`); DeadLetters (`dlq-*-hold` undelivered > 0, replacing RabbitMQDeadLetters too); **ApiDown** (the two API synthetics fail from every probe for 10 min; it reuses SiteDown's shape), the Site\* alerts on the two site checks (SiteDown also fires when Spark disables the site, §8), and SyntheticsMissing (for the four checks) | **TickMissing** (no tick handled by a service for 45 min); **PushBacklog** (oldest unacked > 15 min on a scoring or notify subscription, replacing RabbitMQBacklog); **Saturated** (Cloud Run 429s); the **budget** alerts come by email from Billing, not Grafana | PodRestarting, ServiceExited, DatabaseFlapping, CertificateExpiring, RabbitMQAlarm, RabbitMQNodeDown, AMQPDisconnected, EventsUnroutable (a publish to a missing topic fails → PublishFailing), all Argo\*, all Admission\*, all Vault\* |
 
 ---
 
@@ -440,7 +444,8 @@ still applies.
 - 50 api requests a day each (15,000 a month, 0.2 s).
 - ~3 Pub/Sub deliveries per sync (3,600, 1 s), ~3,000 cold starts (1 s).
 - Ticks: 4 services every 15 min = 11,520 requests (scoring ~2 s, the others ~0.2 s).
-- Synthetics: the 2 checks (`api.` and `ingest.` `/health/ready`, §6), ~17k requests at 0.1 s.
+- Synthetics: the 2 API checks (`api.` and `ingest.` `/health/ready`, §6), ~17k requests at 0.1 s. The 2 site checks
+  hit Hosting, not Cloud Run.
 - Total about **25k vCPU-seconds, 12k GiB-seconds and 50k requests**.
 
 Prices are list prices in USD, Tier 1 (europe-west1). Unmarked figures are confirmed on the pricing pages (§15,
@@ -460,6 +465,7 @@ Prices are list prices in USD, Tier 1 (europe-west1). Unmarked figures are confi
 | Cloud Monitoring | system metrics; Grafana's reads every 5 min (~170k a month, §6) | system metrics free *(unchecked)*; reads *(unchecked: the sources conflict)* | *(unchecked)* | 0 |
 | Egress to Supabase and APNs | ~1.5 GB | *(unchecked)* | ~$0.12/GB *(unchecked)* | ~0.20 |
 | Budgets | 1 | *(unchecked whether free)* | — | 0 |
+| Firebase Hosting (`ryftlab-site`, Spark, no billing account) | ~100 MB stored (estimate), ~1–2 GB out (testers' pages, the synthetics) | 10 GB stored; transfer 10 GB/month (Hosting's quota page) or 360 MB/day (the pricing page): the two official pages disagree | none: a Spark project has no bill, it stops (§8) | 0 |
 | Grafana Cloud, HCP Terraform, Supabase | unchanged | — | — | unchanged |
 | **Total GCP** | | | | **≈ €0.50–1** |
 
@@ -470,7 +476,7 @@ later. Secret Manager and DNS cost cents from day one. Other bills arrive outsid
 - **min-instances 1** anywhere (the user chose 0; its idle price is *(unchecked)*);
 - europe-west3's Tier 2 (1.4 × Tier 1 *(search)*);
 - a rescore of every account (unmeasured, an operator job);
-- ticket F, if it picks a host with a bill (§8).
+- the site project, only if the user links a billing account to it (that turns it into Blaze, §8).
 
 **Worst case:** all 7 instances (§3: api 3, ingest 2, scoring 1, notify 1) busy around the clock is ~18.1M vCPU-s and
 ~11M GiB-s, about **$460 a month** at Tier 1. Max-instances bounds it, and the budget emails long before.
@@ -505,74 +511,166 @@ gcloud billing budgets describe "$BUDGET" --format='yaml(amount,thresholdRules,b
   Then set `public_invokers = false` in `infra/gcp`'s variables before the next apply, which would otherwise add
   `allUsers` back, and find the cause in the billing report (SKU view) before undoing either.
 - Budgets don't cap spending, and "the first notification may take several hours" (Billing docs). Max-instances is the
-  hard cap for Cloud Run; nothing else in the design scales with traffic.
+  hard cap for Cloud Run. The site scales with traffic too, but it sits in a project without billing, so its quota is
+  the cap and needs no stop line (no `firebase hosting:disable`, §8).
 - D55's "budget in USD" becomes EUR, the billing account's currency.
 
 ---
 
-## 8. The legal pages: none in the pre-alpha
+## 8. The site: the whole export on Firebase Hosting (PR C1)
 
-**The user's decision: no site at all.** No Firebase Hosting, no static export served anywhere, no nginx image on
-Cloud Run. `web/` stays in the repo and CI keeps building and testing it (`make web-test web-build web-e2e`), but
-nothing deploys it. The apex `ryftlab.de` and `www` get no web records in Cloud DNS. The pages come back with the
-deferred **ticket F**.
+**The user's decision (follow-up 2, 2026-11-14): the site is back in the pre-alpha.** The whole static export of
+`web/` goes on Firebase Hosting at `https://ryftlab.de`. This replaces the deferred ticket F and its GitHub Pages
+option. It brings back:
+- the legal pages (`/privacy`, `/de/privacy`, `/terms`, `/support`, `/impressum`), so the consent screen's
+  `privacy_policy_url`, the app's Terms, Privacy and Support links and App Store Connect's URLs load again;
+- the AASA: universal links, password AutoFill, push links (`ryft.url`) and invite links;
+- `/admin`, the operator's page.
 
-**What has no host, plainly.**
+REBUILD step 12's "open no gate and invite nobody" clears once `/privacy`, `/de/privacy` and `/impressum` return 200
+(runbook step 10). Testers also wait for C2 to be in force, because the text in force still names AWS (§14). API.md
+needs no change: the URLs are the ones it already documents.
 
-| What | Points to | Until F |
+**Everything in `web/` goes static.**
+- `next.config.ts` is `output: 'export'` with no server runtime.
+- The build reads `../app` (the tokens, the Swift-licence snapshot, the AASA test), which CI already checks out.
+  Nothing calls the RYFT API at build time.
+- `/admin` is static too: a client page that calls `api.ryftlab.de` and Supabase from the browser
+  (`web/config/admin.json`), with its own CSP.
+
+What nginx does that Hosting doesn't, and whether leaving it out breaks anything:
+
+| nginx | On Hosting | Breaks anything? |
 |---|---|---|
-| The consent screen's `privacy_policy_url` (`GET /v1/config`, API.md) | `https://ryftlab.de/privacy` | the link opens a connection error; the app asks for consent to a text nobody can open |
-| The app's Terms, Privacy and Support links | `/terms`, `/privacy`, `/de/privacy`, `/support` | the same |
-| The Impressum | `/impressum` | none online (§5 DDG) |
-| App Store Connect's privacy policy, support and marketing URLs | `ryftlab.de/...` (REBUILD step 12) | point at nothing, so no external TestFlight group and no App Review submission |
-| The AASA | `/.well-known/apple-app-site-association` | no universal links, no password AutoFill association; push links (`ryft.url`) and invite links (`/invite/<code>`) are plain URLs that load nothing |
-| The operator's page | `/admin` | gone; the admin API stays reachable with `ADMIN_API_KEY` from a shell |
+| `/healthz` | gone | no: nothing probes it after D3; the synthetics check `/privacy` and the AASA (§6) |
+| `*.gz` → 404 (the precompressed copies for `gzip_static`) | not uploaded (`ignore`); Hosting compresses on its own | no |
+| the access log without IP, user agent or referrer (`web/docs/LEGAL_CHECKLIST.md` S6) | we get no logs, because Cloud Logging isn't linked. Google's CDN processes the IP to serve the page | no, but the privacy text changes (C2) |
+| `absolute_redirect off`, `charset` on the text types | Hosting's own behaviour | no |
 
-**What that means.** REBUILD step 12 already says it: until `/privacy`, `/de/privacy` and `/impressum` return 200,
-"open no gate and invite nobody". So the pre-alpha without F has **one tester, the user**. Every other tester, the demo
-account for App Review and any external TestFlight group wait for F. §7's "10 testers" is the load after F. API.md
-needs no change: its 2026-11-14 changelog already says `privacy_policy_url` does not load until the site has a host.
+**`firebase.json`** is generated by `web/scripts/firebase-json.mjs` from the same sources as the nginx snippets
+(`scripts/csp.mjs`'s hashes), so the CSP stays one source. It holds:
+- `"public": "out"` and `"cleanUrls": true`. `/privacy` serves `privacy.html`, and a request with `.html` gets a 301
+  without it, which also covers `/admin.html` → `/admin`.
+- **`trailingSlash` left unset, with #156's rule as an explicit redirect:**
+  `{"regex": "^/(?P<p>[A-Za-z0-9][A-Za-z0-9/._-]*)/$", "destination": "/:p", "type": 301}`.
+  - Unset, Hosting "only uses trailing slashes for directory index files", and the export has none below the root.
+    So every other path ending in `/` stays a 404 and is never redirected.
+  - `//host/`, `/\host/` and `/%5Chost/` can't match the pattern (#156).
+  - `trailingSlash: false` would redirect *every* such path, and whether Hosting collapses `//` first is
+    *(unchecked)*, so it isn't used.
+- The app-link rewrite `^/(day|sleep|insights|train|auth|invite)(/.*)?$` → `/open.html` (`regex`, RE2).
+- Headers per path class, as in nginx:
+  - the shared set on everything: nosniff, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, HSTS
+    `max-age=31536000; includeSubDomains`, COOP, CORP, `Permissions-Policy`;
+  - the marketing CSP on everything except `/admin`;
+  - on `/admin` only: the admin CSP, `no-store` and `X-Robots-Tag`;
+  - `Cache-Control` as today: a year for `/_next/static/**`, a day for icons and images, `no-cache` for `/privacy`,
+    `/de/privacy` and the 404, `no-store` for the app-link paths, 300 s for the other pages;
+  - for the AASA: `Content-Type: application/json` and an hour's cache.
+- `"ignore": ["**/*.gz"]` and nothing else. `firebase init`'s default list has `**/.*`, which would drop
+  `.well-known/` and the AASA with it.
 
-**Ticket F, deferred: the pages, cheapest host first.** It starts when the user wants a second tester. Size S–M,
-depending on the host. Options in this order:
-1. **GitHub Pages**, free for public repositories (a private repository needs a paid plan). Limits: 1 GB per site,
-   100 GB a month soft bandwidth. Since this repo is private, CI pushes only `out/` to a separate **public** repo with
-   Pages on; no billing anywhere.
-   - The catch: no custom headers. The CSP shrinks to a `<meta>` tag, and `frame-ancestors` and HSTS can't be set.
-   - There are no rewrites, so the app-link fallback (`/day/**`, `/invite/**` → `open.html`) needs a `404.html` that
-     routes.
-   - The AASA's content type is *(unchecked)*.
-   - The certificate comes from Let's Encrypt, which today's CAA already allows (D214).
-   - GitHub joins the privacy text as a processor of visitors' IPs.
-2. **Firebase Hosting on Spark in a second project without billing.** Hard caps instead of a bill, and `firebase.json`
-   expresses every nginx rule (headers, rewrites, `cleanUrls`). The cost is a second project to run, and CAA needs
-   `pki.goog` (the zone has it anyway, below).
-3. **The nginx `web` image on Cloud Run in `ryftlab-prod`** with an apex mapping. It needs no change to the web code
-   and stays inside the free tier, but it's a third Preview mapping, and the limiter depends on the XFF test (§5.1).
+The docs give the order: reserved `/__/*`, then redirects, then exact files, then rewrites, then the custom
+`404.html`. So the trailing-slash redirect runs before any file is looked up.
 
-F's acceptance: the three URLs return 200, the served AASA matches `web/tests/aasa.test.ts`'s file and Apple's CDN
-(`https://app-site-association.cdn-apple.com/a/v1/ryftlab.de`) returns it, C2 goes into
-force with F's host named in it, and App Store Connect's URLs move (REBUILD step 12).
+**C1's acceptance.** The tests are `web/tests/hosting.test.ts`, replacing `nginx.test.ts`, and `make web-e2e` against
+the Hosting emulator (`firebase emulators:exec --only hosting`, firebase-tools pinned):
+- Every response has exactly one CSP: the marketing one everywhere, the admin one on `/admin` only. Whether Hosting
+  merges two matching `headers` rules or sends both is *(unchecked)*. If it sends both, the generator writes the
+  marketing rule's globs so that they leave `/admin` out.
+- `/privacy/` → 301 `/privacy`. `/x//`, `//evil.example/` and `/%5Cevil.example/` → 404 with no `Location`.
+- The AASA is served as `application/json` without a redirect. Whether a `headers` entry may set `Content-Type` is
+  *(unchecked)*, so the test proves it.
+- The app-link paths serve `open.html` with `no-store`.
+- After the deploy, the same assertions run against `https://ryftlab.de` (runbook step 10), and Apple's CDN
+  (`https://app-site-association.cdn-apple.com/a/v1/ryftlab.de`) returns the served AASA.
 
-**CAA.** The Cloud Run mappings use Google-managed certificates. Today's CAA allows Let's Encrypt only (D214), so the
-Cloud DNS zone adds `issue "pki.goog"` and keeps `letsencrypt.org` for F *(which CA the mappings use is unchecked;
-`pki.goog` is Google Trust Services)*. A certificate pending for over 24 hours is the stop signal (§1, runbook step 9).
+**The site project `ryftlab-site`.** This is head-architect's default; the user can still choose `ryftlab-prod`, which
+puts Hosting on Blaze under "RYFT 50 EUR".
+- **No billing account, so the Spark plan.** "Linking a Cloud Billing account to your project will auto-upgrade your
+  project to the Blaze pricing plan." So it never gets one.
+- **The quota is the cap.**
+  - Hosting's quota page: storage "at no cost up to 10 GB", transfer "up to 10 GB/month". The pricing page says
+    360 MB/day; the two official pages disagree.
+  - Over the transfer quota on Spark: "a short grace period but then your sites will be disabled. Your sites will
+    remain disabled until the start of the next month."
+  - Over the storage quota: no new deploys.
+  - No bill comes either way, so there is no stop line (no `firebase hosting:disable`).
+- **The price of the cap.** A flood of ~10 GB takes the legal pages offline until the 1st.
+  - The API keeps working, and SiteDown fires (§6).
+  - New consents and App Review wait, because REBUILD step 12's rule applies again.
+  - The user then waits, or upgrades the site project to Blaze with its own budget. Nothing here does that
+    automatically.
+- **Custom domains on Spark.**
+  - Firebase's pricing page lists "Custom domain & SSL" under Hosting, and search snippets of that page show it in
+    the no-cost column *(search: the fetched page text shows the row without a value)*.
+  - The custom-domain page names no plan restriction.
+  - Runbook step 10 is the check: if the console asks for Blaze to connect `ryftlab.de`, stop.
+- **Certificates.** "Firebase Hosting provisions an SSL certificate for each of your domains", which "may take up to
+  24 hours after you point your DNS to Firebase Hosting".
+- **`www`** is connected as a second custom domain, with the wizard's option to redirect to `ryftlab.de`. My call:
+  typed `www.` links shouldn't fail, and it costs one more certificate.
+- **Logs.** Hosting's Cloud Logging export is opt-in per site. It records `remoteIp` and the user agent and keeps them
+  30 days. It stays **off**, so we keep no visitor logs, and S6 stays true for us.
+
+**What the user creates** is in runbook step 10's commands (§11): the project, Firebase on Spark, the deploy SA and
+its two bindings, and the custom domains in the console. All of it is owned by hand, not by Terraform. The DNS records
+the wizard shows go into `infra/gcp`'s variables, because Terraform owns the zone.
+
+**How CI deploys.** `deploy.yml` gets a `site` job in environment `deploy`. The GitHub pool's condition
+(`job_workflow_ref` = `deploy.yml` on main, §5.1) already admits it, so no new pool is needed. It runs when `web/`
+changed, after `web-build` and the brand check:
+1. `google-github-actions/auth` (pinned by SHA) with the GitHub provider in `ryftlab-prod` and
+   `service_account: site-deployer@ryftlab-site.iam.gserviceaccount.com`. It writes a short-lived credentials file;
+   there is no key.
+2. `npx --yes firebase-tools@<pinned> deploy --only hosting --project ryftlab-site --non-interactive`, from `web/`.
+   The CLI "will detect and use Application Default Credentials if they're set". `FIREBASE_TOKEN` is "no longer
+   recommended" and `login:ci` is deprecated, so there are no tokens.
+3. The step-10 assertions against `https://ryftlab.de` (curl), and `check_policy_in_force.sh` reads the live
+   `/privacy`.
+
+Rollback is the console's release history (Hosting → Release history → Roll back), or a revert commit.
+
+**CAA.** Today the zone allows only Let's Encrypt (`issue` and `issuewild "letsencrypt.org"`, D214). Both
+certificate users ask for two CAs:
+- Cloud Run: "If you use Certification Authority Authorization (CAA) DNS records for your custom domain, authorize
+  both `pki.goog` and `letsencrypt.org` so that Cloud Run can issue and renew your managed TLS certificate."
+- Firebase Hosting, for a domain stuck in "Pending": "Ensure that the certificate authorities `letsencrypt.org` and
+  `pki.goog` are allowed to create SSL certs for your domain."
+
+So the Cloud DNS zone carries this set at the apex, and `api.`, `ingest.` and `www.` inherit it:
+```
+ryftlab.de.  CAA  0 issue "letsencrypt.org"
+ryftlab.de.  CAA  0 issue "pki.goog"
+ryftlab.de.  CAA  0 issuewild "letsencrypt.org"
+```
+- `issuewild` stays as it is: neither service asks for a wildcard, and an `issuewild` record governs only wildcard
+  requests.
+- The set goes live with the NS switch (step 6), before the mappings (step 9) and the site's domains (step 10)
+  request certificates.
+- A certificate still pending after 24 hours is the stop signal.
+- The site's records are the apex A records and the `hosting-site=` TXT, the same for `www`. Firebase says to remove
+  any A, CNAME and AAAA records that point elsewhere; the apex has none today (D215).
 
 **The privacy text (PR C2, a draft PR only, `status` left alone).**
 - A new version, dated when the user decides, `status: draft`, with `PRIVACY_POLICY_VERSION` moved in the same PR
   (where it lives after `deploy/k8s` is gone: §9).
-- It stays a draft PR, because a draft version on main blocks every deploy (STATUS, F1). It goes into force with F,
-  because before F nobody can read it.
+- It stays a draft PR, because a draft version on main blocks every deploy (STATUS, F1). It goes into force after
+  C1's pages load and before any tester signs in (runbook step 15).
 - Changes:
   - **Google Cloud replaces Amazon Web Services** as processor: Cloud Run, Pub/Sub, Secret Manager, Cloud Logging,
     Cloud Trace (request paths and timings of sampled requests; its location is *(unchecked)*) and Cloud DNS. The
     location is Belgium (europe-west1). The terms are Google's Cloud Data Processing Addendum, with the EU-U.S. Data
     Privacy Framework plus SCCs for any access from the US.
+  - **Firebase Hosting (Google, a global CDN)** is named as the processor that serves `ryftlab.de` worldwide and
+    processes visitors' IP addresses to deliver the pages. The terms are Firebase's Data Processing and Security Terms
+    *(unchecked: which terms cover Hosting in a project without billing)*.
   - **Technical logs** (text §3): add "the IP address and user agent of every API request, in Google's request logs,
     14 days" and the audit logs of administrative access.
   - **Visiting ryftlab.de** (text §3): today it says the IP "is not stored" and is used "to limit requests per
-    address" by our nginx. The bullet is left as a marked gap in the draft and written by F for the host F picks
-    (GitHub, Firebase or our nginx log differently).
+    address" by our nginx. It becomes: the site is served by Firebase Hosting; Google's CDN processes the IP address
+    to deliver the page; we receive and keep no access logs (the Cloud Logging export is off); there is no rate limit
+    of ours.
   - **Security** (text §8): "can reach only what it needs" becomes "can access only the data it needs" (§5.2).
   - **Retention** (text §6): logs 14 days (unchanged, now true by the bucket). Events that couldn't be processed:
     14 days on the dead-letter topic (unchanged).
@@ -597,13 +695,13 @@ Cloud DNS zone adds `issue "pki.goog"` and keeps `letsencrypt.org` for F *(which
   - the Pub/Sub topology (from the generated tfvars) and the Scheduler job;
   - Artifact Registry and its cleanup policy;
   - the WIF pool for GitHub;
-  - the domain mappings and the Cloud DNS zone;
+  - the domain mappings and the Cloud DNS zone, including the site's records (variables from the Hosting wizard);
   - the log bucket and sink;
   - the Grafana-managed rules.
 
   Not in Terraform: the budget (by hand, §7), the WIF pool for HCP Terraform and its two SAs (the bootstrap, because
-  Terraform can't create its own credentials), and the Grafana SA's key (created by hand and stored only in Grafana
-  Cloud, §6).
+  Terraform can't create its own credentials), the Grafana SA's key (created by hand and stored only in Grafana
+  Cloud, §6), and the site project `ryftlab-site` with its deploy SA and custom domains (by hand, §11 step 10).
 - **CI owns the revisions:** `deploy/run/<svc>.yaml` (Knative service YAML, env, secrets by name, probes, limits) and
   `deploy/run/migrate.yaml`. Nothing has two owners, as D94 required. `PRIVACY_POLICY_VERSION` moves from
   `deploy/k8s/base/{api,ingest}/config.env` to `deploy/run/config.env`, and the checks that read it follow.
@@ -614,8 +712,7 @@ Cloud DNS zone adds `issue "pki.goog"` and keeps `letsencrypt.org` for F *(which
      `gcloud run jobs execute migrate --wait`. If it fails, stop: nothing rolls, as with today's PreSync.
   4. `gcloud run services replace deploy/run/<svc>.yaml` with the digest, then scoring, notify, ingest, api.
   5. `make smoke-prod`.
-
-  `web/` deploys nowhere until ticket F (§8).
+  6. The `site` job when `web/` changed: Firebase Hosting in `ryftlab-site` (§8).
 
   Rollback: `gcloud run services update-traffic <svc> --to-revisions=<previous>=100`. Migrations are additive and
   stay. D175's hold becomes a repository variable per image group, read by the workflow. The deploy watch watches
@@ -630,12 +727,12 @@ Cloud DNS zone adds `issue "pki.goog"` and keeps `letsencrypt.org` for F *(which
 
 **Superseded** (written as "superseded by D2xx" in DECISIONS with PR A):
 - D16, D17 (amended: §2.2), D24, D27, D43, D45, D46, D51, D52;
-- D55 (budget in EUR, made by hand; no site until F), D57, D64, D94–D96, D97, D98;
+- D55 (budget in EUR, made by hand; the site on Hosting without billing), D57, D64, D94–D96, D97, D98;
 - D99 (amended: Pub/Sub IAM), D102–D105;
-- D107 (amended: no site in the pre-alpha, ticket F picks the host, §8);
+- D107 (amended: Firebase Hosting instead of the nginx image, §8);
 - D120, D121, D151, D155 (amended: §5.1), D169 (amended: 10 s), D175 (amended: §9), D180, D182, D183, D185;
 - D186–D205 (Vault and admission), D207–D210;
-- D211 (amended: §5.3), D215 (amended: still no host, until ticket F, §8).
+- D211 (amended: §5.3), D215 (superseded by C1, §8).
 
 **Kept:** D100 and D101 (amended: inline relay, not-before), D213 (amended: no `argocd.` and `rabbitmq.` hosts, plus
 `ingest.`), D214 (the records move to Cloud DNS; CAA adds `pki.goog`).
@@ -646,16 +743,18 @@ B0 is done: this pass checked the figures (marks and §15). Its live tests move 
 | # | PR | Size | Contents | After it, the user |
 |---|---|---|---|---|
 | A | `backend: Pub/Sub and Cloud Run` | **XL** (~3–4k lines with tests) | §2.3, §3, §4's DSN and `PGPASSWORD`, h2c, OIDC, OTLP, slog, `/health/live` and `/health/ready`, the outbox migration (`available_at`), compose with the emulator, `cmd/pubsub-topology`, amqpbus and RabbitMQ deleted, the session-state grep (§4). `API.md` (api-contract-owner): Base URLs and the health paths, additive. `MESSAGING_DESIGN.md` rewritten, DECISIONS D216–D227. Deploys nothing | — |
-| B | `infra, deploy: GCP and the deploy workflow` | **L** | `infra/gcp` (workspace `ryft-gcp` in `ryft-lab`; prepared, `terraform test`, never applied), `deploy/run/*`, `deploy.yml` (off until the variable `GCP_DEPLOY=on`), `scripts/dns_compare.sh`, `PRIVACY_POLICY_VERSION`'s new home and its checks, alert rules, `OPERATIONS.md` → GCP with §11's bootstrap and stop line. Disjoint from A, so it is built in parallel | runbook steps 1–11 (§11) |
-| C2 | `legal: privacy draft (Google Cloud, Microsoft via GoDaddy)` | S, **draft only** | §8, `status: draft`. Not merged before F | nothing yet |
+| B | `infra, deploy: GCP and the deploy workflow` | **L** | `infra/gcp` (workspace `ryft-gcp` in `ryft-lab`; prepared, `terraform test`, never applied), `deploy/run/*`, `deploy.yml` (off until the variable `GCP_DEPLOY=on`), `scripts/dns_compare.sh`, `PRIVACY_POLICY_VERSION`'s new home and its checks, alert rules, `OPERATIONS.md` → GCP with §11's bootstrap and stop line. Disjoint from A, so it is built in parallel | runbook steps 1–9 and 11 (§11) |
+| C1 | `web: Firebase Hosting` | **M** | §8: `web/scripts/firebase-json.mjs` and the generated `firebase.json` (headers, #156's trailing-slash redirect, the app-link rewrite, `ignore`); `hosting.test.ts` replacing `nginx.test.ts`; `make web-e2e` against the Hosting emulator; the `site` job in `deploy.yml` (WIF, no tokens); the site's DNS variables in `infra/gcp`; `check_policy_in_force.sh` reading the live `/privacy`; the two site synthetics and Site\* alerts; `web/CLAUDE.md` and the CI docs. It touches B's `deploy.yml` and `infra/gcp`, so it stacks on B (web-engineer, with gitops-engineer for the job) | runbook step 10 |
+| C2 | `legal: privacy draft (Google Cloud, Firebase Hosting, Microsoft via GoDaddy)` | S, **draft** | §8, `status: draft`. Goes into force after C1's pages load, before any tester | decides the wording and date; step 15 |
 | D1 | `infra/aws: allow the removal` | S | the README's first PR: `NoDeletionOrDisable` dropped from `vault_keys`, `force_destroy = true` on the snapshot bucket. Plus E's prerequisite: `prevent_destroy` dropped from the zone in `infra/aws/dns`. Merged after the NS switch (step 6) | steps 12 (E) and 13's first apply |
 | D2 | `infra/aws: empty the root` | S | the README's second PR: `vault.tf`, `budget.tf` and every other resource file of `infra/aws` deleted, so the root declares nothing and the plan destroys the keys (scheduled, 30 days), the aliases, the bucket and the AWS budget | step 13's second apply |
-| D3 | `remove: Kubernetes, Argo CD, Vault, admission, AWS` | L (mostly deletions) | `deploy/k8s`, `deploy/argocd`, `deploy/rabbitmq`, `deploy/monitoring`, `infra/aws` with `dns` and `kubernetes` (incl. admission charts, `admission-e2e`, `argocd-luatest`), `infra/vault`, the kubectl scripts (`admission_e2e`, `check_argocd`, `check_operators_scope`, `check_registry`, `install_kubectl`, `vault_diff`; `dlq`, `rescore_all`, `trace` rewritten in A/B), `admission-e2e.yml`, `make k8s-*`, `promote.sh`, `hold.sh`. `ARCHITECTURE.md` and `OPERATIONS.md` brought up to date, STATUS closed out. Only after E and D2 are applied and production on GCP passes the smoke | step 14 |
-| F | `web: the pages on a host` | S–M, **deferred** | §8: GitHub Pages first, then Firebase Spark in a project without billing, then the nginx image on Cloud Run. C2 goes into force with it | App Store Connect's URLs; testers |
+| D3 | `remove: Kubernetes, Argo CD, Vault, admission, AWS` | L (mostly deletions) | `deploy/k8s`, `deploy/argocd`, `deploy/rabbitmq`, `deploy/monitoring`, `infra/aws` with `dns` and `kubernetes` (incl. admission charts, `admission-e2e`, `argocd-luatest`), `infra/vault`, the kubectl scripts (`admission_e2e`, `check_argocd`, `check_operators_scope`, `check_registry`, `install_kubectl`, `vault_diff`; `dlq`, `rescore_all`, `trace` rewritten in A/B), `admission-e2e.yml`, `make k8s-*`, `promote.sh`, `hold.sh`, the nginx `web` image (`web/Dockerfile`, `web/nginx/`, the `web-image` job, `services/web`). `ARCHITECTURE.md` and `OPERATIONS.md` brought up to date, STATUS closed out. Only after E and D2 are applied and production on GCP passes the smoke | step 14 |
 
-**Order.** A ∥ B → runbook steps 1–11 (GCP live, only the user signs in) → D1 → E (step 12, ≥ 48 h after the NS switch)
-→ D2 (step 13) → D3 and the old workspaces (step 14). The data key's first half (step 0) can run today. F and C2 wait
-for the user's second tester.
+**Order.** A ∥ B, then C1 on top of B (C2 drafted alongside) → runbook steps 1–9 (GCP live) → **step 10, the site: the
+pages load** → step 11 (observability) → C2 in force → step 15, testers. The retirement runs after step 10 and
+doesn't block testers: D1 → E (step 12, ≥ 48 h after the NS switch) → D2 (step 13) → D3 and the old workspaces
+(step 14). The data key's first half (step 0) can run today. The site project itself (step 10's first half) can be
+created any time.
 
 A and B can be built in parallel (one writer each: backend-engineer + database-engineer + test-engineer on A;
 infra-engineer + gitops-engineer on B), then reviewed by code-reviewer, security-privacy-reviewer and sre.
@@ -680,12 +779,12 @@ other step runs in a shell where `TF_TOKEN_app_terraform_io` is unset, so the CL
 | 7 | **Supabase:** the transaction pooler host and port 6543 for the services, session 5432 for migrate, the pool size (Database → Connection pooling), Data API still off, Site URL and redirect URLs on `ryftlab.de`. One `verify-full` login as `ryft_api.<ref>` on 6543 and as the migrate role on 5432 (whether the pooler's certificate matches Supabase's CA and host name is *(unchecked)*; a mismatch fails closed), then `make smoke-supabase` on 6543 (§4) | the login fails or `ECIRCUITBREAKER` appears: stop and wait it out, don't retry in a loop |
 | 8 | **First deploy:** repository variable `GCP_DEPLOY=on`, then run `deploy.yml` by hand. Nothing is public yet | `migrate` doesn't log `migration applied` / `up to date`, or a revision isn't ready |
 | 9 | **`infra/gcp` apply 2:** invokers (`allUsers` on api and ingest, `ryft-push` on scoring and notify) and the domain mappings for `api.` and `ingest.`. Then `make smoke-prod`; a 33 MiB sync through `ingest.ryftlab.de` gets our JSON 413; a request with a forged `X-Forwarded-For` shows the real address in the limiter's log (§5.1) | the plan touches more than IAM and mappings; a certificate is still pending **after 24 hours** (the docs give 15 minutes to 24 hours; then the fallback of §1); the smoke fails; the 413 isn't ours (§3) |
-| 10 | **The app:** a build with `api.` + `ingest.ryftlab.de`. The Sign in with Apple return URL stays Supabase's. App Store Connect's URLs stay until F. **Only you sign in** (§8, REBUILD step 12) | — |
+| 10 | **The site and the app (C1 merged).** Create `ryftlab-site` (the commands below; this half can run any time). In the Firebase console, Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with "redirect to `ryftlab.de`". Put the A and TXT values the wizard shows into `infra/gcp`'s site variables and apply (**apply 3**). Run `deploy.yml` by hand once (the `site` job). Then: `curl -s -o /dev/null -w '%{http_code}\n'` prints `200` for `/privacy`, `/de/privacy`, `/impressum`, `/terms`, `/support`; `curl -sI https://ryftlab.de/.well-known/apple-app-site-association` shows `content-type: application/json` and no redirect; `curl -sI 'https://ryftlab.de//evil.example/'` has no `location`; `https://www.ryftlab.de/privacy` redirects to the apex. The app build uses `api.` + `ingest.ryftlab.de`; App Store Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step 12); check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until here, only you sign in | the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, the user decides); apply 3 touches anything but the site's record sets; a certificate is still pending after 24 hours; any check above fails |
 | 11 | **Observability:** OTLP tokens; `grafana-reader`'s key by hand (`gcloud iam service-accounts keys create grafana-reader.json --iam-account=grafana-reader@ryftlab-prod.iam.gserviceaccount.com`), pasted into the data source, then `rm grafana-reader.json`; `make alerts-apply`; the two synthetics; one test alert. `gcloud iam service-accounts keys list --managed-by=user` per SA shows that one key only | no `ryft_db_up` from any service after 30 min (the ticks aren't arriving) |
 | 12 | **E, old org: Route 53.** ≥ 48 h after the switch, with D1 merged: ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns init`, then ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns apply -destroy`; read every line before `yes` | mail failed during the 48 h; the plan lists anything but the zone and its records |
 | 13 | **D, old org: the Vault keys, the bucket, the AWS budget** (the README's two-PR route). With D1 merged: ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws init`, then ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws apply`: only the two key policies and the bucket's `force_destroy` change. With D2 merged, the same `apply` again: destroys only | the first plan shows anything but those three changes; the second shows a `+` or `~`, or a resource that isn't RYFT's (a shared account: by IDs, never by tag) |
 | 14 | **Old org: the old workspaces.** After step 0's key is confirmed in Secret Manager (§5.3 step 4), and E and D are applied, safe-delete `ryft-prod-euc1-dns`, `ryft-prod-euc1-platform`, `ryft-prod-euc1-kubernetes` and `ryft-prod-euc1-vault` (the last one holds the old data key's state). Then D3 merged; the AWS and GHCR secrets in GitHub deleted | a safe delete is refused (resources are still in that state: find out why first) |
-| 15 | **Testers:** after F and C2 are in force | — |
+| 15 | **Testers:** after step 10's pages load and C2 is in force (its consent round runs first) | `/privacy` doesn't show C2's version |
 
 **Step 2, the bootstrap (bash or zsh, as the project owner, `TF_TOKEN_app_terraform_io` unset).**
 ```bash
@@ -772,6 +871,38 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
 - **Grafana.** The rules' provider needs a Grafana token: a **sensitive** variable set in the workspace UI, never by
   this script or on argv.
 
+**Step 10, the site project (as you, logged in to gcloud and `firebase login`; no billing account anywhere).**
+```bash
+S=ryftlab-site                                       # if the ID is taken, pick another and use it in C1's config
+PN=$(gcloud projects describe ryftlab-prod --format='value(projectNumber)')
+gcloud projects create "$S" --name="RYFT site"       # no --organization; never link a billing account
+gcloud billing projects describe "$S" --format='value(billingEnabled)'   # False
+gcloud services enable firebase.googleapis.com firebasehosting.googleapis.com iam.googleapis.com \
+  iamcredentials.googleapis.com --project="$S"
+npx --yes firebase-tools@<pinned> projects:addfirebase "$S"      # Spark, because there is no billing account
+npx --yes firebase-tools@<pinned> hosting:sites:list --project "$S"  # the default site, ryftlab-site
+
+# The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
+gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
+SITE_SA=site-deployer@$S.iam.gserviceaccount.com
+gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
+  --role=roles/firebasehosting.admin --condition=None
+gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/<github pool>/attribute.repository_id/<repository id>"
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
+```
+- `<github pool>` and the `repository_id` attribute are B's (§5.1). The pool's condition already pins `deploy.yml` on
+  main and the `deploy` environment, so this binding needs only the repository.
+- `roles/firebasehosting.admin` is the one role. Whether it is the minimal set is *(unchecked)*. If the first deploy
+  names a missing permission, add only that one (for example `roles/serviceusage.serviceUsageConsumer` on
+  `ryftlab-site`).
+- Which project's API enablement the cross-project impersonation consumes is *(unchecked)*. `iamcredentials` is on in
+  both projects, and it costs nothing.
+- `ryftlab-site.web.app` and `.firebaseapp.com` serve the same site. That is harmless: the admin page's API calls fail
+  CORS there, and the app accepts only `ryftlab.de` links.
+
 **The €20 stop line** (§7) is an OPERATIONS runbook entry in PR B, with the exact commands from §7.
 
 ---
@@ -779,7 +910,7 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
 ## 12. Proposed decisions (D216 and up)
 
 - **D216** RYFT runs on GCP serverless (Cloud Run, Pub/Sub, Secret Manager, Scheduler, Artifact Registry, Cloud DNS)
-  in project `ryftlab-prod`, without an organisation. Nothing stays in the HashiCorp AWS account. Terraform runs in
+  in project `ryftlab-prod`, without an organisation, and the site on Firebase Hosting in `ryftlab-site`. Nothing stays in the HashiCorp AWS account. Terraform runs in
   HCP Terraform org `ryft-lab` (CLI-driven workspaces, remote execution); the old org `tim-krebs-org` is used only for
   the retirement. *(the user's decision, 2026-11-14)*
 - **D217** Region europe-west1 and Cloud Run domain mappings (Preview), two API hosts, `api.` and `ingest.ryftlab.de`.
@@ -802,9 +933,12 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
   apply SA, each usable only in its run phase (§11 step 2).
 - **D224** Logs stay in Google, in an EU bucket. Grafana reads Cloud Monitoring through a viewer-only SA key (the one
   key, accepted by the user), and the app pushes OTLP at the tick and on SIGTERM (§6).
-- **D225** No site in the pre-alpha: no host for the legal pages, the AASA or `/admin`, so only the user signs in
-  (REBUILD step 12). Ticket F hosts them later, cheapest first (GitHub Pages). CAA admits `pki.goog` for the mappings
-  (§8). *(the user's decision, 2026-11-14)*
+- **D225** The whole static export of `web/` on Firebase Hosting at `ryftlab.de`, with `www` redirecting. It lives in
+  a separate project without billing (`ryftlab-site`, Spark), so the free quota is a hard cap: over it, the site goes
+  offline until the next month, and no bill comes. `firebase.json` is generated from the nginx rules' sources, with
+  #156's trailing-slash rule as an explicit redirect. CI deploys through WIF with no tokens. The CAA set allows
+  `letsencrypt.org` and `pki.goog` (§8). *(the user's decision, follow-up 2, 2026-11-14; the separate project is
+  head-architect's default)*
 - **D226** One budget, "RYFT 50 EUR", made by hand and not in Terraform, with rules at 10/50/90/100 %. The €20 stop
   line is a runbook action (invokers off, the tick paused). Max-instances is the hard cap (§7). *(the user's decision,
   2026-11-14)*
@@ -818,12 +952,12 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
 | 1 | Region | europe-west1 with domain mappings, keeping §1's "revisit if" list |
 | 2 | Two API hosts | yes, `api.` and `ingest.ryftlab.de` |
 | 3 | #161 | merged (`8389feb`), D207–D215 on main |
-| 4 | The site | none in the pre-alpha; ticket F later, cheapest first. C2 stays a draft |
-| 5 | The privacy draft's wording and date | open, with F (below) |
+| 4 | The site | first none (follow-up 1), then **reversed in follow-up 2**: the whole export on Firebase Hosting, C1, before testers |
+| 5 | The privacy draft's wording and date | open (below); C2 names Firebase Hosting |
 | 6 | `min-instances` | 0 everywhere (head-architect's default; the user can object) |
 | 7 | The Grafana SA key | accepted |
 | 8 | §5.2's gaps | accepted for the pre-alpha (the same default) |
-| 9 | Hosting's cost bound | moot without Hosting |
+| 9 | Hosting's cost bound | a separate project without billing (`ryftlab-site`, Spark), head-architect's default; the user can still choose `ryftlab-prod` |
 | — | Budget | "RYFT 50 EUR" by hand, plus a 10 % rule; €5 and €20 as runbook steps; no second budget |
 | — | HCP Terraform | new org `ryft-lab`; the old org only for the retirement, one prefixed command at a time |
 | — | GCP project | `ryftlab-prod`, no organisation, billing on; the bootstrap keeps what RYFT needs |
@@ -831,8 +965,9 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
 | — | Retirement order | data key → Cloud DNS and the NS switch → Route 53 → the AWS keys, bucket and budget → the old workspaces |
 
 **Still open for the user:**
-- C2's wording and date, the D214 questions (the M365 tenant's location, GoDaddy's DPA), and F's host. All three
-  wait until a second tester is wanted.
+- C2's wording and date, and the D214 questions (the M365 tenant's location, GoDaddy's DPA). Both are due before the
+  first tester (step 15).
+- The site's project: `ryftlab-site` without billing (default) or `ryftlab-prod`.
 - Whether the €20 line should send its own email (one more `--add-threshold-rule=percent=0.40`, §7).
 
 ## 14. Top risks
@@ -848,11 +983,13 @@ tfc_var google_site_verification 'google-site-verification=<value from step 1>' 
 | The data key is lost or mistyped | 1Password first (step 0), the fingerprint compare, `prevent_destroy`, delayed destruction, the old workspace deleted last, D211's fallback |
 | A step meant for the new org runs against the old one, or the reverse | the old token only as a one-command prefix, every such step marked; the pool's condition accepts only `ryft-lab`'s IDs |
 | Cost surprise | max-instances, the 10 % (€5) email, the €20 stop line (invokers off, the tick paused) |
-| Nobody but the user can test | by design until F (§8); F's first option costs nothing |
-| Testers consent to a text that misstates logging | C2 names IP and user agent in request logs and corrects "reach only" (§8), and goes into force only with F; the bucket keeps 14 days |
+| Spark's quota disables the site until the 1st (a flood, or the synthetics plus a launch) | ~1–2 GB of 10 GB in use; SiteDown fires; the API keeps working; the user can upgrade the site project to Blaze with a budget (§8) |
+| A Hosting rule differs from nginx (two CSPs on `/admin`, the AASA's type, an off-site trailing-slash redirect) | C1's tests against the Hosting emulator, the same assertions live at step 10 (§8) |
+| A certificate never issues | the CAA set allows `pki.goog` and `letsencrypt.org` before any domain is connected; 24 hours is the stop signal (§8) |
+| Testers consent to a text that misstates logging | C2 names IP and user agent in request logs and Firebase Hosting, corrects "reach only" (§8), and is in force before any tester; the bucket keeps 14 days |
 | A debug commit turns on apikey mode on a public service | P5 moves into `config.LoadAuth` (refused on Cloud Run) and a CI check of `deploy/run/*.yaml` |
 | One `versions add` silently changes a running service (data key, DB password) | secrets pinned by version; rotation is a reviewed deploy (§4) |
-| What is still unchecked (§15) | each item carries the mark, and the ones that can break a step have that step's test (HTTP/2 and XFF at step 9, `verify-full` at step 7) |
+| What is still unchecked (§15) | each item carries the mark, and the ones that can break a step have that step's test (HTTP/2 and XFF at step 9, `verify-full` at step 7, Spark's custom domains and the AASA's type at step 10) |
 
 ## 15. Sources (checked 2026-11-14)
 
@@ -889,14 +1026,23 @@ page was read, because the page itself returned its title only or was refused to
   *(search)*, [workload identity tokens](https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/workload-identity-tokens)
   *(search: the claims)*, [workspaces API](https://developer.hashicorp.com/terraform/cloud-docs/api-docs/workspaces)
   *(search: safe delete)*.
-- [GitHub Pages limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits)
-  *(search)*, [Grafana Synthetic Monitoring](https://grafana.com/docs/grafana-cloud/testing/synthetic-monitoring/)
+- Firebase: [custom domains](https://firebase.google.com/docs/hosting/custom-domain) (CAA, certificates, the
+  redirect to a second domain), [Hosting quotas](https://firebase.google.com/docs/hosting/usage-quotas-pricing)
+  (10 GB, disabled until the next month), [pricing plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans)
+  (Spark, billing auto-upgrades), [pricing](https://firebase.google.com/pricing) (360 MB/day; "Custom domain & SSL"
+  *(search)*), [full config](https://firebase.google.com/docs/hosting/full-config) (priority order, `trailingSlash`,
+  `cleanUrls`, RE2, `ignore`), [request logs](https://firebase.google.com/docs/hosting/web-request-logs-and-metrics)
+  (`remoteIp`, 30 days), [the CLI in CI](https://firebase.google.com/docs/cli) (ADC, `login:ci` deprecated). Cloud
+  Run's CAA sentence is on its mapping page above.
+- [Grafana Synthetic Monitoring](https://grafana.com/docs/grafana-cloud/testing/synthetic-monitoring/)
   *(search: the free executions)*.
 - [Google developer forum, X-Forwarded-For on Cloud Run](https://discuss.google.dev/) *(a forum report, not docs)*.
 
 **Still unchecked:** the load balancer's forwarding-rule price; egress prices; Monitoring API read pricing (the
 sources conflict); Cloud Trace's free allowance and location; whether system metrics and budgets are free;
 `min-instances`' idle price; Grafana Cloud's free metrics and logs; `deliveryAttempt` on push; HTTP/2 through a mapping;
-Supavisor with pgx's `exec` mode; the location of `_Required`; `run.developer` vs `invoker-iam-disabled`; the GitHub
-Pages AASA content type; which CA the mappings use; the token creator role *(search)*; the Budget API on the quota
+Supavisor with pgx's `exec` mode; the location of `_Required`; `run.developer` vs `invoker-iam-disabled`; Hosting
+setting `Content-Type` for the AASA; two matching `headers` rules on Hosting; whether Hosting collapses `//`; Spark's
+custom domains *(search)*; Hosting's transfer quota (10 GB/month or 360 MB/day); the minimal deploy role; which
+project's APIs the cross-project impersonation consumes; Firebase's terms for Hosting; the token creator role *(search)*; the Budget API on the quota
 project; the safe-delete answer for a non-empty state; the pooler's certificate under `verify-full`.

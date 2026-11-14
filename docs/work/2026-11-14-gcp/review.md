@@ -53,3 +53,11 @@ The brief asked for a new review only if a decision changes the security picture
 
 These edits weren't reviewed by a second agent. If PR B's implementation changes the bootstrap's roles or the
 condition, its security-privacy review covers them there.
+
+## Follow-up 2 (2026-11-14): the site comes back, no new review
+
+The brief asked for no new review round. What it changes: Firebase Hosting returns in a separate project without
+billing (`ryftlab-site`), with a deploy SA that holds only `firebasehosting.admin` and is usable only through the
+reviewed GitHub pool. CI uses no tokens. #156's trailing-slash rule is an explicit RE2 redirect that can't match `//`
+or a backslash. The CAA set adds `pki.goog`. The privacy draft names Firebase Hosting, and our side keeps no visitor
+logs. C1's own security-privacy review covers the implementation.
