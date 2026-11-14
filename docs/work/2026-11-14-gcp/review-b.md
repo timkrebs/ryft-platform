@@ -29,5 +29,17 @@ One pass on `17d231d` by security-privacy-reviewer and sre, both read-only, then
 | — | sre, note | The €20 stop line leaves scoring and notify reachable to Pub/Sub | Accepted: without api/ingest traffic and the tick nothing publishes, and both scale to zero |
 | — | security | Privacy: Google as processor (events, request logs with IP and user agent, traces), and the DPA acceptance | C2's draft; the Cloud Data Processing Addendum is accepted in the console before testers |
 
-The fixes weren't re-reviewed beyond the lead's own reading. CI is the first run of every check: the local permission
-system refused `terraform test`, the script tests, actionlint and promtool for every agent.
+**Re-verification** (security-privacy-reviewer, narrow, on `db91226`):
+- Items 1, 2, 4, 5, 11, 12 and 13 are closed.
+- Item 3: the status functions are refused.
+- Three of the new shape checks in `scripts/check_workflows.sh` can be bypassed by a reviewed edit of deploy.yml on main.
+  These are **low, and open as follow-ups**:
+  - SCAN takes the first `trivy … --input` match, so a comment earlier in the file satisfies it. It should take the last
+    one, and refuse `docker build` after the sign-in.
+  - CHANGES_RUN misses `gcloud --quiet run`, `gcloud beta run` and lines continued with `\`.
+  - CURRENT accepts a negated `needs.ci.outputs.current`.
+
+**CI.** The first round was red. The `deploy/run` check found false anchors (yq's `alias` operator), mimirtool rejected a
+repeated namespace, and four `infra/gcp` tests failed: a check that is unknown at plan time, guards matching comments, and
+`expect_failures`. `3839aaf` fixed them, and every job is green. Locally the permission system refused `terraform test`,
+the script tests, actionlint and promtool for every agent, so CI was the first run of each.
