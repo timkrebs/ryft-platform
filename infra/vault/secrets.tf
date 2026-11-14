@@ -31,10 +31,20 @@ resource "random_password" "amqp" {
 # imports the old value into random_bytes.data_key["api"] before the first apply (D211,
 # docs/OPERATIONS.md -> Vault -> The first apply), so this address must not change; the
 # import sets length from the value (32 bytes), which equals the configuration.
+#
+# prevent_destroy: after the import this state is the key's only copy (D211). A plan that
+# would destroy or replace it (a -replace, a changed length, the api's data_key flag
+# dropped, a destroy) fails instead. A deliberate rotation is a reviewed PR that removes
+# this line first. random_password.demo has no such guard: its rotation is a -replace
+# (README -> The App Review demo password).
 resource "random_bytes" "data_key" {
   for_each = { for name, s in local.services : name => s if s.data_key }
 
   length = 32
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Bearer of the api's /v1/admin routes (feature flags). Rotate it with

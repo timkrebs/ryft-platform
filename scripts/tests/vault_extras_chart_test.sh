@@ -6,6 +6,9 @@
 #     with peers.vso.enabled and peers.collector.enabled, exactly those two rules more;
 #   - the peers reach each other on 8200 and 8201, both ways;
 #   - 0.0.0.0/0 only in the two egress rules to TCP 443, with the private ranges excepted; no ingress ipBlock;
+#   - with kmsSeal=false (Shamir, what vault.tf passes by default, D208): vault-server's egress is the peers and the
+#     VPC on 443 only (no 0.0.0.0/0, no Pod Identity agent at 169.254.170.23), and the snapshot job's rules and
+#     vault-server's ingress are those of the default render;
 #   - the PDB keeps the quorum (minAvailable 2 of 3, 3 of 5), AlwaysAllow, the server pods;
 #   - the service-registration Role names the server pods (vault-0..N-1), get/update/patch on pods, nothing else;
 #   - both Certificates are signed by the ClusterIssuer ryft-vault, which cluster-issuers renders from ryft-vault-ca;
@@ -78,6 +81,8 @@ eq() {
 render "$tmp/default.yaml"
 render "$tmp/peers.yaml" --set peers.vso.enabled=true --set peers.collector.enabled=true
 render "$tmp/five.yaml" --set replicas=5
+# Shamir, the seal vault.tf passes by default (kmsSeal = false). The chart's own default is true (values.yaml).
+render "$tmp/shamir.yaml" --set kmsSeal=false
 
 SERVER='select(.kind == "NetworkPolicy" and .metadata.name == "vault-server")'
 P8200='[{"protocol":"TCP","port":8200}]'
@@ -121,14 +126,34 @@ eq "$tmp/default.yaml" '[select(.kind == "NetworkPolicy" and .metadata.name == "
 # Every egress rule, whole: the peers, the API server in the VPC on 443, KMS/S3 on public 443, the Pod Identity
 # agent on 80; the snapshot job has no ingress at all. DNS for every pod, to kube-dns only.
 PODID='{"to":[{"ipBlock":{"cidr":"169.254.170.23/32"}}],"ports":[{"protocol":"TCP","port":80}]}'
+VPC443='{"to":[{"ipBlock":{"cidr":"10.0.0.0/16"}}],"ports":[{"protocol":"TCP","port":443}]}'
 for f in default peers; do
   eq "$tmp/$f.yaml" "$SERVER | .spec.egress" \
-    "[{\"to\":[{\"podSelector\":{\"matchLabels\":$SEL}}],\"ports\":$PEERS},{\"to\":[{\"ipBlock\":{\"cidr\":\"10.0.0.0/16\"}}],\"ports\":[{\"protocol\":\"TCP\",\"port\":443}]},$PUBLIC,$PODID]" \
+    "[{\"to\":[{\"podSelector\":{\"matchLabels\":$SEL}}],\"ports\":$PEERS},$VPC443,$PUBLIC,$PODID]" \
     "vault-server's egress is the peers, the VPC on 443, public 443 and the Pod Identity agent, nothing else ($f)"
+done
+# The snapshot job needs S3 (public 443) and its own Pod Identity credentials whatever the seal: the same rules
+# under Shamir.
+for f in default peers shamir; do
   eq "$tmp/$f.yaml" '[select(.kind == "NetworkPolicy" and .metadata.name == "vault-snapshot") | .spec]' \
     "[{\"podSelector\":{\"matchLabels\":$SNAP},\"policyTypes\":[\"Ingress\",\"Egress\"],\"egress\":[{\"to\":[{\"podSelector\":{\"matchLabels\":$SEL}}],\"ports\":$P8200},$PUBLIC,$PODID]}]" \
     "vault-snapshot admits nothing and reaches the server on 8200, public 443 and the Pod Identity agent only ($f)"
 done
+
+# Shamir (D208): the server has no AWS identity and reaches nothing outside the VPC. Its egress is the peers and the
+# API server, every ipBlock in it is the VPC, and 0.0.0.0/0 is left in the snapshot job's rule alone.
+eq "$tmp/shamir.yaml" "$SERVER | .spec.egress" "[{\"to\":[{\"podSelector\":{\"matchLabels\":$SEL}}],\"ports\":$PEERS},$VPC443]" \
+  "under Shamir vault-server's egress is the peers and the VPC on 443, nothing else (shamir)"
+eq "$tmp/shamir.yaml" "[$SERVER | .spec.egress[] | .to[] | select(has(\"ipBlock\")) | .ipBlock.cidr]" '["10.0.0.0/16"]' \
+  "under Shamir vault-server has no 0.0.0.0/0 and no 169.254.170.23 egress, only the VPC (shamir)"
+eq "$tmp/shamir.yaml" '[select(.kind == "NetworkPolicy") | (.spec.ingress // [], .spec.egress // [])[] | select([(.from // [], .to // [])[] | .ipBlock.cidr] | any_c(. == "0.0.0.0/0"))]' \
+  "[$PUBLIC]" "under Shamir 0.0.0.0/0 appears in exactly one rule, the snapshot job's egress to TCP 443 (shamir)"
+eq "$tmp/shamir.yaml" '[select(.kind == "NetworkPolicy") | .spec.ingress // [] | .[] | .from[] | select(has("ipBlock"))] | length' '0' \
+  "no ingress rule admits an address range (shamir)"
+eq "$tmp/shamir.yaml" "$SERVER | .spec.ingress" "$(yq ea "$SERVER | .spec.ingress | to_json(0)" "$tmp/default.yaml")" \
+  "kmsSeal=false changes no ingress rule of vault-server"
+eq "$tmp/shamir.yaml" '[.kind] | sort' "$(yq ea '[.kind] | sort | to_json(0)' "$tmp/default.yaml")" \
+  "kmsSeal=false renders the same objects"
 eq "$tmp/default.yaml" '[select(.kind == "NetworkPolicy" and .metadata.name == "allow-dns") | .spec]' \
   '[{"podSelector":{},"policyTypes":["Egress"],"egress":[{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}},"podSelector":{"matchLabels":{"k8s-app":"kube-dns"}}}],"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}]}]}]' \
   "allow-dns: every pod to kube-dns on 53, nothing else"
@@ -289,7 +314,7 @@ eq "$tmp/issuers.yaml" '[select(.kind == "ClusterIssuer" and .metadata.name == "
   "cluster-issuers renders the ClusterIssuer ryft-vault from the ryft-vault-ca Secret"
 
 # Schemas: core kinds from kubeconform's default, the cert-manager kinds from the CRDs catalog (as make k8s-validate).
-for f in default peers five issuers; do
+for f in default peers five shamir issuers; do
   kubeconform -strict -summary -schema-location default \
     -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
     - < "$tmp/$f.yaml" > "$tmp/kubeconform.log" 2>&1 || { cat "$tmp/kubeconform.log" >&2; fail "kubeconform refused the $f render"; }

@@ -74,7 +74,8 @@ service_secrets = {
 # the in-cluster Vault its mount kv-<name>, policy and role, plus the VSO manifests (a
 # database = "role" also needs a migration creating ryft_<name> and an entry in
 # backend/internal/db.ServiceRoles). The policy terraform must name it first: render
-# bootstrap/terraform.hcl, write it with the admin token, then apply (infra/vault/README.md).
+# bootstrap/terraform.hcl, write it with a generate-root session's root token, then apply
+# (infra/vault/README.md).
 # services = {
 #   ingest   = { secret_keys = ["SUPABASE_PROJECT_REF"], database = "role", amqp = "client" }
 #   scoring  = { database = "role", amqp = "client" }

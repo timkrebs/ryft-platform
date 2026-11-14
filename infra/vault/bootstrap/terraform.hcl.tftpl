@@ -4,7 +4,8 @@
 # then render it from a plan, not an apply (output bootstrap_terraform_policy; the commands and the order of commit,
 # `vault policy write` and apply are in infra/vault/README.md -> bootstrap/). tests/vault.tftest.hcl and
 # check.bootstrap_terraform_policy_matches_services pin the two equal.
-# Written into Vault by hand, never by Terraform, so this root cannot rewrite its own token's policy:
+# Written into Vault by hand with a root token (a generate-root session: the admin policy may write no policy),
+# never by Terraform, so neither this root nor the admin token can rewrite this token's policy:
 #   vault policy write terraform infra/vault/bootstrap/terraform.hcl
 # The token comes from the token role terraform (bootstrap/token-role-terraform.json): 1 hour, not renewable,
 # usable from 127.0.0.1 only (the port-forward), a child of the session's admin token (token role admin, D209).

@@ -4247,8 +4247,11 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   port-forward's loopback address, the CA file, `TF_VAR_vault_k8s_token`, pinned against the environment fallbacks), one
   `auth/kubernetes` mount reviewed by Vault's own service account, and one `kv-<svc>` mount, policy and role per service
   (D187). No Vault namespaces, no reviewer JWTs or their ClusterRoleBindings, and no `ryft.dev/vault-namespace` label.
-  Every generated VaultConnection names `https://vault.vault.svc:8200`, and VSO's peer on 8200 is open from the add-on's
-  first apply. The HCP variables are retired with a validation that fails the plan and names the line to delete. Every
+  Every generated VaultConnection names `https://vault.vault.svc:8200`. VSO's peer on 8200 is the variable
+  `vault_vso_peer` (the twin of D194's `vault_collector_peer`, default `false`): both stay closed until the operator's
+  own init is done and the root token revoked, then open together in one tfvars edit (OPERATIONS → Vault → Bootstrap
+  step 11, plan 1 to change), and both go back to `false` before a restore or a lost volume's rebuild. So during the
+  init window no other namespace's pod reaches the unauthenticated `sys/init`. The HCP variables are retired with a validation that fails the plan and names the line to delete. Every
   `random_*` keeps its address, so the data key and the demo password can be imported (D211).
 - **Order:** the committed overlays are generator output (the repo guard admits no hand edit), so this PR keeps the
   old ones. The user's first `infra/vault` apply (REBUILD step 7) writes the new ones, and a follow-up PR commits them,
@@ -4270,8 +4273,12 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   back. The PDB (`minAvailable` 2 of ready pods) stops a second drain, so node maintenance needs the operator.
   `VaultSealed` pages for every restart.
 - **Custody (amends D203):** an unseal needs three shares each time, so 1Password holds a threshold (one item per share).
-  The paper copies are the backup against losing 1Password. Whoever has 1Password and a port-forward has Vault. D203's
-  2-2-1 split stays right for `awskms`, where the shares are recovery keys and rarely used.
+  The paper copies are the backup against losing 1Password. Whoever has 1Password (three shares) and any path to 8200
+  (a port-forward, a pod or a node that reaches it) has Vault. D203's 2-2-1 split stays right for `awskms`, where the
+  shares are recovery keys and rarely used.
+- **What Shamir does not protect:** a running, unsealed Vault holds its keys in the server's memory, so node root and
+  privileged hostPID pods (alloy-daemonset, G2) can read them under either seal. Shamir protects a stopped or sealed
+  Vault and its volumes and snapshots: nothing outside the shares opens them.
 - **The alternative, built (D189):** `vault_seal = "awskms"`, one `infra/aws/kubernetes` apply (the role, the association,
   the stanza and the KMS egress), then `vault operator unseal -migrate` pod by pod. After that the shares are recovery
   keys. The unseal key stays in `infra/aws` under Shamir (about $1 a month), so the switch needs no `infra/aws` apply.
@@ -4287,6 +4294,13 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   `bootstrap/token-role-admin.json`), and the root token is revoked at once. The terraform token is the admin token's
   child (token role `terraform`). In the audit stream every session is a root token followed by one admin token, and
   any other pattern is an incident.
+- **The admin token cannot outlive its session** (`bootstrap/admin.hcl`, pinned by an exact-allowlist test): it denies
+  `auth/token/create`, `auth/token/create-orphan` and `auth/token/create/*` except `auth/token/create/terraform` (a
+  deny of the glob, because ACL paths match case-sensitively and a deny of `create/admin` would let `create/ADMIN`
+  through), every `auth/token/roles/*` and `sys/auth/*`, and it may only read and list policies (with `path "*"` a
+  policy write would let it lift its own denies). Writing a policy, a token role or an auth method is therefore a root
+  token's, in a generate-root session before it mints the admin token: the bootstrap, adding a service (the policy
+  `terraform`) and the 403 repair say so.
 - **Trade-off:** about two minutes of ceremony per session, and no credential at rest besides the shares. It needs a
   port-forward, so cluster access as well.
 - **Alternatives, each a reviewed change before use:** (1) the initial root token kept in 1Password: simpler, but a
@@ -4296,12 +4310,24 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 
 ## D210 — The hard gates for a rebuild "as it was" (amends the gates of the Vault CE plan; **G2 is the user's**)
 
-- **Blocking:** G3 (never `vault login` through `kubectl exec`; `Initialized true` before the user's own init means stop
-  and wipe) and G4 (`prevent_destroy` on the namespace and both releases, in the code).
+- **Blocking:** G3 (never `vault login` through `kubectl exec`; `Initialized true` before the user's own init, or an
+  `already initialized` init, means stop and wipe, and a follower that does not show vault-0's cluster identity gets no
+  share) and G4 (`prevent_destroy` on the namespace and both releases, in the code; and on `random_bytes.data_key`,
+  D211).
+- **Blocking procedure in G1's place: a verified pod.** The security review found the gap G1 leaves: without admission in
+  Deny, a pod created in `vault` with Vault's labels joins `svc/vault-active`'s endpoints, and a share or a token sent
+  there goes to it. So no share and no token goes anywhere but a port-forward to `pod/vault-N`, checked first to be
+  controlled by the StatefulSet `vault` (by uid), to run only the pinned image digest and, for a login or Terraform, to
+  carry `vault-active=true`, and checked again after the forward starts (OPERATIONS → Vault → **A verified pod**, the
+  session shell's `vault_forward`). The two peers stay closed until the init is done (D207).
 - **Not blocking, follow-up:** G1, the admission layer in Deny for `vault`. In production the chart was disabled before
   the shutdown (`enabled: false`), and under Shamir no pod can reach a seal key or decrypt the Raft data. An Argo CD
   token could already create a pod in any `ryft-*` namespace and mount its `ryft-secrets`. Follow-up: the chart on in
-  Audit, then the `vault` bindings and P13 in Deny (they can go alone), then #121's P12.
+  Audit, then the `vault` bindings and P13 in Deny (they can go alone), then #121's P12. **Recommendation:** do that
+  follow-up soon after the testers are back, and before `vault_seal = "awskms"` (then G1 blocks again: a pod in `vault`
+  as the service account `vault` reaches KMS). Putting the bindings in Deny before step 7 would be safer still, but the
+  chart was disabled in production before the shutdown, so switching it on and into Deny would add a second unknown to
+  the rebuild's critical path.
 - **The user's call:** G2, the monitoring stack inside Vault's trust boundary (alloy-daemonset privileged with hostPID,
   alloy-operator and VSO reading Secrets cluster-wide). **Recommendation:** accept it for the rebuild, with D197's Fleet
   exclusions of `vault` (pod logs, Beyla) checked before the collector starts (REBUILD step 9). The Art. 32 description
@@ -4311,8 +4337,12 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 
 - **Decision:** `scripts/recover_data_key.sh` reads the newest state version of `ryft-prod-euc1-vault` that still holds
   `random_bytes.data_key["api"]` (and with `--demo`, `random_password.demo`). It goes through the HCP Terraform API
-  (the token from the CLI's credentials, never in argv) and writes a 0600 file. It prints a version, a date, a
-  fingerprint and the key's length, never the value. The user imports both values before the first plan, with the
+  (the token and every request URL, the signed state download URL included, in curl's stdin config, never in argv) and
+  writes a 0600 file, after `tmutil addexclusion` on its directory on macOS (a local snapshot taken while the file exists
+  still keeps it for about a day). It prints a version, a date, a fingerprint and the key's length, never the value. A
+  404 says that the workspace is gone **or** hidden from this token, and the user confirms in the HCP Terraform UI
+  before treating the key as lost. `random_bytes.data_key` has `prevent_destroy` (the state is its only copy after the
+  import); the demo password does not, so it can still be rotated with `-replace`. The user imports both values before the first plan, with the
   output sent to `/dev/null`, and compares fingerprints (OPERATIONS → Vault → The first apply). The values then live in
   their resources' state, with nothing to remember on later applies. The stored Apple tokens keep decrypting, and App
   Store Connect's demo login stays valid.

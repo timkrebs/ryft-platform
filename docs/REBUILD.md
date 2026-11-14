@@ -21,6 +21,8 @@ The decisions this order rests on, and what is yours to confirm, are D207-D212 (
   not archived: `gh repo view timkrebs/ryft-platform --json isArchived` says `false` (CI and the promote PRs need it).
 - **Tools:** Terraform exactly 1.16.6 (`terraform version`), `terraform login` done, `kubectl`, `helm`, the `vault` CLI
   2.2.x, `aws` (the RYFT admin profile), `jq`, `dig`.
+- **For steps 5-7** (shares and tokens on screen): Handoff off, every clipboard manager quit, Secure Keyboard Entry on
+  in the terminal (OPERATIONS → Vault → **The clipboard**).
 - **The HCP Terraform workspaces** (step 14): check them now, before step 3.
 - **Supabase** (step 7's checklist) can be read now; its network restriction waits for the NAT addresses of step 3.
 
@@ -120,25 +122,33 @@ kubectl --context ryft-prod-euc1 -n vault get pods -o wide -L vault-initialized,
 nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1` (uninitialised means not ready, by design,
 D196). A Vault pod can wait in `ContainerCreating` until cert-manager has written `vault-tls`; it recovers by itself.
 Once the delegation of step 1 is live: `kubectl --context ryft-prod-euc1 get certificate -A` all `READY True`.
-**Stop** if a Vault pod logs `unable to set initial state` or carries an `AWS_*` variable. VSO can reach port 8200 from
-this apply on, so go straight to step 5: **if `vault status` shows `Initialized true` before your own init, stop**,
-treat it as a compromise and wipe the claims and volumes (G3, OPERATIONS → Vault → Bootstrap step 1).
+**Stop** if a Vault pod logs `unable to set initial state` or carries an `AWS_*` variable, or if the NetworkPolicy
+`vault-server` already admits a peer: `kubectl --context ryft-prod-euc1 -n vault get networkpolicy vault-server -o json |
+jq -r '[.spec.ingress[].from[].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] // empty] | join(" ")'`
+must print nothing (`vault_vso_peer` and `vault_collector_peer` stay `false` until step 6). Until your init, anything
+that reaches 8200 can init Vault without a token (the node's own address, a port-forward), so go straight to step 5:
+**if `vault status` shows `Initialized true` before your own init, or the init answers `already initialized`, stop**,
+treat it as a compromise and wipe the claims and volumes (G3, OPERATIONS → Vault → Bootstrap steps 1-2).
 
 ## 5. Vault: init and unseal, the shares into 1Password
 
-OPERATIONS → Vault → **Bootstrap**, steps 1-3 and 5, in the standalone terminal.
+OPERATIONS → Vault → **Bootstrap**, steps 1-3 and 5, in the standalone terminal. Every share and token goes only to a
+verified pod: `vault_forward <n> <port>` checks that `vault-<n>` is the StatefulSet's and runs the pinned image, then
+port-forwards to that pod, never to `svc/vault-active` (OPERATIONS → Vault → **A verified pod**).
 - Step 1: all three pods `Initialized false` (G3).
 - Step 2: `vault operator init -key-shares=5 -key-threshold=3` on vault-0. The five shares and the initial root token go
   into 1Password, each share its own item (OPERATIONS → Vault → **Unseal keys**: with Shamir an unseal needs three
   shares every time, so 1Password holds a threshold. The paper copies are the backup against losing 1Password, and
   D203's 2-2-1 split no longer fits).
 - Step 3: unseal vault-0 with three shares; vault-1 and vault-2 join by `retry_join` and each is unsealed with three
-  shares through its own port-forward.
+  shares through its own verified port-forward, after checking that it took vault-0's seal configuration and has no
+  init of its own, and that afterwards it shows vault-0's `Cluster ID` (G3).
 - Step 5: the restart drill (delete a pod, unseal it by hand).
 
 **Worked when:** `vault operator raft list-peers` shows three voters, `vault operator raft autopilot state` says
 `Healthy true` with failure tolerance 1, and the pods are `1/1` with one `vault-active=true`. **Stop** if a pod joins
-without being unsealed, or if a share is refused (wrong item: check 1Password before a fourth try).
+without being unsealed, if a follower's `Cluster ID` differs from vault-0's, if `vault_forward` prints no `verified`
+line, or if a share is refused (wrong item: check 1Password before a fourth try).
 
 **What Shamir means from here on** (D208): every Vault pod that restarts (a node rotated or lost, an eviction, an OOM)
 comes back sealed and waits for you (`VaultSealed` pages you: OPERATIONS → Vault → **A pod is sealed**). One sealed pod
@@ -150,15 +160,26 @@ built: `vault_seal = "awskms"`, one `infra/aws/kubernetes` apply, and `vault ope
 
 ## 6. Vault: the bootstrap
 
-OPERATIONS → Vault → **Bootstrap**, steps 4 and 6-10: the two audit devices (`log_raw=false`) before anything is
+OPERATIONS → Vault → **Bootstrap**, steps 4 and 6-11: the two audit devices (`log_raw=false`) before anything is
 written, the policies and token roles from `infra/vault/bootstrap/`, the first admin token, the terraform token's check,
-the root token revoked, and the drill of every share. From then on every admin session is a **generate-root session**
-(D209, OPERATIONS → Vault → **Login**): three shares make a root token, the root token makes a one-hour admin token, and
-root is revoked at once.
+the root token revoked, the drill of every share, and then the two peers opened. From then on every admin session is a
+**generate-root session** (D209, OPERATIONS → Vault → **Login**): three shares make a root token, the root token makes a
+one-hour admin token, and root is revoked at once. The admin policy creates no token but the terraform token and
+writes no policy, token role or auth method; those changes need the root token of a session.
+
+Step 11, once root is revoked: `vault_vso_peer = true` and `vault_collector_peer = true` in
+`infra/aws/kubernetes/terraform.tfvars` (one editor change), then
+```bash
+terraform -chdir=infra/aws/kubernetes plan -out=peers.tfplan    # exactly 1 to change: helm_release.vault_extras
+terraform -chdir=infra/aws/kubernetes apply peers.tfplan
+rm infra/aws/kubernetes/peers.tfplan
+```
 
 **Worked when:** `vault audit list -detailed` shows `file/` and `stdout/` with `log_raw false`; `vault policy list`
-holds `admin` and `terraform`; the token-capability check of step 8 matches; and after step 9 no token with policy
-`root` is left. **Stop** on any capability the check does not expect.
+holds `admin` and `terraform`; the token-capability checks of steps 8 and 9 match; after step 9 no token with policy
+`root` is left; and step 11's `jq` line prints `vault-secrets-operator-system monitoring`. **Stop** on any capability
+the checks do not expect, or if step 11's plan changes anything but the NetworkPolicy `vault-server` in
+`helm_release.vault_extras`.
 
 ## 7. `infra/vault`
 
@@ -172,9 +193,12 @@ OPERATIONS → Vault → **The first apply** has every command. In short:
    ```
    Then import both before the first plan (the session shell, `TF_VAR_vault_k8s_token` set; the output goes to
    `/dev/null`, so the value never reaches the screen) and compare fingerprints, never values (step 3 of **The first
-   apply**). **If the workspace or its versions are gone** (the script says so): skip the data key's import (the plan
-   then shows 91 to add) and run the fallback statement at step 8, before the api's first sync. Then delete both files:
-   the state holds the values now.
+   apply**). **If the workspace or its versions are gone** (the script says so): a 404 can also mean that your token
+   cannot see the workspace, so confirm on the workspace's page in the HCP Terraform UI first, because the fallback
+   cannot be undone. Only then skip the data key's import (the plan then shows 91 to add) and run the fallback statement
+   at step 8, before the api's first sync. Then delete both files: the state holds the values now. The script excludes
+   `~/.config/ryft` from Time Machine before it writes, but a local snapshot taken while a file exists keeps it for about
+   a day.
 3. **Supabase, before the first sync** (in the dashboard; nothing prints personal data):
    - the project is active (not paused) and still on its plan;
    - **Network Restrictions** admit the new NAT addresses from step 3, and the two released ones are gone. The Network
@@ -199,17 +223,20 @@ OPERATIONS → Vault → **The first apply** has every command. In short:
      (SELECT count(*) FROM pg_roles WHERE rolname LIKE 'ryft\_%' AND rolcanlogin AND NOT rolbypassrls) AS roles_ok;
    ```
    Also check that the smoke user exists: `SELECT count(*) FROM auth.users WHERE email = '<SMOKE_EMAIL>';` prints `1`.
-4. Plan and apply in the session shell, with the port-forward to `svc/vault-active`, `VAULT_CACERT` from the Secret
-   `vault/vault-ca`, and `TF_VAR_vault_k8s_token` from the admin token's `-role=terraform`.
+4. `terraform -chdir=infra/vault init` once (before the imports of item 2). Plan and apply in the session shell, with
+   the verified port-forward to the active pod (`vault_forward "$(vault_active)" 8200 active`), `VAULT_CACERT` from the
+   Secret `vault/vault-ca`, and `TF_VAR_vault_k8s_token` from the admin token's `-role=terraform`.
 
 **Plan: 90 to add, 0 to change, 0 to destroy** after both imports (92 without them, which means import first). That is
 9 namespaces and 9 service accounts, 9 `random_password`, the Kubernetes auth mount and its config, 10 KV mounts, 10
-policies and 10 roles, 13 KV secrets and 18 generated files. **Stop** on any change or destroy, on a warning of
+policies and 10 roles, 13 KV secrets and 18 generated files. The 90 assumes that the tfvars' `service_secrets` sets the
+import service's keys and monitoring's, and nothing for `rabbitmq`; one `vault_kv_secret_v2` fewer per service without
+keys, one more for a `service_secrets.rabbitmq`. **Stop** on any change or destroy, on a warning of
 `check.bootstrap_terraform_policy_matches_services` (a 403 halfway), or if a `ryft-*` or `monitoring` namespace already
 exists.
 
 **Worked when:** a second plan says `No changes`; `terraform -chdir=infra/vault output -json login_check | jq -r .api |
-sh` prints `[default api]`.
+sh` prints `[api default]` (Vault sorts the policies).
 
 **The follow-up PR.** The apply rewrites `deploy/k8s/overlays/vault-namespaces/*/` in the in-cluster shape (nine
 directories). Commit them on a branch `vault/in-cluster-overlays` with the other changes listed in
@@ -274,13 +301,10 @@ step 8. If it was revoked at the shutdown, create a new access policy token with
 an empty cluster**, put it into the tfvars, re-apply `infra/vault` (1 to change), and wait for the sync.
 
 First, the Fleet Management checks of that section: the pod-log exclusion `ryft-.*|vault` and Beyla's exclusion of
-`vault` (D197), **before** the collector starts. Then:
+`vault` (D197), **before** the collector starts. The collector's peer was opened in step 6 (Bootstrap step 11, D194).
+Then:
 ```bash
 grep -c hashicorp.cloud deploy/k8s/overlays/vault-namespaces/monitoring/vault.yaml      # 0
-# vault_collector_peer = true in infra/aws/kubernetes/terraform.tfvars (an editor), after your own init and with root revoked (D194)
-terraform -chdir=infra/aws/kubernetes plan -out=peer.tfplan      # exactly 1 to change: helm_release.vault_extras
-terraform -chdir=infra/aws/kubernetes apply peer.tfplan
-rm infra/aws/kubernetes/peer.tfplan
 make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1
 ```
 **Worked when:** the OBSERVABILITY list holds (`up{job="ryft/vault"}`, `up{job="ryft/vault-state"}`, three

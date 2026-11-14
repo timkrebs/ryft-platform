@@ -58,11 +58,11 @@ run "operator_manifests_match_the_goldens" {
   command = plan
 
   assert {
-    condition     = local_file.vso["api"].content == file("tests/golden/k8s/api.vault.yaml")
+    condition     = local_file.vso["api"].content == file("${path.module}/tests/golden/k8s/api.vault.yaml")
     error_message = "api's operator objects differ from tests/golden/k8s/api.vault.yaml (a Deployment to restart)"
   }
   assert {
-    condition     = local_file.vso["migrate"].content == file("tests/golden/k8s/migrate.vault.yaml")
+    condition     = local_file.vso["migrate"].content == file("${path.module}/tests/golden/k8s/migrate.vault.yaml")
     error_message = "migrate is a Job: a secret but nothing to restart (tests/golden/k8s/migrate.vault.yaml)"
   }
   assert {
@@ -414,7 +414,7 @@ run "rabbitmq_users_reach_the_broker_and_their_own_namespace_only" {
     error_message = "AMQP_PASSWORD reaches the four clients only"
   }
   assert {
-    condition     = local_file.vso["rabbitmq"].content == file("tests/golden/k8s/rabbitmq.vault.yaml")
+    condition     = local_file.vso["rabbitmq"].content == file("${path.module}/tests/golden/k8s/rabbitmq.vault.yaml")
     error_message = "the broker's operator manifests differ from tests/golden/k8s/rabbitmq.vault.yaml (one labelled VaultStaticSecret per user)"
   }
   assert {
@@ -626,9 +626,46 @@ run "the_imported_values_keep_their_addresses" {
   assert {
     condition = can(regex(
       "(?s)resource \"random_password\" \"demo\" \\{.*lifecycle \\{\\s*ignore_changes = \\[length, special, upper, lower, numeric, min_lower, min_upper, min_numeric, min_special, override_special\\]\\s*\\}",
-      file("operator.tf")
+      file("${path.module}/operator.tf")
     ))
     error_message = "random_password.demo must ignore the arguments an import cannot reproduce (otherwise the first plan replaces the imported password)"
+  }
+}
+
+# After the import the state holds the data key's only copy (D211): a plan that destroys or replaces
+# random_bytes.data_key fails instead. Terraform test does not enforce prevent_destroy (its teardown destroys every
+# mocked resource), so the file itself is checked, as G4 is in infra/aws/kubernetes: the flag on a line of its own
+# inside the block's lifecycle (a commented-out flag does not count). random_password.demo stays without it: its
+# rotation is a -replace (README -> The App Review demo password).
+run "the_data_key_cannot_be_destroyed" {
+  command = plan
+
+  assert {
+    condition = length([for c in split("\nresource \"", file("${path.module}/secrets.tf")) : c if startswith(c, "random_bytes\" \"data_key\" {")]) == 1 && alltrue([
+      for c in split("\nresource \"", file("${path.module}/secrets.tf")) :
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) if startswith(c, "random_bytes\" \"data_key\" {")
+    ])
+    error_message = "random_bytes.data_key (secrets.tf) needs lifecycle { prevent_destroy = true }, not commented out: after the import the state is the key's only copy (D211)"
+  }
+  assert {
+    condition = alltrue([for f in fileset(path.module, "*.tf") : alltrue([
+      for c in split("\nresource \"", file("${path.module}/${f}")) :
+      !can(regex("(?m)^[ \\t]*prevent_destroy\\s*=\\s*true", c)) if startswith(c, "random_password\" ")
+    ])])
+    error_message = "no random_password carries prevent_destroy: each rotates with -replace (random_password.demo among them, README)"
+  }
+  # The pattern itself: it matches the flag, and neither a commented-out flag nor a lifecycle without it (the demo
+  # password's, which has ignore_changes only). Every assert here reads a file of the module (path.module): one that
+  # refers to no object fails the run.
+  assert {
+    condition = (
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", "random_bytes\" \"x\" {\n  lifecycle {\n    prevent_destroy = true\n  }\n}\n")) &&
+      !can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", "random_bytes\" \"x\" {\n  lifecycle {\n    # prevent_destroy = true\n  }\n}\n")) &&
+      length([for c in split("\nresource \"", file("${path.module}/operator.tf")) : c if startswith(c, "random_password\" \"demo\" {") && strcontains(c, "lifecycle {")]) == 1 &&
+      !anytrue([for c in split("\nresource \"", file("${path.module}/operator.tf")) :
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) if startswith(c, "random_password\" \"demo\" {")])
+    )
+    error_message = "the prevent_destroy pattern is broken: it must match the flag, and neither a commented-out flag nor the demo password's lifecycle (ignore_changes only)"
   }
 }
 
@@ -670,8 +707,8 @@ run "auth_config_is_in_cluster" {
   }
   assert {
     # kubernetes_ca_cert is computed (a mock would invent one), so the configuration is read instead.
-    condition = length(regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("k8s.tf"))) == 1 && alltrue([
-      for b in regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("k8s.tf")) :
+    condition = length(regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("${path.module}/k8s.tf"))) == 1 && alltrue([
+      for b in regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("${path.module}/k8s.tf")) :
     !strcontains(b, "kubernetes_ca_cert") && !strcontains(b, "token_reviewer_jwt") && !strcontains(b, "issuer")])
     error_message = "the in-cluster auth config sets no CA, reviewer JWT or issuer"
   }
@@ -781,21 +818,21 @@ run "one_vault_provider_and_every_vault_object_in_k8s_tf" {
 
   assert {
     condition = (
-      length(regexall("(?m)^provider \"vault\" \\{$", file("providers.tf"))) == 1 &&
-      alltrue([for f in fileset(".", "*.tf") : f == "providers.tf" || length(regexall("(?m)^\\s*provider\\s+\"vault\"", file(f))) == 0]) &&
-      !can(regex("(?m)^  alias", regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("providers.tf"))))
+      length(regexall("(?m)^provider \"vault\" \\{$", file("${path.module}/providers.tf"))) == 1 &&
+      alltrue([for f in fileset(path.module, "*.tf") : f == "providers.tf" || length(regexall("(?m)^\\s*provider\\s+\"vault\"", file("${path.module}/${f}"))) == 0]) &&
+      !can(regex("(?m)^  alias", regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("${path.module}/providers.tf"))))
     )
     error_message = "exactly one provider \"vault\" block, in providers.tf, without an alias: one Vault, nothing to point a resource elsewhere"
   }
   assert {
-    condition     = alltrue([for f in fileset(".", "*.tf") : length(regexall("(?m)^\\s*provider\\s*=", file(f))) == 0])
+    condition     = alltrue([for f in fileset(path.module, "*.tf") : length(regexall("(?m)^\\s*provider\\s*=", file("${path.module}/${f}"))) == 0])
     error_message = "no resource or data source sets provider =: every object goes to the one default provider of its type"
   }
   assert {
     condition = (
-      alltrue([for f in fileset(".", "*.tf") : f == "k8s.tf" || length(regexall("(?m)^\\s*(resource|data|ephemeral)\\s+\"vault_", file(f))) == 0]) &&
-      length(regexall("(?m)^resource \"vault_[a-z0-9_]+\" \"[a-z0-9_]+\" \\{$", file("k8s.tf"))) == 11 &&
-      length(regexall("(?m)^(resource|data|ephemeral|module|locals|variable|output)\\b", file("k8s.tf"))) == 11
+      alltrue([for f in fileset(path.module, "*.tf") : f == "k8s.tf" || length(regexall("(?m)^\\s*(resource|data|ephemeral)\\s+\"vault_", file("${path.module}/${f}"))) == 0]) &&
+      length(regexall("(?m)^resource \"vault_[a-z0-9_]+\" \"[a-z0-9_]+\" \\{$", file("${path.module}/k8s.tf"))) == 11 &&
+      length(regexall("(?m)^(resource|data|ephemeral|module|locals|variable|output)\\b", file("${path.module}/k8s.tf"))) == 11
     )
     error_message = "every vault_ object is a resource in k8s.tf (11 blocks, and nothing else there); no other file declares one"
   }
@@ -805,7 +842,7 @@ run "one_vault_provider_and_every_vault_object_in_k8s_tf" {
       "(?m)^  ca_cert_file += pathexpand\\(var\\.vault_k8s_ca_cert_file\\)$",
       "(?m)^  skip_tls_verify += false( +#.*)?$",
       "(?m)^  token += var\\.vault_k8s_token$",
-    ] : can(regex(re, regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("providers.tf"))))])
+    ] : can(regex(re, regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("${path.module}/providers.tf"))))])
     error_message = "the Vault provider sets the port-forward address, the CA file, skip_tls_verify = false and the token explicitly (unset, it would take VAULT_ADDR, VAULT_CACERT, VAULT_SKIP_VERIFY or VAULT_TOKEN from the environment)"
   }
 }
@@ -818,7 +855,7 @@ run "no_k8s_mount_switches_audit_hmac_off" {
   assert {
     condition = length(local.k8s_kv_mount) > 0 && length(regexall(
       "audit_non_hmac|passthrough_request_headers|allowed_response_headers|listing_visibility|(?m)^\\s*tune\\s*\\{",
-      join("\n", [for l in split("\n", file("k8s.tf")) : l if !startswith(trimspace(l), "#")])
+      join("\n", [for l in split("\n", file("${path.module}/k8s.tf")) : l if !startswith(trimspace(l), "#")])
     )) == 0
     error_message = "k8s.tf sets audit_non_hmac_*, passthrough_request_headers, allowed_response_headers, listing_visibility or a tune block: secret values would reach both audit devices in clear"
   }
@@ -930,12 +967,36 @@ run "both_policies_are_plain_blocks_only" {
 run "the_admin_policy_and_the_token_roles_hold_the_reviewed_shape" {
   command = plan
 
+  # admin is everything but what outlives the session or opens another way in: no orphan, no token of a role but
+  # terraform (in any spelling: the glob, which the exact terraform path overrides), no token role write, no auth
+  # method, and no policy write (otherwise it rewrites admin, terraform or default and lifts the denies). Paths in
+  # file order, each block's whole body.
   assert {
     condition = (
-      local.bootstrap_policy_paths.admin == ["*"] &&
-      local.bootstrap_policy_blocks.admin == { "*" = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n" }
+      local.bootstrap_policy_paths.admin == ["*", "auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/create/terraform", "auth/token/roles/*", "sys/auth/*", "sys/policies/acl/*", "sys/policy/*"] &&
+      jsonencode(local.bootstrap_policy_blocks.admin) == jsonencode({
+        "*"                           = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n"
+        "auth/token/create"           = "  capabilities = [\"deny\"]\n"
+        "auth/token/create-orphan"    = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/*"         = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/terraform" = "  capabilities = [\"create\", \"update\"]\n"
+        "auth/token/roles/*"          = "  capabilities = [\"deny\"]\n"
+        "sys/auth/*"                  = "  capabilities = [\"deny\"]\n"
+        "sys/policies/acl/*"          = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/policy/*"                = "  capabilities = [\"read\", \"list\"]\n"
+      })
     )
-    error_message = "admin is one path, \"*\", with every capability (the root token is revoked)"
+    error_message = "admin is \"*\" with every capability, deny on auth/token/create, auth/token/create-orphan, auth/token/create/* (every token role), auth/token/roles/* and sys/auth/*, read and list only on sys/policies/acl/* and sys/policy/*, and create and update on auth/token/create/terraform (the terraform token, a child of the session's token); no other path, no other line"
+  }
+  # The terraform token comes from the admin token, so its role must stay a non-orphan child (dies with the
+  # session), and the admin role an orphan that only a root token mints (the glob above refuses it to admin).
+  assert {
+    condition = (
+      local.bootstrap.token_role_terraform.orphan == false && local.bootstrap.token_role_admin.orphan == true &&
+      !contains(keys(local.bootstrap_policy_blocks.admin), "auth/token/create/admin") &&
+      local.bootstrap_policy_blocks.admin["auth/token/create/*"] == "  capabilities = [\"deny\"]\n"
+    )
+    error_message = "the admin token mints terraform tokens (children) and nothing else: role admin is reached only by a root token (auth/token/create/* denied, no exact allow for admin)"
   }
   # An orphan, so revoking the root token that created it does not revoke it (and with it the terraform token).
   assert {

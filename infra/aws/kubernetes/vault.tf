@@ -7,7 +7,8 @@
 #
 # What this creates is an uninitialised Vault: three pods Running and 0/1 ready, by design (D196). The init, the
 # audit devices and the admin identity are the operator's bootstrap (docs/OPERATIONS.md -> Vault). It is the only
-# Vault (D207): VSO may reach it from this apply on, and every VaultConnection infra/vault generates names it.
+# Vault (D207), and every VaultConnection infra/vault generates names it; VSO reaches it once var.vault_vso_peer is
+# set after the operator's own init (below).
 #
 # Admin access is `kubectl port-forward` only (output vault_port_forward_command): no Ingress, no LoadBalancer.
 # Upgrades are by hand, one pod at a time: updateStrategy OnDelete, so an apply that changes the pod template
@@ -309,13 +310,13 @@ locals {
   # two change together (tests/addons.tftest.hcl compares them).
   vault_snapshot_aws_cli_image = "public.ecr.aws/aws-cli/aws-cli:2.39.5@sha256:0cea63506f28774b70b1a3dd1934f49bc202d9784dee23370acc81438e8d0292"
 
-  # VSO reaches 8200 from the first apply: this is the only Vault (D207), every VaultConnection infra/vault
-  # generates names it, and there is no cutover. Until the operator's init VSO's logins fail and it retries; the
-  # workloads keep waiting for their Secrets. The collector (alloy-deployment, job ryft/vault in
-  # deploy/monitoring/k8s-monitoring.yaml, D194) is off until var.vault_collector_peer: the NetworkPolicy admits a
-  # peer to all of 8200, and before the init PUT /v1/sys/init is unauthenticated, so the peer opens only after the
-  # operator's own init (OPERATIONS -> Vault metrics (once)) and closes again for a restore into a fresh cluster
-  # (-> Vault -> Disaster recovery).
+  # Both peers are closed until the operator's own init: the NetworkPolicy admits a peer to all of 8200, and before
+  # the init PUT /v1/sys/init is unauthenticated, so a peer could initialise Vault and hold its shares (G3). VSO
+  # (var.vault_vso_peer: this is the only Vault, D207, and every VaultConnection infra/vault generates names it) and
+  # the collector (var.vault_collector_peer: alloy-deployment, job ryft/vault in deploy/monitoring/k8s-monitoring.yaml,
+  # D194) open together, in one apply after the bootstrap (root revoked) and before infra/vault's first apply, and
+  # close together before a restore into a fresh cluster or a lost-volume rebuild (OPERATIONS -> Vault -> Bootstrap,
+  # Disaster recovery, A lost volume). Nothing needs VSO earlier: no VaultConnection exists before that apply.
   # kmsSeal: the server pods' egress to public 443 (KMS, through the NAT) and to the Pod Identity agent, only for
   # the awskms seal (D208); under Shamir they reach the peers, the API server in the VPC and DNS only.
   vault_extras_values = {
@@ -327,7 +328,7 @@ locals {
       ipAddresses = ["127.0.0.1"]
     }
     peers = {
-      vso       = { enabled = true }
+      vso       = { enabled = var.vault_vso_peer }
       collector = { enabled = var.vault_collector_peer }
     }
     # Every 6 hours at minute 17 (RPO 6 h; OPERATIONS -> Vault -> Snapshots). The bucket and key are infra/aws's

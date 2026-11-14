@@ -40,7 +40,7 @@ output "vault_address_in_cluster" {
 }
 
 output "vault_port_forward_command" {
-  description = "Reaches Vault's API and UI on https://127.0.0.1:8200 (the only way in from outside; trust the vault-ca Secret's ca.crt)"
+  description = "Reaches Vault's API and UI on https://127.0.0.1:8200 for a look without credentials (trust the vault-ca Secret's ca.crt). A share or a token goes only to a verified pod's port-forward, never through svc/vault-active: docs/OPERATIONS.md → Vault → A verified pod"
   value       = "kubectl --context ${var.cluster_name} -n ${local.vault_namespace} port-forward svc/vault-active 8200:8200"
 }
 

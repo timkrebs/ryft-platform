@@ -73,8 +73,9 @@ binding); the pods themselves have no service-account token at all.
 
 ## Usage
 
-Every plan and apply writes the in-cluster Vault, so every one needs the port-forward to
-`svc/vault-active`, the CA file and the one-hour terraform token: run them in the session
+Every plan and apply writes the in-cluster Vault, so every one needs the verified
+port-forward to the active pod (`docs/OPERATIONS.md` → Vault → A verified pod; never
+`svc/vault-active`), the CA file and the one-hour terraform token: run them in the session
 shell of `docs/OPERATIONS.md` → Vault → Login, with the commands of → Terraform through the
 port-forward. The very first apply after the rebuild imports two values first (→ The first
 apply).
@@ -150,7 +151,7 @@ so that migrate sets its password. `default`, `root`, `admin`, `terraform`, `vau
 In the session shell (`VAULT_ADDR` and `VAULT_CACERT` of the port-forward):
 
 ```bash
-terraform output -json login_check | jq -r .api | sh   # prints the token's policies: [default api]
+terraform output -json login_check | jq -r .api | sh   # prints the token's policies, sorted: [api default]
 kubectl --context ryft-prod-euc1 -n ryft-api get vaultauth,vaultstaticsecret,secret ryft-secrets
 ```
 
@@ -191,7 +192,11 @@ token (it takes the terraform token with it) and `unset TF_VAR_vault_k8s_token V
 The files the bootstrap writes into Vault by hand, never Terraform (otherwise its token could
 rewrite its own policy or mint an admin token):
 
-- `admin.hcl`, `terraform.hcl`: the policies `admin` and `terraform`.
+- `admin.hcl`, `terraform.hcl`: the policies `admin` and `terraform`. `admin` is everything
+  except what would outlive its session: it denies `auth/token/create`,
+  `auth/token/create-orphan`, every `auth/token/create/<role>` but `terraform`, the token
+  roles and `sys/auth/*`, so an admin token mints the terraform token (its child) and no other
+  token, role or auth method.
 - `token-role-admin.json`: the token role `admin` (policy `admin`, never `root`; an orphan, so
   revoking the root token leaves it; 1 hour, not renewable, `127.0.0.1` only). The session's
   root token, from `vault operator generate-root`, creates one such token and is revoked
@@ -220,7 +225,9 @@ rm infra/vault/tfplan   # the plan holds every credential; never keep or share t
 403 (a partial apply):
 - **Adding a service:**
   1. commit the regenerated file in the same PR, and merge it;
-  2. `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin token;
+  2. `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the root token of
+     a generate-root session, before it mints the admin token (the admin policy writes no
+     policy);
   3. then the apply.
 - **Removing a service:**
   1. the apply first, while the policy still covers the old paths;
@@ -231,4 +238,5 @@ allowlist: every path, and each block's whole body byte for byte (capabilities a
 limits). Nothing may sit outside those blocks but `#` comment lines: no `/* */` or `//`
 comment, no JSON, no block the regexes cannot read. Both token roles are pinned key for key.
 A change to one is a reviewed commit, and then the same `vault policy write` /
-`vault write auth/token/roles/<name> @…` by hand.
+`vault write auth/token/roles/<name> @…` by hand, with the root token of a generate-root
+session (the admin policy writes no policy and no token role).

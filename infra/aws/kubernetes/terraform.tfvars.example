@@ -20,7 +20,10 @@ acme_email = "you@example.com"
 # (docs/OPERATIONS.md -> Vault).
 # vault_seal = "shamir"
 
-# Vault (D194): admits the monitoring collector to 8200 for the metrics scrape. true only after
-# your own init, with the root token revoked and the hard gates G1-G4 holding; false again
-# before a restore into a fresh cluster (docs/OPERATIONS.md -> Vault -> Disaster recovery).
+# Vault's peers on 8200: the Vault Secrets Operator (D207) and the monitoring collector's
+# metrics scrape (D194). Both false until your own init, with the root token revoked and the
+# hard gates G1-G4 holding; then both true in one edit, before infra/vault's first apply
+# (plan: 1 to change, helm_release.vault_extras). Both false again before a restore into a
+# fresh cluster or a lost volume's rebuild (docs/OPERATIONS.md -> Vault).
+# vault_vso_peer       = false
 # vault_collector_peer = false

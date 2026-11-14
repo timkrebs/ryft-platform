@@ -18,14 +18,23 @@
 #     --org, --workspace  default tim-krebs-org, ryft-prod-euc1-vault (infra/vault/terraform.tf)
 #
 # Token: TF_TOKEN_app_terraform_io, else credentials["app.terraform.io"].token in
-# ~/.terraform.d/credentials.tfrc.json (terraform login). It reaches curl as a config on stdin,
-# never in argv, and goes only to https://app.terraform.io itself (curl drops it on a redirect to
-# another host; -q keeps ~/.curlrc out, where a --verbose would print it and --location-trusted
-# would forward it). HCP Terraform API (v2): GET organizations/:org/workspaces/:name (404: deleted,
-# or not visible to the token), GET state-versions?filter[workspace][name]=&filter[organization]
-# [name]= (paged), GET state-versions/:id, then the version's hosted-state-download-url (the raw
-# state, which holds every credential of infra/vault: kept in a 0700 temp dir, removed on exit).
-# There is no environment switch for the API host; the tests put a fake curl on PATH.
+# ~/.terraform.d/credentials.tfrc.json (terraform login). The token and every URL reach curl as a
+# config on stdin (header = ..., url = ...), never in argv, where ps shows them to every user of
+# the machine: a version's signed hosted-state-download-url alone opens the whole raw state. The
+# token goes only to https://app.terraform.io itself (curl drops it on a redirect to another host;
+# -q keeps ~/.curlrc out, where a --verbose would print it and --location-trusted would forward
+# it). HCP Terraform API (v2): GET organizations/:org/workspaces/:name (404: deleted, or not
+# visible to the token), GET state-versions?filter[workspace][name]=&filter[organization][name]=
+# (paged), GET state-versions/:id, then the version's hosted-state-download-url (the raw state,
+# which holds every credential of infra/vault: kept in a 0700 temp dir, removed on exit). There
+# is no environment switch for the API host; the tests put a fake curl on PATH.
+#
+# Time Machine: before the write, tmutil addexclusion ~/.config/ryft (whenever tmutil is on PATH,
+# so on macOS; the sticky form, an attribute on the folder, no sudo) keeps the folder out of every
+# backup from then on. If that fails the script warns and writes anyway: exclude the folder by hand
+# (System Settings > General > Time Machine > Options) before the next backup. A local snapshot is
+# of the whole volume, exclusions or not: one taken while the file exists keeps it past the rm
+# until it ages out (about 24 hours; tmutil listlocalsnapshots / lists them).
 #
 # Exit: 0 found (and written); 1 not recoverable or refused; 2 usage, missing tool or no token.
 set -euo pipefail
@@ -59,7 +68,7 @@ if [ "$demo" = 1 ]; then
   fallback="without it: scripts/seed_demo.sh with the newly generated password, then App Store Connect (docs/OPERATIONS.md -> App Review demo account)"
 else
   type=random_bytes name=data_key key=api attr=base64 file=data-key-api label='random_bytes.data_key["api"]'
-  fallback="without it: the one-off statement that clears the unreadable Apple tokens (D211, docs/REBUILD.md)"
+  fallback="without it: the one-off statement that clears the unreadable Apple tokens (D211, docs/REBUILD.md), which cannot be undone"
 fi
 dest_dir=$HOME/.config/ryft
 dest=$dest_dir/$file
@@ -89,17 +98,24 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 api=https://app.terraform.io
-# fetch <url> <out>: the body into <out>, the HTTP status on stdout (000: no answer). The bearer
-# only for the API's own origin, through a config on stdin (printf is a builtin: no argv).
+# A URL goes into a curl config line between double quotes as well: https, and nothing that could
+# end or escape the quoted value or the line (a quote, a backslash, white space, a control character).
+url_re='^https://[^"\\[:space:][:cntrl:]]+$'
+# fetch <url> <out>: the body into <out>, the HTTP status on stdout (000: no answer). The URL (a
+# signed download URL is a credential) and, only for the API's own origin, the bearer reach curl
+# through a config on stdin (printf is a builtin: neither is ever in an argv).
 fetch() {
   local cfg='' code
+  # Every caller passes a checked URL; this guards the config line itself.
+  [[ "$1" =~ $url_re ]] || die 1 "a request URL that is not https or holds a quote, a backslash or white space: not passed to curl"
   case "$1" in
-    "$api/api/v2/"*) cfg="header = \"Authorization: Bearer $token\""$'\n''header = "Accept: application/vnd.api+json"' ;;
-    "$api/"*) cfg="header = \"Authorization: Bearer $token\"" ;;
+    "$api/api/v2/"*) cfg="header = \"Authorization: Bearer $token\""$'\n''header = "Accept: application/vnd.api+json"'$'\n' ;;
+    "$api/"*) cfg="header = \"Authorization: Bearer $token\""$'\n' ;;
   esac
+  cfg+="url = \"$1\""
   code=$(printf '%s\n' "$cfg" | curl -q --config - --silent --show-error --location --max-redirs 3 \
     --proto =https --proto-redir =https --connect-timeout 10 --max-time 120 \
-    --output "$2" --write-out '%{http_code}' "$1") || true
+    --output "$2" --write-out '%{http_code}') || true
   printf '%s' "${code:-000}"
 }
 # api_ok <code> <what>: dies on anything but 200, with the reason in words.
@@ -108,7 +124,8 @@ api_ok() {
     200) ;;
     401) die 1 "HCP Terraform refused the token (401): terraform login, or a fresh TF_TOKEN_app_terraform_io" ;;
     403) die 1 "$2: forbidden (403: the token may not read this workspace's state versions)" ;;
-    404) die 1 "$2: not found (404: deleted, or not visible to this token). $fallback" ;;
+    # HCP Terraform answers 404, not 403, for what the token may not see: the two look the same.
+    404) die 1 "$2: not found (404: deleted, or this token cannot see it; the API answers both alike). Before you treat $label as lost, look in the HCP Terraform UI (https://app.terraform.io/app/$org/workspaces/$ws) as a user with access to $org; if it is there, run this again with a token that can read it. $fallback" ;;
     000) die 1 "$2: no answer from app.terraform.io (network, proxy?)" ;;
     *) die 1 "$2: HTTP $1" ;;
   esac
@@ -165,7 +182,7 @@ pick='if (.version // null) != 4 then error("state format \(.version // "missing
 found='' skipped=0
 while IFS=$'\x1f' read -r -u 3 id created serial url; do
   [ -n "$url" ] || die 1 "$id ($created) has no download URL (its data deleted?): name an older version (sv-...) if you know one held the value"
-  [[ "$url" == https://* ]] || die 1 "$id: the download URL is not https"
+  [[ "$url" =~ $url_re ]] || die 1 "$id: the download URL is not https, or holds a quote, a backslash or white space: not passed to curl"
   code=$(fetch "$url" "$work/state.json")
   [ "$code" = 200 ] || die 1 "the state of $id: HTTP $code (the URL expires after a while: run again)"
   : > "$work/value"
@@ -209,6 +226,17 @@ if [ "$dry" = 1 ]; then
   exit 0
 fi
 mkdir -p "$dest_dir"
+# Time Machine, before the file exists: the sticky exclusion (an attribute on the folder, it moves
+# with it; -p, the fixed-path form, needs root). A failure is a warning, not a stop: the key matters
+# more, and the folder can be excluded by hand.
+if command -v tmutil >/dev/null; then
+  if tmutil addexclusion "$dest_dir" >/dev/null 2>"$work/tmutil.err"; then
+    note "$dest_dir: excluded from Time Machine backups (a local snapshot of the volume still holds what it caught: --help)"
+  else
+    why=$(head -c 200 "$work/tmutil.err" | tr '\n' ' '); why=${why% }
+    note "warning: tmutil addexclusion $dest_dir failed${why:+ ($why)}: exclude the folder by hand (System Settings > General > Time Machine > Options) before the next backup"
+  fi
+fi
 # noclobber opens with O_EXCL: an existing file (or one created since the check above) stays.
 if ! (set -o noclobber; cat "$work/value" > "$dest") 2>/dev/null; then
   die 1 "$dest exists: refusing to overwrite it"

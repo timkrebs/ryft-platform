@@ -57,7 +57,7 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` (the zone survived the decommission; this apply switches the mail records to the no-mail set, **Mail for ryftapp.de**) | `terraform output name_servers` lists four awsdns servers |
 | 2. Delegate | GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → those four | `dig NS ryftapp.de @a.nic.de +short` shows them |
 | 3. Cluster | `cd infra/aws && terraform apply`, then `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
-| 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars; the Vault add-on with `vault_collector_peer = false`) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready; `kubectl -n vault get pods` three Running, `0/1` (uninitialised, D196) |
+| 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars; the Vault add-on with `vault_vso_peer = false` and `vault_collector_peer = false`, opened in Vault → Bootstrap step 11) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready; `kubectl -n vault get pods` three Running, `0/1` (uninitialised, D196) |
 | 5. Supabase | the checklist in [`SUPABASE.md`](SUPABASE.md) | project ref, pooler host, database password, secret key at hand |
 | 6. Vault | the in-cluster Vault (D207): **Vault** → Hard gates, Bootstrap (init, unseal by hand), then **Vault** → The first apply of `infra/vault` through the port-forward, then the first snapshot by hand (**Vault** → Snapshots) | all three Vault pods `1/1`; `terraform output secret_keys` lists the keys per service; `kubectl get ns -l app.kubernetes.io/part-of=ryft` shows nine (with `monitoring` and the import service's); `lastSuccessfulTime` of `vault/vault-snapshot` set |
 | 7. Images | first CI run on GitHub pushes `ghcr.io/timkrebs/ryft/{ingest,scoring,api,notify,migrate}:<sha>` | the first promote PR pins them (or `scripts/pin_images.sh <sha> services`) |
@@ -124,10 +124,11 @@ curl -sI https://api.ryftapp.de/v1/me                        # 401 without a tok
 
 If a pod is stuck in `CreateContainerConfigError`, its namespace has no `ryft-secrets`
 yet. `kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets` shows why: usually
-the Vault login. Check it by hand in the session shell (**Vault**: the `svc/vault-active`
-port-forward and the CA file; the login needs no token):
+the Vault login. Check it by hand in the session shell (**Vault**: the verified active
+pod's port-forward and the CA file; the login needs no token):
 `terraform -chdir=infra/vault output -json login_check | jq -r .<svc> | sh` prints the
-role's policies (`[default <svc>]`), never the token. Vault reviews the service account's
+role's policies, `default` and `<svc>` sorted (`[api default]`, `[default ingest]`), never
+the token. Vault reviews the service account's
 token itself, as its own service account against `https://kubernetes.default.svc` (D187),
 so the login does not go through the EKS public endpoint and does not depend on
 `endpoint_public_access_cidrs`. When it fails, the cause is the role or its bound service
@@ -2620,13 +2621,13 @@ hour after a restart goes quiet.
    `alloy-deployment` pods to all of port 8200, so it follows the variable
    `vault_collector_peer` (infra/aws/kubernetes, default `false`). Before the init,
    `PUT /v1/sys/init` is unauthenticated: a collector that Fleet Management steers could
-   initialise Vault and hold its keys (G3). Set it only when all of these hold: `vault status`
-   shows `Initialized true` from **your own** init (bootstrap step 2), the generate-root
-   session's root token revoked (D209), and G3 and G4 hold (G1 is a follow-up, G2 your
-   decision: D210). Then `vault_collector_peer = true` in
+   initialise Vault and hold its keys (G3). It is set together with `vault_vso_peer` in
+   Vault → Bootstrap step 11, when all of these hold: `vault status` shows
+   `Initialized true` from **your own** init (bootstrap step 2), the root token revoked
+   (D209), and G3 and G4 hold (G1 is a follow-up, G2 your decision: D210). One edit of
    `infra/aws/kubernetes/terraform.tfvars` (yours, git-ignored; a `-var` would be undone by the
    next plan without it), plan (exactly `1 to change`: `helm_release.vault_extras`, the
-   NetworkPolicy `vault-server` gains the collector rule; anything else: stop) and apply. The rule's selector must match the
+   NetworkPolicy `vault-server` gains both rules; anything else: stop) and apply. The rule's selector must match the
    running pods: once step 3 has installed the collector (from empty there is none before),
    `kubectl --context ryft-prod-euc1 -n monitoring get pods -l app.kubernetes.io/name=alloy-deployment`
    lists one pod.
@@ -2636,7 +2637,7 @@ hour after a restart goes quiet.
    (`auth/kubernetes/login`; there is no OIDC login, D209). Whether to accept the monitoring
    stack inside Vault's trust boundary is G2, your decision (D210); a started attempt shows in
    `vault operator generate-root -status` and in the audit stream (and makes the next login
-   stop: Vault → Login). VSO's peer (`peers.vso`) is open from the first apply.
+   stop: Vault → Login). VSO's peer (`vault_vso_peer`) follows the same rule (D207).
    The variable closes the **pod-network** path only. The host-network `alloy-daemonset`
    connects from its node's address, not as a pod the peer selects, and node-originated traffic
    very likely still reaches 8200 before the init (**to verify** on the cluster). What covers
@@ -3027,9 +3028,9 @@ crash or a template roll (**A pod is sealed**). `vault_seal = "awskms"` is D189'
 one variable away (**The seal: Shamir or awskms**).
 
 The Vault has no Ingress and no LoadBalancer. Every operator command below goes through
-`kubectl port-forward` on your machine, with the CA from the Secret `vault/vault-ca` (only
-`ca.crt`, never `vault-tls`, which holds the server's key). Every `kubectl` line names
-`--context ryft-prod-euc1`: that is production.
+`kubectl port-forward` on your machine to a verified server pod (**A verified pod** below),
+with the CA from the Secret `vault/vault-ca` (only `ca.crt`, never `vault-tls`, which holds
+the server's key). Every `kubectl` line names `--context ryft-prod-euc1`: that is production.
 
 **One session shell.** It exports `VAULT_ADDR` and `VAULT_CACERT` for the vault CLI, and
 after the login `VAULT_TOKEN` (the admin token) and `TF_VAR_vault_k8s_token` (the terraform
@@ -3044,15 +3045,72 @@ restore and scrollback saving off. Not in the VS Code integrated terminal (it re
 scrollback), not in tmux or screen with logging, and never through an agent's or assistant's
 shell: init output, unseal keys, root and admin tokens pass through it.
 
+**The clipboard.** A share or the root token copied from the terminal reaches Universal
+Clipboard (Handoff sends it to your other Apple devices) and any clipboard manager, and
+`pbcopy </dev/null` clears neither: it empties this Mac's pasteboard only, after Handoff has
+sent it and the manager has kept it. So before the init and before every session:
+- **Handoff off:** System Settings → General → AirDrop & Handoff → "Allow Handoff between
+  this Mac and your iCloud devices" off;
+- **every clipboard manager quit** (also the ones in launchers, such as Raycast's or Alfred's
+  clipboard history);
+- **Secure Keyboard Entry on** in the terminal (Terminal → Secure Keyboard Entry, iTerm2 →
+  Secure Keyboard Entry), so no other app reads the keystrokes of a share.
+
+Afterwards Handoff may go back on. `pbcopy </dev/null` after a paste stays good hygiene.
+
 ```bash
-# The session shell (each time). History off: unseal keys and tokens pass through it.
+# The session shell (each time), from the repository's root on a clean main. History off: unseal keys and tokens pass through it.
 unset HISTFILE VAULT_TOKEN VAULT_NAMESPACE VAULT_SKIP_VERIFY VAULT_TLS_SERVER_NAME VAULT_CAPATH VAULT_CACERT_BYTES VAULT_CLIENT_CERT VAULT_CLIENT_KEY VAULT_MAX_RETRIES TF_VAR_vault_k8s_token TF_LOG
 umask 077 && mkdir -p ~/.config/ryft
 kubectl --context ryft-prod-euc1 -n vault get secret vault-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > ~/.config/ryft/vault-ca.pem
 openssl x509 -in ~/.config/ryft/vault-ca.pem -noout -subject -enddate   # the ryft-vault CA
 export VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT="$HOME/.config/ryft/vault-ca.pem"
-kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200:8200 >/dev/null &   # once a pod is active (after the bootstrap's step 3)
+# then the lines of "A verified pod" below, and once a pod is active (after the bootstrap's step 3):
+vault_forward "$(vault_active)" 8200 active
 ```
+
+**A verified pod.** Never type a share or a token into anything but a verified Vault server
+pod. A share goes to the pod behind the port-forward, and a token goes with every request to
+it, so before an unseal, a generate-root session or a Terraform run, port-forward to
+`pod/vault-N`, never to `svc/vault-active` (its endpoints follow a label, and any pod that
+carries the labels joins them), and only once that pod
+- is controlled by the StatefulSet `vault`: its controller ownerReference is kind
+  `StatefulSet`, name `vault`, and the uid of
+  `kubectl --context ryft-prod-euc1 -n vault get statefulset vault -o jsonpath='{.metadata.uid}'`;
+- runs nothing but the image `infra/aws/kubernetes/vault.tf` pins, by digest;
+- and, for a login and Terraform, carries `vault-active=true`.
+
+The session shell defines it as four functions (bash or zsh). `vault_forward` checks the pod,
+starts the port-forward, and checks again that the same pod (by its uid) is behind it:
+```bash
+VAULT_STS_UID="$(kubectl --context ryft-prod-euc1 -n vault get statefulset vault -o jsonpath='{.metadata.uid}')"
+VAULT_IMAGE="docker.io/hashicorp/vault:$(sed -nE 's/^ +tag += "([0-9][0-9.]*@sha256:[0-9a-f]{64})"$/\1/p' infra/aws/kubernetes/vault.tf)"
+printf '%s\n%s\n' "$VAULT_STS_UID" "$VAULT_IMAGE"   # a uid, and docker.io/hashicorp/vault:2.2.1@sha256:<64 hex>; an empty one: stop
+vault_pod() {      # vault_pod <n> [active]: prints vault-<n>'s pod uid if it is verified; otherwise says why and fails
+  kubectl --context ryft-prod-euc1 -n vault get pod "vault-$1" -o json | jq -er --arg sts "$VAULT_STS_UID" --arg img "$VAULT_IMAGE" --arg want "${2:-}" '
+    if [.metadata.ownerReferences[]? | select(.controller == true) | [.kind, .name, .uid]] != [["StatefulSet", "vault", $sts]] then error("\(.metadata.name): not controlled by StatefulSet vault \($sts)")
+    elif [(.spec.initContainers // [])[].image, .spec.containers[].image] != [$img] then error("\(.metadata.name): runs more or other than \($img)")
+    elif $want == "active" and .metadata.labels["vault-active"] != "true" then error("\(.metadata.name): not vault-active=true")
+    else .metadata.uid end'
+}
+vault_forward() {  # vault_forward <n> <local port> [active]: check, forward, check that the same pod is behind it
+  local uid; uid="$(vault_pod "$1" "${3:-}")" || return 1
+  kubectl --context ryft-prod-euc1 -n vault port-forward "pod/vault-$1" "$2:8200" >/dev/null &
+  sleep 3
+  [ "$(vault_pod "$1" "${3:-}")" = "$uid" ] || { echo "vault-$1 changed under the port-forward: stop" >&2; kill $!; return 1; }
+  echo "vault-$1 verified (uid $uid) on 127.0.0.1:$2"
+}
+vault_active() {   # the n of the one pod labelled vault-active=true; nothing if there is none or more than one
+  kubectl --context ryft-prod-euc1 -n vault get pods -l vault-active=true -o jsonpath='{.items[*].metadata.name}' | sed -nE 's/^vault-([0-9]+)$/\1/p'
+}
+vault_unforward() { pkill -f "port-forward pod/vault-[0-9]+ $1:8200"; }   # vault_unforward <local port>
+```
+No `verified` line, or any error: stop, and type nothing. An empty `vault_active` means no
+single active pod (sealed, a leader election, or a second pod with the label: **The leader
+is gone**). A pod port-forward does not follow a leader change: after a step-down or a lost
+leader, `vault_unforward 8200` and `vault_forward "$(vault_active)" 8200 active` again before
+the next login or Terraform run. During an image roll the pods not yet rolled run the
+previous pin (Day 2 → **An image roll and the verified pod**).
 
 ### Hard gates (before the bootstrap)
 
@@ -3063,7 +3121,9 @@ rebuild, with a follow-up; G2 is your decision.
   restores production as it was, and the admission chart was disabled there. Under Shamir no
   pod in `vault` can reach a seal key (there is no unseal identity), so the risk an
   unguarded `vault` namespace leaves is a pod run there by an Argo CD controller token,
-  which reaches TokenReview and the Raft data, not the seal. The follow-up: the admission
+  which reaches TokenReview and the Raft data, not the seal, and which, carrying Vault's
+  labels, would join `svc/vault-active`. That is why no share and no token goes anywhere
+  but a verified pod (**A verified pod**, blocking until G1 holds). The follow-up: the admission
   chart on in Audit, then D180 Step 0 (#47), P12 (#121), P13 and the `vault` branches of
   P1, P2 and P3 in **Deny** (merged is not enough: a merged binding starts in Audit).
   **Before `vault_seal = "awskms"`, G1 blocks again**: then a pod in `vault` as the service
@@ -3083,11 +3143,12 @@ rebuild, with a follow-up; G2 is your decision.
   and VSO"), or reduce it first. The Art. 32 description must not claim Vault is isolated
   from the monitoring vendor.
 - **G3. Never `vault login` inside a pod** (`kubectl exec`): it writes the token to
-  `~/.vault-token` on the pod's disk. Always use the port-forward and `VAULT_TOKEN` in the
-  session shell (`-no-store` where a login is involved). **If `vault status` shows
-  `Initialized true` before your own init, stop.** Someone else initialised it and holds
-  shares you don't have. Treat it as a compromise: no secret goes in, and you wipe it
-  (step 1).
+  `~/.vault-token` on the pod's disk. Always use a verified pod's port-forward (**A verified
+  pod**) and `VAULT_TOKEN` in the session shell (`-no-store` where a login is involved).
+  **If `vault status` shows `Initialized true` before your own init, or the init answers
+  `already initialized`, stop.** Someone else initialised it and holds shares you don't
+  have. Treat it as a compromise: no secret goes in, and you wipe it (step 1). The same for a
+  follower that turns out to belong to another cluster (step 3): no share goes into it.
 - **G4. `prevent_destroy`** on the namespace `vault` and both Helm releases (in code, #145):
   nothing to do but never remove it.
 
@@ -3095,19 +3156,28 @@ rebuild, with a follow-up; G2 is your decision.
 
 Once, from a clean checkout of `main` (`git status` empty), with the Shamir seal (the
 default; for `awskms` see **The seal: Shamir or awskms** first). Precondition: the Vault
-add-on is applied with `vault_collector_peer = false`, and
-`kubectl --context ryft-prod-euc1 -n vault get pods -o wide` shows `vault-0`, `vault-1` and
-`vault-2` `Running`, `0/1` ready, in three zones. Uninitialised means not ready, by design
-(D196). Nothing below goes into a chat, a PR or a log. Start the session shell above, but
-without the `svc/vault-active` port-forward: before step 3 no pod is ready, so the Service
-has no endpoint. Have the 1Password break-glass vault open and the two paper sheets at hand
-(**Unseal keys**): the drill in step 10 needs every share before one leaves the house.
+add-on is applied with `vault_vso_peer = false` and `vault_collector_peer = false` (the
+defaults), and `kubectl --context ryft-prod-euc1 -n vault get pods -o wide` shows `vault-0`,
+`vault-1` and `vault-2` `Running`, `0/1` ready, in three zones. Uninitialised means not
+ready, by design (D196). Nothing below goes into a chat, a PR or a log. Start the session
+shell above with the functions of **A verified pod**, but without its last line (the active
+pod's port-forward): before step 3 no pod is active. Have the 1Password break-glass vault
+open and the two paper sheets at hand (**Unseal keys**): the drill in step 10 needs every
+share before one leaves the house. Handoff off and the clipboard managers quit (**The
+clipboard**).
+
+**The init window.** Until your init, `PUT /v1/sys/init` answers anyone who reaches 8200,
+without a token. Both peers stay closed until step 11, after the root token is revoked:
+neither VSO nor the collector, nor any other namespace's pod, reaches 8200 before then. The
+node's own address still may (host-network pods such as alloy-daemonset, anything with node
+root: Monitoring → Vault metrics (once), step 2, to verify), so step 1 and step 2's
+`already initialized` stop are what cover that path. Keep steps 1 to 3 short.
 
 **1. All three uninitialised (G3).**
 ```bash
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-0 8200:8200 >/dev/null &
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-1 8201:8200 >/dev/null &
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-2 8202:8200 >/dev/null &
+vault_forward 0 8200
+vault_forward 1 8201
+vault_forward 2 8202                    # each: vault-<n> verified (uid …) on 127.0.0.1:<port>
 for p in 8200 8201 8202; do vault status -address="https://127.0.0.1:$p" | grep -E 'Seal Type|Initialized|Sealed'; done
 # each: Seal Type shamir, Initialized false, Sealed true
 ```
@@ -3118,14 +3188,20 @@ else, find out who reached the pods: the EKS audit log for `pods/portforward` an
 `pods/exec` in `vault`. `Seal Type awskms`: the add-on was applied with `vault_seal =
 "awskms"`; stop and decide (**The seal: Shamir or awskms**) before an init.
 
-**2. Init on vault-0.** Under Shamir these are the **unseal** keys: three of the five unseal
-a pod, make a root token and rekey (**Unseal keys**).
+**2. Init on vault-0** (its verified port-forward of step 1, 8200). Under Shamir these are
+the **unseal** keys: three of the five unseal a pod, make a root token and rekey (**Unseal
+keys**).
 ```bash
 vault operator init -key-shares=5 -key-threshold=3
 ```
+An answer of `Vault is already initialized` (or any error instead of five shares) means
+**stop** (G3): someone initialised vault-0 between step 1 and now and holds its shares. No
+secret goes in. Wipe it as in step 1 and find out who before anything else.
+
 Put each share where **Unseal keys** says, one at a time: the three for 1Password into
-their own items (copy one, paste it, `pbcopy </dev/null`, the next), the two for paper
-straight from the screen, never through the clipboard. Put the initial root token into its
+their own items (copy one, paste it, `pbcopy </dev/null`, the next; with Handoff off and no
+clipboard manager, **The clipboard**), the two for paper straight from the screen, never
+through the clipboard. Put the initial root token into its
 own 1Password item too (so a closed terminal cannot strand the bootstrap; step 9 revokes it
 and deletes the item), and into this shell (next line). Then clear the terminal and its
 scrollback (⌘K).
@@ -3145,25 +3221,44 @@ vault status -address=https://127.0.0.1:8200                 # Initialized true,
 ```
 `vault-1` and `vault-2` find the leader by `retry_join`, but under Shamir a node joins only
 once it is unsealed with **the same shares** (that is how it proves it belongs to the
-cluster). Unseal each, three prompts each:
+cluster). A follower someone else initialised would take your shares just as well, so check
+each one before its first share, and after the third:
 ```bash
+vault status -address=https://127.0.0.1:8200 | grep -E 'Cluster ID|HA Cluster'   # vault-0's: keep both on screen
+kubectl --context ryft-prod-euc1 -n vault logs vault-1 | grep -ciE 'barrier initialized|root token generated'   # 0: no init of its own
+vault status -address=https://127.0.0.1:8201 | grep -E 'Initialized|Sealed|Total Shares|Threshold|Unseal Progress'
+# Initialized true, Sealed true, Total Shares 5, Threshold 3, Unseal Progress 0/3 (its retry_join took vault-0's
+# seal configuration). Initialized false: it has not reached vault-0 yet; no share, wait a minute, look again
 vault operator unseal -address=https://127.0.0.1:8201        # three times: vault-1
-vault operator unseal -address=https://127.0.0.1:8202        # three times: vault-2
+vault status -address=https://127.0.0.1:8201 | grep -E 'Sealed|HA Mode|HA Cluster|Cluster ID'
+# Sealed false, HA Mode standby, and the Cluster ID and HA Cluster of vault-0
+```
+The same for vault-2 on 8202 (`logs vault-2`). Then:
+```bash
 vault operator raft list-peers -address=https://127.0.0.1:8200   # vault-0 leader, vault-1 and vault-2 follower, all Voter true
 vault operator raft autopilot state -address=https://127.0.0.1:8200   # Healthy true, Failure Tolerance 1
 kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # all 1/1, one vault-active=true
 ```
-A joining node that still says `Sealed true` after three shares, or is missing from
-`list-peers`: **to verify** in kind is whether 2.2.1 wants the shares before or after its
-`retry_join` reached the leader; wait a minute and unseal again. Never init vault-1 or
-vault-2 (G3: a second init is a second cluster).
+**A follower that does not join** (`Sealed true` after three shares, or missing from
+`list-peers`): no further share until you know whose it is. Its log grep must still print 0,
+and vault-0's log must show its join attempts
+(`kubectl --context ryft-prod-euc1 -n vault logs vault-0 | grep -i vault-1`). Only then wait a
+minute and repeat the checks and the three shares (**to verify** in kind: whether 2.2.1 wants
+the shares before or after its `retry_join` reached the leader, and the exact log lines of an
+init and of a join). An init line in its log, or once unsealed a `Cluster ID` other than
+vault-0's or `HA Mode active`: someone else initialised it (G3). Stop, type nothing more into
+it, wipe that pod's claims and the pod (as in step 1), find out who, and treat the shares you
+typed as exposed (**Unseal keys** → A place is lost or exposed, once the cluster is whole).
+Never init vault-1 or vault-2 (G3: a second init is a second cluster).
 
 **4. Audit, before anything is written** (addendum 1.10, D198). There are two devices,
 and Vault keeps serving while one of them records. The options are explicit, so a changed
 default cannot switch raw logging on. A fresh Vault audits three request headers
 (`correlation-id`, `x-correlation-id`, `user-agent`); they go, so that no request header
-reaches the audit lines.
+reaches the audit lines. Steps 4 to 9 send the root token to 8200: first check that vault-0
+is active and still the pod behind it.
 ```bash
+vault_pod 0 active                              # the uid vault_forward 0 8200 printed in step 1; anything else: stop
 vault audit enable file file_path=/vault/audit/audit.log log_raw=false hmac_accessor=true format=json
 vault audit enable -path=stdout file file_path=stdout log_raw=false hmac_accessor=true format=json
 vault audit list -detailed                      # file/ and stdout/, log_raw false on both
@@ -3185,7 +3280,8 @@ kubectl --context ryft-prod-euc1 -n vault delete pod vault-2       # its port-fo
 kubectl --context ryft-prod-euc1 -n vault wait --for=jsonpath='{.status.phase}'=Running pod/vault-2 --timeout=5m
 kubectl --context ryft-prod-euc1 -n vault get pod vault-2          # 0/1: sealed, and not in the Raft quorum
 vault operator raft autopilot state             # Failure Tolerance 0 while it is sealed
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-2 8202:8200 >/dev/null &
+vault_forward 2 8202                            # the new pod: a new uid, verified again
+vault status -address=https://127.0.0.1:8202   # Initialized true, Sealed true, Total Shares 5, Threshold 3
 vault operator unseal -address=https://127.0.0.1:8202        # three times
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-2 --timeout=5m
 vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 again
@@ -3203,7 +3299,14 @@ vault read auth/token/roles/admin               # allowed_policies [admin], orph
 ```
 Never attach a policy to an entity or a group (`identity/*`): `admin` comes from the token
 role `admin` only, and every admin token is minted by a root token of a generate-root
-session (**Login**), so revoking that token is the whole revocation.
+session (**Login**), so revoking that token is the whole revocation. The admin policy is
+everything except what would outlive the session: it denies `auth/token/create`,
+`auth/token/create-orphan`, every `auth/token/create/<role>` but `terraform`, the token roles
+(`auth/token/roles/*`, reading and listing them too) and `sys/auth/*`, and it may only read
+and list policies (a policy write would let it lift those denies for itself). So an admin
+token mints the terraform token (a child that dies with it) and nothing else, and every
+policy, token role or auth method change is a root token's, in a generate-root session
+(before it mints the admin token).
 
 **7. The first admin token** (D209), from the initial root token. An orphan: revoking the
 root token in step 9 leaves it.
@@ -3216,7 +3319,7 @@ port-forward is believed to arrive from inside the pod.
 - **Why it should hold.** The listener is `[::]:8200` with no `x_forwarded_for`, so Vault sees
   the peer address of the connection. containerd's port-forward is believed to dial
   `localhost` over tcp4 first, so that peer is `127.0.0.1`. A forwarded request after a
-  step-down (to `svc/vault-active`, a new pod) still arrives from `127.0.0.1`. If it arrives
+  step-down (to the new active pod's port-forward) still arrives from `127.0.0.1`. If it arrives
   as `::1` instead, both bindings fail. Each of these is **to verify** in kind.
 - **How a mismatch shows.** The lookup above says `permission denied` or
   `request originated from invalid CIDR`. Later, the same can happen after a containerd or
@@ -3259,38 +3362,63 @@ debug logs can carry request details, and the token must not reach a log file.
 **9. Revoke the root token.** From now on a root token exists only for the minutes of a
 generate-root session (**Login**).
 ```bash
+vault list auth/token/roles                     # admin, terraform (the root token: the admin policy may not read the roles)
 vault token revoke -self                        # VAULT_TOKEN is still the root token
 export VAULT_TOKEN="$ADMIN"
 for a in $(vault list -format=json auth/token/accessors | jq -r '.[]'); do
   vault token lookup -format=json -accessor "$a" | jq -r 'select(.data.policies | index("root")) | .data.accessor'
 done                                            # prints nothing: no root token left
-vault list auth/token/roles                     # admin, terraform
 vault auth list                                 # token/ only (kubernetes/ comes with infra/vault's first apply)
+for p in auth/token/create auth/token/create-orphan auth/token/create/admin auth/token/create/ADMIN auth/token/roles/admin sys/auth/userpass \
+         sys/policies/acl/admin sys/policies/acl/Admin auth/token/create/terraform; do
+  printf '%-30s %s\n' "$p" "$(vault token capabilities "$p")"
+done                                            # deny for the first six, list, read for the two policies, create, update for the last
 vault token revoke -self; unset VAULT_TOKEN ADMIN
-kill $(jobs -p) 2>/dev/null                     # the remaining port-forwards
+for p in 8200 8201 8202; do vault_unforward "$p"; done   # the remaining port-forwards
 ```
 Delete the 1Password item with the initial root token (it is revoked), unless you chose to
 keep a root token (**Login**, alternative 1: then do not revoke it in this step).
 
 **10. Verify every share once** (**Unseal keys** → Drill), now, while all five are still
 here. Then take the off-site sheet away, and record the custody line under **Unseal keys**.
-Next: infra/vault's first apply (**The first apply**), then the first snapshot by hand
-(**Snapshots**), then the collector peer on (Monitoring → Vault metrics (once)).
+
+**11. Open the peers** (the init window closes: your init is done and no root token is left).
+Both in one edit: `vault_vso_peer = true` and `vault_collector_peer = true` in
+`infra/aws/kubernetes/terraform.tfvars` (an editor; a `-var` would be undone by the next plan
+without it). VSO needs its peer before the first VaultConnection syncs (after infra/vault's
+first apply); the collector's rule admits no pod until the collector is installed (REBUILD
+step 9); both rules admit all of 8200.
+```bash
+terraform -chdir=infra/aws/kubernetes plan -out=peers.tfplan    # exactly 1 to change: helm_release.vault_extras
+terraform -chdir=infra/aws/kubernetes apply peers.tfplan
+rm infra/aws/kubernetes/peers.tfplan
+kubectl --context ryft-prod-euc1 -n vault get networkpolicy vault-server -o json | jq -r '[.spec.ingress[].from[].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] // empty] | join(" ")'
+# vault-secrets-operator-system monitoring
+```
+The plan's diff is the NetworkPolicy `vault-server` gaining the two rules, nothing else; any
+other change or a destroy: stop. Both go back to `false` before a restore into a fresh cluster
+(**Disaster recovery**) and before a lost volume's rebuild (**A lost volume**). Next:
+infra/vault's first apply (**The first apply**), then the first snapshot by hand
+(**Snapshots**), then the collector (Monitoring → Vault metrics (once)).
 
 ### Login (a generate-root session)
 
 There is no standing login (D209: no OIDC, no userpass, no kept root token). A session is:
 three unseal shares make a root token, the root token makes one admin token (1 hour, an
 orphan, `127.0.0.1` only) and is revoked at once, and the admin token makes the terraform
-token when Terraform runs. In the session shell, with the `svc/vault-active` port-forward:
+token when Terraform runs (and no other token: Bootstrap step 6). In the session shell
+(Handoff off, no clipboard manager: **The clipboard**), with the verified port-forward to the
+active pod (**A verified pod**):
 ```bash
 unset VAULT_TOKEN
+vault_pod "$(vault_active)" active              # the uid vault_forward printed; anything else: stop, no share
 vault operator generate-root -status            # Started false. If true: see below, never continue that attempt
 OTP="$(vault operator generate-root -generate-otp)"
 vault operator generate-root -init -otp="$OTP"  # prints the Nonce
 vault operator generate-root -nonce=<nonce>     # three times: one share per prompt, hidden; the third prints the Encoded Token
 read -rs ENC                                    # paste the Encoded Token: not echoed (useless without the OTP, but kept off the screen)
 export VAULT_TOKEN="$(printf %s "$ENC" | vault operator generate-root -decode=- -otp="$OTP")"; unset ENC OTP
+# a reviewed policy or token role write (the admin token may do neither) goes here, with the root token
 ADMIN="$(vault token create -role=admin -display-name=admin -field=token)"
 vault token revoke -self                        # the root token, now
 export VAULT_TOKEN="$ADMIN"; unset ADMIN; pbcopy </dev/null
@@ -3307,8 +3435,9 @@ hour. **To verify** in kind: that 2.2.1 reads the encoded token from stdin with 
   incident: `sys/generate-root/attempt` is unauthenticated, so anyone with a path to 8200
   could have started it. Find out who (the audit stream, the EKS audit log for
   `pods/portforward` in `vault`).
-- **A leader change during the attempt** (the port-forward ends) loses it: restart the
-  port-forward, `-cancel`, start again.
+- **A leader change during the attempt** loses it (the pod behind 8200 is no longer
+  `vault-active=true`; its port-forward ends only if that pod went away): `vault_unforward
+  8200`, `vault_forward "$(vault_active)" 8200 active`, `-cancel`, start again.
 - Every session is a root token in the audit stream (`auth_display_name="root"`), followed by
   one admin token: that is the expected pattern, and anything else is an incident.
 
@@ -3396,6 +3525,12 @@ unseal themselves, and the five shares become **recovery keys** (they unseal not
 generate-root and rekey still take three). The key stays in `infra/aws` either way (about
 $1 a month, no further cost with `awskms`), so the switch needs no `infra/aws` apply.
 
+**What Shamir protects, and what not.** It protects Vault's data at rest: the Raft volumes
+and every snapshot open only with three shares, and no AWS identity, AWS administrator or pod
+can unseal a pod. It does not protect a running Vault's keys: an unsealed pod holds its root
+key and keyring in memory, so root on its node, or a privileged pod with hostPID on that node
+(alloy-daemonset is one), can read them, and with them every secret (G2, your decision: D210).
+
 **Before the bootstrap**, switching is a variable and an apply: the init then prints
 recovery keys (`vault operator init -recovery-shares=5 -recovery-threshold=3`), and steps 3
 and 5 need no unseal. G1 blocks first (**Hard gates**).
@@ -3407,12 +3542,13 @@ first, with 2.2.1):
    Identity role and association added (`module.vault_unseal_pod_identity`), the two Vault
    releases changed (the seal stanza, the server's KMS egress), nothing destroyed; anything
    else: stop. Apply. `OnDelete`: nothing restarts yet.
-3. Each standby, one at a time: delete the pod, port-forward to it once it runs, and
-   `vault operator unseal -migrate -address=https://127.0.0.1:8202` three times (the shares);
-   wait for `1/1` and autopilot Healthy before the next.
-4. The leader last: `vault operator step-down` (the admin token), restart the
-   `svc/vault-active` port-forward, delete the old leader's pod, `unseal -migrate` three times
-   on it.
+3. Each standby, one at a time: delete the pod, `vault_forward <n> 8202` once it runs (**A
+   verified pod**), and `vault operator unseal -migrate -address=https://127.0.0.1:8202` three
+   times (the shares); `vault_unforward 8202`, and wait for `1/1` and autopilot Healthy before
+   the next.
+4. The leader last: `vault operator step-down` (the admin token), then `vault_unforward 8200`
+   and `vault_forward "$(vault_active)" 8200 active` (the new leader), delete the old
+   leader's pod, `vault_forward <n> 8202` to it, `unseal -migrate` three times on it.
 5. `vault status` on each pod: `Seal Type awskms`, `Recovery Seal Type shamir`. Delete one
    standby and watch it come back `1/1` without you. Rename the 1Password items and the
    custody line to *recovery keys*; run the drill (**Unseal keys** → Drill).
@@ -3426,12 +3562,13 @@ reviewed change of `infra/aws/kubernetes/vault.tf` first.
 
 ### Terraform through the port-forward
 
-Every plan and apply of `infra/vault` writes this Vault, so every one needs the
-`svc/vault-active` port-forward, the CA file and the terraform token: in the session shell,
-after the **Login**.
+Every plan and apply of `infra/vault` writes this Vault, so every one needs the verified
+port-forward to the active pod (**A verified pod**), the CA file and the terraform token: in
+the session shell, after the **Login**.
 
 ```bash
-# The session shell: VAULT_ADDR, VAULT_CACERT, the svc/vault-active port-forward, VAULT_TOKEN = the admin token
+# The session shell: VAULT_ADDR, VAULT_CACERT, the verified active pod on 8200, VAULT_TOKEN = the admin token
+vault_pod "$(vault_active)" active              # the uid vault_forward printed; anything else: stop
 export TF_VAR_vault_k8s_token="$(vault token create -role=terraform -display-name=terraform -field=token)"
 terraform -chdir=infra/vault plan -out=tfplan
 terraform -chdir=infra/vault apply tfplan       # the same shell: the ephemeral token is not in tfplan
@@ -3452,10 +3589,13 @@ unset VAULT_TOKEN TF_VAR_vault_k8s_token
   rendered from a plan: `infra/vault/README.md` → `bootstrap/`). An apply the token's policy
   does not cover stops on a 403 halfway, so the order is fixed:
   - **adding a service:** commit the regenerated file, merge, `vault policy write terraform
-    infra/vault/bootstrap/terraform.hcl` with the admin token, then the apply;
+    infra/vault/bootstrap/terraform.hcl` with the root token of a generate-root session
+    (**Login**, before it mints the admin token: the admin policy writes no policy), then the
+    apply;
   - **removing a service:** the apply first, then write the narrower policy.
-- A plan that hangs or fails on `127.0.0.1:8200`: the port-forward died. A leader change
-  ends it (**The leader is gone**). Restart it and run the plan again.
+- A plan that hangs or fails on `127.0.0.1:8200`: the port-forward died with its pod, or
+  that pod is no longer the active one (**The leader is gone**). `vault_unforward 8200`,
+  `vault_forward "$(vault_active)" 8200 active`, and run the plan again.
 - The terraform token lives one hour at most and cannot be renewed, and it dies with the
   admin token it is a child of (which lives one hour from the login). A longer session needs
   a new login, and so does an apply from an old `tfplan`.
@@ -3463,7 +3603,7 @@ unset VAULT_TOKEN TF_VAR_vault_k8s_token
   ```bash
   vault auth list -format=json | jq -r 'keys[]'                 # kubernetes/, token/: nothing else
   vault list auth/kubernetes/role                               # exactly the services and vault-snapshot
-  vault list auth/token/roles                                   # admin, terraform
+  # (the token roles: the admin token may not read them; a root token lists them, Bootstrap step 9)
   vault policy list                                             # admin, default, root, snapshot, terraform and the services
   vault policy read snapshot                                    # read on sys/storage/raft/snapshot, nothing else
   vault read -format=json auth/kubernetes/role/vault-snapshot | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, token_policies, token_max_ttl, token_type, token_no_default_policy}'   # vault-snapshot, vault, [snapshot], 600, service, true
@@ -3495,6 +3635,8 @@ print the file.
   already (a collector installed early, a by-hand `kubectl apply`) fails the apply on
   `already exists`. The collector's install waits for this apply.
 - The login works (**Login**) and `vault auth list` shows `token/` only.
+- Both peers are open (Bootstrap step 11): the `jq` line there prints
+  `vault-secrets-operator-system monitoring`.
 - `bootstrap/terraform.hcl` was written in step 6 from this commit. The plan must not warn
   `check.bootstrap_terraform_policy_matches_services`: a mismatch is a 403 halfway.
 
@@ -3510,13 +3652,18 @@ ignores those, so the plan does not replace it). `terraform import` prints the I
 streams go to `/dev/null` and only the exit code is shown. The value is on the command line of
 that one process for its duration (visible to `ps` on your machine): run nothing else meanwhile.
 ```bash
+terraform -chdir=infra/vault init               # once: the workspace ryft-prod-euc1-vault and the providers (no token needed)
 # the session shell, after the login, with TF_VAR_vault_k8s_token set (import evaluates the whole configuration)
 terraform -chdir=infra/vault import 'random_bytes.data_key["api"]' "$(cat ~/.config/ryft/data-key-api)" >/dev/null 2>&1; echo "exit $?"
 terraform -chdir=infra/vault import random_password.demo "$(cat ~/.config/ryft/demo-password)" >/dev/null 2>&1; echo "exit $?"
 ```
-`exit 1`: run the same line without `2>&1`, read the error (it does not contain the value
-unless it echoes the ID; clear the terminal after), fix it, run again. Then compare
-fingerprints, never values:
+`exit 1`: run the same line with stderr shown but the value filtered out of it (every line
+that contains it is dropped), read the error, fix it, run again:
+```bash
+terraform -chdir=infra/vault import 'random_bytes.data_key["api"]' "$(cat ~/.config/ryft/data-key-api)" >/dev/null 2> >(grep -vFf ~/.config/ryft/data-key-api >&2); echo "exit $?"
+terraform -chdir=infra/vault import random_password.demo "$(cat ~/.config/ryft/demo-password)" >/dev/null 2> >(grep -vFf ~/.config/ryft/demo-password >&2); echo "exit $?"
+```
+Then compare fingerprints, never values:
 ```bash
 echo 'nonsensitive(sha256(random_bytes.data_key["api"].base64))' | terraform -chdir=infra/vault console
 printf %s "$(cat ~/.config/ryft/data-key-api)" | shasum -a 256
@@ -3545,14 +3692,17 @@ service's keys and monitoring's set), after both imports:
 | `vault_kv_secret_v2` | 13 (8 `config`, 4 `amqp-user-<client>`, `demo`) |
 | `local_file` | 18 (`vault.yaml` and `kustomization.yaml` × 9) |
 
-**`Plan: 90 to add, 0 to change, 0 to destroy.`** 92 without the imports (stop: import
-first); one fewer `vault_kv_secret_v2` per service whose keys the tfvars lacks (stop, unless
-you meant it). Any change or destroy: stop. A warning of a `check`: read it; a
+**`Plan: 90 to add, 0 to change, 0 to destroy.`** The 90 assumes that `service_secrets` in
+the tfvars sets the import service's keys (its `config` is one of the 13) and nothing for
+`rabbitmq` (the broker has no `config`; a `service_secrets.rabbitmq` adds one). 92 without the
+imports (stop: import first); one fewer `vault_kv_secret_v2` per service whose keys the
+tfvars lacks (stop, unless you meant it). Any change or destroy: stop. A warning of a `check`: read it; a
 `bootstrap_terraform_policy_matches_services` warning is a stop.
 
 **5. Apply, then the commit.** The apply as in **Terraform through the port-forward**. A 403
 halfway: the policy `terraform` in Vault is not `bootstrap/terraform.hcl` (step 6); write it
-with the admin token and run a new plan, which must show only the remainder. The apply
+with the root token of a new generate-root session (**Login**: the admin policy writes no
+policy) and run a new plan, which must show only the remainder. The apply
 rewrites `deploy/k8s/overlays/vault-namespaces/<svc>/` for every service (the in-cluster
 shape replaces the committed HCP one): `git status --short
 deploy/k8s/overlays/vault-namespaces` lists them; commit them on a branch and open the
@@ -3566,7 +3716,8 @@ and the in-cluster shape on their first sync. Then
 `kubectl --context ryft-prod-euc1 get vaultstaticsecrets -A` shows every one synced within
 its `refreshAfter`. monitoring's and the import service's objects are applied as before
 (D200, D201: not Argo CD applications yet). `terraform -chdir=infra/vault output -json
-login_check | jq -r .api | sh` in the session shell prints `[default api]`.
+login_check | jq -r .api | sh` in the session shell prints `[api default]` (Vault sorts the
+policies).
 
 ### Day 2
 
@@ -3581,17 +3732,27 @@ kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active,controller-re
 # each standby (vault-active=false), one at a time:
 kubectl --context ryft-prod-euc1 -n vault delete pod <standby>
 kubectl --context ryft-prod-euc1 -n vault wait --for=jsonpath='{.status.phase}'=Running pod/<standby> --timeout=5m
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/<standby> 8202:8200 >/dev/null &
+vault_forward <n> 8202                          # A verified pod: the new image is the pinned one now
 vault operator unseal -address=https://127.0.0.1:8202        # three times (Shamir; awskms: not needed)
+vault_unforward 8202
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/<standby> --timeout=5m
 vault operator raft autopilot state             # Healthy true, Failure Tolerance 1 before the next
-# then the leader: hand leadership over, restart the port-forward, delete the old leader, unseal it as above
+# then the leader: hand leadership over, move 8200 to the new leader, delete the old leader, unseal it as above
 vault operator step-down                        # the admin token
+vault_unforward 8200; vault_forward "$(vault_active)" 8200 active
 kubectl --context ryft-prod-euc1 -n vault delete pod <old leader>
 kubectl --context ryft-prod-euc1 -n vault get sts vault -o jsonpath='{.status.updatedReplicas}/{.status.replicas}{"\n"}'   # 3/3
 ```
 VSO's reads go to the `vault` Service (ready pods only), so they ride through each restart.
 Never delete a second pod while one is still sealed: two sealed pods are **Quorum loss**.
+
+**An image roll and the verified pod.** `VAULT_IMAGE` is the pin of your checkout, so after an
+image bump the pods not yet rolled (the leader among them, until its turn) run the previous
+pin and fail `vault_pod`. Take that pin from git, never from the cluster, and use it for those
+pods only:
+`VAULT_IMAGE_OLD="docker.io/hashicorp/vault:$(git show <the commit before the bump>:infra/aws/kubernetes/vault.tf | sed -nE 's/^ +tag += "([0-9][0-9.]*@sha256:[0-9a-f]{64})"$/\1/p')"`,
+then `VAULT_IMAGE="$VAULT_IMAGE_OLD" vault_forward "$(vault_active)" 8200 active` for the
+login on the old leader. A rolled pod is verified with the new pin as above.
 
 **Audit HMAC stays on, monthly and after every apply.** The tune check of **Terraform through
 the port-forward** (the baseline): no mount and no auth method may list
@@ -3658,9 +3819,10 @@ pod costs the failure tolerance (0 until it is unsealed), not the service. Two s
 node failure, a roll. Unseal it, three shares (**Unseal keys**), in the session shell:
 ```bash
 kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active,vault-sealed
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-<n> 8202:8200 >/dev/null &
-vault status -address=https://127.0.0.1:8202   # Seal Type shamir, Initialized true, Sealed true
+vault_forward <n> 8202                          # A verified pod: no share into anything else
+vault status -address=https://127.0.0.1:8202   # Seal Type shamir, Initialized true, Sealed true, Total Shares 5, Threshold 3
 vault operator unseal -address=https://127.0.0.1:8202        # three times, one share per prompt
+vault_unforward 8202
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=5m
 vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
 ```
@@ -3686,9 +3848,10 @@ Fix the cause, then delete the pod so that it starts and unseals again.
 
 The active pod died or was deleted, and a standby wins the election within seconds (both
 standbys unsealed: under Shamir a standby that is sealed cannot). The label
-`vault-active=true` moves, and so does `svc/vault-active`. A port-forward to it ends (restart
-it), and VSO reconnects on its own. Under Shamir the old leader comes back sealed: unseal it
-(**A pod is sealed**).
+`vault-active=true` moves, and so does `svc/vault-active`. Your port-forward to the old
+leader's pod ends with it: `vault_unforward 8200` and `vault_forward "$(vault_active)" 8200
+active` before the next command (**A verified pod**). VSO reconnects on its own. Under Shamir
+the old leader comes back sealed: unseal it (**A pod is sealed**).
 ```bash
 kubectl --context ryft-prod-euc1 -n vault get pods -L vault-active   # exactly one true
 vault operator raft list-peers                  # a leader; the old one follower (or unreachable until it is back)
@@ -3731,34 +3894,43 @@ One pod's data volume is gone (EBS volume lost, zone gone for good) or holds sta
 (530). The other two keep the quorum. Its node id (the pod name) is still a voter in the Raft
 configuration, so the failure tolerance is 0 until it is replaced.
 
-**First, close the collector's path.** The replacement pod starts with a fresh claim and is
+**First, close both peers.** The replacement pod starts with a fresh claim and is
 **uninitialised** until `retry_join` has joined it to the cluster, which under Shamir
 happens only when you unseal it with the cluster's shares. Until then it answers
 `PUT /v1/sys/init` without a token (G3's risk) to anything that reaches its 8200. If that call
 lands, the node forms a cluster of its own (under `awskms` it auto-unseals with the same key;
 under Shamir whoever ran the init holds its shares and unseals it), is labelled
-`vault-active` and joins the `vault-active` endpoints next to the real leader, splitting VSO's
-and the snapshot job's logins between two Vaults. So, by default, set the peer off before you
-start: `vault_collector_peer = false` in `infra/aws/kubernetes/terraform.tfvars`, plan (exactly
-`1 to change`, `helm_release.vault_extras`, the NetworkPolicy `vault-server` loses the
-collector rule; anything else: stop), apply. The server scrape fails until you turn it back on
-(`VaultScrapeDown` may warn). This **narrows** the window, it does not close it: the host-network
-`alloy-daemonset` reaches 8200 from its node's address whatever the variable says (Vault metrics
+`vault-active` and joins the `vault-active` endpoints next to the real leader, splitting the
+logins between two Vaults. So set both peers off before you start: `vault_vso_peer = false`
+and `vault_collector_peer = false` in `infra/aws/kubernetes/terraform.tfvars`, plan (exactly
+`1 to change`, `helm_release.vault_extras`, the NetworkPolicy `vault-server` loses both rules;
+anything else: stop), apply. Until you turn them back on, VSO cannot reach Vault (no sync and
+no rotation; the workloads keep their synced Secrets) and the server scrape fails
+(`VaultScrapeDown` may warn). This **narrows** the window, it does not close it: the snapshot
+job's pods still reach 8200 (pinned images that only log in), and the host-network
+`alloy-daemonset` reaches it from its node's address whatever the variables say (Vault metrics
 (once), step 2; to verify), and so does anything else on a node. Keep the steps below short.
 
-Then, in the session shell (the `svc/vault-active` port-forward and the admin token, G3;
-never `vault login` through `kubectl exec`):
+Then, in the session shell (the verified active pod on 8200 and the admin token, G3; never
+`vault login` through `kubectl exec`):
 ```bash
 vault operator raft list-peers                  # vault-<n> Voter, not reachable
 vault operator raft remove-peer vault-<n>       # the admin token
 kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false
 kubectl --context ryft-prod-euc1 -n vault delete pod vault-<n>
 kubectl --context ryft-prod-euc1 -n vault wait --for=jsonpath='{.status.phase}'=Running pod/vault-<n> --timeout=10m
-kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-<n> 8202:8200 >/dev/null &
-vault status -address=https://127.0.0.1:8202   # Initialized false, Sealed true: never init it
+vault_forward <n> 8202                          # A verified pod
+kubectl --context ryft-prod-euc1 -n vault logs vault-<n> | grep -ciE 'barrier initialized|root token generated'   # 0: no init of its own
+vault status -address=https://127.0.0.1:8202   # Initialized false at first: never init it. Once its retry_join reached the leader:
+                                                # Initialized true, Sealed true, Total Shares 5, Threshold 3, Unseal Progress 0/3
 vault operator unseal -address=https://127.0.0.1:8202        # Shamir: three times, the cluster's shares (the join)
+vault status -address=https://127.0.0.1:8202 | grep -E 'Sealed|HA Mode|Cluster ID'   # Sealed false, standby, the leader's Cluster ID
+vault_unforward 8202
 kubectl --context ryft-prod-euc1 -n vault wait --for=condition=Ready pod/vault-<n> --timeout=10m
 ```
+A share goes in only after the log line count is 0 and `vault status` shows the cluster's
+seal configuration; a pod that stays sealed after three shares gets no further share until
+you know whose it is (Bootstrap step 3, **A follower that does not join**).
 The StatefulSet makes a fresh claim, and the pod joins by `retry_join` and receives the data
 from the leader. **Two checks before anything else**, once the pod is Ready:
 ```bash
@@ -3767,13 +3939,15 @@ kubectl --context ryft-prod-euc1 -n vault get endpoints vault-active -o jsonpath
 # exactly one address: the leader's
 vault operator raft autopilot state             # Healthy true, Failure Tolerance 1
 ```
-Both hold: put `vault_collector_peer = true` back (plan exactly `1 to change`, anything else:
-stop; apply) and check that `up{job="ryft/vault"}` is 1 for all three pods again.
+Both hold: put `vault_vso_peer = true` and `vault_collector_peer = true` back (plan exactly
+`1 to change`, anything else: stop; apply), check that every VaultStaticSecret syncs again
+(`kubectl --context ryft-prod-euc1 get vaultstaticsecrets -A`) and that `up{job="ryft/vault"}`
+is 1 for all three pods again.
 
 **Initialised alone** (`vault-<n>` missing from `list-peers`, or two addresses behind
 `vault-active`, or the new pod reporting `Initialized true` with a cluster of its own on its
-pod port-forward): treat it as G3, a compromise. In this order: first close the path (the peer
-stays `false`; if you had kept it on, set it off now as above) and stop every other change;
+pod port-forward): treat it as G3, a compromise. In this order: first close the path (both
+peers stay `false`; if you had kept one on, set it off now as above) and stop every other change;
 then delete its claim and pod again (`kubectl --context ryft-prod-euc1 -n vault delete pvc data-vault-<n> --wait=false`,
 then the pod) so that it rejoins the real cluster; then find out who reached it (the EKS
 audit log for `pods/portforward` and `pods/exec` in `vault`, the node's connections) and
@@ -3919,28 +4093,31 @@ next (the Terraform runs are yours):
    them means they are gone, see *The unseal key or the shares are lost* below. Under Shamir
    the snapshot opens with the old cluster's shares, not with a key in AWS: have three of
    them at hand (**Unseal keys**) before you start.
-2. **The collector peer off.** `vault_collector_peer = false` in
-   `infra/aws/kubernetes/terraform.tfvars` **before** the next step: the new Vault comes up
-   uninitialised, and `PUT /v1/sys/init` must reach nobody but you (Vault metrics (once),
-   step 2). The same before every restore into a fresh, uninitialised cluster.
+2. **Both peers off.** `vault_vso_peer = false` and `vault_collector_peer = false` in
+   `infra/aws/kubernetes/terraform.tfvars` **before** the next step (both are `true` since
+   the bootstrap's step 11). The new Vault comes up uninitialised, and `PUT /v1/sys/init`
+   answers whatever reaches 8200. With both peers off no pod of another namespace does; the
+   snapshot job's pods and the nodes' own addresses still do (**A lost volume**), so step 3's
+   G3 check and the init's `already initialized` stop in step 4 cover the rest. The same
+   before every restore into a fresh, uninitialised cluster.
 3. **`infra/aws/kubernetes`**: the add-ons, the Vault add-on among them. Vault comes up
    uninitialised (three pods running, 0/1 ready), the snapshot CronJob with it (its runs fail
    until step 4). Check G3 (Vault → Hard gates): `Initialized false` on all three before
    your init.
-4. **Restore the latest snapshot** into the new Vault, in the session shell, with
-   port-forwards to each pod (no pod is ready, so `vault-active` has no endpoint yet). Under
-   Shamir (the default), a throwaway init on vault-0 only, then the restore, then the **old**
-   shares:
+4. **Restore the latest snapshot** into the new Vault, in the session shell (the clipboard
+   rules of **The clipboard**), with verified port-forwards to each pod (**A verified pod**;
+   the StatefulSet is new, so is its uid; no pod is active yet). Under Shamir (the default), a
+   throwaway init on vault-0 only, then the restore, then the **old** shares:
 
    ```bash
    aws s3 ls s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/ --region eu-central-1 | tail -3
    aws s3 cp s3://ryft-prod-euc1-vault-snapshots-<account>/snapshots/<newest> ./vault.snap --region eu-central-1
    vault operator raft snapshot inspect vault.snap        # offline; a corrupt file fails here
-   kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-0 8200:8200 >/dev/null &
-   kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-1 8201:8200 >/dev/null &
-   kubectl --context ryft-prod-euc1 -n vault port-forward pod/vault-2 8202:8200 >/dev/null &
+   vault_forward 0 8200
+   vault_forward 1 8201
+   vault_forward 2 8202
    vault status                                            # Initialized false (G3), on 8201 and 8202 too
-   vault operator init -key-shares=1 -key-threshold=1     # a throwaway unseal key and root token
+   vault operator init -key-shares=1 -key-threshold=1     # a throwaway unseal key and root token; "already initialized": stop (G3)
    vault operator unseal                                   # once: the throwaway key
    read -rs VAULT_TOKEN && export VAULT_TOKEN              # the throwaway root token, not echoed
    vault operator raft snapshot restore -force vault.snap
@@ -3948,8 +4125,8 @@ next (the Terraform runs are yours):
    vault status                                            # Sealed true: the restored keyring wants the OLD shares
    vault operator unseal                                   # three times: three of the old cluster's shares
    vault status                                            # Sealed false, HA Mode active
-   vault operator unseal -address=https://127.0.0.1:8201   # three times, old shares: vault-1 joins
-   vault operator unseal -address=https://127.0.0.1:8202   # three times, old shares: vault-2 joins
+   vault operator unseal -address=https://127.0.0.1:8201   # three times, old shares: vault-1 joins (Bootstrap step 3's checks first)
+   vault operator unseal -address=https://127.0.0.1:8202   # three times, old shares: vault-2 joins (the same)
    ```
 
    `-force` because the new cluster's keys differ from the snapshot's (without it:
@@ -3969,9 +4146,10 @@ next (the Terraform runs are yours):
    shares (or the unseal key), so treat it as every secret. Your disk's encryption (FileVault)
    is what protects the deleted blocks; `shred` is no help on APFS (copy-on-write, SSD) and is
    not on stock macOS.
-5. **The collector peer on again**: `vault_collector_peer = true`, plan (exactly `1 to change`,
-   anything else: stop) and apply `infra/aws/kubernetes` (Vault metrics (once), step 2: the
-   restored Vault is initialised, by your snapshot).
+5. **Both peers on again**: `vault_vso_peer = true` and `vault_collector_peer = true`, plan
+   (exactly `1 to change`, anything else: stop) and apply `infra/aws/kubernetes` (Bootstrap
+   step 11: the restored Vault is initialised, by your snapshot, and the throwaway root token
+   is void).
 6. **The first snapshot by hand** (Snapshots → The first snapshot), right away. The rebuilt
    CronJob has no `lastSuccessfulTime`, so until a run succeeds the alerts' "initialised" gate
    rests on the pod labels alone, which lapse an hour after every pod restarts sealed.
@@ -3988,7 +4166,7 @@ them in its variables), so nothing is lost that Terraform knows.
 **The unseal key or the shares are lost** (under Shamir fewer than three shares left; under
 `awskms` the key deleted after its 30-day window, which the key policy forbids, or the account
 gone): no snapshot opens again, and under Shamir no pod that restarts unseals again. Initialise
-a new Vault: Vault → Bootstrap from step 1, with the collector peer off as in step 2 above
+a new Vault: Vault → Bootstrap from step 1, with both peers off as in step 2 above
 (the shares and root token are the new bootstrap's). Then apply `infra/vault` from its state
 (no import: the state still holds every `random_*`): it recreates the mounts, auth, roles and
 policies and writes the KV values from its variables (`service_secrets` in
@@ -4272,7 +4450,7 @@ deletes the old demo account (`DELETE /v1/me`, sign-in included) and creates it 
 so the data is always recent.
 
 ```bash
-# the session shell (Vault): the svc/vault-active port-forward, VAULT_CACERT, VAULT_TOKEN = an admin token (Vault → Login)
+# the session shell (Vault): the verified active pod's port-forward, VAULT_CACERT, VAULT_TOKEN = an admin token (Vault → Login)
 SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=sb_publishable_… SUPABASE_SECRET_KEY=sb_secret_… \
 ADMIN_API_KEY=$(terraform -chdir=infra/vault output -raw admin_api_key) scripts/seed_demo.sh
 vault kv get -mount=kv-operator -field=password demo    # → App Store Connect

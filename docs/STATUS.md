@@ -83,8 +83,14 @@ the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2
 
 **Done in the PR (merged = nothing happens; no Argo CD exists)**
 - `infra/vault`: the in-cluster Vault only, from an empty state; the HCP side and its variables are retired (D207).
-- `infra/aws/kubernetes`: `vault_seal` with `shamir` as the default and `awskms` built (D208); VSO's peer is open from
-  the first apply; the server pods' egress to AWS only under `awskms` (vault-extras 0.3.0).
+- `infra/aws/kubernetes`: `vault_seal` with `shamir` as the default and `awskms` built (D208); `vault_vso_peer` beside
+  `vault_collector_peer`, both closed until the operator's init is done and root revoked (D207, Bootstrap step 11); the
+  server pods' egress to AWS only under `awskms` (vault-extras 0.3.0).
+- `infra/vault`: the admin policy creates no token but the terraform token and writes no policy, token role or auth
+  method (D209); `prevent_destroy` on the data key (D211).
+- OPERATIONS → Vault: shares and tokens go only to a verified pod (`vault_forward`: the StatefulSet's by uid, the
+  pinned digest, `vault-active` for a login), G1's gap until it is in Deny (D210); the clipboard and the init-window
+  rules.
 - `infra/aws/dns`: no-mail records by default (D212); the Google set is the example.
 - `scripts/recover_data_key.sh` (D211); the scripts read the in-cluster Vault by default; `vault_diff.sh` has no HCP mode.
 - The alerts, OBSERVABILITY and OPERATIONS are written for one Vault, Shamir and the generate-root session (D209).
@@ -102,7 +108,10 @@ the regenerated overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), 
 **Open after the rebuild**
 - Mail for `support@ryftapp.de` (Impressum, privacy policy, Supabase Auth SMTP): before, or soon after, the testers
   return (D212).
-- G1: the admission chart on in Audit, then the `vault` bindings and P13 in Deny, then #121 (D210).
+- G1: the admission chart on in Audit, then the `vault` bindings and P13 in Deny, then #121 (D210). Soon after the
+  testers are back, and before any switch to `awskms`. Until then the verified-pod rule is what stands in for it.
+- To verify in kind (OPERATIONS → Vault): how a 2.2.1 follower takes the shares around its `retry_join`, the init and
+  join log lines, `generate-root -decode=-`, the loopback binding through a port-forward, and the audit options.
 - The import service's namespace is missing from the injector's exclusion list in `deploy/monitoring/k8s-monitoring.yaml`,
   and its keys from `infra/vault/terraform.tfvars.example`: the brand hook stops agents from writing the name, so the
   owner adds both.
@@ -359,7 +368,8 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    2. Rebase #121. It merges second: it bumps the chart above 0.5.1 (#147's and #153's), sets 18 bindings and 13 policies
       (`admission_intended.sh --check` fails if missed) and reconciles P1's in-scope list with `argoScope.namespaceObjects`.
    3. A fresh full-mode `admission-e2e` kind run on a tree that contains #47.
-   4. Mark #121 ready, review, merge, and give its decision a D-number (D206 is next).
+   4. Mark #121 ready, review, merge, and give its decision a D-number (the next free one; D212 is the last as of the
+      rebuild PR).
    5. Enable the chart and apply it (`infra/aws/kubernetes`; every binding starts on `audit`).
    6. Move P6, P1 and P2 (the general bindings) to **Deny**, then P12, each in a reviewed PR. The `vault` bindings and P13 can
       go to Deny at any time, and alone.

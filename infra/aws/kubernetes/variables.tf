@@ -94,6 +94,12 @@ variable "vault_collector_peer" {
   default     = false
 }
 
+variable "vault_vso_peer" {
+  description = "Admits the Vault Secrets Operator (vault-secrets-operator-system) to Vault's port 8200, for every login and read of the workloads' secrets (charts/vault-extras peers.vso, D207). Leave false until the operator's own init is done and the root token is revoked (PUT /v1/sys/init is unauthenticated before the init); set it true together with vault_collector_peer before infra/vault's first apply, and false again before a restore into a fresh cluster or the rebuild of a lost volume (OPERATIONS -> Vault -> Disaster recovery, A lost volume)."
+  type        = bool
+  default     = false
+}
+
 variable "admission_enabled" {
   description = "Overrides `enabled` of admission-values.yaml for one plan (tests, a dry look at the release). null uses the file; the real switch is the reviewed file, so do not run an apply with this set."
   type        = bool

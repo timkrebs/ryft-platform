@@ -19,7 +19,8 @@
 #
 # --context is required and must be one of `kubectl config get-contexts -o name`; kubectl's current
 # context and KUBE_CONTEXT are never used (production is ryft-prod-euc1). The script starts no
-# port-forward: run your own, e.g. `kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200`.
+# port-forward: run your own to a verified pod, never to svc/vault-active, e.g. the session shell's
+# `vault_forward "$(vault_active)" 8200 active` (docs/OPERATIONS.md → Vault → A verified pod).
 #
 #   --k8s-addr URL    or VAULT_ADDR_K8S, default https://127.0.0.1:8200: your port-forward (https on
 #                     127.0.0.1, localhost or [::1] only)
@@ -32,6 +33,9 @@
 #               the end: list the mounts)
 #   create      vault token create -policy=<it> -ttl=30m -use-limit=<the reads of the run, plus one>
 #               (one read per Vault path: `--list` shows them)
+#   who         the admin token may neither write a policy nor create such a token (D209), so both
+#               are done with the root token of a generate-root session, before it mints the admin
+#               token (docs/OPERATIONS.md → Vault → Login); the audit stream then shows this token too
 #   afterwards  vault token revoke -self   (with that token)
 # CE_VAULT_TOKEN in the environment works too, and says so.
 #

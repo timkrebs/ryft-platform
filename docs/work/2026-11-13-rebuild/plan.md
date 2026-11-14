@@ -52,7 +52,8 @@ state below is the brief's and this clone's.
   init and per-pod unseal, the consequence of a restart, the generate-root session, and the switch to `awskms`.
 - **R2** `terraform test` green in `infra/aws/kubernetes` and `infra/aws/dns`; `vault_seal` defaults to `shamir`
   (no seal stanza, no unseal Pod Identity association) and `awskms` renders today's stanza and association; VSO's peer
-  on 8200 is open from the first apply; `admission-values.yaml` admits only the in-cluster address; the server's public
+  on 8200 is `vault_vso_peer` (default false, opened with the collector's after the init: changed after the security
+  review, D207); `admission-values.yaml` admits only the in-cluster address (in the follow-up PR; this PR keeps both); the server's public
   443 egress exists only for `awskms` (if the chart allows it cheaply); DNS defaults are the no-mail set and the Google
   set is one tfvars block away; the expected plan counts from empty (aws, kubernetes) and from the current DNS state are
   stated.

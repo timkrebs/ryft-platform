@@ -69,7 +69,8 @@ admin FAKE_VAULT_VALUE=from-ce RYFT_VAULT=ce || fail "RYFT_VAULT=ce (the old nam
 ! admin || fail "no key anywhere still succeeded"
 [ "$(vault_calls)" = "$CE_CALL" ] || fail "nothing: $(vault_calls)"
 grep -Fq 'vault kv get -mount=kv-api -field=ADMIN_API_KEY config' "$t/err" || fail "the hint: $(cat "$t/err")"
-grep -Fq 'port-forward svc/vault-active 8200' "$t/err" || fail "the hint has no port-forward: $(cat "$t/err")"
+grep -Fq 'vault_forward "$(vault_active)" 8200 active' "$t/err" || fail "the hint has no verified port-forward: $(cat "$t/err")"
+! grep -Fq 'svc/vault-active' "$t/err" || fail "the hint sends a token through svc/vault-active: $(cat "$t/err")"
 ! grep -Fq -e 'VAULT_NAMESPACE=admin' -e 'RYFT_VAULT' "$t/err" || fail "the hint still names HCP: $(cat "$t/err")"
 
 # RYFT_VAULT=hcp (a shell from before the rebuild) and any other value: refused before terraform or Vault.

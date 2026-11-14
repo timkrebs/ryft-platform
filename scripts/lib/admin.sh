@@ -66,8 +66,8 @@ ryft_admin_key() {
 ✗ no admin key. One of these has to work:
   export ADMIN_API_KEY=…                                         (compose: dev-admin-key-change-me-0123456789abcdef)
   terraform -chdir=infra/vault output -raw admin_api_key         (needs `terraform login` and `terraform init` there)
-  vault kv get -mount=kv-api -field=ADMIN_API_KEY config         (the in-cluster Vault: your port-forward
-      kubectl --context ryft-prod-euc1 -n vault port-forward svc/vault-active 8200,
+  vault kv get -mount=kv-api -field=ADMIN_API_KEY config         (the in-cluster Vault: the session shell's verified
+      port-forward vault_forward "$(vault_active)" 8200 active (docs/OPERATIONS.md → Vault → A verified pod),
       VAULT_ADDR=https://127.0.0.1:8200 or unset, VAULT_CACERT, VAULT_TOKEN)
 MSG
   return 1

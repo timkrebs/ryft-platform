@@ -3,34 +3,41 @@
 # scripts/recover_data_key.sh against a fake HCP Terraform API (make test-scripts). curl is a fake
 # on PATH (the script has no switch for the API host), HOME and TMPDIR are throwaway, and the token
 # and every value are made up at run time: nothing reaches app.terraform.io. It checks: arguments
-# and the token before any request; the token only in curl's config on stdin (never in argv), only
-# for app.terraform.io, curl started with -q; the state versions paged and sorted, only finalized
+# and the token before any request; the token and every URL (a signed download URL is a
+# credential) only in curl's config on stdin, never in any argv of any run, the token only for
+# app.terraform.io, curl started with -q; the state versions paged and sorted, only finalized
 # ones, the newest that holds the root module's random_bytes.data_key["api"] (not another index key,
 # a module's or a deposed instance); the value in a 0600 file exactly as in the state, never
-# printed, never overwritten; --demo, --dry-run, a named version; the errors (no token, 401, 404,
-# none holds it, a key that is not 32 bytes, an expired download URL, an unknown state format); and
-# no raw state left behind.
+# printed, never overwritten; the folder excluded from Time Machine before the write, a failing
+# tmutil only a warning; --demo, --dry-run, a named version; the errors (no token, 401, 404 that
+# names both causes, none holds it, a key that is not 32 bytes, an expired download URL, an
+# unknown state format); and no raw state left behind.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/bin" "$t/tmp" "$t/fx/obj" "$t/fx/sv"
 fail() { echo "✗ recover_data_key_test: $*" >&2; exit 1; }
-unset TF_TOKEN_app_terraform_io FAKE_LIST FAKE_WS_GONE FAKE_DL_CODE
+unset TF_TOKEN_app_terraform_io FAKE_LIST FAKE_WS_GONE FAKE_DL_CODE FAKE_TMUTIL_FAIL
 TOKEN=tok$RANDOM$RANDOM.atlasv1.$RANDOM$RANDOM$RANDOM
-export FAKE_DIR=$t/fx FAKE_TOKEN=$TOKEN TMPDIR=$t/tmp
+# The object store's signed token, in the path of every download URL there.
+SIG=dmF1bHQ6djE6$RANDOM$RANDOM$RANDOM$RANDOM
+export FAKE_DIR=$t/fx FAKE_TOKEN=$TOKEN FAKE_SIG=$SIG TMPDIR=$t/tmp
 
-# curl: the API and the state downloads from $FAKE_DIR. Records each call (argv, URL, the headers
-# from the config on stdin). app.terraform.io answers 401 without the right bearer; the object
-# store (a signed URL) answers 400 to a request that carries one. FAKE_LIST picks the list pages
-# (<list>-<page>.json), FAKE_WS_GONE answers 404 for the workspace, FAKE_DL_CODE answers the object
-# store with that status. Any other host: "could not resolve" (no network in this test).
+# curl: the API and the state downloads from $FAKE_DIR. Records each call (argv, URL and where it
+# came from, the headers from the config on stdin) in calls (one run), and every argv in argv.log
+# (all runs). app.terraform.io answers 401 without the right bearer; the object store answers 400
+# to a request that carries one and 403 to a path without the signed token. FAKE_LIST picks the
+# list pages (<list>-<page>.json), FAKE_WS_GONE answers 404 for the workspace, FAKE_DL_CODE answers
+# the object store with that status. Any other host: "could not resolve" (no network in this test).
 cat > "$t/bin/curl" <<'C'
 #!/usr/bin/env python3
 import json, os, re, sys
 from urllib.parse import urlsplit, parse_qs
 d = os.environ["FAKE_DIR"]
 args, opts, url, i = sys.argv[1:], {}, None, 0
+with open(os.path.join(d, "argv.log"), "a") as f:
+    f.write(json.dumps(args) + "\n")
 valued = {"--config", "--max-redirs", "--proto", "--proto-redir", "--connect-timeout", "--max-time", "--output", "--write-out"}
 while i < len(args):
     if args[i] in valued:
@@ -39,16 +46,21 @@ while i < len(args):
         opts[args[i]] = True; i += 1
     else:
         url = args[i]; i += 1
-headers = {}
+headers, url_from = {}, ("argv" if url else None)
 if opts.get("--config") == "-":
     for line in sys.stdin.read().splitlines():
         m = re.fullmatch(r'header = "([^:"]+): ([^"]*)"', line.strip())
+        n = re.fullmatch(r'url = "([^"\\]+)"', line.strip())
         if m:
             headers[m.group(1).lower()] = m.group(2)
+        elif n and url_from != "config":
+            url, url_from = n.group(1), "config"
         elif line.strip():
-            sys.stderr.write("fake curl: a config line that is not a header\n"); sys.exit(2)
+            sys.stderr.write("fake curl: a config line that is not a header or the one url\n"); sys.exit(2)
 with open(os.path.join(d, "calls"), "a") as f:
-    f.write(json.dumps({"argv": args, "url": url, "headers": headers}) + "\n")
+    f.write(json.dumps({"argv": args, "url": url, "url_from": url_from, "headers": headers}) + "\n")
+if url is None:
+    sys.stderr.write("curl: no URL specified\n"); sys.exit(2)
 u = urlsplit(url)
 code, body = 404, '{"errors":[{"status":"404","title":"not found"}]}'
 def from_file(p):
@@ -74,6 +86,8 @@ if u.hostname == "app.terraform.io":
         from_file(os.path.join(d, "obj", u.path.split("/")[3]))
 elif "authorization" in headers:
     code, body = 400, "a bearer sent to the object store"
+elif not u.path.startswith("/v1/object/" + os.environ["FAKE_SIG"] + "/"):
+    code, body = 403, "a download URL without its signed token"
 else:
     from_file(os.path.join(d, "obj", u.path.rsplit("/", 1)[1]))
     if code == 200 and os.environ.get("FAKE_DL_CODE"):
@@ -85,6 +99,15 @@ else:
 sys.stdout.write(opts.get("--write-out", "").replace("%{http_code}", str(code)))
 C
 chmod +x "$t/bin/curl"
+
+# tmutil: records its arguments and what the folder held at that moment (in $FAKE_DIR/tmutil, one
+# run); FAKE_TMUTIL_FAIL makes it fail. First on PATH, so the real one never runs.
+cat > "$t/bin/tmutil" <<'T'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$*" "$(ls -A "${2:-}" 2>/dev/null | tr '\n' ' ')" >> "$FAKE_DIR/tmutil"
+if [ -n "${FAKE_TMUTIL_FAIL:-}" ]; then echo "tmutil: the operation could not be completed (fake)" >&2; exit 1; fi
+T
+chmod +x "$t/bin/tmutil"
 
 # The workspace's history: two state versions after the destroy (the newest empty, the one before
 # with only another index key, a deposed instance and a module's resource of the same name), a
@@ -125,7 +148,7 @@ state("sv-good", 38, db, data_key(b("api", vals["key"]), b("ingest", vals["inges
 state("obj-older", 12, data_key(b("api", vals["older"])), demo(vals["demo_older"]))
 state("obj-short", 5, data_key(b("api", vals["short"])))
 state("obj-v3", 3, data_key(b("api", vals["key"])), version=3)
-A = "https://archivist.terraform.io/v1/object/"
+A = "https://archivist.terraform.io/v1/object/" + os.environ["FAKE_SIG"] + "/"
 def sv(id, created, serial, url, status="finalized", ws="ws-test"):
     v = {"id": id, "type": "state-versions",
          "attributes": {"created-at": created, "serial": serial, "status": status, "hosted-state-download-url": url,
@@ -162,31 +185,37 @@ KEY=$(val key) OLDER=$(val older) DEMO=$(val demo)
 fp() { printf '%s' "$1" | shasum -a 256 | cut -c1-16; }
 mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 home() { export HOME=$t/home.$1; mkdir -p "$HOME"; }
-run() { # recover_data_key.sh <args> with the fake curl first on PATH: $rc, $t/out, $t/err, $t/fx/calls
-  : > "$t/fx/calls"
+run() { # recover_data_key.sh <args> with the fakes first on PATH: $rc, $t/out, $t/err, $t/fx/calls, $t/fx/tmutil
+  : > "$t/fx/calls"; : > "$t/fx/tmutil"
   rc=0; PATH="$t/bin:$PATH" bash "$ROOT/scripts/recover_data_key.sh" "$@" >"$t/out" 2>"$t/err" || rc=$?
 }
 said() { echo "rc=$rc; stdout: $(cat "$t/out"); stderr: $(cat "$t/err")"; }
 no_calls() { [ ! -s "$t/fx/calls" ] || fail "$1: curl ran: $(cat "$t/fx/calls")"; }
-calls() { # <python over calls (each argv, url, headers) and tok>
+no_tmutil() { [ ! -s "$t/fx/tmutil" ] || fail "$1: tmutil ran: $(cat "$t/fx/tmutil")"; }
+excluded() { # tmutil addexclusion (the sticky form: no -p) on the folder, once, while it was still empty
+  [ "$(cat "$t/fx/tmutil")" = "addexclusion $HOME/.config/ryft|" ] || fail "$1: tmutil: $(cat "$t/fx/tmutil")"
+}
+calls() { # <python over calls (each argv, url, url_from, headers), tok and sig>
   python3 -c '
 import json, os, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
-tok = os.environ["FAKE_TOKEN"]
+tok, sig = os.environ["FAKE_TOKEN"], os.environ["FAKE_SIG"]
 exec(sys.argv[2])' "$t/fx/calls" "$1"
 }
-silent() { # no value of the fixtures in what the script printed
+silent() { # no value of the fixtures, no token and no signed URL in what the script printed
   local name
   for name in key older ingest module deposed decoy demo demo_older demo_decoy short; do
     if grep -qF -- "$(val "$name")" "$t/out" "$t/err"; then fail "$1: the value '$name' was printed: $(said)"; fi
   done
   if grep -qF -- "$TOKEN" "$t/out" "$t/err"; then fail "$1: the token was printed"; fi
+  if grep -qF -- "$SIG" "$t/out" "$t/err"; then fail "$1: a signed download URL was printed"; fi
 }
 
 # 1. --help, and every argument checked before the token and before any request.
 home help; run --help
 [ "$rc" = 0 ] && grep -q '^  scripts/recover_data_key.sh \[--demo\] \[--dry-run\]' "$t/out" || fail "--help: $(said)"
 if grep -q '^#' "$t/out" || grep -q '^set -euo' "$t/out"; then fail "--help prints code or # prefixes: $(cat "$t/out")"; fi
+grep -q 'tmutil addexclusion ~/.config/ryft' "$t/out" && grep -q 'local snapshot' "$t/out" || fail "--help does not name the Time Machine step: $(cat "$t/out")"
 export TF_TOKEN_app_terraform_io=$TOKEN
 for a in "--frob" "sv-a;b" "sv-a sv-b" "sv-" "--org" "--org a.b" "--workspace ../x" "--demo extra"; do
   read -ra words <<< "$a"
@@ -213,10 +242,16 @@ TF_TOKEN_app_terraform_io=wrong.atlasv1.token run --dry-run
 [ "$rc" = 1 ] && grep -q '(401)' "$t/err" || fail "TF_TOKEN_app_terraform_io must come before the credentials file: $(said)"
 export TF_TOKEN_app_terraform_io=$TOKEN
 
-# 3. The workspace is gone: a 404 that names the fallback, nothing else asked, nothing written.
+# 3. The workspace is gone (or hidden from the token): a 404 that names both causes, sends the user
+# to the UI first and names the fallback as final; nothing else asked, nothing written.
 home gone; FAKE_WS_GONE=1 run
 [ "$rc" = 1 ] && grep -q 'workspace ryft-prod-euc1-vault in tim-krebs-org: not found (404' "$t/err" \
   && grep -q 'clears the unreadable Apple tokens' "$t/err" || fail "workspace gone: $(said)"
+grep -q 'deleted, or this token cannot see it' "$t/err" \
+  && grep -qF 'HCP Terraform UI (https://app.terraform.io/app/tim-krebs-org/workspaces/ryft-prod-euc1-vault)' "$t/err" \
+  && grep -qF 'Before you treat random_bytes.data_key["api"] as lost' "$t/err" && grep -q 'which cannot be undone' "$t/err" \
+  || fail "the 404 must name both causes, the UI check and the fallback as final: $(said)"
+no_tmutil "workspace gone"
 [ "$(wc -l < "$t/fx/calls" | tr -d ' ')" = 1 ] || fail "after a 404 for the workspace nothing more is asked: $(cat "$t/fx/calls")"
 [ ! -e "$HOME/.config/ryft/data-key-api" ] || fail "workspace gone: a file was written"
 
@@ -238,18 +273,22 @@ grep -q '1 of 5 state versions are not finalized' "$t/err" && grep -q '2 newer s
 f=$HOME/.config/ryft/data-key-api
 [ "$(cat "$f")" = "$KEY" ] && [ "$(wc -c < "$f" | tr -d ' ')" = 44 ] || fail "the file does not hold exactly the key"
 [ "$(mode "$f")" = 600 ] && [ "$(mode "$HOME/.config/ryft")" = 700 ] || fail "modes: file $(mode "$f"), dir $(mode "$HOME/.config/ryft")"
+excluded "the main run"
+grep -qF "$HOME/.config/ryft: excluded from Time Machine backups" "$t/err" || fail "the exclusion is not reported: $(cat "$t/err")"
 silent "the main run"
 calls '
 api = "https://app.terraform.io/"
+obj = "https://archivist.terraform.io/v1/object/" + sig + "/"
 urls = [c["url"] for c in calls]
 assert urls[0] == api + "api/v2/organizations/tim-krebs-org/workspaces/ryft-prod-euc1-vault", urls
 assert [u.split("page%5Bnumber%5D=")[1] for u in urls[1:3]] == ["1", "2"], urls
 assert all("filter%5Bworkspace%5D%5Bname%5D=ryft-prod-euc1-vault" in u and "filter%5Borganization%5D%5Bname%5D=tim-krebs-org" in u for u in urls[1:3]), urls
-assert urls[3:] == ["https://archivist.terraform.io/v1/object/obj-post2", "https://archivist.terraform.io/v1/object/obj-post1",
-                    api + "api/state-versions/sv-good/hosted_state"], urls
+assert urls[3:] == [obj + "obj-post2", obj + "obj-post1", api + "api/state-versions/sv-good/hosted_state"], urls
 for c in calls:
     assert c["argv"][0] == "-q", c["argv"]  # no ~/.curlrc
     assert not [a for a in c["argv"] if tok in a], "the token in argv"
+    assert c["url_from"] == "config", ("the URL not from the config on stdin", c)
+    assert not [a for a in c["argv"] if "://" in a or sig in a or "bearer" in a.lower()], ("a URL or a bearer in argv", c["argv"])
     assert c["argv"][c["argv"].index("--proto") + 1] == "=https" and c["argv"][c["argv"].index("--proto-redir") + 1] == "=https", c["argv"]
     if c["url"].startswith(api):
         assert c["headers"].get("authorization") == "Bearer " + tok, c
@@ -260,12 +299,14 @@ for c in calls:
 # 5. Never overwritten: a second run refuses before any request, a dangling symlink too; --dry-run
 # next to the file is fine and leaves it.
 run; [ "$rc" = 1 ] && grep -q 'exists: refusing to overwrite it' "$t/err" || fail "a second run: $(said)"
-no_calls "a second run"; [ "$(cat "$f")" = "$KEY" ] || fail "the second run changed the file"
+no_calls "a second run"; no_tmutil "a second run"; [ "$(cat "$f")" = "$KEY" ] || fail "the second run changed the file"
 run --dry-run; [ "$rc" = 0 ] && grep -qx 'written:       nothing (--dry-run)' "$t/out" && [ "$(cat "$f")" = "$KEY" ] || fail "--dry-run next to the file: $(said)"
+no_tmutil "--dry-run next to the file"
 home sym; mkdir -p "$HOME/.config/ryft"; ln -s "$t/nowhere" "$HOME/.config/ryft/data-key-api"
 run; [ "$rc" = 1 ] && [ ! -e "$t/nowhere" ] || fail "a dangling symlink: $(said)"; no_calls "a dangling symlink"
 home dry; run --dry-run
 [ "$rc" = 0 ] && [ ! -e "$HOME/.config/ryft/data-key-api" ] && grep -q "^sha256:        $(fp "$KEY") " "$t/out" || fail "--dry-run: $(said)"
+no_tmutil "--dry-run"
 silent "--dry-run"
 
 # 6. A named version: that one, its own workspace's, without the list.
@@ -288,9 +329,21 @@ if grep -q '^decoded:' "$t/out"; then fail "--demo prints a decoded length"; fi
 d=$HOME/.config/ryft/demo-password
 [ "$(cat "$d")" = "$DEMO" ] && [ "$(wc -c < "$d" | tr -d ' ')" = 24 ] && [ "$(mode "$d")" = 600 ] || fail "the demo password file"
 [ ! -e "$HOME/.config/ryft/data-key-api" ] || fail "--demo wrote the key"
+excluded "--demo"
 silent "--demo"
 
-# 8. The errors: no version holds it, a key that is not 32 bytes, an expired download URL, a state
+# 8. Time Machine: a tmutil that fails is a warning that says what to do, and the key is still
+# written (0600, the same report on stdout).
+home tmfail; FAKE_TMUTIL_FAIL=1 run
+[ "$rc" = 0 ] && grep -qF "warning: tmutil addexclusion $HOME/.config/ryft failed (tmutil: the operation could not be completed (fake)" "$t/err" \
+  && grep -q 'exclude the folder by hand' "$t/err" || fail "a failing tmutil: $(said)"
+excluded "a failing tmutil"
+f=$HOME/.config/ryft/data-key-api
+[ "$(cat "$f")" = "$KEY" ] && [ "$(mode "$f")" = 600 ] && grep -qxF "written:       $f (0600)" "$t/out" || fail "a failing tmutil stopped the write: $(said)"
+if grep -qF 'excluded from Time Machine backups' "$t/err"; then fail "a failing tmutil reported as done: $(cat "$t/err")"; fi
+silent "a failing tmutil"
+
+# 9. The errors: no version holds it, a key that is not 32 bytes, an expired download URL, a state
 # format this script does not read, a version without a download URL.
 home none; FAKE_LIST=none run
 [ "$rc" = 1 ] && grep -q 'none of the 2 state versions of ryft-prod-euc1-vault holds random_bytes.data_key\["api"\]' "$t/err" \
@@ -309,6 +362,17 @@ home nourl; FAKE_LIST=nourl run
 [ "$rc" = 1 ] && grep -q 'sv-nourl (2026-11-10T13:00:00.000Z) has no download URL' "$t/err" || fail "no download URL: $(said)"
 silent "the error cases"
 
-# 9. No raw state anywhere: every run removed its temporary directory.
+# 10. Across every run above: no URL (so no signed token) and no bearer in any argv curl was
+# started with (ps shows argv to every user); and no raw state anywhere: every run removed its
+# temporary directory.
+python3 - "$t/fx/argv.log" <<'PY' || fail "curl's argv (above)"
+import json, os, sys
+runs = [json.loads(l) for l in open(sys.argv[1])]
+assert len(runs) > 20, "the fake curl hardly ran: %d" % len(runs)
+hidden = [os.environ["FAKE_TOKEN"], os.environ["FAKE_SIG"], "wrong.atlasv1.token"]
+for argv in runs:
+    bad = [a for a in argv if "://" in a or "bearer" in a.lower() or "authorization" in a.lower() or any(h in a for h in hidden)]
+    assert not bad, ("in argv", bad)
+PY
 [ -z "$(ls -A "$t/tmp")" ] || fail "left behind in TMPDIR: $(ls -A "$t/tmp")"
-echo "✓ recover_data_key_test: arguments and the token before any request, the token only in curl's config and only for app.terraform.io, the newest finalized version holding the root key, 0600 and never overwritten, --demo, --dry-run, a named version, the errors, nothing left behind"
+echo "✓ recover_data_key_test: arguments and the token before any request, the token and every URL only in curl's config (never in argv), the token only for app.terraform.io, the newest finalized version holding the root key, 0600 and never overwritten, excluded from Time Machine first (a failing tmutil only warns), --demo, --dry-run, a named version, the errors, nothing left behind"

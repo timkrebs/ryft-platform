@@ -1505,20 +1505,24 @@ run "unseal_key_in_another_account_fails_the_plan" {
   expect_failures = [helm_release.vault]
 }
 
-run "vault_extras_admits_vso_from_the_first_apply_and_the_role_names_the_pods" {
+run "vault_extras_closes_both_peers_by_default_and_the_role_names_the_pods" {
   command = plan
 
   assert {
     condition = (
-      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.vso.enabled == false &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.collector.enabled == false
     )
-    error_message = "VSO reaches 8200 from the first apply (D207: the only Vault, no cutover); both peers stay off in the chart's own defaults"
+    error_message = "VSO may not reach 8200 (PUT /v1/sys/init is unauthenticated before the init) until var.vault_vso_peer is set after the operator's own init; both peers stay off in the chart's own defaults"
   }
   assert {
     condition     = yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false
     error_message = "the collector may not reach 8200 (PUT /v1/sys/init is unauthenticated before the init) until var.vault_collector_peer is set after the operator's own init"
+  }
+  assert {
+    condition     = var.vault_vso_peer == false && var.vault_collector_peer == false
+    error_message = "both peer variables default to false: an apply from empty leaves 8200 closed to every other namespace until the operator's init"
   }
   assert {
     condition = (
@@ -1539,9 +1543,47 @@ run "vault_collector_peer_opens_only_the_collector" {
   assert {
     condition = (
       yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true &&
-      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false
     )
-    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO's rule as it is"
+    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO's rule closed"
+  }
+}
+
+run "vault_vso_peer_opens_only_vso" {
+  command = plan
+
+  variables {
+    vault_vso_peer = true
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false
+    )
+    error_message = "vault_vso_peer admits the Vault Secrets Operator (D207) and leaves the collector's rule closed"
+  }
+}
+
+# The tfvars edit after the bootstrap (OPERATIONS -> Vault -> Bootstrap): both true in one apply. vault.tf sets
+# `enabled` only, so the namespaces and pod labels stay the chart's (scripts/tests/vault_extras_chart_test.sh pins
+# the rules they render).
+run "both_peers_open_together" {
+  command = plan
+
+  variables {
+    vault_vso_peer       = true
+    vault_collector_peer = true
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true &&
+      tolist(keys(yamldecode(helm_release.vault_extras.values[0]).peers.vso)) == tolist(["enabled"]) &&
+      tolist(keys(yamldecode(helm_release.vault_extras.values[0]).peers.collector)) == tolist(["enabled"])
+    )
+    error_message = "both peer variables together admit VSO and the collector; vault.tf sets enabled only, so the chart keeps its own namespaces and labels"
   }
 }
 
