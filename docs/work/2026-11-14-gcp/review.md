@@ -19,6 +19,18 @@ One read-only review by security-privacy-reviewer of `design.md`, then a narrow 
 Verified as sound by the reviewer: secret-level bindings, D99 kept through one topic per key, the EU storage policy,
 and the data key's fingerprint step (the script hashes the value without a newline, as `versions access` returns it).
 
-## Re-check
+## Re-check (the same reviewer, read-only)
 
-See the PR's body for the result of the narrow re-check.
+B2, S3, S5, S6, S7, S8 and the notes are closed. Still open, now fixed:
+- **S4:** `migrate` sets every role's password on every run (`cmd/migrate/main.go`), so pins that differ between
+  `migrate.yaml` and `<svc>.yaml` would set a role back on the next deploy. Rotation is now one commit that moves both
+  pins, with a CI check that they agree, and `deploy.yml` runs migrate before the roll. The data key's fingerprint
+  check reads version `<N>`, not `latest` (§4, §5.3).
+- **B1:** Cloud Trace is named in the privacy draft's processor list (§8).
+- One-line edits: `API_KEY` added to the P5 check. `hcp-terraform-apply` named in "Left over". Cost-DoS split into
+  Cloud Run and Hosting (§5.2). `hosting:disable` takes the legal pages offline (§7). B0 gets the `verify-full` login
+  on both pooler ports (§10).
+
+The reviewer confirmed the replay statement: notify reads the score from the database, so an injected event can't
+put its own numbers into a push. Its verdict was "not ready until S4 is in", and S4 is now in. These last fixes
+weren't re-reviewed a second time.

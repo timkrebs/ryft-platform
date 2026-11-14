@@ -255,16 +255,20 @@ get a new data key, and the next cold start of a service would log in with a pas
 Failed logins trip Supavisor's circuit breaker for the **whole role** (`ECIRCUITBREAKER`, `SUPABASE.md`), not just one
 instance.
 
-**Rotation (`scripts/rotate_db_password.sh`, in OPERATIONS):**
-1. Add version N+1. Nothing reads it yet.
-2. Execute `migrate`, pinned to N+1 for that role: it runs `ALTER ROLE` with the SCRAM verifier.
-3. Deploy the service's revision pinned to N+1 (a commit to `deploy/run/<svc>.yaml`). Old instances keep their open
-   connections and drain.
+**Rotation is one commit.** `migrate` sets every role's password from `DB_PASSWORD_<SVC>` on **every** run
+(`cmd/migrate/main.go`). So if `deploy/run/migrate.yaml` and `deploy/run/<svc>.yaml` pinned different versions, the
+next deploy would set the role back while the service runs on the other version, and the breaker would trip for the
+whole role.
+1. Add version N+1 (`gcloud secrets versions add`; note the number it prints). Nothing reads it yet.
+2. **One commit** moves the pin from N to N+1 in both `migrate.yaml` and `<svc>.yaml`. `scripts/rotate_db_password.sh`
+   writes it, and a CI check fails when the two disagree.
+3. The merge's `deploy.yml` does the rest in its usual order: `migrate` runs `ALTER ROLE` with the SCRAM verifier,
+   then the service rolls to a revision on N+1. Old instances keep their open connections and drain.
 4. If `ECIRCUITBREAKER` appears, wait it out; never retry in a loop.
 5. After a day, disable version N.
 
-Between steps 2 and 3, old instances can't open new connections. Expect seconds to minutes, which is acceptable at
-pre-alpha.
+Between the migrate step and the roll, old instances can't open new connections. Expect seconds to a minute, which is
+acceptable at pre-alpha.
 
 ---
 
@@ -274,16 +278,16 @@ pre-alpha.
 
 | Layer | It gave | Replacement on GCP | Left over |
 |---|---|---|---|
-| **Vault** (D186–D211) | a KV per service, Kubernetes auth, generated values, audit devices | Secret Manager. Each service has its own SA (`ryft-api@`, …), with `secretmanager.secretAccessor` granted **on each secret**, never at project level. Cloud Run injects secrets as env at instance start, **pinned by version number** (§4). Audit: Cloud Audit Logs. Admin Activity is always on; **Data Access logs for `secretmanager.googleapis.com` are turned on** (tiny volume). Values are added by the user, not generated in state | Anyone with project Owner reads every secret (as Vault's root did). So does `hcp-terraform`: it can grant itself `secretAccessor`, so the HCP Terraform workspace counts as secret access. No dynamic secrets (we had none) |
-| **Admission** (D120, D180, D195) | Pod Security, image and namespace rules, Argo CD's scope | There are no pods to admit. Cloud Run sandboxes every container and can't run it privileged. **Deployer SA** `ryft-deployer` (WIF, §9): `run.developer` on the four services and two jobs, `iam.serviceAccountUser` on the five runtime SAs only, `artifactregistry.writer` on the one repository. It has no IAM rights, so it can't make scoring public. That rests on `run.developer` being unable to set `invoker-iam-disabled` *(unchecked)*, which is one more reason the in-app OIDC check runs on all four services. The **WIF condition uses IDs, not names**: `repository_id`, `repository_owner_id`, `ref == refs/heads/main`, `event_name == push`, `environment == deploy`, and `job_workflow_ref == timkrebs/ryft-platform/.github/workflows/deploy.yml@refs/heads/main`. So no other workflow on main can deploy, whatever `check_workflows.sh` says. Images are deployed by digest. **P5 (`p05-auth-env`) moves into the code:** `config.LoadAuth` refuses `AUTH_MODE=apikey`, `ALLOW_INSECURE_APIKEY_AUTH` and `USER_ID` whenever `K_SERVICE` or `CLOUD_RUN_JOB` is set (with a test), and a CI check rejects those names in `deploy/run/*.yaml` | **Binary Authorization isn't used** (its price on Cloud Run is *(unchecked)*). A compromised main or `deploy` environment can deploy any image, and the deployer could swap one runtime SA for another of the five. The service YAML in git is reviewed, and branch protection is the control |
+| **Vault** (D186–D211) | a KV per service, Kubernetes auth, generated values, audit devices | Secret Manager. Each service has its own SA (`ryft-api@`, …), with `secretmanager.secretAccessor` granted **on each secret**, never at project level. Cloud Run injects secrets as env at instance start, **pinned by version number** (§4). Audit: Cloud Audit Logs. Admin Activity is always on; **Data Access logs for `secretmanager.googleapis.com` are turned on** (tiny volume). Values are added by the user, not generated in state | Anyone with project Owner reads every secret (as Vault's root did). So does `hcp-terraform-apply`: it can grant itself `secretAccessor`, so the HCP Terraform workspace counts as secret access. No dynamic secrets (we had none) |
+| **Admission** (D120, D180, D195) | Pod Security, image and namespace rules, Argo CD's scope | There are no pods to admit. Cloud Run sandboxes every container and can't run it privileged. **Deployer SA** `ryft-deployer` (WIF, §9): `run.developer` on the four services and two jobs, `iam.serviceAccountUser` on the five runtime SAs only, `artifactregistry.writer` on the one repository. It has no IAM rights, so it can't make scoring public. That rests on `run.developer` being unable to set `invoker-iam-disabled` *(unchecked)*, which is one more reason the in-app OIDC check runs on all four services. The **WIF condition uses IDs, not names**: `repository_id`, `repository_owner_id`, `ref == refs/heads/main`, `event_name == push`, `environment == deploy`, and `job_workflow_ref == timkrebs/ryft-platform/.github/workflows/deploy.yml@refs/heads/main`. So no other workflow on main can deploy, whatever `check_workflows.sh` says. Images are deployed by digest. **P5 (`p05-auth-env`) moves into the code:** `config.LoadAuth` refuses `AUTH_MODE=apikey`, `ALLOW_INSECURE_APIKEY_AUTH`, `API_KEY` and `USER_ID` whenever `K_SERVICE` or `CLOUD_RUN_JOB` is set (with a test), and a CI check rejects those names in `deploy/run/*.yaml` | **Binary Authorization isn't used** (its price on Cloud Run is *(unchecked)*). A compromised main or `deploy` environment can deploy any image, and the deployer could swap one runtime SA for another of the five. The service YAML in git is reviewed, and branch protection is the control |
 | **NetworkPolicies** (D16, D185) | default deny; ingress only from Traefik; egress per service | **Ingress:** api and ingest public (`allUsers` invoker). Scoring and notify require IAM: only `ryft-push` can invoke. Whether `ingress=internal` admits Pub/Sub push is *(unchecked)*, so ingress stays `all` and IAM plus the in-app OIDC check is the boundary. **Service to service:** none. Only Pub/Sub calls scoring and notify | **Egress is unrestricted.** Limiting it needs Direct VPC egress, firewall rules and Cloud NAT (paid), and FQDN rules need Cloud NGFW (paid). Supabase's network restrictions can't be used either (egress addresses are dynamic) |
 | **mTLS to RabbitMQ** (D98) and D99's rights | broker identity, per-key publish rights | Google API TLS + per-SA OAuth tokens. One topic per key keeps the publish matrix (§2.1). Nobody holds `subscriber` except the Pub/Sub agent and the operator (DLQ hold subscriptions) | — |
 | **Traefik's limiter** (D155) | per-address limit keyed by the address Traefik appends | `httpx.ClientIP` takes the rightmost `X-Forwarded-For` entry. Google's front end appends the client address *(unchecked)*. B0 sends a request with a forged `X-Forwarded-For` to both hosts from a known address: if Google appends a hop of its own, every client shares one bucket, and `ClientIP` has to skip it. Domain mappings probably publish AAAA *(unchecked)*. The admin limiter's map has no cap, which `adminauth.go` says it needs before IPv6 clients arrive, and one /48 is about 65k /64 keys. **PR A caps it** | **Limits are per instance** and reset at a cold start. The aggregate is bounded by limit × max-instances |
 
 ### 5.2 Honest gaps (free tier only)
 
-- **No Cloud Armor, no WAF.** Google's front end gives basic DDoS protection only. Cost-DoS is bounded by
-  `max-instances` and the budget alert (§7).
+- **No Cloud Armor, no WAF.** Google's front end gives basic DDoS protection only. For Cloud Run, cost-DoS is
+  bounded by `max-instances` and the budget alert. For Hosting, it is bounded by the stop line (§7).
 - **No organisation** (a personal billing account), so no org policies: no resource-location constraint, and no
   `iam.disableServiceAccountKeyCreation`. The rule is "no SA keys" except one (next point), and the runbook checks it
   (`gcloud iam service-accounts keys list` per SA).
@@ -306,8 +310,8 @@ entirely:
 2. Add it: `gcloud secrets versions add data-key --data-file="$HOME/.config/ryft/data-key-api"`. The secret is in
    europe-west1. `prevent_destroy` is set on the container, and a delayed version destroy is set if the provider
    offers it *(unchecked)*.
-3. Compare without printing:
-   `gcloud secrets versions access latest --secret=data-key | shasum -a 256 | cut -c1-16`
+3. Compare without printing, using the version number `add` printed, which `deploy/run/api.yaml` then pins:
+   `gcloud secrets versions access <N> --secret=data-key | shasum -a 256 | cut -c1-16`
    must equal the script's fingerprint. If it differs, stop.
 4. Keep the value in 1Password as the second copy (Secret Manager's destroy is final), then delete the local file.
    `rm -P` overwrites nothing on APFS, so a deleted file's blocks remain until reused. FileVault is what protects them.
@@ -415,7 +419,8 @@ catches it.
   - `gcloud run services remove-iam-policy-binding api --member=allUsers --role=roles/run.invoker`, and the same for
     ingest;
   - `firebase hosting:disable`, because max-instances doesn't bound Hosting's egress, and a project with billing is on
-    the Blaze plan, so Spark's caps don't apply;
+    the Blaze plan, so Spark's caps don't apply. This also takes `/privacy` and `/impressum` offline, so no new tester
+    or App Review sign-in until the site is back (§8, REBUILD step 12);
   - set `public_invokers = false` in `infra/gcp`'s tfvars before the next apply, which would otherwise add `allUsers`
     back.
 - Budgets don't cap spending, and billing data lags by hours *(unchecked)*. Max-instances is the hard cap for Cloud
@@ -464,7 +469,8 @@ before any tester signs in.
 - It stays a draft PR, because a draft version on main blocks every deploy (STATUS, F1).
 - Changes:
   - **Google Cloud replaces Amazon Web Services** as processor: Cloud Run, Pub/Sub, Secret Manager, Cloud Logging,
-    Cloud DNS and Firebase Hosting. The location is Belgium (europe-west1), with the website served worldwide from the
+    Cloud Trace (request paths and timings of sampled requests; its location is *unchecked*), Cloud DNS and Firebase
+    Hosting. The location is Belgium (europe-west1), with the website served worldwide from the
     CDN. The terms are Google's Cloud Data Processing Addendum, plus Firebase's Data Processing and Security Terms for
     Hosting *(which terms apply to Hosting is unchecked)*, with the EU-U.S. Data Privacy Framework plus SCCs for any
     access from the US.
@@ -534,7 +540,7 @@ still serves the M365 mail. A NAT gateway alone costs money every hour.
 | # | PR | Size | Contents | After it, the user |
 |---|---|---|---|---|
 | — | **#161** | — | the user's call (§13). Recommended: merge it as it is (reviewed; it applies nothing without a cluster). It carries D207–D215, the domain cut and `recover_data_key.sh`, and the D numbers stay contiguous | — |
-| B0 | a commit on this branch once web access is allowed (docs only) | S | check every *(unchecked)* figure against the live pages, with dates, and update §1, §3, §7 | — |
+| B0 | a commit on this branch once web access is allowed (docs only) | S | check every *(unchecked)* figure against the live pages, with dates, and update §1, §3, §7. Also: a `verify-full` login on 6543 and 5432 (whether the pooler's certificate matches Supabase's CA and host name is unchecked, and a mismatch fails closed), the session-state grep (§4), and the forged-XFF and 33 MiB tests once a test service runs | — |
 | A | `backend: Pub/Sub and Cloud Run` | **XL** (~3–4k lines with tests) | §2.3, §3, §4's DSN and `PGPASSWORD`, h2c, OIDC, OTLP, slog, the outbox migration (`available_at`), compose with the emulator, `cmd/pubsub-topology`, amqpbus and RabbitMQ deleted. `API.md` Base URLs (api-contract-owner), `MESSAGING_DESIGN.md` rewritten, DECISIONS D216–D227. Deploys nothing | — |
 | B | `infra, deploy: GCP and the deploy workflow` | **L** | `infra/gcp` (prepared, `terraform test`, never applied), `deploy/run/*`, `deploy.yml` (off until the variable `GCP_DEPLOY=on`), `PRIVACY_POLICY_VERSION`'s new home and its checks, alert rules, `OPERATIONS.md` → GCP. Disjoint from A, so it is built in parallel | runbook steps 1–8 (§11) |
 | C1 | `web: Firebase Hosting` | M | §8, merged before the testers return | step 9 |
