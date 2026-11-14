@@ -21,7 +21,8 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
   - P5 (design §5.1): none of AUTH_MODE=apikey, ALLOW_INSECURE_APIKEY_AUTH, API_KEY, USER_ID,
     ALLOW_INSECURE_PUSH or PORT anywhere;
   - keys only from an allowlist (no envFrom, command, args, volumes, extra annotations such as
-    default-url-disabled or invoker-iam-disabled), no anchors, merge keys or duplicate keys.
+    default-url-disabled or invoker-iam-disabled), no anchors or aliases (as yq parses them: an `&`
+    or `*` inside a value or a comment is text), merge keys or duplicate keys.
 Exit 0 clean, 1 a finding, 2 it cannot run (no yq, no python3 renderer). The fake values are built
 here at run time; none of them is a credential.
 """
@@ -154,6 +155,23 @@ def yq_json(yq, expr, path):
     return out
 
 
+def yq_print(yq, expr, path):
+    """yq's YAML print of the document after expr, comments included; None when yq fails."""
+    r = subprocess.run([yq, "-o=yaml", expr, str(path)], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def anchor_names(yq, path):
+    """The anchors yq parsed (`anchor` is a node's own, "" for none), for the message only."""
+    r = subprocess.run([yq, "-o=json", "-I=0", '[... | select(anchor != "") | anchor] | unique', str(path)],
+                       capture_output=True, text=True)
+    try:
+        names = json.loads(r.stdout) if r.returncode == 0 else []
+    except json.JSONDecodeError:
+        return []
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
 def load(yq, path):
     """One YAML document as JSON, refusing anchors, aliases, merge keys, custom tags and duplicates."""
     docs = yq_json(yq, ".", path)
@@ -167,9 +185,17 @@ def load(yq, path):
     bad = sorted({t for t in tags[0] if t not in ("!!map", "!!seq", "!!str", "!!int", "!!bool", "!!null")})
     if bad:
         fail(path.name, f"YAML tags not allowed: {', '.join(bad)} (merge keys, binary and custom tags)")
-    anchors = yq_json(yq, '[... | select(anchor != "" or alias != "")] | length', path)
-    if anchors != [0]:
-        fail(path.name, "anchors and aliases are not allowed (gcloud and yq may read them differently)")
+    # Anchors and aliases are events of the YAML parser, not characters: the `&` of DATABASE_URL's query
+    # string, or `*.run.app` in a quoted value or a comment, is text. explode() replaces every alias with
+    # what it names, resolves merge keys and drops every anchor, and touches nothing else, so a document
+    # without any prints the same before and after it. (yq's `alias` is no test: on a scalar it returns
+    # the scalar's value, so `alias != ""` held for every template. An alias without its anchor does not
+    # parse at all: yq_json above has reported it.)
+    as_read, exploded = yq_print(yq, ".", path), yq_print(yq, "explode(.)", path)
+    if as_read is None or exploded is None or as_read != exploded:
+        names = anchor_names(yq, path)
+        fail(path.name, "anchors and aliases are not allowed (gcloud and yq may read them differently)"
+             + (f": {', '.join('&' + n for n in names)}" if names else ""))
     return docs[0]
 
 

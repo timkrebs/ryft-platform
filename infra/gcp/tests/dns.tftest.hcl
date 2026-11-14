@@ -18,6 +18,24 @@ override_data {
   }
 }
 
+# Cloud Run fills in a domain mapping's status only at apply, so with serve = true checks.tf's
+# domain_mappings_ready is unknown in a plan, and an unknown check fails the run. Mocked as a Ready
+# mapping with the one CNAME Cloud Run returns for a subdomain (dns.tf's records read it); the per-host
+# fields nothing reads stay empty. In every test file: once gates.auto.tfvars says serve = true, every
+# run without its own serve plans the mappings.
+override_resource {
+  target          = google_cloud_run_domain_mapping.host
+  override_during = plan
+  values = {
+    status = [{
+      conditions          = [{ type = "Ready", status = "True", reason = "", message = "" }]
+      mapped_route_name   = ""
+      observed_generation = 1
+      resource_records    = [{ name = "", type = "CNAME", rrdata = "ghs.googlehosted.com." }]
+    }]
+  }
+}
+
 variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
@@ -72,12 +90,12 @@ run "caa_set_at_the_apex" {
 
   # RFC 8659: a `*.` CAA set would answer for every name that does not exist.
   assert {
-    condition     = length(regexall("name\\s*=\\s*\"\\*\\.", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    condition     = length(regexall("(?m)^\\s*name\\s*=\\s*\"\\*\\.", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     error_message = "no wildcard record set: the apex CAA set covers every name"
   }
 
   assert {
-    condition     = length(regexall("type\\s*=\\s*\"CAA\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    condition     = length(regexall("(?m)^\\s*type\\s*=\\s*\"CAA\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     error_message = "exactly one CAA record set in the root"
   }
 }

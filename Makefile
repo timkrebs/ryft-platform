@@ -62,9 +62,17 @@ smoke-hook:
 	  -e SMOKE_TOKEN=$${API_KEY:-dev-api-key-change-me}:$$(python3 -c 'import uuid; print(uuid.uuid4())') \
 	  migrate smoke
 
-# The operator scripts (scripts/tests): a fake kubectl, and the compose api when it is up.
+# The operator scripts (scripts/tests): a fake kubectl, and the compose api when it is up. Every test
+# runs, also after one has failed; the target fails at the end and names each failed test, so one CI
+# round shows all of them.
 test-scripts:
-	@set -e; for t in scripts/tests/*_test.sh; do bash "$$t"; done
+	@failed=; n=0; for t in scripts/tests/*_test.sh; do n=$$((n + 1)); bash "$$t" || failed="$$failed $$t"; done; \
+	if [ -n "$$failed" ]; then \
+	  echo "✗ test-scripts: $$(echo $$failed | wc -w | tr -d ' ') of $$n failed:" >&2; \
+	  for t in $$failed; do echo "  $$t" >&2; [ "$${GITHUB_ACTIONS:-}" != true ] || echo "::error title=test-scripts::$$t failed"; done; \
+	  exit 1; \
+	fi; \
+	echo "✓ test-scripts: all $$n passed"
 
 # After a production deploy (docs/OPERATIONS.md → Deploy and roll back): the edge, the
 # dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
@@ -216,7 +224,9 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 # ryft.yaml is RYFT on Cloud Run, the only file alerts-apply loads. eks-admission.yaml and
 # admission-intended.yaml are the EKS cluster's admission rules, checked here (with their tests) until
 # the EKS removal (D3) and never loaded; alerts-retire-eks deletes their live copies and the old Vault
-# group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers).
+# group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers). mimirtool checks each file in
+# a run of its own: eks-admission.yaml keeps the live namespace ryft, ryft.yaml's (loaded by hand it
+# replaces the live group, never a copy beside it), and one mimirtool run refuses a namespace twice.
 PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 ALERT_FILES := ryft eks-admission admission-intended
@@ -233,7 +243,9 @@ alerts-check:
 	cp deploy/grafana/alerts/ryft.test.yaml deploy/grafana/alerts/eks-admission.test.yaml "$$d/"; chmod a+r "$$d"/*; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules $(foreach f,$(ALERT_FILES),/rules/$(f).rules.yaml); \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml /rules/eks-admission.test.yaml; \
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check $(foreach f,$(ALERT_FILES),/alerts/$(f).yaml)
+	for f in $(ALERT_FILES); do \
+	  $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/$$f.yaml || exit 1; \
+	done
 
 # Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
 # profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or

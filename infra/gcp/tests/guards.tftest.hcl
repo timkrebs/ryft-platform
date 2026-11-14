@@ -19,6 +19,24 @@ override_data {
   }
 }
 
+# Cloud Run fills in a domain mapping's status only at apply, so with serve = true checks.tf's
+# domain_mappings_ready is unknown in a plan, and an unknown check fails the run. Mocked as a Ready
+# mapping with the one CNAME Cloud Run returns for a subdomain (dns.tf's records read it); the per-host
+# fields nothing reads stay empty. In every test file: once gates.auto.tfvars says serve = true, every
+# run without its own serve plans the mappings.
+override_resource {
+  target          = google_cloud_run_domain_mapping.host
+  override_during = plan
+  values = {
+    status = [{
+      conditions          = [{ type = "Ready", status = "True", reason = "", message = "" }]
+      mapped_route_name   = ""
+      observed_generation = 1
+      resource_records    = [{ name = "", type = "CNAME", rrdata = "ghs.googlehosted.com." }]
+    }]
+  }
+}
+
 variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
@@ -28,14 +46,15 @@ variables {
 run "no_key_and_no_secret_value_in_state" {
   command = plan
 
+  # Blocks only: a comment may name them (iam.tf and secrets.tf do, to say there are none).
   assert {
-    condition     = length(regexall("google_service_account_key", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
-    error_message = "no google_service_account_key (resource or data source) in any file: a key would put the private key into the state"
+    condition     = length(regexall("(?m)^\\s*(resource|data)\\s+\"google_service_account_key", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    error_message = "no google_service_account_key resource or data block in any file: a key would put the private key into the state"
   }
 
   assert {
-    condition     = length(regexall("secret_manager_(regional_)?secret_version", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
-    error_message = "no google_secret_manager_secret_version (resource or data source): values never pass through state"
+    condition     = length(regexall("(?m)^\\s*(resource|data)\\s+\"google_secret_manager_(regional_)?secret_version", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    error_message = "no google_secret_manager_(regional_)secret_version* resource or data block (_access included): values never pass through state"
   }
 }
 
@@ -44,20 +63,20 @@ run "prevent_destroy_and_delayed_destruction" {
 
   assert {
     condition = (
-      length(regexall("prevent_destroy\\s*=\\s*true", file("${path.module}/secrets.tf"))) == 1 &&
-      length(regexall("version_destroy_ttl\\s*=\\s*\"2592000s\"", file("${path.module}/secrets.tf"))) == 1 &&
-      length(regexall("prevent_destroy\\s*=\\s*true", file("${path.module}/dns.tf"))) == 1
+      length(regexall("(?m)^\\s*prevent_destroy\\s*=\\s*true", file("${path.module}/secrets.tf"))) == 1 &&
+      length(regexall("(?m)^\\s*version_destroy_ttl\\s*=\\s*\"2592000s\"", file("${path.module}/secrets.tf"))) == 1 &&
+      length(regexall("(?m)^\\s*prevent_destroy\\s*=\\s*true", file("${path.module}/dns.tf"))) == 1
     )
     error_message = "the secrets and the zone keep prevent_destroy; the secrets keep the 30-day destroy delay"
   }
 
   assert {
-    condition     = length(regexall("resource \"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     error_message = "one google_secret_manager_secret block (the one with prevent_destroy)"
   }
 
   assert {
-    condition     = length(regexall("resource \"google_dns_managed_zone\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_dns_managed_zone\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     error_message = "one zone (the one with prevent_destroy)"
   }
 
@@ -154,13 +173,13 @@ run "logs_in_the_eu_for_14_days" {
   assert {
     condition = (
       google_logging_project_sink.ryft_logs.destination == "logging.googleapis.com/projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs" &&
-      length(regexall("filter\\s*=", file("${path.module}/logging.tf"))) == 0
+      length(regexall("(?m)^\\s*filter\\s*=", file("${path.module}/logging.tf"))) == 0
     )
     error_message = "the sink routes everything (no filter) into ryft-logs"
   }
 
   assert {
-    condition     = length(regexall("import\\s*\\{", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    condition     = length(regexall("(?m)^\\s*import\\s*\\{", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     error_message = "no import block: _Default is switched off by the runbook's gcloud command (logging.tf)"
   }
 }

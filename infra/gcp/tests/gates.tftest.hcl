@@ -24,6 +24,24 @@ override_data {
   }
 }
 
+# Cloud Run fills in a domain mapping's status only at apply, so with serve = true checks.tf's
+# domain_mappings_ready is unknown in a plan, and an unknown check fails the run. Mocked as a Ready
+# mapping with the one CNAME Cloud Run returns for a subdomain (dns.tf's records read it); the per-host
+# fields nothing reads stay empty. In every test file: once gates.auto.tfvars says serve = true, every
+# run without its own serve plans the mappings.
+override_resource {
+  target          = google_cloud_run_domain_mapping.host
+  override_during = plan
+  values = {
+    status = [{
+      conditions          = [{ type = "Ready", status = "True", reason = "", message = "" }]
+      mapped_route_name   = ""
+      observed_generation = 1
+      resource_records    = [{ name = "", type = "CNAME", rrdata = "ghs.googlehosted.com." }]
+    }]
+  }
+}
+
 variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
@@ -164,9 +182,9 @@ run "apply_2_serve_true_public_true" {
       toset(keys(google_dns_record_set.mapping)) == toset(["api", "ingest"]) &&
       google_dns_record_set.mapping["api"].name == "api.ryftlab.de." &&
       google_dns_record_set.mapping["ingest"].name == "ingest.ryftlab.de." &&
-      alltrue([for r in google_dns_record_set.mapping : r.type == "CNAME"])
+      alltrue([for r in google_dns_record_set.mapping : r.type == "CNAME" && r.rrdatas == tolist(["ghs.googlehosted.com."])])
     )
-    error_message = "apply 2: one CNAME per mapped host, from the mapping's status"
+    error_message = "apply 2: one CNAME per mapped host, its target read from the mapping's (mocked) status"
   }
 
   assert {
@@ -245,9 +263,9 @@ run "invokers_only_through_the_binding" {
 
   assert {
     condition = (
-      length(regexall("\"roles/run\\.invoker\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
-      length(regexall("resource \"google_cloud_run_v2_service_iam_binding\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
-      length(regexall("google_cloud_run_(v2_)?(service|job)_iam_policy|google_cloud_run_service_iam_", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+      length(regexall("(?m)^[^#\\n]*\"roles/run\\.invoker\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^\\s*resource\\s+\"google_cloud_run_v2_service_iam_binding\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^\\s*(resource|data)\\s+\"(google_cloud_run_(v2_)?(service|job)_iam_policy|google_cloud_run_service_iam_)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     )
     error_message = "run.invoker only in google_cloud_run_v2_service_iam_binding.invoker; no Cloud Run IAM policy resource, no v1 Cloud Run IAM resource"
   }

@@ -8,16 +8,21 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 A=$HERE/deploy/grafana/alerts
 fail() { echo "✗ alerts_retire_test: $*" >&2; exit 1; }
-# groups <file>: namespace/group for each group of a rule file (the layout every file here has).
+# groups <file> [<namespace>]: namespace/group for each group of a rule file (the layout every file here
+# has), in the file's own namespace unless one is given.
 groups() {
-  local ns g
-  ns=$(sed -n 's/^namespace:[[:space:]]*//p' "$1")
+  local ns=${2:-} g
+  [ -n "$ns" ] || ns=$(sed -n 's/^namespace:[[:space:]]*//p' "$1")
   [ -n "$ns" ] || fail "$1 has no namespace: line"
   while read -r g; do printf '%s/%s\n' "$ns" "$g"; done < <(sed -n 's/^  - name:[[:space:]]*//p' "$1")
 }
 flat() { tr '\n' ' ' <<<"$1" | sed 's/ *$//'; }
 
-want=$({ groups "$A/eks-admission.yaml"; groups "$A/admission-intended.yaml"; echo ryft/ryft-vault; } | sort -u)
+# The live names are where alerts-apply loaded the groups on EKS: eks-admission.yaml's groups were
+# ryft.yaml's, in namespace ryft, whatever namespace the file names now (mimirtool checks it in a run
+# of its own); admission-intended.yaml was loaded with its own.
+live=ryft
+want=$({ groups "$A/eks-admission.yaml" "$live"; groups "$A/admission-intended.yaml"; echo "$live/ryft-vault"; } | sort -u)
 have=$(sed -n 's/^EKS_RULE_GROUPS[[:space:]]*:=[[:space:]]*//p' "$HERE/Makefile" | tr -s ' ' '\n' | sed '/^$/d' | sort -u)
 [ "$(grep -c . <<<"$want")" = 3 ] || fail "fixture: want three leftover groups, the files give [$(flat "$want")]"
 [ "$have" = "$want" ] || fail "EKS_RULE_GROUPS in the Makefile is [$(flat "$have")], want [$(flat "$want")]"

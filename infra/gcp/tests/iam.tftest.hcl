@@ -16,6 +16,24 @@ override_data {
   }
 }
 
+# Cloud Run fills in a domain mapping's status only at apply, so with serve = true checks.tf's
+# domain_mappings_ready is unknown in a plan, and an unknown check fails the run. Mocked as a Ready
+# mapping with the one CNAME Cloud Run returns for a subdomain (dns.tf's records read it); the per-host
+# fields nothing reads stay empty. In every test file: once gates.auto.tfvars says serve = true, every
+# run without its own serve plans the mappings.
+override_resource {
+  target          = google_cloud_run_domain_mapping.host
+  override_during = plan
+  values = {
+    status = [{
+      conditions          = [{ type = "Ready", status = "True", reason = "", message = "" }]
+      mapped_route_name   = ""
+      observed_generation = 1
+      resource_records    = [{ name = "", type = "CNAME", rrdata = "ghs.googlehosted.com." }]
+    }]
+  }
+}
+
 variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
@@ -111,9 +129,9 @@ run "secret_accessors_exactly" {
   # authoritative project IAM resource exists (it would also wipe the bootstrap's bindings).
   assert {
     condition = (
-      length(regexall("secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
-      length(regexall("resource \"google_project_iam_(binding|policy)\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
-      length(regexall("google_secret_manager_secret_iam_(member|policy)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+      length(regexall("(?m)^[^#\\n]*secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_(binding|policy)\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
+      length(regexall("(?m)^\\s*(resource|data)\\s+\"google_secret_manager_secret_iam_(member|policy)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     )
     error_message = "secretAccessor only on each secret, authoritatively; no project-level grant, no project IAM binding or policy"
   }
@@ -146,7 +164,7 @@ run "data_access_audit_logs" {
   }
 
   assert {
-    condition     = length(regexall("resource \"google_project_iam_audit_config\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_audit_config\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     error_message = "one audit config resource (data_read)"
   }
 }
@@ -237,9 +255,10 @@ run "deployer_holds_no_iam_admin_role" {
     error_message = "the deployer holds exactly run.developer, serviceAccountUser (runtime accounts) and artifactregistry.writer"
   }
 
-  # No binding elsewhere names the deployer: exactly the five above reference its member.
+  # No binding elsewhere names the deployer: exactly the five above reference its member (code lines;
+  # a # comment may name it).
   assert {
-    condition     = length(regexall("member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 5
+    condition     = length(regexall("(?m)^[^#\\n]*member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 5
     error_message = "the deployer's member appears in exactly five bindings (run.developer project-wide, on the services, on the job; actAs; the repository)"
   }
 
@@ -260,7 +279,7 @@ run "deployer_holds_no_iam_admin_role" {
     condition = (
       google_project_iam_member.grafana_reader.role == "roles/monitoring.viewer" &&
       google_project_iam_member.grafana_reader.member == "serviceAccount:grafana-reader@ryftlab-prod.iam.gserviceaccount.com" &&
-      length(regexall("member\\[\"grafana-reader\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+      length(regexall("(?m)^[^#\\n]*member\\[\"grafana-reader\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     )
     error_message = "grafana-reader holds monitoring.viewer and nothing else"
   }

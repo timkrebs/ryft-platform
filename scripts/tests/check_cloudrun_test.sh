@@ -72,12 +72,16 @@ pinkey() {
   mv "$d/$1.new" "$d/$1"
 }
 pin_of() { sed -nE "s/.*name: $2, key: \"([0-9]+)\".*/\1/p" "$d/$1"; }
-# bad <what> <text>: the check fails on the copy (exit 1) and names <text>; then a fresh copy.
+# bad <what> <text> [<not>]: the check fails on the copy (exit 1), names <text> (and not <not>); then a
+# fresh copy.
 bad() {
   local rc=0 out
   out=$(check --dir "$d" 2>&1) || rc=$?
   [ "$rc" = 1 ] || fail "$1: want exit 1, got $rc: $out"
   case $out in *"$2"*) ;; *) fail "$1: the findings do not say '$2': $out" ;; esac
+  if [ -n "${3:-}" ]; then
+    case $out in *"$3"*) fail "$1: the findings say '$3': $out" ;; esac
+  fi
   fresh
 }
 ok() {
@@ -227,6 +231,21 @@ rm "$d/notify.yaml"
 bad "a missing template" "notify.yaml: missing"
 edit api.yaml 'limits: {' 'limits: {' 'limits: &l {'
 bad "an anchor" "anchors and aliases are not allowed"
+# Anchors and aliases as the parser sees them: the two probes sharing one httpGet through &probe and
+# *probe (the same values once resolved), and an alias without its anchor (which does not parse).
+edit_next api.yaml 'startupProbe:' 'httpGet: {' 'httpGet: &probe {'
+edit_next api.yaml 'livenessProbe:' 'httpGet: { path: /health/live, port: 8080 }' 'httpGet: *probe'
+bad "an anchor and its alias" "anchors and aliases are not allowed"
+edit_next api.yaml 'livenessProbe:' 'httpGet: { path: /health/live, port: 8080 }' 'httpGet: *probe'
+bad "an alias without its anchor" "api.yaml: yq cannot parse it"
+# `&` and `*` inside a comment or a quoted value are text (so is the rendered DATABASE_URL's query
+# string, `...&sslrootcert=...&default_query_exec_mode=exec`, with which every copy above passes).
+add api.yaml 'name: LOG_LEVEL,' '# &a and *a here are a comment, as is https://*.run.app/?a=1&b=2'
+edit api.yaml 'name: AUTH_MODE,' 'value: supabase }' 'value: supabase }  # *.run.app, &a, *a'
+ok "& and * in comments"
+edit api.yaml 'PRIVACY_POLICY_URL' '"https://ryftlab.de/privacy"' '"&a *a https://*.run.app/?a=1&b=2"'
+bad "& and * in a quoted value (a wrong value, no anchor)" "PRIVACY_POLICY_URL='&a *a https://*.run.app/?a=1&b=2', want" \
+  "anchors and aliases"
 edit api.yaml 'timeoutSeconds: 60' '60' '!!float 60'
 bad "a float tag" "YAML tags not allowed: !!float"
 edit api.yaml 'limits: {' '{ cpu: "1",' '{ <<: { cpu: "1" },'
@@ -244,4 +263,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

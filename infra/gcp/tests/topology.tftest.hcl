@@ -1,6 +1,8 @@
 # The topology variables' validations, each against a small topology that breaks one rule. A run that
-# replaces one collection keeps the file-level others; where the collections' validations read each
-# other, the run expects both to fail. Plan-only, mocked.
+# replaces one collection keeps the file-level others. A validation that reads another variable runs
+# only once that variable's own validations have passed (push subscriptions read the topics, hold
+# subscriptions read the push subscriptions), so a run expects exactly the first collection in that
+# order that breaks a rule: the ones after it are never checked, and are not listed. Plan-only, mocked.
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -15,6 +17,24 @@ override_data {
   target = data.google_project.this
   values = {
     number = "123456789012"
+  }
+}
+
+# Cloud Run fills in a domain mapping's status only at apply, so with serve = true checks.tf's
+# domain_mappings_ready is unknown in a plan, and an unknown check fails the run. Mocked as a Ready
+# mapping with the one CNAME Cloud Run returns for a subdomain (dns.tf's records read it); the per-host
+# fields nothing reads stay empty. In every test file: once gates.auto.tfvars says serve = true, every
+# run without its own serve plans the mappings.
+override_resource {
+  target          = google_cloud_run_domain_mapping.host
+  override_during = plan
+  values = {
+    status = [{
+      conditions          = [{ type = "Ready", status = "True", reason = "", message = "" }]
+      mapped_route_name   = ""
+      observed_generation = 1
+      resource_records    = [{ name = "", type = "CNAME", rrdata = "ghs.googlehosted.com." }]
+    }]
   }
 }
 
@@ -135,7 +155,7 @@ run "rejects_a_tick_on_a_push_path" {
   expect_failures = [var.pubsub_push_subscriptions]
 }
 
-# The DLQ is the source topic itself: refused, and the hold no longer reads a DLQ.
+# The DLQ is the source topic itself: refused. The hold, now on no DLQ, is never checked (see the top).
 run "rejects_a_dead_letter_topic_equal_to_its_source" {
   command = plan
 
@@ -153,7 +173,7 @@ run "rejects_a_dead_letter_topic_equal_to_its_source" {
     }
   }
 
-  expect_failures = [var.pubsub_push_subscriptions, var.pubsub_hold_subscriptions]
+  expect_failures = [var.pubsub_push_subscriptions]
 }
 
 run "rejects_a_dead_letter_topic_not_in_the_map" {
@@ -173,7 +193,7 @@ run "rejects_a_dead_letter_topic_not_in_the_map" {
     }
   }
 
-  expect_failures = [var.pubsub_push_subscriptions, var.pubsub_hold_subscriptions]
+  expect_failures = [var.pubsub_push_subscriptions]
 }
 
 run "rejects_an_event_subscription_without_a_dead_letter_topic" {
@@ -193,7 +213,7 @@ run "rejects_an_event_subscription_without_a_dead_letter_topic" {
     }
   }
 
-  expect_failures = [var.pubsub_push_subscriptions, var.pubsub_hold_subscriptions]
+  expect_failures = [var.pubsub_push_subscriptions]
 }
 
 run "rejects_a_hold_subscription_on_a_topic_that_is_no_dlq" {

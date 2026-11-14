@@ -5,7 +5,9 @@
 # mimirtool, the 20-rule limit) and runs its unit tests (eks-admission.test.yaml), until the EKS
 # removal (D3) deletes it with admission-intended.yaml and the chart. Namespace and group are the
 # live ones, so loading it by hand while EKS still runs changes nothing on the live copy;
-# `make alerts-retire-eks` deletes the live copy (OBSERVABILITY.md → Alerts → EKS leftovers).
+# `make alerts-retire-eks` deletes the live copy (OBSERVABILITY.md → Alerts → EKS leftovers). The
+# namespace is ryft.yaml's too, so mimirtool checks each file in a run of its own (one run refuses a
+# namespace twice).
 namespace: ryft
 groups:
   # ---- admission policies (T12-e, D120) ---------------------------------------------------
