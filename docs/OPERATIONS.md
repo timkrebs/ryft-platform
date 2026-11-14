@@ -152,7 +152,7 @@ gcloud services list --enabled --project="$P" --format='value(config.name)'
 tfc_auth() { jq -r '"Authorization: Bearer " + .credentials["app.terraform.io"].token' ~/.terraform.d/credentials.tfrc.json; }
 API=https://app.terraform.io/api/v2; CT='Content-Type: application/vnd.api+json'
 tfc_auth | curl -sS -H @- -H "$CT" -X POST "$API/organizations/ryft-lab/workspaces" \
-  --data '{"data":{"type":"workspaces","attributes":{"name":"ryft-gcp","execution-mode":"remote","auto-apply":false,"terraform-version":"1.16.6"}}}' \
+  --data '{"data":{"type":"workspaces","attributes":{"name":"ryft-gcp","execution-mode":"remote","auto-apply":false,"terraform-version":"1.16.7"}}}' \
   | jq -r '.data.id // .errors'
 WS_ID=$(tfc_auth | curl -sS -H @- "$API/organizations/ryft-lab/workspaces/ryft-gcp" | jq -r .data.id)
 echo "$WS_ID"                                       # ws-…
@@ -227,7 +227,7 @@ terraform -chdir=infra/gcp plan                     # 116 to add (step 4)
 - **The apply SA is owner-equivalent in effect**, because `projectIamAdmin` can grant any role.
   That comes with Terraform owning IAM. The boundary is the condition (one org, one workspace,
   apply phase only) plus `auto-apply` off. The stop rule still refuses `roles/owner` itself.
-- **The Terraform version.** 2b pins the workspace to 1.16.6, the root's `required_version`.
+- **The Terraform version.** 2b pins the workspace to 1.16.7, the root's `required_version`.
   A remote run on another version fails at `init`.
 - **Never** set `serve` or `public_invokers` as workspace variables. They live in
   `infra/gcp/gates.auto.tfvars`, so each flip is a reviewed PR.
@@ -1239,7 +1239,7 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 
 | Step | Command | Done when |
 | --- | --- | --- |
-| 0. State | the four HCP Terraform workspaces with execution mode Local, Terraform 1.16.6, `terraform login` | see **Terraform state** below; states from before HCP: `make tf-migrate-hcp` once |
+| 0. State | the four HCP Terraform workspaces with execution mode Local, Terraform 1.16.7, `terraform login` | see **Terraform state** below; states from before HCP: `make tf-migrate-hcp` once |
 | 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` (the zone `ryftlab.de` with CAA and the Microsoft 365 records, D213/D214, **Mail for ryftlab.de**; the rebuild's order is `docs/REBUILD.md` step 1) | `terraform output name_servers` lists four awsdns servers, and every record answers from them |
 | 2. Delegate | GoDaddy → ryftlab.de → Nameservers → *I'll use my own* → those four | `dig +norecurse NS ryftlab.de @a.nic.de` shows them |
 | 3. Cluster | `cd infra/aws && terraform apply`, then `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
@@ -5425,9 +5425,9 @@ empty, `infra/vault` creates `monitoring` itself: Vault → The first apply).
 
 1. In HCP Terraform, create the two missing workspaces (`-dns`, `-kubernetes`) as
    CLI-driven workspaces. On all four, set *Settings → General → Execution Mode* to
-   **Local** and the Terraform version to **1.16.6**. Restrict team access: the vault
+   **Local** and the Terraform version to **1.16.7**. Restrict team access: the vault
    workspace's state contains every RYFT secret.
-2. Install exactly Terraform 1.16.6 (`tfenv install 1.16.6 && tfenv use 1.16.6`, or the
+2. Install exactly Terraform 1.16.7 (`tfenv install 1.16.7 && tfenv use 1.16.7`, or the
    binary from releases.hashicorp.com), then run `terraform login`.
 3. `make tf-migrate-hcp`. For each root it:
    - checks the workspace exists and runs locally;
@@ -5452,7 +5452,7 @@ If `terraform init` ever offers to *migrate* state from another backend, answer 
 and use the steps above: the S3 bucket holds only a partial Vault state.
 
 **CI** checks every root offline on every push: `fmt`, `init -backend=false`,
-`validate`, `tflint` and the mocked `terraform test`, with Terraform 1.16.6. It has no
+`validate`, `tflint` and the mocked `terraform test`, with Terraform 1.16.7. It has no
 HCP token and no cloud credentials and never touches a workspace.
 
 ## Budget

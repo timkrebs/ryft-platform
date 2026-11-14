@@ -134,7 +134,7 @@ monitoring-apply: k8s-context k8s-check-auth
 
 # Move every Terraform root's state into its HCP Terraform workspace, once
 # (docs/OPERATIONS.md → Terraform state). Needs `terraform login` and the four
-# workspaces, each with execution mode Local and Terraform 1.16.6. The source is
+# workspaces, each with execution mode Local and Terraform 1.16.7. The source is
 # each root's last full local state: terraform.tfstate, or terraform.tfstate.backup
 # where the S3 attempt left terraform.tfstate empty. It is copied to
 # ~/.ryft-tfstate-rescue/<time>/ first. A workspace that already holds state is left

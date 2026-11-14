@@ -25,7 +25,7 @@ The decisions this order rests on, and what is yours to confirm, are D207-D215 (
   merge builds carries it: `gh variable set SUPPORT_EMAIL -R timkrebs/ryft-platform --body support@ryftlab.de`.
 - **This PR is merged** and you work from a clean `main` (`git status` empty, `git pull --ff-only`). The repository is
   not archived: `gh repo view timkrebs/ryft-platform --json isArchived` says `false` (CI and the promote PRs need it).
-- **Tools:** Terraform exactly 1.16.6 (`terraform version`), `terraform login` done, `kubectl`, `helm`, the `vault` CLI
+- **Tools:** Terraform exactly 1.16.7 (`terraform version`), `terraform login` done, `kubectl`, `helm`, the `vault` CLI
   2.2.x, `aws` (the RYFT admin profile), `jq`, `dig`.
 - **For steps 5-7** (shares and tokens on screen): Handoff off, every clipboard manager quit, Secure Keyboard Entry on
   in the terminal (OPERATIONS → Vault → **The clipboard**).
@@ -405,7 +405,7 @@ users.
 ## 14. The HCP Terraform workspaces
 
 **Reuse them** (recommended; the `cloud` blocks name them, and nothing in the code changes): `ryft-prod-euc1-platform`,
-`-dns`, `-kubernetes` and `-vault` in `tim-krebs-org`, execution mode **Local**, Terraform 1.16.6. Check before step 3
+`-dns`, `-kubernetes` and `-vault` in `tim-krebs-org`, execution mode **Local**, Terraform 1.16.7. Check before step 3
 that all four exist and that the three emptied ones hold no resources (`terraform -chdir=<root> init`, then
 `terraform -chdir=<root> state list` prints nothing, except for `infra/aws/dns`). New workspaces would also work, but
 then the data key's old versions stay in the old `-vault` workspace (step 7 reads them from there). Afterwards: the
