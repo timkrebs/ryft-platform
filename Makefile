@@ -291,12 +291,12 @@ k8s-validate:
 	@set -e; export GIT_ALLOW_PROTOCOL=file; out=$$(mktemp); gen=; \
 	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
 	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
-	for o in $(addprefix services/,$(NAMESPACES)) overlays/eks overlays/local-postgres; do \
+	for o in $(addprefix services/,$(NAMESPACES)) services/web overlays/eks overlays/local-postgres; do \
 	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
 	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
 	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
+	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml deploy/k8s/overlays/eks/web.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
 	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
 	@$(MAKE) --no-print-directory k8s-check-images
 	@./scripts/check_argocd.sh

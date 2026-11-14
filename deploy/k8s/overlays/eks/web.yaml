@@ -2,6 +2,8 @@
 # apex (Apple's apple-app-site-association lookup does not follow redirects, so the
 # app's associated domains name ryftlab.de itself). One certificate for both names
 # (DNS-01), DNS by ExternalDNS (an alias A record at the apex).
+# Not listed in kustomization.yaml since D215: kept so that deploying the site again is two
+# resource lines (docs/REBUILD.md, "Optional: the web pod for the legal pages").
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

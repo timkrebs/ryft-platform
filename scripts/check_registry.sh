@@ -6,7 +6,8 @@
 # given, are image references to check instead of the overlay's.
 # The overlay is rendered with `kubectl kustomize` and the registry asked with `curl`: there is
 # no environment switch for either (a workflow could set one); the tests put fake kubectl and
-# curl on PATH. The render holds our six images and nothing else today (no third-party image in
+# curl on PATH. The render holds our images and nothing else today (five while web is not deployed,
+# D215; the web pin is then checked from the overlay's pin line; no third-party image in
 # overlays/eks: PostgreSQL is Supabase, RabbitMQ and its operators are other Argo CD apps with
 # their own manifests), so nothing else is allowed. If one is ever added, pin it by digest and
 # list it here on purpose.
@@ -53,6 +54,11 @@ if [ $# -eq 0 ]; then
 $refs
 EOT
   for line in $pins; do
+    # web may be pinned without being deployed (D215): with no web image in the render at all, its pin
+    # is still asked of the registry below (promote moves it, and adding web back deploys it).
+    if [ "${line%%=*}" = web ] && ! printf '%s\n' "$refs" | grep -q "^${ours}web:"; then
+      refs=$(printf '%s\n%s\n' "$refs" "${ours}web:${line#*=}"); continue
+    fi
     printf '%s\n' "$refs" | grep -qx "${ours}${line%%=*}:${line#*=}" || { echo "✗ ${line%%=*} is pinned to ${line#*=} but the overlay renders another image"; exit 1; }
   done
 fi

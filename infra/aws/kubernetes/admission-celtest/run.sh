@@ -33,6 +33,9 @@ export CELTEST_DECOM_CHART="$out/chart-decom.yaml"
 
 # What Argo CD applies, and what the controllers write on top.
 kubectl kustomize "$repo/deploy/k8s/overlays/eks" > "$out/eks.yaml"
+# The web unit is not deployed (D215) but P1 still admits its Namespace (adding web back creates it),
+# so its P1 cases keep judging the file itself, as scripts/lib/admission_lib.sh does.
+{ echo ---; cat "$repo/deploy/k8s/services/web/namespace.yaml"; } >> "$out/eks.yaml"
 kubectl kustomize "$repo/deploy/rabbitmq" > "$out/rabbitmq.yaml"
 kubectl kustomize "$repo/deploy/rabbitmq/operators" > "$out/operators.yaml"
 awk 'FNR==1{print "---"} {print}' "$repo"/deploy/k8s/overlays/vault-namespaces/*/vault.yaml > "$out/vault.yaml"

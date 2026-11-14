@@ -8,7 +8,8 @@
 #  - the value is not a bare, real YYYY-MM-DD date (quotes, spaces and comments are part of a
 #    value; Go refuses 2026-11-31),
 #  - the version is not in web/content/legal/privacy-versions.json,
-#  - the web image's commit does not SERVE the version at /privacy: the site shows the newest
+#  - the web image's commit does not SERVE the version at /privacy (the rendered web Deployment's
+#    image, or, with web not deployed (D215), the overlay's web pin): the site shows the newest
 #    page per language (web/src/lib/content.ts), so the newest
 #    web/content/legal/{en,de}/privacy/<version>.mdx there must be the version in force. A pin
 #    that is not a commit of this history passes only when it is the known foreign pin
@@ -105,7 +106,14 @@ python3 -c 'import datetime,sys; datetime.date.fromisoformat(sys.argv[1])' "$v" 
 jq -e --arg v "$v" 'index($v) != null' "$list" >/dev/null || err "the version in force, $v, is not in $list ($(jq -c . "$list"))"
 
 tag=$(printf '%s\n' "$found" | sed -n 's/^web //p' | head -1)
-[ -n "$tag" ] || err "the EKS overlay renders no ghcr.io/timkrebs/ryft/web image"
+# web not deployed (D215): no web Deployment renders. Then the overlay's pin is checked instead, the
+# image a re-added web would run, so the version in force and the page that image serves stay in step.
+web_note=
+if [ -z "$tag" ] && [ -f "$overlay" ]; then
+  tag=$(awk '/ghcr.io\/timkrebs\/ryft\/web[ \t]*$/ { h = 1; next } h && /newTag:/ { gsub(/[" ]|newTag:/, ""); print; exit }' "$overlay")
+  web_note=" (pinned, not deployed)"
+fi
+[ -n "$tag" ] || err "the EKS overlay neither renders nor pins a ghcr.io/timkrebs/ryft/web image"
 # The pin must be exactly one commit of this history, or the one known foreign pin (built in the
 # archived ryft-web repository). An unknown or ambiguous short SHA is not "foreign".
 FOREIGN=f437747
@@ -222,4 +230,4 @@ if [ -n "$base" ]; then
     done
   fi
 fi
-echo "policy in force: $v (api and ingest agree; web $tag serves it at /privacy)"
+echo "policy in force: $v (api and ingest agree; web $tag$web_note serves it at /privacy)"
