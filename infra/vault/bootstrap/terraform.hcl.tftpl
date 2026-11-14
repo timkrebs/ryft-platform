@@ -1,4 +1,4 @@
-# Policy terraform on the in-cluster Vault: what infra/vault's provider vault.k8s may do (k8s.tf, D191, D193).
+# Policy terraform on the in-cluster Vault: what infra/vault's Vault provider may do (k8s.tf, D191, D207).
 #
 # GENERATED from bootstrap/terraform.hcl.tftpl with the services of var.services (bootstrap.tf): edit the template,
 # then render it from a plan, not an apply (output bootstrap_terraform_policy; the commands and the order of commit,
@@ -7,7 +7,7 @@
 # Written into Vault by hand, never by Terraform, so this root cannot rewrite its own token's policy:
 #   vault policy write terraform infra/vault/bootstrap/terraform.hcl
 # The token comes from the token role terraform (bootstrap/token-role-terraform.json): 1 hour, not renewable,
-# usable from 127.0.0.1 only (the port-forward), a child of the operator's admin login.
+# usable from 127.0.0.1 only (the port-forward), a child of the session's admin token (token role admin, D209).
 #
 # What this token is: admin-equivalent for its hour, not a sandbox. It reads every credential (read on the KV data
 # is needed: the provider reads each secret back), and it rewrites the policy of any role it manages (the services'
@@ -28,7 +28,7 @@
 #     token_type: as batch, the tokens of every role that sets no token_type of its own could not be revoked.
 #   - Nothing on sys/audit, sys/config/auditing, sys/seal, sys/storage/raft, sys/generate-root, sys/rekey,
 #     sys/auth/oidc, auth/oidc, auth/token (beyond the default policy's own-token paths), identity/*.
-# Never attach policies to the operator's entity or groups (identity/*): admin comes from the OIDC role only.
+# Never attach policies to an entity or a group (identity/*): admin comes from the token role admin only.
 #
 # Which endpoints need sudo on 2.2.1, and whether a line is missing, the kind rehearsal settles: it applies
 # infra/vault with exactly this policy, and every 403 there is a missing line (design Appendix B #2).

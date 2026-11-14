@@ -1,4 +1,4 @@
-# Test input of admission.tftest.hcl: a namespace still on HCP Vault.
+# Test input of admission.tftest.hcl: a namespace left on HCP Vault (deleted, D207): admitted while vaultAddresses lists it, refused after the follow-up PR.
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultConnection
 metadata:

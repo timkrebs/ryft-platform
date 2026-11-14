@@ -26,9 +26,10 @@ terraform {
 
   # State in HCP Terraform (docs/OPERATIONS.md → Terraform state): stored, locked
   # and versioned there; plans and applies run locally (execution mode Local).
-  # One workspace per root; this one holds Vault namespaces, auth and secrets.
-  # This state holds every credential the root writes into Vault (generated
-  # passwords, the owner password, tokens): workspace access is secret access.
+  # One workspace per root; this one holds the service namespaces and the
+  # in-cluster Vault's auth, policies and secrets (D207). This state holds every
+  # credential the root writes into Vault (generated passwords, the data key, the
+  # owner password, tokens): workspace access is secret access.
   cloud {
     organization = "tim-krebs-org"
 

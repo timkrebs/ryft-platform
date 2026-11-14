@@ -1,19 +1,15 @@
-# Vault Secrets Operator manifests, one kustomize directory per service, generated from
-# the values above so the Kubernetes side can never drift from the Vault side.
-# Argo CD applies them in wave 0 (vault-<svc>; monitoring and the import service by hand,
-# docs/OPERATIONS.md). One VaultConnection per service namespace, so no cross-namespace
-# reference is needed. Everything here is plan-time known (locals, not provider-computed
-# paths), which is what lets the tests pin the output against tests/golden/{hcp,k8s}/.
+# Vault Secrets Operator manifests, one kustomize directory per service, generated from the values above so the
+# Kubernetes side can never drift from the Vault side. Argo CD applies them in wave 0 (vault-<svc>; monitoring and
+# the import service by hand, docs/OPERATIONS.md). One VaultConnection per service namespace, so no cross-namespace
+# reference is needed. Every namespace reads the in-cluster Vault (D207): its address with caCertSecretRef vault-ca
+# (the Certificate below, D190), no Vault namespace (CE), the mount kv-<svc>, and the in-app sync waves (connection
+# and auth before the secrets, design 9.1).
 #
-# Two shapes (targets.tf): a namespace in local.vso_on_k8s reads the in-cluster Vault, every
-# other one HCP. They differ only in the VaultConnection's address and caCertSecretRef, the
-# VaultAuth's Vault namespace (none on CE), the VaultStaticSecrets' mount (kv-<svc> on CE)
-# and, on CE, the in-app sync waves (connection and auth before the secrets, design 9.1).
-# Both carry the Certificate vault-ca, so its Secret exists before a cutover names it.
-
-locals {
-  vso_target = { for name in keys(local.services) : name => contains(local.vso_on_k8s, name) ? "k8s" : "hcp" }
-}
+# Everything here is plan-time known (locals and configured arguments, no provider-computed value), which is what
+# lets the tests pin the output against tests/golden/k8s/ (tests/vault.tftest.hcl). The committed
+# deploy/k8s/overlays/vault-namespaces/ are still HCP's render until the first apply rewrites them; the follow-up PR
+# that commits them also pins them to this render (docs/work/2026-11-13-rebuild/followup-overlays.md), so from then
+# on a PR cannot ship files an apply would rewrite.
 
 resource "local_file" "vso" {
   for_each = local.services
@@ -21,32 +17,18 @@ resource "local_file" "vso" {
   filename        = "${path.module}/${var.vso_output_dir}/${each.key}/vault.yaml"
   file_permission = "0644"
   content = templatefile("${path.module}/templates/vso.yaml.tftpl", {
-    target          = local.vso_target[each.key]
     project         = var.project
     service         = each.key
     k8s_ns          = each.value.k8s_ns
-    vault_ns        = each.value.vault_ns_full
-    vault_address   = local.vso_target[each.key] == "k8s" ? local.vault_k8s_address_for_cluster : var.vault_address_for_cluster
-    auth_mount      = local.vso_target[each.key] == "k8s" ? "kubernetes" : vault_auth_backend.kubernetes[each.key].path
-    role            = local.vso_target[each.key] == "k8s" ? each.key : vault_kubernetes_auth_backend_role.service[each.key].role_name
+    vault_address   = local.vault_k8s_address_for_cluster
+    auth_mount      = vault_auth_backend.k8s.path
+    role            = vault_kubernetes_auth_backend_role.k8s_service[each.key].role_name
     service_account = each.value.service_account
-    kv_mount        = local.vso_target[each.key] == "k8s" ? local.k8s_kv_mount[each.key] : vault_mount.kv[each.key].path
+    kv_mount        = vault_mount.k8s_kv[each.key].path
     has_secret      = contains(keys(local.services_with_secrets), each.key)
     restart_targets = each.value.restart_targets
     amqp_users      = each.value.amqp == "server" ? local.amqp_clients : []
   })
-
-  lifecycle {
-    # Repeated on every instance, so a bad list fails whatever the service.
-    precondition {
-      condition     = alltrue([for n in local.vso_on_k8s : contains(keys(local.services), n)])
-      error_message = "vso_on_k8s (targets.tf) names a service that is not in var.services: ${join(", ", [for n in local.vso_on_k8s : n if !contains(keys(local.services), n)])}."
-    }
-    precondition {
-      condition     = local.vso_target[each.key] == "hcp" || local.write_k8s
-      error_message = "${each.key} is in vso_on_k8s, but write_k8s is false (targets.tf): its namespace would read an in-cluster Vault this root does not write. Switch write_k8s on first (PR 3b)."
-    }
-  }
 }
 
 resource "local_file" "vso_kustomization" {

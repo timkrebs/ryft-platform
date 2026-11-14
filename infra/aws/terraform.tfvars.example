@@ -4,10 +4,10 @@ region      = "eu-central-1"
 project     = "ryft"
 environment = "prod"
 
-# Who may reach the Kubernetes API. Your own address(es) (curl -s https://checkip.amazonaws.com)
-# AND HCP Vault's egress addresses: its Kubernetes auth calls TokenReview on every login
-# (infra/vault). Without Vault's, secret syncs stop; leave 0.0.0.0/0 until you know them.
-# The API itself still requires IAM authentication.
+# Who may reach the public Kubernetes API: the addresses Terraform, kubectl and helm run from
+# (curl -s https://checkip.amazonaws.com). The Vault in the cluster (the only one, D207) calls
+# TokenReview over the private endpoint, so it needs no entry here. The API itself still
+# requires IAM authentication.
 endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 deletion_protection = true

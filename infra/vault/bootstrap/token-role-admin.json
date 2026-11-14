@@ -1,0 +1,10 @@
+{
+  "allowed_policies": ["admin"],
+  "disallowed_policies": ["root"],
+  "orphan": true,
+  "renewable": false,
+  "token_type": "service",
+  "token_explicit_max_ttl": 3600,
+  "token_no_default_policy": false,
+  "token_bound_cidrs": ["127.0.0.1/32"]
+}

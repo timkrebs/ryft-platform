@@ -1,4 +1,4 @@
-# Test input of admission.tftest.hcl: a namespace already moved to the in-cluster Vault.
+# Test input of admission.tftest.hcl: a namespace on the in-cluster Vault, next to one left on HCP's.
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultConnection
 metadata:

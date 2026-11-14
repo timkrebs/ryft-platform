@@ -4140,7 +4140,7 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   sub-processors (**to verify**). Vault also holds the smoke user's and the App Review demo account's e-mail addresses as KV
   values (HMAC'd in the audit log).
 - **Mandatory before the add-on is applied (D188):** Fleet Management's pod-log exclusion `ryft-.*` → `ryft-.*|vault` and a
-  Beyla exclusion of `vault` (OPERATIONS → Before the Vault add-on is applied), then an Explore check that `{namespace="vault"}`,
+  Beyla exclusion of `vault` (OPERATIONS → Fleet exclusions of vault; the heading was "Before the Vault add-on is applied"), then an Explore check that `{namespace="vault"}`,
   Beyla series and Tempo return nothing.
 - **Limits:** the Loki copy is not tamper-proof (anyone with `logs:write` can push `stream="audit"` lines); operator sessions
   show `127.0.0.1`. **Not verified:** the Fleet UI paths and Beyla's exclusion syntax, the pipeline end to end.
@@ -4234,3 +4234,103 @@ the cited PR; the number was given here. D162 is reserved for the /admin page (#
   credentials.
 - **State:** after the decommission (PR 6), as PR 6c, in one reviewed tfvars edit, a plan with one in-place update, the
   owner's apply and a 24-hour watch. Not started.
+
+*D206 is the shutdown of 2026-11-10 (`docs/DECOMMISSION.md`, branch `infra/decommission`; not merged into this
+history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-11-13-rebuild/`).*
+
+## D207 — The rebuild: the in-cluster Vault is the only Vault (supersedes D191 and the cutovers of D186; amends D187, D190; the rebuild PR)
+
+- **Context:** HCP Vault Dedicated was deleted with the shutdown, and every Terraform state but the zone's is empty. The
+  migration machinery of D186 and D191 (dual-write, `write_k8s`, `vso_on_k8s`, cutovers 5a-5i, `vault_diff.sh`'s HCP mode,
+  PR 6/6b) has nothing left to migrate from.
+- **Decision:** `infra/vault` writes the in-cluster Vault only, from an empty state. There is one provider (the
+  port-forward's loopback address, the CA file, `TF_VAR_vault_k8s_token`, pinned against the environment fallbacks), one
+  `auth/kubernetes` mount reviewed by Vault's own service account, and one `kv-<svc>` mount, policy and role per service
+  (D187). No Vault namespaces, no reviewer JWTs or their ClusterRoleBindings, and no `ryft.dev/vault-namespace` label.
+  Every generated VaultConnection names `https://vault.vault.svc:8200`, and VSO's peer on 8200 is open from the add-on's
+  first apply. The HCP variables are retired with a validation that fails the plan and names the line to delete. Every
+  `random_*` keeps its address, so the data key and the demo password can be imported (D211).
+- **Order:** the committed overlays are generator output (the repo guard admits no hand edit), so this PR keeps the
+  old ones. The user's first `infra/vault` apply (REBUILD step 7) writes the new ones, and a follow-up PR commits them,
+  adds back the test that holds them to the generator, and drops HCP's address from `vaultAddresses`
+  (`docs/work/2026-11-13-rebuild/followup-overlays.md`). Argo CD's root app is applied only after that merge (step 8).
+- **Kept from main:** the add-on (D188), the CA (D190), the audit devices (D198), metrics and alerts (D194), snapshots
+  (D192), probes and placement (D196, D204). **Moot:** D199 is still not built; D200-D202 and D205 stand as decided, not
+  built.
+
+## D208 — Vault's seal: Shamir by default, `awskms` one variable away (amends D189, D203; **the user confirms**)
+
+- **The user's words:** "I keep the unseal keys local in 1Password." Built as the default: `vault_seal = "shamir"` in
+  `infra/aws/kubernetes` renders no seal stanza, no unseal Pod Identity role or association, and no lookup of the KMS
+  alias. The server pods have no AWS identity and no egress out of the cluster (vault-extras 0.3.0). The init is
+  `-key-shares=5 -key-threshold=3`, and the shares and the initial root token go to 1Password.
+- **Consequence:** every Vault pod that starts (node rotation or loss, eviction, OOM) stays sealed until it is unsealed
+  by hand with three shares. A sealed pod does not vote, and two sealed pods lose the Raft quorum. The workloads keep
+  their synced Secrets (VSO only syncs), so the users notice nothing, but nothing syncs or rotates until the quorum is
+  back. The PDB (`minAvailable` 2 of ready pods) stops a second drain, so node maintenance needs the operator.
+  `VaultSealed` pages for every restart.
+- **Custody (amends D203):** an unseal needs three shares each time, so 1Password holds a threshold (one item per share).
+  The paper copies are the backup against losing 1Password. Whoever has 1Password and a port-forward has Vault. D203's
+  2-2-1 split stays right for `awskms`, where the shares are recovery keys and rarely used.
+- **The alternative, built (D189):** `vault_seal = "awskms"`, one `infra/aws/kubernetes` apply (the role, the association,
+  the stanza and the KMS egress), then `vault operator unseal -migrate` pod by pod. After that the shares are recovery
+  keys. The unseal key stays in `infra/aws` under Shamir (about $1 a month), so the switch needs no `infra/aws` apply.
+- **Why Shamir by default:** it is what the user asked for. It also takes the parts of D189 that were never verified
+  (Pod Identity reaching the seal on 2.2.1, the session-tag trust) off the rebuild's critical path, and no AWS
+  administrator can unseal Vault. **Recommendation:** Shamir for the rebuild. Move to `awskms` if unseals by hand
+  become a burden (more than one a week, or nights).
+
+## D209 — The operator's login without Google Workspace: a generate-root session, no OIDC (amends D193; **the user confirms**)
+
+- **Decision:** there is no standing login. A session is `vault operator generate-root` with three shares (an OTP; the
+  token decoded locally), then a one-hour orphan admin token bound to `127.0.0.1` (token role `admin`,
+  `bootstrap/token-role-admin.json`), and the root token is revoked at once. The terraform token is the admin token's
+  child (token role `terraform`). In the audit stream every session is a root token followed by one admin token, and
+  any other pattern is an incident.
+- **Trade-off:** about two minutes of ceremony per session, and no credential at rest besides the shares. It needs a
+  port-forward, so cluster access as well.
+- **Alternatives, each a reviewed change before use:** (1) the initial root token kept in 1Password: simpler, but a
+  standing credential that never expires and works without any share; (2) OIDC with a personal Google account later
+  (the `oidc-*.json` files stay as that option, now without the `hd` binding and needing a Google Cloud project of the
+  user's own); it adds Vault's egress to Google. **Recommendation:** the session, as built.
+
+## D210 — The hard gates for a rebuild "as it was" (amends the gates of the Vault CE plan; **G2 is the user's**)
+
+- **Blocking:** G3 (never `vault login` through `kubectl exec`; `Initialized true` before the user's own init means stop
+  and wipe) and G4 (`prevent_destroy` on the namespace and both releases, in the code).
+- **Not blocking, follow-up:** G1, the admission layer in Deny for `vault`. In production the chart was disabled before
+  the shutdown (`enabled: false`), and under Shamir no pod can reach a seal key or decrypt the Raft data. An Argo CD
+  token could already create a pod in any `ryft-*` namespace and mount its `ryft-secrets`. Follow-up: the chart on in
+  Audit, then the `vault` bindings and P13 in Deny (they can go alone), then #121's P12.
+- **The user's call:** G2, the monitoring stack inside Vault's trust boundary (alloy-daemonset privileged with hostPID,
+  alloy-operator and VSO reading Secrets cluster-wide). **Recommendation:** accept it for the rebuild, with D197's Fleet
+  exclusions of `vault` (pod logs, Beyla) checked before the collector starts (REBUILD step 9). The Art. 32 description
+  must not claim Vault is isolated from the monitoring vendor.
+
+## D211 — The data key and the demo password come back from the old state (**the user confirms**)
+
+- **Decision:** `scripts/recover_data_key.sh` reads the newest state version of `ryft-prod-euc1-vault` that still holds
+  `random_bytes.data_key["api"]` (and with `--demo`, `random_password.demo`). It goes through the HCP Terraform API
+  (the token from the CLI's credentials, never in argv) and writes a 0600 file. It prints a version, a date, a
+  fingerprint and the key's length, never the value. The user imports both values before the first plan, with the
+  output sent to `/dev/null`, and compares fingerprints (OPERATIONS → Vault → The first apply). The values then live in
+  their resources' state, with nothing to remember on later applies. The stored Apple tokens keep decrypting, and App
+  Store Connect's demo login stays valid.
+- **If the versions are gone:** the plan creates a new key. A one-off statement in the SQL editor (REBUILD step 8, before
+  the api starts) deletes the tokens sealed before 2026-11-11 and clears them from tombstones, so the reconcile loop no
+  longer retries revocations it cannot decrypt (an ERROR per tombstone every 15 minutes, and `AccountDeletionIncomplete`
+  without end). A tester's token comes back at their next interactive Sign in with Apple. Accounts deleted before then
+  are not revoked at Apple, and the tester can remove the grant in iOS Settings. **No migration:** a migration would run
+  in every database, including those whose key is fine.
+- **Recommendation:** recover. The fallback is the cost of losing it.
+
+## D212 — No mail for ryftapp.de until a provider is chosen (amends D142; **the user picks the provider**)
+
+- **Decision:** the mail records in `infra/aws/dns` are variables whose default says "no mail": a null MX `0 .` (RFC
+  7505), SPF `v=spf1 -all`, DMARC `v=DMARC1; p=reject; adkim=s; aspf=s` (no `rua`, since no mailbox exists), and no
+  DKIM and no site verification. Google Workspace's values are the example in `terraform.tfvars.example`. From the
+  current state the plan is 0 to add, 3 to change, 1 to destroy (the DKIM record). Nobody can send mail as the domain,
+  and every mail to it bounces at once, instead of reaching a deleted mailbox.
+- **Consequence:** the Impressum (§5 DDG) and the privacy policy name `support@ryftapp.de`, so mail must work again
+  before, or soon after, the testers are back. Supabase Auth SMTP, the budget alerts and `acme_email` need an address
+  that receives mail. A new provider is one tfvars block and an apply, with DMARC starting at `p=none` and a real `rua`.

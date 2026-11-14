@@ -72,6 +72,45 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Rebuild (2026-11-13)
+
+RYFT was shut down on 2026-11-10 (D206): every AWS resource is gone, the Terraform states of `infra/aws`,
+`infra/aws/kubernetes` and `infra/vault` are empty, and HCP Vault and Google Workspace are deleted. The owner brings
+production back **as it was** (same hostnames, same images, the testers' data in Supabase), now with Vault CE in the
+cluster as the only Vault. The rebuild PR (`infra: rebuild with Vault CE in the cluster`, branch `infra/rebuild`) holds
+the code and the runbook. **Nothing is applied.** Plan and records: `docs/work/2026-11-13-rebuild/`. Decisions:
+**D207-D212**.
+
+**Done in the PR (merged = nothing happens; no Argo CD exists)**
+- `infra/vault`: the in-cluster Vault only, from an empty state; the HCP side and its variables are retired (D207).
+- `infra/aws/kubernetes`: `vault_seal` with `shamir` as the default and `awskms` built (D208); VSO's peer is open from
+  the first apply; the server pods' egress to AWS only under `awskms` (vault-extras 0.3.0).
+- `infra/aws/dns`: no-mail records by default (D212); the Google set is the example.
+- `scripts/recover_data_key.sh` (D211); the scripts read the in-cluster Vault by default; `vault_diff.sh` has no HCP mode.
+- The alerts, OBSERVABILITY and OPERATIONS are written for one Vault, Shamir and the generate-root session (D209).
+- `docs/REBUILD.md`: the owner's fourteen steps, each with a plan count, a "worked when" and a stop rule.
+
+**Verified only by CI, not here:** no `terraform fmt`/`validate`/`test`, `make test-scripts`, `make alerts-check`,
+gofmt or the admission harness ran in the session (the permission system refused them). The plan counts in REBUILD.md
+are counted from the code, not planned: `infra/aws` about 80 and `infra/aws/kubernetes` about 37 are estimates;
+`infra/vault` 90 and DNS 0/3/1 are exact counts of the resources.
+
+**Needs you, in order:** confirm or change D208 (seal), D209 (login), D210's G2, D211 (recover the key), D212 (mail
+provider); merge the PR; then `docs/REBUILD.md` steps 1-14. Step 7 ends with a follow-up PR that only you can produce:
+the regenerated overlays (`docs/work/2026-11-13-rebuild/followup-overlays.md`), merged before step 8.
+
+**Open after the rebuild**
+- Mail for `support@ryftapp.de` (Impressum, privacy policy, Supabase Auth SMTP): before, or soon after, the testers
+  return (D212).
+- G1: the admission chart on in Audit, then the `vault` bindings and P13 in Deny, then #121 (D210).
+- The import service's namespace is missing from the injector's exclusion list in `deploy/monitoring/k8s-monitoring.yaml`,
+  and its keys from `infra/vault/terraform.tfvars.example`: the brand hook stops agents from writing the name, so the
+  owner adds both.
+- D205 (the EKS endpoint narrowed to the operator's addresses) no longer waits for HCP: it can follow at any time.
+- Still not built: D199 (log-based Vault alerts), D200-D202 (Argo CD apps for monitoring's and the import service's
+  operator objects; the collector as a Terraform add-on). The "not verified" list of the Vault CE section below still
+  applies, except for the KMS items under Shamir.
+
 ## Production hardening (2026-11)
 
 Run of 2026-11-04 and 2026-11-05: Phase 0 (safety net), Phase 1 (docs in code) and part of Phase 2 (structure) of
@@ -278,6 +317,10 @@ builds it; see D175 and OPERATIONS → Deploy and roll back → "Staging a backe
 
 ## Vault CE migration (2026-11)
 
+**Superseded by the rebuild (D207, section above).** HCP Vault is deleted, so nothing below is to be run any more: no
+dual-write, no cutovers, no decommission PRs. The section stays as the record of what #145-#155 built. Headings it names
+in OPERATIONS may have moved (Vault → Login, Unseal keys).
+
 Moving every credential from HCP Vault Dedicated to Vault Community Edition 2.2.1 in namespace `vault` (plan, design and
 addenda: `docs/work/2026-11-05-vault-ce/`). Decisions: **D186-D205** (D186-D198 and D204 are cited by the code; D203 is a procedure;
 D199-D202 and D205 are decided, not built). Written against `origin/main` `6d1f9fa` on 2026-11-06. "Not applied" means exactly that:
@@ -323,7 +366,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    Verify with the G1 command in OPERATIONS → Vault → Hard gates. **If step 6's plan shows `helm_release.admission_policy`, this
    step's apply is not done: stop.**
 3. **Fleet Management and Beyla** (D197): the pod-log exclusion `ryft-.*` → `ryft-.*|vault` and Beyla's exclusion of `vault`
-   (OPERATIONS → Before the Vault add-on is applied).
+   (OPERATIONS → Fleet exclusions of vault).
 4. **The injector exclusion** (#145): `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
    `kubectl --context ryft-prod-euc1 get mutatingwebhookconfigurations -o custom-columns='NAME:.metadata.name,NAMESPACES:.webhooks[*].namespaceSelector,OBJECTS:.webhooks[*].objectSelector'`:
    the injector's `NotIn` list carries every `ryft-*` namespace, `vault` and `vault-secrets-operator-system`.
@@ -335,7 +378,7 @@ and injector exclusions before the add-on apply, and G1-G4 before the bootstrap.
    `rm infra/aws/kubernetes/vault-addon.tfplan`. The CronJob fails until step 9 writes the role `vault-snapshot`: expected. Keep
    steps 8-10 in one sitting, or do not load the `ryft-vault` alert group before step 10. Verify read-only as the list in #145's body (step 6): three pods `Running`, `0/1`
    ready, in three nodes, `vault-initialized=false`, `vault-sealed=true`, `vault-version=2.2.1`, exactly five `AWS_*` variables
-   in the pod, no `unable to set initial state`. Then the Explore check (OPERATIONS → Before the Vault add-on is applied,
+   in the pod, no `unable to set initial state`. Then the Explore check (OPERATIONS → Fleet exclusions of vault,
    step 3), **before bootstrap step 3**: Loki `{namespace="vault", container=~".+"}` returns nothing and every stream of the
    wider `{namespace="vault"}` is k8s-manifest-tail's or an event stream; Beyla series and Tempo return nothing. If `vault status` already shows `Initialized true` before your own init
    (G3): stop, treat it as a compromise, wipe the PVCs and EBS volumes.

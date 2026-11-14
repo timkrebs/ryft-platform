@@ -11,49 +11,66 @@ variable "eks_cluster_name" {
 }
 
 variable "project" {
-  description = "Prefix for every Vault and Kubernetes namespace"
+  description = "Prefix of every Kubernetes namespace (<project>-<service>), Postgres role (<project>_<service>) and the synced Secret <project>-secrets"
   type        = string
   default     = "ryft"
 }
 
+# Retired with HCP Vault (D207): the in-cluster Vault is the only Vault, it has no namespaces, Terraform reaches it
+# at vault_k8s_address and the workloads at local.vault_k8s_address_for_cluster, and every namespace trusts its CA
+# through the generated Certificate vault-ca (D190). Kept only for their validations: a terraform.tfvars that still
+# sets one fails the plan and names the line to delete, instead of being ignored with a warning.
+# tflint-ignore: terraform_unused_declarations
 variable "vault_parent_namespace_root" {
-  description = "Vault namespace the provider token lives in and under which the project namespace is created. Empty = root namespace (Vault Enterprise self-managed); \"admin\" on HCP Vault Dedicated."
+  description = "Retired (D207): HCP Vault's parent namespace. Must stay unset."
   type        = string
-  default     = ""
-}
-
-variable "vault_address" {
-  description = "Vault address as reachable from where you run Terraform. Empty = vault_address_for_cluster (right for HCP's public endpoint)."
-  type        = string
-  default     = ""
-}
-
-variable "vault_address_for_cluster" {
-  description = "Vault address as reachable FROM the EKS pods (used in the generated VaultConnection). Usually the same as VAULT_ADDR."
-  type        = string
+  default     = null
 
   validation {
-    condition     = startswith(var.vault_address_for_cluster, "https://")
-    error_message = "vault_address_for_cluster must be an https:// URL; the operator sends Vault tokens over it."
+    condition     = var.vault_parent_namespace_root == null
+    error_message = "vault_parent_namespace_root is retired (D207: HCP Vault is gone, and the in-cluster Vault has no namespaces). Delete the line `vault_parent_namespace_root = ...` from infra/vault/terraform.tfvars (and unset TF_VAR_vault_parent_namespace_root)."
   }
 }
 
-# Kept only for its validation: a terraform.tfvars that still sets it fails the plan instead of being ignored.
+# tflint-ignore: terraform_unused_declarations
+variable "vault_address" {
+  description = "Retired (D207): HCP Vault's address for Terraform. Must stay unset; Terraform reaches the in-cluster Vault at vault_k8s_address."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.vault_address == null
+    error_message = "vault_address is retired (D207: HCP Vault is gone; Terraform reaches the in-cluster Vault at vault_k8s_address, the port-forward). Delete the line `vault_address = ...` from infra/vault/terraform.tfvars (and unset TF_VAR_vault_address)."
+  }
+}
+
+# tflint-ignore: terraform_unused_declarations
+variable "vault_address_for_cluster" {
+  description = "Retired (D207): HCP Vault's address for the pods. Must stay unset; every generated VaultConnection names https://vault.vault.svc:8200."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.vault_address_for_cluster == null
+    error_message = "vault_address_for_cluster is retired (D207: HCP Vault is gone; every generated VaultConnection names the in-cluster Vault, https://vault.vault.svc:8200). Delete the line `vault_address_for_cluster = ...` from infra/vault/terraform.tfvars (and unset TF_VAR_vault_address_for_cluster)."
+  }
+}
+
 # tflint-ignore: terraform_unused_declarations
 variable "vault_ca_bundle_b64" {
-  description = "Retired (HCP's listener is publicly trusted). Must stay empty: every generated namespace has a cert-manager Certificate vault-ca whose Secret of the same name is the in-cluster Vault's trust (D190). The variable goes with the HCP provider (PR 6b)."
+  description = "Retired (D190, D207): a literal CA Secret. Must stay unset: every generated namespace has a cert-manager Certificate vault-ca whose Secret of the same name is the in-cluster Vault's trust."
   type        = string
-  default     = ""
+  default     = null
 
   validation {
-    condition     = var.vault_ca_bundle_b64 == ""
-    error_message = "vault_ca_bundle_b64 must be empty: the generated Certificate vault-ca writes the Secret vault-ca in every namespace, and a literal Secret of that name would fight cert-manager. HCP Vault Dedicated needs no CA bundle."
+    condition     = var.vault_ca_bundle_b64 == null
+    error_message = "vault_ca_bundle_b64 is retired (D190, D207): the generated Certificate vault-ca writes the Secret vault-ca in every namespace, and a literal Secret of that name would fight cert-manager. Delete the line `vault_ca_bundle_b64 = ...` from infra/vault/terraform.tfvars (and unset TF_VAR_vault_ca_bundle_b64)."
   }
 }
 
-# The in-cluster Vault (provider vault.k8s, providers.tf), reached from the operator's machine through
-# `kubectl port-forward` only (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). Used only while
-# local.write_k8s is true (targets.tf).
+# The in-cluster Vault (the provider in providers.tf), reached from the operator's machine through
+# `kubectl port-forward` only (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward). Every plan and
+# apply needs the port-forward, the CA file and the token.
 variable "vault_k8s_address" {
   description = "The in-cluster Vault as Terraform reaches it: the local end of the port-forward to svc/vault-active."
   type        = string
@@ -61,46 +78,36 @@ variable "vault_k8s_address" {
 
   validation {
     condition     = can(regex("^https://(127\\.0\\.0\\.1|localhost):[0-9]{1,5}$", var.vault_k8s_address))
-    error_message = "vault_k8s_address must be the port-forward's local end, https://127.0.0.1:<port> (or https://localhost:<port>): the in-cluster Vault is not reachable any other way, and any other address could be HCP's."
+    error_message = "vault_k8s_address must be the port-forward's local end, https://127.0.0.1:<port> (or https://localhost:<port>): the in-cluster Vault is not reachable any other way, and any other address is not that Vault."
   }
 }
 
 variable "vault_k8s_ca_cert_file" {
-  description = "PEM file with the ryft-vault CA (ca.crt of the Secret vault-ca in namespace vault). Read only while write_k8s is true."
+  description = "PEM file with the ryft-vault CA (ca.crt of the Secret vault-ca in namespace vault), read by every plan and apply."
   type        = string
   default     = "~/.config/ryft/vault-ca.pem"
 }
 
 variable "vault_k8s_token" {
-  description = "Token for the in-cluster Vault: policy terraform, 1 hour (docs/OPERATIONS.md -> Vault). Only from TF_VAR_vault_k8s_token in the shell that runs Terraform, never in a file. Ephemeral: written neither to the plan nor to the state, so it is needed again at apply."
+  description = "Token for the in-cluster Vault: token role terraform, policy terraform, 1 hour (docs/OPERATIONS.md -> Vault -> Login). Only from TF_VAR_vault_k8s_token in the shell that runs Terraform, never in a file. Ephemeral: written neither to the plan nor to the state, so it is needed again at apply."
   type        = string
   sensitive   = true
   ephemeral   = true
   default     = null
 
   validation {
-    # Without it the provider would fall back to VAULT_TOKEN, the HCP admin token, and send it to the port-forward.
-    condition     = !local.write_k8s || try(length(var.vault_k8s_token) > 0, false)
-    error_message = "write_k8s is true (targets.tf): set TF_VAR_vault_k8s_token to the 1-hour terraform token of the in-cluster Vault (docs/OPERATIONS.md -> Vault -> Terraform through the port-forward)."
+    # Without it the provider would fall back to VAULT_TOKEN or ~/.vault-token, whatever token that is.
+    condition     = try(length(var.vault_k8s_token) > 0, false)
+    error_message = "Set TF_VAR_vault_k8s_token to the 1-hour terraform token of the in-cluster Vault (docs/OPERATIONS.md -> Vault -> Login, then -> Terraform through the port-forward). Every plan and apply of infra/vault needs it."
   }
 }
 
-variable "test_override_targets" {
-  description = "terraform test only: replaces the committed switches of targets.tf. Never set it in terraform.tfvars or TF_VAR_* (check.targets_come_from_git warns)."
-  type = object({
-    write_k8s  = bool
-    vso_on_k8s = list(string)
-  })
-  default = null
-}
-
-# One entry per workload. Each gets: a Vault namespace <project>/<name>, a Kubernetes
-# namespace <project>-<name>, a Kubernetes auth mount in its Vault namespace bound to
-# that Kubernetes namespace and service account, a KV v2 mount with exactly the
-# credentials it uses, a read-only policy, and the VSO manifests.
+# One entry per workload. Each gets: a Kubernetes namespace <project>-<name> and its service account, and on the
+# in-cluster Vault a role bound to exactly that namespace and service account, a KV v2 mount kv-<name> with exactly
+# the credentials it uses, a read-only policy, and the VSO manifests.
 variable "services" {
   description = <<-EOT
-    Workloads that get their own Vault + Kubernetes namespace.
+    Workloads that get their own Kubernetes namespace and, on the in-cluster Vault, a role, a policy and a mount kv-<name>.
     service_account: the workload's SA (default: the name).
     secret_keys:     keys it may read from shared_secrets, plus SUPABASE_PROJECT_REF.
     database:        "role" = its own least-privilege Postgres role ryft_<name> (migration 0009),
@@ -212,7 +219,7 @@ variable "database" {
 }
 
 variable "demo_email" {
-  description = "Email of the App Review demo account (scripts/seed_demo.sh); its password is generated into operator/demo"
+  description = "Email of the App Review demo account (scripts/seed_demo.sh); its password is generated into kv-operator/demo"
   type        = string
   default     = "review@ryftapp.de"
 

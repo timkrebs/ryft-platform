@@ -577,14 +577,20 @@ groups:
           summary: "The admission scrape {{ $labels.job }} of {{ $labels.instance }} has been down for 15 minutes"
           runbook: "docs/OPERATIONS.md → Admission policy signals"
 
-  # The in-cluster Vault (namespace vault; D192, D194; OBSERVABILITY.md → Vault). Two scrapes of
-  # the alloy-deployment collector (deploy/monitoring/k8s-monitoring.yaml): job ryft/vault is each
+  # The in-cluster Vault, RYFT's only Vault (namespace vault; D192, D194, D207; OBSERVABILITY.md →
+  # Vault). Two scrapes of the alloy-deployment collector
+  # (deploy/monitoring/k8s-monitoring.yaml): job ryft/vault is each
   # server's /v1/sys/metrics (Vault's `cluster` label renamed vault_cluster), job ryft/vault-state
   # is kube-state-metrics for namespace vault. Vault's gauges expire 2 minutes after their last
   # update (prometheus_retention_time) and a sealed node reports no vault_core_active, so being
   # sealed is read from the pods' readiness (strict: only an unsealed active or standby node is
-  # ready), not from vault_core_unsealed. Before the operator's init no pod is ever ready (D196),
-  # and the collector may not reach the servers yet (var.vault_collector_peer): the rules that
+  # ready), not from vault_core_unsealed. One rule set for both seals (infra/aws/kubernetes
+  # var.vault_seal, D208): under shamir, the default, every pod that starts (a restart, a node
+  # drain, a new node) stays sealed until the operator unseals it by hand with three of the five
+  # shares, so a sealed pod is routine work that needs the operator; under awskms it unseals
+  # itself within seconds, so a sealed pod is a fault (the KMS key, its role, the egress). The
+  # texts name both; the metrics do not carry the seal type. Before the operator's init no pod is
+  # ever ready (D196), and the collector may not reach the servers yet (var.vault_collector_peer): the rules that
   # would fire on that are gated on "this Vault has been initialised", in two halves. (1) A server
   # pod labelled vault-initialized=true in the last hour (kube-state-metrics exports the label as
   # kube_pod_labels). Vault's service registration resets its labels at every process start to
@@ -592,18 +598,26 @@ groups:
   # unseals, so the label means "unsealed at least once since this process started": after a
   # restart of every pod that stays sealed it lapses an hour after the last unsealed sample
   # (Vault's command/server.go starts the registration as initialized=false, sealed=true;
-  # NotifyInitializedStateChange(true) runs on unseal; to verify in the kind drill).
-  # (2) The snapshot CronJob has succeeded at least once (its status keeps lastSuccessfulTime;
-  # last_over_time bridges a 6 h scrape gap): the half that survives an outage of every pod.
-  # The first snapshot is taken by hand right after the init (OPERATIONS.md → Vault metrics
-  # (once)) and is a precondition for these alerts. Restarts are PodRestarting's (group ryft),
-  # certificates CertificateExpiring's.
+  # NotifyInitializedStateChange(true) runs on unseal; to verify in the kind drill). Under shamir
+  # that is any restart of all three before the operator has unsealed them; under awskms a KMS
+  # path that fails. As read, a shamir init alone does not set the label (the node stays sealed
+  # until its first unseal; the same kind-drill check), and no rule depends on which it is: the
+  # rules are loaded after the bootstrap. (2) The snapshot CronJob has succeeded at least once (its status keeps
+  # lastSuccessfulTime; last_over_time bridges a 6 h scrape gap): the half that survives an
+  # outage of every pod. The first snapshot is taken by hand right after the init and infra/vault's
+  # apply (OPERATIONS.md → Vault metrics (once)) and is a precondition for these alerts, before
+  # `make alerts-apply`. A rebuild from empty starts with neither half (no old series: the add-on
+  # never ran before), so it is quiet until its own init. Restarts are PodRestarting's (group
+  # ryft), certificates CertificateExpiring's.
   - name: ryft-vault
     rules:
       - alert: VaultSealed
-        # One server pod runs but is not ready for 5 minutes: sealed (KMS unreachable or the role
-        # gone), or a standby that cannot reach the active node (474). Auto-unseal takes seconds.
-        # Two or more: VaultSealedQuorum instead.
+        # One server pod runs but is not ready for 5 minutes: sealed, or a standby that cannot
+        # reach the active node (474). Sealed under shamir (D208): the pod started and waits for
+        # the operator's unseal by hand (three of the five shares), after every restart, a node
+        # drain included; it does not heal itself, and until it is unsealed the failure tolerance
+        # is 0. Sealed under awskms: auto-unseal takes seconds, so the KMS key, its role or the
+        # egress is broken. Two or more: VaultSealedQuorum instead.
         expr: |
           (
             max by (pod) (kube_pod_container_status_running{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
@@ -627,12 +641,14 @@ groups:
         for: 5m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.pod }} runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+          summary: "{{ $labels.pod }} runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
           runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
       - alert: VaultSealedQuorum
         # Two or more server pods run but are not ready for 5 minutes: with 3 replicas no quorum
-        # is left, so there is no leader (the same causes as VaultSealed, on several nodes: the
-        # KMS key or the IAM role, more likely than a node).
+        # is left, so there is no leader (the same causes as VaultSealed, on several nodes). Under
+        # shamir: several pods restarted (a node group update, a zone) and wait for the operator;
+        # unsealing each by hand brings the quorum back with the second. Under awskms: the KMS key
+        # or the IAM role, more likely than a node.
         expr: |
           (
             count(
@@ -650,12 +666,13 @@ groups:
         for: 5m
         labels: { severity: critical }
         annotations:
-          summary: "{{ $value }} Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+          summary: "{{ $value }} Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
           runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
       - alert: VaultUnavailable
         # No server pod is ready for 10 minutes, whatever the reason (all sealed, Pending, a crash
         # loop, the StatefulSet scaled to 0): every login and read fails, VSO keeps the Secrets it
-        # has and stops renewing them.
+        # has and stops renewing them. All sealed and running also raises VaultSealedQuorum, whose
+        # text names the unseal; under shamir that is every pod after a restart of all three.
         expr: |
           (max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}) == 0)
             and on ()

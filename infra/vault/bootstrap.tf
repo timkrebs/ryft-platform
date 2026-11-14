@@ -1,12 +1,19 @@
 # The bootstrap's hand-written files (bootstrap/, docs/OPERATIONS.md -> Vault -> Bootstrap): the policies admin
-# and terraform, the token role terraform and the OIDC login. Nothing in this root writes them to Vault (so the
-# terraform token cannot rewrite its own policy or reach the operator's login); they are read here so that every
-# plan checks them, and tests/vault.tftest.hcl holds them to an exact allowlist (a test failure, not a warning).
+# and terraform and the token roles admin and terraform. Nothing in this root writes them to Vault (so the terraform
+# token cannot rewrite its own policy or mint an admin token); they are read here so that every plan checks them,
+# and tests/vault.tftest.hcl holds them to an exact allowlist (a test failure, not a warning).
+#
+# The operator's login is a generate-root session (D209): three unseal key shares, a root token that creates one
+# token of the token role admin and is revoked at once. The OIDC files (oidc-*.json) are the documented later
+# option, written nowhere in the rebuild: they are the Google Workspace version (D193, bound to hd = ryftapp.de,
+# and Google Workspace is gone), so a personal Google account needs a reviewed change of them first
+# (infra/vault/README.md -> bootstrap/). They stay pinned so that change is a deliberate one.
 locals {
   bootstrap = {
     oidc_config          = jsondecode(file("${path.module}/bootstrap/oidc-config.json"))
     oidc_role_admin      = jsondecode(file("${path.module}/bootstrap/oidc-role-admin.json"))
     oidc_role_enroll     = jsondecode(file("${path.module}/bootstrap/oidc-role-enroll.json"))
+    token_role_admin     = jsondecode(file("${path.module}/bootstrap/token-role-admin.json"))
     token_role_terraform = jsondecode(file("${path.module}/bootstrap/token-role-terraform.json"))
     terraform_policy     = file("${path.module}/bootstrap/terraform.hcl")
     admin_policy         = file("${path.module}/bootstrap/admin.hcl")
@@ -47,8 +54,8 @@ locals {
   }
 }
 
-# The operator's login puts a pseudonymous id into every audit line, never an email or a name (D198): those lines
-# leave the cluster (Grafana Cloud, addendum-1 section 1.7).
+# If OIDC comes back (the later option above), the login puts a pseudonymous id into every audit line, never an
+# email or a name (D198): those lines leave the cluster (Grafana Cloud, addendum-1 section 1.7).
 check "bootstrap_oidc_roles_are_pseudonymous" {
   assert {
     condition = alltrue([for r in [local.bootstrap.oidc_role_admin, local.bootstrap.oidc_role_enroll] :
@@ -62,7 +69,7 @@ check "bootstrap_oidc_roles_are_pseudonymous" {
 check "bootstrap_terraform_policy_matches_services" {
   assert {
     condition     = local.bootstrap.terraform_policy == local.bootstrap_terraform_policy_rendered
-    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. Render it from a plan, no apply: terraform -chdir=infra/vault plan -out=tfplan && terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl, then commit it. A new service: merge, `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin login, THEN apply (otherwise the apply stops on a 403 halfway). A removed service: apply first, then write the narrower policy (infra/vault/README.md -> bootstrap/)."
+    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. Render it from a plan, no apply: terraform -chdir=infra/vault plan -out=tfplan && terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl, then commit it. A new service: merge, `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin token, THEN apply (otherwise the apply stops on a 403 halfway). A removed service: apply first, then write the narrower policy (infra/vault/README.md -> bootstrap/)."
   }
 }
 

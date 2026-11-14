@@ -1,12 +1,8 @@
 locals {
-  # ryft/api in Vault, ryft-api in Kubernetes, role/policy/SA named after the service.
-  # Resources take Vault namespaces relative to the provider's namespace (vault_ns);
-  # the operator and the vault CLI need the path from the root (vault_ns_full), which
-  # on HCP starts with admin/.
+  # ryft-api in Kubernetes; role, policy, mount kv-api and service account named after the service on the
+  # in-cluster Vault (k8s.tf). CE has no namespaces: the isolation is the mount, the role and the policy (D187).
   services = {
     for name, s in var.services : name => {
-      vault_ns        = "${var.project}/${name}"
-      vault_ns_full   = join("/", compact([var.vault_parent_namespace_root, var.project, name]))
       k8s_ns          = coalesce(s.k8s_namespace, "${var.project}-${name}")
       service_account = coalesce(s.service_account, name)
       secret_keys     = s.secret_keys
@@ -20,6 +16,27 @@ locals {
       restart_targets = concat(s.workload_kind == "" ? [] : [{ kind = s.workload_kind, name = coalesce(s.workload_name, name) }], s.extra_restarts)
     }
   }
+
+  # What the in-cluster Vault serves (the chart in infra/aws/kubernetes, output vault_address_in_cluster): every
+  # generated VaultConnection names it (D207). A local, not a variable: the admission chart's P4 admits exactly this
+  # address (vaultAddresses).
+  vault_k8s_address_for_cluster = "https://vault.vault.svc:8200"
+
+  # One KV v2 mount per service (k8s.tf). The generator and the terraform policy's render (bootstrap.tf) read the
+  # same names.
+  k8s_kv_mount = { for name in keys(var.services) : name => "kv-${name}" }
+
+  # The snapshot CronJob's identity (charts/vault-extras, k8s.tf): role vault-snapshot, bound to vault/vault-snapshot,
+  # carrying policy snapshot. k8s.tf and the terraform policy's render (bootstrap.tf) read these names, so the token
+  # can write exactly this role and this policy.
+  k8s_snapshot = { name = "vault-snapshot", policy = "snapshot", service_account = "vault-snapshot", k8s_ns = "vault" }
+
+  # Names a service may not have: policies and roles share the root namespace with Vault's own (default, root), the
+  # bootstrap's (admin, terraform) and the snapshot job's (role vault-snapshot, policy snapshot), and kv-operator
+  # holds the demo password (variables.tf validates var.services against this list). The admission chart's
+  # vso.reservedServices names the same seven names (keep the two lists equal); a kv-snapshot mount cannot exist
+  # while no service has that name.
+  reserved_service_names = ["default", "root", "admin", "terraform", "vault-snapshot", "snapshot", "operator"]
 
   # Postgres role per service (created by migration 0009; the migrate job sets the
   # passwords generated here) and RabbitMQ user per client (deploy/rabbitmq/topology).

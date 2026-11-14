@@ -1,9 +1,20 @@
 # Grafana Cloud Kubernetes Monitoring (chart grafana/k8s-monitoring 4.5.3), as the
 # Grafana Cloud onboarding generated it, adapted to RYFT (docs/DECISIONS.md D51):
 #   - namespace monitoring (created by infra/vault, Pod Security privileged), not ryft;
-#   - the Fleet Management token comes from Secret ryft-secrets (key GC_TOKEN), which
-#     the Vault Secrets Operator syncs from Vault admin/ryft/monitoring. It is never
-#     on a command line or in this file.
+#   - the Fleet Management token comes from Secret ryft-secrets (keys GC_TOKEN and
+#     PROM_USERNAME), which the Vault Secrets Operator syncs from the in-cluster Vault,
+#     RYFT's only Vault (https://vault.vault.svc:8200; mount kv-monitoring, path config,
+#     Kubernetes auth role monitoring; D207), through the VaultConnection, VaultAuth and
+#     VaultStaticSecret that infra/vault generates into
+#     deploy/k8s/overlays/vault-namespaces/monitoring. The token is
+#     infra/vault's service_secrets.monitoring.GC_TOKEN; it is never on a command line
+#     or in this file.
+# From an empty cluster this chart comes after the Vault init and infra/vault's apply (the
+# Secret cannot exist before), so the Vault pods already run when the collectors start.
+# Of the three exclusions of `vault`, only the SDK injector's is in this file
+# (telemetryServices.sdkInjector below); the pod-log and Beyla exclusions are Fleet
+# Management settings in Grafana Cloud and must be checked there before this install
+# (docs/OBSERVABILITY.md → From an empty cluster: prerequisites, the token and its scopes).
 # What the collector gathers is configured remotely in Grafana Cloud (Fleet
 # Management). RYFT's pod logs must stay out of it (they carry users' daily scores;
 # they go to CloudWatch instead): see docs/OBSERVABILITY.md → Grafana Cloud.
@@ -110,7 +121,8 @@ selfReporting:
 # node's container log files (gather method "volumes", the filesystem-log-reader preset already
 # mounts them) and pushes to vault-logs. No connection to Vault, so no NetworkPolicy change.
 # Fleet Management's own pod-log pipeline must exclude `ryft-.*|vault` (a Grafana UI setting,
-# OPERATIONS -> Vault logs), or the lines arrive twice and shaped by remote config.
+# OPERATIONS -> Monitoring -> Fleet exclusions of vault), or the lines arrive twice and shaped
+# by remote config.
 # OFF until vault-logs has its URL and ryft-secrets has LOKI_USERNAME: with the key missing,
 # the daemonset's whole local config would fail to evaluate. Turning it on is one reviewed PR
 # (enabled: true plus the URL above), then `make monitoring-apply`.
@@ -438,8 +450,12 @@ telemetryServices:
     # defaults are repeated first. A new ryft-* namespace is added here too
     # (docs/OBSERVABILITY.md -> Grafana Cloud). Vault (D186) and the operator that reads it
     # are excluded as well: a mutated Vault pod would run an injected container next to the
-    # unsealed keyring and with its Pod Identity token, and this webhook's configuration is
-    # steered from Grafana Fleet. Apply this before infra/aws/kubernetes creates namespace vault.
+    # unsealed keyring (and, under vault_seal = "awskms", the pod's Pod Identity credentials
+    # for the unseal key), and what the injector injects is steered from Grafana Fleet. The
+    # exclusion lives here, in the chart's webhook, not in Fleet: it is in force from this
+    # chart's first install, and the webhook acts on pod CREATE only, so Vault pods that
+    # started before the install (a rebuild from empty: Vault comes first) were never seen by
+    # it. Never install this chart without these entries.
     webhook:
       excludedNamespaces:
         # chart defaults (4.5.3)

@@ -77,6 +77,17 @@ variable "admission_vault_namespaces_dir" {
   default     = null
 }
 
+variable "vault_seal" {
+  description = "How Vault's root key is sealed (D208). shamir (default): no seal stanza, so Vault's own Shamir seal; the operator's init splits the unseal key into shares, and every Vault pod that starts stays sealed until it is unsealed by hand; no AWS identity and no egress out of the cluster for the server pods. awskms: auto-unseal with infra/aws's key alias/<cluster>-vault-unseal through the Pod Identity role of vault/vault (D189), and the server pods' egress to KMS. Changing it on an initialised Vault is a seal migration (docs/OPERATIONS.md -> Vault): apply, then restart and `vault operator unseal -migrate` pod by pod."
+  type        = string
+  default     = "shamir"
+
+  validation {
+    condition     = contains(["shamir", "awskms"], var.vault_seal)
+    error_message = "vault_seal must be shamir or awskms."
+  }
+}
+
 variable "vault_collector_peer" {
   description = "Admits the monitoring collector (alloy-deployment) to Vault's port 8200 for the metrics scrape (charts/vault-extras peers.collector, D194). Leave false until the operator's own init is done, the root token is revoked and the hard gates G1-G4 hold; set it false again before a restore into a fresh cluster (OPERATIONS -> Vault -> Disaster recovery)."
   type        = bool

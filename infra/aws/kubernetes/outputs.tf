@@ -44,9 +44,14 @@ output "vault_port_forward_command" {
   value       = "kubectl --context ${var.cluster_name} -n ${local.vault_namespace} port-forward svc/vault-active 8200:8200"
 }
 
+output "vault_seal" {
+  description = "Vault's seal (var.vault_seal, D208): shamir (every pod that starts is unsealed by hand with the key shares of the operator's init) or awskms (auto-unseal with infra/aws's unseal key)"
+  value       = var.vault_seal
+}
+
 output "vault_unseal_role_arn" {
-  description = "The Pod Identity role vault/vault unseals with (kms:Encrypt, kms:Decrypt, kms:DescribeKey on the unseal key only)"
-  value       = module.vault_unseal_pod_identity.iam_role_arn
+  description = "The Pod Identity role vault/vault unseals with under awskms (kms:Encrypt, kms:Decrypt, kms:DescribeKey on the unseal key only); null under shamir, where no role exists"
+  value       = one(module.vault_unseal_pod_identity[*].iam_role_arn)
 }
 
 output "vault_snapshot_role_arn" {

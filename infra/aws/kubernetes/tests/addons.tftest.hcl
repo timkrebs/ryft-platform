@@ -995,21 +995,13 @@ run "vault_is_the_pinned_community_image_with_three_raft_replicas" {
   }
 }
 
-run "vault_config_has_mlock_off_the_kms_seal_tls_reload_and_metrics" {
+# The default seal (Shamir). The seal stanza and its key are vault_seal_awskms_renders_the_kms_stanza_and_association's.
+run "vault_config_has_mlock_off_tls_reload_and_metrics" {
   command = plan
 
   assert {
     condition     = strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "disable_mlock = true")
     error_message = "disable_mlock = true is required with Raft (Vault refuses to start without it) and lets the pod run without IPC_LOCK"
-  }
-  assert {
-    condition = (
-      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "seal \"awskms\" {") &&
-      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "region     = \"eu-central-1\"") &&
-      strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "kms_key_id = \"arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b\"") &&
-      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "alias/")
-    )
-    error_message = "the awskms seal names the key's ARN from the alias (never the alias itself, which can be re-pointed) and the region (not left to the injected AWS_REGION)"
   }
   assert {
     condition = alltrue([for w in ["access_key", "secret_key", "session_token", "shared_creds", "role_arn", "web_identity_token_file"] :
@@ -1066,6 +1058,136 @@ run "vault_config_has_mlock_off_the_kms_seal_tls_reload_and_metrics" {
       strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "storage \"raft\" {\n  path = \"/vault/data\"\n")
     )
     error_message = "the UI on, the cluster name, and Raft on the data volume (/vault/data, the chart's dataStorage mount)"
+  }
+}
+
+# --- The seal (var.vault_seal, D208): Shamir by default, awskms (D189) one variable away ---
+
+run "vault_seal_is_shamir_by_default" {
+  command = plan
+
+  assert {
+    condition     = var.vault_seal == "shamir" && output.vault_seal == "shamir"
+    error_message = "the seal defaults to shamir (D208)"
+  }
+  assert {
+    condition = (
+      length(regexall("(?m)^seal ", yamldecode(helm_release.vault.values[0]).server.ha.raft.config)) == 0 &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "awskms") &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "kms_key_id") &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "arn:")
+    )
+    error_message = "under Shamir the config has no seal stanza (Vault's own Shamir seal) and names no KMS key"
+  }
+  assert {
+    condition     = strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "  }\n}\n\nservice_registration \"kubernetes\" {}\n\ntelemetry {\n")
+    error_message = "under Shamir one blank line separates the storage block from service_registration, both at column 0: the seal's directives leave nothing behind"
+  }
+  assert {
+    condition = (
+      length(data.aws_kms_alias.vault_unseal) == 0 &&
+      local.vault_unseal_key_arn == null &&
+      length(module.vault_unseal_pod_identity) == 0 &&
+      output.vault_unseal_role_arn == null
+    )
+    error_message = "under Shamir the unseal alias is not read, and neither the unseal role nor its Pod Identity association for vault/vault exists"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).kmsSeal == false &&
+      length([for k in keys(yamldecode(helm_release.vault.values[0]).server.extraEnvironmentVars) : k if startswith(k, "AWS_")]) == 0 &&
+      !can(yamldecode(helm_release.vault.values[0]).server.serviceAccount.annotations) &&
+      !can(yamldecode(helm_release.vault.values[0]).server.extraSecretEnvironmentVars)
+    )
+    error_message = "under Shamir the server pods get no AWS egress (vault-extras kmsSeal false: no public 443, no Pod Identity agent) and no AWS identity of any kind: no AWS_* variable, no IRSA annotation, no secret env"
+  }
+  # The chart side of kmsSeal: in the vault-server policy (from its name to the next document), the public 443 rule
+  # and the Pod Identity agent rule exist once each, and only inside `{{- if .Values.kmsSeal }}`.
+  assert {
+    condition = (
+      length(regexall("0\\.0\\.0\\.0/0|169\\.254\\.170\\.23/32", regex("(?s)\\n  name: vault-server\\n(.*?)\\n---\\n", file("${path.module}/charts/vault-extras/templates/networkpolicies.yaml"))[0])) == 2 &&
+      length(regexall("0\\.0\\.0\\.0/0|169\\.254\\.170\\.23/32", replace(regex("(?s)\\n  name: vault-server\\n(.*?)\\n---\\n", file("${path.module}/charts/vault-extras/templates/networkpolicies.yaml"))[0], "/(?s)\\{\\{- if \\.Values\\.kmsSeal \\}\\}.*?\\{\\{- end \\}\\}/", ""))) == 0
+    )
+    error_message = "vault-server's egress to 0.0.0.0/0 (KMS) and to the Pod Identity agent must sit inside {{- if .Values.kmsSeal }}, and nowhere else in that policy"
+  }
+  assert {
+    condition     = yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).kmsSeal == true
+    error_message = "the chart's own default keeps the render scripts/tests/vault_extras_chart_test.sh pins (the awskms shape); vault.tf always sets kmsSeal"
+  }
+}
+
+run "vault_seal_awskms_renders_the_kms_stanza_and_association" {
+  command = plan
+
+  variables {
+    vault_seal = "awskms"
+  }
+
+  assert {
+    condition     = strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "  }\n}\n\nseal \"awskms\" {\n  region     = \"eu-central-1\"\n  kms_key_id = \"arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b\"\n}\n\nservice_registration \"kubernetes\" {}\n\ntelemetry {\n")
+    error_message = "awskms renders exactly the stanza of before (D189): after the storage block and a blank line, the region (not left to the injected AWS_REGION) and the key's ARN from the alias, then a blank line and service_registration, all at column 0"
+  }
+  assert {
+    condition = (
+      length(regexall("(?m)^seal ", yamldecode(helm_release.vault.values[0]).server.ha.raft.config)) == 1 &&
+      !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, "alias/")
+    )
+    error_message = "one seal stanza, naming the key's ARN, never the alias (an alias can be re-pointed)"
+  }
+  assert {
+    condition = alltrue([for w in ["access_key", "secret_key", "session_token", "shared_creds", "role_arn", "web_identity_token_file"] :
+    !strcontains(yamldecode(helm_release.vault.values[0]).server.ha.raft.config, w)])
+    error_message = "no static or IRSA credentials in the seal: Pod Identity only"
+  }
+  assert {
+    condition = (
+      length(data.aws_kms_alias.vault_unseal) == 1 &&
+      data.aws_kms_alias.vault_unseal[0].name == "alias/ryft-prod-euc1-vault-unseal" &&
+      local.vault_unseal_key_arn == "arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b" &&
+      length(module.vault_unseal_pod_identity) == 1 &&
+      length(module.vault_unseal_pod_identity[0].associations) == 1 &&
+      module.vault_unseal_pod_identity[0].associations["vault"].namespace == "vault" &&
+      module.vault_unseal_pod_identity[0].associations["vault"].service_account == "vault" &&
+      module.vault_unseal_pod_identity[0].associations["vault"].cluster_name == "ryft-prod-euc1"
+    )
+    error_message = "awskms reads infra/aws's alias and creates the unseal role with one Pod Identity association, to exactly vault/vault, as before (D189)"
+  }
+  assert {
+    condition = (
+      yamldecode(helm_release.vault_extras.values[0]).kmsSeal == true &&
+      length([for k in keys(yamldecode(helm_release.vault.values[0]).server.extraEnvironmentVars) : k if startswith(k, "AWS_")]) == 0 &&
+      !can(yamldecode(helm_release.vault.values[0]).server.serviceAccount.annotations) &&
+      output.vault_seal == "awskms"
+    )
+    error_message = "awskms gives the server pods their egress to KMS (public 443) and to the Pod Identity agent, and still no AWS_* variable or IRSA annotation (Pod Identity's credentials only)"
+  }
+}
+
+run "rejects_an_unknown_seal" {
+  command = plan
+
+  variables {
+    vault_seal = "transit"
+  }
+
+  expect_failures = [var.vault_seal]
+}
+
+# Under Shamir the alias is never read: a value that fails the awskms plan (unseal_key_in_another_account_fails_the_plan)
+# does not touch it.
+run "shamir_ignores_the_unseal_alias" {
+  command = plan
+
+  override_data {
+    target = data.aws_kms_alias.vault_unseal
+    values = {
+      target_key_arn = "arn:aws:kms:eu-central-1:210987654321:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+    }
+  }
+
+  assert {
+    condition     = length(data.aws_kms_alias.vault_unseal) == 0 && length(module.vault_unseal_pod_identity) == 0
+    error_message = "under Shamir the plan neither reads nor checks the unseal alias"
   }
 }
 
@@ -1278,7 +1400,7 @@ run "vault_release_does_not_wait_and_starts_after_its_identity" {
       can(regex("depends_on\\s*=\\s*\\[[^\\]]*module\\.vault_unseal_pod_identity[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", ""))) &&
       can(regex("depends_on\\s*=\\s*\\[[^\\]]*helm_release\\.vault_extras[,\\]]", replace(regex("(?s)resource \"helm_release\" \"vault\" \\{\\n(.*?)\\n\\}\\n", file("${path.module}/vault.tf"))[0], "/(?m)#.*$/", "")))
     )
-    error_message = "helm_release.vault depends on the unseal pod identity association (credentials are injected at pod creation only) and on the extras (the TLS Secret and the default deny before the first pod)"
+    error_message = "helm_release.vault depends on the unseal pod identity association (awskms: credentials are injected at pod creation only; under Shamir the module has no instance) and on the extras (the TLS Secret and the default deny before the first pod)"
   }
   assert {
     condition = (
@@ -1303,6 +1425,10 @@ run "vault_release_does_not_wait_and_starts_after_its_identity" {
 run "vault_unseal_role_may_only_use_its_key" {
   command = plan
 
+  variables {
+    vault_seal = "awskms"
+  }
+
   assert {
     condition = (
       length(local.vault_unseal_policy_statements) == 1 &&
@@ -1313,15 +1439,19 @@ run "vault_unseal_role_may_only_use_its_key" {
     error_message = "the unseal role may Encrypt, Decrypt and DescribeKey on the unseal key's ARN, nothing else"
   }
   assert {
-    condition     = data.aws_kms_alias.vault_unseal.name == "alias/ryft-prod-euc1-vault-unseal"
+    condition     = data.aws_kms_alias.vault_unseal[0].name == "alias/ryft-prod-euc1-vault-unseal"
     error_message = "the key is infra/aws's, found by the alias PR 1 creates (alias/<cluster>-vault-unseal)"
   }
   assert {
+    condition     = !contains(flatten([for s in local.vault_snapshot_policy_statements : s.resources]), local.vault_unseal_key_arn)
+    error_message = "the snapshot role never names the unseal key"
+  }
+  assert {
     condition = (
-      module.vault_unseal_pod_identity.associations["vault"].namespace == "vault" &&
-      module.vault_unseal_pod_identity.associations["vault"].service_account == "vault" &&
-      module.vault_unseal_pod_identity.associations["vault"].cluster_name == "ryft-prod-euc1" &&
-      length(module.vault_unseal_pod_identity.associations) == 1 &&
+      module.vault_unseal_pod_identity[0].associations["vault"].namespace == "vault" &&
+      module.vault_unseal_pod_identity[0].associations["vault"].service_account == "vault" &&
+      module.vault_unseal_pod_identity[0].associations["vault"].cluster_name == "ryft-prod-euc1" &&
+      length(module.vault_unseal_pod_identity[0].associations) == 1 &&
       yamldecode(helm_release.vault.values[0]).server.serviceAccount.name == "vault"
     )
     error_message = "one association, to exactly vault/vault: the service account the chart creates for the server"
@@ -1344,6 +1474,10 @@ run "vault_unseal_role_may_only_use_its_key" {
 run "unseal_key_in_another_region_fails_the_plan" {
   command = plan
 
+  variables {
+    vault_seal = "awskms"
+  }
+
   override_data {
     target = data.aws_kms_alias.vault_unseal
     values = {
@@ -1357,6 +1491,10 @@ run "unseal_key_in_another_region_fails_the_plan" {
 run "unseal_key_in_another_account_fails_the_plan" {
   command = plan
 
+  variables {
+    vault_seal = "awskms"
+  }
+
   override_data {
     target = data.aws_kms_alias.vault_unseal
     values = {
@@ -1367,16 +1505,16 @@ run "unseal_key_in_another_account_fails_the_plan" {
   expect_failures = [helm_release.vault]
 }
 
-run "vault_extras_peers_off_by_default_and_the_role_names_the_pods" {
+run "vault_extras_admits_vso_from_the_first_apply_and_the_role_names_the_pods" {
   command = plan
 
   assert {
     condition = (
-      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false &&
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.vso.enabled == false &&
       yamldecode(file("${path.module}/charts/vault-extras/values.yaml")).peers.collector.enabled == false
     )
-    error_message = "no ingress from VSO until the first cutover; both peers are off in the chart's defaults"
+    error_message = "VSO reaches 8200 from the first apply (D207: the only Vault, no cutover); both peers stay off in the chart's own defaults"
   }
   assert {
     condition     = yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == false
@@ -1401,9 +1539,9 @@ run "vault_collector_peer_opens_only_the_collector" {
   assert {
     condition = (
       yamldecode(helm_release.vault_extras.values[0]).peers.collector.enabled == true &&
-      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == false
+      yamldecode(helm_release.vault_extras.values[0]).peers.vso.enabled == true
     )
-    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO off"
+    error_message = "vault_collector_peer admits the collector's scrape (job ryft/vault, D194) and leaves VSO's rule as it is"
   }
 }
 
@@ -1473,8 +1611,10 @@ run "vault_snapshot_role_may_only_put_snapshots" {
     condition     = data.aws_kms_alias.vault_snapshots.name == "alias/ryft-prod-euc1-vault-snapshots" && local.vault_snapshots_bucket == "ryft-prod-euc1-vault-snapshots-123456789012"
     error_message = "the key and the bucket are infra/aws's (alias/<cluster>-vault-snapshots, <cluster>-vault-snapshots-<account>)"
   }
+  # The unseal key's ARN as the provider-wide mock returns it (the alias itself is read under awskms only, where
+  # vault_unseal_role_may_only_use_its_key checks the same against the data source).
   assert {
-    condition     = !contains(flatten([for s in local.vault_snapshot_policy_statements : s.resources]), data.aws_kms_alias.vault_unseal.target_key_arn)
+    condition     = !contains(flatten([for s in local.vault_snapshot_policy_statements : s.resources]), "arn:aws:kms:eu-central-1:123456789012:key/0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b")
     error_message = "the snapshot role never names the unseal key"
   }
   assert {

@@ -1152,9 +1152,36 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, pod: vault-1 }
             exp_annotations:
-              summary: "vault-1 runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
       - { eval_time: 20m, alertname: VaultSealedQuorum, exp_alerts: [] }
+  - name: shamir, one pod restarts and stays sealed overnight, VaultSealed holds until the unseal by hand
+    interval: 1m
+    input_series:
+      # D208: vault-1 restarts at 10 minutes and stays sealed until the operator unseals it at
+      # 8 h (480 m). Its own label is "false" from the restart on; vault-0 and vault-2 keep
+      # vault-initialized="true", so the gate does not lapse however long the operator takes.
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x600' }
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x600' }
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x10 _x469 1x120' }
+      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x10 1x469' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x600' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x468 1x120' }
+      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x600' }
+      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x600' }
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: VaultSealed
+        exp_alerts:
+          - exp_labels: { severity: warning, pod: vault-1 }
+            exp_annotations:
+              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
+              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
+      - { eval_time: 7h, alertname: VaultSealedQuorum, exp_alerts: [] }
+      # Unsealed at 480 m: ready again, resolved.
+      - { eval_time: 485m, alertname: VaultSealed, exp_alerts: [] }
   - name: two vault pods sealed, the quorum is gone
     interval: 1m
     input_series:
@@ -1173,7 +1200,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
       # One alert for the quorum, not one per pod as well.
       - { eval_time: 20m, alertname: VaultSealed, exp_alerts: [] }
@@ -1380,7 +1407,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, pod: vault-1 }
             exp_annotations:
-              summary: "vault-1 runs but has not been ready for 5 minutes (sealed, or a standby without the active node)"
+              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
       - eval_time: 30m
         alertname: VaultNoActiveNode
@@ -1410,14 +1437,15 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
   - name: every pod restarts and stays sealed, the gate held by the last snapshot alone
     interval: 1m
     input_series:
-      # At 30 minutes every server restarts (a node group replaced) and none unseals (the KMS key
-      # unreachable): Vault's service registration writes vault-initialized="false" at start, so
-      # the label half of the gate lapses at 1 h 30 m; the snapshot's success keeps it.
+      # At 30 minutes every server restarts (a node group replaced) and none unseals (shamir: the
+      # operator has not unsealed them yet; awskms: the KMS key unreachable): Vault's service
+      # registration writes vault-initialized="false" at start, so the label half of the gate
+      # lapses at 1 h 30 m; the snapshot's success keeps it.
       - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x30' }
       - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
       - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x180' }
@@ -1438,7 +1466,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
       - eval_time: 150m
         alertname: VaultUnavailable
@@ -1472,7 +1500,7 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone"
+              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
               runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
       - eval_time: 45m
         alertname: VaultUnavailable

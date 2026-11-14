@@ -5,7 +5,7 @@ Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
 
 | Root | What | Lifetime |
 | --- | --- | --- |
-| `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only) | long-lived; survives cluster rebuilds |
+| `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only), the mail records (no mail by default, D212) | long-lived; survives cluster rebuilds |
 | `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons; Vault's KMS keys and snapshot bucket | the cluster; the Vault keys and bucket outlive it (`prevent_destroy`) |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
@@ -24,7 +24,7 @@ infra/aws/
 │                                                             (terraform-aws-modules/eks v21)
 ├── tests/ryft.tftest.hcl      terraform test, providers mocked
 ├── tests/vault.tftest.hcl     the Vault keys and bucket (mocked; greps prevent_destroy)
-├── dns/                       root: zone + CAA                     (tests/dns.tftest.hcl)
+├── dns/                       root: zone + CAA + mail records      (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
     ├── charts/admission-policy local chart: ValidatingAdmissionPolicies P1-P11, P13 + bindings (D120)
@@ -36,7 +36,7 @@ infra/aws/
 
 | Resource | Name / value |
 | --- | --- |
-| Hosted zone | `ryftapp.de`, `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org` |
+| Hosted zone | `ryftapp.de`, `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org`; mail (D212): by default null MX `0 .`, SPF `v=spf1 -all`, DMARC `p=reject` with strict alignment, no DKIM. A provider's values go in `dns/terraform.tfvars` (Google Workspace is the example in `dns/terraform.tfvars.example`) |
 | VPC | `ryft-prod-euc1`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
 | EKS cluster | `ryft-prod-euc1`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
 | Node group | `ryft-prod-euc1-default-…`: 3 × t3.large (AL2023), one per zone |
@@ -45,7 +45,7 @@ infra/aws/
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
-| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
+| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal, used only with `vault_seal = "awskms"` in `kubernetes/`; under the default Shamir seal it is kept unused, D208, about $1 a month) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
 | Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
 
 Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
@@ -53,6 +53,7 @@ Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api p
 
 ### Unseal key allowlist (optional, off by default)
 
+Only meaningful with `vault_seal = "awskms"` in `kubernetes/`; under Shamir no role uses the key.
 Without it, any identity in the account whose IAM policy allows `kms:Decrypt` on `*` (an
 administrator, a broad CI role) can use Vault's unseal key. `vault_unseal_allowed_principal_arns`
 adds a Deny to the unseal key's policy: `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*` and
@@ -170,10 +171,11 @@ those go to deny before the Vault bootstrap, whatever step the `ryft-*` rollout 
 run for them and no webhook can be down; the cost is nil (API server CPU only).
 
 **It ships off.** `admission-values.yaml` holds `enabled: false`, so a plan creates nothing.
-It also holds the Vault addresses P4 admits, `vaultAddresses` (HCP's and the in-cluster
-`https://vault.vault.svc:8200` while the namespaces move; a check requires every generated
-`deploy/k8s/overlays/vault-namespaces/*/vault.yaml` to carry one of them), Argo CD's service account names and
-the action of each binding, `audit` or `deny`:
+It also holds the Vault addresses P4 admits, `vaultAddresses` (the in-cluster
+`https://vault.vault.svc:8200`, D207, and HCP's dead address until the follow-up PR that commits
+the overlays infra/vault regenerates, `docs/work/2026-11-13-rebuild/followup-overlays.md`; a check
+requires every generated `deploy/k8s/overlays/vault-namespaces/*/vault.yaml` to carry one of them),
+Argo CD's service account names and the action of each binding, `audit` or `deny`:
 
 | `actions` value | `validationActions` | Meaning |
 | --- | --- | --- |
@@ -197,7 +199,9 @@ it). After Step A, reverting T12-g by git needs the break-glass.
 Variables (all optional; see `terraform.tfvars.example`): `admission_break_glass` (bool),
 `admission_actions` (a one-plan override per binding), `admission_enabled` (a plan-only
 override of the file; never apply with it set) and `admission_scoped_rbac_file` (a test knob
-for the T12-g precondition). For Vault: `vault_collector_peer` (bool, default false), which
+for the T12-g precondition). For Vault: `vault_seal` (`shamir`, the default: no seal stanza,
+no unseal role or association, no unseal alias read, and the server's public 443 egress is
+not rendered; `awskms`: the KMS auto-unseal, D208), and `vault_collector_peer` (bool, default false), which
 admits the monitoring collector to Vault's 8200; true only after your own init (OPERATIONS →
 Vault metrics (once)), false again before a restore into a fresh cluster.
 
