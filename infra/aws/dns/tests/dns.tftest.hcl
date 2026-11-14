@@ -1,168 +1,114 @@
-# Plan-only (the zone has prevent_destroy); the AWS provider is mocked. The file sets no variables: the defaults
-# are the production values (D212, no mail).
+# Plan-only (the zone has prevent_destroy); the AWS provider is mocked. The file sets no variables: the
+# defaults are the production values (D213 the domain, D214 the Microsoft 365 records).
 mock_provider "aws" {}
 
 run "zone_and_caa_for_the_domain" {
   command = plan
 
   assert {
-    condition     = aws_route53_zone.this.name == "ryftapp.de"
-    error_message = "the zone must be for ryftapp.de"
+    condition     = aws_route53_zone.ryftlab_de.name == "ryftlab.de"
+    error_message = "the zone must be for ryftlab.de"
   }
 
   assert {
-    condition     = aws_route53_record.caa.records == toset(["0 issue \"letsencrypt.org\""])
+    condition     = aws_route53_record.caa.name == "ryftlab.de" && aws_route53_record.caa.records == toset(["0 issue \"letsencrypt.org\""])
     error_message = "only Let's Encrypt may issue for the apex"
   }
 
   assert {
-    condition     = aws_route53_record.caa_wildcard.name == "*.ryftapp.de" && aws_route53_record.caa_wildcard.records == toset(["0 issuewild \"letsencrypt.org\""])
+    condition     = aws_route53_record.caa_wildcard.name == "*.ryftlab.de" && aws_route53_record.caa_wildcard.records == toset(["0 issuewild \"letsencrypt.org\""])
     error_message = "wildcard issuance must be limited to Let's Encrypt"
   }
 }
 
-# D212: no mail provider yet. The defaults say the domain neither receives nor sends mail.
-run "no_mail_by_default" {
+# D213: the previous zone left the configuration, so the plan destroys it. One zone is configured, and it
+# is not at the old address (a zone still at aws_route53_zone.this would be replaced in place, which
+# prevent_destroy refuses).
+run "the_old_zone_is_gone" {
   command = plan
 
   assert {
-    condition     = aws_route53_record.mx.name == "ryftapp.de" && aws_route53_record.mx.records == toset(["0 ."])
-    error_message = "the default MX is the RFC 7505 null MX (0 .): the domain accepts no mail"
+    condition = (
+      length(regexall("resource \"aws_route53_zone\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      !strcontains(join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]), "resource \"aws_route53_zone\" \"this\"")
+    )
+    error_message = "exactly one zone, aws_route53_zone.ryftlab_de; the old zone's block must stay removed"
   }
 
   assert {
-    condition     = aws_route53_record.apex_txt.name == "ryftapp.de" && aws_route53_record.apex_txt.records == toset(["v=spf1 -all"])
-    error_message = "the default apex TXT is SPF -all alone: no host may send as the domain, and no provider verification"
+    condition     = !strcontains(file("${path.module}/main.tf"), "moved {")
+    error_message = "no moved block: the old records (dkim[0] among them) are destroyed with their zone, not moved"
   }
 
   assert {
-    condition     = aws_route53_record.dmarc.name == "_dmarc.ryftapp.de" && aws_route53_record.dmarc.records == toset(["v=DMARC1; p=reject; adkim=s; aspf=s"])
-    error_message = "the default DMARC rejects with strict alignment and has no rua (there is no mailbox for reports)"
-  }
-
-  assert {
-    condition     = length(aws_route53_record.dkim) == 0
-    error_message = "no DKIM record without a provider's key"
-  }
-
-  assert {
-    condition = !anytrue([
-      for v in concat(tolist(aws_route53_record.mx.records), tolist(aws_route53_record.apex_txt.records), tolist(aws_route53_record.dmarc.records)) :
-      strcontains(v, "google") || strcontains(v, "mailto:")
+    condition = alltrue([
+      for n in concat(
+        [aws_route53_record.caa.name, aws_route53_record.caa_wildcard.name, aws_route53_record.mx.name, aws_route53_record.apex_txt.name, aws_route53_record.dmarc.name],
+        [for r in aws_route53_record.mail_cname : r.name],
+        [for r in aws_route53_record.mail_srv : r.name],
+      ) : n == "ryftlab.de" || endswith(n, ".ryftlab.de")
     ])
-    error_message = "the no-mail set names no provider and no report address"
+    error_message = "every record is in ryftlab.de"
   }
 }
 
-# The Google Workspace set of terraform.tfvars.example (D142) is one tfvars block away and renders the records as
-# they were before D212. A 2048-bit key is ~400 characters: longer than one Route 53 string (255).
-run "google_workspace_is_one_tfvars_block_away" {
+# D214: Microsoft 365 through GoDaddy, exactly the values GoDaddy shows.
+run "microsoft_365_mail" {
   command = plan
 
-  variables {
-    mx_records             = ["1 smtp.google.com"]
-    apex_txt_verifications = ["google-site-verification=eUj_Gi_u5TMp0qhySZvarTISldu_UzkiJkRoIJBmfR8"]
-    spf                    = "v=spf1 include:_spf.google.com ~all"
-    dkim_selector          = "google"
-    dkim_record            = "v=DKIM1; k=rsa; p=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    dmarc                  = "v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s"
+  assert {
+    condition     = aws_route53_record.mx.records == toset(["0 ryftlab-de.mail.protection.outlook.com."])
+    error_message = "MX points at the tenant's Exchange Online endpoint"
   }
 
   assert {
-    condition     = aws_route53_record.mx.name == "ryftapp.de" && aws_route53_record.mx.records == toset(["1 smtp.google.com"])
-    error_message = "MX must point at Google Workspace"
+    condition     = aws_route53_record.apex_txt.records == toset(["NETORGFT21311797.onmicrosoft.com", "v=spf1 include:secureserver.net -all"])
+    error_message = "the apex TXT set holds the tenant verification and the SPF as two values, without quotes"
   }
 
   assert {
-    condition = aws_route53_record.apex_txt.records == toset([
-      "google-site-verification=eUj_Gi_u5TMp0qhySZvarTISldu_UzkiJkRoIJBmfR8",
-      "v=spf1 include:_spf.google.com ~all",
-    ])
-    error_message = "the apex TXT must hold verification and SPF as two separate values, without quotes"
-  }
-
-  assert {
-    condition     = length(aws_route53_record.dkim) == 1 && aws_route53_record.dkim[0].name == "google._domainkey.ryftapp.de"
-    error_message = "DKIM sits at the selector under _domainkey"
+    condition     = aws_route53_record.dmarc.name == "_dmarc.ryftlab.de" && aws_route53_record.dmarc.records == toset(["v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:dmarc_rua@onsecureserver.net;"])
+    error_message = "DMARC quarantines with relaxed alignment and reports to GoDaddy's address"
   }
 
   assert {
     condition = (
-      length(var.dkim_record) > 255 &&
-      !startswith(one(aws_route53_record.dkim[0].records), "\"") &&
-      !endswith(one(aws_route53_record.dkim[0].records), "\"") &&
-      length(split("\" \"", one(aws_route53_record.dkim[0].records))) >= 2 &&
-      alltrue([for s in split("\" \"", one(aws_route53_record.dkim[0].records)) : length(s) <= 255 && !strcontains(s, "\"")]) &&
-      join("", split("\" \"", one(aws_route53_record.dkim[0].records))) == var.dkim_record
+      length(aws_route53_record.mail_cname) == 6 &&
+      alltrue([for r in aws_route53_record.mail_cname : r.type == "CNAME" && r.ttl == 3600]) &&
+      aws_route53_record.mail_cname["autodiscover"].records == toset(["autodiscover.outlook.com."]) &&
+      aws_route53_record.mail_cname["selector2._domainkey"].name == "selector2._domainkey.ryftlab.de" &&
+      aws_route53_record.mail_cname["selector2._domainkey"].records == toset(["selector2-ryftlab-de._domainkey.netorgft21311797.d-v1.dkim.mail.microsoft."]) &&
+      aws_route53_record.mail_cname["email"].records == toset(["email.secureserver.net."]) &&
+      aws_route53_record.mail_cname["lyncdiscover"].records == toset(["webdir.online.lync.com."]) &&
+      aws_route53_record.mail_cname["sip"].records == toset(["sipdir.online.lync.com."]) &&
+      aws_route53_record.mail_cname["msoid"].records == toset(["clientconfig.microsoftonline-p.net."])
     )
-    error_message = "the DKIM value must be chunk1\" \"chunk2 with no outer quotes (the provider adds them), chunks of at most 255 characters that join back to the key"
+    error_message = "the six CNAMEs as GoDaddy shows them"
   }
 
   assert {
-    condition     = aws_route53_record.dmarc.name == "_dmarc.ryftapp.de" && aws_route53_record.dmarc.records == toset(["v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s"])
-    error_message = "DMARC starts at p=none with strict alignment and reports to support@"
+    condition     = !contains(keys(aws_route53_record.mail_cname), "selector1._domainkey")
+    error_message = "selector1 is not published until it resolves (one line in mail.tf adds it)"
   }
 
-  # The example file carries the same set, commented out.
   assert {
-    condition = alltrue([for l in [
-      "# mx_records             = [\"1 smtp.google.com\"]",
-      "# apex_txt_verifications = [\"google-site-verification=eUj_Gi_u5TMp0qhySZvarTISldu_UzkiJkRoIJBmfR8\"]",
-      "# spf                    = \"v=spf1 include:_spf.google.com ~all\"",
-      "# dkim_selector          = \"google\"",
-      "# dmarc                  = \"v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s\"",
-    ] : strcontains(file("${path.module}/terraform.tfvars.example"), l)])
-    error_message = "terraform.tfvars.example must keep the Google Workspace set this run plans"
+    condition = (
+      length(aws_route53_record.mail_srv) == 2 &&
+      alltrue([for r in aws_route53_record.mail_srv : r.type == "SRV"]) &&
+      aws_route53_record.mail_srv["_sip._tls"].name == "_sip._tls.ryftlab.de" &&
+      aws_route53_record.mail_srv["_sip._tls"].records == toset(["100 1 443 sipdir.online.lync.com."]) &&
+      aws_route53_record.mail_srv["_sipfederationtls._tcp"].records == toset(["100 1 5061 sipfed.online.lync.com."])
+    )
+    error_message = "the two SRV records as GoDaddy shows them"
   }
 }
 
-run "rejects_a_dkim_value_that_is_not_dkim" {
+run "rejects_no_caa_issuer" {
   command = plan
 
   variables {
-    dkim_selector = "google"
-    dkim_record   = "v=spf1 -all"
+    caa_issuers = []
   }
 
-  expect_failures = [var.dkim_record]
-}
-
-run "rejects_a_dkim_record_without_a_selector" {
-  command = plan
-
-  variables {
-    dkim_record = "v=DKIM1; k=rsa; p=AAAA"
-  }
-
-  expect_failures = [var.dkim_record]
-}
-
-run "rejects_a_null_mx_next_to_another_mx" {
-  command = plan
-
-  variables {
-    mx_records = ["0 .", "1 smtp.google.com"]
-  }
-
-  expect_failures = [var.mx_records]
-}
-
-run "rejects_an_spf_among_the_verifications" {
-  command = plan
-
-  variables {
-    apex_txt_verifications = ["v=spf1 include:_spf.google.com ~all"]
-  }
-
-  expect_failures = [var.apex_txt_verifications]
-}
-
-run "rejects_invalid_domain" {
-  command = plan
-
-  variables {
-    domain = "RyftApp.DE"
-  }
-
-  expect_failures = [var.domain]
+  expect_failures = [var.caa_issuers]
 }

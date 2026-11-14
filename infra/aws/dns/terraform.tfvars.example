@@ -1,18 +1,5 @@
-# Copy to terraform.tfvars (git-ignored) only to change a default. Without one, this root
-# publishes the zone, its CAA records and the no-mail set (D212): null MX "0 .", SPF
-# "v=spf1 -all", DMARC "v=DMARC1; p=reject; adkim=s; aspf=s", no DKIM record.
+# Copy to terraform.tfvars (git-ignored) only to change a default. Without one, this root publishes
+# the zone ryftlab.de, its CAA records and the Microsoft 365 mail records (D214, mail.tf). The domain
+# and the mail values are code, not variables: change them in main.tf and mail.tf.
 
 # caa_issuers = ["letsencrypt.org"]
-
-# Mail through a provider, for example Google Workspace (D142; deleted with the rebuild, kept
-# here as the example). Every value comes from the provider's admin console. Start DMARC at
-# p=none with a rua mailbox that exists, then quarantine and reject (docs/OPERATIONS.md ->
-# Mail for ryftapp.de). A provider that publishes DKIM as CNAMEs (several selectors) needs a
-# change of main.tf first: this root writes one TXT key.
-#
-# mx_records             = ["1 smtp.google.com"]
-# apex_txt_verifications = ["google-site-verification=eUj_Gi_u5TMp0qhySZvarTISldu_UzkiJkRoIJBmfR8"]
-# spf                    = "v=spf1 include:_spf.google.com ~all"
-# dkim_selector          = "google"
-# dkim_record            = "v=DKIM1; k=rsa; p=<the 2048-bit key from the admin console>"
-# dmarc                  = "v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s"
