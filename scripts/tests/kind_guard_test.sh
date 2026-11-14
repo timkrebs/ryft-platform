@@ -82,8 +82,11 @@ ok "$tmp/k/okfilelink" "$tmp/home" "a link to a good file elsewhere"
     [ -z "${!v:-}" ] || exit 1
   done ) || fail "the guard left a HELM_KUBE* variable set"
 
-# The wrappers name the kubeconfig and the context explicitly.
-( KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home" kind_guard
+# The wrappers name the kubeconfig and the context explicitly. KUBECONFIG is exported in the subshell, not
+# put before the call: the bash of the ubuntu-26.04 runners (from 2026-11-11) no longer keeps a function's
+# prefix assignment after it returns, even when the function exports the variable, and the wrappers read
+# KUBECONFIG afterwards.
+( export KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home"; kind_guard
   kubectl() { printf '%s\n' "$*"; }; helm() { printf '%s\n' "$*"; }
   kc get ns | grep -q -- "--kubeconfig $tmp/k/kind-ok --context kind-adm get ns" || exit 1
   hc list | grep -q -- "--kubeconfig $tmp/k/kind-ok --kube-context kind-adm list" || exit 1
@@ -92,7 +95,7 @@ ok "$tmp/k/okfilelink" "$tmp/home" "a link to a good file elsewhere"
 
 # ... and refuse an argument that would override them (a value of the tree under test, split by the
 # shell, could look like one).
-( KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home" kind_guard
+( export KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home"; kind_guard
   kubectl() { printf 'CALLED %s\n' "$*"; }; helm() { printf 'CALLED %s\n' "$*"; }
   for a in --kubeconfig=/x '--kubeconfig' --context=prod --context --cluster=prod --server=https://x --server -s -shttps://x --token=x --token --user=u --user \
     --kube-context=prod --kube-apiserver=https://x --kube-token=x --kube-as-user=u --kube-ca-file=/x --as=u --as --as-group=g --as-uid=1 \
@@ -118,9 +121,9 @@ cat > "$tmp/bin/kind" <<EOF
 cat "$tmp/k/\${KIND_FAKE_FILE:-kind-ok}"
 EOF
 chmod +x "$tmp/bin/kind"
-( PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home" kind_guard && PATH="$tmp/bin:$PATH" kind_guard_verify_with_kind adm ) >/dev/null 2>&1 || fail "verify_with_kind refused kind's own file"
+( export PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home"; kind_guard && kind_guard_verify_with_kind adm ) >/dev/null 2>&1 || fail "verify_with_kind refused kind's own file"
 mk "$tmp/k/kind-other-port" kind-adm https://127.0.0.1:41824
-( PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-other-port" HOME="$tmp/home" kind_guard && PATH="$tmp/bin:$PATH" kind_guard_verify_with_kind adm ) >/dev/null 2>&1 && fail "verify_with_kind accepted a file with another server"
-( PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home" kind_guard && PATH="$tmp/bin:$PATH" kind_guard_verify_with_kind nosuch ) >/dev/null 2>&1 && fail "verify_with_kind accepted a cluster kind does not know"
+( export PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-other-port" HOME="$tmp/home"; kind_guard && kind_guard_verify_with_kind adm ) >/dev/null 2>&1 && fail "verify_with_kind accepted a file with another server"
+( export PATH="$tmp/bin:$PATH" KUBECONFIG="$tmp/k/kind-ok" HOME="$tmp/home"; kind_guard && kind_guard_verify_with_kind nosuch ) >/dev/null 2>&1 && fail "verify_with_kind accepted a cluster kind does not know"
 
 echo "✓ kind_guard_test"

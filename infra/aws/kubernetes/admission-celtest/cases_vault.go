@@ -2,6 +2,12 @@ package main
 
 import "fmt"
 
+// hcpAddress is the deleted HCP Vault's address, as infra/vault generated it before the rebuild. The
+// committed overlays carry it until the follow-up PR commits infra/vault's regenerated ones, which
+// name the in-cluster Vault (D207); the cases carry it as a constant, so they still mean HCP's
+// address after that.
+const hcpAddress = "https://ryft-prod-euc1-vault-public-vault-d9cda245.5ea5b8ce.z1.hashicorp.cloud:8200"
+
 // Namespace vault: the in-cluster Vault (docs/work/2026-11-05-vault-ce/design.md sections 5 and 6),
 // a Terraform add-on whose chart is not in the tree yet. The fixtures (testdata/objects.json,
 // "vault-*") are the design's shapes: the Namespace, the server StatefulSet, the snapshot CronJob,
@@ -168,7 +174,9 @@ func runVault(c *chart) {
 		add("P4 the in-cluster "+o.label+" updated", argoCtl, "UPDATE", o.obj())
 	}
 	add("P4 the in-cluster address without a CA (VSO's own trust store)", argoCtl, "CREATE", del(vc(), "spec/caCertSecretRef"))
-	add("P4 the HCP address with caCertSecretRef vault-ca", argoCtl, "CREATE", set(vc(), "spec/address", find("VaultConnection", "ryft-api", "vault")["spec"].(map[string]any)["address"]))
+	// Admitted while admission-values.yaml lists HCP's address; the follow-up PR drops it and makes this a
+	// refusal (docs/work/2026-11-13-rebuild/followup-overlays.md).
+	add("P4 the HCP address with caCertSecretRef vault-ca (admitted until the follow-up)", argoCtl, "CREATE", set(vc(), "spec/address", hcpAddress))
 	add("P4 caCertSecretRef to another Secret", argoCtl, "CREATE", set(vc(), "spec/caCertSecretRef", "amqp-client"), "P4: a VaultConnection")
 	add("P4 the in-cluster address over http", argoCtl, "CREATE", set(vc(), "spec/address", "http://vault.vault.svc:8200"), "P4: a VaultConnection")
 	add("P4 the in-cluster address spelt with cluster.local", argoCtl, "CREATE", set(vc(), "spec/address", "https://vault.vault.svc.cluster.local:8200"), "P4: a VaultConnection")
@@ -239,10 +247,10 @@ func runVault(c *chart) {
 	add("P13 another Certificate in vault", admin, "CREATE", set(set(tls(), "metadata/name", "vault-tls-2"), "spec/secretName", "vault-tls-2"), only)
 	add("P13 a Certificate with a generated name", admin, "CREATE", set(del(tls(), "metadata/name"), "metadata/generateName", "vault-tls-"), only)
 	ingressShim := set(set(set(tls(), "metadata/namespace", "ryft-api"), "metadata/name", "api-tls"), "spec/secretName", "api-tls")
-	set(ingressShim, "spec/dnsNames", jv(`["api.ryftapp.de"]`))
+	set(ingressShim, "spec/dnsNames", jv(`["api.ryftlab.de"]`))
 	del(ingressShim, "spec/ipAddresses")
 	add("P13 ingress-shim's Certificate for an Ingress annotated with ryft-vault", "system:serviceaccount:cert-manager:cert-manager", "CREATE", ingressShim, only)
-	add("P13 vault-tls with another name", admin, "CREATE", set(tls(), "spec/dnsNames/0", "api.ryftapp.de"), server)
+	add("P13 vault-tls with another name", admin, "CREATE", set(tls(), "spec/dnsNames/0", "api.ryftlab.de"), server)
 	add("P13 vault-tls with a wildcard", admin, "CREATE", set(tls(), "spec/dnsNames/0", "*.vault.svc"), server)
 	add("P13 vault-tls with a pod IP", admin, "CREATE", set(tls(), "spec/ipAddresses", jv(`["127.0.0.1","10.0.3.7"]`)), server)
 	add("P13 vault-tls with client auth", admin, "CREATE", set(tls(), "spec/usages", jv(`["server auth","client auth","digital signature"]`)), server)
@@ -391,12 +399,12 @@ func runDecom(c *chart) {
 	vc := func() map[string]any { return fx("vault-vso-connection-api") }
 	va := func() map[string]any { return defaults(fx("vault-vso-auth-api")) }
 	vs := func() map[string]any { return defaults(fx("vault-vso-static-api")) }
-	hcp := find("VaultConnection", "ryft-api", "vault")["spec"].(map[string]any)["address"]
 	add("the in-cluster VaultConnection", vc())
 	add("the in-cluster VaultAuth", va())
 	add("the in-cluster VaultStaticSecret", vs())
-	add("the HCP address", set(vc(), "spec/address", hcp), "P4: a VaultConnection")
-	add("the HCP VaultConnection as generated today", find("VaultConnection", "ryft-api", "vault"), "P4: a VaultConnection")
+	add("the HCP address", set(vc(), "spec/address", hcpAddress), "P4: a VaultConnection")
+	// HCP's shape as infra/vault generated it: its address and no caCertSecretRef (a public CA).
+	add("the HCP VaultConnection as infra/vault generated it", del(set(vc(), "spec/address", hcpAddress), "spec/caCertSecretRef"), "P4: a VaultConnection")
 	add("an HCP Vault namespace", set(va(), "spec/namespace", "admin/ryft/api"), "P4: a VaultAuth must use the kubernetes method and mount, audience vault, the local VaultConnection, no Vault namespace")
 	add("an empty Vault namespace", set(va(), "spec/namespace", ""), "P4: a VaultAuth")
 	add("the mount kv", set(vs(), "spec/mount", "kv"), "P4: a VaultStaticSecret must use a local VaultAuth, type kv-v2 on the mount kv-<its service> (never a reserved one)")

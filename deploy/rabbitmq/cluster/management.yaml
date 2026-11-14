@@ -1,6 +1,6 @@
-# The management UI at https://rabbitmq.ryftapp.de (D103), for people; the services
+# The management UI at https://rabbitmq.ryftlab.de (D103), for people; the services
 # and the Topology Operator never come this way. Traefik ends the public TLS (Let's
-# Encrypt, like api.ryftapp.de), limits requests per client address, adds HSTS, and
+# Encrypt, like api.ryftlab.de), limits requests per client address, adds HSTS, and
 # speaks TLS again to the nodes' management listener (15671, the internal CA), checked
 # against the broker's certificate. The login is RabbitMQ's own: Secret
 # rabbitmq-default-user (OPERATIONS.md → RabbitMQ).
@@ -73,10 +73,10 @@ metadata:
 spec:
   ingressClassName: traefik
   tls:
-    - hosts: [rabbitmq.ryftapp.de]
-      secretName: rabbitmq-ryftapp-de-tls
+    - hosts: [rabbitmq.ryftlab.de]
+      secretName: rabbitmq-ryftlab-de-tls
   rules:
-    - host: rabbitmq.ryftapp.de
+    - host: rabbitmq.ryftlab.de
       http:
         paths:
           - path: /

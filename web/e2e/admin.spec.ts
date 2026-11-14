@@ -496,7 +496,7 @@ test.describe('the api answers', () => {
     stub.apiDown = true;
     await tab(page, 'Flags').click();
     await expect(page.getByRole('alert')).toHaveText(
-      'No answer from api.ryftapp.de (network or edge limit). Try again.',
+      'No answer from api.ryftlab.de (network or edge limit). Try again.',
     );
     stub.apiDown = false;
     await tab(page, 'Invites').click();
@@ -554,7 +554,7 @@ test.describe('invites', () => {
     const card = page.locator('.adm-new');
     await expect(card.getByTestId('new-code')).toHaveText(/^RYFT-7K3M-QX\d\d$/);
     const code = (await card.getByTestId('new-code').textContent())!;
-    await expect(card.getByTestId('new-link')).toHaveText(`https://ryftapp.de/invite/${code}`);
+    await expect(card.getByTestId('new-link')).toHaveText(`https://ryftlab.de/invite/${code}`);
     await expect(card).toContainText('Only for anna@example.com');
 
     const post = stub.seen.find((s) => s.method === 'POST' && s.path === '/v1/admin/invites')!;
@@ -566,7 +566,7 @@ test.describe('invites', () => {
 
     await card.getByRole('button', { name: 'Copy link' }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-      `https://ryftapp.de/invite/${code}`,
+      `https://ryftlab.de/invite/${code}`,
     );
     await card.getByRole('button', { name: 'Copy code' }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
@@ -574,7 +574,7 @@ test.describe('invites', () => {
     expect(await page.evaluate(() => (window as unknown as { __shared: unknown }).__shared)).toEqual({
       title: 'RYFT beta invite',
       text: `Your RYFT invite code: ${code}`,
-      url: `https://ryftapp.de/invite/${code}`,
+      url: `https://ryftlab.de/invite/${code}`,
     });
 
     // The list shows it open, and no address (not even the masked one) until the switch asks for it.

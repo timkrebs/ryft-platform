@@ -1,12 +1,22 @@
 # The bootstrap's hand-written files (bootstrap/, docs/OPERATIONS.md -> Vault -> Bootstrap): the policies admin
-# and terraform, the token role terraform and the OIDC login. Nothing in this root writes them to Vault (so the
-# terraform token cannot rewrite its own policy or reach the operator's login); they are read here so that every
-# plan checks them, and tests/vault.tftest.hcl holds them to an exact allowlist (a test failure, not a warning).
+# and terraform and the token roles admin and terraform. Nothing in this root writes them to Vault (so the terraform
+# token cannot rewrite its own policy or mint an admin token); they are read here so that every plan checks them,
+# and tests/vault.tftest.hcl holds them to an exact allowlist (a test failure, not a warning).
+#
+# The operator's login is a generate-root session (D209): three unseal key shares, a root token that creates one
+# token of the token role admin and is revoked at once. The admin token mints the terraform token (a child) and no
+# other token, and writes no token role, auth method, auth role or config, identity or policy, and restores no
+# snapshot (bootstrap/admin.hcl): nothing it makes outlives the session, and every new way in is a root token's.
+# The OIDC files (oidc-*.json) are the documented later option, written nowhere in the rebuild: they are the Google
+# Workspace version (D193, bound to hd = ryftlab.de, and Google Workspace is gone), so a personal Google account
+# needs a reviewed change of them first (infra/vault/README.md -> bootstrap/). They stay pinned so that change is a
+# deliberate one.
 locals {
   bootstrap = {
     oidc_config          = jsondecode(file("${path.module}/bootstrap/oidc-config.json"))
     oidc_role_admin      = jsondecode(file("${path.module}/bootstrap/oidc-role-admin.json"))
     oidc_role_enroll     = jsondecode(file("${path.module}/bootstrap/oidc-role-enroll.json"))
+    token_role_admin     = jsondecode(file("${path.module}/bootstrap/token-role-admin.json"))
     token_role_terraform = jsondecode(file("${path.module}/bootstrap/token-role-terraform.json"))
     terraform_policy     = file("${path.module}/bootstrap/terraform.hcl")
     admin_policy         = file("${path.module}/bootstrap/admin.hcl")
@@ -47,8 +57,8 @@ locals {
   }
 }
 
-# The operator's login puts a pseudonymous id into every audit line, never an email or a name (D198): those lines
-# leave the cluster (Grafana Cloud, addendum-1 section 1.7).
+# If OIDC comes back (the later option above), the login puts a pseudonymous id into every audit line, never an
+# email or a name (D198): those lines leave the cluster (Grafana Cloud, addendum-1 section 1.7).
 check "bootstrap_oidc_roles_are_pseudonymous" {
   assert {
     condition = alltrue([for r in [local.bootstrap.oidc_role_admin, local.bootstrap.oidc_role_enroll] :
@@ -62,7 +72,27 @@ check "bootstrap_oidc_roles_are_pseudonymous" {
 check "bootstrap_terraform_policy_matches_services" {
   assert {
     condition     = local.bootstrap.terraform_policy == local.bootstrap_terraform_policy_rendered
-    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. Render it from a plan, no apply: terraform -chdir=infra/vault plan -out=tfplan && terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl, then commit it. A new service: merge, `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the admin login, THEN apply (otherwise the apply stops on a 403 halfway). A removed service: apply first, then write the narrower policy (infra/vault/README.md -> bootstrap/)."
+    error_message = "bootstrap/terraform.hcl is not the render of bootstrap/terraform.hcl.tftpl for these services. Render it from a plan, no apply: terraform -chdir=infra/vault plan -out=tfplan && terraform -chdir=infra/vault show -json tfplan | jq -r '.planned_values.outputs.bootstrap_terraform_policy.value' > infra/vault/bootstrap/terraform.hcl, then commit it. A new service: merge, `vault policy write terraform infra/vault/bootstrap/terraform.hcl` with the root token of a generate-root session (the admin policy writes no policy), THEN apply (otherwise the apply stops on a 403 halfway). A removed service: apply first, then write the narrower policy (infra/vault/README.md -> bootstrap/)."
+  }
+}
+
+# The admin token ends with its session (D209): deny on every token creation but the terraform role's (a child, so
+# it dies with the admin token), on the token roles, on sys/auth/*, on moving a mount and on a snapshot restore;
+# every policy, every auth method's roles and config, and identity read-only (a write there is a login that outlives
+# the session, or lifts these denies). The test pins the whole file; this warns at every plan if admin.hcl lost one.
+check "bootstrap_admin_policy_ends_with_its_session" {
+  assert {
+    condition = (
+      alltrue([for p in ["auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/roles/*", "sys/auth/*", "sys/remount", "sys/storage/raft/snapshot-force"] :
+      try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"deny\"]\n"]) &&
+      alltrue([for p in ["sys/policies/acl/*", "sys/policy/*", "auth/+/role/*", "identity/*"] :
+      try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\", \"list\"]\n"]) &&
+      alltrue([for p in ["auth/+/config", "sys/storage/raft/snapshot"] :
+      try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\"]\n"]) &&
+      try(local.bootstrap_policy_blocks.admin["auth/token/create/terraform"], "") == "  capabilities = [\"create\", \"update\"]\n" &&
+      local.bootstrap.token_role_terraform.orphan == false
+    )
+    error_message = "bootstrap/admin.hcl must deny auth/token/create, auth/token/create-orphan, auth/token/create/*, auth/token/roles/*, sys/auth/*, sys/remount and sys/storage/raft/snapshot-force, allow only read and list on sys/policies/acl/*, sys/policy/*, auth/+/role/* and identity/*, only read on auth/+/config and sys/storage/raft/snapshot, and create and update on auth/token/create/terraform (token role terraform, orphan false): otherwise the admin token can mint a token or plant a login (a role, an auth config, an identity with policies, a restored snapshot) that outlives its session, or rewrite its own policy."
   }
 }
 

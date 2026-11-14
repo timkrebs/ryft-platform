@@ -9,3 +9,5 @@ tfplan
 # Local overrides, e.g. backend_override.tf to keep local state for a while
 override.tf
 *_override.tf
+# tests/vault.tftest.hcl's vso_output_dir: written only if a run ever used the real local provider
+tests/.vso-render/

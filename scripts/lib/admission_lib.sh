@@ -156,7 +156,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ryft
     ryft.dev/service: $svc
-    ryft.dev/vault-namespace: admin_ryft_$svc
     pod-security.kubernetes.io/enforce: $level
     pod-security.kubernetes.io/warn: $level
     pod-security.kubernetes.io/audit: $level

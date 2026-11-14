@@ -974,7 +974,6 @@
       "labels": {
         "app.kubernetes.io/part-of": "ryft",
         "ryft.dev/service": "api",
-        "ryft.dev/vault-namespace": "admin_ryft_api",
         "pod-security.kubernetes.io/enforce": "restricted",
         "pod-security.kubernetes.io/warn": "restricted",
         "pod-security.kubernetes.io/audit": "restricted"

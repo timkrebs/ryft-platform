@@ -1,4 +1,4 @@
-# ryftapp.de: build the static export with Node, serve it with unprivileged nginx.
+# ryftlab.de: build the static export with Node, serve it with unprivileged nginx.
 # Fonts (Fontshare) and the app's licence texts (GitHub, pinned revisions) are fetched
 # during the build; nothing else leaves the build, and the final image has no Node.
 # The build stage runs on the builder's own architecture (the export is the same everywhere);
@@ -34,5 +34,5 @@ COPY --from=build /web/out /usr/share/nginx/html
 USER 101
 EXPOSE 8080
 LABEL org.opencontainers.image.source="https://github.com/timkrebs/ryft-platform" \
-      org.opencontainers.image.description="ryftapp.de, static, served by nginx" \
+      org.opencontainers.image.description="ryftlab.de, static, served by nginx" \
       org.opencontainers.image.licenses="NOASSERTION"

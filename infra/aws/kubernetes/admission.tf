@@ -49,7 +49,8 @@ locals {
 
   # The VaultConnections infra/vault generates: every file must hold exactly one address
   # (quotes stripped), and every address must be one of admission-values.yaml's
-  # vaultAddresses (HCP's or the in-cluster Vault's during the cutover); a check and a test.
+  # vaultAddresses (D207: the in-cluster Vault's, and HCP's until the follow-up PR commits
+  # the regenerated overlays); a check and a test.
   vault_namespaces_dir = coalesce(var.admission_vault_namespaces_dir, "${path.module}/../../../deploy/k8s/overlays/vault-namespaces")
   vault_address_by_file = {
     for f in fileset(local.vault_namespaces_dir, "*/vault.yaml") :

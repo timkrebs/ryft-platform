@@ -1,5 +1,6 @@
-# Argo CD projects for ryft-prod-euc1 (D94). Applied once by hand, with root.yaml:
-#   kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml
+# Argo CD projects for ryft-prod-euc1 (D94). Applied once by hand, with root.yaml
+# (infra/aws/kubernetes installs Argo CD, never these two files):
+#   kubectl --context ryft-prod-euc1 apply -f deploy/argocd/project.yaml -f deploy/argocd/root.yaml
 # Afterwards this file is not synced by Argo CD itself: a change here is applied the
 # same way, so the rules that bound every application cannot be loosened by a commit
 # to an application alone.
@@ -41,14 +42,14 @@ spec:
   orphanedResources:
     warn: true
     ignore:
-      # Made by the Vault Secrets Operator, cert-manager and the Kubernetes token
-      # controller, not git (seen in the kind test of the broker).
+      # Made by the Vault Secrets Operator and cert-manager, not git (seen in the kind
+      # test of the broker). No vault-auth-token: that reviewer token was HCP Vault's, and
+      # the in-cluster Vault reviews tokens with its own service account (D207).
       - { kind: Secret, name: ryft-secrets }
-      - { kind: Secret, name: vault-auth-token }
       # cert-manager's, from the vault-ca Certificate in every vault-namespaces overlay (D190).
       - { kind: Secret, name: vault-ca }
       - { kind: Secret, name: rabbitmq-tls }
-      - { kind: Secret, name: rabbitmq-ryftapp-de-tls }
+      - { kind: Secret, name: rabbitmq-ryftlab-de-tls }
       - { kind: Secret, name: amqp-client }
       - { kind: Secret, name: amqp-user-ingest }
       - { kind: Secret, name: amqp-user-api }

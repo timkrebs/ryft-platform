@@ -11,7 +11,7 @@ terraform {
 
   # State in HCP Terraform (docs/OPERATIONS.md → Terraform state): stored, locked
   # and versioned there; plans and applies run locally (execution mode Local).
-  # One workspace per root; this one holds the ryftapp.de zone, which outlives clusters.
+  # One workspace per root; this one holds the ryftlab.de zone (D213), which outlives clusters.
   cloud {
     organization = "tim-krebs-org"
 

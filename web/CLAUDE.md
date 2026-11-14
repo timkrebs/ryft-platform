@@ -1,6 +1,6 @@
 # RYFT web — instructions for Claude Code
 
-You are the **web agent** for RYFT: `ryftapp.de`, a static site (landing, science, beta,
+You are the **web agent** for RYFT: `ryftlab.de`, a static site (landing, science, beta,
 legal pages, licences, the app's universal-link fallback and the AASA file). This folder
 is `web/` of the platform repository (`timkrebs/ryft-platform`, D107). The root `CLAUDE.md`
 applies to the whole repository, `web/` included (secrets, git, production); this file adds

@@ -1,17 +1,24 @@
 # Unit tests: Vault, Kubernetes, AWS, local and random providers are mocked; nothing
-# is created and no file is written.
+# is created and no file is written (files are only read: the goldens and the bootstrap files).
 #   terraform init -backend=false && terraform test
 #
-# The generated operator manifests are pinned in tests/golden/{hcp,k8s}/ (make k8s-validate
-# checks those against the operator's CRD schemas).
+# The generated operator manifests are pinned in tests/golden/k8s/ (make k8s-validate checks those against the
+# operator's CRD schemas). No run reads the committed deploy/k8s/overlays/vault-namespaces/: they stay HCP's render
+# until the user's first apply of this root rewrites them, and the follow-up PR that commits the rewritten files
+# adds the run that holds them to the generator (docs/work/2026-11-13-rebuild/followup-overlays.md). service_secrets
+# below holds every key the checks of secrets.tf ask for, as production's terraform.tfvars must: the render here is
+# then the one production's apply writes.
 
 variables {
-  vault_parent_namespace_root = "admin"
-  vault_address_for_cluster   = "https://vault.example.hashicorp.cloud:8200"
-  supabase_project_ref        = "abcdefghijklmnopqrst"
-  database                    = { host = "aws-0-eu-central-1.pooler.supabase.com" }
-  database_owner_password     = "owner-password-123"
-  # terraform test also reads a local terraform.tfvars: these runs assume none.
+  supabase_project_ref    = "abcdefghijklmnopqrst"
+  database                = { host = "aws-0-eu-central-1.pooler.supabase.com" }
+  database_owner_password = "owner-password-123"
+  vault_k8s_token         = "terraform-token"
+  # Never the committed overlays: local is mocked, so no run writes a file, and if a run ever used the real provider,
+  # an apply and its teardown would write and delete files under tests/ (git-ignored), not the generated overlays.
+  vso_output_dir = "tests/.vso-render"
+  # terraform test also reads a local terraform.tfvars: these runs assume none (one that still sets a retired HCP
+  # variable fails every run, as it fails the plan).
   shared_secrets = {}
   service_secrets = {
     "whoop-import" = { client_id = "test-client", client_secret = "test-secret", refresh_token = "test-refresh" }
@@ -28,16 +35,8 @@ variables {
 }
 
 mock_provider "vault" {}
-# The in-cluster Vault (providers.tf, k8s.tf). tests/k8s_offline.tftest.hcl runs the real provider instead.
-mock_provider "vault" {
-  alias = "k8s"
-}
 mock_provider "local" {}
-mock_provider "kubernetes" {
-  mock_resource "kubernetes_secret_v1" {
-    defaults = { data = { token = "reviewer-jwt" } }
-  }
-}
+mock_provider "kubernetes" {}
 mock_provider "aws" {
   mock_data "aws_eks_cluster" {
     defaults = {
@@ -55,20 +54,20 @@ mock_provider "random" {
   }
 }
 
-run "operator_manifests_use_the_full_namespace_path" {
-  command = apply
+run "operator_manifests_match_the_goldens" {
+  command = plan
 
   assert {
-    condition     = local_file.vso["api"].content == file("tests/golden/hcp/api.vault.yaml")
-    error_message = "api's VaultAuth/VaultStaticSecret differ from tests/golden/hcp/api.vault.yaml"
+    condition     = local_file.vso["api"].content == file("${path.module}/tests/golden/k8s/api.vault.yaml")
+    error_message = "api's operator objects differ from tests/golden/k8s/api.vault.yaml (a Deployment to restart)"
   }
   assert {
-    condition     = local_file.vso["migrate"].content == file("tests/golden/hcp/migrate.vault.yaml")
-    error_message = "migrate is a Job: a secret but nothing to restart (tests/golden/hcp/migrate.vault.yaml)"
+    condition     = local_file.vso["migrate"].content == file("${path.module}/tests/golden/k8s/migrate.vault.yaml")
+    error_message = "migrate is a Job: a secret but nothing to restart (tests/golden/k8s/migrate.vault.yaml)"
   }
   assert {
-    condition     = output.login_check["api"] == "VAULT_NAMESPACE=admin/ryft/api vault write auth/kubernetes/login role=api jwt=\"$(kubectl -n ryft-api create token api --audience vault --duration 10m)\""
-    error_message = "login_check must use the namespace from the root"
+    condition     = output.login_check["api"] == "vault write -field=token_policies auth/kubernetes/login role=api jwt=\"$(kubectl --context ryft-prod-euc1 -n ryft-api create token api --audience vault --duration 10m)\""
+    error_message = "login_check: the in-cluster role, no Vault namespace, the named context, only the token's policies printed"
   }
 }
 
@@ -90,21 +89,26 @@ run "each_namespace_holds_only_its_own_credentials" {
     error_message = "secret keys per namespace: ${jsonencode(output.secret_keys)}"
   }
   assert {
-    condition     = startswith(nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).DATABASE_URL), "postgresql://ryft_api.abcdefghijklmnopqrst:generatedpassword0123456789@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require")
+    condition     = startswith(nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["api"].data_json).DATABASE_URL), "postgresql://ryft_api.abcdefghijklmnopqrst:generatedpassword0123456789@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require")
     error_message = "api connects as its own role through the session pooler"
   }
   assert {
-    condition     = startswith(nonsensitive(jsondecode(vault_kv_secret_v2.config["migrate"].data_json).DATABASE_URL), "postgresql://postgres.abcdefghijklmnopqrst:owner-password-123@")
+    condition     = startswith(nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["migrate"].data_json).DATABASE_URL), "postgresql://postgres.abcdefghijklmnopqrst:owner-password-123@")
     error_message = "only migrate holds the owner"
   }
   assert {
     condition = alltrue([for s in ["ingest", "scoring", "api", "notify"] :
-    !strcontains(nonsensitive(vault_kv_secret_v2.config[s].data_json), "owner-password-123")])
+    !strcontains(nonsensitive(vault_kv_secret_v2.k8s_config[s].data_json), "owner-password-123")])
     error_message = "the owner password must not leave the migrate namespace"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["scoring"].data_json).AMQP_USER) == "scoring"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["scoring"].data_json).AMQP_USER) == "scoring"
     error_message = "each client is its own RabbitMQ user"
+  }
+  assert {
+    condition = alltrue([for k, s in vault_kv_secret_v2.k8s_config :
+    s.mount == "kv-${k}" && s.name == "config" && s.delete_all_versions == true])
+    error_message = "every service's secrets are kv-<svc>/config (a destroy removes every version)"
   }
 }
 
@@ -112,40 +116,40 @@ run "roles_trust_one_namespace_and_one_service_account" {
   command = apply
 
   assert {
-    condition = alltrue([for k, r in vault_kubernetes_auth_backend_role.service :
-      tolist(r.bound_service_account_namespaces) == tolist([k == "monitoring" ? "monitoring" : "ryft-${k}"]) && tolist(r.bound_service_account_names) == tolist([k]) &&
-    r.audience == "vault" && r.role_name == k])
-    error_message = "a role must be bound to exactly its own namespace and service account"
+    condition = alltrue([for k, r in vault_kubernetes_auth_backend_role.k8s_service :
+      r.backend == "kubernetes" && r.role_name == k &&
+      tolist(r.bound_service_account_names) == tolist([local.services[k].service_account]) &&
+      tolist(r.bound_service_account_namespaces) == tolist([k == "monitoring" ? "monitoring" : "ryft-${k}"]) &&
+      r.audience == "vault" && tolist(r.token_policies) == tolist([k]) &&
+      r.token_ttl == 3600 && r.token_max_ttl == 14400
+    ])
+    error_message = "a role is bound to exactly its namespace and service account, audience vault, its own policy, 1 hour (4 at most)"
   }
   assert {
-    condition     = jsonencode(output.auth_roles["monitoring"]) == jsonencode({ namespace = "admin/ryft/monitoring", mount = "kubernetes", role = "monitoring", sa = "monitoring" })
+    condition     = tolist(vault_kubernetes_auth_backend_role.k8s_service["monitoring"].bound_service_account_namespaces) == tolist(["monitoring"])
+    error_message = "the collector's role is bound to namespace monitoring (no ryft- prefix)"
+  }
+  assert {
+    condition     = jsonencode(output.auth_roles["monitoring"]) == jsonencode({ mount = "kubernetes", role = "monitoring", sa = "monitoring", k8s_ns = "monitoring" })
     error_message = "auth_roles: ${jsonencode(output.auth_roles["monitoring"])}"
-  }
-  assert {
-    condition     = !strcontains(vault_policy.service["api"].policy, "*") && strcontains(vault_policy.service["api"].policy, "path \"kv/data/config\"")
-    error_message = "the policy reads kv/config and nothing else"
   }
   assert {
     condition = alltrue([for k, n in kubernetes_namespace_v1.service :
     n.metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" if k != "monitoring"])
     error_message = "every RYFT namespace enforces Pod Security restricted"
   }
+  # Nothing selects on the HCP namespace label (charts, admission, deploy): CE has no namespaces, so it is gone.
+  assert {
+    condition = alltrue([for k, n in kubernetes_namespace_v1.service :
+      !contains(keys(n.metadata[0].labels), "ryft.dev/vault-namespace") &&
+      n.metadata[0].labels["ryft.dev/service"] == k && n.metadata[0].labels["app.kubernetes.io/part-of"] == "ryft"
+    ])
+    error_message = "a namespace carries ryft.dev/service and part-of ryft, and no ryft.dev/vault-namespace label (there is no Vault namespace)"
+  }
   assert {
     condition = alltrue([for k, sa in kubernetes_service_account_v1.workload :
-    sa.automount_service_account_token == false])
+    sa.automount_service_account_token == false && sa.metadata[0].namespace == local.services[k].k8s_ns])
     error_message = "workload pods get no Kubernetes API token"
-  }
-}
-
-run "self_managed_vault_has_no_admin_prefix" {
-  command = plan
-
-  variables {
-    vault_parent_namespace_root = ""
-  }
-  assert {
-    condition     = output.vault_namespaces["api"] == "ryft/api"
-    error_message = "without a parent namespace the path starts at ryft/"
   }
 }
 
@@ -273,7 +277,7 @@ run "the_data_key_reaches_only_the_api" {
     error_message = "only the api may hold the data encryption key"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).DATA_ENCRYPTION_KEY) == "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["api"].data_json).DATA_ENCRYPTION_KEY) == "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
     error_message = "the api gets the generated key (base64, 32 bytes)"
   }
 }
@@ -291,14 +295,19 @@ run "monitoring_is_privileged_and_restarts_the_collector" {
   }
   assert {
     condition = (
-      strcontains(local_file.vso["monitoring"].content, "namespace: admin/ryft/monitoring") &&
+      strcontains(local_file.vso["monitoring"].content, "  mount: kv-monitoring\n") &&
       strcontains(local_file.vso["monitoring"].content,
       "- kind: DaemonSet\n      name: grafana-cloud-alloy-daemonset\n    - kind: Deployment\n      name: grafana-cloud-alloy-deployment\n")
     )
-    error_message = "the operator logs in to admin/ryft/monitoring and restarts both collectors"
+    error_message = "monitoring (no ryft- prefix) reads kv-monitoring and restarts both collectors"
+  }
+  # The Vault metrics scrape (#153, deploy/monitoring) reads the Secret vault-ca in namespace monitoring.
+  assert {
+    condition = strcontains(local_file.vso["monitoring"].content,
+    "kind: Certificate\nmetadata:\n  name: vault-ca\n  namespace: monitoring\n") && strcontains(local_file.vso["monitoring"].content, "  secretName: vault-ca\n")
+    error_message = "monitoring's file requests the Secret vault-ca in namespace monitoring (the Vault metrics scrape reads it)"
   }
 }
-
 
 run "the_admin_key_reaches_only_the_api" {
   command = apply
@@ -309,7 +318,7 @@ run "the_admin_key_reaches_only_the_api" {
     error_message = "only the api holds the admin key"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["api"].data_json).ADMIN_API_KEY) == "generatedpassword0123456789"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["api"].data_json).ADMIN_API_KEY) == "generatedpassword0123456789"
     error_message = "the api gets the generated admin key"
   }
 }
@@ -326,7 +335,7 @@ run "the_beta_gate_reaches_api_and_ingest" {
     error_message = "BETA_GATE goes to the api and ingest only"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["ingest"].data_json).BETA_GATE) == "on"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["ingest"].data_json).BETA_GATE) == "on"
     error_message = "ingest gets the value"
   }
 }
@@ -335,16 +344,16 @@ run "the_demo_password_stays_with_the_operator" {
   command = apply
 
   assert {
-    condition     = vault_kv_secret_v2.demo.namespace == vault_namespace.project.path_fq && vault_kv_secret_v2.demo.mount == "operator"
-    error_message = "the demo password lives in the project namespace's operator mount"
+    condition     = vault_mount.k8s_operator.path == "kv-operator" && vault_kv_secret_v2.k8s_demo.mount == "kv-operator" && vault_kv_secret_v2.k8s_demo.name == "demo"
+    error_message = "the demo password lives at kv-operator/demo"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.demo.data_json).email) == "review@ryftapp.de"
-    error_message = "the demo account is review@ryftapp.de"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_demo.data_json).email) == "review@ryftlab.de"
+    error_message = "the demo account is review@ryftlab.de"
   }
   assert {
-    condition     = alltrue([for s, v in vault_policy.service : !strcontains(v.policy, "operator")])
-    error_message = "no service policy reaches the operator mount"
+    condition     = alltrue([for s, v in vault_policy.k8s_service : !strcontains(v.policy, "operator")]) && !strcontains(vault_policy.k8s_snapshot.policy, "operator")
+    error_message = "no role's policy reaches the operator mount"
   }
 }
 
@@ -360,7 +369,7 @@ run "the_consent_mode_reaches_api_ingest_and_scoring" {
     error_message = "CONSENT_ENFORCE goes to api, ingest and scoring only"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.config["scoring"].data_json).CONSENT_ENFORCE) == "warn"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["scoring"].data_json).CONSENT_ENFORCE) == "warn"
     error_message = "scoring gets the value"
   }
   assert {
@@ -387,84 +396,72 @@ run "rabbitmq_users_reach_the_broker_and_their_own_namespace_only" {
 
   assert {
     condition = alltrue([for c in ["ingest", "api", "scoring", "notify"] :
-      nonsensitive(jsondecode(vault_kv_secret_v2.config[c].data_json).AMQP_USER) == c &&
-    nonsensitive(jsondecode(vault_kv_secret_v2.amqp_user[c].data_json).username) == c])
-    error_message = "each client is its own RabbitMQ user, and the broker's namespace has its credentials"
+      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config[c].data_json).AMQP_USER) == c &&
+    nonsensitive(jsondecode(vault_kv_secret_v2.k8s_amqp_user[c].data_json).username) == c])
+    error_message = "each client is its own RabbitMQ user, and the broker's mount has its credentials"
   }
   assert {
-    condition = alltrue([for c in ["ingest", "api", "scoring", "notify"] :
-      vault_kv_secret_v2.amqp_user[c].name == "amqp-user-${c}" &&
-    vault_kv_secret_v2.amqp_user[c].namespace == vault_namespace.service["rabbitmq"].path_fq])
-    error_message = "the users' credentials live in the broker's Vault namespace, one secret per user"
+    condition = toset(keys(vault_kv_secret_v2.k8s_amqp_user)) == toset(["ingest", "api", "scoring", "notify"]) && alltrue([for c, s in vault_kv_secret_v2.k8s_amqp_user :
+    s.name == "amqp-user-${c}" && s.mount == "kv-rabbitmq" && s.delete_all_versions == true])
+    error_message = "the users' credentials live in the broker's mount kv-rabbitmq, one secret per user"
   }
   assert {
-    condition     = !contains(keys(vault_kv_secret_v2.config), "rabbitmq")
-    error_message = "the broker's namespace has no ryft-secrets: nothing of the database or the other services"
+    condition     = !contains(keys(vault_kv_secret_v2.k8s_config), "rabbitmq")
+    error_message = "the broker's mount has no config (no ryft-secrets): nothing of the database or the other services"
   }
   assert {
     condition     = alltrue([for name, s in local.service_secret_keys : contains(["ingest", "api", "scoring", "notify"], name) == contains(s, "AMQP_PASSWORD")])
     error_message = "AMQP_PASSWORD reaches the four clients only"
   }
   assert {
-    condition     = local_file.vso["rabbitmq"].content == file("tests/golden/hcp/rabbitmq.vault.yaml")
-    error_message = "the broker's operator manifests differ from tests/golden/hcp/rabbitmq.vault.yaml (one labelled VaultStaticSecret per user)"
+    condition     = local_file.vso["rabbitmq"].content == file("${path.module}/tests/golden/k8s/rabbitmq.vault.yaml")
+    error_message = "the broker's operator manifests differ from tests/golden/k8s/rabbitmq.vault.yaml (one labelled VaultStaticSecret per user)"
   }
   assert {
-    condition     = strcontains(vault_policy.service["rabbitmq"].policy, "kv/data/amqp-user-*") && !strcontains(vault_policy.service["api"].policy, "amqp-user")
-    error_message = "only the broker's namespace may read the users' credentials"
+    condition     = strcontains(vault_policy.k8s_service["rabbitmq"].policy, "kv-rabbitmq/data/amqp-user-*") && !strcontains(vault_policy.k8s_service["api"].policy, "amqp-user")
+    error_message = "only the broker's policy may read the users' credentials"
   }
 }
 
 # ---------------------------------------------------------------------------------------------------------------
-# The in-cluster Vault (k8s.tf, targets.tf, design section 2.5). The committed switches are off; a test turns them
-# on through test_override_targets, which check.targets_come_from_git reports (expected in every such run).
+# The in-cluster Vault (k8s.tf, D207): the only Vault this root writes, and the only one the generated objects read.
 
-run "k8s_target_is_off_by_default" {
+# Every generated file, monitoring and the import service included: the Certificate vault-ca, the connection to the
+# in-cluster address trusting vault-ca, the auth without a Vault namespace, the secrets from kv-<svc>, and the in-app
+# waves (connection and auth in 0, the secrets in 1, design 1.3); never a literal Secret, never an HCP address.
+run "every_namespace_reads_the_in_cluster_vault" {
   command = plan
 
   assert {
-    condition = (
-      length(vault_auth_backend.k8s) + length(vault_kubernetes_auth_backend_config.k8s) + length(vault_mount.k8s_kv) +
-      length(vault_policy.k8s_service) + length(vault_kubernetes_auth_backend_role.k8s_service) +
-      length(vault_kv_secret_v2.k8s_config) + length(vault_kv_secret_v2.k8s_amqp_user) + length(vault_mount.k8s_operator) +
-      length(vault_kv_secret_v2.k8s_demo) + length(vault_policy.k8s_snapshot) + length(vault_kubernetes_auth_backend_role.k8s_snapshot)
-    ) == 0
-    error_message = "with write_k8s false (the committed default) nothing is written to the in-cluster Vault"
-  }
-  assert {
-    condition = alltrue([for s in ["api", "migrate", "rabbitmq"] :
-    local_file.vso[s].content == file("tests/golden/hcp/${s}.vault.yaml")])
-    error_message = "every namespace keeps the HCP shape, with the pre-staged Certificate vault-ca (tests/golden/hcp/)"
-  }
-  assert {
-    condition = alltrue([for k, f in local_file.vso :
+    condition = length(local_file.vso) == length(var.services) && alltrue([for k, f in local_file.vso :
       strcontains(f.content, "kind: Certificate\nmetadata:\n  name: vault-ca\n  namespace: ${local.services[k].k8s_ns}\n") &&
       strcontains(f.content, "  commonName: vso.${local.services[k].k8s_ns}\n") &&
-      !strcontains(f.content, "caCertSecretRef") && !strcontains(f.content, local.vault_k8s_address_for_cluster) &&
-      !strcontains(f.content, "argocd.argoproj.io/sync-wave") && !strcontains(f.content, "kind: Secret")
+      strcontains(f.content, "  address: https://vault.vault.svc:8200\n") && strcontains(f.content, "  caCertSecretRef: vault-ca\n") &&
+      strcontains(f.content, "  skipTLSVerify: false\n") &&
+      !strcontains(f.content, "hashicorp.cloud") && !strcontains(f.content, "admin/") && !strcontains(f.content, "kind: Secret\n")
     ])
-    error_message = "every namespace, monitoring and the import service included, gets its Certificate vault-ca and nothing else new: no CA reference, no in-cluster address, no waves, no literal Secret"
-  }
-  # The Vault metrics scrape (#153, deploy/monitoring) reads the Secret vault-ca in namespace monitoring.
-  assert {
-    condition = length(local_file.vso) == length(var.services) && strcontains(local_file.vso["monitoring"].content,
-    "kind: Certificate\nmetadata:\n  name: vault-ca\n  namespace: monitoring\n") && strcontains(local_file.vso["monitoring"].content, "  secretName: vault-ca\n")
-    error_message = "one generated file per service, and monitoring's requests the Secret vault-ca in namespace monitoring (the Vault metrics scrape reads it)"
+    error_message = "every namespace gets its Certificate vault-ca and a connection to https://vault.vault.svc:8200 with caCertSecretRef vault-ca; no HCP address or namespace path, no literal Secret"
   }
   assert {
-    condition     = output.vso_targets.write_k8s == false && alltrue([for k, t in output.vso_targets.services : t == "hcp"]) && length(output.vso_targets.services) == length(var.services)
-    error_message = "the committed default: no CE writes, every namespace on HCP"
+    # try(): the operands of || and && are all evaluated, and a kind without the attribute must not fail the run.
+    condition = alltrue([for s, f in local_file.vso : alltrue([for d in split("\n---\n", f.content) :
+      yamldecode(d).kind == "Certificate" ? !can(yamldecode(d).metadata.annotations) : (
+        try(yamldecode(d).metadata.annotations, {}) == { "argocd.argoproj.io/sync-wave" = (yamldecode(d).kind == "VaultStaticSecret" ? "1" : "0") } &&
+        (yamldecode(d).kind != "VaultAuth" || (!can(yamldecode(d).spec.namespace) && try(yamldecode(d).spec.kubernetes.role, "") == s && try(yamldecode(d).spec.mount, "") == "kubernetes")) &&
+        (yamldecode(d).kind != "VaultStaticSecret" || try(yamldecode(d).spec.mount, "") == "kv-${s}")
+    )])])
+    error_message = "connection and auth in wave 0, the secrets in wave 1; the auth uses mount kubernetes and the service's role, without a Vault namespace; every VaultStaticSecret reads kv-<svc>"
+  }
+  assert {
+    condition = alltrue([for s, f in local_file.vso :
+      strcontains(f.content, "kind: VaultStaticSecret\n") == (contains(keys(local.services_with_secrets), s) || local.services[s].amqp == "server")
+    ])
+    error_message = "a service gets a VaultStaticSecret exactly when it has secrets (the broker: its users'); none for a service without"
   }
 }
 
 run "each_service_gets_one_mount_one_role_one_policy" {
   command = plan
-
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [check.targets_come_from_git]
 
   assert {
     condition = (
@@ -481,25 +478,20 @@ run "each_service_gets_one_mount_one_role_one_policy" {
   }
   assert {
     condition = (
-      length(vault_auth_backend.k8s) == 1 && vault_auth_backend.k8s[0].type == "kubernetes" && vault_auth_backend.k8s[0].path == "kubernetes" &&
-      alltrue([for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.backend == "kubernetes"])
+      vault_auth_backend.k8s.type == "kubernetes" && vault_auth_backend.k8s.path == "kubernetes" &&
+      alltrue([for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.backend == "kubernetes"]) &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.backend == "kubernetes"
     )
     error_message = "one Kubernetes auth mount at kubernetes (the path P4 pins), which every role uses"
   }
   assert {
-    condition     = length(vault_mount.k8s_operator) == 1 && vault_mount.k8s_operator[0].path == "kv-operator" && vault_kv_secret_v2.k8s_demo[0].mount == "kv-operator" && vault_kv_secret_v2.k8s_demo[0].name == "demo"
-    error_message = "the demo password lives at kv-operator/demo"
+    condition     = vault_mount.k8s_operator.path == "kv-operator" && vault_mount.k8s_operator.type == "kv" && vault_mount.k8s_operator.options.version == "2"
+    error_message = "the operator's mount is kv-operator, KV version 2"
   }
 }
 
 run "policies_read_only_their_own_config" {
   command = plan
-
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [check.targets_come_from_git]
 
   assert {
     condition = alltrue([for k, p in vault_policy.k8s_service :
@@ -521,70 +513,32 @@ run "policies_read_only_their_own_config" {
   }
 }
 
-run "roles_trust_one_namespace_and_one_service_account_on_k8s" {
-  command = plan
-
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [check.targets_come_from_git]
-
-  assert {
-    condition = alltrue([for k, r in vault_kubernetes_auth_backend_role.k8s_service :
-      r.role_name == k && tolist(r.bound_service_account_names) == tolist([local.services[k].service_account]) &&
-      tolist(r.bound_service_account_namespaces) == tolist([local.services[k].k8s_ns]) &&
-      r.audience == "vault" && tolist(r.token_policies) == tolist([k]) &&
-      r.token_ttl == 3600 && r.token_max_ttl == 14400
-    ])
-    error_message = "a role is bound to exactly its namespace and service account, audience vault, its own policy, the HCP TTLs"
-  }
-  assert {
-    condition = alltrue([for k, r in vault_kubernetes_auth_backend_role.k8s_service :
-      tolist(r.bound_service_account_names) == tolist(vault_kubernetes_auth_backend_role.service[k].bound_service_account_names) &&
-      tolist(r.bound_service_account_namespaces) == tolist(vault_kubernetes_auth_backend_role.service[k].bound_service_account_namespaces) &&
-    r.token_ttl == vault_kubernetes_auth_backend_role.service[k].token_ttl && r.token_max_ttl == vault_kubernetes_auth_backend_role.service[k].token_max_ttl])
-    error_message = "each in-cluster role trusts exactly what its HCP role trusts"
-  }
-  assert {
-    condition     = tolist(vault_kubernetes_auth_backend_role.k8s_service["monitoring"].bound_service_account_namespaces) == tolist(["monitoring"])
-    error_message = "the collector's role is bound to namespace monitoring (no ryft- prefix)"
-  }
-}
-
 # The snapshot CronJob (charts/vault-extras, PR 4) logs in as role vault-snapshot from vault/vault-snapshot with a
 # 10-minute projected token for audience vault, and may save a snapshot, nothing else (restore is break-glass).
 run "the_snapshot_job_saves_a_snapshot_and_nothing_else" {
   command = plan
 
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [check.targets_come_from_git]
-
   assert {
-    condition     = length(vault_policy.k8s_snapshot) == 1 && vault_policy.k8s_snapshot[0].name == "snapshot" && vault_policy.k8s_snapshot[0].policy == "path \"sys/storage/raft/snapshot\" {\n  capabilities = [\"read\"]\n}\n"
+    condition     = vault_policy.k8s_snapshot.name == "snapshot" && vault_policy.k8s_snapshot.policy == "path \"sys/storage/raft/snapshot\" {\n  capabilities = [\"read\"]\n}\n"
     error_message = "policy snapshot is read on sys/storage/raft/snapshot and nothing else (no update: that is restore; no sudo, no other path)"
   }
   assert {
     condition = (
-      length(vault_kubernetes_auth_backend_role.k8s_snapshot) == 1 &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].backend == "kubernetes" &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].role_name == "vault-snapshot" &&
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_names) == tolist(["vault-snapshot"]) &&
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].bound_service_account_namespaces) == tolist(["vault"]) &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].audience == "vault" &&
-      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_policies) == tolist(["snapshot"]) &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_ttl == 600 && vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_max_ttl == 600 &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_type == "service" &&
-      vault_kubernetes_auth_backend_role.k8s_snapshot[0].token_no_default_policy == true
+      vault_kubernetes_auth_backend_role.k8s_snapshot.backend == "kubernetes" &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.role_name == "vault-snapshot" &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot.bound_service_account_names) == tolist(["vault-snapshot"]) &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot.bound_service_account_namespaces) == tolist(["vault"]) &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.audience == "vault" &&
+      tolist(vault_kubernetes_auth_backend_role.k8s_snapshot.token_policies) == tolist(["snapshot"]) &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.token_ttl == 600 && vault_kubernetes_auth_backend_role.k8s_snapshot.token_max_ttl == 600 &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.token_type == "service" &&
+      vault_kubernetes_auth_backend_role.k8s_snapshot.token_no_default_policy == true
     )
     error_message = "role vault-snapshot is bound to vault/vault-snapshot, audience vault, policy snapshot only (no default policy), revocable service tokens of 10 minutes at most"
   }
   assert {
-    condition = toset(concat([for p in values(vault_policy.k8s_service) : p.name], [for p in vault_policy.k8s_snapshot : p.name])) == toset(concat(keys(var.services), ["snapshot"])) && toset(concat(
-      [for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [for r in vault_kubernetes_auth_backend_role.k8s_snapshot : r.role_name]
+    condition = toset(concat([for p in values(vault_policy.k8s_service) : p.name], [vault_policy.k8s_snapshot.name])) == toset(concat(keys(var.services), ["snapshot"])) && toset(concat(
+      [for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [vault_kubernetes_auth_backend_role.k8s_snapshot.role_name]
     )) == toset(concat(keys(var.services), ["vault-snapshot"]))
     error_message = "the in-cluster Vault gets exactly one policy per service plus snapshot, and one role per service plus vault-snapshot"
   }
@@ -592,28 +546,28 @@ run "the_snapshot_job_saves_a_snapshot_and_nothing_else" {
   assert {
     condition = (
       toset([for p in local.bootstrap_policy_paths.terraform : trimprefix(p, "sys/policies/acl/") if startswith(p, "sys/policies/acl/")]) ==
-      toset(concat([for p in values(vault_policy.k8s_service) : p.name], [for p in vault_policy.k8s_snapshot : p.name])) &&
+      toset(concat([for p in values(vault_policy.k8s_service) : p.name], [vault_policy.k8s_snapshot.name])) &&
       toset([for p in local.bootstrap_policy_paths.terraform : trimprefix(p, "auth/kubernetes/role/") if startswith(p, "auth/kubernetes/role/")]) ==
-      toset(concat([for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [for r in vault_kubernetes_auth_backend_role.k8s_snapshot : r.role_name]))
+      toset(concat([for r in values(vault_kubernetes_auth_backend_role.k8s_service) : r.role_name], [vault_kubernetes_auth_backend_role.k8s_snapshot.role_name])) &&
+      toset([for p in local.bootstrap_policy_paths.terraform : trimsuffix(trimprefix(p, "sys/mounts/"), "/tune") if startswith(p, "sys/mounts/kv-")]) ==
+      toset(concat([for m in values(vault_mount.k8s_kv) : m.path], [vault_mount.k8s_operator.path]))
     )
-    error_message = "the terraform policy names exactly the policies and roles k8s.tf writes: a missing one is a 403 at the apply, an extra one a right nobody uses"
+    error_message = "the terraform policy names exactly the policies, roles and mounts k8s.tf writes: a missing one is a 403 at the apply, an extra one a right nobody uses"
   }
 }
 
-# One random value, two writes: the CE secrets are built from the same locals and random_* as HCP's, so the
-# migration is a copy. Marked values per credential (overrides, in a state of its own so the random_* are
-# created here), so a write that took another random_* (or a fresh one) would differ.
-run "same_values_on_both_targets" {
+# One random value per credential: every Vault write takes it from the random_* of secrets.tf (and operator.tf), so
+# an import there (the data key, the demo password) is what the services read. Marked values per credential
+# (overrides, in a state of its own so the random_* are created here), so a write that took another random_* (or a
+# fresh one) would differ.
+run "one_random_value_per_credential" {
   command   = apply
-  state_key = "same_values"
+  state_key = "one_random"
 
   variables {
-    test_override_targets   = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token         = "terraform-token"
-    database_owner_password = "owner-password-for-both"
+    database_owner_password = "owner-password-for-the-test"
     shared_secrets          = { BETA_GATE = "warn", CONSENT_ENFORCE = "on" }
   }
-  expect_failures = [check.targets_come_from_git]
 
   override_resource {
     target = random_password.amqp
@@ -625,41 +579,93 @@ run "same_values_on_both_targets" {
   }
 
   assert {
-    condition = (
-      toset(keys(vault_kv_secret_v2.k8s_config)) == toset(keys(vault_kv_secret_v2.config)) &&
-      alltrue([for k, s in vault_kv_secret_v2.k8s_config : s.data_json == vault_kv_secret_v2.config[k].data_json])
-    )
-    error_message = "every service's kv-<svc>/config holds exactly what its HCP kv/config holds"
+    condition = alltrue([for c, s in vault_kv_secret_v2.k8s_amqp_user :
+      nonsensitive(jsondecode(s.data_json).password) == "amqp-password-from-the-one-random" &&
+      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config[c].data_json).AMQP_PASSWORD) == "amqp-password-from-the-one-random"
+    ])
+    error_message = "a client's AMQP_PASSWORD and the broker's amqp-user-<c> come from the one random_password.amqp[c]"
   }
   assert {
     condition = (
-      toset(keys(vault_kv_secret_v2.k8s_amqp_user)) == toset(keys(vault_kv_secret_v2.amqp_user)) &&
-      alltrue([for k, s in vault_kv_secret_v2.k8s_amqp_user : s.data_json == vault_kv_secret_v2.amqp_user[k].data_json && s.name == "amqp-user-${k}" && s.mount == "kv-rabbitmq"]) &&
-      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_amqp_user["api"].data_json).password) == "amqp-password-from-the-one-random"
+      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_demo.data_json).password) == "demo-password-from-the-one-random" &&
+      nonsensitive(output.demo_password) == "demo-password-from-the-one-random"
     )
-    error_message = "the broker's amqp-user-<c> are the same on both targets, from the one random_password.amqp"
+    error_message = "kv-operator/demo and output demo_password are random_password.demo (the imported value)"
   }
   assert {
     condition = (
-      vault_kv_secret_v2.k8s_demo[0].data_json == vault_kv_secret_v2.demo.data_json &&
-      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_demo[0].data_json).password) == "demo-password-from-the-one-random"
+      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["api"].data_json).DATA_ENCRYPTION_KEY) == nonsensitive(random_bytes.data_key["api"].base64) &&
+      toset(keys(random_bytes.data_key)) == toset(["api"])
     )
-    error_message = "the demo password is the same on both targets"
+    error_message = "the api's DATA_ENCRYPTION_KEY is random_bytes.data_key[\"api\"].base64 (the imported key), and only the api has one"
   }
   assert {
-    condition = (
-      strcontains(nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["migrate"].data_json).DATABASE_URL), ":owner-password-for-both@") &&
-      nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["api"].data_json).AMQP_PASSWORD) == "amqp-password-from-the-one-random"
-    )
-    error_message = "the values reach the in-cluster Vault unchanged (the owner URL, the broker password)"
+    condition     = strcontains(nonsensitive(jsondecode(vault_kv_secret_v2.k8s_config["migrate"].data_json).DATABASE_URL), ":owner-password-for-the-test@")
+    error_message = "the owner URL reaches kv-migrate/config unchanged"
   }
   assert {
     condition     = length(random_password.amqp) == length(local.amqp_clients) && length(random_password.db) == length(local.db_roles)
-    error_message = "one random_password per credential: the in-cluster Vault adds none"
+    error_message = "one random_password per credential"
+  }
+}
+
+# The two values the rebuild imports (docs/OPERATIONS.md -> Vault -> The first apply) keep their addresses and a
+# configuration the import's attributes satisfy: random_bytes.data_key["api"] is 32 bytes (the import takes the
+# length from the value), and random_password.demo ignores the attributes the import sets to defaults (length from
+# the value, special/upper/lower/numeric true), so the first plan after the import changes neither.
+run "the_imported_values_keep_their_addresses" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(keys(random_bytes.data_key)) == toset(["api"]) && random_bytes.data_key["api"].length == 32 &&
+      random_password.demo.length == 24 && random_password.demo.special == false
+    )
+    error_message = "random_bytes.data_key[\"api\"] (32 bytes) and random_password.demo (24, alphanumeric) are the import targets: same addresses, same arguments"
   }
   assert {
-    condition     = !contains(keys(vault_kv_secret_v2.k8s_config), "rabbitmq")
-    error_message = "the broker's mount has no config on the in-cluster Vault either"
+    condition = can(regex(
+      "(?s)resource \"random_password\" \"demo\" \\{.*lifecycle \\{\\s*ignore_changes = \\[length, special, upper, lower, numeric, min_lower, min_upper, min_numeric, min_special, override_special\\]\\s*\\}",
+      file("${path.module}/operator.tf")
+    ))
+    error_message = "random_password.demo must ignore the arguments an import cannot reproduce (otherwise the first plan replaces the imported password)"
+  }
+}
+
+# After the import the state holds the data key's only copy (D211): a plan that destroys or replaces
+# random_bytes.data_key fails instead. Terraform test does not enforce prevent_destroy (its teardown destroys every
+# mocked resource), so the file itself is checked, as G4 is in infra/aws/kubernetes: the flag on a line of its own
+# inside the block's lifecycle (a commented-out flag does not count). random_password.demo stays without it: its
+# rotation is a -replace (README -> The App Review demo password).
+run "the_data_key_cannot_be_destroyed" {
+  command = plan
+
+  assert {
+    condition = length([for c in split("\nresource \"", file("${path.module}/secrets.tf")) : c if startswith(c, "random_bytes\" \"data_key\" {")]) == 1 && alltrue([
+      for c in split("\nresource \"", file("${path.module}/secrets.tf")) :
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) if startswith(c, "random_bytes\" \"data_key\" {")
+    ])
+    error_message = "random_bytes.data_key (secrets.tf) needs lifecycle { prevent_destroy = true }, not commented out: after the import the state is the key's only copy (D211)"
+  }
+  assert {
+    condition = alltrue([for f in fileset(path.module, "*.tf") : alltrue([
+      for c in split("\nresource \"", file("${path.module}/${f}")) :
+      !can(regex("(?m)^[ \\t]*prevent_destroy\\s*=\\s*true", c)) if startswith(c, "random_password\" ")
+    ])])
+    error_message = "no random_password carries prevent_destroy: each rotates with -replace (random_password.demo among them, README)"
+  }
+  # The pattern itself: it matches the flag, and neither a commented-out flag nor a lifecycle without it (the demo
+  # password's, which has ignore_changes only). Every assert here reads a file of the module (path.module): one that
+  # refers to no object fails the run.
+  assert {
+    condition = (
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", "random_bytes\" \"x\" {\n  lifecycle {\n    prevent_destroy = true\n  }\n}\n")) &&
+      !can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", "random_bytes\" \"x\" {\n  lifecycle {\n    # prevent_destroy = true\n  }\n}\n")) &&
+      length([for c in split("\nresource \"", file("${path.module}/operator.tf")) : c if startswith(c, "random_password\" \"demo\" {") && strcontains(c, "lifecycle {")]) == 1 &&
+      !anytrue([for c in split("\nresource \"", file("${path.module}/operator.tf")) :
+      can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) if startswith(c, "random_password\" \"demo\" {")])
+    )
+    error_message = "the prevent_destroy pattern is broken: it must match the flag, and neither a commented-out flag nor the demo password's lifecycle (ignore_changes only)"
   }
 }
 
@@ -667,11 +673,8 @@ run "shared_secrets_reach_only_the_services_that_list_them" {
   command = plan
 
   variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-    shared_secrets        = { BETA_GATE = "on", CONSENT_ENFORCE = "on" }
+    shared_secrets = { BETA_GATE = "on", CONSENT_ENFORCE = "on" }
   }
-  expect_failures = [check.targets_come_from_git]
 
   assert {
     condition = alltrue([for k, s in vault_kv_secret_v2.k8s_config :
@@ -692,131 +695,42 @@ run "shared_secrets_reach_only_the_services_that_list_them" {
 run "auth_config_is_in_cluster" {
   command = plan
 
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [check.targets_come_from_git]
-
   assert {
     condition = (
-      vault_kubernetes_auth_backend_config.k8s[0].backend == "kubernetes" &&
-      vault_kubernetes_auth_backend_config.k8s[0].kubernetes_host == "https://kubernetes.default.svc" &&
-      vault_kubernetes_auth_backend_config.k8s[0].disable_local_ca_jwt == false &&
-      vault_kubernetes_auth_backend_config.k8s[0].token_reviewer_jwt == null &&
-      vault_kubernetes_auth_backend_config.k8s[0].pem_keys == null
+      vault_kubernetes_auth_backend_config.k8s.backend == "kubernetes" &&
+      vault_kubernetes_auth_backend_config.k8s.kubernetes_host == "https://kubernetes.default.svc" &&
+      vault_kubernetes_auth_backend_config.k8s.disable_local_ca_jwt == false &&
+      vault_kubernetes_auth_backend_config.k8s.token_reviewer_jwt == null &&
+      vault_kubernetes_auth_backend_config.k8s.pem_keys == null
     )
     error_message = "Kubernetes auth uses the in-cluster API and Vault's own pod token and CA: no reviewer JWT, no keys"
   }
   assert {
     # kubernetes_ca_cert is computed (a mock would invent one), so the configuration is read instead.
-    condition = length(vault_kubernetes_auth_backend_config.k8s) == 1 && length(regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("k8s.tf"))) == 1 && alltrue([
-      for b in regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("k8s.tf")) :
+    condition = length(regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("${path.module}/k8s.tf"))) == 1 && alltrue([
+      for b in regexall("(?s)resource \"vault_kubernetes_auth_backend_config\" \"k8s\" \\{.*?\n\\}", file("${path.module}/k8s.tf")) :
     !strcontains(b, "kubernetes_ca_cert") && !strcontains(b, "token_reviewer_jwt") && !strcontains(b, "issuer")])
     error_message = "the in-cluster auth config sets no CA, reviewer JWT or issuer"
   }
 }
 
-run "golden_k8s" {
+# Every plan and apply writes the in-cluster Vault, so every one needs the one-hour terraform token.
+run "the_token_is_required" {
   command = plan
 
   variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = ["api", "migrate", "rabbitmq"] }
-    vault_k8s_token       = "terraform-token"
+    vault_k8s_token = null
   }
-  expect_failures = [check.targets_come_from_git]
-
-  assert {
-    condition = alltrue([for s in ["api", "migrate", "rabbitmq"] :
-    local_file.vso[s].content == file("tests/golden/k8s/${s}.vault.yaml")])
-    error_message = "the in-cluster shape differs from tests/golden/k8s/"
-  }
-  assert {
-    condition = alltrue([for k, f in local_file.vso :
-      strcontains(f.content, "address: ${var.vault_address_for_cluster}\n") && strcontains(f.content, "namespace: admin/ryft/${k}\n")
-    if !contains(["api", "migrate", "rabbitmq"], k)])
-    error_message = "a namespace not in vso_on_k8s keeps reading HCP"
-  }
-  assert {
-    condition     = output.vso_targets.services["api"] == "k8s" && output.vso_targets.services["ingest"] == "hcp"
-    error_message = "the output says which namespace reads which Vault"
-  }
+  expect_failures = [var.vault_k8s_token]
 }
 
-# V3: the generated objects for the in-cluster Vault differ from the HCP ones in the VaultConnection's address
-# and caCertSecretRef, the VaultAuth's Vault namespace and the VaultStaticSecrets' mount, plus the in-app sync
-# waves (design 1.3); nothing else (destination, excludeRaw, labels, restart targets, role, audience, Certificate).
-run "overlay_differs_only_in_mount_address_ca_and_namespace" {
+run "the_token_may_not_be_empty" {
   command = plan
 
   variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = ["api", "migrate", "rabbitmq", "monitoring"] }
-    vault_k8s_token       = "terraform-token"
+    vault_k8s_token = ""
   }
-  expect_failures = [check.targets_come_from_git]
-
-  assert {
-    condition = alltrue([for s in ["api", "migrate", "rabbitmq"] :
-      jsonencode([for d in split("\n---\n", local_file.vso[s].content) : {
-        apiVersion = yamldecode(d).apiVersion
-        kind       = yamldecode(d).kind
-        metadata   = { for mk, mv in yamldecode(d).metadata : mk => mv if mk != "annotations" }
-        spec       = { for sk, sv in yamldecode(d).spec : sk => sv if !contains(yamldecode(d).kind == "VaultStaticSecret" ? ["mount"] : ["address", "caCertSecretRef", "namespace"], sk) }
-      }]) ==
-      jsonencode([for d in split("\n---\n", file("tests/golden/hcp/${s}.vault.yaml")) : {
-        apiVersion = yamldecode(d).apiVersion
-        kind       = yamldecode(d).kind
-        metadata   = { for mk, mv in yamldecode(d).metadata : mk => mv if mk != "annotations" }
-        spec       = { for sk, sv in yamldecode(d).spec : sk => sv if !contains(yamldecode(d).kind == "VaultStaticSecret" ? ["mount"] : ["address", "caCertSecretRef", "namespace"], sk) }
-      }])
-    ])
-    error_message = "the two shapes differ in more than address, caCertSecretRef, the Vault namespace, the mount and the waves"
-  }
-  assert {
-    condition = alltrue([for s in ["api", "migrate", "rabbitmq", "monitoring"] : alltrue([for d in split("\n---\n", local_file.vso[s].content) :
-      yamldecode(d).kind == "Certificate" ? !can(yamldecode(d).metadata.annotations) : (
-        yamldecode(d).metadata.annotations == { "argocd.argoproj.io/sync-wave" = (yamldecode(d).kind == "VaultStaticSecret" ? "1" : "0") } &&
-        (yamldecode(d).kind != "VaultConnection" || (yamldecode(d).spec.address == "https://vault.vault.svc:8200" && yamldecode(d).spec.caCertSecretRef == "vault-ca")) &&
-        (yamldecode(d).kind != "VaultAuth" || !can(yamldecode(d).spec.namespace)) &&
-        (yamldecode(d).kind != "VaultStaticSecret" || yamldecode(d).spec.mount == "kv-${s}")
-    )])])
-    error_message = "in-cluster shape: connection and auth in wave 0, the secrets in wave 1, the in-cluster address with vault-ca, no Vault namespace, the mount kv-<svc>"
-  }
-  assert {
-    condition = (
-      strcontains(local_file.vso["monitoring"].content, "  mount: kv-monitoring\n") &&
-      strcontains(local_file.vso["monitoring"].content, "- kind: DaemonSet\n      name: grafana-cloud-alloy-daemonset\n    - kind: Deployment\n      name: grafana-cloud-alloy-deployment\n")
-    )
-    error_message = "monitoring (no ryft- prefix) reads kv-monitoring and still restarts both collectors"
-  }
-}
-
-run "k8s_source_needs_write_k8s" {
-  command = plan
-
-  variables {
-    test_override_targets = { write_k8s = false, vso_on_k8s = ["api"] }
-  }
-  expect_failures = [local_file.vso, check.targets_come_from_git]
-}
-
-run "k8s_source_must_be_a_service" {
-  command = plan
-
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = ["api", "no-such-service"] }
-    vault_k8s_token       = "terraform-token"
-  }
-  expect_failures = [local_file.vso, check.targets_come_from_git]
-}
-
-run "write_k8s_needs_the_token" {
-  command = plan
-
-  variables {
-    test_override_targets = { write_k8s = true, vso_on_k8s = [] }
-  }
-  expect_failures = [var.vault_k8s_token, check.targets_come_from_git]
+  expect_failures = [var.vault_k8s_token]
 }
 
 run "reserved_service_names_are_refused" {
@@ -853,13 +767,28 @@ run "the_port_forward_is_the_only_address" {
   expect_failures = [var.vault_k8s_address]
 }
 
-run "the_literal_ca_secret_is_retired" {
+# D207: a terraform.tfvars from the HCP era that still sets one of these fails the plan, naming the line to delete,
+# instead of being ignored (a silently ignored HCP address would look like a working configuration).
+run "the_hcp_variables_are_retired" {
   command = plan
 
   variables {
-    vault_ca_bundle_b64 = "LS0tLS1CRUdJTi0tLS0t"
+    vault_parent_namespace_root = "admin"
+    vault_address               = "https://vault.example.hashicorp.cloud:8200"
+    vault_address_for_cluster   = "https://vault.example.hashicorp.cloud:8200"
+    vault_ca_bundle_b64         = "LS0tLS1CRUdJTi0tLS0t"
   }
-  expect_failures = [var.vault_ca_bundle_b64]
+  expect_failures = [var.vault_parent_namespace_root, var.vault_address, var.vault_address_for_cluster, var.vault_ca_bundle_b64]
+}
+
+# An empty string is a set line too (the tripwire is null, not "").
+run "an_empty_retired_variable_still_fails" {
+  command = plan
+
+  variables {
+    vault_parent_namespace_root = ""
+  }
+  expect_failures = [var.vault_parent_namespace_root]
 }
 
 # Service names are canonical already: Vault lower-cases and trims policy names on write but matches ACL paths as
@@ -876,30 +805,45 @@ run "service_names_are_canonical" {
   expect_failures = [var.services]
 }
 
-# Every resource in k8s.tf goes to the in-cluster Vault, and nothing else does: a dropped `provider = vault.k8s`
-# would write that object (the demo password, a service's KV) into HCP's admin namespace instead.
+# One Vault, one provider (D207): the default `vault` provider in providers.tf, which can only reach the port-forward
+# (var.vault_k8s_address) with the ryft-vault CA and the terraform token. No alias and no `provider =` anywhere, so
+# no object can be pointed at another Vault; every Vault object is in k8s.tf, where the terraform policy's allowlist
+# is reviewed against it (the_snapshot_job_saves_a_snapshot_and_nothing_else).
 #
-# k8s.tf is read with its comments removed (/* */, # and //), so a `provider = vault.k8s` inside a comment is not
-# taken for the real line. Removing text can only drop a provider line or a block, and either fails here, so the
-# stripping never makes this run pass where the raw file should fail. The other files are read raw: there any
-# mention fails, comments included.
-run "the_k8s_resources_and_only_they_use_the_k8s_provider" {
+# The patterns are anchored at the start of a line with the block's own indentation, so a `#` comment line or a
+# line inside a heredoc (the policies) is never taken for configuration; a block inside /* */ would be counted,
+# which can only fail a run, never pass one.
+run "one_vault_provider_and_every_vault_object_in_k8s_tf" {
   command = plan
 
   assert {
-    condition = length(local.k8s_kv_mount) > 0 && alltrue([
-      for b in regexall("(?ms)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\" \\{\\n(.*?)^\\}$",
-      replace(replace(replace(file("k8s.tf"), "/(?s)/\\*.*?\\*//", ""), "/(?m)#.*$/", ""), "/(?m)//.*$/", "")) :
-      startswith(b[0], "vault_") && can(regex("(?m)^  provider += vault\\.k8s$", b[2]))
-      ]) && length(regexall("(?m)^resource ",
-    replace(replace(replace(file("k8s.tf"), "/(?s)/\\*.*?\\*//", ""), "/(?m)#.*$/", ""), "/(?m)//.*$/", ""))) == 11
-    error_message = "every resource block in k8s.tf (11, comments removed) is a vault_ resource with a live provider = vault.k8s"
+    condition = (
+      length(regexall("(?m)^provider \"vault\" \\{$", file("${path.module}/providers.tf"))) == 1 &&
+      alltrue([for f in fileset(path.module, "*.tf") : f == "providers.tf" || length(regexall("(?m)^\\s*provider\\s+\"vault\"", file("${path.module}/${f}"))) == 0]) &&
+      !can(regex("(?m)^  alias", regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("${path.module}/providers.tf"))))
+    )
+    error_message = "exactly one provider \"vault\" block, in providers.tf, without an alias: one Vault, nothing to point a resource elsewhere"
   }
   assert {
-    condition = length(local.k8s_kv_mount) > 0 && alltrue([
-      for f in fileset(".", "*.tf") : f == "k8s.tf" || length(regexall("provider\\s*=\\s*vault\\.k8s", file(f))) == 0
-    ])
-    error_message = "no file but k8s.tf points a resource at vault.k8s"
+    condition     = alltrue([for f in fileset(path.module, "*.tf") : length(regexall("(?m)^\\s*provider\\s*=", file("${path.module}/${f}"))) == 0])
+    error_message = "no resource or data source sets provider =: every object goes to the one default provider of its type"
+  }
+  assert {
+    condition = (
+      alltrue([for f in fileset(path.module, "*.tf") : f == "k8s.tf" || length(regexall("(?m)^\\s*(resource|data|ephemeral)\\s+\"vault_", file("${path.module}/${f}"))) == 0]) &&
+      length(regexall("(?m)^resource \"vault_[a-z0-9_]+\" \"[a-z0-9_]+\" \\{$", file("${path.module}/k8s.tf"))) == 11 &&
+      length(regexall("(?m)^(resource|data|ephemeral|module|locals|variable|output)\\b", file("${path.module}/k8s.tf"))) == 11
+    )
+    error_message = "every vault_ object is a resource in k8s.tf (11 blocks, and nothing else there); no other file declares one"
+  }
+  assert {
+    condition = alltrue([for re in [
+      "(?m)^  address += var\\.vault_k8s_address$",
+      "(?m)^  ca_cert_file += pathexpand\\(var\\.vault_k8s_ca_cert_file\\)$",
+      "(?m)^  skip_tls_verify += false( +#.*)?$",
+      "(?m)^  token += var\\.vault_k8s_token$",
+    ] : can(regex(re, regex("(?ms)^provider \"vault\" \\{\\n.*?^\\}$", file("${path.module}/providers.tf"))))])
+    error_message = "the Vault provider sets the port-forward address, the CA file, skip_tls_verify = false and the token explicitly (unset, it would take VAULT_ADDR, VAULT_CACERT, VAULT_SKIP_VERIFY or VAULT_TOKEN from the environment)"
   }
 }
 
@@ -911,7 +855,7 @@ run "no_k8s_mount_switches_audit_hmac_off" {
   assert {
     condition = length(local.k8s_kv_mount) > 0 && length(regexall(
       "audit_non_hmac|passthrough_request_headers|allowed_response_headers|listing_visibility|(?m)^\\s*tune\\s*\\{",
-      join("\n", [for l in split("\n", file("k8s.tf")) : l if !startswith(trimspace(l), "#")])
+      join("\n", [for l in split("\n", file("${path.module}/k8s.tf")) : l if !startswith(trimspace(l), "#")])
     )) == 0
     error_message = "k8s.tf sets audit_non_hmac_*, passthrough_request_headers, allowed_response_headers, listing_visibility or a tune block: secret values would reach both audit devices in clear"
   }
@@ -1017,20 +961,110 @@ run "both_policies_are_plain_blocks_only" {
   }
 }
 
-run "the_admin_policy_and_the_login_hold_the_reviewed_shape" {
+# The login is a generate-root session (D209, docs/OPERATIONS.md -> Vault -> Login): the root token creates one
+# token of the token role admin and is revoked; the admin token creates the terraform token. Both roles are pinned
+# here as an exact allowlist of keys and values.
+run "the_admin_policy_and_the_token_roles_hold_the_reviewed_shape" {
+  command = plan
+
+  # admin is everything but what outlives the session or opens another way in: no orphan, no token of a role but
+  # terraform (in any spelling: the glob, which the exact terraform path overrides), no token role write, no auth
+  # method enabled, disabled or moved, no write of an auth method's roles or config or of identity (a standing login:
+  # a role or an identity with policy admin, a config that trusts another cluster), no policy write (otherwise it
+  # rewrites admin, terraform or default and lifts the denies), and no snapshot restore. Paths in file order, each
+  # block's whole body.
+  assert {
+    condition = (
+      local.bootstrap_policy_paths.admin == [
+        "*", "auth/token/create", "auth/token/create-orphan", "auth/token/create/*", "auth/token/create/terraform", "auth/token/roles/*",
+        "sys/auth/*", "sys/remount", "auth/+/role/*", "auth/+/config", "identity/*", "sys/policies/acl/*", "sys/policy/*",
+        "sys/storage/raft/snapshot", "sys/storage/raft/snapshot-force",
+      ] &&
+      jsonencode(local.bootstrap_policy_blocks.admin) == jsonencode({
+        "*"                               = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n"
+        "auth/token/create"               = "  capabilities = [\"deny\"]\n"
+        "auth/token/create-orphan"        = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/*"             = "  capabilities = [\"deny\"]\n"
+        "auth/token/create/terraform"     = "  capabilities = [\"create\", \"update\"]\n"
+        "auth/token/roles/*"              = "  capabilities = [\"deny\"]\n"
+        "sys/auth/*"                      = "  capabilities = [\"deny\"]\n"
+        "sys/remount"                     = "  capabilities = [\"deny\"]\n"
+        "auth/+/role/*"                   = "  capabilities = [\"read\", \"list\"]\n"
+        "auth/+/config"                   = "  capabilities = [\"read\"]\n"
+        "identity/*"                      = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/policies/acl/*"              = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/policy/*"                    = "  capabilities = [\"read\", \"list\"]\n"
+        "sys/storage/raft/snapshot"       = "  capabilities = [\"read\"]\n"
+        "sys/storage/raft/snapshot-force" = "  capabilities = [\"deny\"]\n"
+      })
+    )
+    error_message = "admin is \"*\" with every capability, deny on auth/token/create, auth/token/create-orphan, auth/token/create/* (every token role), auth/token/roles/*, sys/auth/*, sys/remount and sys/storage/raft/snapshot-force, read and list only on sys/policies/acl/*, sys/policy/*, auth/+/role/* and identity/*, read only on auth/+/config and sys/storage/raft/snapshot (a save, no restore), and create and update on auth/token/create/terraform (the terraform token, a child of the session's token); no other path, no other line"
+  }
+  # No standing login (D209, the security re-review of the rebuild): with "*" alone, each of these would let the
+  # admin token leave a login behind that mints admin (or any policy) after the session, with the token role admin
+  # deleted: a kubernetes role bound to a service account, an identity group or entity with policies, an auth config
+  # that trusts another cluster, an auth mount moved below a nested path (where the `+` blocks miss it) and back, a
+  # restored snapshot. Named one by one so that a removal fails with this message.
+  assert {
+    condition = (
+      alltrue([for p in ["auth/+/role/*", "identity/*"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\", \"list\"]\n"]) &&
+      alltrue([for p in ["auth/+/config", "sys/storage/raft/snapshot"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"read\"]\n"]) &&
+      alltrue([for p in ["sys/remount", "sys/storage/raft/snapshot-force"] : try(local.bootstrap_policy_blocks.admin[p], "") == "  capabilities = [\"deny\"]\n"])
+    )
+    error_message = "the admin token plants no standing login: auth/+/role/* and identity/* read and list only, auth/+/config and sys/storage/raft/snapshot read only, sys/remount and sys/storage/raft/snapshot-force denied"
+  }
+  # The terraform token comes from the admin token, so its role must stay a non-orphan child (dies with the
+  # session), and the admin role an orphan that only a root token mints (the glob above refuses it to admin).
+  assert {
+    condition = (
+      local.bootstrap.token_role_terraform.orphan == false && local.bootstrap.token_role_admin.orphan == true &&
+      !contains(keys(local.bootstrap_policy_blocks.admin), "auth/token/create/admin") &&
+      local.bootstrap_policy_blocks.admin["auth/token/create/*"] == "  capabilities = [\"deny\"]\n"
+    )
+    error_message = "the admin token mints terraform tokens (children) and nothing else: role admin is reached only by a root token (auth/token/create/* denied, no exact allow for admin)"
+  }
+  # An orphan, so revoking the root token that created it does not revoke it (and with it the terraform token).
+  assert {
+    condition = (
+      jsonencode(local.bootstrap.token_role_admin) == jsonencode({
+        allowed_policies        = ["admin"]
+        disallowed_policies     = ["root"]
+        orphan                  = true
+        renewable               = false
+        token_bound_cidrs       = ["127.0.0.1/32"]
+        token_explicit_max_ttl  = 3600
+        token_no_default_policy = false
+        token_type              = "service"
+      })
+    )
+    error_message = "the token role admin: the policy admin only (never root), an orphan (revoking the root token leaves it), one hour, not renewable, a revocable service token, through the port-forward only, and no other key"
+  }
+  assert {
+    condition = (
+      jsonencode(local.bootstrap.token_role_terraform) == jsonencode({
+        allowed_policies        = ["terraform"]
+        disallowed_policies     = ["admin", "root"]
+        orphan                  = false
+        renewable               = false
+        token_bound_cidrs       = ["127.0.0.1/32"]
+        token_explicit_max_ttl  = 3600
+        token_no_default_policy = false
+        token_type              = "service"
+      })
+    )
+    error_message = "the token role terraform: the policy terraform only (never admin or root), a child of the admin token (not an orphan: it dies with the session), one hour, not renewable, a revocable service token, through the port-forward only, and no other key"
+  }
+}
+
+# The OIDC files are the documented later option (bootstrap.tf's header): written nowhere in the rebuild, and still
+# the Google Workspace version. Pinned so that the change for a personal Google account is a reviewed one.
+run "the_oidc_files_stay_the_reviewed_later_option" {
   command = plan
 
   assert {
-    condition = (
-      local.bootstrap_policy_paths.admin == ["*"] &&
-      local.bootstrap_policy_blocks.admin == { "*" = "  capabilities = [\"create\", \"read\", \"update\", \"patch\", \"delete\", \"list\", \"sudo\"]\n" }
-    )
-    error_message = "admin is one path, \"*\", with every capability (the root token is revoked)"
-  }
-  assert {
     condition = alltrue([for r in [local.bootstrap.oidc_role_admin, local.bootstrap.oidc_role_enroll] : (
       r.role_type == "oidc" && r.user_claim == "sub" && r.verbose_oidc_logging == false &&
-      r.bound_claims == { hd = "ryftapp.de" } && r.bound_claims_type == "string" && length(r.oidc_scopes) == 0 &&
+      r.bound_claims == { hd = "ryftlab.de" } && r.bound_claims_type == "string" && length(r.oidc_scopes) == 0 &&
       tolist(r.allowed_redirect_uris) == tolist(["http://localhost:8250/oidc/callback"]) &&
       r.max_age == 600 && tolist(r.token_bound_cidrs) == tolist(["127.0.0.1/32"]) && r.token_type == "service" &&
       length(setintersection(keys(r), ["claim_mappings", "groups_claim", "bound_subject", "user_claim_json_pointer", "bound_audiences"])) == 0
@@ -1050,16 +1084,6 @@ run "the_admin_policy_and_the_login_hold_the_reviewed_shape" {
       local.bootstrap.oidc_config.oidc_discovery_url == "https://accounts.google.com" && local.bootstrap.oidc_config.default_role == "admin" &&
       length(setintersection(keys(local.bootstrap.oidc_config), ["oidc_client_secret", "oidc_client_id", "provider_config"])) == 0
     )
-    error_message = "the OIDC config names Google and the admin role; the client id and secret are passed at the bootstrap, never committed"
-  }
-  assert {
-    condition = (
-      local.bootstrap.token_role_terraform.allowed_policies == ["terraform"] &&
-      local.bootstrap.token_role_terraform.renewable == false && local.bootstrap.token_role_terraform.orphan == false &&
-      local.bootstrap.token_role_terraform.token_explicit_max_ttl == 3600 &&
-      tolist(local.bootstrap.token_role_terraform.token_bound_cidrs) == tolist(["127.0.0.1/32"]) &&
-      length(setintersection(keys(local.bootstrap.token_role_terraform), ["allowed_policies_glob", "token_period", "token_num_uses", "path_suffix", "allowed_entity_aliases"])) == 0
-    )
-    error_message = "the token role terraform: the policy terraform only, one hour, not renewable, a child of the admin login (not an orphan), through the port-forward only"
+    error_message = "the OIDC config names Google and the admin role; the client id and secret would be passed at the setup, never committed"
   }
 }

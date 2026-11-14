@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (git-ignored) only to change a default. Without one, this root publishes
+# the zone ryftlab.de, its CAA records and the Microsoft 365 mail records (D214, mail.tf). The domain
+# and the mail values are code, not variables: change them in main.tf and mail.tf.
+
+# caa_issuers = ["letsencrypt.org"]

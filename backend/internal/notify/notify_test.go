@@ -43,7 +43,7 @@ func TestMorningPayload(t *testing.T) {
 	}
 	if p.APS.Alert.TitleKey != "MORNING_SCORE_TITLE" || p.APS.Alert.TitleArgs[0] != "82%" ||
 		p.APS.Alert.Key != "MORNING_SCORE_BODY_BALANCED" || p.APS.Alert.Args[0] != "78" ||
-		p.APS.Category != "MORNING_SCORE" || p.APS.Mutable != 1 || p.RYFT["url"] != "https://ryftapp.de/day/2026-10-19" {
+		p.APS.Category != "MORNING_SCORE" || p.APS.Mutable != 1 || p.RYFT["url"] != "https://ryftlab.de/day/2026-10-19" {
 		t.Fatalf("payload %s", m.Payload())
 	}
 	if got := Render(m.TitleKey, m.TitleArgs, "en"); got != "Recovery 82%" {

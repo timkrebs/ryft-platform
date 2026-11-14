@@ -49,13 +49,13 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | Strain — Train: import | plans and workout history from another training app's export; label imported sessions; start the imported plan where the user is | `POST /v1/train/import`, `Session.origin` / `import_source`, `POST /v1/plans/{id}/enroll` (optional position) |
 | (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`) |
-| Operator web page `https://ryftapp.de/admin` (not an app screen; Supabase sign-in with TOTP) | invites for a person (create, copy and share the link, list, revoke, who redeemed), users (beta access), feedback, flags (read-only), audit (read-only, last 7 days) | **Admin routes** below: `POST`/`GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}`, `GET /v1/admin/users`, `POST`/`DELETE /v1/admin/users/{id}/access`, `GET /v1/admin/feedback`, `POST /v1/admin/feedback/{id}/resolve`, `GET /v1/admin/flags`, `GET /v1/admin/audit` |
+| Operator web page `https://ryftlab.de/admin` (not an app screen; Supabase sign-in with TOTP) | invites for a person (create, copy and share the link, list, revoke, who redeemed), users (beta access), feedback, flags (read-only), audit (read-only, last 7 days) | **Admin routes** below: `POST`/`GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}`, `GET /v1/admin/users`, `POST`/`DELETE /v1/admin/users/{id}/access`, `GET /v1/admin/feedback`, `POST /v1/admin/feedback/{id}/resolve`, `GET /v1/admin/flags`, `GET /v1/admin/audit` |
 
 ## Conventions
 
 | Topic | Rule |
 | --- | --- |
-| Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). Production: **`https://api.ryftapp.de`** for both (HTTPS only, port 80 closed; live once Supabase auth ships, M1). Configure the app with that one URL and leave the ingest URL empty. |
+| Base URLs | Two services. **ingest** serves `POST /v1/sync`; **api** serves everything else. Behind the Ingress both share one host (`/v1/sync` → ingest, other `/v1/*` → api). Production: **`https://api.ryftlab.de`** for both (HTTPS only, port 80 closed; live once Supabase auth ships, M1). Configure the app with that one URL and leave the ingest URL empty. |
 | Auth | Every `/v1/*` request carries `Authorization: Bearer <access token>`: the Supabase Auth access token of the signed-in user (a JWT; Sign in with Apple through Supabase). See **Authentication** below. `/healthz`, `/readyz`, `/metrics` are unauthenticated. |
 | Users | Every response is scoped to the token's user. There is no sign-up call: the platform creates the user on the first authenticated request. |
 | Content type | Requests and responses are `application/json`, UTF-8. Request bodies reject unknown fields (`400`). Max request body 32 MiB for `POST /v1/sync`, 1 MiB for `POST /v1/train/import`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB for everything else (`413`). |
@@ -511,7 +511,7 @@ the last answer (and compiled-in defaults) when offline.
 { "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
              "coach.enabled": false, "push.enabled": false, "physiology.card": false },
   "evaluated_at": "2026-10-19T06:12:00Z", "ttl_sec": 21600,
-  "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftapp.de/privacy" }
+  "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftlab.de/privacy" }
 ```
 
 | Field | Type | Notes |
@@ -580,9 +580,9 @@ bundle ID as topic. **Until the APNs key is configured** (Apple Developer Progra
 
 | Category | Sent when | Title · body keys (arguments) | Opens (`ryft.url`) |
 | --- | --- | --- | --- |
-| `MORNING_SCORE` | Today's day is **final** (`score.coverage.status`) with a recovery and a night's sleep for the first time: not on a provisional scoring (a 03:00 sync of half a night sends nothing), but when the night is complete or at 10:00 local, whichever comes first; if sleep only arrives after the 10:00 ceiling, when it does. Once a day; during quiet hours it waits until they end, the score as it is then. | `MORNING_SCORE_TITLE` (recovery `82%`) · `MORNING_SCORE_BODY_BALANCED`, `_STRAINED`, `_DEPLETED` or `_CALIBRATING` by `state` (readiness) | `https://ryftapp.de/day/<day>` |
-| `SESSION_SCORED` | A completed strength session has its load (scoring has run), within 12 h of its end. The first one each day; not during quiet hours. | `SESSION_SCORED_TITLE` (session title) or `SESSION_SCORED_TITLE_UNTITLED` · `SESSION_SCORED_BODY` (strain), `_PR` (strain) or `_PRS` (strain, number of records) | `https://ryftapp.de/train/session/<id>` |
-| `PR` | Instead of `SESSION_SCORED` when that category is off and the session set a record. | `PR_TITLE` (exercise name) · `PR_BODY_E1RM`, `_MAX_WEIGHT`, `_MAX_REPS` or `_MAX_VOLUME` (value) | `https://ryftapp.de/train/session/<id>` |
+| `MORNING_SCORE` | Today's day is **final** (`score.coverage.status`) with a recovery and a night's sleep for the first time: not on a provisional scoring (a 03:00 sync of half a night sends nothing), but when the night is complete or at 10:00 local, whichever comes first; if sleep only arrives after the 10:00 ceiling, when it does. Once a day; during quiet hours it waits until they end, the score as it is then. | `MORNING_SCORE_TITLE` (recovery `82%`) · `MORNING_SCORE_BODY_BALANCED`, `_STRAINED`, `_DEPLETED` or `_CALIBRATING` by `state` (readiness) | `https://ryftlab.de/day/<day>` |
+| `SESSION_SCORED` | A completed strength session has its load (scoring has run), within 12 h of its end. The first one each day; not during quiet hours. | `SESSION_SCORED_TITLE` (session title) or `SESSION_SCORED_TITLE_UNTITLED` · `SESSION_SCORED_BODY` (strain), `_PR` (strain) or `_PRS` (strain, number of records) | `https://ryftlab.de/train/session/<id>` |
+| `PR` | Instead of `SESSION_SCORED` when that category is off and the session set a record. | `PR_TITLE` (exercise name) · `PR_BODY_E1RM`, `_MAX_WEIGHT`, `_MAX_REPS` or `_MAX_VOLUME` (value) | `https://ryftlab.de/train/session/<id>` |
 | `SYNC_STALE` | No heart-rate or step sample for 20 hours (users with data in the last 7 days), once a day between 09:00 and 21:00 local, not during quiet hours. | `SYNC_STALE_TITLE` · `SYNC_STALE_BODY` (hours) | — |
 
 With every `MORNING_SCORE` event, also when that category is off or quiet hours hold
@@ -605,7 +605,7 @@ An alert's payload:
                       "loc-key": "MORNING_SCORE_BODY_BALANCED", "loc-args": ["78"] },
            "sound": "default", "category": "MORNING_SCORE", "thread-id": "MORNING_SCORE",
            "mutable-content": 1 },
-  "ryft": { "category": "MORNING_SCORE", "day": "2026-10-19", "url": "https://ryftapp.de/day/2026-10-19" } }
+  "ryft": { "category": "MORNING_SCORE", "day": "2026-10-19", "url": "https://ryftlab.de/day/2026-10-19" } }
 ```
 
 `category` is the `UNNotificationCategory` identifier, `thread-id` groups by category,
@@ -1923,7 +1923,7 @@ broker: a sync's events wait in its outbox. `GET /metrics` → Prometheus text f
 ## Admin routes (operator only)
 
 `/v1/admin/*` is the operator's surface: scripts (`scripts/*.sh`, `make smoke-prod`) and, since
-2026-11-05, a Supabase sign-in for the operator's web page at `https://ryftapp.de/admin` (merged in
+2026-11-05, a Supabase sign-in for the operator's web page at `https://ryftlab.de/admin` (merged in
 timkrebs/ryft-platform#128, pinned in #138, confirmed working by the owner on 2026-11-05). **The app never calls these
 routes** and does not mirror their types; the page builds its own types from the shapes below. The
 routes exist only when the api has an `ADMIN_API_KEY` (otherwise every `/v1/admin/*` path is `404`).
@@ -2008,7 +2008,7 @@ ambiguous). An unknown path under `/v1/admin/` is `404` after the bearer check.
 
 Only `/v1/admin/*` sends CORS headers; no other route does (`GET /v1/config` with an `Origin` has no
 `Access-Control-*` header). The allowed origins come from the api's `ADMIN_WEB_ORIGINS` (a comma-separated
-list of exact origins, production `https://ryftapp.de`). **Empty or unset means no CORS at all**: a browser
+list of exact origins, production `https://ryftlab.de`). **Empty or unset means no CORS at all**: a browser
 page then cannot read any answer; scripts are not affected. Matching is exact string equality: no
 wildcards, no `*`, no `null`.
 
@@ -2026,12 +2026,12 @@ itself (its `429`, a `502`) carry no CORS headers, so a browser reports a networ
 
 ```http
 OPTIONS /v1/admin/invites HTTP/1.1
-Origin: https://ryftapp.de
+Origin: https://ryftlab.de
 Access-Control-Request-Method: POST
 Access-Control-Request-Headers: authorization,content-type
 
 HTTP/1.1 204 No Content
-Access-Control-Allow-Origin: https://ryftapp.de
+Access-Control-Allow-Origin: https://ryftlab.de
 Access-Control-Allow-Methods: GET, POST, DELETE
 Access-Control-Allow-Headers: Authorization, Content-Type
 Access-Control-Max-Age: 600
@@ -2078,7 +2078,7 @@ its `code`, a list of users or invites holds `emails` (whether the addresses wer
 
 An invite code (`RYFT-7K3M-QX9P`; case, spaces and dashes never matter where a code is read) is either
 **unbound** (anyone with the code, today's behaviour) or **bound to an email address**. The tester opens the
-universal link `https://ryftapp.de/invite/RYFT-7K3M-QX9P` (the `link` field) or types the code in the app
+universal link `https://ryftlab.de/invite/RYFT-7K3M-QX9P` (the `link` field) or types the code in the app
 (`POST /v1/me/invite`).
 
 #### `POST /v1/admin/invites` — create a code
@@ -2103,7 +2103,7 @@ the caller just sent it), `uses_by` is `[]` and `created_by` is the caller's act
 { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 0,
   "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
   "email": "anna@example.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
-  "revoked_at": null, "status": "open", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+  "revoked_at": null, "status": "open", "link": "https://ryftlab.de/invite/RYFT-7K3M-QX9P",
   "uses_by": [] }
 ```
 
@@ -2119,7 +2119,7 @@ revoked and used-up ones too. The new fields are all additive:
 | `created_by` | `Actor` | who created it; `{"kind": "key", "id": null}` for codes from before 2026-11-05 |
 | `revoked_at` | RFC 3339? | set by `DELETE`; `null` otherwise |
 | `status` | string | **closed** enum, the first match wins: `revoked` (`revoked_at` set), `used` (`uses` ≥ `max_uses`), `expired` (`expires_at` not in the future), `open` |
-| `link` | string | `<PUBLIC_WEB_URL>/invite/<code with dashes>`, i.e. `https://ryftapp.de/invite/RYFT-7K3M-QX9P`. Always present |
+| `link` | string | `<PUBLIC_WEB_URL>/invite/<code with dashes>`, i.e. `https://ryftlab.de/invite/RYFT-7K3M-QX9P`. Always present |
 | `uses_by` | `[InviteUse]` | the accounts that redeemed the code, oldest first |
 
 `InviteUse`: `user_id` (uuid), `short_id` (its first 8 hex digits), `email` (string?, the account's email, masked unless
@@ -2134,18 +2134,18 @@ revoked and used-up ones too. The new fields are all additive:
   { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 1,
     "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
     "email": "anna@example.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
-    "revoked_at": null, "status": "used", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+    "revoked_at": null, "status": "used", "link": "https://ryftlab.de/invite/RYFT-7K3M-QX9P",
     "uses_by": [ { "user_id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", "short_id": "9f8e7d6c", "email": "anna@example.com",
                    "private_relay": false, "at": "2026-11-05T18:02:11Z" } ] },
   { "code": "RYFT-H2NP-4WCX", "note": "Ben", "max_uses": 1, "uses": 0,
     "expires_at": "2026-11-05T11:30:00Z", "created_at": "2026-11-05T09:00:00Z",
     "email": "ben@example.com", "created_by": { "kind": "key", "id": "3fa1c2d9" },
-    "revoked_at": "2026-11-05T11:30:00Z", "status": "revoked", "link": "https://ryftapp.de/invite/RYFT-H2NP-4WCX",
+    "revoked_at": "2026-11-05T11:30:00Z", "status": "revoked", "link": "https://ryftlab.de/invite/RYFT-H2NP-4WCX",
     "uses_by": [] },
   { "code": "RYFT-A9KT-3DMF", "note": "TestFlight wave 2", "max_uses": 20, "uses": 3,
     "expires_at": null, "created_at": "2026-10-20T08:00:00Z",
     "email": null, "created_by": { "kind": "key", "id": "3fa1c2d9" },
-    "revoked_at": null, "status": "open", "link": "https://ryftapp.de/invite/RYFT-A9KT-3DMF",
+    "revoked_at": null, "status": "open", "link": "https://ryftlab.de/invite/RYFT-A9KT-3DMF",
     "uses_by": [ { "user_id": "0a1b2c3d-4e5f-4061-8283-949a5b6c7d8e", "short_id": "0a1b2c3d", "email": "mia@icloud.com",
                    "private_relay": false, "at": "2026-10-22T07:41:00Z" },
                  { "user_id": "7c6b5a49-3827-4160-8f0e-1d2c3b4a5968", "short_id": "7c6b5a49", "email": "x7k2m9q4@privaterelay.appleid.com",
@@ -2161,7 +2161,7 @@ Without `?emails=1` the same first entry reads:
   { "code": "RYFT-7K3M-QX9P", "note": "Anna", "max_uses": 1, "uses": 1,
     "expires_at": "2026-11-19T10:00:00Z", "created_at": "2026-11-05T10:00:00Z",
     "email": "a***@e***.com", "created_by": { "kind": "user", "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081" },
-    "revoked_at": null, "status": "used", "link": "https://ryftapp.de/invite/RYFT-7K3M-QX9P",
+    "revoked_at": null, "status": "used", "link": "https://ryftlab.de/invite/RYFT-7K3M-QX9P",
     "uses_by": [ { "user_id": "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a", "short_id": "9f8e7d6c", "email": "a***@e***.com",
                    "private_relay": false, "at": "2026-11-05T18:02:11Z" } ] }
 ]
@@ -3078,6 +3078,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-14 | **The domain is `ryftlab.de`, a hard cut** (D213; platform PR #161, the rebuild). The base URL is now **`https://api.ryftlab.de`** for both services (ingest's `POST /v1/sync` and everything else); `api.ryftapp.de` is not served any more: no alias, no redirect, no AASA on the old domain. Every URL the server emits moves with it: `privacy_policy_url` in `GET /v1/config` is `https://ryftlab.de/privacy`; the push payloads' `ryft.url` is `https://ryftlab.de/day/<day>` or `https://ryftlab.de/train/session/<id>`; an invite's `link` is `https://ryftlab.de/invite/<code>`; the operator's page and the CORS origin are `https://ryftlab.de` (Admin routes → CORS). The examples are updated. **Fields:** none added, renamed or removed; `privacy_policy_version` is unchanged (`2026-10-26`). **The app:** a build whose base URL is `https://api.ryftlab.de` and that accepts only `ryftlab.de` hosts in `ryft.url`, invite links and help links; its associated domains name `ryftlab.de`. Until the site is deployed again (D215), `https://ryftlab.de/...` has no page and no AASA, so these URLs are no universal links and `privacy_policy_url` does not load in a browser; the payload shapes are unchanged. **Swift:** none (no type changes; the base URL is configuration). |
 | 2026-11-05 | **Docs only: the operator's page as built** (timkrebs/ryft-platform#128 merged, pinned in #138, confirmed working by the owner on 2026-11-05; no `API_REQUESTS.md` entry, the app is not involved). Admin routes → Routes and who may call them: the "Used by the page" column now matches the page: `GET /v1/admin/audit` is used (an Audit tab, read-only, the default 7 days; it said "not in v1"), flags are read-only and the page shows only the count of allow-listed accounts (the token's answer still carries `allow_user_ids`; flags have no projection), `?emails=1` is sent only while the page's email switch is on, feedback asks 30 days back. Screens → endpoints: the operator page's row lists the audit. `POST /v1/admin/invites`: the page's expiry default (14 days) and its "Never" (no `expires_at`, only without `email`) are said precisely. **Behaviour:** none; no route, field, status or `code` changes. **Swift:** none. |
 | 2026-11-05 | **Invites for a person** (the operator's page; the app is not involved): `POST /v1/admin/invites` takes an optional `email` (a bound code has `max_uses` 1 and always expires: 14 days by default, at most 90; `422` otherwise, and `422` while bound invites are unavailable because the Supabase project does not confirm emails or cannot be asked); `BetaInvite` gains `email` (masked unless `?emails=1`), `created_by` (`Actor`), `revoked_at`, `status` (`open` \| `used` \| `expired` \| `revoked`, closed), `link` and `uses_by`; `GET /v1/admin/invites` is still an array; `DELETE /v1/admin/invites/{code}` now **revokes** (`204`, idempotent; the row stays listed) instead of deleting; `POST /v1/me/invite` refuses a revoked code, a bound code whose email is not the account's confirmed one and a code this account has already redeemed (an account whose access the operator removed cannot redeem the same multi-use code again), with the same single `422 "invalid or used code"`, and answers `503` with `Retry-After: 5` for a bound code when the account's email cannot be checked. **Behaviour:** nothing changes for the app, except that `DELETE /v1/admin/invites/{code}` no longer removes the row; codes created before this entry are unbound and list as created by `{"kind": "key", "id": null}`. Old clients ignore every new field. **Swift:** none (`InvitePost` is unchanged and the admin types are not mirrored). |
 | 2026-11-05 | **Admin sign-in** (the api side of the operator's page at `https://ryftapp.de/admin`; the app is not involved, so no `API_REQUESTS.md` entry answers to this): a new section [Admin routes (operator only)](#admin-routes-operator-only) documents `/v1/admin/*`, which API.md did not cover before. **Auth:** `/v1/admin/*` accepts the admin key (unchanged) **or** a Supabase access token with `app_metadata.role` `admin`, an allow-list row and a TOTP (`aal2`, `amr` `totp`) at most 12 h old; every other bearer gets one identical `401`; a valid, allow-listed admin without a fresh second factor gets `403` with the new `code` **`mfa_required`** (Errors → `code` table and the `403` row); merge, flag writes, user detail and resync-hint stay key-only (`403` for a token, no `code`); a token whose signing keys or database check is unavailable gets `503` with `Retry-After: 5`; `/v1/admin/*` has a per-address limit (10/s, bursts of 20, `429` with `Retry-After`). **CORS:** only `/v1/admin/*`, only for the origins in `ADMIN_WEB_ORIGINS` (empty = none), `GET, POST, DELETE`, `Authorization`, `Content-Type`, preflight answered without auth, `Max-Age` 600, no credentials, `X-Request-ID` and `Retry-After` exposed. **Audit:** `AuditRecord.actor` (`{kind: key | user, id}`, `Actor`, closed `kind`); `key_fingerprint` stays and is `""` for a user actor. **Token answers:** the users list and the feedback are projections for an operator's token (`AdminUserBrief`, `FeedbackBrief`: no health-derived, device or diagnostic fields); the key's answers are unchanged. **Behaviour:** nothing changes for the app or for key-based scripts, except that a key caller can now get `429` above 10 requests a second per address, the `401` message is `admin key or admin sign-in required`, and the scheme `bearer` in lower case is accepted. Old clients ignore every new field. **Swift:** the closed `code` enum gains `mfa_required` in so many words, but only on `/v1/admin/*`, routes the app never calls, so no app request can receive it; the mirror gains `APIErrorCode.mfaRequired` for completeness; the app needs no change, it never calls `/v1/admin/*` (`APIErrorBody` is unchanged, and the admin types are not mirrored). |

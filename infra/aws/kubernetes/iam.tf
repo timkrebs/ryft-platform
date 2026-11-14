@@ -39,9 +39,11 @@ module "external_dns_pod_identity" {
   tags = local.tags
 }
 
-# Vault's auto-unseal (vault.tf, D189). The key is infra/aws's (aws_kms_key.vault_unseal, prevent_destroy), found
-# by its alias; apply infra/aws first. The role names the key's ARN, never the alias: re-pointing the alias must not
-# move what this role may use. Nothing else: no kms:GenerateDataKey, no ReEncrypt, no other key.
+# Vault's auto-unseal (vault.tf, D189), only with var.vault_seal = "awskms": under Shamir (the default, D208) the
+# alias is not read and neither the role nor the association exists. The key is infra/aws's (aws_kms_key.vault_unseal,
+# prevent_destroy; it stays there under Shamir, so the switch needs no infra/aws apply), found by its alias; apply
+# infra/aws first. The role names the key's ARN, never the alias: re-pointing the alias must not move what this role
+# may use. Nothing else: no kms:GenerateDataKey, no ReEncrypt, no other key.
 #
 # Who gets the role: the association binds it to vault/vault (the chart's server service account; no
 # eks.amazonaws.com/role-arn annotation on it, IRSA would come first in the SDK's chain), and the trust policy
@@ -51,14 +53,20 @@ module "external_dns_pod_identity" {
 # account, or from another cluster of the account, cannot assume it. Not conditioned yet (to verify for Pod
 # Identity first): aws:SourceAccount and aws:SourceArn.
 data "aws_kms_alias" "vault_unseal" {
+  count = local.vault_seal_awskms ? 1 : 0
+
   name = "alias/${var.cluster_name}-vault-unseal"
 }
 
 locals {
+  # The unseal key's ARN; null under Shamir, where the alias is not read (the seal stanza and the precondition on
+  # helm_release.vault use it only with awskms).
+  vault_unseal_key_arn = one(data.aws_kms_alias.vault_unseal[*].target_key_arn)
+
   vault_unseal_policy_statements = [{
     sid       = "AutoUnseal"
     actions   = ["kms:Encrypt", "kms:Decrypt", "kms:DescribeKey"]
-    resources = [data.aws_kms_alias.vault_unseal.target_key_arn]
+    resources = [local.vault_unseal_key_arn]
   }]
 
   vault_unseal_trust_conditions = [
@@ -71,6 +79,7 @@ locals {
 module "vault_unseal_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
   version = "~> 2.10"
+  count   = local.vault_seal_awskms ? 1 : 0
 
   name                    = "${var.cluster_name}-vault-unseal"
   attach_custom_policy    = true

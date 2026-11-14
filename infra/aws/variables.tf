@@ -19,7 +19,7 @@ variable "endpoint_public_access_cidrs" {
   validation {
     condition = !anytrue([for c in var.endpoint_public_access_cidrs :
     can(regex("^(192\\.0\\.2|198\\.51\\.100|203\\.0\\.113)\\.", try(cidrhost(c, 0), "")))])
-    error_message = "endpoint_public_access_cidrs holds a documentation address (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), which EKS rejects. Use 0.0.0.0/0, or your own address together with HCP Vault's egress addresses."
+    error_message = "endpoint_public_access_cidrs holds a documentation address (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), which EKS rejects. Use 0.0.0.0/0 or your own address(es)."
   }
 }
 

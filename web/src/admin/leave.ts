@@ -1,4 +1,4 @@
-// sessionStorage is per tab AND per origin: every page of ryftapp.de loaded in this tab (or a
+// sessionStorage is per tab AND per origin: every page of ryftlab.de loaded in this tab (or a
 // duplicate of it) can read what /admin stored. So the session is cleared when the tab leaves
 // /admin: on `pagehide`, unless the Navigation API told us the next document is /admin itself
 // (a script-initiated reload or navigation). A reload by the browser (reload button, pull to

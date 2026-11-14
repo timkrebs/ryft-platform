@@ -43,7 +43,9 @@ if yq --version 2>&1 | grep -q mikefarah; then
   mktree api ryft-api api ryft-api
   adm_create_namespaces || fail "a good tree was refused"
   grep -q 'kc apply' "$tmp/kc.log" || fail "a good tree was not applied"
-  grep -q 'name: api' "$WORK/namespaces.yaml" && grep -q 'ryft.dev/vault-namespace: admin_ryft_api' "$WORK/namespaces.yaml" || fail "the namespace YAML lost its content"
+  grep -q 'name: api' "$WORK/namespaces.yaml" && grep -q 'ryft.dev/service: api' "$WORK/namespaces.yaml" || fail "the namespace YAML lost its content"
+  # infra/vault's namespaces carry no ryft.dev/vault-namespace since D207 (no Vault namespaces on CE); the copy neither.
+  if grep -q 'ryft.dev/vault-namespace' "$WORK/namespaces.yaml"; then fail "the namespace YAML still carries ryft.dev/vault-namespace (infra/vault dropped it, D207)"; fi
   bad() { # <what> <dir> <ns> <sa> <vaultauth ns>
     mktree "$2" "$3" "$4" "$5"
     if adm_create_namespaces; then fail "$1: expected a refusal"; fi

@@ -29,7 +29,7 @@ either.
      minimum length to 10 and require letters and digits. Turn on *Leaked password
      protection* where the plan offers it.
    - **Redirects** (Authentication → URL Configuration): *Site URL*
-     `https://ryftapp.de`. Add `ryft://auth/callback` to *Redirect URLs*: the app opens
+     `https://ryftlab.de`. Add `ryft://auth/callback` to *Redirect URLs*: the app opens
      confirmation and password-reset links through it.
    - **Emails** (Authentication → Emails): set the sender name to *RYFT* and word every
      template the same way (*Confirm signup*, *Reset password*, *Change email address*,
@@ -263,7 +263,7 @@ it holds only test data. A project cannot change region, so this means a new pro
    services start against it.
 4. **App:** switch the Supabase URL and publishable key in the Release config. Accounts
    of the old project do not exist in the new one, so test users sign up again.
-5. **Verify:** `make smoke-supabase` against `https://api.ryftapp.de` (`OPERATIONS.md`),
+5. **Verify:** `make smoke-supabase` against `https://api.ryftlab.de` (`OPERATIONS.md`),
    and the role and RLS queries above.
 6. **Retire the old project:** pause it, and delete it after a week with no surprises.
 

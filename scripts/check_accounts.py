@@ -7,7 +7,7 @@ password grant, checked for isolation, and deleted through DELETE /v1/me, which 
 remove their Supabase sign-in too. They are cleaned up even if a check fails.
 
   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=<publishable> SUPABASE_SECRET_KEY=sb_secret_… \\
-  API_URL=https://api.ryftapp.de INGEST_URL=https://api.ryftapp.de scripts/check_accounts.py
+  API_URL=https://api.ryftlab.de INGEST_URL=https://api.ryftlab.de scripts/check_accounts.py
 """
 import json, os, secrets, string, sys, time, urllib.error, urllib.request, uuid
 from datetime import datetime, timedelta, timezone
@@ -17,7 +17,7 @@ ANON = os.environ["SUPABASE_ANON_KEY"]
 SECRET = os.environ["SUPABASE_SECRET_KEY"]
 API = os.environ.get("API_URL", "http://localhost:8082").rstrip("/")
 INGEST = os.environ.get("INGEST_URL", "http://localhost:8081").rstrip("/")
-DOMAIN = os.environ.get("SMOKE_EMAIL_DOMAIN", "ryftapp.de")
+DOMAIN = os.environ.get("SMOKE_EMAIL_DOMAIN", "ryftlab.de")
 
 
 def call(method, url, body=None, headers=None):

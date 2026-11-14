@@ -35,7 +35,7 @@ func acHeaders(h http.Header) []string {
 
 // design 2026-11-05-admin-web §5: the CORS table, row by row.
 func TestCORSPreflight(t *testing.T) {
-	const page = "https://ryftapp.de"
+	const page = "https://ryftlab.de"
 	srv, ran := corsServer(testCORS(page))
 	preflight := func(origin, method, headers string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodOptions, "/v1/admin/invites", nil)
@@ -76,10 +76,10 @@ func TestCORSPreflight(t *testing.T) {
 			"other origin":     preflight("https://evil.example", "GET", "authorization"),
 			"null origin":      preflight("null", "GET", ""),
 			"star origin":      preflight("*", "GET", ""),
-			"suffix of origin": preflight("https://ryftapp.de.evil.example", "GET", ""),
-			"scheme differs":   preflight("http://ryftapp.de", "GET", ""),
-			"port differs":     preflight("https://ryftapp.de:8443", "GET", ""),
-			"upper-case host":  preflight("https://RYFTAPP.de", "GET", ""),
+			"suffix of origin": preflight("https://ryftlab.de.evil.example", "GET", ""),
+			"scheme differs":   preflight("http://ryftlab.de", "GET", ""),
+			"port differs":     preflight("https://ryftlab.de:8443", "GET", ""),
+			"upper-case host":  preflight("https://RYFTLAB.de", "GET", ""),
 			"PUT":              preflight(page, "PUT", "authorization"),
 			"PATCH":            preflight(page, "PATCH", ""),
 			"lower-case get":   preflight(page, "get", ""),
@@ -107,7 +107,7 @@ func TestCORSPreflight(t *testing.T) {
 }
 
 func TestCORSActualRequest(t *testing.T) {
-	const page = "https://ryftapp.de"
+	const page = "https://ryftlab.de"
 	srv, _ := corsServer(testCORS(page, "http://localhost:3000"))
 	get := func(origin string) http.Header {
 		r := httptest.NewRequest(http.MethodGet, "/v1/admin/flags", nil)
@@ -128,7 +128,7 @@ func TestCORSActualRequest(t *testing.T) {
 			t.Errorf("%s: %v", o, h)
 		}
 	}
-	for _, o := range []string{"", "https://evil.example", "null", "*", "https://ryftapp.de/", "HTTPS://ryftapp.de"} {
+	for _, o := range []string{"", "https://evil.example", "null", "*", "https://ryftlab.de/", "HTTPS://ryftlab.de"} {
 		h := get(o)
 		if len(acHeaders(h)) != 0 || h.Get("Vary") != "Origin" {
 			t.Errorf("origin %q: %v", o, h)
@@ -139,7 +139,7 @@ func TestCORSActualRequest(t *testing.T) {
 // Empty Origins (the config default) allows nothing, whatever the page sends.
 func TestCORSEmptyOriginsAllowNothing(t *testing.T) {
 	srv, _ := corsServer(testCORS())
-	for _, origin := range []string{"https://ryftapp.de", "null", "*", ""} {
+	for _, origin := range []string{"https://ryftlab.de", "null", "*", ""} {
 		r := httptest.NewRequest(http.MethodOptions, "/v1/admin/invites", nil)
 		r.Header.Set("Origin", origin)
 		r.Header.Set("Access-Control-Request-Method", "GET")

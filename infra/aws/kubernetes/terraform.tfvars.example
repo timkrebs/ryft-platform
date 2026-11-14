@@ -4,7 +4,7 @@
 acme_email = "you@example.com"
 
 # cluster_name = "ryft-prod-euc1"
-# domain       = "ryftapp.de"
+# domain       = "ryftlab.de"
 # region       = "eu-central-1"
 
 # Admission policies (D120). The switch and the per-binding actions are the committed
@@ -13,7 +13,17 @@ acme_email = "you@example.com"
 # admission_actions     = {}      # e.g. { argocd = "audit" } for one plan only
 # admission_enabled     = null    # plan-only override of `enabled`; never apply with it set
 
-# Vault (D194): admits the monitoring collector to 8200 for the metrics scrape. true only after
-# your own init, with the root token revoked and the hard gates G1-G4 holding; false again
-# before a restore into a fresh cluster (docs/OPERATIONS.md -> Vault -> Disaster recovery).
+# Vault's seal (D208). shamir (the default): unseal every Vault pod that starts by hand with
+# three of the five key shares of your init. awskms: auto-unseal with infra/aws's key
+# alias/<cluster>-vault-unseal (it exists under shamir too). Switching an initialised Vault is
+# a seal migration: apply, then restart and `vault operator unseal -migrate` pod by pod
+# (docs/OPERATIONS.md -> Vault).
+# vault_seal = "shamir"
+
+# Vault's peers on 8200: the Vault Secrets Operator (D207) and the monitoring collector's
+# metrics scrape (D194). Both false until your own init, with the root token revoked and the
+# hard gates G1-G4 holding; then both true in one edit, before infra/vault's first apply
+# (plan: 1 to change, helm_release.vault_extras). Both false again before a restore into a
+# fresh cluster or a lost volume's rebuild (docs/OPERATIONS.md -> Vault).
+# vault_vso_peer       = false
 # vault_collector_peer = false

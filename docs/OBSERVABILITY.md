@@ -42,15 +42,19 @@ series for the admission bindings (job `ryft/admission-bindings`). They write th
 destination of their own with the `PROM_USERNAME` and `GC_TOKEN` of `ryft-secrets`, the
 token the Fleet pipelines write with.
 
-Two more are the in-cluster Vault's (D194; **Vault** under Alerts): `/v1/sys/metrics?format=prometheus`
+Two more are the in-cluster Vault's, RYFT's only Vault since the rebuild (D194, D207; **Vault**
+under Alerts). The collector's own `GC_TOKEN` comes from that Vault too (mount `kv-monitoring`,
+synced into `monitoring/ryft-secrets` by VSO), so on an empty cluster the collector is installed
+after the Vault init and infra/vault's apply, with the Vault pods already running
+(**From an empty cluster** below): `/v1/sys/metrics?format=prometheus`
 on each server pod over TLS with the ryft-vault CA (job `ryft/vault`; no token,
 `unauthenticated_metrics_access` on the listener; admitted by vault-extras' NetworkPolicy from the
 `alloy-deployment` pods only, and only once `vault_collector_peer` is set after the operator's own
 init: the peer reaches all of 8200, `PUT /v1/sys/init` included. The flag closes the pod-network
 path only: the host-network `alloy-daemonset` connects from its node's address, not as a pod the
 peer selects, and node-originated traffic very likely still reaches 8200 before the init (to
-verify on the cluster); OPERATIONS → Vault, G3 and Bootstrap step 1 ("`Initialized true` before
-your own init: stop") cover that case), and kube-state-metrics' series
+verify on the cluster); OPERATIONS → Vault covers that case: G3 and the bootstrap's first check,
+"`Initialized true` before your own init: stop"), and kube-state-metrics' series
 for namespace `vault` (job `ryft/vault-state`: the snapshot CronJob, the StatefulSet, the server
 pods' readiness and their service-registration labels). Both run on
 `alloy-deployment` and write through the same destination. Vault's own pod logs go to Grafana
@@ -68,9 +72,12 @@ container would be refused, and the services emit their own metrics. The chart e
 by exact namespace name, not by prefix, so `deploy/monitoring/k8s-monitoring.yaml` lists
 every `ryft-*` namespace next to the chart's own defaults (a list value replaces the
 default list). A new `ryft-*` namespace is added there too. `vault` and
-`vault-secrets-operator-system` are listed as well (D186): the webhook's configuration is steered
+`vault-secrets-operator-system` are listed as well (D186): what the injector injects is steered
 from Grafana Fleet, and a mutated Vault pod would run foreign code next to the unsealed keyring
-and its Pod Identity token. Scraping and the Fleet
+(and, under `vault_seal = "awskms"`, the Pod Identity credentials for the unseal key). This
+exclusion is the chart's, not Fleet's: it holds from the first install, and the webhook only
+acts on pod CREATE, so Vault pods that started before the collector existed (a rebuild from
+empty) were never seen by it. Scraping and the Fleet
 Management log setting above are unaffected. Apply with `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`, then
 check read-only:
 
@@ -86,22 +93,96 @@ A self-hosted Prometheus works the same way: a job that keeps pods with
 `prometheus.io/scrape=true` and uses the annotated port, running in namespace
 `monitoring`.
 
+### From an empty cluster
+
+The collector's token is in Vault, so on a cluster built from nothing (the 2026-11 rebuild,
+D207) the collector comes **after** Vault: the Vault pods have run, and logged, before the first
+collector starts. The chart stays a Helm release of `make monitoring-apply`, outside Terraform
+(D201 and D202 are decided, not built). Before `make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1`:
+
+1. **Vault and infra/vault.** Vault is initialised and all three pods are unsealed (`1/1`), and
+   infra/vault is applied. That apply creates namespace `monitoring` (Pod Security
+   `privileged`), its service account and the Kubernetes auth role `monitoring`, the mount
+   `kv-monitoring` with `config` = `GC_TOKEN`, `PROM_USERNAME` (from
+   `service_secrets.monitoring`), and the generated overlay
+   `deploy/k8s/overlays/vault-namespaces/monitoring` (Certificate `vault-ca`, a VaultConnection to
+   `https://vault.vault.svc:8200`, VaultAuth, VaultStaticSecret `ryft-secrets`). No Argo CD
+   application applies that overlay: `make monitoring-apply` applies it by hand first and waits
+   for `monitoring/ryft-secrets`. The committed copy must be the in-cluster shape:
+   `grep -c hashicorp.cloud deploy/k8s/overlays/vault-namespaces/monitoring/vault.yaml` prints
+   `0`.
+2. **The add-ons.** cert-manager with the ClusterIssuer `ryft-vault`, and VSO, both from
+   infra/aws/kubernetes. Best also `vault_collector_peer = true` (Vault metrics (once) in
+   OPERATIONS: only after your own init), or the `ryft/vault` scrape fails until it is set.
+3. **The token** (below) is valid, and **Fleet's two exclusions** (below) are in place.
+
+**The token.** `GC_TOKEN` is one Grafana Cloud access policy token (the onboarding's Kubernetes
+Monitoring policy, realm: the stack), and everything in the namespace uses it:
+
+- the remote configuration from Fleet Management: `fleet-management:read`;
+- every Fleet pipeline's remote_write and the chart's own destination (admission, Vault):
+  `metrics:write`;
+- OpenCost reading the stack's Prometheus: `metrics:read`;
+- Fleet's log and event pipelines, and `vault-logs` once it is on: `logs:write`;
+- Beyla's and the OTLP receiver's traces: `traces:write` (and `profiles:write` if a Fleet
+  pipeline profiles).
+
+The policy page is authoritative (**to verify** the scope names there). Do not widen this token
+for anything else: the alert rules token and the Synthetic Monitoring token are separate. It
+survived the decommission only if nobody revoked it. So before infra/vault's first apply, check
+in Grafana Cloud → the stack → Access policies → the Kubernetes Monitoring policy that the token
+in `service_secrets.monitoring.GC_TOKEN` is still listed (by its name; never paste the value). If
+it is gone, or you cannot tell which one it is: add a token to the same policy (or recreate the
+policy with the scopes above), put it into `infra/vault/terraform.tfvars` as
+`service_secrets.monitoring.GC_TOKEN` (`PROM_USERNAME` stays the stack's Prometheus user), then
+plan and apply infra/vault (only `kv-monitoring/config` changes). VSO rewrites `ryft-secrets` at
+its next refresh (hourly) and restarts both collectors (`rolloutRestartTargets`). After an
+install with a revoked token, the collectors log `401`/`403` and Fleet Management → Collectors
+shows none of them.
+
+**The three exclusions of `vault`** (D186, D197):
+
+| Exclusion | Lives in | In force | Checked by |
+| --- | --- | --- | --- |
+| SDK injector webhook | this repo: `telemetryServices.sdkInjector.webhook.excludedNamespaces` | from the chart's first install. The webhook acts on pod CREATE only, so Vault pods that started before it were never seen, and every later one (each Shamir restart) is excluded | the `mutatingwebhookconfigurations` check above |
+| Pod logs (`alloy-daemonset` reads the nodes' log files) | **Fleet Management**: the pod-log pipeline's namespace rule `ryft-.*\|vault` | at the collectors' first poll | Loki: `{namespace="vault", container=~".+"}` is empty |
+| Beyla (eBPF; sees the request paths Vault serves) | **Fleet Management**: the Beyla pipeline's discovery exclusion (**to verify**: if this stack's Beyla takes its discovery from the chart instead, the exclusion belongs in this file; stop and raise it) | at the collectors' first poll | Prometheus: `count by (__name__) ({k8s_namespace_name="vault"})` and Tempo: `{resource.k8s.namespace.name="vault"}` are empty |
+
+The two Fleet settings survived with the stack. Nobody has looked at them since #145 described
+them (#145 was never applied). Check them in the Fleet UI (OPERATIONS → Monitoring → Fleet
+exclusions of vault) before the Vault pods start, and at the latest before `make monitoring-apply`.
+Nothing reads them while no collector runs. Once a collector starts, it can read the Vault pods'
+log files from their first line, and Beyla attaches to processes that are already running.
+
+**Worked when** (within 15 minutes of the install; Explore and read-only `kubectl`):
+`monitoring/ryft-secrets` holds the keys `GC_TOKEN` and `PROM_USERNAME`; every pod in
+`monitoring` is Running, with one `alloy-deployment` pod; Fleet Management → Collectors shows the
+new collectors with their pipelines (remove the destroyed cluster's collectors there);
+`up{job="ryft/vault"}` is 1 for three pods; `up{job="ryft/vault-state"}` and
+`up{job=~"ryft/kube-apiserver-admission|ryft/admission-bindings"}` are 1;
+`kube_pod_labels{job="ryft/vault-state", label_vault_initialized="true"}` has three series;
+`kubelet_volume_stats_capacity_bytes{namespace="vault"}` has six; the injector's selector lists
+`vault` under `NotIn`; and the Loki, Prometheus and Tempo queries in the table and
+`{namespace=~"ryft-.*"}` return nothing. A Vault line in Loki, or a Beyla series or trace of
+`vault`, is a stop: uninstall the release, fix the pipeline, and send a Loki delete request
+before going on.
+
 ### Synthetic Monitoring: the site from outside
 
 Nothing inside the cluster sees what a visitor, the App Review team or Apple's AASA
-fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftapp.de` from
+fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftlab.de` from
 two public EU probes every 5 minutes. The definitions are code,
-`deploy/grafana/synthetics/ryftapp.json`; `make synthetics-check` validates them
+`deploy/grafana/synthetics/ryftlab.json`; `make synthetics-check` validates them
 offline, `make synthetics-apply` upserts them by `job` through the SM API
 (`SM_API_URL`, `SM_ACCESS_TOKEN`; OPERATIONS → Monitoring). The results are ordinary
 metrics in the stack's Prometheus, so the same ruler evaluates the alerts.
 
 | `job` | `instance` (the URL) | Passes when |
 | --- | --- | --- |
-| `ryft-site-home` | `https://ryftapp.de/` | 200, `text/html` |
-| `ryft-site-privacy` | `https://ryftapp.de/privacy` | 200, `text/html`, the body holds `Art. 9(2)(a) GDPR` (only the real policy has it) |
-| `ryft-site-aasa` | `https://ryftapp.de/.well-known/apple-app-site-association` | 200 with no redirect, `application/json`, the body holds `M77SKHKG63.dev.timkrebs.ryft` |
-| `ryft-site-www-redirect` | `https://www.ryftapp.de/` | 301 (or 308) whose `Location` is `https://ryftapp.de/`, not followed |
+| `ryft-site-home` | `https://ryftlab.de/` | 200, `text/html` |
+| `ryft-site-privacy` | `https://ryftlab.de/privacy` | 200, `text/html`, the body holds `Art. 9(2)(a) GDPR` (only the real policy has it) |
+| `ryft-site-aasa` | `https://ryftlab.de/.well-known/apple-app-site-association` | 200 with no redirect, `application/json`, the body holds `M77SKHKG63.dev.timkrebs.ryft` |
+| `ryft-site-www-redirect` | `https://www.ryftlab.de/` | 301 (or 308) whose `Location` is `https://ryftlab.de/`, not followed |
 
 Every check also fails when TLS fails. Metrics (labels `job`, `instance`, `probe`):
 `probe_success` (1 or 0 per run), `probe_ssl_earliest_cert_expiry` (Unix seconds; the
@@ -195,7 +276,7 @@ JSON (`make synthetics-apply`), not the page.
 | `vault_core_unsealed` | gauge | `pod`, `vault_cluster` | Vault, every node | 1 unsealed, 0 sealed, but it expires with the retention, so the alerts read sealing from the pods' readiness instead (`kube_pod_container_status_ready`). Dashboard only. |
 | `vault_autopilot_healthy`, `vault_autopilot_failure_tolerance`, `vault_autopilot_node_healthy` | gauge | `node_id` (the last) | Vault, the active node only | Raft autopilot: the cluster's health, how many voters it may lose, each voter's health. `VaultRaftPeersBelow3` counts `node_healthy == 1` (`vault_raft_peers` expires and lags, not used). |
 | `vault_audit_log_request_failure`, `vault_audit_log_response_failure` | counter | `pod` | Vault, the active node | Audit entries that could not be written. Cumulative: Vault adds 0 or 1 on every request, so the counter lives while requests come and expires 2 minutes after the last (retention). `VaultAuditFailing` (critical) reads `increase()` over 10 minutes, plus a counter that appears above 0 (no request for 2 minutes, then a failing one). With every audit device failing, Vault refuses the request. |
-| `vault_audit_log_request_count`, `vault_audit_log_response_count`, `vault_core_handle_request_count`, `vault_core_handle_login_request_count`, `vault_core_in_flight_requests` | counter, gauge | `pod` | Vault, the active node | Request and login volume (VSO's hourly refreshes and logins); dashboard only. Before the first cutover nearly 0. |
+| `vault_audit_log_request_count`, `vault_audit_log_response_count`, `vault_core_handle_request_count`, `vault_core_handle_login_request_count`, `vault_core_in_flight_requests` | counter, gauge | `pod` | Vault, the active node | Request and login volume (VSO's hourly refreshes and logins for every service namespace, the snapshot job's four logins a day, the operator's sessions); dashboard only. |
 | `vault_token_count`, `vault_token_count_by_policy`, `vault_token_count_by_ttl` | gauge | `policy`, `creation_ttl` | Vault, the active node | Live tokens. Vault emits these usage gauges every 10 minutes and they expire after 2, so the series has gaps: read it with `max_over_time(…[15m])`. Not seen in the local 2.2.1 check (a fresh dev cluster); confirm on the first scrape. A steady rise means a client that logs in more often than its tokens expire (the snapshot job's token, policy `snapshot`, cannot revoke itself and lives its 10 minutes: four a day, never more than one at a time). |
 | `vault_raft_leader_lastContact_sum`, `_count` | summary | `pod` | Vault, standbys | Heartbeat delay from the leader as a mean; a rise before `VaultRaftPeersBelow3` points at a CPU-starved node. |
 | `kube_cronjob_status_last_successful_time`, `kube_cronjob_status_last_schedule_time` | gauge | `cronjob` | kube-state-metrics (job `ryft/vault-state`, namespace `vault` only) | When the snapshot job last succeeded and was last scheduled (Unix seconds). The success series exists only after the first success. `VaultSnapshotStale` (pages at 13 h), `VaultSnapshotFailing`. |
@@ -395,8 +476,8 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | ArgoMetricsMissing | warning | no `argocd_app_info` for 15 min | `kubectl -n argocd get pods`, the metrics policy |
 | SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
-| SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
-| SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
+| SiteWwwRedirectBroken | warning | `www.ryftlab.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
+| SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftlab-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
 | AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny. Info, not warning: findings that repeat on every Argo CD refresh would page all day | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
 | AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
 | AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`: step C, vault's pods and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
@@ -408,9 +489,9 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | AdmissionSignalsMissing | warning | no `up` for the API-server scrape or the bindings scrape for 15 min (also before the monitoring values are applied) | `kubectl -n monitoring get pods`, the collector log |
 | AdmissionScrapeDown | warning | `up == 0` for an admission target, 15 min | the same; remote_write errors in the collector log |
 | SyntheticsMissing | warning | no `probe_success` for one of the four `ryft-site-*` jobs for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
-| VaultSealed | warning | one Vault server pod runs but is not ready for 5 min (sealed, or a standby that cannot reach the active node), once Vault has been initialised | OPERATIONS → Vault alerts (VaultSealed) → Vault → A pod is sealed |
-| VaultSealedQuorum | critical | two or more server pods run but are not ready for 5 min: no quorum with 3 replicas (same gate) | OPERATIONS → Vault alerts (VaultSealedQuorum) → Vault → Quorum loss: the unseal key, its role |
-| VaultUnavailable | critical | no Vault server is ready for 10 min, whatever the reason (same gate) | OPERATIONS → Vault alerts (VaultUnavailable): sealed, Pending or crash-looping |
+| VaultSealed | warning | one Vault server pod runs but is not ready for 5 min (sealed, or a standby that cannot reach the active node), once Vault has been initialised. Under shamir (the default, D208) this follows every pod restart, a node drain included, and does not clear by itself | shamir: unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key, its role, the egress (OPERATIONS → Vault alerts (VaultSealed)) |
+| VaultSealedQuorum | critical | two or more server pods run but are not ready for 5 min: no quorum with 3 replicas (same gate) | shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed; the second brings the leader back); awskms: the unseal key, its role (OPERATIONS → Vault alerts (VaultSealedQuorum) → Vault → Quorum loss) |
+| VaultUnavailable | critical | no Vault server is ready for 10 min, whatever the reason (same gate) | OPERATIONS → Vault alerts (VaultUnavailable): sealed (shamir: unseal by hand), Pending or crash-looping |
 | VaultNoActiveNode | critical | the Vault scrape works and no node reports itself active, 2 min (same gate) | OPERATIONS → Vault alerts (VaultNoActiveNode) → Vault → The leader is gone |
 | VaultRaftPeersBelow3 | warning | autopilot counts fewer than 3 healthy voters, 10 min (only with an active node) | OPERATIONS → Vault alerts (VaultRaftPeersBelow3): which pod, its zone, `raft list-peers` |
 | VaultSnapshotStale | critical | no successful snapshot for 13 h, or none in 13 h of a Vault that was ready throughout, while a server is ready (RPO 6 h; expiry would delete the last snapshot after 37 days) | OPERATIONS → Vault → Snapshots |
@@ -472,8 +553,20 @@ is no incident.
 ### Vault
 
 The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/vault` and
-`ryft/vault-state`; Collection above). Properties that are deliberate:
+`ryft/vault-state`; Collection above) of the in-cluster Vault, the only one (D207). Properties
+that are deliberate:
 
+- **One rule set for both seals.** `vault_seal` (infra/aws/kubernetes, D208) is `shamir` by
+  default: 5 shares, threshold 3, in the operator's 1Password, and every Vault pod that starts
+  (a restart, an eviction, a node drain or replacement) stays sealed until the operator unseals
+  it by hand. A sealed pod is then routine work that needs a person, not a fault, and it never
+  clears by itself. Under `awskms` a pod unseals itself within seconds, so a sealed pod is a
+  fault (the KMS key, its role, the egress). Neither the metrics nor the pod labels carry the
+  seal type, so the summaries of `VaultSealed` and `VaultSealedQuorum` name both readings:
+  "shamir: unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its
+  role". The severities stay: one sealed pod costs the failure tolerance (warning; under shamir it
+  stays at 0 until the operator acts, and the PDB keeps a drain from taking a second ready pod),
+  two cost the quorum (critical).
 - **Sealed is read from readiness.** A sealed node still answers the metrics scrape, but its
   `vault_core_unsealed` expires two minutes later and it never reports `vault_core_active`
   (checked on 2.2.1). The readiness probe is strict (`/v1/sys/health?standbyok=true`: only an
@@ -487,12 +580,30 @@ The `Vault*` alerts (group `ryft-vault`) read the two Vault scrapes (jobs `ryft/
   stays in its status). The label half is short-lived: Vault's service registration resets the
   labels at every process start (`vault-initialized=false`, `vault-sealed=true`) and sets
   `vault-initialized=true` again only on unseal, so the label means "unsealed at least once since
-  this process started" (the state Vault's server command hands its Kubernetes service registration at start (`command/server.go`: initialized false, sealed true) and the registration's `NotifyInitializedStateChange(true)` on the unseal path (`vault/`), as read in the #153 re-read; not checked against 2.2.1's source here, **to verify in the kind drill**). When every pod restarts and stays sealed (the KMS key unreachable, a
-  node group replaced), the label half lapses an hour after the last unsealed sample, and new
-  pods that never start carry no labels at all. Only the snapshot half holds through that, so a
-  Vault down for a week keeps paging only if a snapshot has succeeded: the first snapshot, taken
-  by hand right after the init (OPERATIONS → Vault metrics (once)), is a precondition of these
-  alerts, not an extra. A fresh or rebuilt cluster stays quiet until its init.
+  this process started" (the state Vault's server command hands its Kubernetes service registration at start (`command/server.go`: initialized false, sealed true) and the registration's `NotifyInitializedStateChange(true)` on the unseal path (`vault/`), as read in the #153 re-read; not checked against 2.2.1's source here, **to verify in the kind drill**). When every pod restarts and stays sealed (under shamir any
+  restart of all three, a node group replaced, until the operator has unsealed them; under
+  awskms the KMS key unreachable), the label half lapses an hour after the last unsealed sample,
+  and new pods that never start carry no labels at all. Only the snapshot half holds through
+  that, so a Vault down for a week keeps paging only if a snapshot has succeeded: the first
+  snapshot, taken by hand right after the init and infra/vault's apply (OPERATIONS → Vault
+  metrics (once)), is a precondition of these alerts, not an extra, and comes before
+  `make alerts-apply`. If Vault in fact writes `vault-initialized=true` at start for an
+  initialised storage (the kind drill decides), the label half holds through a sealed restart
+  too; the rules are right either way. While one pod is sealed the other two keep the label, so
+  `VaultSealed` keeps firing however long the unseal takes (a test keeps one pod sealed for eight
+  hours, from a restart to the unseal by hand, and checks that it resolves then).
+- **From empty.** The rebuild starts with neither half: the Vault add-on never ran before
+  2026-11-10, so no old `kube_pod_labels` or `lastSuccessfulTime` series exist, and the windows
+  (1 h, 6 h) would have dropped them anyway. As read, a shamir init alone sets no label (the
+  node is initialised but sealed) and the first unseal does (**to verify** with the label
+  source above). The cluster is quiet until then. More to the point, no collector runs during
+  the bootstrap (its token comes from this Vault, Collection → From an empty cluster), and the
+  alerts are loaded only after the bootstrap, infra/vault's apply, the collector and the first
+  snapshot. So the minutes between the first unseal and the third (two pods running unready)
+  cannot raise `VaultSealedQuorum`, whichever way the label behaves. A
+  `ryft-vault` group that is already live in the ruler from an earlier `make alerts-apply` sees
+  no Vault series at all until the collector runs and warns only through `VaultScrapeDown`'s
+  ungated half.
 - **Sealed: one warns, two page.** One sealed pod costs the failure tolerance, not the service
   (`VaultSealed`, warning); two or more of three leave no quorum (`VaultSealedQuorum`,
   critical, one alert instead of one per pod). `VaultUnavailable` covers the rest of "no server
@@ -548,7 +659,7 @@ refused if it is `/`, `$HOME` or a non-empty directory without the `.ryft-load-o
 route's error rate is above 1 % (`LOAD_MAX_ERROR_RATE`) or an optional k6 threshold (`LOAD_P95_SYNC_MS`,
 `LOAD_P95_DAYS_MS`) failed. In local mode `INGEST_URL` and `API_URL` are only the readiness probes from the host; k6
 talks to the services over the compose network. A plain URL on localhost is required: `LOAD_ALLOW_REMOTE=1` allows
-other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftapp.de` or
+other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftlab.de` or
 `*.supabase.co`; never aim it at production. Each invocation leaves 200 accounts and about 250 000 samples in the dev
 database (`make down` clears it).
 
@@ -687,9 +798,11 @@ The one log stream that goes to Grafana Cloud on purpose (D197, D198): namespace
 `alloy-daemonset` (the node's log files) to the stack's Loki, through the chart's own
 `podLogsViaLoki` pipeline (`deploy/monitoring/k8s-monitoring.yaml`, **off** until the steps in
 OPERATIONS → Vault logs are done). Fleet Management's pod-log pipeline excludes `ryft-.*|vault`
-and Beyla skips `vault`, both set before the Vault add-on is applied (OPERATIONS → Before the
-Vault add-on is applied, with the Explore check that `{namespace="vault"}` is empty), so
-nothing of it arrives shaped by remote configuration.
+and Beyla skips `vault`, both set before the collector reads the nodes' log files: on the old
+cluster before the Vault add-on, on a cluster rebuilt from empty before `make monitoring-apply`
+(the Vault pods run by then; Collection → From an empty cluster, with the Explore check that
+`{namespace="vault", container=~".+"}` is empty), so nothing of it arrives shaped by remote
+configuration.
 
 | Stream label | Values |
 | --- | --- |
@@ -702,14 +815,15 @@ a line (a path, an accessor) never turns into a stream. Queries:
 
 ```text
 {namespace="vault", stream="audit"} | json | request_path=~"sys/.*"     # administrative requests
-{namespace="vault", stream="audit"} | json | auth_display_name="root"   # root-token use
+{namespace="vault", stream="audit"} | json | auth_display_name="root"   # root-token use (each generate-root session's start, D209; anything else: ask why)
 {namespace="vault", stream="server"} | json | __error__="" | _level=~"warn|error"
 ```
 
 **What an audit entry holds.** One entry per request and per response: time, the operation and
 the request path (`kv-api/data/config`, `sys/storage/raft/snapshot`), the mount, the client's
 address (a pod IP; `127.0.0.1` through the port-forward), the auth's display name, entity and
-policies (a service's Kubernetes role, the operator's admin identity), token accessor and TTLs.
+policies (a service's Kubernetes role; for the operator, the session's tokens from
+`vault operator generate-root`, D209: `root`, then the hour's admin token), token accessor and TTLs.
 Secret values, tokens and request or response bodies' values are HMAC-SHA256'd with the audit
 device's salt (Vault's default; no `hmac_accessor=false`, no unhashed keys), so a line names
 *which* secret was read by *whom*, never its value. No tester data: the testers never talk to
@@ -727,13 +841,15 @@ user and of the App Review demo account); the audit lines carry those only as HM
   `stream="audit"`. It is evidence only together with the file device on the audit volume.
 - **Processor:** Grafana Labs, already the processor for the metrics (stack in London, D86;
   the UK is a third country with an adequacy decision, Art. 45 GDPR). The audit lines add
-  personal data of one person, the operator (a pseudonymous OIDC subject, D198; the client
-  address of an operator session is `127.0.0.1`, through the port-forward), and none of the
-  testers. Retention is the stack's log retention (Grafana Cloud → the stack → Usage/limits).
+  personal data of one person, the operator (no OIDC login in the rebuild, D209: an operator
+  session is a token from `vault operator generate-root`, so the lines show token display names
+  such as `root` and `token`, not a personal subject; D198's OIDC subject applies only if OIDC is
+  added later; the client address of an operator session is `127.0.0.1`, through the
+  port-forward), and none of the testers. Retention is the stack's log retention (Grafana Cloud → the stack → Usage/limits).
 - **Your steps, before turning the pipeline on:** accept Grafana Labs' data processing
   agreement (grafana.com → Legal → DPA, in the organisation's settings), and add an entry to
   the record of processing activities: purpose "security monitoring of access to credentials",
-  categories "the operator's pseudonymous subject, client addresses (pod IPs; `127.0.0.1` for
+  categories "the operator's token display names (a pseudonymous subject once OIDC exists), client addresses (pod IPs; `127.0.0.1` for
   operator sessions), service account names, timestamps, HMACs of KV values", recipient
   Grafana Labs (processor), the retention above, and the transfers with their mechanisms: the
   UK (the stack's region; adequacy decision) and the US entities and sub-processors Grafana's
