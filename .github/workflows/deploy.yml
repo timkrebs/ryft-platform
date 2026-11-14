@@ -1,0 +1,317 @@
+# The deploy to Cloud Run (design §9, ticket B2): a push to main, once ci.yml's own run on that commit
+# has a green `ci-ok` job, builds the five images (linux/amd64, one single-arch manifest each, with the
+# runner's own Docker) and scans each saved image. Only when all five pass does it sign in to Google
+# Cloud and push those same images to Artifact Registry, tagged with the short SHA. It renders
+# deploy/run with their digests, checks that main is still at this commit, runs the migrate job and
+# stops when it fails (nothing rolls, as with the old PreSync), then replaces the services in the order
+# scoring, notify, ingest, api, and runs `make smoke-prod`. A manual run (workflow_dispatch, main only:
+# the WIF condition admits nothing else) does the same; its `smoke` input skips the smoke for the
+# first deploy, before anything is public (runbook step 8).
+#
+# Only main's tip deploys. Main moves in pairs (EKS's promote PRs still merge themselves), and ci.yml
+# keeps one run waiting per ref, so a commit in between may never get its ci-ok. A run whose commit is
+# no longer main's tip (looked at while waiting, and again right before migrate) ends green with the
+# notice "superseded by <sha>" and deploys nothing: the run of the newer commit deploys main.
+#
+# Off until the repository variable GCP_DEPLOY is `on`: every job has that `if`, so on EKS this
+# workflow does nothing. DEPLOY_HOLD_SERVICES (a repository variable, the reason) holds the services:
+# nothing is built or deployed and the run ends green with a notice (D175's hold, now a variable).
+# Rollback: `gcloud run services update-traffic <svc> --to-revisions=<previous>=100` (the next deploy
+# sends all traffic to its own revision again); a revert of the merge redeploys the old code.
+# docs/OPERATIONS.md → GCP holds the steps. scripts/check_workflows.sh pins the shape of this file: no
+# status function (always(), failure(), ...) in any `if` and no continue-on-error, so a failed step
+# stops everything after it; checkout is the deploy job's only action; nothing signs in or pushes
+# before the scan; every step that changes Cloud Run runs only while main is at this commit.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: Run make smoke-prod after the deploy (off only for the first deploy, before infra/gcp's apply 2)
+        type: boolean
+        default: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ci.yml's own run on this very commit, read from the Actions API (a workflow_run trigger is not
+  # allowed here, scripts/check_workflows.sh): the newest push run of .github/workflows/ci.yml on main
+  # for this SHA, and the job named ci-ok in its latest attempt. A check run named ci-ok proves
+  # nothing: any workflow with checks: write, on any branch, can post one on main's commit.
+  # While it waits it watches main's tip; once main has moved on, this run is superseded.
+  ci:
+    name: wait for ci-ok
+    if: vars.GCP_DEPLOY == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    # Only the Actions API. main's tip is public (the repository is), and when it cannot be read here
+    # the newest push run of ci.yml on main stands in; the deploy job asks again before migrate.
+    permissions:
+      actions: read
+    outputs:
+      current: ${{ steps.wait.outputs.current }}
+    steps:
+      - name: ci.yml's ci-ok is green on this commit, and main is still at it
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # ci-ok in ci.yml's newest push run on main for $SHA: success, pending, missing, unreadable,
+          # refused (that run is not ci.yml's on main), the job's conclusion, or how its run ended.
+          ci_state() {
+            local run job id path branch status conclusion
+            run=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=push&branch=main&per_page=100" \
+              --jq '[.workflow_runs[] | select(.head_sha == env.SHA)] | if length == 0 then "missing" else (max_by(.id) | "\(.id) \(.path) \(.head_branch) \(.status) \(.conclusion // "none")") end') \
+              || { echo unreadable; return; }
+            [ "$run" != missing ] || { echo missing; return; }
+            read -r id path branch status conclusion <<<"$run"
+            # The run's path may carry the ref (".github/workflows/ci.yml@refs/heads/main").
+            case $path in
+              .github/workflows/ci.yml | .github/workflows/ci.yml@main | .github/workflows/ci.yml@refs/heads/main) ;;
+              *) echo "refused (run $id, path $path)"; return ;;
+            esac
+            [ "$branch" = main ] || { echo "refused (run $id, branch $branch)"; return; }
+            job=$(gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" \
+              --jq '[.jobs[] | select(.name == "ci-ok")] | if length == 0 then "missing" else (max_by(.id) | if .status != "completed" then "pending" else (.conclusion // "none") end) end') \
+              || { echo unreadable; return; }
+            # A run that ended without a ci-ok job (cancelled before it started) never gets one.
+            if [ "$job" = missing ] && [ "$status" = completed ]; then echo "its run ended ($conclusion) without one"; return; fi
+            echo "$job"
+          }
+          # main's tip, by branch name (a tag called main cannot stand in); else the newest push run of
+          # ci.yml on main (every push to main starts one); else unknown.
+          tip_of_main() {
+            local t
+            if t=$(gh api "repos/$REPO/branches/main" --jq .commit.sha 2>/dev/null) && [[ $t =~ ^[0-9a-f]{40}$ ]]; then echo "$t"; return; fi
+            if t=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&per_page=1" --jq '.workflow_runs[0].head_sha' 2>/dev/null) \
+              && [[ $t =~ ^[0-9a-f]{40}$ ]]; then echo "$t"; return; fi
+            echo unknown
+          }
+          again="Once ci is green on main's tip, dispatch a new run on main: gh workflow run deploy.yml --ref main"
+          deadline=$(( $(date +%s) + 95 * 60 ))
+          while :; do
+            state=$(ci_state)
+            # After the state: a ci run that a newer push cancelled is seen together with that push.
+            tip=$(tip_of_main)
+            if [ "$tip" != unknown ] && [ "$tip" != "$SHA" ]; then
+              echo "::notice title=deploy superseded::superseded by $tip: main has moved on from $SHA, so this run deploys nothing (the run of $tip deploys main)"
+              printf '### Deploy superseded\nsuperseded by %s: main has moved on from %s. Nothing was built or deployed.\n' "$tip" "$SHA" >> "$GITHUB_STEP_SUMMARY"
+              echo "current=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            case $state in
+              success)
+                echo "ci-ok is green in ci.yml's run on $SHA, and main is at $SHA (tip: $tip)"
+                echo "current=true" >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              missing | pending | unreadable) echo "ci-ok on $SHA: $state, waiting" ;;
+              refused*) echo "::error title=deploy::ci.yml's newest push run for $SHA is $state, not ci.yml's own on main: nothing is deployed"; exit 1 ;;
+              *) echo "::error title=deploy::ci-ok on $SHA: $state. Nothing is deployed. $again"; exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error title=deploy::no green ci-ok on $SHA within 95 minutes: nothing is deployed. $again"
+              exit 1
+            fi
+            sleep 30
+          done
+
+  # The hold: nothing is built or deployed, and the run is green.
+  held:
+    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: The services are held
+        env:
+          REASON: ${{ vars.DEPLOY_HOLD_SERVICES }}
+        run: |
+          echo "::notice title=deploy held::DEPLOY_HOLD_SERVICES is set ($REASON): nothing was built or deployed. Delete the variable and run deploy.yml by hand to ship main."
+          printf '### Deploy held\nDEPLOY_HOLD_SERVICES: %s\n\nNothing was built or deployed.\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
+  # Skipped (and the run green) when the wait found main moved on.
+  deploy:
+    needs: [ci]
+    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The environment admits main only (its deployment branch rule); the smoke user's secrets live there.
+    environment: deploy
+    permissions:
+      contents: read
+      id-token: write
+    # One deploy at a time, never cancelled half way (a migrate or a rollout cut off is worse than a
+    # late one). GitHub keeps at most one run waiting, the newest.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      PROJECT: ryftlab-prod
+      REGION: europe-west1
+      REGISTRY: europe-west1-docker.pkg.dev/ryftlab-prod/ryft
+      DEPLOYER: ryft-deployer@ryftlab-prod.iam.gserviceaccount.com
+      # The Trivy image of ci.yml, by digest.
+      TRIVY: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before anything is built: config.env is filled in (the config PR of runbook step 8 merged) and
+      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes.
+      - name: config.env has no placeholder left and deploy/run renders
+        run: |
+          printf -v z '%064d' 0
+          args=()
+          for s in api ingest scoring notify migrate; do args+=("--digest=$s=sha256:$z"); done
+          python3 -I scripts/cloudrun_render.py --out "$RUNNER_TEMP/dry-run" "${args[@]}"
+          rm -rf "$RUNNER_TEMP/dry-run"
+      # The runner's own Docker builds (its default builder, BuildKit inside the daemon): no
+      # setup-buildx-action, so no BuildKit container from a floating tag, and nothing here can reach
+      # Google Cloud yet. --provenance=false --sbom=false: one linux/amd64 manifest per image, no
+      # attestation manifests and so no image index. Each image is saved to a tarball, and the pinned
+      # Trivy reads it from a read-only mount without docker.sock: the scanner never talks to the
+      # daemon. The image IDs go to $RUNNER_TEMP/ids, and the push below sends exactly those.
+      - name: Build the five images (linux/amd64) and scan each saved image (Trivy, fail on critical)
+        run: |
+          mkdir -p "$RUNNER_TEMP/images"
+          : > "$RUNNER_TEMP/ids"
+          for s in api ingest scoring notify migrate; do
+            docker build --platform linux/amd64 --provenance=false --sbom=false --build-arg "SERVICE=$s" -t "ryft-$s:$GITHUB_SHA" backend
+            echo "$s $(docker image inspect --format '{{.Id}}' "ryft-$s:$GITHUB_SHA")" >> "$RUNNER_TEMP/ids"
+            docker save -o "$RUNNER_TEMP/images/$s.tar" "ryft-$s:$GITHUB_SHA"
+          done
+          for s in api ingest scoring notify migrate; do
+            docker run --rm -v "$RUNNER_TEMP/images:/in:ro" -v ryft-trivy-cache:/cache "$TRIVY" image --cache-dir /cache --input "/in/$s.tar" --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress
+          done
+          rm -rf "$RUNNER_TEMP/images"
+      # Only now, with all five scanned: Workload Identity Federation with gcloud as the runner image
+      # ships it. No service account key, and no third-party action holds the token. The credential
+      # config (the external_account file google-github-actions/auth writes, built here from the
+      # environment, so the request token is in no command line) makes gcloud fetch a fresh GitHub OIDC
+      # token, audience the provider's https name, whenever it exchanges one, and impersonate
+      # ryft-deployer. The WIF condition (infra/gcp) admits this repository's deploy.yml on
+      # refs/heads/main, push or workflow_dispatch. gcloud's and docker's credentials live under
+      # $RUNNER_TEMP, which the runner empties at the end of every job, failed or not, so no step has
+      # to run after a failure to clean them up.
+      - name: Sign in to Google Cloud as ryft-deployer (WIF)
+        run: |
+          echo "CLOUDSDK_CONFIG=$RUNNER_TEMP/gcloud" >> "$GITHUB_ENV"
+          export CLOUDSDK_CONFIG="$RUNNER_TEMP/gcloud"
+          pn=$(sed -n 's/^GCP_PROJECT_NUMBER=//p' deploy/run/config.env)
+          [[ $pn =~ ^[1-9][0-9]{5,19}$ ]] || { echo "::error title=deploy::GCP_PROJECT_NUMBER in deploy/run/config.env is not a project number"; exit 1; }
+          export WIF_PROVIDER="projects/$pn/locations/global/workloadIdentityPools/github/providers/github-actions"
+          gcloud --version
+          (umask 077; python3 -I - > "$RUNNER_TEMP/gcp-wif.json" <<'PY'
+          import json, os, urllib.parse
+          p, sa = os.environ["WIF_PROVIDER"], os.environ["DEPLOYER"]
+          aud = urllib.parse.quote("https://iam.googleapis.com/" + p, safe="")
+          print(json.dumps({
+              "type": "external_account",
+              "audience": "//iam.googleapis.com/" + p,
+              "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+              "token_url": "https://sts.googleapis.com/v1/token",
+              "service_account_impersonation_url":
+                  f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{sa}:generateAccessToken",
+              "credential_source": {
+                  "url": os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=" + aud,
+                  "headers": {"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+                  "format": {"type": "json", "subject_token_field_name": "value"},
+              },
+          }))
+          PY
+          )
+          gcloud auth login --cred-file="$RUNNER_TEMP/gcp-wif.json" --quiet
+          gcloud config set project "$PROJECT" --quiet
+          gcloud auth print-access-token | docker --config "$RUNNER_TEMP/docker" login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev"
+      # The scanned images themselves (pushed = scanned): each local image ID from the build is tagged
+      # and pushed, and its digest is what the registry recorded for it.
+      - name: Push the scanned images, tagged with the short SHA; record the digests
+        run: |
+          tag=${GITHUB_SHA::7}
+          : > "$RUNNER_TEMP/digests"
+          while read -r s id; do
+            ref=$REGISTRY/$s:$tag
+            docker tag "$id" "$ref"
+            [ "$(docker image inspect --format '{{.Id}}' "$ref")" = "$id" ] || { echo "::error title=deploy::$ref is not the scanned image $id"; exit 1; }
+            docker --config "$RUNNER_TEMP/docker" push --quiet "$ref"
+            rd=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -F "$REGISTRY/$s@" | head -n 1 || true)
+            d=${rd#"$REGISTRY/$s@"}
+            [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error title=deploy::no registry digest for $s (RepoDigests: '$rd')"; exit 1; }
+            echo "--digest=$s=$d" >> "$RUNNER_TEMP/digests"
+          done < "$RUNNER_TEMP/ids"
+          [ "$(wc -l < "$RUNNER_TEMP/digests")" -eq 5 ] || { echo "::error title=deploy::five digests expected"; cat "$RUNNER_TEMP/digests"; exit 1; }
+          { echo "### Images ($tag)"; echo '```'; sed 's/^--digest=//' "$RUNNER_TEMP/digests"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Render deploy/run with the digests
+        run: |
+          mapfile -t args < "$RUNNER_TEMP/digests"
+          python3 -I scripts/cloudrun_render.py --out "$RUNNER_TEMP/run" "${args[@]}"
+      # Right before migrate: is main still at this commit? A newer commit's run deploys main (it waits
+      # for its own ci-ok, then for this job's concurrency group), and this older one must not roll the
+      # services back behind it. Superseded: a notice, the steps below are skipped, the run is green.
+      # main's tip unreadable: red, nothing deployed.
+      - name: main is still at this commit
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          tip=
+          for _ in 1 2 3; do
+            if tip=$(gh api "repos/$REPO/branches/main" --jq .commit.sha) && [[ $tip =~ ^[0-9a-f]{40}$ ]]; then break; fi
+            tip=
+            sleep 5
+          done
+          if [ -z "$tip" ]; then
+            echo "::error title=deploy::main's tip cannot be read: nothing is deployed. Dispatch a new run on main: gh workflow run deploy.yml --ref main"
+            exit 1
+          fi
+          if [ "$tip" != "$SHA" ]; then
+            echo "::notice title=deploy superseded::superseded by $tip: main has moved on from $SHA, so this run deploys nothing (the run of $tip deploys main; the images pushed here stay unused)"
+            printf '### Deploy superseded\nsuperseded by %s before migrate: nothing was deployed from %s.\n' "$tip" "$SHA" >> "$GITHUB_STEP_SUMMARY"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Migrations first; a failed run stops the workflow here and no service rolls. The job does not
+      # retry (maxRetries 0, deploy/run/migrate.yaml).
+      - name: migrate (replace the job, execute it, wait)
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          gcloud run jobs replace "$RUNNER_TEMP/run/migrate.yaml" --region="$REGION" --project="$PROJECT" --quiet
+          gcloud run jobs execute migrate --region="$REGION" --project="$PROJECT" --wait --quiet
+      # The consumers before the producers: scoring and notify answer the pushes of the new code first.
+      # `services replace` waits until the new revision is ready and serving.
+      - name: The services, scoring, notify, ingest, api
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          for s in scoring notify ingest api; do
+            gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet
+            rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)')
+            echo "- $s: $rev" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: make smoke-prod
+        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+          SUPABASE_URL="https://$ref.supabase.co" make smoke-prod
+      # On success and when superseded. After a failure nothing runs (no status function in this file),
+      # and the runner empties $RUNNER_TEMP, where the credentials are, at the end of the job.
+      - name: Sign out
+        run: |
+          gcloud auth revoke --all --quiet 2>/dev/null || true
+          docker --config "$RUNNER_TEMP/docker" logout "https://$REGION-docker.pkg.dev" >/dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/gcp-wif.json" "$RUNNER_TEMP/gcloud" "$RUNNER_TEMP/docker"

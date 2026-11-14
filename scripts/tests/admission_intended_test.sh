@@ -32,7 +32,7 @@ if ADMISSION_VALUES=$tmp/typo.yaml ADMISSION_INTENDED_OUT=$tmp/o5.yaml "$script"
 
 # AdmissionBindingMissing must count the chart's bindings: a stale threshold or summary fails --check
 # (two PRs that each add a binding would otherwise both pass and leave the alert one short)
-alerts=$root/deploy/grafana/alerts/ryft.yaml
+alerts=$root/deploy/grafana/alerts/eks-admission.yaml
 want=$(sed -n 's/^want_bindings=\([0-9]*\).*/\1/p' "$script")
 grep -q "or vector(0)) < $want\$" "$alerts" || fail "the committed alert does not count $want bindings"
 sed "s/or vector(0)) < $want\$/or vector(0)) < $((want - 1))/" "$alerts" > "$tmp/stale-lt.yaml"

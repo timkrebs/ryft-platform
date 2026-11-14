@@ -22,6 +22,15 @@
 #    one in force now.
 # So rolling web back past a policy version fails until the in-force pin goes back too, and a
 # newer page in the pinned web commit fails until the pin follows it.
+# Cloud Run (ticket B2): deploy/run/config.env is the version's home there (scripts/cloudrun_render.py
+# hands it to api and ingest). It fails when
+#  - the file is missing, or PRIVACY_POLICY_VERSION is not set exactly once as a bare, real YYYY-MM-DD,
+#  - the version is not listed, or has no en or de page in this tree,
+#  - given a base ref: it changes (from base's deploy/run/config.env, or, on the PR that introduces
+#    the file, from base's deploy/k8s/base/api/config.env) to a version whose page is not published
+#    in both languages (going back to one listed before stays allowed), or base's version had a
+#    published page that this change sets back to a draft,
+#  - a k8s copy (deploy/k8s/base/{api,ingest}/config.env, while the EKS manifests exist) differs from it.
 #   scripts/check_policy_in_force.sh [base-ref]        e.g. origin/main
 # The overlay is rendered by `kubectl kustomize deploy/k8s/overlays/eks`; there is no environment
 # switch for that (the tests put a fake kubectl on PATH).
@@ -236,4 +245,45 @@ if [ -n "$base" ]; then
     done
   fi
 fi
-echo "policy in force: $v (api and ingest agree; web $tag$web_note serves it at /privacy)"
+
+# ---- Cloud Run: deploy/run/config.env ---------------------------------------------------------
+run_cfg=deploy/run/config.env
+[ -f "$run_cfg" ] || err "$run_cfg is missing: it holds PRIVACY_POLICY_VERSION for api and ingest on Cloud Run"
+n_keys=$(grep -cE '^[[:space:]]*PRIVACY_POLICY_VERSION([^A-Za-z0-9_]|$)' "$run_cfg" || true)
+[ "$n_keys" = 1 ] || err "$run_cfg sets PRIVACY_POLICY_VERSION ${n_keys:-0} times: exactly once"
+rv=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$run_cfg")
+printf '%s' "$rv" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
+  || err "$run_cfg: PRIVACY_POLICY_VERSION '$rv' is not a bare YYYY-MM-DD date (the line is exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD: no quotes, spaces or comment)"
+python3 -c 'import datetime,sys; datetime.date.fromisoformat(sys.argv[1])' "$rv" 2>/dev/null \
+  || err "$run_cfg: PRIVACY_POLICY_VERSION '$rv' is not a real calendar date (the services refuse it at start-up)"
+jq -e --arg v "$rv" 'index($v) != null' "$list" >/dev/null || err "$run_cfg: $rv is not in $list ($(jq -c . "$list"))"
+for lang in en de; do
+  [ -f "web/content/legal/$lang/privacy/$rv.mdx" ] \
+    || err "$run_cfg: $rv has no $lang page: web/content/legal/$lang/privacy/$rv.mdx is missing (the site serves the text people consent to)"
+done
+if [ -n "$base" ]; then
+  # The PR that introduces deploy/run/config.env compares with base's api copy (what was published).
+  if git cat-file -e "$base:$run_cfg" 2>/dev/null; then rsrc=$run_cfg; else rsrc=deploy/k8s/base/api/config.env; fi
+  rold=$(git show "$base:$rsrc" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
+  if [ -n "$rold" ] && [ "$rold" != "$rv" ] && ! listed_before "$rv" "$rold"; then
+    for lang in en de; do
+      published < "web/content/legal/$lang/privacy/$rv.mdx" \
+        || err "$run_cfg changes PRIVACY_POLICY_VERSION from $rold (base's $rsrc) to $rv, and the $lang page web/content/legal/$lang/privacy/$rv.mdx is not status: published. Publish the text first (the user's legal call), or go back to a version listed before $rold."
+    done
+  fi
+  if [ -n "$rold" ]; then
+    for lang in en de; do
+      if git show "$base:web/content/legal/$lang/privacy/$rold.mdx" 2>/dev/null | published \
+        && ! published < "web/content/legal/$lang/privacy/$rold.mdx"; then
+        err "the $lang page of $rold ($rsrc on $base) is status: published there and is not in this change: a published policy text cannot go back to a draft in place. Publish a new version instead."
+      fi
+    done
+  fi
+fi
+for s in api ingest; do
+  f=deploy/k8s/base/$s/config.env
+  [ -f "$f" ] || continue
+  c=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$f" | head -1)
+  [ "$c" = "$rv" ] || err "$f has PRIVACY_POLICY_VERSION '$c' and $run_cfg '$rv': the k8s copy must equal $run_cfg (change them in one PR)"
+done
+echo "policy in force: $v (api and ingest agree; web $tag$web_note serves it at /privacy); Cloud Run: $run_cfg $rv (listed, en and de pages, the k8s copies equal it)"

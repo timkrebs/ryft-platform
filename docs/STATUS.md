@@ -72,6 +72,24 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## GCP serverless (2026-11-14)
+
+The design (`docs/work/2026-11-14-gcp/design.md`, #163) replaces the EKS rebuild: an SCP now denies `eks:CreateCluster`
+in the AWS account. **Ticket B** (`infra, deploy: GCP and the deploy workflow`) is built, and none of it is applied or
+deployed. Its plan, the interfaces ticket A builds to, and the design fixes are in `docs/work/2026-11-14-gcp/ticket-b.md`;
+the review is in `review-b.md`. The ticket contains:
+- `infra/gcp` (workspace `ryft-gcp` in `ryft-lab`), in two applies, gated by `infra/gcp/gates.auto.tfvars`;
+- `deploy/run` and `deploy.yml`, which stays off until `GCP_DEPLOY=on`;
+- `PRIVACY_POLICY_VERSION`'s new home, `deploy/run/config.env`;
+- the GCP alert set, `scripts/dns_compare.sh`, and the runbook in **OPERATIONS → GCP**.
+
+Open:
+- **A**, the backend: Pub/Sub, h2c, the health paths, OTLP, `cmd/pubsub-topology` and DECISIONS D216–D227.
+- **C1**: Firebase Hosting, stacked on B.
+- **C2**: the privacy draft.
+- **D1–D3**: the AWS retirement.
+- **Steps 0–6 of OPERATIONS → GCP can run once B is merged.** Step 7 is partly ready. Step 8 onwards waits for A.
+
 ## Rebuild (2026-11-13)
 
 RYFT was shut down on 2026-11-10 (D206): every AWS resource is gone, the Terraform states of `infra/aws`,

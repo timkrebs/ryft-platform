@@ -9,7 +9,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail() { echo "✗ check_rule_groups_test: $*" >&2; exit 1; }
 run() { rc=0; "$script" "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
 
-run "$HERE/deploy/grafana/alerts/ryft.yaml" "$HERE/deploy/grafana/alerts/admission-intended.yaml"
+run "$HERE/deploy/grafana/alerts/ryft.yaml" "$HERE/deploy/grafana/alerts/eks-admission.yaml" "$HERE/deploy/grafana/alerts/admission-intended.yaml"
 [ "$rc" = 0 ] || fail "the committed rule files must fit (rc=$rc): $(cat "$tmp/err")"
 
 # group <name> <alerts> <records>: a group in the layout of ryft.yaml; every fourth alert is in

@@ -1,206 +1,188 @@
-# RYFT alert rules for Grafana Cloud (Prometheus rule format, D85). Check and load:
+# RYFT alert rules for Grafana Cloud (Prometheus rule format, D85), for RYFT on Cloud Run. Check and load:
 #   make alerts-check     # promtool check rules + the unit tests in ryft.test.yaml (containers)
 #   make alerts-apply     # mimirtool rules load into the stack's ruler (GRAFANA_PROM_URL, _USER, GRAFANA_RULES_TOKEN)
 # Then route them: Alerting → Contact points (email and the Grafana mobile app) and a
 # notification policy for severity critical, warning and info. Expressions, thresholds
-# and what to do: docs/OBSERVABILITY.md → Alerts. Labels namespace and pod come from the
-# collector's pod discovery.
+# and what to do: docs/OBSERVABILITY.md → Alerts.
+# The app's metrics (ryft_*) arrive by OTLP push, not by scrape (design §6): each instance pushes
+# at the end of each tick (every 15 minutes) and on SIGTERM, with job="ryft/<svc>" (the resource's
+# service.namespace/service.name) and instance (service.instance.id, one per Cloud Run instance).
+# So a series has a sample every 15 minutes at best, an instance that handles no tick pushes once
+# (when it stops), and every instance is a new series. The rules are written for that:
+#   - a gauge is read with last_over_time(...[30m]), never as an instant vector (stale after 5 min);
+#   - a counter's increase() needs two samples of one series, so windows are 30 minutes or more;
+#   - a counter only one push ever saw (a short-lived instance, its count since start) is caught by
+#     the "new series" term: last_over_time(x[30m]) unless last_over_time(x[1h] offset 30m), a series
+#     with a sample in the last 30 minutes and none in the hour before. Its value is what the instance
+#     counted since it started; a sum of such values > 0 means events nobody saw as an increase;
+#   - a rule that compares counts over a window w (SyncToScoreSlow, APNsFailing,
+#     InviteEmailPurgeFailing) takes per series the new-series term over that window,
+#     last_over_time(x[w]) unless last_over_time(x[1h] offset w) (an instance first seen inside the
+#     window counts with all it counted), or else increase(x[w]); per `le` for a histogram.
+# Cloud Run's own signals (5xx ratio, latency, 429s, Pub/Sub backlog and dead letters) are
+# Grafana-managed rules in infra/gcp, read from Cloud Monitoring: HTTP5xxRatio, SyncSlow,
+# DeadLetters, PushBacklog, Saturated. The EKS-coupled groups moved to eks-admission.yaml (checked,
+# not loaded) or are gone (OBSERVABILITY.md → Alerts → EKS leftovers).
 # Grafana Cloud takes at most 20 rules per group (alerts and recording rules; D179); keep a group
 # at 18 or fewer and start a new one by theme (scripts/check_rule_groups.sh fails above 20;
 # OBSERVABILITY.md → Alerts). A load replaces each named group whole, and a group not in the
-# file stays live: rename or drop one only with its live copy in mind.
+# file stays live: rename or drop one only with its live copy in mind (make alerts-retire-eks).
 namespace: ryft
 groups:
   - name: ryft
     rules:
       # ---- the services -----------------------------------------------------------
-      - alert: HTTP5xxRatio
-        # More than 2 % of api or ingest requests fail with a 5xx for 10 minutes.
-        expr: |
-          sum by (namespace) (rate(ryft_http_requests_total{namespace=~"ryft-(api|ingest)", code=~"5.."}[5m]))
-            / sum by (namespace) (rate(ryft_http_requests_total{namespace=~"ryft-(api|ingest)"}[5m])) > 0.02
-        for: 10m
-        labels: { severity: critical }
-        annotations: { summary: "{{ $labels.namespace }}: more than 2 % of requests answer 5xx" }
-      - alert: PodRestarting
-        # A RYFT or Vault pod restarted more than three times in 30 minutes (crash loop, OOM;
-        # for vault: OPERATIONS.md → Vault alerts).
-        expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-.*|vault"}[30m])) > 3
-        labels: { severity: critical }
-        annotations: { summary: "{{ $labels.pod }} restarted more than 3 times in 30 minutes" }
-      - alert: ServiceExited
-        # A container of api, ingest, scoring or notify restarted in the last 15 minutes (D173, D174).
-        # Zero restarts is normal for these four, so any restart pages. The exit code is
-        # not part of the rule: the services handle SIGTERM and exit 0 on a clean stop, so
-        # a container the kubelet killed for a failed liveness or startup probe (a hang, a
-        # deadlock) can end with exit 0, and kube-state-metrics may not send the exit code
-        # series at all. The code is read from `describe pod` (OPERATIONS.md → A service
-        # exited): 2 a recovered panic (the only trace a service that panics in its own
-        # goroutine leaves, because its counter dies with the process), 1 a failed start or
-        # an HTTP port that would not bind, 137 OOM or the SIGKILL after the grace period.
-        # A pod replaced by a rollout is a new pod, not a restart, and never fires this.
-        expr: |
-          sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~"ryft-(api|ingest|scoring|notify)"}[15m])) > 0
-        labels: { severity: critical }
-        annotations:
-          summary: "{{ $labels.namespace }} {{ $labels.pod }}: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
-          runbook: "docs/OPERATIONS.md → A service exited"
       - alert: Panics
         # A panic anywhere (D173, D174): a handler (ryft_http_panics_total, answered 500), an event
-        # handler (ryft_event_handler_panics_total, retried) or a service's own goroutine
-        # (ryft_goroutine_panics_total, after which the service exits 2). The terms are
-        # joined with `or`, not `+`: a sum would be empty as soon as one counter has no
-        # series, and hide the others. The two labelled counters are created by their first
-        # panic at 1, which increase() never sees, so each has the second term of
-        # TextRefusedByDatabase's: a series with no sample in the hour before the last 15
-        # minutes is new (a scrape gap shorter than an hour is not a birth). The goroutine
-        # counter exists at 0 from the start of the process, and its panic ends the process
-        # before a scrape may see it, so the restart is what ServiceExited is for. Known
-        # holes until the counters are initialised at 0 (Phase 3): a first panic during a
-        # collector outage of about 75 minutes or more, and a second panic of a labelled
-        # counter within about 75 minutes of a pod restart, look like old series.
+        # handler (ryft_event_handler_panics_total, the push is answered 5xx and Pub/Sub redelivers) or a
+        # service's own goroutine (ryft_goroutine_panics_total). The terms are joined with `or`, not `+`:
+        # a sum would be empty as soon as one counter has no series, and hide the others. Each counter
+        # has its increase over an hour (an instance that pushed before and after the panic) and the
+        # new-series term (an instance whose first push already carried it). Known hole: a goroutine
+        # panic ends the process with exit 2 before any push, so only Cloud Logging's msg="panic" line
+        # and the container's exit show it (OBSERVABILITY.md → Alerts).
         expr: |
-          sum by (namespace) (increase(ryft_http_panics_total[15m])) > 0
-            or sum by (namespace) (ryft_http_panics_total
-              unless last_over_time(ryft_http_panics_total[1h] offset 15m)) > 0
-            or sum by (namespace) (increase(ryft_event_handler_panics_total[15m])) > 0
-            or sum by (namespace) (ryft_event_handler_panics_total
-              unless last_over_time(ryft_event_handler_panics_total[1h] offset 15m)) > 0
-            or sum by (namespace) (increase(ryft_goroutine_panics_total[15m])) > 0
+          sum by (job) (increase(ryft_http_panics_total[1h])) > 0
+            or sum by (job) (last_over_time(ryft_http_panics_total[30m])
+              unless last_over_time(ryft_http_panics_total[1h] offset 30m)) > 0
+            or sum by (job) (increase(ryft_event_handler_panics_total[1h])) > 0
+            or sum by (job) (last_over_time(ryft_event_handler_panics_total[30m])
+              unless last_over_time(ryft_event_handler_panics_total[1h] offset 30m)) > 0
+            or sum by (job) (increase(ryft_goroutine_panics_total[1h])) > 0
+            or sum by (job) (last_over_time(ryft_goroutine_panics_total[30m])
+              unless last_over_time(ryft_goroutine_panics_total[1h] offset 30m)) > 0
         labels: { severity: critical }
         annotations:
-          summary: "{{ $labels.namespace }}: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
+          summary: "{{ $labels.job }}: a panic in the last hour (the msg=\"panic\" line in Cloud Logging has the stack)"
           runbook: "docs/OPERATIONS.md → A panic (Panics)"
       - alert: TextRefusedByDatabase
         # Postgres refused a request's text (SQLSTATE 22021/22P05) that httpx's checks let
         # through: the client got a 422 and nothing was logged, where it used to be a logged
         # 500. A path the normalisation missed, or a server-side bug writing bad text. The
-        # second term sees a route's first refusal, which increase() misses: the series is
-        # created at 1. It counts as new only if it had no sample in the hour before the
-        # last one, so a scrape gap around the offset does not fire (OBSERVABILITY.md → Alerts).
+        # second term sees a route's first refusal in an instance, which increase() misses.
         expr: |
-          sum by (namespace, route) (increase(ryft_http_text_refused_total{at="database"}[1h])) > 0
-            or sum by (namespace, route) (ryft_http_text_refused_total{at="database"}
-              unless last_over_time(ryft_http_text_refused_total{at="database"}[1h] offset 1h)) > 0
+          sum by (job, route) (increase(ryft_http_text_refused_total{at="database"}[1h])) > 0
+            or sum by (job, route) (last_over_time(ryft_http_text_refused_total{at="database"}[30m])
+              unless last_over_time(ryft_http_text_refused_total{at="database"}[1h] offset 30m)) > 0
         labels: { severity: warning }
-        annotations: { summary: "{{ $labels.namespace }} {{ $labels.route }}: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
-      - alert: SyncSlow
-        expr: histogram_quantile(0.95, sum by (le) (rate(ryft_http_request_duration_seconds_bucket{route="POST /v1/sync"}[15m]))) > 10
+        annotations: { summary: "{{ $labels.job }} {{ $labels.route }}: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
+      - alert: RateLimited
+        # A client stuck in a retry loop, or limits too tight: more than 1800 refusals in 30 minutes
+        # (one a second), counted over the instances that pushed twice and those that pushed once.
+        expr: |
+          (sum(increase(ryft_rate_limited_total[30m])) or vector(0))
+            + (sum(last_over_time(ryft_rate_limited_total[30m])
+                unless last_over_time(ryft_rate_limited_total[1h] offset 30m)) or vector(0))
+            > 1800
         for: 15m
         labels: { severity: warning }
-        annotations: { summary: "Syncs take over 10 s (p95)" }
-      - alert: RateLimited
-        # A client stuck in a retry loop, or limits too tight.
-        expr: sum(rate(ryft_rate_limited_total[10m])) > 1
-        for: 10m
-        labels: { severity: warning }
+        annotations: { summary: "Over 1800 requests refused by the rate limits in 30 minutes" }
       - alert: AuthUnavailable
         # The signing keys or a user/allow-list lookup cannot be reached. jwks_refresh_limited is left out:
         # it is a token with an unknown key id inside the refresh limit (a rotation, or a forged kid that
         # anyone can send), retryable and not an outage.
-        expr: sum(rate(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[5m])) > 0
-        for: 5m
+        expr: |
+          sum(increase(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[30m])) > 0
+            or sum(last_over_time(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[30m])
+              unless last_over_time(ryft_auth_failures_total{reason=~"jwks_unavailable|internal"}[1h] offset 30m)) > 0
+        for: 15m
         labels: { severity: critical }
+        annotations: { summary: "Sign-ins fail: the signing keys or a user lookup cannot be reached (reason jwks_unavailable or internal)" }
       - alert: DatabaseDown
-        # A service cannot reach Supabase (pings every 30 s): pooler down, role
-        # refused, circuit breaker (ECIRCUITBREAKER) after failed logins.
-        expr: min by (service) (ryft_db_up) == 0
-        for: 2m
+        # A service's ticks cannot reach Supabase (each tick sets ryft_db_up): pooler down, role
+        # refused, circuit breaker (ECIRCUITBREAKER) after failed logins, a password pin that
+        # differs from the role's (scripts/rotate_db_password.sh). max, not min: an instance that
+        # stops without having run a tick must not page for the whole service.
+        expr: max by (job) (last_over_time(ryft_db_up[30m])) == 0
+        for: 20m
         labels: { severity: critical }
-        annotations: { summary: "{{ $labels.service }} cannot reach the database" }
-      - alert: DatabaseFlapping
-        expr: sum by (service) (increase(ryft_db_ping_failures_total[15m])) > 3
-        labels: { severity: warning }
-        annotations: { summary: "{{ $labels.service }}: database pings keep failing" }
-      - alert: CertificateExpiring
-        # cert-manager renews 30 days ahead; under 14 days left, renewal has been failing for two weeks.
-        expr: min by (namespace, name) (certmanager_certificate_expiration_timestamp_seconds - time()) < 14 * 86400
-        for: 1h
-        labels: { severity: warning }
-        annotations: { summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 14 days" }
+        annotations: { summary: "{{ $labels.job }} cannot reach the database (its ticks set ryft_db_up to 0)" }
+      - alert: TickMissing
+        # A service has handled no /internal/tick for 45 minutes, three ticks of the Scheduler job
+        # ryft-tick (*/15), or its counts do not arrive. Without ticks there is no outbox relay, no
+        # rescoring pass, no metrics push and no ryft_db_up, so the rules above go blind. One series
+        # per service from the start (absence included): a service is quiet only when its tick counter
+        # rose in an instance that pushed twice, or a new instance pushed it (the per-tick instance of
+        # a service at zero). Three causes: Scheduler or the tick subscription; no instance starts (a
+        # process that does not listen while the database refuses it, a bad revision); or the ticks
+        # run but the OTLP push fails (then every service fires at once, and ryft_db_up is gone too).
+        expr: |
+          (
+            label_replace(vector(1), "job", "ryft/api", "", "")
+              or label_replace(vector(1), "job", "ryft/ingest", "", "")
+              or label_replace(vector(1), "job", "ryft/scoring", "", "")
+              or label_replace(vector(1), "job", "ryft/notify", "", "")
+          )
+            unless on (job) (sum by (job) (increase(ryft_ticks_total[45m])) > 0)
+            unless on (job) (sum by (job) (last_over_time(ryft_ticks_total[45m])
+              unless last_over_time(ryft_ticks_total[1h] offset 45m)) > 0)
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
+          runbook: "docs/OPERATIONS.md → GCP"
 
   - name: ryft-pipeline
     rules:
-      # ---- events -----------------------------------------------------------------
-      - alert: DeadLetters
-        # An event could not be handled and was dead-lettered (OPERATIONS.md → RabbitMQ).
-        expr: sum by (subject) (increase(ryft_events_dlq_total{result="ok"}[1h])) > 0
-        labels: { severity: warning }
-        annotations: { summary: "{{ $labels.subject }}: an event was dead-lettered (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
+      # ---- events (Pub/Sub) -----------------------------------------------------------
       - alert: DeadLetterPublishFailing
-        # Not even the dead-letter publish worked: the message was rejected, and the
-        # broker's delivery limit dead-letters it once it is out of attempts.
-        expr: sum(increase(ryft_events_dlq_total{result="error"}[1h])) > 0
+        # Not even the dead-letter publish worked.
+        expr: |
+          sum(increase(ryft_events_dlq_total{result="error"}[1h])) > 0
+            or sum(last_over_time(ryft_events_dlq_total{result="error"}[30m])
+              unless last_over_time(ryft_events_dlq_total{result="error"}[1h] offset 30m)) > 0
         labels: { severity: critical }
-      # ---- RabbitMQ (D97; quiet until the broker exists: no series, no alert) --------
-      - alert: RabbitMQBacklog
-        # scoring or notify is not keeping up with its queue (per queue, from the broker).
-        expr: max by (queue) (rabbitmq_queue_messages_ready{vhost="ryft", queue=~"scoring|notify"}) > 100
+        annotations: { summary: "A dead-letter publish failed (Cloud Logging has the event)" }
+      - alert: OutboxBacklog
+        # Events written but not published for over 30 minutes: the publish after the request and
+        # two tick passes failed (D101). Nothing is lost; scores wait. Only due rows count, so a
+        # deliberately deferred notification is no backlog.
+        expr: max by (publisher) (last_over_time(ryft_outbox_oldest_seconds[30m])) > 1800
         for: 15m
         labels: { severity: warning }
-        annotations: { summary: "RabbitMQ {{ $labels.queue }}: over 100 events waiting for 15 minutes" }
-      - alert: RabbitMQDeadLetters
-        # Something waits in a dead-letter queue (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list; OPERATIONS → RabbitMQ).
-        expr: max by (queue) (rabbitmq_queue_messages{vhost="ryft", queue=~"dlq\\..*"}) > 0
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "RabbitMQ {{ $labels.queue }} holds dead letters (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
-      - alert: RabbitMQAlarm
-        # A node's memory or disk alarm: the broker blocks every publisher until it clears.
-        expr: max(rabbitmq_alarms_memory_used_watermark) > 0 or max(rabbitmq_alarms_free_disk_space_watermark) > 0
-        for: 2m
-        labels: { severity: critical }
-        annotations: { summary: "RabbitMQ blocks publishers (memory or disk alarm)" }
-      - alert: RabbitMQNodeDown
-        # Fewer than three nodes report: quorum queues still work with two, not with one.
-        expr: count(rabbitmq_identity_info{rabbitmq_cluster="rabbitmq"}) < 3
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "RabbitMQ: only {{ $value }} of 3 nodes report" }
-      - alert: AMQPDisconnected
-        # A service cannot reach RabbitMQ (it keeps running, /readyz says why; D47).
-        expr: max by (namespace) (ryft_amqp_connected) == 0
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "{{ $labels.namespace }} is not connected to RabbitMQ" }
-      - alert: EventsUnroutable
-        # An event no queue is bound for: the topology lacks a binding (internal/events/amqpbus/topology.go).
-        expr: sum by (reason) (increase(ryft_events_published_total{result="unroutable"}[15m])) > 0
-        labels: { severity: critical }
-        annotations: { summary: "{{ $labels.reason }} events are unroutable on RabbitMQ" }
-      - alert: OutboxBacklog
-        # Events written but not confirmed by the broker for over 5 minutes: the relay
-        # cannot reach it, or the broker refuses (D101). Nothing is lost; scores wait.
-        expr: max by (publisher) (ryft_outbox_oldest_seconds) > 300
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "{{ $labels.publisher }}: outbox events waiting over 5 minutes for the broker" }
+        annotations: { summary: "{{ $labels.publisher }}: outbox events waiting over 30 minutes for Pub/Sub" }
       - alert: OutboxStuck
-        # An event failed 50 sends and was set aside: no queue takes its key, or it is
-        # malformed. It needs a person (OPERATIONS → RabbitMQ → The outbox).
-        expr: max by (publisher) (ryft_outbox_stuck) > 0
+        # An event failed 50 sends and was set aside: no topic takes its key, or it is
+        # malformed. It needs a person (OPERATIONS → The outbox).
+        expr: max by (publisher) (last_over_time(ryft_outbox_stuck[30m])) > 0
         labels: { severity: warning }
         annotations: { summary: "{{ $labels.publisher }}: outbox events set aside after 50 failed sends" }
       - alert: PublishFailing
-        # Syncs are stored but scoring does not hear of them (the 15-minute pass catches up).
-        expr: sum(rate(ryft_events_published_total{result="error"}[10m])) > 0
-        for: 10m
+        # Syncs are stored but scoring does not hear of them (the outbox retries on each tick).
+        expr: |
+          sum(increase(ryft_events_published_total{result="error"}[30m])) > 0
+            or sum(last_over_time(ryft_events_published_total{result="error"}[30m])
+              unless last_over_time(ryft_events_published_total{result="error"}[1h] offset 30m)) > 0
+        for: 15m
         labels: { severity: warning }
+        annotations: { summary: "Publishing to Pub/Sub fails (the outbox keeps the events and retries)" }
       - alert: SyncToScoreSlow
-        # Testers wait over two minutes for their scores after a sync (p95 of the days scored).
-        expr: histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[15m]))) > 120
-        for: 15m
+        # Testers wait over two minutes for their scores after a sync: p95 of the days scored in the
+        # last hour. Per bucket series, a scoring instance first seen inside the hour counts with all
+        # it counted (most live minutes: min instances 0), any other with its increase.
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            (last_over_time(ryft_sync_to_score_seconds_bucket[1h])
+              unless last_over_time(ryft_sync_to_score_seconds_bucket[1h] offset 1h))
+            or increase(ryft_sync_to_score_seconds_bucket[1h])
+          )) > 120
+        for: 30m
         labels: { severity: warning }
-        annotations: { summary: "Scores take over 2 minutes after a sync (p95)" }
+        annotations: { summary: "Scores take over 2 minutes after a sync (p95 over an hour)" }
       - alert: ScoringErrors
-        expr: sum(rate(ryft_days_scored_total{result="error"}[15m])) > 0
+        expr: |
+          sum(increase(ryft_days_scored_total{result="error"}[30m])) > 0
+            or sum(last_over_time(ryft_days_scored_total{result="error"}[30m])
+              unless last_over_time(ryft_days_scored_total{result="error"}[1h] offset 30m)) > 0
         for: 15m
         labels: { severity: warning }
+        annotations: { summary: "Days fail to score" }
       - alert: NoSync
-        # No phone has synced for six hours (the gauge lives in ingest's memory;
-        # absent() also fires when nothing reports it, e.g. after a restart).
+        # No phone has synced for six hours: the newest ryft_last_sync_timestamp_seconds of any
+        # ingest instance in six hours, or none pushed at all in that time.
         # Per tester: the panel "Testers by last sync", not a page.
-        expr: (time() - max(ryft_last_sync_timestamp_seconds) > 6 * 3600) or absent(ryft_last_sync_timestamp_seconds)
+        expr: |
+          (time() - max(max_over_time(ryft_last_sync_timestamp_seconds[6h])) > 6 * 3600)
+            or absent_over_time(ryft_last_sync_timestamp_seconds[6h])
         for: 15m
         labels: { severity: warning }
         annotations: { summary: "No RYFT sync for over six hours" }
@@ -209,48 +191,78 @@ groups:
     rules:
       # ---- push -------------------------------------------------------------------
       - alert: APNsFailing
-        # More than 10 % of APNs requests failed over 30 minutes (at least 5 requests).
+        # More than 10 % of APNs requests failed over an hour (at least 5 requests).
         # 410 Unregistered is not a failure: the app was deleted, the token is dropped.
+        # Per series, a notify instance first seen inside the hour counts with all it counted.
         expr: |
-          (sum(increase(ryft_apns_responses_total{status!~"200|410"}[30m]))
-            / sum(increase(ryft_apns_responses_total[30m])) > 0.1)
-          and sum(increase(ryft_apns_responses_total[30m])) >= 5
+          (
+            sum(
+              (last_over_time(ryft_apns_responses_total{status!~"200|410"}[1h])
+                unless last_over_time(ryft_apns_responses_total{status!~"200|410"}[1h] offset 1h))
+              or increase(ryft_apns_responses_total{status!~"200|410"}[1h])
+            )
+            / sum(
+              (last_over_time(ryft_apns_responses_total[1h]) unless last_over_time(ryft_apns_responses_total[1h] offset 1h))
+              or increase(ryft_apns_responses_total[1h])
+            )
+            > 0.1
+          )
+          and
+          sum(
+            (last_over_time(ryft_apns_responses_total[1h]) unless last_over_time(ryft_apns_responses_total[1h] offset 1h))
+            or increase(ryft_apns_responses_total[1h])
+          ) >= 5
         labels: { severity: warning }
         annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
       - alert: PushFailing
         # notify reached no device for a notification (APNs unreachable after retries,
         # or every device refused it). "unconfigured" (no APNs key yet) is not a failure.
-        expr: sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0
+        expr: |
+          sum(increase(ryft_push_notifications_total{result="failed"}[1h])) > 0
+            or sum(last_over_time(ryft_push_notifications_total{result="failed"}[30m])
+              unless last_over_time(ryft_push_notifications_total{result="failed"}[1h] offset 30m)) > 0
         labels: { severity: warning }
         annotations: { summary: "Push notifications are not reaching devices" }
       - alert: APNsRejectsOurKey
         # 403: InvalidProviderToken and friends — the APNs key was revoked, or key ID / team ID do not match.
-        expr: sum(increase(ryft_apns_responses_total{status="403"}[15m])) > 0
+        expr: |
+          sum(increase(ryft_apns_responses_total{status="403"}[1h])) > 0
+            or sum(last_over_time(ryft_apns_responses_total{status="403"}[30m])
+              unless last_over_time(ryft_apns_responses_total{status="403"}[1h] offset 30m)) > 0
         labels: { severity: critical }
-        annotations: { summary: "APNs refuses notify's provider token (check APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8)" }
+        annotations: { summary: "APNs refuses notify's provider token (check APNS_KEY_ID, APNS_TEAM_ID, the apns-key-p8 pin)" }
 
       # ---- accounts and the beta --------------------------------------------------
       - alert: AccountDeletionIncomplete
-        expr: sum(increase(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h])) > 0
+        expr: |
+          sum(increase(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h])) > 0
+            or sum(last_over_time(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[30m])
+              unless last_over_time(ryft_account_deletions_total{step=~"auth|apple",result=~"error|skipped"}[1h] offset 30m)) > 0
         labels: { severity: warning }
         annotations: { summary: "A deleted account still has its Supabase sign-in or Apple grant" }
       - alert: NewFeedback
         # A tester sent feedback: read it with scripts/beta_report.sh feedback.
-        expr: sum(increase(ryft_feedback_received_total[10m])) > 0
+        expr: |
+          sum(increase(ryft_feedback_received_total[1h])) > 0
+            or sum(last_over_time(ryft_feedback_received_total[30m])
+              unless last_over_time(ryft_feedback_received_total[1h] offset 30m)) > 0
         labels: { severity: info }
         annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
       # The admin alerts (D158): no personal data in a label, and they only reach Grafana through
-      # `make alerts-apply`, which comes before the first admin_accounts row (OPERATIONS.md -> Beta ->
-      # Admin sign-in).
+      # `make alerts-apply` (OPERATIONS.md -> Beta -> Admin sign-in).
       - alert: AdminUnauthorized
-        # More than 20 /v1/admin requests with a bad bearer in 10 minutes: a scanner, a guessed key, a
+        # More than 20 /v1/admin requests with a bad bearer in 30 minutes: a scanner, a guessed key, a
         # stale or foreign token. The api never sees a guessed password (that is Supabase Auth: Supabase ->
         # Logs -> Auth). The answer is the same 401 for every reason; the reason is the api's "admin auth
         # rejected" log line and the access line's code. The per-address limit
         # (ryft_rate_limited_total{class="admin_ip"}) caps what one address can send. A real operator
         # refused for want of a fresh second factor (result="mfa_required") is in neither alert, on
         # purpose: it is in the audit and the log (OPERATIONS.md -> Beta -> Admin sign-in).
-        expr: sum(increase(ryft_admin_requests_total{result="unauthorized"}[10m])) > 20
+        expr: |
+          (sum(increase(ryft_admin_requests_total{result="unauthorized"}[30m])) or vector(0))
+            + (sum(last_over_time(ryft_admin_requests_total{result="unauthorized"}[30m])
+                unless last_over_time(ryft_admin_requests_total{result="unauthorized"}[1h] offset 30m)) or vector(0))
+            > 20
         labels: { severity: warning }
         annotations:
           summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
@@ -258,57 +270,48 @@ groups:
       - alert: AdminWebUsed
         # The operator's page (an admin Supabase token) was used. Who is in GET /v1/admin/audit, not in a
         # label: a user id in a metric is personal data in Grafana Cloud. A use you did not make is the signal.
-        expr: sum(increase(ryft_admin_authorized_total{actor="user"}[10m])) > 0
+        expr: |
+          sum(increase(ryft_admin_authorized_total{actor="user"}[1h])) > 0
+            or sum(last_over_time(ryft_admin_authorized_total{actor="user"}[30m])
+              unless last_over_time(ryft_admin_authorized_total{actor="user"}[1h] offset 30m)) > 0
         labels: { severity: info }
         annotations:
           summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
           runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
       - alert: InviteEmailPurgeFailing
-        # The hourly job that clears the email (and note) of an invite code 30 days after it stopped being
-        # redeemable (D161) keeps failing: three failed passes in three hours is one pod failing every time
-        # (each api pod runs it). The address of someone who only asked for an invite then stays longer than
-        # the privacy text says. Nothing user-visible breaks, so a warning. The api logs "invite email purge
-        # failed" with the cause. Like the admin alerts it reaches Grafana only through the user's manual
-        # alerts apply.
-        expr: sum(increase(ryft_invite_email_purge_total{result="error"}[3h])) >= 3
+        # The job that clears the email (and note) of an invite code 30 days after it stopped being
+        # redeemable (D161) keeps failing: three failed passes in three hours. The address of someone who
+        # only asked for an invite then stays longer than the privacy text says. Nothing user-visible
+        # breaks, so a warning. The api logs "invite email purge failed" with the cause. Per series,
+        # an api instance first seen inside the three hours counts with all it counted (each pass may
+        # run on a fresh instance: min instances 0), any other with its increase.
+        expr: |
+          sum(
+            (last_over_time(ryft_invite_email_purge_total{result="error"}[3h])
+              unless last_over_time(ryft_invite_email_purge_total{result="error"}[1h] offset 3h))
+            or increase(ryft_invite_email_purge_total{result="error"}[3h])
+          ) >= 3
         labels: { severity: warning }
         annotations:
           summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
           runbook: "docs/OPERATIONS.md → Beta → A code for one person"
 
-      # ---- deploys (Argo CD, D94) ---------------------------------------------------
-      - alert: ArgoAppDegraded
-        # An application's workloads are failing: a crash-looping pod, a failed PostSync
-        # smoke (the release is in, but something end to end does not work).
-        expr: max by (name) (argocd_app_info{health_status="Degraded"}) > 0
-        for: 10m
-        labels: { severity: warning }
-        annotations: { summary: "Argo CD application {{ $labels.name }} is Degraded (argocd app get, OPERATIONS.md → Deploy)" }
-      - alert: ArgoAppOutOfSync
-        # git and the cluster differ for 30 minutes although auto-sync is on: a sync that
-        # keeps failing, a wave waiting on an unhealthy one, or manifests that do not
-        # render (sync status Unknown). Applications with auto-sync paused are left out.
-        expr: max by (name) (argocd_app_info{sync_status!="Synced", autosync_enabled="true"}) > 0
-        for: 30m
-        labels: { severity: warning }
-        annotations: { summary: "Argo CD application {{ $labels.name }} has not matched git for 30 minutes" }
-      - alert: ArgoSyncFailed
-        # A sync ended in Failed or Error: a migration (PreSync), an apply the API
-        # server refused, or the smoke (PostSync). Nothing after the failing step ran.
-        expr: sum by (name) (increase(argocd_app_sync_total{phase=~"Error|Failed"}[15m])) > 0
+      # ---- from outside (Synthetic Monitoring, deploy/grafana/synthetics) ----------------
+      # probe_success per probe (labels job, instance, probe): the site's checks every 5 minutes, the
+      # services' every 10. The agent republishes a run's last result about every 2 minutes.
+      - alert: ApiDown
+        # api.ryftlab.de or ingest.ryftlab.de fails its readiness check (/health/ready, exactly 200)
+        # from every probe in two runs in a row: the service, its domain mapping, its certificate, or
+        # the database behind /health/ready. SiteDown's shape: SiteDown's 10 minutes are two of its
+        # 5-minute runs, and these checks run every 10 minutes, so 20 minutes; one failed run (a cold
+        # start over the timeout) does not page.
+        expr: max by (job, instance) (max_over_time(probe_success{job=~"ryft-(api|ingest)-ready"}[20m])) == 0
         labels: { severity: critical }
-        annotations: { summary: "Argo CD sync of {{ $labels.name }} failed (its last operation names the step)" }
-      - alert: ArgoMetricsMissing
-        # The application controller is not scraped: Argo CD is down, or its metrics
-        # policy broke; deploys and the three alerts above are blind.
-        expr: absent(argocd_app_info)
-        for: 15m
-        labels: { severity: warning }
-        annotations: { summary: "No Argo CD metrics for 15 minutes" }
-
-      # ---- the site from outside (Synthetic Monitoring, deploy/grafana/synthetics) ----
-      # probe_success per probe (labels job, instance, probe) every 5 minutes. Runbook for all:
-      # OPERATIONS.md → Apex site and apple-app-site-association → When a synthetic alert fires.
+        annotations:
+          summary: "{{ $labels.instance }} fails from every probe (job {{ $labels.job }})"
+          runbook: "docs/OPERATIONS.md → GCP"
+      # Runbook for the Site* alerts: OPERATIONS.md → Apex site and apple-app-site-association → When a
+      # synthetic alert fires.
       - alert: SiteDown
         # The home page, /privacy or the AASA fails from every probe for 10 minutes: the
         # site is down, or healthy but wrong (the checks pin status, content type and a
@@ -354,508 +357,16 @@ groups:
       - alert: SyntheticsMissing
         # A check reports nothing for 25 minutes (a 10-minute window, then 15): it was deleted or disabled, Synthetic
         # Monitoring is switched off, or its limit is used up. That job is unwatched until fixed.
+        # scripts/synthetics.sh holds these lines to the enabled checks of ryftlab.json.
         expr: |
           absent_over_time(probe_success{job="ryft-site-home"}[10m])
             or absent_over_time(probe_success{job="ryft-site-privacy"}[10m])
             or absent_over_time(probe_success{job="ryft-site-aasa"}[10m])
             or absent_over_time(probe_success{job="ryft-site-www-redirect"}[10m])
+            or absent_over_time(probe_success{job="ryft-api-ready"}[10m])
+            or absent_over_time(probe_success{job="ryft-ingest-ready"}[10m])
         for: 15m
         labels: { severity: warning }
         annotations:
           summary: "No Synthetic Monitoring results for {{ $labels.job }} for 25 minutes"
           runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
-
-  # ---- admission policies (T12-e, D120) ---------------------------------------------------
-  # Three sources, each pinned by job:
-  #   ryft/kube-apiserver-admission  the API servers' policy-check and Pod Security counters,
-  #                                  one scrape per endpoint of default/kubernetes;
-  #   ryft/admission-bindings        kube-state-metrics' native collector for the bindings:
-  #                                  kube_validatingadmissionpolicybinding_info{validatingadmissionpolicybinding,
-  #                                  policy_name} and _validation_action{validatingadmissionpolicybinding,action},
-  #                                  1 for each live action only (deploy/monitoring/k8s-monitoring.yaml);
-  #   ryft:admission_binding_intended  the committed action of each binding, generated from
-  #                                  admission-values.yaml (admission-intended.yaml, scripts/admission_intended.sh).
-  # Runbook for all: OPERATIONS.md → Admission policy signals.
-  # The counter alerts need no gate on the bindings: policy=~"ryft-.*" only exists once the
-  # chart is enabled, and Pod Security enforces today, so its refusals must page now. The
-  # binding alerts (Missing, NotDenying, Drift, BreakGlass) are gated by the bindings
-  # themselves and are quiet in Phase 0.
-  # The first-event gap: a counter child is created at 1 when its first event happens, so
-  # increase() has nothing to subtract and stays silent for the first violation, denial or
-  # error of a policy. The recording rules therefore add the series that had no sample in
-  # the hour before the last 10 minutes (last_over_time(...[1h] offset 10m)); a series that
-  # is new counts as an event, unless that endpoint's scrape was not up 12 minutes ago
-  # (turning the scrape on, or a recovered one, must not make every old counter look new).
-  # Steady counters stay quiet, and after 10 minutes a single event resolves.
-  - name: ryft-admission
-    rules:
-      - record: ryft:apiserver_admission_policy_check:fresh10m
-        expr: |
-          (sum by (policy, policy_binding, enforcement_action, error_type) (increase(apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission", policy=~"ryft-.*"}[10m])) > 0)
-            or
-          sum by (policy, policy_binding, enforcement_action, error_type) (
-            (apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission", policy=~"ryft-.*"}
-              unless last_over_time(apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission", policy=~"ryft-.*"}[1h] offset 10m))
-              and on (instance) (up{job="ryft/kube-apiserver-admission"} offset 12m == 1))
-      - record: ryft:pod_security_evaluations:fresh10m
-        expr: |
-          (sum by (decision, mode, resource, policy_level) (increase(pod_security_evaluations_total{job="ryft/kube-apiserver-admission"}[10m])) > 0)
-            or
-          sum by (decision, mode, resource, policy_level) (
-            (pod_security_evaluations_total{job="ryft/kube-apiserver-admission"}
-              unless last_over_time(pod_security_evaluations_total{job="ryft/kube-apiserver-admission"}[1h] offset 10m))
-              and on (instance) (up{job="ryft/kube-apiserver-admission"} offset 12m == 1))
-      - alert: AdmissionPolicyViolation
-        # A binding in Warn+Audit flagged a request (or Pod Security's warn or audit mode
-        # did): it was admitted. Expected in Phase 1; read the findings daily (OPERATIONS →
-        # Admission policy signals). Info, not warning: findings that repeat on every Argo CD
-        # refresh would otherwise page all day. A binding that denies is
-        # AdmissionPolicyDenied's. PSA's series are renamed to the policy label set so both
-        # share one alert.
-        expr: |
-          (
-            max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action=~"warn|audit"})
-              unless on (policy, policy_binding)
-            max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny"})
-          )
-            or
-          label_replace(label_replace(
-            max by (mode) (ryft:pod_security_evaluations:fresh10m{decision="deny", mode=~"warn|audit"}),
-            "policy", "pod-security", "mode", ".*"), "policy_binding", "pod-security-$1", "mode", "(.*)")
-        labels: { severity: info }
-        annotations:
-          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) flagged a request that was admitted"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionPolicyDenied
-        # A binding in Deny+Audit refused a request (an Argo CD sync of a changed manifest,
-        # a kubectl apply). The bindings that can refuse a Pod are AdmissionPodDenied's. With
-        # server-side diff the app also turns OutOfSync (ArgoAppOutOfSync); this one names the
-        # policy within minutes.
-        expr: |
-          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding!~"ryft-(workloads-pods|workloads-pods-vault|operator-reach|auth-env)"})
-        labels: { severity: warning }
-        annotations:
-          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) refused a request"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionPodDenied
-        # A Pod can be refused by P2's pods bindings (workloads-pods and vault's workloads-pods-vault),
-        # by P5 (auth-env) and by P8 (operator-reach) (the design's step C row, and vault's
-        # bootstrap gate, critical), or by Pod Security's enforce mode. The check
-        # counter has no resource label, so P5's and P8's refusals of other objects page too.
-        # A refused Pod means a re-create after a node loss or a rollout can be refused the same way.
-        expr: |
-          label_replace(
-            max by (policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny", policy_binding=~"ryft-(workloads-pods|workloads-pods-vault|operator-reach|auth-env)"}),
-            "source", "ValidatingAdmissionPolicy", "policy_binding", ".*")
-              or
-          label_replace(
-            max by (policy_level) (ryft:pod_security_evaluations:fresh10m{decision="deny", mode="enforce", resource="pod"}),
-            "source", "Pod Security", "policy_level", ".*")
-        labels: { severity: critical }
-        annotations:
-          summary: "A Pod was refused by admission ({{ $labels.source }}); a re-create can be refused too"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionPolicyError
-        # A policy's CEL expression could not be evaluated (error_type is anything but
-        # no_error: compile_error, invalid_error, out_of_budget) and the request was
-        # refused, because failurePolicy is Fail and the binding denies. Critical for any
-        # action that is not warn or audit (an unexpected empty action is treated as a refusal).
-        expr: |
-          max by (policy, policy_binding, error_type) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action!~"warn|audit", error_type!~"no_error|"})
-        labels: { severity: critical }
-        annotations:
-          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }}) and refuses requests"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionPolicyError
-        # The same under Warn+Audit: the requests are admitted, but the policy judges nothing.
-        # A Deny+Audit binding counts its audit child too; that one is the critical rule's.
-        expr: |
-          max by (policy, policy_binding, error_type) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action=~"warn|audit", error_type!~"no_error|"})
-            unless on (policy, policy_binding)
-          max by (policy, policy_binding) (ryft:apiserver_admission_policy_check:fresh10m{enforcement_action="deny"})
-        labels: { severity: warning }
-        annotations:
-          summary: "Admission policy {{ $labels.policy }} ({{ $labels.policy_binding }}) fails to evaluate ({{ $labels.error_type }}); requests are admitted"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionBindingMissing
-        # Fewer than the chart's 17 ryft-* bindings exist (a binding deleted by hand, a release
-        # that lost objects, or kube-state-metrics blind), once bindings have existed in the
-        # last day. A chart that was never enabled stays quiet; a deliberate rollback to
-        # Phase 0 raises this for up to a day: silence it.
-        expr: |
-          (count(count by (validatingadmissionpolicybinding) (kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"})) or vector(0)) < 17
-            and on ()
-          count(last_over_time(kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"}[1d])) > 0
-        for: 10m
-        labels: { severity: critical }
-        annotations:
-          summary: "{{ $value }} of 17 admission policy bindings exist"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionBindingNotDenying
-        # A binding committed as deny (ryft:admission_binding_intended) has no Deny while
-        # others do: a fast-path patch left in place, or a hand edit. The fast rule: the
-        # protection of that binding is off. When no binding has Deny at all, that is the
-        # chart's break-glass (AdmissionBreakGlass's), not this.
-        expr: |
-          (
-            ryft:admission_binding_intended{intended_action="deny"}
-              unless on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Deny"}
-          )
-            and on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings"}
-            and on () (count(kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*", action="Deny"}) > 0)
-        for: 10m
-        labels: { severity: warning }
-        annotations:
-          summary: "Binding {{ $labels.validatingadmissionpolicybinding }} is committed as deny but does not deny"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionBindingDrift
-        # The rest of the mismatches between a binding's live validationActions and its
-        # committed action, for 2 hours: a deny binding without Audit, an audit binding with
-        # Deny or without Warn or Audit. (A deny binding without Deny is NotDenying's, or
-        # BreakGlass's.) Helm does not see a patch, so this is what finds a hand edit.
-        expr: |
-          (
-            (
-              (ryft:admission_binding_intended{intended_action="deny"}
-                and on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Deny"})
-              unless on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Audit"}
-            )
-              or
-            (ryft:admission_binding_intended{intended_action="audit"}
-              and on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Deny"})
-              or
-            (
-              (ryft:admission_binding_intended{intended_action="audit"}
-                and on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings"})
-              unless on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Warn"}
-            )
-              or
-            (
-              (ryft:admission_binding_intended{intended_action="audit"}
-                and on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings"})
-              unless on (validatingadmissionpolicybinding) kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", action="Audit"}
-            )
-          )
-        for: 2h
-        labels: { severity: warning }
-        annotations:
-          summary: "Binding {{ $labels.validatingadmissionpolicybinding }} does not carry the actions it was committed with ({{ $labels.intended_action }})"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionBreakGlass
-        # No ryft-* binding has Deny while at least one is committed as deny: the chart's
-        # break-glass (admission_break_glass) is on, or every binding was patched. The
-        # cluster is unprotected. 4 hours is long for an incident's fix.
-        expr: |
-          (count(ryft:admission_binding_intended{intended_action="deny"}) > 0)
-            and on ()
-          (count(kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*"}) > 0)
-            unless on ()
-          (count(kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings", validatingadmissionpolicybinding=~"ryft-.*", action="Deny"}) > 0)
-        for: 4h
-        labels: { severity: warning }
-        annotations:
-          summary: "No admission binding denies although {{ $value }} are committed as deny (break-glass?) for 4 hours"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionSignalsMissing
-        # Not gated: a scrape that reports nothing for 15 minutes blinds the alerts above
-        # (the API servers' counters, or the bindings). Includes the state before the
-        # monitoring values are applied.
-        expr: |
-          absent_over_time(up{job="ryft/kube-apiserver-admission"}[15m])
-            or
-          absent_over_time(up{job="ryft/admission-bindings"}[15m])
-        labels: { severity: warning }
-        annotations:
-          summary: "No {{ $labels.job }} scrape results for 15 minutes; the admission alerts are blind"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - alert: AdmissionScrapeDown
-        # A target is scraped but fails (an API server endpoint, or kube-state-metrics).
-        expr: max by (job, instance) (up{job=~"ryft/(kube-apiserver-admission|admission-bindings)"}) == 0
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "The admission scrape {{ $labels.job }} of {{ $labels.instance }} has been down for 15 minutes"
-          runbook: "docs/OPERATIONS.md → Admission policy signals"
-
-  # The in-cluster Vault, RYFT's only Vault (namespace vault; D192, D194, D207; OBSERVABILITY.md →
-  # Vault). Two scrapes of the alloy-deployment collector
-  # (deploy/monitoring/k8s-monitoring.yaml): job ryft/vault is each
-  # server's /v1/sys/metrics (Vault's `cluster` label renamed vault_cluster), job ryft/vault-state
-  # is kube-state-metrics for namespace vault. Vault's gauges expire 2 minutes after their last
-  # update (prometheus_retention_time) and a sealed node reports no vault_core_active, so being
-  # sealed is read from the pods' readiness (strict: only an unsealed active or standby node is
-  # ready), not from vault_core_unsealed. One rule set for both seals (infra/aws/kubernetes
-  # var.vault_seal, D208): under shamir, the default, every pod that starts (a restart, a node
-  # drain, a new node) stays sealed until the operator unseals it by hand with three of the five
-  # shares, so a sealed pod is routine work that needs the operator; under awskms it unseals
-  # itself within seconds, so a sealed pod is a fault (the KMS key, its role, the egress). The
-  # texts name both; the metrics do not carry the seal type. Before the operator's init no pod is
-  # ever ready (D196), and the collector may not reach the servers yet (var.vault_collector_peer): the rules that
-  # would fire on that are gated on "this Vault has been initialised", in two halves. (1) A server
-  # pod labelled vault-initialized=true in the last hour (kube-state-metrics exports the label as
-  # kube_pod_labels). Vault's service registration resets its labels at every process start to
-  # initialized=false, sealed=true and sets vault-initialized=true again only when the node
-  # unseals, so the label means "unsealed at least once since this process started": after a
-  # restart of every pod that stays sealed it lapses an hour after the last unsealed sample
-  # (Vault's command/server.go starts the registration as initialized=false, sealed=true;
-  # NotifyInitializedStateChange(true) runs on unseal; to verify in the kind drill). Under shamir
-  # that is any restart of all three before the operator has unsealed them; under awskms a KMS
-  # path that fails. As read, a shamir init alone does not set the label (the node stays sealed
-  # until its first unseal; the same kind-drill check), and no rule depends on which it is: the
-  # rules are loaded after the bootstrap. (2) The snapshot CronJob has succeeded at least once (its status keeps
-  # lastSuccessfulTime; last_over_time bridges a 6 h scrape gap): the half that survives an
-  # outage of every pod. The first snapshot is taken by hand right after the init and infra/vault's
-  # apply (OPERATIONS.md → Vault metrics (once)) and is a precondition for these alerts, before
-  # `make alerts-apply`. A rebuild from empty starts with neither half (no old series: the add-on
-  # never ran before), so it is quiet until its own init. Restarts are PodRestarting's (group
-  # ryft), certificates CertificateExpiring's.
-  - name: ryft-vault
-    rules:
-      - alert: VaultSealed
-        # One server pod runs but is not ready for 5 minutes: sealed, or a standby that cannot
-        # reach the active node (474). Sealed under shamir (D208): the pod started and waits for
-        # the operator's unseal by hand (three of the five shares), after every restart, a node
-        # drain included; it does not heal itself, and until it is unsealed the failure tolerance
-        # is 0. Sealed under awskms: auto-unseal takes seconds, so the KMS key, its role or the
-        # egress is broken. Two or more: VaultSealedQuorum instead.
-        expr: |
-          (
-            max by (pod) (kube_pod_container_status_running{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-              unless on (pod)
-            max by (pod) (kube_pod_container_status_ready{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-          )
-            and on ()
-          (
-            count(
-              max by (pod) (kube_pod_container_status_running{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-                unless on (pod)
-              max by (pod) (kube_pod_container_status_ready{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-            ) < 2
-          )
-            and on ()
-          (
-            max(last_over_time(kube_pod_labels{job="ryft/vault-state", namespace="vault", pod=~"vault-[0-9]+", label_vault_initialized="true"}[1h]))
-              or on ()
-            count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-          )
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "{{ $labels.pod }} runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
-      - alert: VaultSealedQuorum
-        # Two or more server pods run but are not ready for 5 minutes: with 3 replicas no quorum
-        # is left, so there is no leader (the same causes as VaultSealed, on several nodes). Under
-        # shamir: several pods restarted (a node group update, a zone) and wait for the operator;
-        # unsealing each by hand brings the quorum back with the second. Under awskms: the KMS key
-        # or the IAM role, more likely than a node.
-        expr: |
-          (
-            count(
-              max by (pod) (kube_pod_container_status_running{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-                unless on (pod)
-              max by (pod) (kube_pod_container_status_ready{job="ryft/vault-state", namespace="vault", container="vault", pod=~"vault-[0-9]+"}) == 1
-            ) >= 2
-          )
-            and on ()
-          (
-            max(last_over_time(kube_pod_labels{job="ryft/vault-state", namespace="vault", pod=~"vault-[0-9]+", label_vault_initialized="true"}[1h]))
-              or on ()
-            count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-          )
-        for: 5m
-        labels: { severity: critical }
-        annotations:
-          summary: "{{ $value }} Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
-      - alert: VaultUnavailable
-        # No server pod is ready for 10 minutes, whatever the reason (all sealed, Pending, a crash
-        # loop, the StatefulSet scaled to 0): every login and read fails, VSO keeps the Secrets it
-        # has and stops renewing them. All sealed and running also raises VaultSealedQuorum, whose
-        # text names the unseal; under shamir that is every pod after a restart of all three.
-        expr: |
-          (max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}) == 0)
-            and on ()
-          (
-            max(last_over_time(kube_pod_labels{job="ryft/vault-state", namespace="vault", pod=~"vault-[0-9]+", label_vault_initialized="true"}[1h]))
-              or on ()
-            count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-          )
-        for: 10m
-        labels: { severity: critical }
-        annotations:
-          summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
-      - alert: VaultNoActiveNode
-        # The scrape works and no node reports itself active: no leader, so no login or read
-        # succeeds (VSO keeps the Secrets it has).
-        expr: |
-          ((sum(vault_core_active{job="ryft/vault"}) or vector(0)) < 1)
-            and on ()
-          (max(up{job="ryft/vault"}) == 1)
-            and on ()
-          (
-            max(last_over_time(kube_pod_labels{job="ryft/vault-state", namespace="vault", pod=~"vault-[0-9]+", label_vault_initialized="true"}[1h]))
-              or on ()
-            count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-          )
-        for: 2m
-        labels: { severity: critical }
-        annotations:
-          summary: "No Vault node has been active for 2 minutes: logins and reads fail"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
-      - alert: VaultRaftPeersBelow3
-        # Autopilot on the active node counts fewer than 3 healthy voters for 10 minutes: one more
-        # loss ends the quorum. vault_raft_peers is not used (it expires and lags). Only with an
-        # active node (no autopilot before the init or without a leader).
-        expr: |
-          ((count(max by (node_id) (vault_autopilot_node_healthy{job="ryft/vault"}) == 1) or vector(0)) < 3)
-            and on ()
-          (sum(vault_core_active{job="ryft/vault"}) >= 1)
-        for: 10m
-        labels: { severity: warning }
-        annotations:
-          summary: "Only {{ $value }} of 3 Raft peers are healthy: one more loss ends the quorum"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultRaftPeersBelow3)"
-      - alert: VaultSnapshotStale
-        # Pages (D192): no successful snapshot for 13 hours (two missed 6-hourly runs), or none in
-        # 13 hours of a Vault that was ready all along (ready 13 hours ago and never at 0 since,
-        # so a fresh init, or a Vault back from an outage, has 13 hours for its first snapshot).
-        # Lifecycle expiry deletes snapshots after 30 days (and the versions 7 days later), so a
-        # job broken for 37 days leaves no snapshot at all. Only while a server is ready: a Vault
-        # that is down pages as VaultUnavailable, and no snapshot can be taken then.
-        # last_over_time bridges a scrape gap of up to 6 h.
-        expr: |
-          (
-              (time() - max(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))) > 13 * 3600
-            or on ()
-              (
-                max(absent_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[13h]))
-                  and on ()
-                (min_over_time(max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"})[13h:5m]) > 0)
-                  and on ()
-                (max(last_over_time(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}[1h] offset 13h)) > 0)
-              )
-          )
-            and on ()
-          (max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0)
-        labels: { severity: critical }
-        annotations:
-          summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-          runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-      - alert: VaultSnapshotFailing
-        # The latest scheduled run started more than 30 minutes ago and has not succeeded (a run
-        # takes at most 10 minutes, retries included), or no run has ever succeeded although one
-        # was scheduled over 30 minutes ago and a server is ready (the first runs after the init).
-        # Warns on the first failed run; the page is VaultSnapshotStale's.
-        expr: |
-          (
-            (
-              max(last_over_time(kube_cronjob_status_last_schedule_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-                >
-              max(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-            )
-              or on ()
-            (
-              max(last_over_time(kube_cronjob_status_last_schedule_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-                unless on ()
-              count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-                and on ()
-              (max(kube_statefulset_status_replicas_ready{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0)
-            )
-          )
-            and on ()
-          ((time() - max(last_over_time(kube_cronjob_status_last_schedule_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))) > 1800)
-        labels: { severity: warning }
-        annotations:
-          summary: "The latest Vault snapshot run did not succeed"
-          runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-      - alert: VaultAuditFailing
-        # Critical (the lead's call): a node failed to write an audit entry in the last 10 minutes.
-        # Vault refuses a request only when EVERY device fails, so a failure here means requests
-        # go unrecorded or are about to be refused: the audit trail is the one record of who read
-        # which secret, and the cause (a full audit volume, a broken device) gets worse, not
-        # better. The counters are cumulative (Vault adds 0 or 1 on every request) and expire 2
-        # minutes after the last request: increase() catches a failure on a live counter, and a
-        # counter that appears above 0 (no request for 2 minutes, then a failing one) counts too,
-        # one branch per named counter.
-        expr: |
-          max by (pod) (increase(vault_audit_log_request_failure{job="ryft/vault"}[10m])) > 0
-            or
-          max by (pod) (increase(vault_audit_log_response_failure{job="ryft/vault"}[10m])) > 0
-            or
-          max by (pod) (
-            vault_audit_log_request_failure{job="ryft/vault"} > 0
-              unless
-            vault_audit_log_request_failure{job="ryft/vault"} offset 10m
-          )
-            or
-          max by (pod) (
-            vault_audit_log_response_failure{job="ryft/vault"} > 0
-              unless
-            vault_audit_log_response_failure{job="ryft/vault"} offset 10m
-          )
-        labels: { severity: critical }
-        annotations:
-          summary: "{{ $labels.pod }} failed to write audit entries in the last 10 minutes"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
-      - alert: VaultVolumeFilling
-        # A data or audit volume of a server is over 80 % full for 15 minutes. The audit file only
-        # grows (Vault reopens it on SIGHUP alone); a full one makes Vault refuse requests. The
-        # series are Fleet's kubelet scrape (remote config): VaultScrapeDown warns when they are
-        # missing, and OPERATIONS → Vault metrics (once) checks them.
-        expr: |
-          max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace="vault"})
-            / max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="vault"}) > 0.8
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultVolumeFilling)"
-      - alert: VaultUpdatePending
-        # updateStrategy OnDelete (D204): an applied change to the pod template (a Vault upgrade, a
-        # new setting) waits for the operator's pod-by-pod restart, and the next node drain would
-        # roll it unplanned. Existing pods minus updated ones (currentRevision does not advance
-        # reliably under OnDelete). Information after a day.
-        expr: |
-          max(kube_statefulset_status_replicas{job="ryft/vault-state", namespace="vault", statefulset="vault"})
-            - max(kube_statefulset_status_replicas_updated{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0
-        for: 24h
-        labels: { severity: info }
-        annotations:
-          summary: "{{ $value }} Vault pod(s) still run the previous template: restart them one by one"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultUpdatePending)"
-      - alert: VaultScrapeDown
-        # The alerts above are blind: kube-state-metrics for vault is not scraped; or, once Vault
-        # has been initialised (the collector may reach the servers only after the operator's init,
-        # var.vault_collector_peer), a server is not scraped (TLS: the collector's vault-ca Secret;
-        # the NetworkPolicy peer) or Fleet's kubelet scrape sends no volume stats for vault
-        # (VaultVolumeFilling). Those two count only while the StatefulSet exists (a restore
-        # removes it). The kube-state-metrics half is ungated: alerts loaded before the collector
-        # config warn until that scrape runs, so the monitoring goes first (OPERATIONS.md → Vault
-        # alerts).
-        expr: |
-          (max by (job) (up{job="ryft/vault-state"}) == 0 or absent(up{job="ryft/vault-state"}))
-            or
-          (
-            (
-              max by (job, pod) (up{job="ryft/vault"}) == 0
-                or
-              absent(up{job="ryft/vault"})
-                or
-              label_replace(absent(kubelet_volume_stats_capacity_bytes{namespace="vault"}), "job", "kubelet volume stats", "", "")
-            )
-              and on ()
-            (max(kube_statefulset_replicas{job="ryft/vault-state", namespace="vault", statefulset="vault"}) > 0)
-              and on ()
-            (
-              max(last_over_time(kube_pod_labels{job="ryft/vault-state", namespace="vault", pod=~"vault-[0-9]+", label_vault_initialized="true"}[1h]))
-                or on ()
-              count(last_over_time(kube_cronjob_status_last_successful_time{job="ryft/vault-state", namespace="vault", cronjob="vault-snapshot"}[6h]))
-            )
-          )
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "The Vault scrape {{ $labels.job }}{{ with $labels.pod }} of {{ . }}{{ end }} has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-          runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"

@@ -1,0 +1,38 @@
+# The migrate job on Cloud Run (D223): applies the migrations, seeds, and sets every service role's
+# password from DB_PASSWORD_<SVC> on every run (cmd/migrate). deploy.yml runs it (`gcloud run jobs
+# replace`, then `gcloud run jobs execute migrate --wait`) before any service rolls, and stops when it
+# fails. Session mode (5432) as the schema owner; the services use the transaction pooler.
+# Each DB_PASSWORD_<SVC> pin must equal PGPASSWORD's in <svc>.yaml (design §4: a difference would set
+# the role back on the next deploy and trip the pooler's breaker for the whole role):
+# scripts/rotate_db_password.sh moves both, and scripts/check_cloudrun.py fails when they differ.
+# A template for scripts/cloudrun_render.py; see api.yaml.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  template:
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:
+        spec:
+          serviceAccountName: ryft-migrate@ryftlab-prod.iam.gserviceaccount.com
+          # No retry: a retry is a second failed owner login when the password or the pooler is the
+          # cause, and failed logins feed Supavisor's circuit breaker (ECIRCUITBREAKER, for the whole
+          # role). A migration that hit its 5 s lock timeout fails the run; dispatch a new one.
+          timeoutSeconds: 600
+          maxRetries: 0
+          containers:
+            - name: migrate
+              image: "${IMAGE}"
+              resources:
+                limits: { cpu: "1", memory: 512Mi }
+              env:
+                - { name: DATABASE_URL, value: "${DATABASE_URL}" }
+                - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: db-password-owner, key: "1" } } }
+                - { name: DB_PASSWORD_API, valueFrom: { secretKeyRef: { name: db-password-api, key: "1" } } }
+                - { name: DB_PASSWORD_INGEST, valueFrom: { secretKeyRef: { name: db-password-ingest, key: "1" } } }
+                - { name: DB_PASSWORD_SCORING, valueFrom: { secretKeyRef: { name: db-password-scoring, key: "1" } } }
+                - { name: DB_PASSWORD_NOTIFY, valueFrom: { secretKeyRef: { name: db-password-notify, key: "1" } } }
+                - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }

@@ -1,0 +1,20 @@
+# Placeholders only. This root reads no local tfvars: every value below is a workspace variable of
+# ryft-gcp in ryft-lab (terraform category, docs/OPERATIONS.md -> GCP, step 2e), set once.
+# The gates are not here: they live in gates.auto.tfvars (reviewed), and the topology in
+# pubsub.auto.tfvars.json (generated).
+
+# gh api repos/timkrebs/ryft-platform --jq '.id, .owner.id'
+github_repository_id       = "<repository id, digits>"
+github_repository_owner_id = "<owner id, digits>"
+
+# Search Console -> add the domain property ryftlab.de -> the TXT value it shows (public).
+google_site_verification = "google-site-verification=<value from Search Console>"
+
+# From runbook step 11. Until grafana_datasource_uid is set, no Grafana resource exists.
+# grafana_url            = "https://<stack>.grafana.net"
+# grafana_datasource_uid = "<uid of the Google Cloud Monitoring data source>"
+# grafana_auth: sensitive, in the workspace UI only. Never here, never on argv.
+
+# Defaults, change only with a reason:
+# project_id = "ryftlab-prod"
+# region     = "europe-west1"
